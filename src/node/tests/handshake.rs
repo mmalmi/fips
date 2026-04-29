@@ -951,3 +951,69 @@ async fn test_duplicate_msg2_dropped() {
     assert_eq!(node.connection_count(), 0);
     assert_eq!(node.peer_count(), 0);
 }
+
+/// `should_admit_msg1` admits when no transport is registered for the id.
+/// (No gate to apply — the caller's other checks decide the outcome.)
+#[test]
+fn test_should_admit_msg1_no_transport() {
+    let node = make_node();
+    let addr = TransportAddr::from_string("10.0.0.2:2121");
+    assert!(node.should_admit_msg1(TransportId::new(1), &addr));
+}
+
+/// `should_admit_msg1` rejects a fresh msg1 (no addr_to_link entry) when
+/// the transport has accept_connections=false. Behavior unchanged from
+/// before the carve-out.
+#[tokio::test]
+async fn test_should_admit_msg1_rejects_fresh_when_accept_off() {
+    use crate::config::TcpConfig;
+    use crate::transport::tcp::TcpTransport;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    // bind_addr=None → accept_connections() == false
+    let cfg = TcpConfig {
+        bind_addr: None,
+        ..Default::default()
+    };
+    let (tx, _rx) = packet_channel(64);
+    let tcp = TcpTransport::new(transport_id, None, cfg, tx);
+    node.transports
+        .insert(transport_id, TransportHandle::Tcp(tcp));
+
+    let addr = TransportAddr::from_string("10.0.0.2:2121");
+    assert!(!node.should_admit_msg1(transport_id, &addr));
+}
+
+/// ISSUE-2026-0004 regression test: `should_admit_msg1` admits rekey/restart
+/// msg1 from a peer with an existing link even when the transport has
+/// accept_connections=false. Without this, the dual-init tie-breaker
+/// deadlocks (the larger-NodeAddr side drops the winner's rekey msg1).
+#[tokio::test]
+async fn test_should_admit_msg1_admits_rekey_when_accept_off() {
+    use crate::config::TcpConfig;
+    use crate::transport::tcp::TcpTransport;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let cfg = TcpConfig {
+        bind_addr: None,
+        ..Default::default()
+    };
+    let (tx, _rx) = packet_channel(64);
+    let tcp = TcpTransport::new(transport_id, None, cfg, tx);
+    node.transports
+        .insert(transport_id, TransportHandle::Tcp(tcp));
+
+    let addr = TransportAddr::from_string("10.0.0.2:2121");
+
+    // Pre-populate addr_to_link as if a session were established for this
+    // peer on this transport (rekey msg1 will arrive against this entry).
+    let link_id = node.allocate_link_id();
+    node.addr_to_link
+        .insert((transport_id, addr.clone()), link_id);
+
+    assert!(node.should_admit_msg1(transport_id, &addr));
+}

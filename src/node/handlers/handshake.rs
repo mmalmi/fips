@@ -10,6 +10,30 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 impl Node {
+    /// Returns true if an inbound msg1 should be admitted past the
+    /// `accept_connections` gate.
+    ///
+    /// Rekey/restart msg1 on an existing link is always admitted (the gate
+    /// is meant to filter fresh handshakes from strangers, not maintenance
+    /// traffic on established sessions). Otherwise the transport's
+    /// `accept_connections` config decides; absence of a registered
+    /// transport admits (no gate to apply).
+    pub(in crate::node) fn should_admit_msg1(
+        &self,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+    ) -> bool {
+        if self
+            .addr_to_link
+            .contains_key(&(transport_id, remote_addr.clone()))
+        {
+            return true;
+        }
+        self.transports
+            .get(&transport_id)
+            .is_none_or(|t| t.accept_connections())
+    }
+
     /// Handle handshake message 1 (phase 0x1).
     ///
     /// This creates a new inbound connection. Rate limiting is applied
@@ -25,10 +49,11 @@ impl Node {
             return;
         }
 
-        // Check if this transport accepts inbound connections
-        if let Some(transport) = self.transports.get(&packet.transport_id)
-            && !transport.accept_connections()
-        {
+        // accept_connections gate. Rekey/restart msg1 on an existing link
+        // is always admitted; the gate only filters truly-fresh connections
+        // from strangers. Without this carve-out, the dual-init tie-breaker
+        // deadlocks when the larger-NodeAddr side has accept_connections=false.
+        if !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
             self.msg1_rate_limiter.complete_handshake();
             return;
         }
