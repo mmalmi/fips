@@ -144,6 +144,13 @@ impl UdpTransport {
 
         self.state = TransportState::Starting;
 
+        if self.config.outbound_only() && self.config.bind_addr.is_some() {
+            warn!(
+                configured_bind_addr = ?self.config.bind_addr,
+                "udp.outbound_only = true; configured bind_addr is ignored, binding to 0.0.0.0:0"
+            );
+        }
+
         // Parse bind address
         let bind_addr: SocketAddr = self
             .config
@@ -367,6 +374,20 @@ impl Transport for UdpTransport {
         // Peer configuration is handled at the node level, not transport level
         Ok(Vec::new())
     }
+
+    /// Whether the transport accepts inbound handshake initiations.
+    /// `outbound_only` mode forces this to false; otherwise reflects the
+    /// `accept_connections` config field (default: true). Note that the
+    /// hard gate is at the Node level (see ISSUE-2026-0004 fix in
+    /// `src/node/handlers/handshake.rs`); this method is what that gate
+    /// consults for transports that lack runtime-state-based filtering.
+    fn accept_connections(&self) -> bool {
+        if self.config.outbound_only() {
+            false
+        } else {
+            self.config.accept_connections()
+        }
+    }
 }
 
 impl Drop for UdpTransport {
@@ -474,10 +495,7 @@ mod tests {
         UdpConfig {
             bind_addr: Some(format!("127.0.0.1:{}", port)),
             mtu: Some(1280),
-            recv_buf_size: None,
-            send_buf_size: None,
-            advertise_on_nostr: None,
-            public: None,
+            ..Default::default()
         }
     }
 
@@ -703,6 +721,77 @@ mod tests {
         // Before start, congestion should still report (from stats)
         let cong = transport.congestion();
         assert_eq!(cong.recv_drops, Some(0));
+    }
+
+    #[test]
+    fn test_accept_connections_default_true() {
+        let (tx, _rx) = packet_channel(100);
+        let transport = UdpTransport::new(TransportId::new(1), None, make_config(0), tx);
+        // Default UdpConfig has accept_connections unset → true.
+        assert!(transport.accept_connections());
+    }
+
+    #[test]
+    fn test_accept_connections_false_when_configured() {
+        let (tx, _rx) = packet_channel(100);
+        let transport = UdpTransport::new(
+            TransportId::new(1),
+            None,
+            UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                accept_connections: Some(false),
+                ..Default::default()
+            },
+            tx,
+        );
+        assert!(!transport.accept_connections());
+    }
+
+    #[test]
+    fn test_accept_connections_forced_false_in_outbound_only() {
+        let (tx, _rx) = packet_channel(100);
+        let transport = UdpTransport::new(
+            TransportId::new(1),
+            None,
+            UdpConfig {
+                outbound_only: Some(true),
+                accept_connections: Some(true), // explicit true; outbound_only wins
+                ..Default::default()
+            },
+            tx,
+        );
+        assert!(!transport.accept_connections());
+    }
+
+    #[tokio::test]
+    async fn test_outbound_only_binds_ephemeral() {
+        // outbound_only=true must override bind_addr to 0.0.0.0:0 so the
+        // kernel picks a source port and there is no listener on a known
+        // port. The runtime should bind successfully even if `bind_addr`
+        // is explicitly set in the config (a warn fires; not asserted
+        // here).
+        let (tx, _rx) = packet_channel(100);
+        let mut transport = UdpTransport::new(
+            TransportId::new(1),
+            None,
+            UdpConfig {
+                bind_addr: Some("127.0.0.1:65535".to_string()),
+                outbound_only: Some(true),
+                ..Default::default()
+            },
+            tx,
+        );
+
+        transport.start_async().await.unwrap();
+        let local = transport.local_addr().unwrap();
+        // Ephemeral port: kernel-assigned, non-zero, never matches the
+        // configured 65535 (since outbound_only ignored bind_addr).
+        assert_ne!(local.port(), 65535);
+        assert!(local.port() > 0);
+        // Source IP picked by the kernel; v4 INADDR_ANY before binding,
+        // resolves to 0.0.0.0 on the local end.
+        assert!(local.ip().is_unspecified());
+        transport.stop_async().await.unwrap();
     }
 
     #[tokio::test]

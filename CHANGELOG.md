@@ -147,6 +147,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (development) packages with sysusers.d/tmpfiles.d integration
   ([#21](https://github.com/jmcorgan/fips/pull/21),
   [@dskvr](https://github.com/dskvr))
+- `transports.udp.outbound_only` (default `false`). When true, the UDP
+  transport binds a kernel-assigned ephemeral port (`0.0.0.0:0`) instead
+  of the configured `bind_addr`, refuses inbound handshakes, and is
+  never advertised on Nostr regardless of `advertise_on_nostr`. Use
+  this to participate in the mesh as a pure client — initiate outbound
+  links without exposing an inbound listener on a known port.
+  Implements the long-form fix for `udp.bind_addr: "127.0.0.1:..."`
+  not actually working as a workaround (Linux pins the loopback source
+  IP, dropping outbound flows to external peers at the routing layer)
+- `transports.udp.accept_connections` (default `true`). Mirrors the
+  Ethernet/BLE knob; setting to `false` produces a "client" posture
+  (initiate outbound, refuse inbound msg1 from new addresses). The
+  Node-level handshake gate carves out msg1 from peers already
+  established on this transport so rekey continues to work
+  (ISSUE-2026-0004). Affects every transport via the `Transport` trait
+- Startup validation now rejects `transports.udp[*].bind_addr` set to a
+  loopback address when at least one peer has a non-loopback UDP
+  address. Replaces the silent "peer link won't establish" failure
+  mode where Linux's source-address routing check dropped outbound
+  flows from the loopback-bound socket. `outbound_only: true` is
+  exempt from the check (it overrides `bind_addr` to `0.0.0.0:0`)
 - `packaging/debian/build-deb.sh` now auto-derives a per-commit Debian
   Version field for dev builds (Cargo.toml version ending in `-dev`)
   using the form `<base>~dev+git<YYYYMMDD>.<sha>[.dirty]-1`, e.g.

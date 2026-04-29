@@ -59,6 +59,11 @@ transports:
     bind_addr: "0.0.0.0:2121"
     # advertise_on_nostr: true
     # public: false # false => advertise udp:nat; true => advertise bound host:port
+    # accept_connections: true # default; refuse inbound msg1 when false
+    # outbound_only: false     # true => bind ephemeral, no listener on a
+    #                          # known port. Forces advertise_on_nostr=false
+    #                          # and accept_connections=false. Pure-client
+    #                          # posture; bind_addr is ignored.
 
   tcp:
     # Accepts inbound connections. No static outbound peers.
