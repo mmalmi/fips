@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Security
+
+- Mesh-interface nftables baseline (Linux). Ships `/etc/fips/fips.nft`
+  as a documented operator conffile and `fips-firewall.service`
+  (disabled by default) for default-deny inbound on the `fips0` mesh
+  interface. Operators enable explicitly with
+  `systemctl enable --now fips-firewall.service`. Drop-ins in
+  `/etc/fips/fips.d/*.nft`. See `docs/fips-security.md`.
+
 #### Platform Support
 
 - Windows platform support: wintun TUN device, TCP control socket on
