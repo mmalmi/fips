@@ -261,6 +261,9 @@ jobs:
           - suite: rekey-accept-off
             type: rekey-accept-off
             topology: rekey-accept-off
+          - suite: rekey-outbound-only
+            type: rekey-outbound-only
+            topology: rekey-outbound-only
           - suite: acl-allowlist
             type: acl-allowlist
           # ── Outbound LAN gateway integration test ──────────────────────
@@ -459,6 +462,41 @@ jobs:
         run: |
           docker compose -f testing/static/docker-compose.yml \
             --profile rekey-accept-off down --volumes --remove-orphans
+
+      # ── Rekey + udp.outbound_only=true variant ─────────────────────────────
+      - name: Generate and inject configs (rekey-outbound-only)
+        if: matrix.type == 'rekey-outbound-only'
+        env:
+          REKEY_TOPOLOGY: rekey-outbound-only
+          REKEY_OUTBOUND_ONLY_NODES: b
+        run: |
+          bash testing/static/scripts/generate-configs.sh rekey-outbound-only
+          bash testing/static/scripts/rekey-test.sh inject-config
+
+      - name: Start containers (rekey-outbound-only)
+        if: matrix.type == 'rekey-outbound-only'
+        run: |
+          docker compose -f testing/static/docker-compose.yml \
+            --profile rekey-outbound-only up -d
+
+      - name: Run rekey test (outbound-only variant)
+        if: matrix.type == 'rekey-outbound-only'
+        env:
+          REKEY_TOPOLOGY: rekey-outbound-only
+          REKEY_OUTBOUND_ONLY_NODES: b
+        run: bash testing/static/scripts/rekey-test.sh
+
+      - name: Collect logs on failure (rekey-outbound-only)
+        if: matrix.type == 'rekey-outbound-only' && failure()
+        run: |
+          docker compose -f testing/static/docker-compose.yml \
+            --profile rekey-outbound-only logs --no-color | tail -300
+
+      - name: Stop containers (rekey-outbound-only)
+        if: matrix.type == 'rekey-outbound-only' && always()
+        run: |
+          docker compose -f testing/static/docker-compose.yml \
+            --profile rekey-outbound-only down --volumes --remove-orphans
 
       # ── ACL allowlist integration test ─────────────────────────────────────
       - name: Run ACL allowlist integration test

@@ -13,11 +13,29 @@ impl Node {
     /// Returns true if an inbound msg1 should be admitted past the
     /// `accept_connections` gate.
     ///
-    /// Rekey/restart msg1 on an existing link is always admitted (the gate
-    /// is meant to filter fresh handshakes from strangers, not maintenance
-    /// traffic on established sessions). Otherwise the transport's
-    /// `accept_connections` config decides; absence of a registered
-    /// transport admits (no gate to apply).
+    /// Rekey/restart msg1 from an established peer is always admitted (the
+    /// gate is meant to filter fresh handshakes from strangers, not
+    /// maintenance traffic on established sessions). Two predicates cover
+    /// "established peer at this transport+addr":
+    ///
+    /// 1. `addr_to_link` has an entry for `(transport_id, remote_addr)`.
+    ///    This is the fast path and matches when the peer registered with
+    ///    the same `TransportAddr` form we observe on inbound packets
+    ///    (e.g., both numeric when peer config uses a numeric IP).
+    ///
+    /// 2. An active peer's `current_addr()` matches `(transport_id,
+    ///    remote_addr)`. `current_addr` is updated from inbound encrypted-
+    ///    frame source addrs (always numeric `SocketAddr`-form), so this
+    ///    catches established peers whose `addr_to_link` key is hostname-
+    ///    form (because `initiate_connection` populated it from a
+    ///    hostname-bearing peer config) while inbound rekey msg1 arrives
+    ///    in numeric form. Without this second predicate, the carve-out
+    ///    misses any deployment that combines a hostname-based peer config
+    ///    with `udp.accept_connections: false` or `udp.outbound_only: true`
+    ///    (the production trigger for the 2026-04-30 bug).
+    ///
+    /// Otherwise the transport's `accept_connections` config decides;
+    /// absence of a registered transport admits (no gate to apply).
     pub(in crate::node) fn should_admit_msg1(
         &self,
         transport_id: crate::transport::TransportId,
@@ -27,6 +45,11 @@ impl Node {
             .addr_to_link
             .contains_key(&(transport_id, remote_addr.clone()))
         {
+            return true;
+        }
+        if self.peers.values().any(|p| {
+            p.transport_id() == Some(transport_id) && p.current_addr() == Some(remote_addr)
+        }) {
             return true;
         }
         self.transports

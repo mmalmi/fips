@@ -356,6 +356,86 @@ services:
       fips-net:
         ipv4_address: 172.20.0.14
 
+  # ── Rekey topology with udp.outbound_only=true on node b ────
+  # Exercises the udp.outbound_only rekey-msg1 admission regression
+  # observed in production 2026-04-30. Same 5-node mesh as
+  # rekey-accept-off, but node-b's generated config has
+  # `transports.udp.outbound_only: true` (forces ephemeral bind +
+  # accept_connections false) AND node-b's peer-c address is
+  # rewritten to the docker hostname (`node-c:2121`) so the
+  # `addr_to_link` lookup misses on the inbound numeric source addr.
+  # Injected by rekey-test.sh's inject-config when
+  # REKEY_OUTBOUND_ONLY_NODES=b.
+  rekey-outbound-only-a:
+    <<: *fips-common
+    profiles: ["rekey-outbound-only"]
+    container_name: fips-node-a
+    hostname: node-a
+    environment:
+      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/rekey-outbound-only/node-a.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      fips-net:
+        ipv4_address: 172.20.0.10
+
+  rekey-outbound-only-b:
+    <<: *fips-common
+    profiles: ["rekey-outbound-only"]
+    container_name: fips-node-b
+    hostname: node-b
+    environment:
+      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/rekey-outbound-only/node-b.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      fips-net:
+        ipv4_address: 172.20.0.11
+
+  rekey-outbound-only-c:
+    <<: *fips-common
+    profiles: ["rekey-outbound-only"]
+    container_name: fips-node-c
+    hostname: node-c
+    environment:
+      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/rekey-outbound-only/node-c.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      fips-net:
+        ipv4_address: 172.20.0.12
+
+  rekey-outbound-only-d:
+    <<: *fips-common
+    profiles: ["rekey-outbound-only"]
+    container_name: fips-node-d
+    hostname: node-d
+    environment:
+      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/rekey-outbound-only/node-d.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      fips-net:
+        ipv4_address: 172.20.0.13
+
+  rekey-outbound-only-e:
+    <<: *fips-common
+    profiles: ["rekey-outbound-only"]
+    container_name: fips-node-e
+    hostname: node-e
+    environment:
+      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+    volumes:
+      - ../docker/resolv.conf:/etc/resolv.conf:ro
+      - ./generated-configs/rekey-outbound-only/node-e.yaml:/etc/fips/fips.yaml:ro
+    networks:
+      fips-net:
+        ipv4_address: 172.20.0.14
+
   # ── TCP chain topology (A-B-C) ───────────────────────────────
   tcp-a:
     <<: *fips-common
