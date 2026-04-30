@@ -242,10 +242,7 @@ async fn main() {
                         last_failure = Some(format!("recv_from failed: {}", e));
                     }
                     Err(_) => {
-                        last_failure = Some(format!(
-                            "no response within {}s",
-                            PROBE_TIMEOUT_SECS
-                        ));
+                        last_failure = Some(format!("no response within {}s", PROBE_TIMEOUT_SECS));
                     }
                 }
             }

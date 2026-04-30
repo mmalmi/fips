@@ -71,10 +71,7 @@ fn is_loopback_addr_str(addr: &str) -> bool {
         Some((h, _)) => h,
         None => addr,
     };
-    host == "localhost"
-        || host == "::1"
-        || host == "0:0:0:0:0:0:0:1"
-        || host.starts_with("127.")
+    host == "localhost" || host == "::1" || host == "0:0:0:0:0:0:0:1" || host.starts_with("127.")
 }
 
 /// Derive the key file path from a config file path.

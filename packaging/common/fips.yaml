@@ -12,7 +12,6 @@ node:
     # nsec: "nsec1..."
   discovery:
     # Optional Nostr-mediated overlay endpoint discovery.
-    # Requires a build of fips compiled with the 'nostr-discovery' feature.
     # nostr:
     #   enabled: true
     #   policy: configured_only  # disabled | configured_only | open

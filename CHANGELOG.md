@@ -197,6 +197,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Nostr-mediated overlay discovery is now always-on. The
+  `nostr-discovery` cargo feature flag has been dropped along with the
+  `optional = true` markers on `nostr` / `nostr-sdk` dependencies and
+  every `#[cfg(feature = "nostr-discovery")]` source-level gate. Plain
+  `cargo build` produces a binary with overlay discovery available
+  whether or not the operator enables it via
+  `node.discovery.nostr.enabled`. Mirrors PR #79's collapse of the
+  `tui` / `ble` / `gateway` features in favor of platform cfg gates.
+  No runtime behavior change — the feature was in `default` already
 - MMP link-layer report intervals retuned for constrained transports:
   steady-state floor raised from 100ms to 1000ms, ceiling from 2000ms
   to 5000ms. Cold-start uses a 200ms floor for the first 5 SRTT samples

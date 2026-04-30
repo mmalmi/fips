@@ -268,8 +268,8 @@ fn private_interface_ips() -> Vec<IpAddr> {
         // SAFETY: `cursor` points at a valid node from the `getifaddrs` list.
         let entry = unsafe { &*cursor };
         let flags = entry.ifa_flags as i32;
-        let is_up = (flags & libc::IFF_UP as i32) != 0;
-        let is_loopback = (flags & libc::IFF_LOOPBACK as i32) != 0;
+        let is_up = (flags & libc::IFF_UP) != 0;
+        let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
 
         if is_up && !is_loopback && !entry.ifa_addr.is_null() {
             // SAFETY: `ifa_addr` is non-null and its concrete type matches

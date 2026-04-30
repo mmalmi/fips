@@ -829,12 +829,12 @@ impl NostrDiscovery {
         advert: Option<&OverlayAdvert>,
     ) -> Result<Vec<String>, BootstrapError> {
         let mut merged = self.find_recipient_inbox_relays(target_pubkey).await?;
-        if let Some(advert) = advert {
-            if let Some(relays) = advert.signal_relays.as_ref() {
-                for relay in relays {
-                    if !merged.contains(relay) {
-                        merged.push(relay.clone());
-                    }
+        if let Some(advert) = advert
+            && let Some(relays) = advert.signal_relays.as_ref()
+        {
+            for relay in relays {
+                if !merged.contains(relay) {
+                    merged.push(relay.clone());
                 }
             }
         }
