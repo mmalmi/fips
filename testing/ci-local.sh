@@ -193,8 +193,8 @@ run_build() {
         return 1
     fi
 
-    info "cargo clippy --all -- -D warnings"
-    if cargo clippy --all -- -D warnings 2>&1; then
+    info "cargo clippy --all-targets --all-features -- -D warnings"
+    if cargo clippy --all-targets --all-features -- -D warnings 2>&1; then
         record "clippy" 0
     else
         record "clippy" 1

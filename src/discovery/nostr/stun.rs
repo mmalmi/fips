@@ -344,6 +344,14 @@ fn push_ip(addresses: &mut Vec<String>, ip: IpAddr) {
     }
 }
 
+fn random_txn_id() -> [u8; 12] {
+    let mut txn_id = [0u8; 12];
+    for byte in &mut txn_id {
+        *byte = rand::random::<u8>();
+    }
+    txn_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_private_overlay_candidate_ip;
@@ -380,12 +388,4 @@ mod tests {
             "2001:db8::1".parse::<Ipv6Addr>().unwrap()
         )));
     }
-}
-
-fn random_txn_id() -> [u8; 12] {
-    let mut txn_id = [0u8; 12];
-    for byte in &mut txn_id {
-        *byte = rand::random::<u8>();
-    }
-    txn_id
 }
