@@ -177,6 +177,20 @@ record() {
 run_build() {
     stage "Stage 1: Build"
 
+    info "sudo nft -c -f packaging/common/fips.nft (nftables ruleset syntax check)"
+    if command -v nft &>/dev/null; then
+        if sudo nft -c -f packaging/common/fips.nft 2>&1; then
+            record "nft-syntax" 0
+        else
+            record "nft-syntax" 1
+            return 1
+        fi
+    else
+        info "nftables not installed; install with 'apt install nftables' to validate fips.nft"
+        record "nft-syntax" 1
+        return 1
+    fi
+
     info "cargo build --release"
     if cargo build --release 2>&1; then
         record "build" 0
