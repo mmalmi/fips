@@ -251,6 +251,35 @@ jobs:
         run: cargo nextest run --all --profile ci
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Job 2d – PowerShell lint (Windows packaging scripts)
+#
+# Runs PSScriptAnalyzer against the operator-facing installer/build
+# scripts shipped in the Windows ZIP package. Settings live in
+# packaging/windows/PSScriptAnalyzerSettings.psd1 (each suppressed rule
+# is documented there). Pre-installed on windows-latest runners; no
+# Install-Module step needed.
+# ─────────────────────────────────────────────────────────────────────────────
+  windows-lint:
+    name: PowerShell lint (Windows packaging)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer `
+            -Path packaging/windows/*.ps1 `
+            -Settings packaging/windows/PSScriptAnalyzerSettings.psd1
+          if ($results) {
+            $results | Format-Table -AutoSize
+            Write-Error "PSScriptAnalyzer found $($results.Count) issue(s)"
+            exit 1
+          } else {
+            Write-Host "PSScriptAnalyzer: no issues"
+          }
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Job 3 – Integration tests (static mesh + chaos simulation)
 #
 # Runs only when both build and test succeed.  Each topology / scenario is a
