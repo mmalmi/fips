@@ -407,7 +407,56 @@ impl Node {
                     peer_config,
                     reason,
                 } => {
-                    warn!(npub = %peer_config.npub, error = %reason, "NAT traversal failed");
+                    let now_ms = Self::now_ms();
+                    let decision = bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
+                    if decision.should_warn {
+                        warn!(
+                            npub = %peer_config.npub,
+                            error = %reason,
+                            consecutive_failures = decision.consecutive_failures,
+                            cooldown_secs = decision
+                                .cooldown_until_ms
+                                .map(|t| t.saturating_sub(now_ms) / 1000),
+                            "NAT traversal failed"
+                        );
+                    } else {
+                        debug!(
+                            npub = %peer_config.npub,
+                            error = %reason,
+                            consecutive_failures = decision.consecutive_failures,
+                            "NAT traversal failed (suppressed by warn-rate-limit)"
+                        );
+                    }
+
+                    // B6: stale-advert eviction on the streak-threshold
+                    // crossing. Fire-and-forget; the outcome is logged so
+                    // operators can see when peers get cleaned up.
+                    if decision.crossed_threshold {
+                        let bootstrap = bootstrap.clone();
+                        let npub = peer_config.npub.clone();
+                        tokio::spawn(async move {
+                            let outcome = bootstrap.refetch_advert_for_stale_check(&npub).await;
+                            match outcome {
+                                crate::discovery::nostr::NostrRefetchOutcome::Evicted => info!(
+                                    npub = %npub,
+                                    "stale-advert sweep: peer evicted from advert cache"
+                                ),
+                                crate::discovery::nostr::NostrRefetchOutcome::Refreshed => info!(
+                                    npub = %npub,
+                                    "stale-advert sweep: peer republished, cache refreshed and streak reset"
+                                ),
+                                crate::discovery::nostr::NostrRefetchOutcome::SameAdvert => debug!(
+                                    npub = %npub,
+                                    "stale-advert sweep: advert unchanged, cooldown stands"
+                                ),
+                                crate::discovery::nostr::NostrRefetchOutcome::Skipped => debug!(
+                                    npub = %npub,
+                                    "stale-advert sweep: skipped (relay error or no advert_relays)"
+                                ),
+                            }
+                        });
+                    }
+
                     let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
                         Ok(identity) => identity,
                         Err(_) => continue,
@@ -421,7 +470,16 @@ impl Node {
                         continue;
                     }
 
-                    self.schedule_retry(*peer_identity.node_addr(), Self::now_ms());
+                    let node_addr = *peer_identity.node_addr();
+                    self.schedule_retry(node_addr, now_ms);
+                    if let Some(cooldown_until_ms) = decision.cooldown_until_ms
+                        && let Some(state) = self.retry_pending.get_mut(&node_addr)
+                    {
+                        // Push the next retry past the cooldown so the
+                        // open-discovery sweep doesn't re-enqueue and the
+                        // per-attempt backoff doesn't fire sooner.
+                        state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+                    }
                 }
             }
         }
@@ -1204,6 +1262,7 @@ impl Node {
         let mut skipped_connecting = 0usize;
         let mut skipped_no_endpoints = 0usize;
         let mut skipped_invalid_npub = 0usize;
+        let mut skipped_cooldown = 0usize;
 
         for (npub, endpoints, created_at_secs) in candidates {
             if enqueue_budget == 0 {
@@ -1240,6 +1299,10 @@ impl Node {
             }
             if self.retry_pending.contains_key(&node_addr) {
                 skipped_retry_pending = skipped_retry_pending.saturating_add(1);
+                continue;
+            }
+            if bootstrap.cooldown_until(&npub, now_ms).is_some() {
+                skipped_cooldown = skipped_cooldown.saturating_add(1);
                 continue;
             }
             let connecting = self.connections.values().any(|conn| {
@@ -1309,7 +1372,8 @@ impl Node {
             + skipped_retry_pending
             + skipped_connecting
             + skipped_no_endpoints
-            + skipped_invalid_npub;
+            + skipped_invalid_npub
+            + skipped_cooldown;
         let should_summarize = caller == "startup" || enqueued > 0;
         if should_summarize {
             info!(
@@ -1324,6 +1388,7 @@ impl Node {
                 skipped_connecting = skipped_connecting,
                 skipped_no_endpoints = skipped_no_endpoints,
                 skipped_invalid_npub = skipped_invalid_npub,
+                skipped_cooldown = skipped_cooldown,
                 skipped_total = total_skipped,
                 "open-discovery sweep complete"
             );

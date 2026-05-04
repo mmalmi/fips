@@ -274,6 +274,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nostr-discovery now tolerates ±60s of clock skew on offer/answer
+  freshness checks so a responder whose wall clock leads the
+  initiator's by less than that no longer silently rejects every
+  offer. Previously, a public-test daemon with un-NTP'd peers (or
+  long uptime — `now_ms()` anchors to `SystemTime` once at startup,
+  then advances monotonically; post-startup NTP step adjustments
+  don't propagate) would see ~100% signal-timeout rate against
+  skewed peers, indistinguishable from "peer is offline." New
+  optional `offerReceivedAt` field on the answer payload lets the
+  initiator log per-peer NTP-style skew estimates (DEBUG when ≥30s)
+  for operator visibility. Backward-compatible — older responders
+  that don't fill the field still produce valid answers
+- Nostr-discovery NAT-traversal failure suppression: per-npub
+  consecutive-failure counter triggers a 30-min extended cooldown
+  after 5 failures, preventing the daemon from hammering Nostr
+  relays with offers to peers that have gone away. WARN log lines
+  rate-limited to one per peer per 5 min (subsequent failures
+  emit DEBUG with `consecutive_failures` + remaining `cooldown_secs`).
+  Threshold-crossing also fires a one-shot active re-check of the
+  peer's Kind 37195 advert against `advert_relays`; absent →
+  evict cache; newer → refresh + reset streak; same → cooldown
+  stands. New `failure_streak_threshold`, `extended_cooldown_secs`,
+  `warn_log_interval_secs`, `failure_state_max_entries` config
+  fields under `node.discovery.nostr`. Per-peer state visible in
+  `fipsctl show peers` JSON under `nostr_traversal`
 - Tor onion adverts published over Nostr overlay discovery now
   include the public-facing port (`<onion>.onion:<port>`) instead of
   just the bare onion hostname. The publisher previously emitted a
