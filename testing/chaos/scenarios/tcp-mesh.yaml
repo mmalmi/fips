@@ -59,7 +59,11 @@ link_flaps:
   protect_connectivity: true
 
 traffic:
-  enabled: false
+  enabled: true
+  max_concurrent: 3
+  interval_secs: {min: 8, max: 16}
+  duration_secs: {min: 10, max: 20}
+  parallel_streams: 4
 
 logging:
   rust_log: "info"

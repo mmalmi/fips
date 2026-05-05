@@ -29,15 +29,26 @@ fn main() {
     let report = Simulation::new(config).run();
 
     println!(
-        "strategy,packet_success,stream_success,stream_mbps,stream_p95_ms,avg_routes,root_capture,mal_parent,fake_root,mal_root,blackhole,flaky,reply_fail,no_route,loops,p95_hops,floods,learned,avg_tx"
+        "strategy,packet_success,stream_success,stream_mbps,packet_loss,tcp_stream_success,tcp_stream_mbps,tcp_packet_loss,tcp_avg_routes,tcp_standby_routes,tcp_failovers,standby_routes,failovers,adaptive_adds,adaptive_rejects,stream_p95_ms,avg_routes,root_capture,mal_parent,fake_root,mal_root,blackhole,flaky,reply_fail,no_route,loops,p95_hops,floods,learned,avg_tx"
     );
     for strategy in &report.strategies {
         println!(
-            "{},{:.3},{:.3},{:.1},{:.1},{:.2},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1}",
+            "{},{:.3},{:.3},{:.1},{:.3},{:.3},{:.1},{:.3},{:.2},{:.2},{},{:.2},{},{},{},{:.1},{:.2},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1}",
             strategy.strategy_label,
             strategy.routing.success_rate,
             strategy.streams.success_rate,
             strategy.streams.avg_throughput_mbps,
+            strategy.streams.packet_loss_rate,
+            strategy.tcp_streams.success_rate,
+            strategy.tcp_streams.avg_throughput_mbps,
+            strategy.tcp_streams.packet_loss_rate,
+            strategy.tcp_streams.avg_routes_per_stream,
+            strategy.tcp_streams.avg_standby_routes_per_stream,
+            strategy.tcp_streams.failover_streams,
+            strategy.streams.avg_standby_routes_per_stream,
+            strategy.streams.failover_streams,
+            strategy.streams.adaptive_route_improvements,
+            strategy.streams.adaptive_route_rejections,
             strategy.streams.p95_completion_ms,
             strategy.streams.avg_routes_per_stream,
             strategy.tree.root_capture_rate,

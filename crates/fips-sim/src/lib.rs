@@ -149,7 +149,12 @@ pub struct StrategyReport {
     pub converged: bool,
     pub tree: TreeStats,
     pub routing: RoutingStats,
+    /// FIPS-native stream behavior where the routing layer can schedule chunks
+    /// across multiple routes.
     pub streams: StreamStats,
+    /// TCP-over-FIPS behavior where route changes and packet reordering are
+    /// penalized like they would be for an ordinary TCP flow.
+    pub tcp_streams: StreamStats,
 }
 
 /// Static topology statistics.
@@ -211,12 +216,20 @@ pub struct StreamStats {
     pub single_route_streams: usize,
     pub multi_route_streams: usize,
     pub avg_routes_per_stream: f64,
+    pub avg_standby_routes_per_stream: f64,
+    pub failover_streams: usize,
+    pub adaptive_route_improvements: usize,
+    pub adaptive_route_rejections: usize,
     pub avg_latency_ms: f64,
     pub p95_latency_ms: f64,
     pub avg_completion_ms: f64,
     pub p95_completion_ms: f64,
     pub avg_throughput_mbps: f64,
     pub p95_throughput_mbps: f64,
+    pub packets_sent: usize,
+    pub packets_delivered: usize,
+    pub packets_lost: usize,
+    pub packet_loss_rate: f64,
     pub discovery_floods: usize,
     pub learned_route_uses: usize,
     pub peer_reputation_uses: usize,
@@ -239,6 +252,19 @@ enum ForwardBehavior {
     Flaky { drop_probability: f64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamMode {
+    NativeFips,
+    TcpOverFips,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StreamRoutePlan {
+    active_route_limit: usize,
+    candidate_route_limit: usize,
+    mode: StreamMode,
+}
+
 #[derive(Debug, Clone)]
 struct NodeSpec {
     addr: NodeAddr,
@@ -253,6 +279,7 @@ struct LinkSpec {
     cost: f64,
     latency_ms: f64,
     throughput_mbps: f64,
+    loss_probability: f64,
 }
 
 impl NodeSpec {
@@ -328,17 +355,20 @@ impl Simulation {
             let cost = 1.0 + rng.random::<f64>() * config.link_cost_jitter.max(0.0);
             let latency_ms = 2.0 + rng.random::<f64>() * 48.0;
             let throughput_mbps = 10.0 + rng.random::<f64>().powf(1.7) * 990.0;
+            let loss_probability = rng.random::<f64>().powf(2.0) * 0.015;
             let link_ab = LinkSpec {
                 neighbor: b,
                 cost,
                 latency_ms,
                 throughput_mbps,
+                loss_probability,
             };
             let link_ba = LinkSpec {
                 neighbor: a,
                 cost,
                 latency_ms,
                 throughput_mbps,
+                loss_probability,
             };
             nodes[a].neighbors.push(link_ab);
             nodes[b].neighbors.push(link_ba);
@@ -400,7 +430,9 @@ impl Simulation {
         let run = self.converge(strategy);
         let tree = self.tree_stats(&run.states);
         let routing = self.routing_stats(&run.states, &run.views, strategy);
-        let streams = self.stream_stats(&run.states, &run.views, strategy);
+        let streams = self.stream_stats(&run.states, &run.views, strategy, StreamMode::NativeFips);
+        let tcp_streams =
+            self.stream_stats(&run.states, &run.views, strategy, StreamMode::TcpOverFips);
 
         StrategyReport {
             strategy,
@@ -410,6 +442,7 @@ impl Simulation {
             tree,
             routing,
             streams,
+            tcp_streams,
         }
     }
 
@@ -942,6 +975,7 @@ impl Simulation {
         states: &[NodeState],
         views: &[HashMap<usize, Vec<NodeAddr>>],
         strategy: RoutingStrategy,
+        mode: StreamMode,
     ) -> StreamStats {
         let endpoints = self
             .nodes
@@ -962,6 +996,7 @@ impl Simulation {
         let mut rng = StdRng::seed_from_u64(self.config.seed ^ stream_seed(strategy));
         let mut learning = StreamLearningState::default();
         let mut route_counts = Vec::new();
+        let mut standby_route_counts = Vec::new();
         let mut latencies = Vec::new();
         let mut completion_times = Vec::new();
         let mut throughputs = Vec::new();
@@ -982,20 +1017,44 @@ impl Simulation {
                 | RoutingStrategy::PinnedRoot => {
                     self.simulate_tree_stream(states, views, src, dst, &mut rng)
                 }
-                RoutingStrategy::ReplyLearnedFlood => {
-                    self.simulate_reply_learned_stream(src, dst, 1, &mut learning, &mut rng)
-                }
-                RoutingStrategy::ReplyLearnedMultipath => self.simulate_reply_learned_stream(
+                RoutingStrategy::ReplyLearnedFlood => self.simulate_reply_learned_stream(
                     src,
                     dst,
-                    self.config.max_multipath_routes.max(1),
+                    StreamRoutePlan {
+                        active_route_limit: 1,
+                        candidate_route_limit: 1,
+                        mode,
+                    },
                     &mut learning,
                     &mut rng,
                 ),
+                RoutingStrategy::ReplyLearnedMultipath => {
+                    let active_routes = match mode {
+                        StreamMode::NativeFips => self.config.max_multipath_routes.max(1),
+                        StreamMode::TcpOverFips => 1,
+                    };
+                    let candidate_routes = self.config.max_multipath_routes.max(active_routes);
+                    self.simulate_reply_learned_stream(
+                        src,
+                        dst,
+                        StreamRoutePlan {
+                            active_route_limit: active_routes,
+                            candidate_route_limit: candidate_routes,
+                            mode,
+                        },
+                        &mut learning,
+                        &mut rng,
+                    )
+                }
             };
 
             stats.transmissions += attempt.transmissions;
+            stats.packets_sent += attempt.packets_sent;
+            stats.packets_delivered += attempt.packets_delivered;
+            stats.packets_lost += attempt.packets_lost;
             stats.peer_reputation_uses += attempt.peer_reputation_uses;
+            stats.adaptive_route_improvements += attempt.adaptive_route_improvements;
+            stats.adaptive_route_rejections += attempt.adaptive_route_rejections;
             if attempt.discovery_flood {
                 stats.discovery_floods += 1;
             }
@@ -1010,7 +1069,11 @@ impl Simulation {
                 } else {
                     stats.single_route_streams += 1;
                 }
+                if attempt.failover_used {
+                    stats.failover_streams += 1;
+                }
                 route_counts.push(attempt.route_count);
+                standby_route_counts.push(attempt.standby_route_count);
                 latencies.push(attempt.latency_ms);
                 completion_times.push(attempt.completion_ms);
                 throughputs.push(attempt.throughput_mbps);
@@ -1024,9 +1087,16 @@ impl Simulation {
             stats.success_rate = stats.completed as f64 / stats.streams as f64;
             stats.avg_transmissions_per_stream = stats.transmissions as f64 / stats.streams as f64;
         }
+        if stats.packets_sent > 0 {
+            stats.packet_loss_rate = stats.packets_lost as f64 / stats.packets_sent as f64;
+        }
         if !route_counts.is_empty() {
             stats.avg_routes_per_stream =
                 route_counts.iter().sum::<usize>() as f64 / route_counts.len() as f64;
+        }
+        if !standby_route_counts.is_empty() {
+            stats.avg_standby_routes_per_stream = standby_route_counts.iter().sum::<usize>() as f64
+                / standby_route_counts.len() as f64;
         }
         if !latencies.is_empty() {
             latencies.sort_by(|a, b| a.total_cmp(b));
@@ -1062,21 +1132,31 @@ impl Simulation {
                 ..StreamAttempt::default()
             };
         };
+        let schedule = self.schedule_stream(std::slice::from_ref(&path), 1, 1, None);
         if !self.path_stream_survives(&path.nodes, rng) {
             return StreamAttempt {
                 transmissions: path_attempt.transmissions,
+                packets_sent: schedule.packets_sent,
+                packets_lost: schedule.packets_sent,
                 ..StreamAttempt::default()
             };
         }
 
-        let schedule = self.schedule_stream(&[path], 1, None);
+        let packets_lost = self.transient_path_packet_loss(&path.nodes, schedule.packets_sent, rng);
+        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
         StreamAttempt {
             completed: true,
             route_count: schedule.route_count,
+            standby_route_count: schedule.standby_route_count,
             latency_ms: schedule.latency_ms,
             completion_ms: schedule.completion_ms,
             throughput_mbps: schedule.throughput_mbps,
             transmissions: path_attempt.transmissions + schedule.transmissions,
+            packets_sent: payload_packets.saturating_add(packets_lost),
+            packets_delivered: payload_packets,
+            packets_lost,
+            adaptive_route_improvements: schedule.adaptive_route_improvements,
+            adaptive_route_rejections: schedule.adaptive_route_rejections,
             ..StreamAttempt::default()
         }
     }
@@ -1085,11 +1165,13 @@ impl Simulation {
         &self,
         src: usize,
         dst: usize,
-        max_routes: usize,
+        plan: StreamRoutePlan,
         learning: &mut StreamLearningState,
         rng: &mut StdRng,
     ) -> StreamAttempt {
         let mut attempt = StreamAttempt::default();
+        let active_route_limit = plan.active_route_limit.max(1);
+        let candidate_route_limit = plan.candidate_route_limit.max(active_route_limit);
         let cache_key = (src, dst);
         let mut candidates = learning
             .route_cache
@@ -1102,10 +1184,15 @@ impl Simulation {
             attempt.learned_route_use = true;
         }
 
-        if candidates.len() < max_routes {
+        if candidates.len() < candidate_route_limit {
             attempt.discovery_flood = true;
-            let discovery =
-                self.discover_confirmed_paths(src, dst, max_routes, &learning.reputation, rng);
+            let discovery = self.discover_confirmed_paths(
+                src,
+                dst,
+                candidate_route_limit,
+                &learning.reputation,
+                rng,
+            );
             attempt.transmissions += discovery.transmissions;
             attempt.peer_reputation_uses += discovery.peer_reputation_uses;
             candidates.extend(discovery.paths);
@@ -1116,35 +1203,119 @@ impl Simulation {
             return attempt;
         }
 
-        let selected =
-            self.select_stream_routes(&candidates, max_routes, Some(&learning.reputation));
-        let mut survivors = Vec::new();
-        for path in selected {
-            if self.path_stream_survives(&path.nodes, rng) {
-                let metrics = self.path_metrics(&path.nodes);
-                learning.reputation.update_success(&path.nodes, metrics);
-                survivors.push(path);
-            } else {
-                learning.reputation.update_failure(&path.nodes);
-            }
-        }
-
-        if survivors.is_empty() {
+        let schedule = self.schedule_stream(
+            &candidates,
+            active_route_limit,
+            candidate_route_limit,
+            Some(&learning.reputation),
+        );
+        if schedule.active_routes.is_empty() {
             learning.route_cache.remove(&cache_key);
             return attempt;
         }
+        let initial_standby_route_count = schedule.standby_route_count;
+        let retained_candidate_count = candidates.len().min(candidate_route_limit);
+        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
 
-        let schedule = self.schedule_stream(&survivors, max_routes, Some(&learning.reputation));
+        let path_selection = match plan.mode {
+            StreamMode::NativeFips => {
+                let mut survivors = Vec::new();
+                let mut failed_routes = 0usize;
+                let mut failed_transmissions = 0usize;
+                let mut packets_lost = 0usize;
+                for scheduled in &schedule.active_routes {
+                    if self.path_stream_survives(&scheduled.path.nodes, rng) {
+                        let metrics = self.path_metrics(&scheduled.path.nodes);
+                        learning
+                            .reputation
+                            .update_success(&scheduled.path.nodes, metrics);
+                        packets_lost += self.transient_path_packet_loss(
+                            &scheduled.path.nodes,
+                            scheduled.packet_count,
+                            rng,
+                        );
+                        survivors.push(scheduled.path.clone());
+                    } else {
+                        learning.reputation.update_failure(&scheduled.path.nodes);
+                        failed_routes += 1;
+                        packets_lost += scheduled.packet_count;
+                        failed_transmissions += failed_stream_probe_transmissions(&scheduled.path);
+                    }
+                }
+                StreamPathSelection {
+                    survivors,
+                    failed_active_routes: failed_routes,
+                    failover_penalty_ms: 0.0,
+                    failed_transmissions,
+                    packets_lost,
+                }
+            }
+            StreamMode::TcpOverFips => self.try_tcp_stream_paths(
+                &candidates,
+                candidate_route_limit,
+                &mut learning.reputation,
+                rng,
+            ),
+        };
+        attempt.transmissions += path_selection.failed_transmissions;
+
+        if path_selection.survivors.is_empty() {
+            learning.route_cache.remove(&cache_key);
+            attempt.packets_sent = schedule.packets_sent;
+            attempt.packets_lost = schedule.packets_sent;
+            return attempt;
+        }
+
+        let schedule = self.schedule_stream(
+            &path_selection.survivors,
+            active_route_limit,
+            active_route_limit,
+            Some(&learning.reputation),
+        );
+        let mut latency_ms = schedule.latency_ms;
+        let mut completion_ms = schedule.completion_ms;
+        if path_selection.failed_active_routes > 0 {
+            attempt.failover_used = true;
+            let failover_penalty_ms = match plan.mode {
+                StreamMode::NativeFips => {
+                    native_failover_penalty_ms(path_selection.failed_active_routes)
+                }
+                StreamMode::TcpOverFips => path_selection.failover_penalty_ms,
+            };
+            latency_ms += failover_penalty_ms;
+            completion_ms += failover_penalty_ms;
+        }
+        let throughput_mbps = stream_throughput_mbps(self.config.stream_size_bytes, completion_ms);
+        let standby_route_count = match plan.mode {
+            StreamMode::NativeFips => {
+                initial_standby_route_count.saturating_add(schedule.standby_route_count)
+            }
+            StreamMode::TcpOverFips => retained_candidate_count.saturating_sub(
+                path_selection
+                    .failed_active_routes
+                    .saturating_add(schedule.route_count),
+            ),
+        };
         attempt.completed = true;
         attempt.route_count = schedule.route_count;
-        attempt.latency_ms = schedule.latency_ms;
-        attempt.completion_ms = schedule.completion_ms;
-        attempt.throughput_mbps = schedule.throughput_mbps;
+        attempt.standby_route_count = standby_route_count;
+        attempt.latency_ms = latency_ms;
+        attempt.completion_ms = completion_ms;
+        attempt.throughput_mbps = throughput_mbps;
         attempt.transmissions += schedule.transmissions;
+        attempt.packets_sent = payload_packets.saturating_add(path_selection.packets_lost);
+        attempt.packets_delivered = payload_packets;
+        attempt.packets_lost = path_selection.packets_lost;
+        attempt.adaptive_route_improvements = schedule.adaptive_route_improvements;
+        attempt.adaptive_route_rejections = schedule.adaptive_route_rejections;
 
         learning.route_cache.insert(
             cache_key,
-            self.select_stream_routes(&survivors, max_routes, Some(&learning.reputation)),
+            self.select_stream_routes(
+                &path_selection.survivors,
+                candidate_route_limit,
+                Some(&learning.reputation),
+            ),
         );
         attempt
     }
@@ -1308,11 +1479,14 @@ impl Simulation {
     fn schedule_stream(
         &self,
         paths: &[RoutedPath],
-        max_routes: usize,
+        active_route_limit: usize,
+        candidate_route_limit: usize,
         reputation: Option<&PeerReputation>,
     ) -> StreamSchedule {
-        let selected = self.select_stream_routes(paths, max_routes, reputation);
-        let mut weighted = Vec::new();
+        let active_route_limit = active_route_limit.max(1);
+        let candidate_route_limit = candidate_route_limit.max(active_route_limit);
+        let selected = self.select_stream_routes(paths, candidate_route_limit, reputation);
+        let mut candidates = Vec::new();
         for path in selected {
             let metrics = self.path_metrics(&path.nodes);
             let first_hop_score = path
@@ -1325,36 +1499,130 @@ impl Simulation {
                         .unwrap_or(1.0)
                 })
                 .unwrap_or(1.0);
-            weighted.push((path, metrics, scheduler_weight(metrics, first_hop_score)));
+            candidates.push(WeightedRoute {
+                path,
+                metrics,
+                weight: scheduler_weight(metrics, first_hop_score),
+            });
         }
 
-        let total_weight = weighted.iter().map(|(_, _, weight)| *weight).sum::<f64>();
+        if candidates.is_empty() {
+            return StreamSchedule::default();
+        }
+
+        let mut selected = Vec::new();
+        let mut adaptive_route_improvements = 0usize;
+        let mut adaptive_route_rejections = 0usize;
+        for candidate in candidates.iter().cloned() {
+            if selected.is_empty() {
+                selected.push(candidate);
+                continue;
+            }
+            if selected.len() >= active_route_limit {
+                adaptive_route_rejections += 1;
+                continue;
+            }
+
+            let current = self.weighted_stream_schedule(&selected);
+            let mut proposed = selected.clone();
+            proposed.push(candidate.clone());
+            let next = self.weighted_stream_schedule(&proposed);
+            if route_addition_improves_stream(&current, &next) {
+                selected.push(candidate);
+                adaptive_route_improvements += 1;
+            } else {
+                adaptive_route_rejections += 1;
+            }
+        }
+
+        let mut schedule = self.weighted_stream_schedule(&selected);
+        schedule.standby_route_count = candidates.len().saturating_sub(selected.len());
+        schedule.adaptive_route_improvements = adaptive_route_improvements;
+        schedule.adaptive_route_rejections = adaptive_route_rejections;
+        schedule
+    }
+
+    fn weighted_stream_schedule(&self, weighted: &[WeightedRoute]) -> StreamSchedule {
+        if weighted.is_empty() {
+            return StreamSchedule::default();
+        }
+
+        let total_weight = weighted.iter().map(|route| route.weight).sum::<f64>();
         let total_weight = total_weight.max(f64::EPSILON);
         let mut completion_ms = 0.0f64;
         let mut first_byte_latency_ms = f64::MAX;
         let mut transmissions = 0usize;
+        let mut packets_sent = 0usize;
+        let mut active_routes = Vec::new();
 
-        for (path, metrics, weight) in &weighted {
-            let byte_share = self.config.stream_size_bytes as f64 * (*weight / total_weight);
-            let transfer_ms = transfer_time_ms(byte_share, metrics.throughput_mbps);
-            completion_ms = completion_ms.max(metrics.latency_ms + transfer_ms);
-            first_byte_latency_ms = first_byte_latency_ms.min(metrics.latency_ms);
+        for route in weighted {
+            let byte_share = self.config.stream_size_bytes as f64 * (route.weight / total_weight);
+            let transfer_ms = transfer_time_ms(byte_share, route.metrics.throughput_mbps);
+            completion_ms = completion_ms.max(route.metrics.latency_ms + transfer_ms);
+            first_byte_latency_ms = first_byte_latency_ms.min(route.metrics.latency_ms);
             let packet_share = stream_packet_count(byte_share as usize);
-            transmissions += packet_share.saturating_mul(path.hops());
+            packets_sent += packet_share;
+            transmissions += packet_share.saturating_mul(route.path.hops());
+            active_routes.push(ScheduledRoute {
+                path: route.path.clone(),
+                packet_count: packet_share,
+            });
         }
-
-        let throughput_mbps = if completion_ms > 0.0 {
-            (self.config.stream_size_bytes as f64 * 8.0) / (completion_ms * 1_000.0)
-        } else {
-            0.0
-        };
 
         StreamSchedule {
             route_count: weighted.len(),
+            standby_route_count: 0,
             latency_ms: first_byte_latency_ms,
             completion_ms,
-            throughput_mbps,
+            throughput_mbps: stream_throughput_mbps(self.config.stream_size_bytes, completion_ms),
             transmissions,
+            packets_sent,
+            active_routes,
+            adaptive_route_improvements: 0,
+            adaptive_route_rejections: 0,
+        }
+    }
+
+    fn try_tcp_stream_paths(
+        &self,
+        candidates: &[RoutedPath],
+        candidate_route_limit: usize,
+        reputation: &mut PeerReputation,
+        rng: &mut StdRng,
+    ) -> StreamPathSelection {
+        let ranked =
+            self.select_stream_routes(candidates, candidate_route_limit.max(1), Some(reputation));
+        let mut failed_routes = 0usize;
+        let mut failed_transmissions = 0usize;
+        let mut packets_lost = 0usize;
+        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
+
+        for path in ranked {
+            if self.path_stream_survives(&path.nodes, rng) {
+                let metrics = self.path_metrics(&path.nodes);
+                reputation.update_success(&path.nodes, metrics);
+                packets_lost += self.transient_path_packet_loss(&path.nodes, payload_packets, rng);
+                return StreamPathSelection {
+                    survivors: vec![path],
+                    failed_active_routes: failed_routes,
+                    failover_penalty_ms: tcp_failover_penalty_ms(failed_routes),
+                    failed_transmissions,
+                    packets_lost,
+                };
+            }
+
+            reputation.update_failure(&path.nodes);
+            failed_routes += 1;
+            failed_transmissions += failed_stream_probe_transmissions(&path);
+            packets_lost += failed_stream_probe_packet_count();
+        }
+
+        StreamPathSelection {
+            survivors: Vec::new(),
+            failed_active_routes: failed_routes,
+            failover_penalty_ms: tcp_failover_penalty_ms(failed_routes),
+            failed_transmissions,
+            packets_lost,
         }
     }
 
@@ -1434,10 +1702,12 @@ impl Simulation {
     fn path_metrics(&self, path: &[usize]) -> PathMetrics {
         let mut latency_ms = 0.0;
         let mut throughput_mbps = f64::MAX;
+        let mut delivery_probability = 1.0;
         for pair in path.windows(2) {
             if let Some(link) = self.link_between(pair[0], pair[1]) {
                 latency_ms += link.latency_ms;
                 throughput_mbps = throughput_mbps.min(link.throughput_mbps);
+                delivery_probability *= 1.0 - link.loss_probability.clamp(0.0, 1.0);
             }
         }
         PathMetrics {
@@ -1447,6 +1717,7 @@ impl Simulation {
             } else {
                 0.0
             },
+            loss_probability: 1.0 - delivery_probability,
         }
     }
 
@@ -1479,6 +1750,16 @@ impl Simulation {
             }
         }
         true
+    }
+
+    fn transient_path_packet_loss(
+        &self,
+        path: &[usize],
+        packet_count: usize,
+        rng: &mut StdRng,
+    ) -> usize {
+        let loss_probability = self.path_metrics(path).loss_probability.clamp(0.0, 1.0);
+        sample_packet_losses(packet_count, loss_probability, rng)
     }
 
     fn simulate_reply_learned_probe(
@@ -2050,19 +2331,40 @@ impl Default for PeerScore {
 struct StreamAttempt {
     completed: bool,
     route_count: usize,
+    standby_route_count: usize,
     latency_ms: f64,
     completion_ms: f64,
     throughput_mbps: f64,
+    failover_used: bool,
     discovery_flood: bool,
     learned_route_use: bool,
     peer_reputation_uses: usize,
     transmissions: usize,
+    packets_sent: usize,
+    packets_delivered: usize,
+    packets_lost: usize,
+    adaptive_route_improvements: usize,
+    adaptive_route_rejections: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PathMetrics {
     latency_ms: f64,
     throughput_mbps: f64,
+    loss_probability: f64,
+}
+
+#[derive(Debug, Clone)]
+struct WeightedRoute {
+    path: RoutedPath,
+    metrics: PathMetrics,
+    weight: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ScheduledRoute {
+    path: RoutedPath,
+    packet_count: usize,
 }
 
 #[derive(Debug, Default)]
@@ -2072,13 +2374,27 @@ struct StreamDiscovery {
     peer_reputation_uses: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct StreamSchedule {
     route_count: usize,
+    standby_route_count: usize,
     latency_ms: f64,
     completion_ms: f64,
     throughput_mbps: f64,
     transmissions: usize,
+    packets_sent: usize,
+    active_routes: Vec<ScheduledRoute>,
+    adaptive_route_improvements: usize,
+    adaptive_route_rejections: usize,
+}
+
+#[derive(Debug, Default)]
+struct StreamPathSelection {
+    survivors: Vec<RoutedPath>,
+    failed_active_routes: usize,
+    failover_penalty_ms: f64,
+    failed_transmissions: usize,
+    packets_lost: usize,
 }
 
 #[derive(Debug)]
@@ -2143,7 +2459,47 @@ fn scheduler_weight(metrics: PathMetrics, peer_score: f64) -> f64 {
     if metrics.throughput_mbps <= 0.0 {
         return 0.0;
     }
-    metrics.throughput_mbps * peer_score.max(0.05) / (1.0 + metrics.latency_ms / 100.0)
+    let loss_score = (1.0 - metrics.loss_probability.clamp(0.0, 0.95)).powf(2.0);
+    metrics.throughput_mbps * peer_score.max(0.05) * loss_score / (1.0 + metrics.latency_ms / 100.0)
+}
+
+fn route_addition_improves_stream(current: &StreamSchedule, next: &StreamSchedule) -> bool {
+    if next.completion_ms >= current.completion_ms {
+        return false;
+    }
+    let absolute_gain_ms = current.completion_ms - next.completion_ms;
+    let relative_gain = absolute_gain_ms / current.completion_ms.max(1.0);
+    absolute_gain_ms >= 25.0 || relative_gain >= 0.03
+}
+
+fn stream_throughput_mbps(bytes: usize, completion_ms: f64) -> f64 {
+    if completion_ms > 0.0 && completion_ms.is_finite() {
+        (bytes as f64 * 8.0) / (completion_ms * 1_000.0)
+    } else {
+        0.0
+    }
+}
+
+fn failed_stream_probe_transmissions(path: &RoutedPath) -> usize {
+    failed_stream_probe_packet_count().saturating_mul(path.hops())
+}
+
+fn failed_stream_probe_packet_count() -> usize {
+    stream_packet_count(256 * 1024)
+}
+
+fn native_failover_penalty_ms(failed_routes: usize) -> f64 {
+    failed_routes as f64 * 250.0
+}
+
+fn tcp_failover_penalty_ms(failed_routes: usize) -> f64 {
+    if failed_routes == 0 {
+        return 0.0;
+    }
+    let base_rto_ms = 1_000.0;
+    (0..failed_routes)
+        .map(|attempt| base_rto_ms * 2f64.powi(attempt.min(4) as i32))
+        .sum()
 }
 
 fn transfer_time_ms(bytes: f64, throughput_mbps: f64) -> f64 {
@@ -2156,6 +2512,18 @@ fn transfer_time_ms(bytes: f64, throughput_mbps: f64) -> f64 {
 fn stream_packet_count(bytes: usize) -> usize {
     const STREAM_CHUNK_BYTES: usize = 64 * 1024;
     bytes.div_ceil(STREAM_CHUNK_BYTES).max(1)
+}
+
+fn sample_packet_losses(packet_count: usize, loss_probability: f64, rng: &mut StdRng) -> usize {
+    if packet_count == 0 || loss_probability <= 0.0 {
+        return 0;
+    }
+    if loss_probability >= 1.0 {
+        return packet_count;
+    }
+    (0..packet_count)
+        .filter(|_| rng.random::<f64>() < loss_probability)
+        .count()
 }
 
 fn average_f64(values: &[f64]) -> f64 {
@@ -2536,6 +2904,26 @@ mod tests {
         assert!(
             multipath.streams.avg_throughput_mbps >= single.streams.avg_throughput_mbps,
             "bandwidth scheduling should not underperform single-route streams"
+        );
+        assert!(
+            multipath.streams.adaptive_route_improvements > 0,
+            "multipath should track when adding a route improves completion time"
+        );
+        assert!(
+            multipath.streams.packets_sent > 0 && multipath.streams.packets_delivered > 0,
+            "stream simulation should account source and delivered packets"
+        );
+        assert!(
+            multipath.streams.packet_loss_rate > 0.0,
+            "stream simulation should expose first-pass packet loss"
+        );
+        assert_eq!(
+            multipath.tcp_streams.multi_route_streams, 0,
+            "ordinary TCP-over-FIPS should use only one active route per flow"
+        );
+        assert!(
+            multipath.tcp_streams.avg_standby_routes_per_stream > 0.0,
+            "TCP-over-FIPS should keep warm route candidates for failover"
         );
     }
 }
