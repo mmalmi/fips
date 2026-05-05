@@ -36,7 +36,7 @@ class SimTopology:
 
     def ethernet_edges(self) -> list[tuple[str, str]]:
         """Return all edges using Ethernet transport."""
-        return [e for e, t in self.edge_transport.items() if t == "ethernet"]
+        return sorted(e for e, t in self.edge_transport.items() if t == "ethernet")
 
     def has_ethernet(self) -> bool:
         """Check if any edges use Ethernet transport."""
@@ -44,7 +44,7 @@ class SimTopology:
 
     def tcp_edges(self) -> list[tuple[str, str]]:
         """Return all edges using TCP transport."""
-        return [e for e, t in self.edge_transport.items() if t == "tcp"]
+        return sorted(e for e, t in self.edge_transport.items() if t == "tcp")
 
     def has_tcp(self) -> bool:
         """Check if any edges use TCP transport."""
@@ -125,10 +125,11 @@ class SimTopology:
         every node is reachable via at least one inbound connection.
         """
         # Consider all edges that use static peer config (not Ethernet/discovery)
-        static_edges = {
+        static_edges = [
             e for e in self.edges
             if self.edge_transport.get(e, "udp") != "ethernet"
-        }
+        ]
+        static_edges.sort()
 
         outbound: dict[str, list[str]] = {nid: [] for nid in self.nodes}
 
@@ -215,7 +216,7 @@ def generate_topology(
         edge_transport = _assign_edge_transports(edges, config, rng)
 
     # Build peer lists from edges
-    for a, b in edges:
+    for a, b in sorted(edges):
         nodes[a].peers.append(b)
         nodes[b].peers.append(a)
 
@@ -238,7 +239,7 @@ def generate_topology(
             else:
                 break  # chain is always connected
 
-            for a, b in edges:
+            for a, b in sorted(edges):
                 nodes[a].peers.append(b)
                 nodes[b].peers.append(a)
 
@@ -332,7 +333,7 @@ def _assign_edge_transports(
     ``config.default_transport``.
     """
     if config.transport_mix is None:
-        return {e: config.default_transport for e in edges}
+        return {e: config.default_transport for e in sorted(edges)}
 
     transports = list(config.transport_mix.keys())
     weights = [config.transport_mix[t] for t in transports]

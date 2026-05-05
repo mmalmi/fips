@@ -185,13 +185,13 @@ class NodeManager:
 
         # Build adjacency for active nodes only
         adj: dict[str, list[str]] = {nid: [] for nid in active_nodes}
-        for a, b in self.topology.edges:
+        for a, b in sorted(self.topology.edges):
             if a in active_nodes and b in active_nodes:
                 adj[a].append(b)
                 adj[b].append(a)
 
         # BFS
-        start = next(iter(active_nodes))
+        start = min(active_nodes)
         visited = set()
         queue = deque([start])
         while queue:

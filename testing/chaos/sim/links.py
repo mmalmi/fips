@@ -48,7 +48,7 @@ class LinkManager:
         self.rng = rng
         self.netem_mgr = netem_mgr  # Optional: for coordinated tc manipulation
         self.link_states: dict[tuple[str, str], LinkState] = {
-            edge: LinkState(edge=edge) for edge in topology.edges
+            edge: LinkState(edge=edge) for edge in sorted(topology.edges)
         }
 
     @property
@@ -208,11 +208,11 @@ class LinkManager:
             return True
 
         adj: dict[str, list[str]] = {nid: [] for nid in self.topology.nodes}
-        for a, b in active_edges:
+        for a, b in sorted(active_edges):
             adj[a].append(b)
             adj[b].append(a)
 
-        start = next(iter(self.topology.nodes))
+        start = min(self.topology.nodes)
         visited = set()
         queue = [start]
         while queue:
