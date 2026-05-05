@@ -1,0 +1,16 @@
+[package]
+name = "fips-identity"
+version = "0.3.0-dev"
+edition = "2024"
+description = "FIPS identity, npub, node address, and FIPS address primitives"
+license = "MIT"
+authors = ["Johnathan Corgan <jcorgan@corganlabs.com>"]
+repository = "https://github.com/jmcorgan/fips"
+
+[dependencies]
+secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
+sha2 = "0.10"
+rand = "0.10.0"
+thiserror = "2.0"
+bech32 = "0.11"
+hex = "0.4"
