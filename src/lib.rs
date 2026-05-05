@@ -8,6 +8,7 @@ pub mod cache;
 pub mod config;
 pub mod control;
 pub mod discovery;
+pub mod endpoint;
 #[cfg(target_os = "linux")]
 pub mod gateway;
 pub mod identity;
@@ -66,4 +67,7 @@ pub use peer::{
 };
 
 // Re-export node types
-pub use node::{Node, NodeError, NodeState};
+pub use endpoint::{
+    FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsProtocolHandler, FipsSession,
+};
+pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

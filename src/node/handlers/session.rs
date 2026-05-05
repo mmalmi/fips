@@ -312,7 +312,9 @@ impl Node {
                                     mark_ipv6_ecn_ce(&mut packet);
                                     self.stats_mut().congestion.record_ce_received();
                                 }
-                                if let Some(tun_tx) = &self.tun_tx {
+                                if self.external_packet_tx.is_some() {
+                                    self.deliver_external_ipv6_packet(src_addr, packet);
+                                } else if let Some(tun_tx) = &self.tun_tx {
                                     if let Err(e) = tun_tx.send(packet) {
                                         debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
                                     }

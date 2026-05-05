@@ -387,7 +387,7 @@ fn utun_af_inet6_header() -> [u8; 4] {
 /// path; this helper exists for round-trip testability with
 /// [`utun_af_inet6_header`] and for any future code path that reads
 /// from the dup'd fd directly.
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 #[inline]
 fn parse_utun_af_prefix(buf: &[u8]) -> Option<u32> {
     if buf.len() < 4 {

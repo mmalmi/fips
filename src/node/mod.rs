@@ -45,13 +45,16 @@ use crate::upper::hosts::HostMap;
 use crate::upper::icmp_rate_limit::IcmpRateLimiter;
 use crate::upper::tun::{TunError, TunOutboundRx, TunState, TunTx};
 use crate::utils::index::IndexAllocator;
-use crate::{Config, ConfigError, Identity, IdentityError, NodeAddr, PeerIdentity};
+use crate::{
+    Config, ConfigError, FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, encode_npub,
+};
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
+use tracing::debug;
 
 /// Errors related to node operations.
 #[derive(Debug, Error)]
@@ -140,6 +143,28 @@ pub enum NodeError {
 
     #[error("bootstrap handoff failed: {0}")]
     BootstrapHandoff(String),
+}
+
+/// Source-attributed packet delivered by a node running without a system TUN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeDeliveredPacket {
+    /// FIPS node address that originated the packet.
+    pub source_node_addr: NodeAddr,
+    /// Source Nostr public key when the node has learned it.
+    pub source_npub: Option<String>,
+    /// Destination FIPS address from the IPv6 packet.
+    pub destination: FipsAddress,
+    /// Full IPv6 packet after FIPS session decapsulation.
+    pub packet: Vec<u8>,
+}
+
+/// App-owned packet channels for embedding FIPS without a system TUN.
+#[derive(Debug)]
+pub struct ExternalPacketIo {
+    /// Send outbound IPv6 packets into the node.
+    pub outbound_tx: crate::upper::tun::TunOutboundTx,
+    /// Receive inbound IPv6 packets delivered by FIPS sessions.
+    pub inbound_rx: tokio::sync::mpsc::Receiver<NodeDeliveredPacket>,
 }
 
 /// Node operational state.
@@ -383,6 +408,8 @@ pub struct Node {
     tun_tx: Option<TunTx>,
     /// Receiver for outbound packets from the TUN reader.
     tun_outbound_rx: Option<TunOutboundRx>,
+    /// App-owned packet sink used by embedded/no-TUN integrations.
+    external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -589,6 +616,7 @@ impl Node {
             tun_name: None,
             tun_tx: None,
             tun_outbound_rx: None,
+            external_packet_tx: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -721,6 +749,7 @@ impl Node {
             tun_name: None,
             tun_tx: None,
             tun_outbound_rx: None,
+            external_packet_tx: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -1852,6 +1881,76 @@ impl Node {
     /// Returns None if TUN is not active or the node hasn't been started.
     pub fn tun_tx(&self) -> Option<&TunTx> {
         self.tun_tx.as_ref()
+    }
+
+    /// Attach app-owned packet I/O for embedded operation without a system TUN.
+    ///
+    /// This must be called before [`Node::start`] and requires `tun.enabled =
+    /// false`. Outbound packets sent to the returned sender are processed by the
+    /// normal session pipeline. Inbound packets delivered by FIPS sessions are
+    /// sent to the returned receiver with source attribution.
+    pub fn attach_external_packet_io(
+        &mut self,
+        capacity: usize,
+    ) -> Result<ExternalPacketIo, NodeError> {
+        if self.state != NodeState::Created {
+            return Err(NodeError::Config(ConfigError::Validation(
+                "external packet I/O must be attached before node start".to_string(),
+            )));
+        }
+        if self.config.tun.enabled {
+            return Err(NodeError::Config(ConfigError::Validation(
+                "external packet I/O requires tun.enabled=false".to_string(),
+            )));
+        }
+
+        let capacity = capacity.max(1);
+        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(capacity);
+        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(capacity);
+        self.tun_outbound_rx = Some(outbound_rx);
+        self.external_packet_tx = Some(inbound_tx);
+
+        Ok(ExternalPacketIo {
+            outbound_tx,
+            inbound_rx,
+        })
+    }
+
+    pub(crate) fn npub_for_node_addr(&self, addr: &NodeAddr) -> Option<String> {
+        let mut prefix = [0u8; 15];
+        prefix.copy_from_slice(&addr.as_bytes()[0..15]);
+        self.identity_cache
+            .get(&prefix)
+            .filter(|(node_addr, _, _)| node_addr == addr)
+            .map(|(_, pubkey, _)| {
+                let (xonly, _) = pubkey.x_only_public_key();
+                encode_npub(&xonly)
+            })
+    }
+
+    pub(in crate::node) fn deliver_external_ipv6_packet(
+        &self,
+        src_addr: &NodeAddr,
+        packet: Vec<u8>,
+    ) {
+        let Some(external_packet_tx) = &self.external_packet_tx else {
+            return;
+        };
+        if packet.len() < 40 {
+            return;
+        }
+        let Ok(destination) = FipsAddress::from_slice(&packet[24..40]) else {
+            return;
+        };
+        let delivered = NodeDeliveredPacket {
+            source_node_addr: *src_addr,
+            source_npub: self.npub_for_node_addr(src_addr),
+            destination,
+            packet,
+        };
+        if let Err(error) = external_packet_tx.try_send(delivered) {
+            debug!(error = %error, "Failed to deliver packet to external app sink");
+        }
     }
 
     // === Sending ===
