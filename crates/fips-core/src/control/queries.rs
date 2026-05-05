@@ -693,6 +693,7 @@ pub fn show_routing(node: &Node) -> Value {
     let now = now_ms();
     let cache_stats = cache.stats(now);
     let node_stats = node.stats().snapshot();
+    let learned_routes = node.learned_route_table_snapshot(now);
 
     // Pending discovery lookups (individual targets)
     let lookups: Vec<Value> = node
@@ -725,6 +726,8 @@ pub fn show_routing(node: &Node) -> Value {
 
     json!({
         "coord_cache_entries": cache_stats.entries,
+        "routing_mode": node.config().node.routing.mode.to_string(),
+        "learned_routes": serde_json::to_value(&learned_routes).unwrap_or_default(),
         "identity_cache_entries": node.identity_cache_len(),
         "pending_lookups": lookups,
         "pending_tun_destinations": node.pending_tun_destinations(),

@@ -24,7 +24,7 @@ impl Node {
     /// has already had its msg_type byte stripped by dispatch.
     pub(in crate::node) async fn handle_session_datagram(
         &mut self,
-        _from: &NodeAddr,
+        from: &NodeAddr,
         payload: &[u8],
         incoming_ce: bool,
     ) {
@@ -65,6 +65,7 @@ impl Node {
                 &datagram.payload,
                 datagram.path_mtu,
                 incoming_ce,
+                Some(*from),
             )
             .await;
             return;
@@ -116,6 +117,7 @@ impl Node {
             .send_encrypted_link_message_with_ce(&next_hop_addr, &encoded, outgoing_ce)
             .await
         {
+            self.record_route_failure(datagram.dest_addr, next_hop_addr);
             match e {
                 NodeError::MtuExceeded { mtu, .. } => {
                     self.stats_mut()

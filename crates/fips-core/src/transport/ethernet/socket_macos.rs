@@ -552,6 +552,46 @@ fn get_mac_addr(interface: &str) -> Result<[u8; 6], TransportError> {
     result
 }
 
+/// Get the MTU of an interface by index.
+fn get_if_mtu(if_index: i32) -> Result<u16, TransportError> {
+    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if sock < 0 {
+        return Err(TransportError::StartFailed(format!(
+            "socket(AF_INET) for MTU query failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    // Get interface name from index
+    let mut name_buf = [0i8; libc::IFNAMSIZ];
+    let ret = unsafe { libc::if_indextoname(if_index as libc::c_uint, name_buf.as_mut_ptr()) };
+    if ret.is_null() {
+        unsafe { libc::close(sock) };
+        return Err(TransportError::StartFailed(format!(
+            "if_indextoname({}) failed: {}",
+            if_index,
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+    unsafe {
+        std::ptr::copy_nonoverlapping(name_buf.as_ptr(), ifr.ifr_name.as_mut_ptr(), libc::IFNAMSIZ);
+    }
+
+    let ret = unsafe { libc::ioctl(sock, SIOCGIFMTU, &mut ifr) };
+    unsafe { libc::close(sock) };
+    if ret < 0 {
+        return Err(TransportError::StartFailed(format!(
+            "ioctl(SIOCGIFMTU) failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let mtu = unsafe { ifr.ifr_ifru.ifru_mtu } as u16;
+    Ok(mtu)
+}
+
 // ============================================================================
 // Unit tests
 //
@@ -943,44 +983,4 @@ mod tests {
         // Source MAC is reported directly from bytes [6..12] of the frame.
         assert_eq!(parsed_src, src_mac);
     }
-}
-
-/// Get the MTU of an interface by index.
-fn get_if_mtu(if_index: i32) -> Result<u16, TransportError> {
-    let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-    if sock < 0 {
-        return Err(TransportError::StartFailed(format!(
-            "socket(AF_INET) for MTU query failed: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-
-    // Get interface name from index
-    let mut name_buf = [0i8; libc::IFNAMSIZ];
-    let ret = unsafe { libc::if_indextoname(if_index as libc::c_uint, name_buf.as_mut_ptr()) };
-    if ret.is_null() {
-        unsafe { libc::close(sock) };
-        return Err(TransportError::StartFailed(format!(
-            "if_indextoname({}) failed: {}",
-            if_index,
-            std::io::Error::last_os_error()
-        )));
-    }
-
-    let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
-    unsafe {
-        std::ptr::copy_nonoverlapping(name_buf.as_ptr(), ifr.ifr_name.as_mut_ptr(), libc::IFNAMSIZ);
-    }
-
-    let ret = unsafe { libc::ioctl(sock, SIOCGIFMTU, &mut ifr) };
-    unsafe { libc::close(sock) };
-    if ret < 0 {
-        return Err(TransportError::StartFailed(format!(
-            "ioctl(SIOCGIFMTU) failed: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-
-    let mtu = unsafe { ifr.ifr_ifru.ifru_mtu } as u16;
-    Ok(mtu)
 }

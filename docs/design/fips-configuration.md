@@ -778,6 +778,10 @@ node:
     flap_threshold: 4                    # parent switches before dampening
     flap_window_secs: 60                 # sliding window for flap detection
     flap_dampening_secs: 120             # extended hold-down on flap
+  routing:
+    mode: tree                           # tree | reply_learned
+    learned_ttl_secs: 300                # TTL for locally learned reverse-path routes
+    max_learned_routes_per_dest: 4       # standby next-hop candidates per destination
   bloom:
     update_debounce_ms: 500
   session:

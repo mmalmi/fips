@@ -208,6 +208,7 @@ impl Node {
 
             self.coord_cache
                 .insert_with_path_mtu(target, response.target_coords, now_ms, path_mtu);
+            self.learn_reverse_route(target, *from);
 
             // Mirror path_mtu into the FipsAddress-keyed read-only lookup
             // map used by the TUN reader/writer at TCP MSS clamp time.

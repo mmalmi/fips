@@ -35,7 +35,7 @@ pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward,
 pub use node::{
     BloomConfig, BuffersConfig, CacheConfig, ControlConfig, DiscoveryConfig, LimitsConfig,
     NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig, RekeyConfig,
-    RetryConfig, SessionConfig, SessionMmpConfig, TreeConfig,
+    RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig, TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
 pub use transport::{

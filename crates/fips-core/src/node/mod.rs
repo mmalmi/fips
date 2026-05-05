@@ -11,6 +11,7 @@ mod handlers;
 mod lifecycle;
 mod rate_limit;
 mod retry;
+mod routing;
 mod routing_error_rate_limit;
 pub(crate) mod session;
 pub(crate) mod session_wire;
@@ -23,6 +24,7 @@ pub(crate) mod wire;
 
 use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
+use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
 use self::wire::{
     FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
@@ -30,6 +32,7 @@ use self::wire::{
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
+use crate::config::RoutingMode;
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(unix)]
@@ -352,6 +355,8 @@ pub struct Node {
     // === Routing ===
     /// Address -> coordinates cache (from session setup and discovery).
     coord_cache: CoordCache,
+    /// Locally learned reverse-path next-hop hints.
+    learned_routes: LearnedRouteTable,
     /// Recent discovery requests (dedup + reverse-path forwarding).
     /// Maps request_id → RecentRequest.
     recent_requests: HashMap<u64, RecentRequest>,
@@ -627,6 +632,7 @@ impl Node {
             tree_state,
             bloom_state,
             coord_cache,
+            learned_routes: LearnedRouteTable::default(),
             recent_requests: HashMap::new(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -763,6 +769,7 @@ impl Node {
             tree_state,
             bloom_state,
             coord_cache,
+            learned_routes: LearnedRouteTable::default(),
             recent_requests: HashMap::new(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -1832,11 +1839,30 @@ impl Node {
             return Some(peer);
         }
 
-        // Look up cached destination coordinates (required by both bloom and tree paths).
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+
+        // 3. Optional reply-learned routing. These entries are not peer
+        // claims; they are local observations of which peer carried traffic
+        // or a verified lookup response back from the destination.
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let sendable_peers = self
+                .peers
+                .iter()
+                .filter(|(_, peer)| peer.can_send())
+                .map(|(addr, _)| *addr)
+                .collect::<HashSet<_>>();
+            if let Some(next_hop_addr) =
+                self.learned_routes
+                    .best_next_hop(dest_node_addr, now_ms, |addr| sendable_peers.contains(addr))
+            {
+                return self.peers.get(&next_hop_addr);
+            }
+        }
+
+        // Look up cached destination coordinates (required by both bloom and tree paths).
         let dest_coords = self
             .coord_cache
             .get_and_touch(dest_node_addr, now_ms)?
@@ -1855,6 +1881,45 @@ impl Node {
         let next_hop_id = self.tree_state.find_next_hop(&dest_coords)?;
 
         self.peers.get(&next_hop_id).filter(|p| p.can_send())
+    }
+
+    pub(in crate::node) fn learn_reverse_route(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+    ) {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned
+            || destination == *self.node_addr()
+        {
+            return;
+        }
+        let now_ms = Self::now_ms();
+        self.learned_routes.learn(
+            destination,
+            next_hop,
+            now_ms,
+            self.config.node.routing.learned_ttl_secs,
+            self.config.node.routing.max_learned_routes_per_dest,
+        );
+    }
+
+    pub(in crate::node) fn record_route_failure(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+    ) {
+        if self.config.node.routing.mode != RoutingMode::ReplyLearned {
+            return;
+        }
+        self.learned_routes.record_failure(&destination, &next_hop);
+    }
+
+    pub(crate) fn learned_route_table_snapshot(&self, now_ms: u64) -> LearnedRouteTableSnapshot {
+        self.learned_routes.snapshot(now_ms)
+    }
+
+    pub(in crate::node) fn purge_learned_routes(&mut self, now_ms: u64) {
+        self.learned_routes.purge_expired(now_ms);
     }
 
     /// Select the best peer from a set of bloom filter candidates.

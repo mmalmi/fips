@@ -604,6 +604,64 @@ impl TreeConfig {
     }
 }
 
+/// Routing strategy selection (`node.routing.*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingConfig {
+    /// Next-hop selection mode (`node.routing.mode`).
+    #[serde(default)]
+    pub mode: RoutingMode,
+    /// TTL for learned reverse-path routes in seconds (`node.routing.learned_ttl_secs`).
+    #[serde(default = "RoutingConfig::default_learned_ttl_secs")]
+    pub learned_ttl_secs: u64,
+    /// Maximum learned next-hop candidates per destination
+    /// (`node.routing.max_learned_routes_per_dest`).
+    #[serde(default = "RoutingConfig::default_max_learned_routes_per_dest")]
+    pub max_learned_routes_per_dest: usize,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            mode: RoutingMode::default(),
+            learned_ttl_secs: 300,
+            max_learned_routes_per_dest: 4,
+        }
+    }
+}
+
+impl RoutingConfig {
+    fn default_learned_ttl_secs() -> u64 {
+        300
+    }
+
+    fn default_max_learned_routes_per_dest() -> usize {
+        4
+    }
+}
+
+/// Daemon routing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    /// Current FIPS behavior: bloom-assisted greedy tree routing.
+    #[default]
+    Tree,
+    /// Prefer locally learned reverse paths before falling back to tree routing.
+    ///
+    /// Learned routes are populated only from local evidence: inbound
+    /// SessionDatagrams and verified LookupResponses.
+    ReplyLearned,
+}
+
+impl std::fmt::Display for RoutingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RoutingMode::Tree => write!(f, "tree"),
+            RoutingMode::ReplyLearned => write!(f, "reply_learned"),
+        }
+    }
+}
+
 /// Bloom filter (`node.bloom.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BloomConfig {
@@ -973,6 +1031,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub tree: TreeConfig,
 
+    /// Routing strategy (`node.routing.*`).
+    #[serde(default)]
+    pub routing: RoutingConfig,
+
     /// Bloom filter (`node.bloom.*`).
     #[serde(default)]
     pub bloom: BloomConfig,
@@ -1026,6 +1088,7 @@ impl Default for NodeConfig {
             cache: CacheConfig::default(),
             discovery: DiscoveryConfig::default(),
             tree: TreeConfig::default(),
+            routing: RoutingConfig::default(),
             bloom: BloomConfig::default(),
             session: SessionConfig::default(),
             buffers: BuffersConfig::default(),
@@ -1080,6 +1143,23 @@ mod tests {
         assert!(c.enabled);
         assert!((c.loss_threshold - 0.05).abs() < 1e-9);
         assert!((c.etx_threshold - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_routing_config_defaults() {
+        let c = RoutingConfig::default();
+        assert_eq!(c.mode, RoutingMode::Tree);
+        assert_eq!(c.learned_ttl_secs, 300);
+        assert_eq!(c.max_learned_routes_per_dest, 4);
+    }
+
+    #[test]
+    fn test_routing_config_yaml() {
+        let yaml = "mode: reply_learned\nlearned_ttl_secs: 120\nmax_learned_routes_per_dest: 2\n";
+        let c: RoutingConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(c.mode, RoutingMode::ReplyLearned);
+        assert_eq!(c.learned_ttl_secs, 120);
+        assert_eq!(c.max_learned_routes_per_dest, 2);
     }
 
     #[test]

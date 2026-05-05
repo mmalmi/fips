@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::bloom::BloomFilter;
+use crate::config::RoutingMode;
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 use spanning_tree::{
     TestNode, cleanup_nodes, drain_all_packets, generate_random_edges, initiate_handshake,
@@ -307,6 +308,54 @@ fn test_routing_tree_no_coords_in_cache() {
     // Destination not in bloom filters and not in coord cache
     let dest = make_node_addr(99);
     assert!(node.find_next_hop(&dest).is_none());
+}
+
+#[test]
+fn test_reply_learned_mode_uses_observed_route_without_coords() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let link_id1 = LinkId::new(1);
+    let (conn1, id1) = make_completed_connection(&mut node, link_id1, transport_id, 1000);
+    let peer1_addr = *id1.node_addr();
+    node.add_connection(conn1).unwrap();
+    node.promote_connection(link_id1, id1, 2000).unwrap();
+
+    let link_id2 = LinkId::new(2);
+    let (conn2, id2) = make_completed_connection(&mut node, link_id2, transport_id, 1000);
+    let peer2_addr = *id2.node_addr();
+    node.add_connection(conn2).unwrap();
+    node.promote_connection(link_id2, id2, 2000).unwrap();
+
+    let dest = make_node_addr(99);
+    node.learn_reverse_route(dest, peer2_addr);
+
+    let result = node.find_next_hop(&dest);
+    assert!(result.is_some(), "learned route should not require coords");
+    assert_eq!(result.unwrap().node_addr(), &peer2_addr);
+    assert_ne!(peer1_addr, peer2_addr);
+}
+
+#[test]
+fn test_tree_mode_ignores_learned_route_without_coords() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let link_id = LinkId::new(1);
+    let (conn, id) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let peer_addr = *id.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, id, 2000).unwrap();
+
+    let dest = make_node_addr(99);
+    node.learn_reverse_route(dest, peer_addr);
+
+    assert!(
+        node.find_next_hop(&dest).is_none(),
+        "default tree mode must preserve current no-coords behavior"
+    );
 }
 
 // === Active routing refreshes coord_cache TTL ===

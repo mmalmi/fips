@@ -46,6 +46,7 @@ impl Node {
         payload: &[u8],
         path_mtu: u16,
         ce_flag: bool,
+        previous_hop: Option<NodeAddr>,
     ) {
         let prefix = match FspCommonPrefix::parse(payload) {
             Some(p) => p,
@@ -94,8 +95,14 @@ impl Node {
                 }
             }
             FSP_PHASE_ESTABLISHED => {
-                self.handle_encrypted_session_msg(src_addr, payload, path_mtu, ce_flag)
-                    .await;
+                self.handle_encrypted_session_msg(
+                    src_addr,
+                    payload,
+                    path_mtu,
+                    ce_flag,
+                    previous_hop,
+                )
+                .await;
             }
             _ => {
                 debug!(phase = prefix.phase, "Unknown FSP phase");
@@ -118,6 +125,7 @@ impl Node {
         payload: &[u8],
         path_mtu: u16,
         ce_flag: bool,
+        previous_hop: Option<NodeAddr>,
     ) {
         // Parse the 12-byte encrypted header (includes the 4-byte prefix)
         let header = match FspEncryptedHeader::parse(payload) {
@@ -247,6 +255,9 @@ impl Node {
         };
 
         self.sessions.insert(*src_addr, entry);
+        if let Some(next_hop) = previous_hop {
+            self.learn_reverse_route(*src_addr, next_hop);
+        }
 
         // Strip FSP inner header (6 bytes)
         let (timestamp, msg_type, inner_flags_byte, rest) = match fsp_strip_inner_header(&plaintext)
@@ -1842,8 +1853,13 @@ impl Node {
         }
 
         let encoded = datagram.encode();
-        self.send_encrypted_link_message(&next_hop_addr, &encoded)
-            .await?;
+        if let Err(err) = self
+            .send_encrypted_link_message(&next_hop_addr, &encoded)
+            .await
+        {
+            self.record_route_failure(datagram.dest_addr, next_hop_addr);
+            return Err(err);
+        }
         self.stats_mut().forwarding.record_originated(encoded.len());
         Ok(())
     }

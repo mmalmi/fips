@@ -55,11 +55,17 @@
       "ttl_exhausted_packets": 0
     },
     "identity_cache_entries": 0,
+    "learned_routes": {
+      "destination_count": 0,
+      "destinations": [],
+      "route_count": 0
+    },
     "pending_lookups": [],
     "pending_tun_destinations": 0,
     "pending_tun_packets": 0,
     "recent_requests": 0,
-    "retries": []
+    "retries": [],
+    "routing_mode": "tree"
   },
   "status": "ok"
 }
