@@ -17,6 +17,7 @@ fn main() {
             RoutingStrategy::CurrentFips,
             RoutingStrategy::VerifiedAncestry,
             RoutingStrategy::PinnedRoot,
+            RoutingStrategy::ReplyLearnedFlood,
         ],
         ..SimConfig::default()
     };
@@ -24,11 +25,11 @@ fn main() {
     let report = Simulation::new(config).run();
 
     println!(
-        "strategy,success,root_capture,mal_parent,fake_root,mal_root,blackhole,flaky,no_route,loops,p95_hops"
+        "strategy,success,root_capture,mal_parent,fake_root,mal_root,blackhole,flaky,reply_fail,no_route,loops,p95_hops,floods,learned,avg_tx"
     );
     for strategy in &report.strategies {
         println!(
-            "{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{}",
+            "{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{},{},{},{},{:.1}",
             strategy.strategy_label,
             strategy.routing.success_rate,
             strategy.tree.root_capture_rate,
@@ -37,9 +38,13 @@ fn main() {
             strategy.tree.honest_on_malicious_root,
             strategy.routing.dropped_by_blackhole,
             strategy.routing.dropped_by_flaky,
+            strategy.routing.reply_failures,
             strategy.routing.no_route,
             strategy.routing.loops,
             strategy.routing.p95_hops,
+            strategy.routing.discovery_floods,
+            strategy.routing.learned_route_attempts,
+            strategy.routing.avg_transmissions_per_probe,
         );
     }
 

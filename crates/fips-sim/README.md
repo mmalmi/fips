@@ -39,6 +39,11 @@ Built-in strategies:
   by requiring every ancestry hop to correspond to a real topology edge.
 - `pinned_root`: private-mesh model where nodes only follow a configured root
   identity. In the simulator this is the smallest honest endpoint.
+- `reply_learned_flood`: Reticulum-like discovery model where first contact
+  floods through peers and a next-hop route is cached only after a reply/proof
+  returns on the reverse path.
 
 The simulator reports root capture, malicious parent selection, route success,
-blackhole/flaky drops, loops, no-route failures, and hop percentiles.
+unconfirmed deliveries, reply failures, discovery floods, learned route
+attempts, total transmissions, blackhole/flaky drops, loops, no-route failures,
+and hop percentiles.

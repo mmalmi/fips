@@ -565,6 +565,7 @@ impl Drop for ShutdownFd {
 /// avoiding the need to close the TUN fd externally (which would cause a
 /// double-close when `TunDevice` drops).
 #[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
 pub fn run_tun_reader(
     mut device: TunDevice,
     mtu: u16,

@@ -9,7 +9,7 @@ use fips_core::NodeAddr;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// Parent/routing strategy under test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -25,6 +25,11 @@ pub enum RoutingStrategy {
     /// Private-mesh / allowlisted-root model: only follow the configured root.
     /// The simulator pins this to the smallest honest endpoint in the run.
     PinnedRoot,
+    /// Discovery/data flood model: first contact floods to all peers, then
+    /// caches next hops only after a reply/proof returns on the reverse path.
+    /// This is closer to Reticulum's discover/cache/revalidate pattern than
+    /// to FIPS tree-coordinate routing.
+    ReplyLearnedFlood,
 }
 
 impl RoutingStrategy {
@@ -33,6 +38,7 @@ impl RoutingStrategy {
             RoutingStrategy::CurrentFips => "current_fips",
             RoutingStrategy::VerifiedAncestry => "verified_ancestry",
             RoutingStrategy::PinnedRoot => "pinned_root",
+            RoutingStrategy::ReplyLearnedFlood => "reply_learned_flood",
         }
     }
 }
@@ -104,6 +110,7 @@ impl Default for SimConfig {
                 RoutingStrategy::CurrentFips,
                 RoutingStrategy::VerifiedAncestry,
                 RoutingStrategy::PinnedRoot,
+                RoutingStrategy::ReplyLearnedFlood,
             ],
         }
     }
@@ -159,17 +166,23 @@ pub struct TreeStats {
 pub struct RoutingStats {
     pub probes: usize,
     pub delivered: usize,
+    pub delivered_without_reply: usize,
     pub no_route: usize,
     pub loops: usize,
     pub ttl_expired: usize,
     pub dropped_by_blackhole: usize,
     pub dropped_by_flaky: usize,
+    pub reply_failures: usize,
     pub success_rate: f64,
     pub p50_hops: usize,
     pub p95_hops: usize,
     pub max_hops: usize,
     pub avg_hops: f64,
     pub routes_with_malicious_transit: usize,
+    pub discovery_floods: usize,
+    pub learned_route_attempts: usize,
+    pub transmissions: usize,
+    pub avg_transmissions_per_probe: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +312,7 @@ impl Simulation {
                 RoutingStrategy::CurrentFips,
                 RoutingStrategy::VerifiedAncestry,
                 RoutingStrategy::PinnedRoot,
+                RoutingStrategy::ReplyLearnedFlood,
             ]
         } else {
             self.config.strategies.clone()
@@ -392,6 +406,15 @@ impl Simulation {
     }
 
     fn converge(&self, strategy: RoutingStrategy) -> StrategyRun {
+        if strategy == RoutingStrategy::ReplyLearnedFlood {
+            return StrategyRun {
+                states: self.initial_states(),
+                views: vec![HashMap::new(); self.nodes.len()],
+                convergence_rounds: 0,
+                converged: true,
+            };
+        }
+
         let mut states = self.initial_states();
         let mut views = vec![HashMap::new(); self.nodes.len()];
         let mut converged = false;
@@ -508,7 +531,9 @@ impl Simulation {
                 }
                 self.pinned_root
             }
-            RoutingStrategy::CurrentFips | RoutingStrategy::VerifiedAncestry => {
+            RoutingStrategy::CurrentFips
+            | RoutingStrategy::VerifiedAncestry
+            | RoutingStrategy::ReplyLearnedFlood => {
                 let smallest_peer_root = accepted.values().filter_map(|coord| coord.last()).min();
                 let smallest_visible = smallest_peer_root
                     .copied()
@@ -570,6 +595,7 @@ impl Simulation {
             RoutingStrategy::CurrentFips => true,
             RoutingStrategy::PinnedRoot => advert.root == self.pinned_root,
             RoutingStrategy::VerifiedAncestry => self.link_attested_ancestry(advert),
+            RoutingStrategy::ReplyLearnedFlood => true,
         }
     }
 
@@ -675,6 +701,10 @@ impl Simulation {
         views: &[HashMap<usize, Vec<NodeAddr>>],
         strategy: RoutingStrategy,
     ) -> RoutingStats {
+        if strategy == RoutingStrategy::ReplyLearnedFlood {
+            return self.reply_learned_routing_stats(strategy);
+        }
+
         let endpoints = self
             .nodes
             .iter()
@@ -701,12 +731,24 @@ impl Simulation {
             let dst = endpoints[dst_pos];
 
             stats.probes += 1;
-            match self.simulate_route(states, views, src, dst, &mut rng) {
+            let probe = self.simulate_route(states, views, src, dst, &mut rng);
+            stats.transmissions += probe.transmissions;
+            match probe.result {
                 RouteResult::Delivered {
                     hops,
                     malicious_transit,
                 } => {
                     stats.delivered += 1;
+                    delivered_hops.push(hops);
+                    if malicious_transit {
+                        stats.routes_with_malicious_transit += 1;
+                    }
+                }
+                RouteResult::UnconfirmedDelivery {
+                    hops,
+                    malicious_transit,
+                } => {
+                    stats.delivered_without_reply += 1;
                     delivered_hops.push(hops);
                     if malicious_transit {
                         stats.routes_with_malicious_transit += 1;
@@ -722,6 +764,7 @@ impl Simulation {
 
         if stats.probes > 0 {
             stats.success_rate = stats.delivered as f64 / stats.probes as f64;
+            stats.avg_transmissions_per_probe = stats.transmissions as f64 / stats.probes as f64;
         }
         if !delivered_hops.is_empty() {
             delivered_hops.sort_unstable();
@@ -734,6 +777,406 @@ impl Simulation {
         stats
     }
 
+    fn reply_learned_routing_stats(&self, strategy: RoutingStrategy) -> RoutingStats {
+        let endpoints = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.is_honest_endpoint())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        let mut stats = RoutingStats::default();
+        if endpoints.len() < 2 || self.config.route_probe_count == 0 {
+            return stats;
+        }
+
+        let mut rng = StdRng::seed_from_u64(self.config.seed ^ strategy_seed(strategy));
+        let mut learned_routes = LearnedRouteTable::new();
+        let mut delivered_hops = Vec::new();
+
+        for _ in 0..self.config.route_probe_count {
+            let src_pos = rng.random_range(0..endpoints.len());
+            let mut dst_pos = rng.random_range(0..endpoints.len() - 1);
+            if dst_pos >= src_pos {
+                dst_pos += 1;
+            }
+            let src = endpoints[src_pos];
+            let dst = endpoints[dst_pos];
+
+            stats.probes += 1;
+            let probe = self.simulate_reply_learned_probe(&mut learned_routes, src, dst, &mut rng);
+
+            stats.transmissions += probe.transmissions;
+            if probe.discovery_flood {
+                stats.discovery_floods += 1;
+            }
+            if probe.learned_route_attempt {
+                stats.learned_route_attempts += 1;
+            }
+            if probe.reply_failure {
+                stats.reply_failures += 1;
+            }
+
+            match probe.result {
+                RouteResult::Delivered {
+                    hops,
+                    malicious_transit,
+                } => {
+                    stats.delivered += 1;
+                    delivered_hops.push(hops);
+                    if malicious_transit {
+                        stats.routes_with_malicious_transit += 1;
+                    }
+                }
+                RouteResult::UnconfirmedDelivery {
+                    hops,
+                    malicious_transit,
+                } => {
+                    stats.delivered_without_reply += 1;
+                    delivered_hops.push(hops);
+                    if malicious_transit {
+                        stats.routes_with_malicious_transit += 1;
+                    }
+                }
+                RouteResult::NoRoute => stats.no_route += 1,
+                RouteResult::Loop => stats.loops += 1,
+                RouteResult::TtlExpired => stats.ttl_expired += 1,
+                RouteResult::Blackholed => stats.dropped_by_blackhole += 1,
+                RouteResult::FlakyDrop => stats.dropped_by_flaky += 1,
+            }
+        }
+
+        if stats.probes > 0 {
+            stats.success_rate = stats.delivered as f64 / stats.probes as f64;
+            stats.avg_transmissions_per_probe = stats.transmissions as f64 / stats.probes as f64;
+        }
+        if !delivered_hops.is_empty() {
+            delivered_hops.sort_unstable();
+            stats.p50_hops = percentile_usize(&delivered_hops, 0.50);
+            stats.p95_hops = percentile_usize(&delivered_hops, 0.95);
+            stats.max_hops = delivered_hops.last().copied().unwrap_or(0);
+            stats.avg_hops =
+                delivered_hops.iter().sum::<usize>() as f64 / delivered_hops.len() as f64;
+        }
+        stats
+    }
+
+    fn simulate_reply_learned_probe(
+        &self,
+        learned_routes: &mut LearnedRouteTable,
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+    ) -> ReplyLearnedProbe {
+        let mut probe = ReplyLearnedProbe::default();
+
+        if learned_routes.contains_key(&(src, dst)) {
+            probe.learned_route_attempt = true;
+            let attempt = self.follow_learned_route(learned_routes, src, dst, rng);
+            probe.transmissions += attempt.transmissions;
+
+            match attempt.result {
+                PathResult::Delivered(path) => {
+                    let reply = self.confirm_reply(&path.nodes, rng);
+                    probe.transmissions += reply.transmissions;
+                    if reply.confirmed {
+                        learn_path(learned_routes, &path.nodes);
+                        probe.result = RouteResult::Delivered {
+                            hops: path.hops(),
+                            malicious_transit: path.malicious_transit,
+                        };
+                        return probe;
+                    }
+
+                    probe.reply_failure = true;
+                    invalidate_path(learned_routes, &path.nodes, dst);
+                    let result = RouteResult::UnconfirmedDelivery {
+                        hops: path.hops(),
+                        malicious_transit: path.malicious_transit,
+                    };
+                    if reply.dropped_by_blackhole || reply.dropped_by_flaky {
+                        probe.result = self
+                            .flood_after_failed_learned_route(
+                                learned_routes,
+                                src,
+                                dst,
+                                rng,
+                                &mut probe,
+                            )
+                            .unwrap_or(result);
+                    } else {
+                        probe.result = result;
+                    }
+                    return probe;
+                }
+                PathResult::NoRoute | PathResult::Loop | PathResult::TtlExpired => {
+                    learned_routes.remove(&(src, dst));
+                }
+                PathResult::Blackholed | PathResult::FlakyDrop => {
+                    learned_routes.remove(&(src, dst));
+                }
+            }
+        }
+
+        probe.result = self
+            .flood_after_failed_learned_route(learned_routes, src, dst, rng, &mut probe)
+            .unwrap_or(RouteResult::NoRoute);
+        probe
+    }
+
+    fn flood_after_failed_learned_route(
+        &self,
+        learned_routes: &mut LearnedRouteTable,
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+        probe: &mut ReplyLearnedProbe,
+    ) -> Option<RouteResult> {
+        probe.discovery_flood = true;
+        let flood = self.flood_discover_confirmed_path(src, dst, rng);
+        probe.transmissions += flood.transmissions;
+        if flood.reply_failures > 0 {
+            probe.reply_failure = true;
+        }
+
+        if let Some(path) = flood.confirmed_path {
+            learn_path(learned_routes, &path.nodes);
+            return Some(RouteResult::Delivered {
+                hops: path.hops(),
+                malicious_transit: path.malicious_transit,
+            });
+        }
+
+        if let Some(path) = flood.unconfirmed_path {
+            return Some(RouteResult::UnconfirmedDelivery {
+                hops: path.hops(),
+                malicious_transit: path.malicious_transit,
+            });
+        }
+
+        if flood.dropped_by_blackhole {
+            Some(RouteResult::Blackholed)
+        } else if flood.dropped_by_flaky {
+            Some(RouteResult::FlakyDrop)
+        } else {
+            None
+        }
+    }
+
+    fn follow_learned_route(
+        &self,
+        learned_routes: &LearnedRouteTable,
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+    ) -> LearnedPathAttempt {
+        let ttl = self.nodes.len().saturating_mul(2).max(1);
+        let mut visited = HashSet::new();
+        let mut current = src;
+        let mut path = vec![src];
+        let mut transmissions = 0;
+        let mut malicious_transit = false;
+        visited.insert(current);
+
+        for _ in 0..=ttl {
+            if current == dst {
+                return LearnedPathAttempt {
+                    result: PathResult::Delivered(RoutedPath {
+                        nodes: path,
+                        malicious_transit,
+                    }),
+                    transmissions,
+                };
+            }
+
+            if current != src {
+                match self.nodes[current].forward {
+                    ForwardBehavior::Honest => {}
+                    ForwardBehavior::Blackhole => {
+                        return LearnedPathAttempt {
+                            result: PathResult::Blackholed,
+                            transmissions,
+                        };
+                    }
+                    ForwardBehavior::Flaky { drop_probability } => {
+                        if rng.random::<f64>() < drop_probability {
+                            return LearnedPathAttempt {
+                                result: PathResult::FlakyDrop,
+                                transmissions,
+                            };
+                        }
+                    }
+                }
+                if self.nodes[current].is_malicious_or_misbehaving() {
+                    malicious_transit = true;
+                }
+            }
+
+            let next = if self.has_edge(current, dst) {
+                dst
+            } else {
+                let Some(next) = learned_routes.get(&(current, dst)).copied() else {
+                    return LearnedPathAttempt {
+                        result: PathResult::NoRoute,
+                        transmissions,
+                    };
+                };
+                if !self.has_edge(current, next) {
+                    return LearnedPathAttempt {
+                        result: PathResult::NoRoute,
+                        transmissions,
+                    };
+                }
+                next
+            };
+
+            transmissions += 1;
+            if !visited.insert(next) {
+                return LearnedPathAttempt {
+                    result: PathResult::Loop,
+                    transmissions,
+                };
+            }
+            path.push(next);
+            current = next;
+        }
+
+        LearnedPathAttempt {
+            result: PathResult::TtlExpired,
+            transmissions,
+        }
+    }
+
+    fn flood_discover_confirmed_path(
+        &self,
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+    ) -> FloodAttempt {
+        let ttl = self.nodes.len().max(1);
+        let mut attempt = FloodAttempt::default();
+        let mut queue = VecDeque::new();
+        let mut processed = HashSet::new();
+        queue.push_back(vec![src]);
+
+        while let Some(path) = queue.pop_front() {
+            if path.len().saturating_sub(1) > ttl {
+                continue;
+            }
+
+            let current = *path.last().expect("flood path is non-empty");
+            if !processed.insert(current) {
+                continue;
+            }
+
+            if current != src && current != dst {
+                match self.nodes[current].forward {
+                    ForwardBehavior::Honest => {}
+                    ForwardBehavior::Blackhole => {
+                        attempt.dropped_by_blackhole = true;
+                        continue;
+                    }
+                    ForwardBehavior::Flaky { drop_probability } => {
+                        if rng.random::<f64>() < drop_probability {
+                            attempt.dropped_by_flaky = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if current == dst {
+                let routed_path = RoutedPath {
+                    malicious_transit: self.path_has_malicious_transit(&path),
+                    nodes: path,
+                };
+                let reply = self.confirm_reply(&routed_path.nodes, rng);
+                attempt.transmissions += reply.transmissions;
+                if reply.confirmed {
+                    attempt.confirmed_path = Some(routed_path);
+                    break;
+                }
+
+                attempt.reply_failures += 1;
+                attempt.unconfirmed_path = Some(routed_path);
+                if reply.dropped_by_blackhole {
+                    attempt.dropped_by_blackhole = true;
+                }
+                if reply.dropped_by_flaky {
+                    attempt.dropped_by_flaky = true;
+                }
+                continue;
+            }
+
+            let previous = path
+                .len()
+                .checked_sub(2)
+                .and_then(|index| path.get(index))
+                .copied();
+            for &(neighbor, _) in &self.nodes[current].neighbors {
+                if Some(neighbor) == previous {
+                    continue;
+                }
+
+                attempt.transmissions += 1;
+                if processed.contains(&neighbor) || path.contains(&neighbor) {
+                    continue;
+                }
+
+                let mut next_path = path.clone();
+                next_path.push(neighbor);
+                queue.push_back(next_path);
+            }
+        }
+
+        attempt
+    }
+
+    fn confirm_reply(&self, path: &[usize], rng: &mut StdRng) -> ReplyAttempt {
+        let mut attempt = ReplyAttempt {
+            confirmed: true,
+            transmissions: 0,
+            dropped_by_blackhole: false,
+            dropped_by_flaky: false,
+        };
+        if path.len() < 2 {
+            return attempt;
+        }
+
+        let dst = *path.last().expect("path is non-empty");
+        for index in (1..path.len()).rev() {
+            let current = path[index];
+            if current != dst {
+                match self.nodes[current].forward {
+                    ForwardBehavior::Honest => {}
+                    ForwardBehavior::Blackhole => {
+                        attempt.confirmed = false;
+                        attempt.dropped_by_blackhole = true;
+                        return attempt;
+                    }
+                    ForwardBehavior::Flaky { drop_probability } => {
+                        if rng.random::<f64>() < drop_probability {
+                            attempt.confirmed = false;
+                            attempt.dropped_by_flaky = true;
+                            return attempt;
+                        }
+                    }
+                }
+            }
+            attempt.transmissions += 1;
+        }
+
+        attempt
+    }
+
+    fn path_has_malicious_transit(&self, path: &[usize]) -> bool {
+        path.iter()
+            .skip(1)
+            .take(path.len().saturating_sub(2))
+            .any(|node| self.nodes[*node].is_malicious_or_misbehaving())
+    }
+
     fn simulate_route(
         &self,
         states: &[NodeState],
@@ -741,7 +1184,7 @@ impl Simulation {
         src: usize,
         dst: usize,
         rng: &mut StdRng,
-    ) -> RouteResult {
+    ) -> RouteProbeAttempt {
         let ttl = self.nodes.len().saturating_mul(2).max(1);
         let mut visited = HashSet::new();
         let mut current = src;
@@ -750,19 +1193,30 @@ impl Simulation {
 
         for hops in 0..=ttl {
             if current == dst {
-                return RouteResult::Delivered {
-                    hops,
-                    malicious_transit,
+                return RouteProbeAttempt {
+                    result: RouteResult::Delivered {
+                        hops,
+                        malicious_transit,
+                    },
+                    transmissions: hops,
                 };
             }
 
             if current != src {
                 match self.nodes[current].forward {
                     ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => return RouteResult::Blackholed,
+                    ForwardBehavior::Blackhole => {
+                        return RouteProbeAttempt {
+                            result: RouteResult::Blackholed,
+                            transmissions: hops,
+                        };
+                    }
                     ForwardBehavior::Flaky { drop_probability } => {
                         if rng.random::<f64>() < drop_probability {
-                            return RouteResult::FlakyDrop;
+                            return RouteProbeAttempt {
+                                result: RouteResult::FlakyDrop,
+                                transmissions: hops,
+                            };
                         }
                     }
                 }
@@ -772,16 +1226,25 @@ impl Simulation {
             }
 
             let Some(next) = self.next_hop(states, views, current, dst) else {
-                return RouteResult::NoRoute;
+                return RouteProbeAttempt {
+                    result: RouteResult::NoRoute,
+                    transmissions: hops,
+                };
             };
             if visited.contains(&next) {
-                return RouteResult::Loop;
+                return RouteProbeAttempt {
+                    result: RouteResult::Loop,
+                    transmissions: hops + 1,
+                };
             }
             visited.insert(next);
             current = next;
         }
 
-        RouteResult::TtlExpired
+        RouteProbeAttempt {
+            result: RouteResult::TtlExpired,
+            transmissions: ttl,
+        }
     }
 
     fn next_hop(
@@ -826,9 +1289,88 @@ struct ParentDecision {
     accepted_coords: HashMap<usize, Vec<NodeAddr>>,
 }
 
+type LearnedRouteTable = HashMap<(usize, usize), usize>;
+
+#[derive(Debug)]
+struct ReplyLearnedProbe {
+    result: RouteResult,
+    transmissions: usize,
+    discovery_flood: bool,
+    learned_route_attempt: bool,
+    reply_failure: bool,
+}
+
+impl Default for ReplyLearnedProbe {
+    fn default() -> Self {
+        Self {
+            result: RouteResult::NoRoute,
+            transmissions: 0,
+            discovery_flood: false,
+            learned_route_attempt: false,
+            reply_failure: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LearnedPathAttempt {
+    result: PathResult,
+    transmissions: usize,
+}
+
+#[derive(Debug)]
+enum PathResult {
+    Delivered(RoutedPath),
+    NoRoute,
+    Loop,
+    TtlExpired,
+    Blackholed,
+    FlakyDrop,
+}
+
+#[derive(Debug, Clone)]
+struct RoutedPath {
+    nodes: Vec<usize>,
+    malicious_transit: bool,
+}
+
+impl RoutedPath {
+    fn hops(&self) -> usize {
+        self.nodes.len().saturating_sub(1)
+    }
+}
+
+#[derive(Debug, Default)]
+struct FloodAttempt {
+    confirmed_path: Option<RoutedPath>,
+    unconfirmed_path: Option<RoutedPath>,
+    transmissions: usize,
+    dropped_by_blackhole: bool,
+    dropped_by_flaky: bool,
+    reply_failures: usize,
+}
+
+#[derive(Debug)]
+struct ReplyAttempt {
+    confirmed: bool,
+    transmissions: usize,
+    dropped_by_blackhole: bool,
+    dropped_by_flaky: bool,
+}
+
+#[derive(Debug)]
+struct RouteProbeAttempt {
+    result: RouteResult,
+    transmissions: usize,
+}
+
 #[derive(Debug)]
 enum RouteResult {
     Delivered {
+        hops: usize,
+        malicious_transit: bool,
+    },
+    UnconfirmedDelivery {
         hops: usize,
         malicious_transit: bool,
     },
@@ -846,6 +1388,27 @@ pub fn run_parameter_sweep(configs: &[SimConfig]) -> Vec<ComparisonReport> {
         .cloned()
         .map(|config| Simulation::new(config).run())
         .collect()
+}
+
+fn learn_path(learned_routes: &mut LearnedRouteTable, path: &[usize]) {
+    if path.len() < 2 {
+        return;
+    }
+
+    let src = path[0];
+    let dst = *path.last().expect("path is non-empty");
+    for pair in path.windows(2) {
+        learned_routes.insert((pair[0], dst), pair[1]);
+        learned_routes.insert((pair[1], src), pair[0]);
+    }
+}
+
+fn invalidate_path(learned_routes: &mut LearnedRouteTable, path: &[usize], dst: usize) {
+    for pair in path.windows(2) {
+        if learned_routes.get(&(pair[0], dst)).copied() == Some(pair[1]) {
+            learned_routes.remove(&(pair[0], dst));
+        }
+    }
 }
 
 fn assign_identity_behaviors(n: usize, adversary: AdversaryConfig) -> Vec<IdentityBehavior> {
@@ -972,6 +1535,7 @@ fn strategy_seed(strategy: RoutingStrategy) -> u64 {
         RoutingStrategy::CurrentFips => 0xF1F5_0001,
         RoutingStrategy::VerifiedAncestry => 0xF1F5_0002,
         RoutingStrategy::PinnedRoot => 0xF1F5_0003,
+        RoutingStrategy::ReplyLearnedFlood => 0xF1F5_0004,
     }
 }
 
@@ -1098,6 +1662,50 @@ mod tests {
         assert!(
             pinned.routing.success_rate >= current.routing.success_rate,
             "pinned root should improve or preserve routing under grinder blackholes"
+        );
+    }
+
+    #[test]
+    fn reply_learned_flood_uses_reply_confirmed_routes() {
+        let config = SimConfig {
+            node_count: 60,
+            target_edges: 140,
+            route_probe_count: 500,
+            seed: 41,
+            adversary: AdversaryConfig {
+                root_grinder_fraction: 0.04,
+                phantom_root_fraction: 0.08,
+                blackhole_fraction: 0.05,
+                flaky_fraction: 0.05,
+                flaky_drop_probability: 0.20,
+            },
+            strategies: vec![RoutingStrategy::ReplyLearnedFlood],
+            ..SimConfig::default()
+        };
+
+        let report = Simulation::new(config).run();
+        let reply_learned = report_for(&report, RoutingStrategy::ReplyLearnedFlood);
+
+        assert_eq!(
+            reply_learned.tree.root_capture_rate, 0.0,
+            "reply-learned flooding should not depend on a tree root"
+        );
+        assert!(
+            reply_learned.routing.discovery_floods > 0,
+            "first-contact routes should use discovery floods"
+        );
+        assert!(
+            reply_learned.routing.learned_route_attempts > 0,
+            "successful replies should populate the learned route cache"
+        );
+        assert!(
+            reply_learned.routing.success_rate >= 0.75,
+            "expected most bidirectional probes to confirm, got {:.3}",
+            reply_learned.routing.success_rate
+        );
+        assert!(
+            reply_learned.routing.avg_transmissions_per_probe > reply_learned.routing.avg_hops,
+            "flood discovery should expose bandwidth cost beyond route hop count"
         );
     }
 }
