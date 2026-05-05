@@ -14,6 +14,9 @@ let report = Simulation::new(SimConfig {
     node_count: 100,
     target_edges: 240,
     route_probe_count: 1_000,
+    stream_probe_count: 150,
+    stream_size_bytes: 64 * 1024 * 1024,
+    max_multipath_routes: 3,
     adversary: AdversaryConfig {
         root_grinder_fraction: 0.03,
         phantom_root_fraction: 0.05,
@@ -42,8 +45,12 @@ Built-in strategies:
 - `reply_learned_flood`: Reticulum-like discovery model where first contact
   floods through peers and a next-hop route is cached only after a reply/proof
   returns on the reverse path.
+- `reply_learned_multipath`: large-stream model that keeps route-quality and
+  peer-reputation scores, then schedules bytes across several confirmed routes
+  with more bandwidth assigned to high-throughput, low-latency peers.
 
 The simulator reports root capture, malicious parent selection, route success,
 unconfirmed deliveries, reply failures, discovery floods, learned route
-attempts, total transmissions, blackhole/flaky drops, loops, no-route failures,
-and hop percentiles.
+attempts, stream completion rates, latency, throughput, route fanout, total
+transmissions, blackhole/flaky drops, loops, no-route failures, and hop
+percentiles.

@@ -30,6 +30,9 @@ pub enum RoutingStrategy {
     /// This is closer to Reticulum's discover/cache/revalidate pattern than
     /// to FIPS tree-coordinate routing.
     ReplyLearnedFlood,
+    /// Reply-learned model for large transfers: maintain route quality and
+    /// peer reputation, then split streams across multiple confirmed routes.
+    ReplyLearnedMultipath,
 }
 
 impl RoutingStrategy {
@@ -39,6 +42,7 @@ impl RoutingStrategy {
             RoutingStrategy::VerifiedAncestry => "verified_ancestry",
             RoutingStrategy::PinnedRoot => "pinned_root",
             RoutingStrategy::ReplyLearnedFlood => "reply_learned_flood",
+            RoutingStrategy::ReplyLearnedMultipath => "reply_learned_multipath",
         }
     }
 }
@@ -84,6 +88,12 @@ pub struct SimConfig {
     pub target_edges: usize,
     /// Number of honest-endpoint route probes per strategy.
     pub route_probe_count: usize,
+    /// Number of large stream transfers per strategy.
+    pub stream_probe_count: usize,
+    /// Bytes per simulated large stream transfer.
+    pub stream_size_bytes: usize,
+    /// Maximum confirmed routes a multipath stream may use.
+    pub max_multipath_routes: usize,
     /// Random seed for reproducible topology, roles, and probes.
     pub seed: u64,
     /// Maximum synchronous convergence rounds.
@@ -102,6 +112,9 @@ impl Default for SimConfig {
             node_count: 80,
             target_edges: 180,
             route_probe_count: 500,
+            stream_probe_count: 120,
+            stream_size_bytes: 64 * 1024 * 1024,
+            max_multipath_routes: 3,
             seed: 42,
             max_convergence_rounds: 64,
             link_cost_jitter: 0.25,
@@ -111,6 +124,7 @@ impl Default for SimConfig {
                 RoutingStrategy::VerifiedAncestry,
                 RoutingStrategy::PinnedRoot,
                 RoutingStrategy::ReplyLearnedFlood,
+                RoutingStrategy::ReplyLearnedMultipath,
             ],
         }
     }
@@ -135,6 +149,7 @@ pub struct StrategyReport {
     pub converged: bool,
     pub tree: TreeStats,
     pub routing: RoutingStats,
+    pub streams: StreamStats,
 }
 
 /// Static topology statistics.
@@ -185,6 +200,31 @@ pub struct RoutingStats {
     pub avg_transmissions_per_probe: f64,
 }
 
+/// Large stream-transfer statistics.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct StreamStats {
+    pub streams: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub success_rate: f64,
+    pub stream_size_bytes: usize,
+    pub single_route_streams: usize,
+    pub multi_route_streams: usize,
+    pub avg_routes_per_stream: f64,
+    pub avg_latency_ms: f64,
+    pub p95_latency_ms: f64,
+    pub avg_completion_ms: f64,
+    pub p95_completion_ms: f64,
+    pub avg_throughput_mbps: f64,
+    pub p95_throughput_mbps: f64,
+    pub discovery_floods: usize,
+    pub learned_route_uses: usize,
+    pub peer_reputation_uses: usize,
+    pub peer_reputation_entries: usize,
+    pub transmissions: usize,
+    pub avg_transmissions_per_stream: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityBehavior {
     Honest,
@@ -204,7 +244,15 @@ struct NodeSpec {
     addr: NodeAddr,
     identity: IdentityBehavior,
     forward: ForwardBehavior,
-    neighbors: Vec<(usize, f64)>,
+    neighbors: Vec<LinkSpec>,
+}
+
+#[derive(Debug, Clone)]
+struct LinkSpec {
+    neighbor: usize,
+    cost: f64,
+    latency_ms: f64,
+    throughput_mbps: f64,
 }
 
 impl NodeSpec {
@@ -278,8 +326,22 @@ impl Simulation {
         let edges = generate_connected_edges(config.node_count, config.target_edges, &mut rng);
         for &(a, b) in &edges {
             let cost = 1.0 + rng.random::<f64>() * config.link_cost_jitter.max(0.0);
-            nodes[a].neighbors.push((b, cost));
-            nodes[b].neighbors.push((a, cost));
+            let latency_ms = 2.0 + rng.random::<f64>() * 48.0;
+            let throughput_mbps = 10.0 + rng.random::<f64>().powf(1.7) * 990.0;
+            let link_ab = LinkSpec {
+                neighbor: b,
+                cost,
+                latency_ms,
+                throughput_mbps,
+            };
+            let link_ba = LinkSpec {
+                neighbor: a,
+                cost,
+                latency_ms,
+                throughput_mbps,
+            };
+            nodes[a].neighbors.push(link_ab);
+            nodes[b].neighbors.push(link_ba);
         }
 
         let addr_to_index = nodes
@@ -313,6 +375,7 @@ impl Simulation {
                 RoutingStrategy::VerifiedAncestry,
                 RoutingStrategy::PinnedRoot,
                 RoutingStrategy::ReplyLearnedFlood,
+                RoutingStrategy::ReplyLearnedMultipath,
             ]
         } else {
             self.config.strategies.clone()
@@ -337,6 +400,7 @@ impl Simulation {
         let run = self.converge(strategy);
         let tree = self.tree_stats(&run.states);
         let routing = self.routing_stats(&run.states, &run.views, strategy);
+        let streams = self.stream_stats(&run.states, &run.views, strategy);
 
         StrategyReport {
             strategy,
@@ -345,6 +409,7 @@ impl Simulation {
             converged: run.converged,
             tree,
             routing,
+            streams,
         }
     }
 
@@ -406,7 +471,10 @@ impl Simulation {
     }
 
     fn converge(&self, strategy: RoutingStrategy) -> StrategyRun {
-        if strategy == RoutingStrategy::ReplyLearnedFlood {
+        if matches!(
+            strategy,
+            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath
+        ) {
             return StrategyRun {
                 states: self.initial_states(),
                 views: vec![HashMap::new(); self.nodes.len()],
@@ -514,7 +582,8 @@ impl Simulation {
         let mut accepted = HashMap::new();
         let local_addr = self.nodes[local].addr;
 
-        for &(peer, _) in &self.nodes[local].neighbors {
+        for link in &self.nodes[local].neighbors {
+            let peer = link.neighbor;
             let advert = &adverts[peer];
             if self.accept_advert(strategy, local, advert) {
                 accepted.insert(peer, advert.coord.clone());
@@ -533,7 +602,8 @@ impl Simulation {
             }
             RoutingStrategy::CurrentFips
             | RoutingStrategy::VerifiedAncestry
-            | RoutingStrategy::ReplyLearnedFlood => {
+            | RoutingStrategy::ReplyLearnedFlood
+            | RoutingStrategy::ReplyLearnedMultipath => {
                 let smallest_peer_root = accepted.values().filter_map(|coord| coord.last()).min();
                 let smallest_visible = smallest_peer_root
                     .copied()
@@ -550,7 +620,9 @@ impl Simulation {
         };
 
         let mut best: Option<(usize, Vec<NodeAddr>, f64, NodeAddr)> = None;
-        for &(peer, cost) in &self.nodes[local].neighbors {
+        for link in &self.nodes[local].neighbors {
+            let peer = link.neighbor;
+            let cost = link.cost;
             let Some(coord) = accepted.get(&peer) else {
                 continue;
             };
@@ -595,7 +667,7 @@ impl Simulation {
             RoutingStrategy::CurrentFips => true,
             RoutingStrategy::PinnedRoot => advert.root == self.pinned_root,
             RoutingStrategy::VerifiedAncestry => self.link_attested_ancestry(advert),
-            RoutingStrategy::ReplyLearnedFlood => true,
+            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath => true,
         }
     }
 
@@ -647,7 +719,7 @@ impl Simulation {
         self.nodes[a]
             .neighbors
             .iter()
-            .any(|(neighbor, _)| *neighbor == b)
+            .any(|link| link.neighbor == b)
     }
 
     fn tree_stats(&self, states: &[NodeState]) -> TreeStats {
@@ -701,7 +773,10 @@ impl Simulation {
         views: &[HashMap<usize, Vec<NodeAddr>>],
         strategy: RoutingStrategy,
     ) -> RoutingStats {
-        if strategy == RoutingStrategy::ReplyLearnedFlood {
+        if matches!(
+            strategy,
+            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath
+        ) {
             return self.reply_learned_routing_stats(strategy);
         }
 
@@ -860,6 +935,550 @@ impl Simulation {
                 delivered_hops.iter().sum::<usize>() as f64 / delivered_hops.len() as f64;
         }
         stats
+    }
+
+    fn stream_stats(
+        &self,
+        states: &[NodeState],
+        views: &[HashMap<usize, Vec<NodeAddr>>],
+        strategy: RoutingStrategy,
+    ) -> StreamStats {
+        let endpoints = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.is_honest_endpoint())
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        let mut stats = StreamStats {
+            stream_size_bytes: self.config.stream_size_bytes,
+            ..StreamStats::default()
+        };
+        if endpoints.len() < 2 || self.config.stream_probe_count == 0 {
+            return stats;
+        }
+
+        let mut rng = StdRng::seed_from_u64(self.config.seed ^ stream_seed(strategy));
+        let mut learning = StreamLearningState::default();
+        let mut route_counts = Vec::new();
+        let mut latencies = Vec::new();
+        let mut completion_times = Vec::new();
+        let mut throughputs = Vec::new();
+
+        for _ in 0..self.config.stream_probe_count {
+            let src_pos = rng.random_range(0..endpoints.len());
+            let mut dst_pos = rng.random_range(0..endpoints.len() - 1);
+            if dst_pos >= src_pos {
+                dst_pos += 1;
+            }
+            let src = endpoints[src_pos];
+            let dst = endpoints[dst_pos];
+
+            stats.streams += 1;
+            let attempt = match strategy {
+                RoutingStrategy::CurrentFips
+                | RoutingStrategy::VerifiedAncestry
+                | RoutingStrategy::PinnedRoot => {
+                    self.simulate_tree_stream(states, views, src, dst, &mut rng)
+                }
+                RoutingStrategy::ReplyLearnedFlood => {
+                    self.simulate_reply_learned_stream(src, dst, 1, &mut learning, &mut rng)
+                }
+                RoutingStrategy::ReplyLearnedMultipath => self.simulate_reply_learned_stream(
+                    src,
+                    dst,
+                    self.config.max_multipath_routes.max(1),
+                    &mut learning,
+                    &mut rng,
+                ),
+            };
+
+            stats.transmissions += attempt.transmissions;
+            stats.peer_reputation_uses += attempt.peer_reputation_uses;
+            if attempt.discovery_flood {
+                stats.discovery_floods += 1;
+            }
+            if attempt.learned_route_use {
+                stats.learned_route_uses += 1;
+            }
+
+            if attempt.completed {
+                stats.completed += 1;
+                if attempt.route_count > 1 {
+                    stats.multi_route_streams += 1;
+                } else {
+                    stats.single_route_streams += 1;
+                }
+                route_counts.push(attempt.route_count);
+                latencies.push(attempt.latency_ms);
+                completion_times.push(attempt.completion_ms);
+                throughputs.push(attempt.throughput_mbps);
+            } else {
+                stats.failed += 1;
+            }
+        }
+
+        stats.peer_reputation_entries = learning.reputation.len();
+        if stats.streams > 0 {
+            stats.success_rate = stats.completed as f64 / stats.streams as f64;
+            stats.avg_transmissions_per_stream = stats.transmissions as f64 / stats.streams as f64;
+        }
+        if !route_counts.is_empty() {
+            stats.avg_routes_per_stream =
+                route_counts.iter().sum::<usize>() as f64 / route_counts.len() as f64;
+        }
+        if !latencies.is_empty() {
+            latencies.sort_by(|a, b| a.total_cmp(b));
+            stats.avg_latency_ms = average_f64(&latencies);
+            stats.p95_latency_ms = percentile_f64(&latencies, 0.95);
+        }
+        if !completion_times.is_empty() {
+            completion_times.sort_by(|a, b| a.total_cmp(b));
+            stats.avg_completion_ms = average_f64(&completion_times);
+            stats.p95_completion_ms = percentile_f64(&completion_times, 0.95);
+        }
+        if !throughputs.is_empty() {
+            throughputs.sort_by(|a, b| a.total_cmp(b));
+            stats.avg_throughput_mbps = average_f64(&throughputs);
+            stats.p95_throughput_mbps = percentile_f64(&throughputs, 0.95);
+        }
+
+        stats
+    }
+
+    fn simulate_tree_stream(
+        &self,
+        states: &[NodeState],
+        views: &[HashMap<usize, Vec<NodeAddr>>],
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+    ) -> StreamAttempt {
+        let path_attempt = self.simulate_route_path(states, views, src, dst, rng);
+        let PathResult::Delivered(path) = path_attempt.result else {
+            return StreamAttempt {
+                transmissions: path_attempt.transmissions,
+                ..StreamAttempt::default()
+            };
+        };
+        if !self.path_stream_survives(&path.nodes, rng) {
+            return StreamAttempt {
+                transmissions: path_attempt.transmissions,
+                ..StreamAttempt::default()
+            };
+        }
+
+        let schedule = self.schedule_stream(&[path], 1, None);
+        StreamAttempt {
+            completed: true,
+            route_count: schedule.route_count,
+            latency_ms: schedule.latency_ms,
+            completion_ms: schedule.completion_ms,
+            throughput_mbps: schedule.throughput_mbps,
+            transmissions: path_attempt.transmissions + schedule.transmissions,
+            ..StreamAttempt::default()
+        }
+    }
+
+    fn simulate_reply_learned_stream(
+        &self,
+        src: usize,
+        dst: usize,
+        max_routes: usize,
+        learning: &mut StreamLearningState,
+        rng: &mut StdRng,
+    ) -> StreamAttempt {
+        let mut attempt = StreamAttempt::default();
+        let cache_key = (src, dst);
+        let mut candidates = learning
+            .route_cache
+            .get(&cache_key)
+            .cloned()
+            .unwrap_or_default();
+        candidates.retain(|path| self.path_edges_exist(&path.nodes));
+
+        if !candidates.is_empty() {
+            attempt.learned_route_use = true;
+        }
+
+        if candidates.len() < max_routes {
+            attempt.discovery_flood = true;
+            let discovery =
+                self.discover_confirmed_paths(src, dst, max_routes, &learning.reputation, rng);
+            attempt.transmissions += discovery.transmissions;
+            attempt.peer_reputation_uses += discovery.peer_reputation_uses;
+            candidates.extend(discovery.paths);
+            candidates = dedupe_paths(candidates);
+        }
+
+        if candidates.is_empty() {
+            return attempt;
+        }
+
+        let selected =
+            self.select_stream_routes(&candidates, max_routes, Some(&learning.reputation));
+        let mut survivors = Vec::new();
+        for path in selected {
+            if self.path_stream_survives(&path.nodes, rng) {
+                let metrics = self.path_metrics(&path.nodes);
+                learning.reputation.update_success(&path.nodes, metrics);
+                survivors.push(path);
+            } else {
+                learning.reputation.update_failure(&path.nodes);
+            }
+        }
+
+        if survivors.is_empty() {
+            learning.route_cache.remove(&cache_key);
+            return attempt;
+        }
+
+        let schedule = self.schedule_stream(&survivors, max_routes, Some(&learning.reputation));
+        attempt.completed = true;
+        attempt.route_count = schedule.route_count;
+        attempt.latency_ms = schedule.latency_ms;
+        attempt.completion_ms = schedule.completion_ms;
+        attempt.throughput_mbps = schedule.throughput_mbps;
+        attempt.transmissions += schedule.transmissions;
+
+        learning.route_cache.insert(
+            cache_key,
+            self.select_stream_routes(&survivors, max_routes, Some(&learning.reputation)),
+        );
+        attempt
+    }
+
+    fn discover_confirmed_paths(
+        &self,
+        src: usize,
+        dst: usize,
+        max_paths: usize,
+        reputation: &PeerReputation,
+        rng: &mut StdRng,
+    ) -> StreamDiscovery {
+        let mut discovery = StreamDiscovery::default();
+        let mut queue = VecDeque::new();
+        let mut completed_first_hops = HashSet::new();
+        let expansion_limit = self
+            .nodes
+            .len()
+            .saturating_mul(max_paths.max(1))
+            .saturating_mul(8)
+            .max(1);
+        let mut expansions = 0usize;
+        queue.push_back(vec![src]);
+
+        while let Some(path) = queue.pop_front() {
+            if discovery.paths.len() >= max_paths || expansions >= expansion_limit {
+                break;
+            }
+            expansions += 1;
+
+            let current = *path.last().expect("discovery path is non-empty");
+            if current != src && current != dst {
+                match self.nodes[current].forward {
+                    ForwardBehavior::Honest => {}
+                    ForwardBehavior::Blackhole => continue,
+                    ForwardBehavior::Flaky { drop_probability } => {
+                        if rng.random::<f64>() < drop_probability {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if current == dst {
+                let routed_path = RoutedPath {
+                    malicious_transit: self.path_has_malicious_transit(&path),
+                    nodes: path,
+                };
+                let reply = self.confirm_reply(&routed_path.nodes, rng);
+                discovery.transmissions += reply.transmissions;
+                if reply.confirmed
+                    && let Some(first_hop) = routed_path.nodes.get(1).copied()
+                    && (completed_first_hops.insert(first_hop) || max_paths == 1)
+                {
+                    discovery.paths.push(routed_path);
+                }
+                continue;
+            }
+
+            let previous = path
+                .len()
+                .checked_sub(2)
+                .and_then(|index| path.get(index))
+                .copied();
+            let (neighbors, reputation_uses) =
+                self.ranked_neighbors(current, previous, &path, reputation);
+            discovery.peer_reputation_uses += reputation_uses;
+            for neighbor in neighbors {
+                discovery.transmissions += 1;
+                let mut next_path = path.clone();
+                next_path.push(neighbor);
+                queue.push_back(next_path);
+            }
+        }
+
+        discovery
+    }
+
+    fn ranked_neighbors(
+        &self,
+        current: usize,
+        previous: Option<usize>,
+        path: &[usize],
+        reputation: &PeerReputation,
+    ) -> (Vec<usize>, usize) {
+        let mut reputation_uses = 0usize;
+        let mut neighbors = self.nodes[current]
+            .neighbors
+            .iter()
+            .filter(|link| Some(link.neighbor) != previous && !path.contains(&link.neighbor))
+            .map(|link| {
+                let reputation_score = reputation.score(current, link.neighbor);
+                if reputation.has_score(current, link.neighbor) {
+                    reputation_uses += 1;
+                }
+                let link_score = link.throughput_mbps.sqrt() / (1.0 + link.latency_ms / 100.0);
+                (link.neighbor, reputation_score * link_score)
+            })
+            .collect::<Vec<_>>();
+        neighbors.sort_by(|(_, left), (_, right)| right.total_cmp(left));
+        (
+            neighbors
+                .into_iter()
+                .map(|(neighbor, _)| neighbor)
+                .collect(),
+            reputation_uses,
+        )
+    }
+
+    fn select_stream_routes(
+        &self,
+        candidates: &[RoutedPath],
+        max_routes: usize,
+        reputation: Option<&PeerReputation>,
+    ) -> Vec<RoutedPath> {
+        let mut scored = candidates
+            .iter()
+            .cloned()
+            .map(|path| {
+                let metrics = self.path_metrics(&path.nodes);
+                let first_hop_score = path
+                    .nodes
+                    .get(1)
+                    .copied()
+                    .map(|first_hop| {
+                        reputation
+                            .map(|rep| rep.score(path.nodes[0], first_hop))
+                            .unwrap_or(1.0)
+                    })
+                    .unwrap_or(1.0);
+                let score = scheduler_weight(metrics, first_hop_score);
+                (path, score)
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|(_, left), (_, right)| right.total_cmp(left));
+
+        let mut selected = Vec::new();
+        let mut first_hops = HashSet::new();
+        for (path, _) in scored.iter() {
+            let first_hop = path.nodes.get(1).copied();
+            if first_hop.is_some_and(|hop| !first_hops.insert(hop)) {
+                continue;
+            }
+            selected.push(path.clone());
+            if selected.len() >= max_routes {
+                return selected;
+            }
+        }
+        for (path, _) in scored {
+            if selected.iter().any(|existing| existing.nodes == path.nodes) {
+                continue;
+            }
+            selected.push(path);
+            if selected.len() >= max_routes {
+                break;
+            }
+        }
+        selected
+    }
+
+    fn schedule_stream(
+        &self,
+        paths: &[RoutedPath],
+        max_routes: usize,
+        reputation: Option<&PeerReputation>,
+    ) -> StreamSchedule {
+        let selected = self.select_stream_routes(paths, max_routes, reputation);
+        let mut weighted = Vec::new();
+        for path in selected {
+            let metrics = self.path_metrics(&path.nodes);
+            let first_hop_score = path
+                .nodes
+                .get(1)
+                .copied()
+                .map(|first_hop| {
+                    reputation
+                        .map(|rep| rep.score(path.nodes[0], first_hop))
+                        .unwrap_or(1.0)
+                })
+                .unwrap_or(1.0);
+            weighted.push((path, metrics, scheduler_weight(metrics, first_hop_score)));
+        }
+
+        let total_weight = weighted.iter().map(|(_, _, weight)| *weight).sum::<f64>();
+        let total_weight = total_weight.max(f64::EPSILON);
+        let mut completion_ms = 0.0f64;
+        let mut first_byte_latency_ms = f64::MAX;
+        let mut transmissions = 0usize;
+
+        for (path, metrics, weight) in &weighted {
+            let byte_share = self.config.stream_size_bytes as f64 * (*weight / total_weight);
+            let transfer_ms = transfer_time_ms(byte_share, metrics.throughput_mbps);
+            completion_ms = completion_ms.max(metrics.latency_ms + transfer_ms);
+            first_byte_latency_ms = first_byte_latency_ms.min(metrics.latency_ms);
+            let packet_share = stream_packet_count(byte_share as usize);
+            transmissions += packet_share.saturating_mul(path.hops());
+        }
+
+        let throughput_mbps = if completion_ms > 0.0 {
+            (self.config.stream_size_bytes as f64 * 8.0) / (completion_ms * 1_000.0)
+        } else {
+            0.0
+        };
+
+        StreamSchedule {
+            route_count: weighted.len(),
+            latency_ms: first_byte_latency_ms,
+            completion_ms,
+            throughput_mbps,
+            transmissions,
+        }
+    }
+
+    fn simulate_route_path(
+        &self,
+        states: &[NodeState],
+        views: &[HashMap<usize, Vec<NodeAddr>>],
+        src: usize,
+        dst: usize,
+        rng: &mut StdRng,
+    ) -> LearnedPathAttempt {
+        let ttl = self.nodes.len().saturating_mul(2).max(1);
+        let mut visited = HashSet::new();
+        let mut current = src;
+        let mut path = vec![src];
+        let mut transmissions = 0;
+        let mut malicious_transit = false;
+        visited.insert(current);
+
+        for _ in 0..=ttl {
+            if current == dst {
+                return LearnedPathAttempt {
+                    result: PathResult::Delivered(RoutedPath {
+                        nodes: path,
+                        malicious_transit,
+                    }),
+                    transmissions,
+                };
+            }
+
+            if current != src {
+                match self.nodes[current].forward {
+                    ForwardBehavior::Honest => {}
+                    ForwardBehavior::Blackhole => {
+                        return LearnedPathAttempt {
+                            result: PathResult::Blackholed,
+                            transmissions,
+                        };
+                    }
+                    ForwardBehavior::Flaky { drop_probability } => {
+                        if rng.random::<f64>() < drop_probability {
+                            return LearnedPathAttempt {
+                                result: PathResult::FlakyDrop,
+                                transmissions,
+                            };
+                        }
+                    }
+                }
+                if self.nodes[current].is_malicious_or_misbehaving() {
+                    malicious_transit = true;
+                }
+            }
+
+            let Some(next) = self.next_hop(states, views, current, dst) else {
+                return LearnedPathAttempt {
+                    result: PathResult::NoRoute,
+                    transmissions,
+                };
+            };
+            transmissions += 1;
+            if !visited.insert(next) {
+                return LearnedPathAttempt {
+                    result: PathResult::Loop,
+                    transmissions,
+                };
+            }
+            path.push(next);
+            current = next;
+        }
+
+        LearnedPathAttempt {
+            result: PathResult::TtlExpired,
+            transmissions,
+        }
+    }
+
+    fn path_metrics(&self, path: &[usize]) -> PathMetrics {
+        let mut latency_ms = 0.0;
+        let mut throughput_mbps = f64::MAX;
+        for pair in path.windows(2) {
+            if let Some(link) = self.link_between(pair[0], pair[1]) {
+                latency_ms += link.latency_ms;
+                throughput_mbps = throughput_mbps.min(link.throughput_mbps);
+            }
+        }
+        PathMetrics {
+            latency_ms,
+            throughput_mbps: if throughput_mbps.is_finite() {
+                throughput_mbps
+            } else {
+                0.0
+            },
+        }
+    }
+
+    fn link_between(&self, a: usize, b: usize) -> Option<&LinkSpec> {
+        self.nodes[a]
+            .neighbors
+            .iter()
+            .find(|link| link.neighbor == b)
+    }
+
+    fn path_edges_exist(&self, path: &[usize]) -> bool {
+        path.windows(2)
+            .all(|pair| self.link_between(pair[0], pair[1]).is_some())
+    }
+
+    fn path_stream_survives(&self, path: &[usize], rng: &mut StdRng) -> bool {
+        let chunks = stream_packet_count(self.config.stream_size_bytes).max(1);
+        let trials = (chunks as f64).sqrt().min(32.0);
+        for node in path.iter().skip(1).take(path.len().saturating_sub(2)) {
+            match self.nodes[*node].forward {
+                ForwardBehavior::Honest => {}
+                ForwardBehavior::Blackhole => return false,
+                ForwardBehavior::Flaky { drop_probability } => {
+                    let stream_drop_probability =
+                        1.0 - (1.0 - drop_probability.clamp(0.0, 1.0)).powf(trials);
+                    if rng.random::<f64>() < stream_drop_probability {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     fn simulate_reply_learned_probe(
@@ -1114,7 +1733,8 @@ impl Simulation {
                 .checked_sub(2)
                 .and_then(|index| path.get(index))
                 .copied();
-            for &(neighbor, _) in &self.nodes[current].neighbors {
+            for link in &self.nodes[current].neighbors {
+                let neighbor = link.neighbor;
                 if Some(neighbor) == previous {
                     continue;
                 }
@@ -1364,6 +1984,103 @@ struct RouteProbeAttempt {
     transmissions: usize,
 }
 
+#[derive(Debug, Default)]
+struct StreamLearningState {
+    route_cache: HashMap<(usize, usize), Vec<RoutedPath>>,
+    reputation: PeerReputation,
+}
+
+#[derive(Debug, Default)]
+struct PeerReputation {
+    scores: HashMap<(usize, usize), PeerScore>,
+}
+
+impl PeerReputation {
+    fn score(&self, local: usize, peer: usize) -> f64 {
+        self.scores
+            .get(&(local, peer))
+            .map(|score| score.value)
+            .unwrap_or(1.0)
+    }
+
+    fn has_score(&self, local: usize, peer: usize) -> bool {
+        self.scores.contains_key(&(local, peer))
+    }
+
+    fn len(&self) -> usize {
+        self.scores.len()
+    }
+
+    fn update_success(&mut self, path: &[usize], metrics: PathMetrics) {
+        let sample = scheduler_weight(metrics, 1.0).clamp(0.20, 8.0);
+        for pair in path.windows(2) {
+            let score = self.scores.entry((pair[0], pair[1])).or_default();
+            score.successes += 1;
+            score.value = ewma(score.value, sample, 0.25).clamp(0.10, 10.0);
+        }
+    }
+
+    fn update_failure(&mut self, path: &[usize]) {
+        for pair in path.windows(2) {
+            let score = self.scores.entry((pair[0], pair[1])).or_default();
+            score.failures += 1;
+            score.value = (score.value * 0.65).clamp(0.05, 10.0);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PeerScore {
+    value: f64,
+    successes: usize,
+    failures: usize,
+}
+
+impl Default for PeerScore {
+    fn default() -> Self {
+        Self {
+            value: 1.0,
+            successes: 0,
+            failures: 0,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StreamAttempt {
+    completed: bool,
+    route_count: usize,
+    latency_ms: f64,
+    completion_ms: f64,
+    throughput_mbps: f64,
+    discovery_flood: bool,
+    learned_route_use: bool,
+    peer_reputation_uses: usize,
+    transmissions: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PathMetrics {
+    latency_ms: f64,
+    throughput_mbps: f64,
+}
+
+#[derive(Debug, Default)]
+struct StreamDiscovery {
+    paths: Vec<RoutedPath>,
+    transmissions: usize,
+    peer_reputation_uses: usize,
+}
+
+#[derive(Debug)]
+struct StreamSchedule {
+    route_count: usize,
+    latency_ms: f64,
+    completion_ms: f64,
+    throughput_mbps: f64,
+    transmissions: usize,
+}
+
 #[derive(Debug)]
 enum RouteResult {
     Delivered {
@@ -1409,6 +2126,57 @@ fn invalidate_path(learned_routes: &mut LearnedRouteTable, path: &[usize], dst: 
             learned_routes.remove(&(pair[0], dst));
         }
     }
+}
+
+fn dedupe_paths(paths: Vec<RoutedPath>) -> Vec<RoutedPath> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for path in paths {
+        if seen.insert(path.nodes.clone()) {
+            deduped.push(path);
+        }
+    }
+    deduped
+}
+
+fn scheduler_weight(metrics: PathMetrics, peer_score: f64) -> f64 {
+    if metrics.throughput_mbps <= 0.0 {
+        return 0.0;
+    }
+    metrics.throughput_mbps * peer_score.max(0.05) / (1.0 + metrics.latency_ms / 100.0)
+}
+
+fn transfer_time_ms(bytes: f64, throughput_mbps: f64) -> f64 {
+    if throughput_mbps <= 0.0 {
+        return f64::MAX;
+    }
+    bytes * 8.0 / (throughput_mbps * 1_000.0)
+}
+
+fn stream_packet_count(bytes: usize) -> usize {
+    const STREAM_CHUNK_BYTES: usize = 64 * 1024;
+    bytes.div_ceil(STREAM_CHUNK_BYTES).max(1)
+}
+
+fn average_f64(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
+}
+
+fn percentile_f64(sorted: &[f64], percentile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let p = percentile.clamp(0.0, 1.0);
+    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[idx]
+}
+
+fn ewma(old: f64, sample: f64, alpha: f64) -> f64 {
+    old * (1.0 - alpha) + sample * alpha
 }
 
 fn assign_identity_behaviors(n: usize, adversary: AdversaryConfig) -> Vec<IdentityBehavior> {
@@ -1536,6 +2304,17 @@ fn strategy_seed(strategy: RoutingStrategy) -> u64 {
         RoutingStrategy::VerifiedAncestry => 0xF1F5_0002,
         RoutingStrategy::PinnedRoot => 0xF1F5_0003,
         RoutingStrategy::ReplyLearnedFlood => 0xF1F5_0004,
+        RoutingStrategy::ReplyLearnedMultipath => 0xF1F5_0005,
+    }
+}
+
+fn stream_seed(strategy: RoutingStrategy) -> u64 {
+    match strategy {
+        RoutingStrategy::CurrentFips => 0xF1F5_1001,
+        RoutingStrategy::VerifiedAncestry => 0xF1F5_1002,
+        RoutingStrategy::PinnedRoot => 0xF1F5_1003,
+        RoutingStrategy::ReplyLearnedFlood => 0xF1F5_1004,
+        RoutingStrategy::ReplyLearnedMultipath => 0xF1F5_1005,
     }
 }
 
@@ -1706,6 +2485,57 @@ mod tests {
         assert!(
             reply_learned.routing.avg_transmissions_per_probe > reply_learned.routing.avg_hops,
             "flood discovery should expose bandwidth cost beyond route hop count"
+        );
+    }
+
+    #[test]
+    fn multipath_streams_use_reputation_and_improve_throughput() {
+        let config = SimConfig {
+            node_count: 70,
+            target_edges: 180,
+            route_probe_count: 300,
+            stream_probe_count: 90,
+            stream_size_bytes: 32 * 1024 * 1024,
+            max_multipath_routes: 3,
+            seed: 52,
+            adversary: AdversaryConfig {
+                root_grinder_fraction: 0.03,
+                phantom_root_fraction: 0.05,
+                blackhole_fraction: 0.04,
+                flaky_fraction: 0.04,
+                flaky_drop_probability: 0.20,
+            },
+            strategies: vec![
+                RoutingStrategy::ReplyLearnedFlood,
+                RoutingStrategy::ReplyLearnedMultipath,
+            ],
+            ..SimConfig::default()
+        };
+
+        let report = Simulation::new(config).run();
+        let single = report_for(&report, RoutingStrategy::ReplyLearnedFlood);
+        let multipath = report_for(&report, RoutingStrategy::ReplyLearnedMultipath);
+
+        assert_eq!(multipath.streams.stream_size_bytes, 32 * 1024 * 1024);
+        assert!(
+            multipath.streams.multi_route_streams > 0,
+            "multipath strategy should schedule some streams over multiple routes"
+        );
+        assert!(
+            multipath.streams.avg_routes_per_stream > single.streams.avg_routes_per_stream,
+            "multipath should use more routes per completed stream"
+        );
+        assert!(
+            multipath.streams.peer_reputation_entries > 0,
+            "confirmed stream paths should build peer reputation"
+        );
+        assert!(
+            multipath.streams.peer_reputation_uses > 0,
+            "route discovery should consult peer reputation"
+        );
+        assert!(
+            multipath.streams.avg_throughput_mbps >= single.streams.avg_throughput_mbps,
+            "bandwidth scheduling should not underperform single-route streams"
         );
     }
 }

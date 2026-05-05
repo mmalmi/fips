@@ -18,24 +18,27 @@ tradeoff:
 - **Possible false positives** — if the filter says "present," the
   element is *probably* in the set, but might not be
 
-This makes bloom filters well-suited for routing: a definitive "no"
-eliminates a peer from consideration, while a "maybe" simply means the
-peer is worth checking. The false positive rate is controlled by the
-filter size and number of hash functions relative to the number of
-entries.
+This makes bloom filters useful for candidate selection, not for trusted
+routing authority. For a well-formed filter, a definitive "no" eliminates
+that advertised peer/filter from consideration, while a "maybe" means the
+peer is worth probing. An adversarial or broken peer can still lie, omit
+entries, or advertise garbage, so forwarding must validate progress through
+actual replies, proofs, path errors, and measured behavior.
 
 ## Purpose
 
-Each node maintains bloom filters summarizing which destinations are
-reachable through each of its peers. When forwarding a packet, a node
-checks its peers' filters to identify potential routing paths — typically
-up or down the spanning tree, unless a mesh peer provides a shortcut
-directly to the destination. The actual forwarding decision is made by
-tree coordinate distance ranking.
+Each node maintains bloom filters summarizing which destinations each peer
+advertises as possible candidates. When forwarding a packet, a node checks
+its peers' filters to identify potential routing paths — typically up or
+down the spanning tree, unless a mesh peer provides a shortcut directly to
+the destination. The actual forwarding decision is made by tree coordinate
+distance ranking and should be corrected by delivery/reply feedback.
 
-Bloom filters answer a single question: "can peer P possibly reach
-destination D?" The answer is either "no" (definitive) or "maybe"
-(probabilistic — false positives are possible, false negatives are not).
+Bloom filters answer a narrow local question: "does peer P's latest
+advertised filter include destination D?" For an honest, well-formed filter,
+the answer is either "no" or "maybe" (probabilistic — false positives are
+possible, false negatives are not). This is not a cryptographic statement
+that P can deliver traffic.
 
 ## Filter Parameters
 
@@ -125,8 +128,8 @@ but downward filters grow proportionally with N.
 ## Per-Peer Filter Model
 
 Each node maintains a separate outbound filter for each peer. The filter
-for peer Q answers: "which destinations are reachable through me (but not
-through Q itself)?"
+for peer Q advertises: "which destinations I believe may be reachable
+through me (but not through Q itself)?"
 
 ### Filter Computation
 
@@ -183,6 +186,33 @@ For a node with tree peers A, B and mesh peer C:
 | A | Self + B's filter (tree-only merge, excluding A) |
 | B | Self + A's filter (tree-only merge, excluding B) |
 | C | Self + A's filter + B's filter (tree-only merge, C excluded as non-tree) |
+
+## Observed-Through-Peer Filters
+
+In addition to advertised reachability filters, an implementation may keep
+local-only filters of identities that have recently sent traffic through each
+peer. These filters are not gossiped and are not routing authority. They are
+a cheap memory of observed bidirectional usefulness:
+
+- When a valid message, proof, reply, or stream chunk arrives through peer P,
+  insert the source identity or routing identity into P's observed filter.
+- When choosing among candidate peers, treat an observed-filter hit as a
+  positive prior, then combine it with measured delivery success, latency,
+  loss, throughput, MTU, and freshness.
+- Never use an observed-filter hit as proof that P can still route to that
+  identity. False positives and stale entries should only cause extra probes,
+  not exclusive route selection.
+- Use epoch rotation or a stable/counting bloom design so old observations
+  decay. A peer that was useful yesterday should not permanently dominate
+  route choice.
+
+This is distinct from the transitive FilterAnnounce mechanism. Advertised
+filters answer "who does this peer's untrusted routing advertisement include?"
+Observed-through-peer filters answer "whose traffic have we personally seen
+arrive through this peer recently?" The second signal is especially useful
+for reply-learned routing and multipath scheduling, where peers that have
+efficiently carried traffic for one identity are more likely to be good
+first-hop candidates for nearby or related future traffic.
 
 ## Filter Propagation
 
@@ -349,6 +379,7 @@ positions that folding produces.
 | 500ms rate limiting | **Implemented** |
 | FilterAnnounce gossip (all peers) | **Implemented** |
 | Filter cardinality logging | **Implemented** |
+| Observed-through-peer local filters | Future direction |
 | Size class negotiation | Future direction |
 | Folding support | Future direction |
 | Adaptive filter sizing | Future direction |
