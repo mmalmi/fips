@@ -1012,6 +1012,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fips-sim"
+version = "0.3.0-dev"
+dependencies = [
+ "fips-core",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

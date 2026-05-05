@@ -1,0 +1,50 @@
+use fips_sim::{AdversaryConfig, RoutingStrategy, SimConfig, Simulation};
+
+fn main() {
+    let config = SimConfig {
+        node_count: 100,
+        target_edges: 240,
+        route_probe_count: 1_000,
+        seed: 42,
+        adversary: AdversaryConfig {
+            root_grinder_fraction: 0.03,
+            phantom_root_fraction: 0.05,
+            blackhole_fraction: 0.08,
+            flaky_fraction: 0.05,
+            flaky_drop_probability: 0.30,
+        },
+        strategies: vec![
+            RoutingStrategy::CurrentFips,
+            RoutingStrategy::VerifiedAncestry,
+            RoutingStrategy::PinnedRoot,
+        ],
+        ..SimConfig::default()
+    };
+
+    let report = Simulation::new(config).run();
+
+    println!(
+        "strategy,success,root_capture,mal_parent,fake_root,mal_root,blackhole,flaky,no_route,loops,p95_hops"
+    );
+    for strategy in &report.strategies {
+        println!(
+            "{},{:.3},{:.3},{:.3},{},{},{},{},{},{},{}",
+            strategy.strategy_label,
+            strategy.routing.success_rate,
+            strategy.tree.root_capture_rate,
+            strategy.tree.malicious_parent_rate,
+            strategy.tree.honest_on_fake_root,
+            strategy.tree.honest_on_malicious_root,
+            strategy.routing.dropped_by_blackhole,
+            strategy.routing.dropped_by_flaky,
+            strategy.routing.no_route,
+            strategy.routing.loops,
+            strategy.routing.p95_hops,
+        );
+    }
+
+    println!(
+        "\n{}",
+        serde_json::to_string_pretty(&report).expect("report serializes")
+    );
+}
