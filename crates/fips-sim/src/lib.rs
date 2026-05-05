@@ -1,79 +1,56 @@
-//! Fast simulation tools for FIPS tree and routing strategy evaluation.
+//! Production-backed simulation tools for FIPS routing evaluation.
 //!
-//! The simulator is intentionally smaller than the Docker chaos harness. It
-//! models the FIPS spanning-tree coordinate rule and greedy forwarding rule
-//! directly so strategy sweeps can compare behavior under honest,
-//! malicious, and misbehaving peers without live transports.
+//! `fips-sim` starts real `FipsEndpoint` nodes and runs them over the
+//! in-memory `sim` transport from `fips-core`. The simulator controls topology,
+//! latency, bandwidth, packet loss, blackhole/flaky peers, and churn while the
+//! actual FIPS handshake, tree, discovery, session, and forwarding code handles
+//! routing.
 
-use fips_core::NodeAddr;
+use fips_core::config::{PeerConfig, SimTransportConfig, TransportInstances};
+use fips_core::{
+    Config, FipsEndpoint, FipsEndpointError, Identity, IdentityConfig, SimLink, SimNetwork,
+    SimNetworkStats, SimNodeBehavior, register_sim_network, unregister_sim_network,
+};
 use rand::rngs::StdRng;
-use rand::{RngExt, SeedableRng};
+use rand::{Rng, RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
+use std::time::{Duration, Instant};
 
-/// Parent/routing strategy under test.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Topology generator used by the production simulation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RoutingStrategy {
-    /// Current FIPS v1 behavior: smallest visible root, transitive ancestry
-    /// trust, then effective-depth parent selection.
-    CurrentFips,
-    /// Proposed hardening model: accept the same FIPS coordinate shape, but
-    /// require every ancestry hop to be a real node linked by a real edge.
-    /// This approximates a future link-attested ancestry chain.
-    VerifiedAncestry,
-    /// Private-mesh / allowlisted-root model: only follow the configured root.
-    /// The simulator pins this to the smallest honest endpoint in the run.
-    PinnedRoot,
-    /// Discovery/data flood model: first contact floods to all peers, then
-    /// caches next hops only after a reply/proof returns on the reverse path.
-    /// This is closer to Reticulum's discover/cache/revalidate pattern than
-    /// to FIPS tree-coordinate routing.
-    ReplyLearnedFlood,
-    /// Reply-learned model for large transfers: maintain route quality and
-    /// peer reputation, then split streams across multiple confirmed routes.
-    ReplyLearnedMultipath,
+pub enum TopologyProfile {
+    /// Regional mesh with a small set of stronger backbone links.
+    Standard,
+    /// Uniform random mesh with less structured link quality.
+    RandomMesh,
 }
 
-impl RoutingStrategy {
-    fn label(self) -> &'static str {
-        match self {
-            RoutingStrategy::CurrentFips => "current_fips",
-            RoutingStrategy::VerifiedAncestry => "verified_ancestry",
-            RoutingStrategy::PinnedRoot => "pinned_root",
-            RoutingStrategy::ReplyLearnedFlood => "reply_learned_flood",
-            RoutingStrategy::ReplyLearnedMultipath => "reply_learned_multipath",
-        }
-    }
-}
-
-/// Adversarial and misbehavior mix for a simulation.
+/// Misbehaving peer and churn mix.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct AdversaryConfig {
-    /// Fraction of nodes with honestly advertised but ground-low node_addr.
-    ///
-    /// This models identity grinding against "smallest node_addr wins".
-    pub root_grinder_fraction: f64,
-    /// Fraction of nodes that advertise a phantom all-zero root in their
-    /// ancestry. Current FIPS v1 accepts this from an authenticated direct
-    /// peer because non-direct ancestry is transitively trusted.
-    pub phantom_root_fraction: f64,
-    /// Fraction of nodes that drop all transit traffic.
+    /// Fraction of nodes that blackhole egress after the clean baseline phase.
     pub blackhole_fraction: f64,
-    /// Fraction of nodes that probabilistically drop transit traffic.
+    /// Fraction of nodes that probabilistically drop egress after baseline.
     pub flaky_fraction: f64,
-    /// Drop probability for flaky nodes.
+    /// Drop probability used by flaky nodes.
     pub flaky_drop_probability: f64,
+    /// Fraction of nodes marked down after baseline.
+    pub churned_node_fraction: f64,
+    /// Fraction of links marked down after baseline.
+    pub churned_link_fraction: f64,
 }
 
 impl Default for AdversaryConfig {
     fn default() -> Self {
         Self {
-            root_grinder_fraction: 0.0,
-            phantom_root_fraction: 0.0,
-            blackhole_fraction: 0.0,
-            flaky_fraction: 0.0,
-            flaky_drop_probability: 0.25,
+            blackhole_fraction: 0.06,
+            flaky_fraction: 0.06,
+            flaky_drop_probability: 0.30,
+            churned_node_fraction: 0.04,
+            churned_link_fraction: 0.05,
         }
     }
 }
@@ -81,83 +58,65 @@ impl Default for AdversaryConfig {
 /// Simulation configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimConfig {
-    /// Number of simulated nodes.
+    /// Number of production FIPS nodes to start.
     pub node_count: usize,
-    /// Number of undirected topology edges. A random spanning tree is created
-    /// first, then extra edges are added up to this target.
+    /// Target number of undirected topology edges.
     pub target_edges: usize,
-    /// Number of honest-endpoint route probes per strategy.
+    /// Endpoint-data probes per phase.
     pub route_probe_count: usize,
-    /// Number of large stream transfers per strategy.
+    /// Chunked stream transfers per phase.
     pub stream_probe_count: usize,
-    /// Bytes per simulated large stream transfer.
+    /// Bytes per stream transfer.
     pub stream_size_bytes: usize,
-    /// Maximum confirmed routes a multipath stream may use.
-    pub max_multipath_routes: usize,
-    /// Random seed for reproducible topology, roles, and probes.
+    /// Endpoint payload bytes per stream chunk.
+    pub chunk_size_bytes: usize,
+    /// Random seed for topology, identities, roles, and traffic pairs.
     pub seed: u64,
-    /// Maximum synchronous convergence rounds.
-    pub max_convergence_rounds: usize,
-    /// Random extra cost added to each link in `[0, link_cost_jitter]`.
-    pub link_cost_jitter: f64,
-    /// Attack and misbehavior mix.
+    /// Initial settling time before clean traffic starts.
+    pub convergence_wait_ms: u64,
+    /// Settling time after impairments are applied.
+    pub reconvergence_wait_ms: u64,
+    /// Per-probe delivery timeout.
+    pub delivery_timeout_ms: u64,
+    /// Per-stream delivery timeout.
+    pub stream_timeout_ms: u64,
+    /// Topology shape.
+    pub topology: TopologyProfile,
+    /// Misbehavior and churn mix applied after the clean baseline phase.
     pub adversary: AdversaryConfig,
-    /// Strategies to compare. Empty means all built-in strategies.
-    pub strategies: Vec<RoutingStrategy>,
 }
 
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            node_count: 80,
-            target_edges: 180,
-            route_probe_count: 500,
-            stream_probe_count: 120,
-            stream_size_bytes: 64 * 1024 * 1024,
-            max_multipath_routes: 3,
+            node_count: 64,
+            target_edges: 160,
+            route_probe_count: 32,
+            stream_probe_count: 8,
+            stream_size_bytes: 256 * 1024,
+            chunk_size_bytes: 1024,
             seed: 42,
-            max_convergence_rounds: 64,
-            link_cost_jitter: 0.25,
+            convergence_wait_ms: 2_500,
+            reconvergence_wait_ms: 1_500,
+            delivery_timeout_ms: 4_000,
+            stream_timeout_ms: 8_000,
+            topology: TopologyProfile::Standard,
             adversary: AdversaryConfig::default(),
-            strategies: vec![
-                RoutingStrategy::CurrentFips,
-                RoutingStrategy::VerifiedAncestry,
-                RoutingStrategy::PinnedRoot,
-                RoutingStrategy::ReplyLearnedFlood,
-                RoutingStrategy::ReplyLearnedMultipath,
-            ],
         }
     }
 }
 
-/// Whole comparison output for one shared topology.
+/// Whole simulation report.
 #[derive(Debug, Clone, Serialize)]
-pub struct ComparisonReport {
+pub struct ProductionSimReport {
     pub config: SimConfig,
     pub topology: TopologyStats,
-    pub pinned_root: String,
     pub behavior_counts: BTreeMap<String, usize>,
-    pub strategies: Vec<StrategyReport>,
+    pub baseline: PhaseReport,
+    pub impaired: PhaseReport,
 }
 
-/// Per-strategy output.
-#[derive(Debug, Clone, Serialize)]
-pub struct StrategyReport {
-    pub strategy: RoutingStrategy,
-    pub strategy_label: &'static str,
-    pub convergence_rounds: usize,
-    pub converged: bool,
-    pub tree: TreeStats,
-    pub routing: RoutingStats,
-    /// FIPS-native stream behavior where the routing layer can schedule chunks
-    /// across multiple routes.
-    pub streams: StreamStats,
-    /// TCP-over-FIPS behavior where route changes and packet reordering are
-    /// penalized like they would be for an ordinary TCP flow.
-    pub tcp_streams: StreamStats,
-}
-
-/// Static topology statistics.
+/// Topology summary.
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyStats {
     pub node_count: usize,
@@ -165,47 +124,40 @@ pub struct TopologyStats {
     pub avg_degree: f64,
     pub min_degree: usize,
     pub max_degree: usize,
+    pub backbone_links: usize,
+    pub regional_links: usize,
+    pub long_haul_links: usize,
+    pub avg_latency_ms: f64,
+    pub avg_loss_probability: f64,
+    pub min_throughput_mbps: f64,
+    pub max_throughput_mbps: f64,
+    pub root_node_addr: String,
 }
 
-/// Tree-state statistics after convergence.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct TreeStats {
-    pub honest_endpoint_count: usize,
-    pub honest_on_fake_root: usize,
-    pub honest_on_malicious_root: usize,
-    pub honest_with_malicious_parent: usize,
-    pub root_capture_rate: f64,
-    pub malicious_parent_rate: f64,
-    pub avg_honest_depth: f64,
-    pub max_honest_depth: usize,
-    pub distinct_roots: usize,
+/// One traffic phase.
+#[derive(Debug, Clone, Serialize)]
+pub struct PhaseReport {
+    pub label: &'static str,
+    pub route_probes: ProbeStats,
+    pub streams: StreamStats,
+    pub network: SimNetworkStats,
+    pub elapsed_ms: u64,
 }
 
-/// Route-probe statistics.
+/// Endpoint-data probe stats.
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct RoutingStats {
-    pub probes: usize,
+pub struct ProbeStats {
+    pub attempted: usize,
     pub delivered: usize,
-    pub delivered_without_reply: usize,
-    pub no_route: usize,
-    pub loops: usize,
-    pub ttl_expired: usize,
-    pub dropped_by_blackhole: usize,
-    pub dropped_by_flaky: usize,
-    pub reply_failures: usize,
+    pub failed_send: usize,
+    pub timed_out: usize,
     pub success_rate: f64,
-    pub p50_hops: usize,
-    pub p95_hops: usize,
-    pub max_hops: usize,
-    pub avg_hops: f64,
-    pub routes_with_malicious_transit: usize,
-    pub discovery_floods: usize,
-    pub learned_route_attempts: usize,
-    pub transmissions: usize,
-    pub avg_transmissions_per_probe: f64,
+    pub avg_latency_ms: f64,
+    pub p50_latency_ms: f64,
+    pub p95_latency_ms: f64,
 }
 
-/// Large stream-transfer statistics.
+/// Chunked endpoint stream stats.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct StreamStats {
     pub streams: usize,
@@ -213,2320 +165,834 @@ pub struct StreamStats {
     pub failed: usize,
     pub success_rate: f64,
     pub stream_size_bytes: usize,
-    pub single_route_streams: usize,
-    pub multi_route_streams: usize,
-    pub avg_routes_per_stream: f64,
-    pub avg_standby_routes_per_stream: f64,
-    pub failover_streams: usize,
-    pub adaptive_route_improvements: usize,
-    pub adaptive_route_rejections: usize,
-    pub avg_latency_ms: f64,
-    pub p95_latency_ms: f64,
+    pub chunk_size_bytes: usize,
+    pub chunks_sent: usize,
+    pub chunks_delivered: usize,
+    pub chunks_lost: usize,
+    pub chunk_loss_rate: f64,
     pub avg_completion_ms: f64,
     pub p95_completion_ms: f64,
     pub avg_throughput_mbps: f64,
     pub p95_throughput_mbps: f64,
-    pub packets_sent: usize,
-    pub packets_delivered: usize,
-    pub packets_lost: usize,
-    pub packet_loss_rate: f64,
-    pub discovery_floods: usize,
-    pub learned_route_uses: usize,
-    pub peer_reputation_uses: usize,
-    pub peer_reputation_entries: usize,
-    pub transmissions: usize,
-    pub avg_transmissions_per_stream: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IdentityBehavior {
-    Honest,
-    RootGrinder,
-    PhantomRoot,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ForwardBehavior {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeRole {
     Honest,
     Blackhole,
-    Flaky { drop_probability: f64 },
+    Flaky,
+    Churned,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamMode {
-    NativeFips,
-    TcpOverFips,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkClass {
+    Backbone,
+    Regional,
+    LongHaul,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct StreamRoutePlan {
-    active_route_limit: usize,
-    candidate_route_limit: usize,
-    mode: StreamMode,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct NodeSpec {
-    addr: NodeAddr,
-    identity: IdentityBehavior,
-    forward: ForwardBehavior,
-    neighbors: Vec<LinkSpec>,
+    index: usize,
+    secret_hex: String,
+    npub: String,
+    node_addr: fips_core::NodeAddr,
+    sim_addr: String,
+    role: NodeRole,
+    region: usize,
+    backbone: bool,
 }
 
-#[derive(Debug, Clone)]
-struct LinkSpec {
-    neighbor: usize,
-    cost: f64,
-    latency_ms: f64,
-    throughput_mbps: f64,
-    loss_probability: f64,
+#[derive(Clone)]
+struct EdgeSpec {
+    a: usize,
+    b: usize,
+    link: SimLink,
+    class: LinkClass,
+    churned: bool,
 }
 
-impl NodeSpec {
-    fn is_honest_endpoint(&self) -> bool {
-        self.identity == IdentityBehavior::Honest && self.forward == ForwardBehavior::Honest
-    }
-
-    fn is_malicious_or_misbehaving(&self) -> bool {
-        self.identity != IdentityBehavior::Honest || self.forward != ForwardBehavior::Honest
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NodeState {
-    parent: Option<usize>,
-    root: NodeAddr,
-    coord: Vec<NodeAddr>,
-}
-
-#[derive(Debug, Clone)]
-struct Advertisement {
-    from: usize,
-    parent_addr: NodeAddr,
-    root: NodeAddr,
-    coord: Vec<NodeAddr>,
-}
-
-#[derive(Debug, Clone)]
-struct StrategyRun {
-    states: Vec<NodeState>,
-    views: Vec<HashMap<usize, Vec<NodeAddr>>>,
-    convergence_rounds: usize,
-    converged: bool,
-}
-
-/// In-process FIPS strategy simulator.
-#[derive(Debug, Clone)]
+/// Production-backed FIPS simulator.
 pub struct Simulation {
     config: SimConfig,
     nodes: Vec<NodeSpec>,
-    edges: Vec<(usize, usize)>,
-    addr_to_index: HashMap<NodeAddr, usize>,
-    pinned_root: NodeAddr,
+    edges: Vec<EdgeSpec>,
+    adjacency: HashMap<usize, Vec<usize>>,
+    network_id: String,
 }
 
 impl Simulation {
-    /// Build a deterministic topology and behavior assignment.
+    /// Build a deterministic production simulation.
     pub fn new(config: SimConfig) -> Self {
-        assert!(config.node_count > 0, "node_count must be > 0");
+        assert!(config.node_count >= 2, "node_count must be at least 2");
+        assert!(
+            config.chunk_size_bytes > 64,
+            "chunk_size_bytes must leave room for simulator headers"
+        );
+
         let mut rng = StdRng::seed_from_u64(config.seed);
-
-        let identity_behaviors = assign_identity_behaviors(config.node_count, config.adversary);
-        let forward_behaviors = assign_forward_behaviors(config.node_count, config.adversary);
-
+        let roles = assign_roles(config.node_count, config.adversary, &mut rng);
+        let backbone_nodes = choose_backbone_nodes(config.node_count, &mut rng);
         let mut nodes = Vec::with_capacity(config.node_count);
-        for index in 0..config.node_count {
-            let addr = match identity_behaviors[index] {
-                IdentityBehavior::RootGrinder => addr_from_rank((index + 1) as u128),
-                IdentityBehavior::Honest | IdentityBehavior::PhantomRoot => {
-                    addr_from_rank(1_000_000 + index as u128)
-                }
-            };
+
+        for (index, role) in roles.iter().copied().enumerate().take(config.node_count) {
+            let (identity, secret_hex) = deterministic_identity(config.seed, index);
             nodes.push(NodeSpec {
-                addr,
-                identity: identity_behaviors[index],
-                forward: forward_behaviors[index],
-                neighbors: Vec::new(),
+                index,
+                secret_hex,
+                npub: identity.npub(),
+                node_addr: *identity.node_addr(),
+                sim_addr: format!("node-{index}"),
+                role,
+                region: index % 4,
+                backbone: backbone_nodes.contains(&index),
             });
         }
 
-        let edges = generate_connected_edges(config.node_count, config.target_edges, &mut rng);
-        for &(a, b) in &edges {
-            let cost = 1.0 + rng.random::<f64>() * config.link_cost_jitter.max(0.0);
-            let latency_ms = 2.0 + rng.random::<f64>() * 48.0;
-            let throughput_mbps = 10.0 + rng.random::<f64>().powf(1.7) * 990.0;
-            let loss_probability = rng.random::<f64>().powf(2.0) * 0.015;
-            let link_ab = LinkSpec {
-                neighbor: b,
-                cost,
-                latency_ms,
-                throughput_mbps,
-                loss_probability,
-            };
-            let link_ba = LinkSpec {
-                neighbor: a,
-                cost,
-                latency_ms,
-                throughput_mbps,
-                loss_probability,
-            };
-            nodes[a].neighbors.push(link_ab);
-            nodes[b].neighbors.push(link_ba);
-        }
-
-        let addr_to_index = nodes
-            .iter()
-            .enumerate()
-            .map(|(idx, node)| (node.addr, idx))
-            .collect::<HashMap<_, _>>();
-
-        let pinned_root = nodes
-            .iter()
-            .filter(|node| node.is_honest_endpoint())
-            .map(|node| node.addr)
-            .min()
-            .or_else(|| nodes.iter().map(|node| node.addr).min())
-            .expect("non-empty node set");
+        let mut edges = generate_edges(&config, &nodes, &mut rng);
+        mark_churned_links(&mut edges, config.adversary.churned_link_fraction, &mut rng);
+        let adjacency = build_adjacency(config.node_count, &edges);
+        let network_id = format!("fips-sim-{}-{}", config.seed, rand::random::<u64>());
 
         Self {
             config,
             nodes,
             edges,
-            addr_to_index,
-            pinned_root,
+            adjacency,
+            network_id,
         }
     }
 
-    /// Run all configured strategies against the same generated scenario.
-    pub fn run(&self) -> ComparisonReport {
-        let strategies = if self.config.strategies.is_empty() {
-            vec![
-                RoutingStrategy::CurrentFips,
-                RoutingStrategy::VerifiedAncestry,
-                RoutingStrategy::PinnedRoot,
-                RoutingStrategy::ReplyLearnedFlood,
-                RoutingStrategy::ReplyLearnedMultipath,
-            ]
-        } else {
-            self.config.strategies.clone()
+    /// Run the clean baseline phase, apply impairments, then run the impaired
+    /// phase. All traffic uses real FIPS endpoint data over the production
+    /// session and forwarding stack.
+    pub async fn run(&self) -> Result<ProductionSimReport, SimError> {
+        let network = SimNetwork::new(self.config.seed ^ 0x51_4d_4e_45_54);
+        for edge in &self.edges {
+            network.set_link(
+                self.nodes[edge.a].sim_addr.clone(),
+                self.nodes[edge.b].sim_addr.clone(),
+                edge.link,
+            );
+        }
+        register_sim_network(self.network_id.clone(), network.clone());
+
+        let mut endpoints = match self.start_endpoints().await {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                unregister_sim_network(&self.network_id);
+                return Err(error);
+            }
         };
 
-        let reports = strategies
-            .into_iter()
-            .map(|strategy| self.run_strategy(strategy))
-            .collect();
+        tokio::time::sleep(Duration::from_millis(self.config.convergence_wait_ms)).await;
+        let baseline = self.run_phase("baseline", &endpoints, &network, 0).await;
 
-        ComparisonReport {
+        self.apply_impairments(&network);
+        tokio::time::sleep(Duration::from_millis(self.config.reconvergence_wait_ms)).await;
+        let impaired = self.run_phase("impaired", &endpoints, &network, 1).await;
+
+        let mut shutdown_error = None;
+        while let Some(endpoint) = endpoints.pop() {
+            if let Err(error) = endpoint.shutdown().await {
+                shutdown_error = Some(error);
+            }
+        }
+        unregister_sim_network(&self.network_id);
+        if let Some(error) = shutdown_error {
+            return Err(error.into());
+        }
+
+        Ok(ProductionSimReport {
             config: self.config.clone(),
             topology: self.topology_stats(),
-            pinned_root: self.pinned_root.to_string(),
             behavior_counts: self.behavior_counts(),
-            strategies: reports,
-        }
+            baseline,
+            impaired,
+        })
     }
 
-    /// Run one strategy against the generated scenario.
-    pub fn run_strategy(&self, strategy: RoutingStrategy) -> StrategyReport {
-        let run = self.converge(strategy);
-        let tree = self.tree_stats(&run.states);
-        let routing = self.routing_stats(&run.states, &run.views, strategy);
-        let streams = self.stream_stats(&run.states, &run.views, strategy, StreamMode::NativeFips);
-        let tcp_streams =
-            self.stream_stats(&run.states, &run.views, strategy, StreamMode::TcpOverFips);
+    /// Convenience JSON report.
+    pub async fn report_json(&self) -> Result<serde_json::Value, SimError> {
+        Ok(serde_json::to_value(self.run().await?).expect("simulation report serializes"))
+    }
 
-        StrategyReport {
-            strategy,
-            strategy_label: strategy.label(),
-            convergence_rounds: run.convergence_rounds,
-            converged: run.converged,
-            tree,
-            routing,
+    async fn start_endpoints(&self) -> Result<Vec<FipsEndpoint>, SimError> {
+        let mut endpoints = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            match FipsEndpoint::builder()
+                .config(self.node_config(node))
+                .without_system_tun()
+                .packet_channel_capacity(8192)
+                .bind()
+                .await
+            {
+                Ok(endpoint) => endpoints.push(endpoint),
+                Err(error) => {
+                    while let Some(endpoint) = endpoints.pop() {
+                        let _ = endpoint.shutdown().await;
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(endpoints)
+    }
+
+    fn node_config(&self, node: &NodeSpec) -> Config {
+        let mut config = Config::new();
+        config.node.identity = IdentityConfig {
+            nsec: Some(node.secret_hex.clone()),
+            persistent: false,
+        };
+        config.node.limits.max_connections = self.config.node_count + 32;
+        config.node.limits.max_peers = self.config.node_count + 32;
+        config.node.limits.max_links = self.config.node_count + 32;
+        config.node.limits.max_pending_inbound = self.config.node_count * 16;
+        config.node.rate_limit.handshake_burst = 10_000;
+        config.node.rate_limit.handshake_rate = 10_000.0;
+        config.node.rate_limit.handshake_timeout_secs = 8;
+        config.node.rate_limit.handshake_resend_interval_ms = 100;
+        config.node.rate_limit.handshake_max_resends = 20;
+        config.node.retry.base_interval_secs = 1;
+        config.node.retry.max_retries = 20;
+        config.node.retry.max_backoff_secs = 4;
+        config.node.discovery.attempt_timeouts_secs = vec![1, 1, 2];
+        config.node.discovery.forward_min_interval_secs = 0;
+        config.node.tree.announce_min_interval_ms = 25;
+        config.node.tree.parent_hysteresis = 0.0;
+        config.node.tree.hold_down_secs = 0;
+        config.node.tree.reeval_interval_secs = 1;
+        config.node.heartbeat_interval_secs = 1;
+        config.node.link_dead_timeout_secs = 4;
+        config.tun.enabled = false;
+        config.dns.enabled = false;
+        config.transports.sim = TransportInstances::Single(SimTransportConfig {
+            network: Some(self.network_id.clone()),
+            addr: Some(node.sim_addr.clone()),
+            mtu: Some(1280),
+            auto_connect: Some(false),
+            accept_connections: Some(true),
+        });
+        config.peers = self
+            .adjacency
+            .get(&node.index)
+            .into_iter()
+            .flat_map(|neighbors| neighbors.iter())
+            .map(|neighbor| {
+                let peer = &self.nodes[*neighbor];
+                PeerConfig::new(peer.npub.clone(), "sim", peer.sim_addr.clone())
+                    .with_alias(format!("node-{}", peer.index))
+            })
+            .collect();
+        config
+    }
+
+    async fn run_phase(
+        &self,
+        label: &'static str,
+        endpoints: &[FipsEndpoint],
+        network: &SimNetwork,
+        phase_index: u64,
+    ) -> PhaseReport {
+        let before = network.stats();
+        let start = Instant::now();
+        let route_probes = self.run_route_probes(label, endpoints, phase_index).await;
+        let streams = self.run_streams(label, endpoints, phase_index).await;
+        let network_delta = network.stats().delta_since(&before);
+
+        PhaseReport {
+            label,
+            route_probes,
             streams,
-            tcp_streams,
+            network: network_delta,
+            elapsed_ms: start.elapsed().as_millis() as u64,
         }
     }
 
-    /// JSON value for callers that want hashtree-sim style reporting.
-    pub fn report_json(&self) -> serde_json::Value {
-        serde_json::to_value(self.run()).expect("comparison report serializes")
+    async fn run_route_probes(
+        &self,
+        label: &'static str,
+        endpoints: &[FipsEndpoint],
+        phase_index: u64,
+    ) -> ProbeStats {
+        let eligible = self.eligible_endpoint_indices();
+        if eligible.len() < 2 || self.config.route_probe_count == 0 {
+            return ProbeStats::default();
+        }
+
+        let mut rng = StdRng::seed_from_u64(self.config.seed ^ 0x70_52_4f_42_45 ^ phase_index);
+        let mut latencies = Vec::new();
+        let mut failed_send = 0usize;
+        let mut timed_out = 0usize;
+
+        for probe in 0..self.config.route_probe_count {
+            let (src, dst) = pick_pair(&eligible, &mut rng);
+            let payload = fixed_payload(
+                format!("fips-sim|probe|{label}|{probe}|{src}|{dst}|").as_bytes(),
+                192,
+            );
+            let start = Instant::now();
+            match endpoints[src]
+                .send(self.nodes[dst].npub.clone(), payload.clone())
+                .await
+            {
+                Ok(()) => {
+                    let timeout = Duration::from_millis(self.config.delivery_timeout_ms);
+                    if recv_exact(&endpoints[dst], &payload, timeout).await {
+                        latencies.push(start.elapsed().as_secs_f64() * 1000.0);
+                    } else {
+                        timed_out += 1;
+                    }
+                }
+                Err(_) => failed_send += 1,
+            }
+        }
+
+        probe_stats(
+            self.config.route_probe_count,
+            failed_send,
+            timed_out,
+            latencies,
+        )
     }
 
-    fn topology_stats(&self) -> TopologyStats {
-        let degrees = self
+    async fn run_streams(
+        &self,
+        label: &'static str,
+        endpoints: &[FipsEndpoint],
+        phase_index: u64,
+    ) -> StreamStats {
+        let eligible = self.eligible_endpoint_indices();
+        if eligible.len() < 2 || self.config.stream_probe_count == 0 {
+            return StreamStats {
+                stream_size_bytes: self.config.stream_size_bytes,
+                chunk_size_bytes: self.config.chunk_size_bytes,
+                ..StreamStats::default()
+            };
+        }
+
+        let mut rng = StdRng::seed_from_u64(self.config.seed ^ 0x53_54_52_45_41_4d ^ phase_index);
+        let mut completions = Vec::new();
+        let mut throughputs = Vec::new();
+        let mut chunks_sent = 0usize;
+        let mut chunks_delivered = 0usize;
+
+        for stream in 0..self.config.stream_probe_count {
+            let (src, dst) = pick_pair(&eligible, &mut rng);
+            let chunks = make_stream_payloads(
+                label,
+                stream,
+                src,
+                dst,
+                self.config.stream_size_bytes,
+                self.config.chunk_size_bytes,
+            );
+            chunks_sent += chunks.len();
+
+            let start = Instant::now();
+            let mut expected = chunks.iter().cloned().collect::<HashSet<_>>();
+            for chunk in &chunks {
+                let _ = endpoints[src]
+                    .send(self.nodes[dst].npub.clone(), chunk.clone())
+                    .await;
+            }
+
+            let timeout = Duration::from_millis(self.config.stream_timeout_ms);
+            let delivered = recv_payload_set(&endpoints[dst], &mut expected, timeout).await;
+            chunks_delivered += delivered;
+            if expected.is_empty() {
+                let completion_ms = start.elapsed().as_secs_f64() * 1000.0;
+                completions.push(completion_ms);
+                let throughput_mbps =
+                    (self.config.stream_size_bytes as f64 * 8.0) / completion_ms / 1000.0;
+                throughputs.push(throughput_mbps);
+            }
+        }
+
+        let completed = completions.len();
+        let failed = self.config.stream_probe_count.saturating_sub(completed);
+        let chunks_lost = chunks_sent.saturating_sub(chunks_delivered);
+        StreamStats {
+            streams: self.config.stream_probe_count,
+            completed,
+            failed,
+            success_rate: rate(completed, self.config.stream_probe_count),
+            stream_size_bytes: self.config.stream_size_bytes,
+            chunk_size_bytes: self.config.chunk_size_bytes,
+            chunks_sent,
+            chunks_delivered,
+            chunks_lost,
+            chunk_loss_rate: rate(chunks_lost, chunks_sent),
+            avg_completion_ms: mean(&completions),
+            p95_completion_ms: percentile(completions.clone(), 0.95),
+            avg_throughput_mbps: mean(&throughputs),
+            p95_throughput_mbps: percentile(throughputs, 0.95),
+        }
+    }
+
+    fn apply_impairments(&self, network: &SimNetwork) {
+        for node in &self.nodes {
+            match node.role {
+                NodeRole::Honest => {}
+                NodeRole::Blackhole => network.set_node_egress_loss(node.sim_addr.clone(), 1.0),
+                NodeRole::Flaky => network.set_node_egress_loss(
+                    node.sim_addr.clone(),
+                    self.config.adversary.flaky_drop_probability,
+                ),
+                NodeRole::Churned => {
+                    network.set_node_behavior(
+                        node.sim_addr.clone(),
+                        SimNodeBehavior {
+                            up: false,
+                            egress_loss_probability: 0.0,
+                        },
+                    );
+                }
+            }
+        }
+        for edge in &self.edges {
+            if edge.churned {
+                network.set_link_up(
+                    self.nodes[edge.a].sim_addr.clone(),
+                    self.nodes[edge.b].sim_addr.clone(),
+                    false,
+                );
+            }
+        }
+    }
+
+    fn eligible_endpoint_indices(&self) -> Vec<usize> {
+        let honest = self
             .nodes
             .iter()
-            .map(|node| node.neighbors.len())
+            .filter(|node| node.role == NodeRole::Honest)
+            .map(|node| node.index)
             .collect::<Vec<_>>();
-        let node_count = self.nodes.len();
-        let edge_count = self.edges.len();
-        let avg_degree = if node_count == 0 {
-            0.0
+        if honest.len() >= 2 {
+            honest
         } else {
-            (edge_count * 2) as f64 / node_count as f64
-        };
-        TopologyStats {
-            node_count,
-            edge_count,
-            avg_degree,
-            min_degree: degrees.iter().copied().min().unwrap_or(0),
-            max_degree: degrees.iter().copied().max().unwrap_or(0),
+            (0..self.nodes.len()).collect()
         }
     }
 
     fn behavior_counts(&self) -> BTreeMap<String, usize> {
         let mut counts = BTreeMap::new();
         for node in &self.nodes {
-            let identity = match node.identity {
-                IdentityBehavior::Honest => "identity_honest",
-                IdentityBehavior::RootGrinder => "identity_root_grinder",
-                IdentityBehavior::PhantomRoot => "identity_phantom_root",
+            let key = match node.role {
+                NodeRole::Honest => "honest",
+                NodeRole::Blackhole => "blackhole",
+                NodeRole::Flaky => "flaky",
+                NodeRole::Churned => "churned",
             };
-            let forward = match node.forward {
-                ForwardBehavior::Honest => "forward_honest",
-                ForwardBehavior::Blackhole => "forward_blackhole",
-                ForwardBehavior::Flaky { .. } => "forward_flaky",
-            };
-            *counts.entry(identity.to_string()).or_insert(0) += 1;
-            *counts.entry(forward.to_string()).or_insert(0) += 1;
+            *counts.entry(key.to_string()).or_insert(0) += 1;
         }
         counts
     }
 
-    fn initial_states(&self) -> Vec<NodeState> {
-        self.nodes
-            .iter()
-            .map(|node| NodeState {
-                parent: None,
-                root: node.addr,
-                coord: vec![node.addr],
-            })
-            .collect()
-    }
-
-    fn converge(&self, strategy: RoutingStrategy) -> StrategyRun {
-        if matches!(
-            strategy,
-            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath
-        ) {
-            return StrategyRun {
-                states: self.initial_states(),
-                views: vec![HashMap::new(); self.nodes.len()],
-                convergence_rounds: 0,
-                converged: true,
-            };
-        }
-
-        let mut states = self.initial_states();
-        let mut views = vec![HashMap::new(); self.nodes.len()];
-        let mut converged = false;
-        let mut convergence_rounds = 0;
-
-        for round in 0..self.config.max_convergence_rounds {
-            let adverts = self.advertisements(&states);
-            let mut next_states = states.clone();
-            let mut next_views = vec![HashMap::new(); self.nodes.len()];
-
-            for index in 0..self.nodes.len() {
-                let decision = self.choose_parent(strategy, index, &adverts);
-                next_views[index] = decision.accepted_coords;
-                match decision.parent {
-                    Some((parent, parent_coord)) => {
-                        let mut coord = Vec::with_capacity(parent_coord.len() + 1);
-                        coord.push(self.nodes[index].addr);
-                        coord.extend(parent_coord);
-                        let root = *coord.last().expect("coord is non-empty");
-                        next_states[index] = NodeState {
-                            parent: Some(parent),
-                            root,
-                            coord,
-                        };
-                    }
-                    None => {
-                        next_states[index] = NodeState {
-                            parent: None,
-                            root: self.nodes[index].addr,
-                            coord: vec![self.nodes[index].addr],
-                        };
-                    }
-                }
-            }
-
-            convergence_rounds = round + 1;
-            if next_states == states {
-                converged = true;
-                views = next_views;
-                break;
-            }
-            states = next_states;
-            views = next_views;
-        }
-
-        if !converged {
-            let adverts = self.advertisements(&states);
-            views = (0..self.nodes.len())
-                .map(|index| {
-                    self.choose_parent(strategy, index, &adverts)
-                        .accepted_coords
-                })
-                .collect();
-        }
-
-        StrategyRun {
-            states,
-            views,
-            convergence_rounds,
-            converged,
-        }
-    }
-
-    fn advertisements(&self, states: &[NodeState]) -> Vec<Advertisement> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| match node.identity {
-                IdentityBehavior::PhantomRoot => Advertisement {
-                    from: index,
-                    parent_addr: fake_root(),
-                    root: fake_root(),
-                    coord: vec![node.addr, fake_root()],
-                },
-                IdentityBehavior::Honest | IdentityBehavior::RootGrinder => {
-                    let state = &states[index];
-                    Advertisement {
-                        from: index,
-                        parent_addr: state
-                            .parent
-                            .map(|parent| self.nodes[parent].addr)
-                            .unwrap_or(node.addr),
-                        root: state.root,
-                        coord: state.coord.clone(),
-                    }
-                }
-            })
-            .collect()
-    }
-
-    fn choose_parent(
-        &self,
-        strategy: RoutingStrategy,
-        local: usize,
-        adverts: &[Advertisement],
-    ) -> ParentDecision {
-        let mut accepted = HashMap::new();
-        let local_addr = self.nodes[local].addr;
-
-        for link in &self.nodes[local].neighbors {
-            let peer = link.neighbor;
-            let advert = &adverts[peer];
-            if self.accept_advert(strategy, local, advert) {
-                accepted.insert(peer, advert.coord.clone());
-            }
-        }
-
-        let target_root = match strategy {
-            RoutingStrategy::PinnedRoot => {
-                if local_addr == self.pinned_root {
-                    return ParentDecision {
-                        parent: None,
-                        accepted_coords: accepted,
-                    };
-                }
-                self.pinned_root
-            }
-            RoutingStrategy::CurrentFips
-            | RoutingStrategy::VerifiedAncestry
-            | RoutingStrategy::ReplyLearnedFlood
-            | RoutingStrategy::ReplyLearnedMultipath => {
-                let smallest_peer_root = accepted.values().filter_map(|coord| coord.last()).min();
-                let smallest_visible = smallest_peer_root
-                    .copied()
-                    .map(|root| root.min(local_addr))
-                    .unwrap_or(local_addr);
-                if local_addr <= smallest_visible {
-                    return ParentDecision {
-                        parent: None,
-                        accepted_coords: accepted,
-                    };
-                }
-                smallest_visible
-            }
-        };
-
-        let mut best: Option<(usize, Vec<NodeAddr>, f64, NodeAddr)> = None;
-        for link in &self.nodes[local].neighbors {
-            let peer = link.neighbor;
-            let cost = link.cost;
-            let Some(coord) = accepted.get(&peer) else {
-                continue;
-            };
-            if coord.last().copied() != Some(target_root) {
-                continue;
-            }
-            if coord.contains(&local_addr) {
-                continue;
-            }
-
-            let effective_depth = coord.len().saturating_sub(1) as f64 + cost;
-            let peer_addr = self.nodes[peer].addr;
-            let better = match &best {
-                None => true,
-                Some((_, _, best_depth, best_addr)) => {
-                    effective_depth < *best_depth
-                        || (effective_depth == *best_depth && peer_addr < *best_addr)
-                }
-            };
-            if better {
-                best = Some((peer, coord.clone(), effective_depth, peer_addr));
-            }
-        }
-
-        ParentDecision {
-            parent: best.map(|(peer, coord, _, _)| (peer, coord)),
-            accepted_coords: accepted,
-        }
-    }
-
-    fn accept_advert(
-        &self,
-        strategy: RoutingStrategy,
-        _local: usize,
-        advert: &Advertisement,
-    ) -> bool {
-        if !self.structurally_valid_advert(advert) {
-            return false;
-        }
-
-        match strategy {
-            RoutingStrategy::CurrentFips => true,
-            RoutingStrategy::PinnedRoot => advert.root == self.pinned_root,
-            RoutingStrategy::VerifiedAncestry => self.link_attested_ancestry(advert),
-            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath => true,
-        }
-    }
-
-    fn structurally_valid_advert(&self, advert: &Advertisement) -> bool {
-        if advert.coord.is_empty() {
-            return false;
-        }
-        if advert.coord[0] != self.nodes[advert.from].addr {
-            return false;
-        }
-        if advert.coord.last().copied() != Some(advert.root) {
-            return false;
-        }
-        let Some(minimum) = advert.coord.iter().min() else {
-            return false;
-        };
-        if *minimum != advert.root {
-            return false;
-        }
-        if advert.coord.len() == 1 {
-            advert.parent_addr == self.nodes[advert.from].addr
-        } else {
-            advert.coord.get(1).copied() == Some(advert.parent_addr)
-        }
-    }
-
-    fn link_attested_ancestry(&self, advert: &Advertisement) -> bool {
-        let mut seen = HashSet::new();
-        let mut indices = Vec::with_capacity(advert.coord.len());
-        for addr in &advert.coord {
-            if !seen.insert(*addr) {
-                return false;
-            }
-            let Some(index) = self.addr_to_index.get(addr).copied() else {
-                return false;
-            };
-            indices.push(index);
-        }
-
-        for pair in indices.windows(2) {
-            if !self.has_edge(pair[0], pair[1]) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn has_edge(&self, a: usize, b: usize) -> bool {
-        self.nodes[a]
-            .neighbors
-            .iter()
-            .any(|link| link.neighbor == b)
-    }
-
-    fn tree_stats(&self, states: &[NodeState]) -> TreeStats {
-        let mut stats = TreeStats::default();
-        let mut total_depth = 0usize;
-        let mut roots = HashSet::new();
-
-        for (index, node) in self.nodes.iter().enumerate() {
-            roots.insert(states[index].root);
-            if !node.is_honest_endpoint() {
-                continue;
-            }
-
-            stats.honest_endpoint_count += 1;
-            total_depth += states[index].coord.len().saturating_sub(1);
-            stats.max_honest_depth = stats
-                .max_honest_depth
-                .max(states[index].coord.len().saturating_sub(1));
-
-            match self.addr_to_index.get(&states[index].root).copied() {
-                None => stats.honest_on_fake_root += 1,
-                Some(root_idx) => {
-                    if self.nodes[root_idx].is_malicious_or_misbehaving() {
-                        stats.honest_on_malicious_root += 1;
-                    }
-                }
-            }
-
-            if let Some(parent) = states[index].parent
-                && self.nodes[parent].is_malicious_or_misbehaving()
-            {
-                stats.honest_with_malicious_parent += 1;
-            }
-        }
-
-        if stats.honest_endpoint_count > 0 {
-            stats.root_capture_rate = (stats.honest_on_fake_root + stats.honest_on_malicious_root)
-                as f64
-                / stats.honest_endpoint_count as f64;
-            stats.malicious_parent_rate =
-                stats.honest_with_malicious_parent as f64 / stats.honest_endpoint_count as f64;
-            stats.avg_honest_depth = total_depth as f64 / stats.honest_endpoint_count as f64;
-        }
-        stats.distinct_roots = roots.len();
-        stats
-    }
-
-    fn routing_stats(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        strategy: RoutingStrategy,
-    ) -> RoutingStats {
-        if matches!(
-            strategy,
-            RoutingStrategy::ReplyLearnedFlood | RoutingStrategy::ReplyLearnedMultipath
-        ) {
-            return self.reply_learned_routing_stats(strategy);
-        }
-
-        let endpoints = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.is_honest_endpoint())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-
-        let mut stats = RoutingStats::default();
-        if endpoints.len() < 2 || self.config.route_probe_count == 0 {
-            return stats;
-        }
-
-        let mut rng = StdRng::seed_from_u64(self.config.seed ^ strategy_seed(strategy));
-        let mut delivered_hops = Vec::new();
-
-        for _ in 0..self.config.route_probe_count {
-            let src_pos = rng.random_range(0..endpoints.len());
-            let mut dst_pos = rng.random_range(0..endpoints.len() - 1);
-            if dst_pos >= src_pos {
-                dst_pos += 1;
-            }
-            let src = endpoints[src_pos];
-            let dst = endpoints[dst_pos];
-
-            stats.probes += 1;
-            let probe = self.simulate_route(states, views, src, dst, &mut rng);
-            stats.transmissions += probe.transmissions;
-            match probe.result {
-                RouteResult::Delivered {
-                    hops,
-                    malicious_transit,
-                } => {
-                    stats.delivered += 1;
-                    delivered_hops.push(hops);
-                    if malicious_transit {
-                        stats.routes_with_malicious_transit += 1;
-                    }
-                }
-                RouteResult::UnconfirmedDelivery {
-                    hops,
-                    malicious_transit,
-                } => {
-                    stats.delivered_without_reply += 1;
-                    delivered_hops.push(hops);
-                    if malicious_transit {
-                        stats.routes_with_malicious_transit += 1;
-                    }
-                }
-                RouteResult::NoRoute => stats.no_route += 1,
-                RouteResult::Loop => stats.loops += 1,
-                RouteResult::TtlExpired => stats.ttl_expired += 1,
-                RouteResult::Blackholed => stats.dropped_by_blackhole += 1,
-                RouteResult::FlakyDrop => stats.dropped_by_flaky += 1,
-            }
-        }
-
-        if stats.probes > 0 {
-            stats.success_rate = stats.delivered as f64 / stats.probes as f64;
-            stats.avg_transmissions_per_probe = stats.transmissions as f64 / stats.probes as f64;
-        }
-        if !delivered_hops.is_empty() {
-            delivered_hops.sort_unstable();
-            stats.p50_hops = percentile_usize(&delivered_hops, 0.50);
-            stats.p95_hops = percentile_usize(&delivered_hops, 0.95);
-            stats.max_hops = delivered_hops.last().copied().unwrap_or(0);
-            stats.avg_hops =
-                delivered_hops.iter().sum::<usize>() as f64 / delivered_hops.len() as f64;
-        }
-        stats
-    }
-
-    fn reply_learned_routing_stats(&self, strategy: RoutingStrategy) -> RoutingStats {
-        let endpoints = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.is_honest_endpoint())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-
-        let mut stats = RoutingStats::default();
-        if endpoints.len() < 2 || self.config.route_probe_count == 0 {
-            return stats;
-        }
-
-        let mut rng = StdRng::seed_from_u64(self.config.seed ^ strategy_seed(strategy));
-        let mut learned_routes = LearnedRouteTable::new();
-        let mut delivered_hops = Vec::new();
-
-        for _ in 0..self.config.route_probe_count {
-            let src_pos = rng.random_range(0..endpoints.len());
-            let mut dst_pos = rng.random_range(0..endpoints.len() - 1);
-            if dst_pos >= src_pos {
-                dst_pos += 1;
-            }
-            let src = endpoints[src_pos];
-            let dst = endpoints[dst_pos];
-
-            stats.probes += 1;
-            let probe = self.simulate_reply_learned_probe(&mut learned_routes, src, dst, &mut rng);
-
-            stats.transmissions += probe.transmissions;
-            if probe.discovery_flood {
-                stats.discovery_floods += 1;
-            }
-            if probe.learned_route_attempt {
-                stats.learned_route_attempts += 1;
-            }
-            if probe.reply_failure {
-                stats.reply_failures += 1;
-            }
-
-            match probe.result {
-                RouteResult::Delivered {
-                    hops,
-                    malicious_transit,
-                } => {
-                    stats.delivered += 1;
-                    delivered_hops.push(hops);
-                    if malicious_transit {
-                        stats.routes_with_malicious_transit += 1;
-                    }
-                }
-                RouteResult::UnconfirmedDelivery {
-                    hops,
-                    malicious_transit,
-                } => {
-                    stats.delivered_without_reply += 1;
-                    delivered_hops.push(hops);
-                    if malicious_transit {
-                        stats.routes_with_malicious_transit += 1;
-                    }
-                }
-                RouteResult::NoRoute => stats.no_route += 1,
-                RouteResult::Loop => stats.loops += 1,
-                RouteResult::TtlExpired => stats.ttl_expired += 1,
-                RouteResult::Blackholed => stats.dropped_by_blackhole += 1,
-                RouteResult::FlakyDrop => stats.dropped_by_flaky += 1,
-            }
-        }
-
-        if stats.probes > 0 {
-            stats.success_rate = stats.delivered as f64 / stats.probes as f64;
-            stats.avg_transmissions_per_probe = stats.transmissions as f64 / stats.probes as f64;
-        }
-        if !delivered_hops.is_empty() {
-            delivered_hops.sort_unstable();
-            stats.p50_hops = percentile_usize(&delivered_hops, 0.50);
-            stats.p95_hops = percentile_usize(&delivered_hops, 0.95);
-            stats.max_hops = delivered_hops.last().copied().unwrap_or(0);
-            stats.avg_hops =
-                delivered_hops.iter().sum::<usize>() as f64 / delivered_hops.len() as f64;
-        }
-        stats
-    }
-
-    fn stream_stats(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        strategy: RoutingStrategy,
-        mode: StreamMode,
-    ) -> StreamStats {
-        let endpoints = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.is_honest_endpoint())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-
-        let mut stats = StreamStats {
-            stream_size_bytes: self.config.stream_size_bytes,
-            ..StreamStats::default()
-        };
-        if endpoints.len() < 2 || self.config.stream_probe_count == 0 {
-            return stats;
-        }
-
-        let mut rng = StdRng::seed_from_u64(self.config.seed ^ stream_seed(strategy));
-        let mut learning = StreamLearningState::default();
-        let mut route_counts = Vec::new();
-        let mut standby_route_counts = Vec::new();
+    fn topology_stats(&self) -> TopologyStats {
+        let mut degrees = vec![0usize; self.nodes.len()];
+        let mut backbone_links = 0usize;
+        let mut regional_links = 0usize;
+        let mut long_haul_links = 0usize;
         let mut latencies = Vec::new();
-        let mut completion_times = Vec::new();
+        let mut losses = Vec::new();
         let mut throughputs = Vec::new();
 
-        for _ in 0..self.config.stream_probe_count {
-            let src_pos = rng.random_range(0..endpoints.len());
-            let mut dst_pos = rng.random_range(0..endpoints.len() - 1);
-            if dst_pos >= src_pos {
-                dst_pos += 1;
+        for edge in &self.edges {
+            degrees[edge.a] += 1;
+            degrees[edge.b] += 1;
+            match edge.class {
+                LinkClass::Backbone => backbone_links += 1,
+                LinkClass::Regional => regional_links += 1,
+                LinkClass::LongHaul => long_haul_links += 1,
             }
-            let src = endpoints[src_pos];
-            let dst = endpoints[dst_pos];
-
-            stats.streams += 1;
-            let attempt = match strategy {
-                RoutingStrategy::CurrentFips
-                | RoutingStrategy::VerifiedAncestry
-                | RoutingStrategy::PinnedRoot => {
-                    self.simulate_tree_stream(states, views, src, dst, &mut rng)
-                }
-                RoutingStrategy::ReplyLearnedFlood => self.simulate_reply_learned_stream(
-                    src,
-                    dst,
-                    StreamRoutePlan {
-                        active_route_limit: 1,
-                        candidate_route_limit: 1,
-                        mode,
-                    },
-                    &mut learning,
-                    &mut rng,
-                ),
-                RoutingStrategy::ReplyLearnedMultipath => {
-                    let active_routes = match mode {
-                        StreamMode::NativeFips => self.config.max_multipath_routes.max(1),
-                        StreamMode::TcpOverFips => 1,
-                    };
-                    let candidate_routes = self.config.max_multipath_routes.max(active_routes);
-                    self.simulate_reply_learned_stream(
-                        src,
-                        dst,
-                        StreamRoutePlan {
-                            active_route_limit: active_routes,
-                            candidate_route_limit: candidate_routes,
-                            mode,
-                        },
-                        &mut learning,
-                        &mut rng,
-                    )
-                }
-            };
-
-            stats.transmissions += attempt.transmissions;
-            stats.packets_sent += attempt.packets_sent;
-            stats.packets_delivered += attempt.packets_delivered;
-            stats.packets_lost += attempt.packets_lost;
-            stats.peer_reputation_uses += attempt.peer_reputation_uses;
-            stats.adaptive_route_improvements += attempt.adaptive_route_improvements;
-            stats.adaptive_route_rejections += attempt.adaptive_route_rejections;
-            if attempt.discovery_flood {
-                stats.discovery_floods += 1;
-            }
-            if attempt.learned_route_use {
-                stats.learned_route_uses += 1;
-            }
-
-            if attempt.completed {
-                stats.completed += 1;
-                if attempt.route_count > 1 {
-                    stats.multi_route_streams += 1;
-                } else {
-                    stats.single_route_streams += 1;
-                }
-                if attempt.failover_used {
-                    stats.failover_streams += 1;
-                }
-                route_counts.push(attempt.route_count);
-                standby_route_counts.push(attempt.standby_route_count);
-                latencies.push(attempt.latency_ms);
-                completion_times.push(attempt.completion_ms);
-                throughputs.push(attempt.throughput_mbps);
-            } else {
-                stats.failed += 1;
-            }
+            latencies.push(edge.link.latency_ms as f64);
+            losses.push(edge.link.loss_probability);
+            throughputs.push(edge.link.throughput_mbps);
         }
 
-        stats.peer_reputation_entries = learning.reputation.len();
-        if stats.streams > 0 {
-            stats.success_rate = stats.completed as f64 / stats.streams as f64;
-            stats.avg_transmissions_per_stream = stats.transmissions as f64 / stats.streams as f64;
-        }
-        if stats.packets_sent > 0 {
-            stats.packet_loss_rate = stats.packets_lost as f64 / stats.packets_sent as f64;
-        }
-        if !route_counts.is_empty() {
-            stats.avg_routes_per_stream =
-                route_counts.iter().sum::<usize>() as f64 / route_counts.len() as f64;
-        }
-        if !standby_route_counts.is_empty() {
-            stats.avg_standby_routes_per_stream = standby_route_counts.iter().sum::<usize>() as f64
-                / standby_route_counts.len() as f64;
-        }
-        if !latencies.is_empty() {
-            latencies.sort_by(|a, b| a.total_cmp(b));
-            stats.avg_latency_ms = average_f64(&latencies);
-            stats.p95_latency_ms = percentile_f64(&latencies, 0.95);
-        }
-        if !completion_times.is_empty() {
-            completion_times.sort_by(|a, b| a.total_cmp(b));
-            stats.avg_completion_ms = average_f64(&completion_times);
-            stats.p95_completion_ms = percentile_f64(&completion_times, 0.95);
-        }
-        if !throughputs.is_empty() {
-            throughputs.sort_by(|a, b| a.total_cmp(b));
-            stats.avg_throughput_mbps = average_f64(&throughputs);
-            stats.p95_throughput_mbps = percentile_f64(&throughputs, 0.95);
-        }
-
-        stats
-    }
-
-    fn simulate_tree_stream(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> StreamAttempt {
-        let path_attempt = self.simulate_route_path(states, views, src, dst, rng);
-        let PathResult::Delivered(path) = path_attempt.result else {
-            return StreamAttempt {
-                transmissions: path_attempt.transmissions,
-                ..StreamAttempt::default()
-            };
-        };
-        let schedule = self.schedule_stream(std::slice::from_ref(&path), 1, 1, None);
-        if !self.path_stream_survives(&path.nodes, rng) {
-            return StreamAttempt {
-                transmissions: path_attempt.transmissions,
-                packets_sent: schedule.packets_sent,
-                packets_lost: schedule.packets_sent,
-                ..StreamAttempt::default()
-            };
-        }
-
-        let packets_lost = self.transient_path_packet_loss(&path.nodes, schedule.packets_sent, rng);
-        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
-        StreamAttempt {
-            completed: true,
-            route_count: schedule.route_count,
-            standby_route_count: schedule.standby_route_count,
-            latency_ms: schedule.latency_ms,
-            completion_ms: schedule.completion_ms,
-            throughput_mbps: schedule.throughput_mbps,
-            transmissions: path_attempt.transmissions + schedule.transmissions,
-            packets_sent: payload_packets.saturating_add(packets_lost),
-            packets_delivered: payload_packets,
-            packets_lost,
-            adaptive_route_improvements: schedule.adaptive_route_improvements,
-            adaptive_route_rejections: schedule.adaptive_route_rejections,
-            ..StreamAttempt::default()
-        }
-    }
-
-    fn simulate_reply_learned_stream(
-        &self,
-        src: usize,
-        dst: usize,
-        plan: StreamRoutePlan,
-        learning: &mut StreamLearningState,
-        rng: &mut StdRng,
-    ) -> StreamAttempt {
-        let mut attempt = StreamAttempt::default();
-        let active_route_limit = plan.active_route_limit.max(1);
-        let candidate_route_limit = plan.candidate_route_limit.max(active_route_limit);
-        let cache_key = (src, dst);
-        let mut candidates = learning
-            .route_cache
-            .get(&cache_key)
-            .cloned()
-            .unwrap_or_default();
-        candidates.retain(|path| self.path_edges_exist(&path.nodes));
-
-        if !candidates.is_empty() {
-            attempt.learned_route_use = true;
-        }
-
-        if candidates.len() < candidate_route_limit {
-            attempt.discovery_flood = true;
-            let discovery = self.discover_confirmed_paths(
-                src,
-                dst,
-                candidate_route_limit,
-                &learning.reputation,
-                rng,
-            );
-            attempt.transmissions += discovery.transmissions;
-            attempt.peer_reputation_uses += discovery.peer_reputation_uses;
-            candidates.extend(discovery.paths);
-            candidates = dedupe_paths(candidates);
-        }
-
-        if candidates.is_empty() {
-            return attempt;
-        }
-
-        let schedule = self.schedule_stream(
-            &candidates,
-            active_route_limit,
-            candidate_route_limit,
-            Some(&learning.reputation),
-        );
-        if schedule.active_routes.is_empty() {
-            learning.route_cache.remove(&cache_key);
-            return attempt;
-        }
-        let initial_standby_route_count = schedule.standby_route_count;
-        let retained_candidate_count = candidates.len().min(candidate_route_limit);
-        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
-
-        let path_selection = match plan.mode {
-            StreamMode::NativeFips => {
-                let mut survivors = Vec::new();
-                let mut failed_routes = 0usize;
-                let mut failed_transmissions = 0usize;
-                let mut packets_lost = 0usize;
-                for scheduled in &schedule.active_routes {
-                    if self.path_stream_survives(&scheduled.path.nodes, rng) {
-                        let metrics = self.path_metrics(&scheduled.path.nodes);
-                        learning
-                            .reputation
-                            .update_success(&scheduled.path.nodes, metrics);
-                        packets_lost += self.transient_path_packet_loss(
-                            &scheduled.path.nodes,
-                            scheduled.packet_count,
-                            rng,
-                        );
-                        survivors.push(scheduled.path.clone());
-                    } else {
-                        learning.reputation.update_failure(&scheduled.path.nodes);
-                        failed_routes += 1;
-                        packets_lost += scheduled.packet_count;
-                        failed_transmissions += failed_stream_probe_transmissions(&scheduled.path);
-                    }
-                }
-                StreamPathSelection {
-                    survivors,
-                    failed_active_routes: failed_routes,
-                    failover_penalty_ms: 0.0,
-                    failed_transmissions,
-                    packets_lost,
-                }
-            }
-            StreamMode::TcpOverFips => self.try_tcp_stream_paths(
-                &candidates,
-                candidate_route_limit,
-                &mut learning.reputation,
-                rng,
-            ),
-        };
-        attempt.transmissions += path_selection.failed_transmissions;
-
-        if path_selection.survivors.is_empty() {
-            learning.route_cache.remove(&cache_key);
-            attempt.packets_sent = schedule.packets_sent;
-            attempt.packets_lost = schedule.packets_sent;
-            return attempt;
-        }
-
-        let schedule = self.schedule_stream(
-            &path_selection.survivors,
-            active_route_limit,
-            active_route_limit,
-            Some(&learning.reputation),
-        );
-        let mut latency_ms = schedule.latency_ms;
-        let mut completion_ms = schedule.completion_ms;
-        if path_selection.failed_active_routes > 0 {
-            attempt.failover_used = true;
-            let failover_penalty_ms = match plan.mode {
-                StreamMode::NativeFips => {
-                    native_failover_penalty_ms(path_selection.failed_active_routes)
-                }
-                StreamMode::TcpOverFips => path_selection.failover_penalty_ms,
-            };
-            latency_ms += failover_penalty_ms;
-            completion_ms += failover_penalty_ms;
-        }
-        let throughput_mbps = stream_throughput_mbps(self.config.stream_size_bytes, completion_ms);
-        let standby_route_count = match plan.mode {
-            StreamMode::NativeFips => {
-                initial_standby_route_count.saturating_add(schedule.standby_route_count)
-            }
-            StreamMode::TcpOverFips => retained_candidate_count.saturating_sub(
-                path_selection
-                    .failed_active_routes
-                    .saturating_add(schedule.route_count),
-            ),
-        };
-        attempt.completed = true;
-        attempt.route_count = schedule.route_count;
-        attempt.standby_route_count = standby_route_count;
-        attempt.latency_ms = latency_ms;
-        attempt.completion_ms = completion_ms;
-        attempt.throughput_mbps = throughput_mbps;
-        attempt.transmissions += schedule.transmissions;
-        attempt.packets_sent = payload_packets.saturating_add(path_selection.packets_lost);
-        attempt.packets_delivered = payload_packets;
-        attempt.packets_lost = path_selection.packets_lost;
-        attempt.adaptive_route_improvements = schedule.adaptive_route_improvements;
-        attempt.adaptive_route_rejections = schedule.adaptive_route_rejections;
-
-        learning.route_cache.insert(
-            cache_key,
-            self.select_stream_routes(
-                &path_selection.survivors,
-                candidate_route_limit,
-                Some(&learning.reputation),
-            ),
-        );
-        attempt
-    }
-
-    fn discover_confirmed_paths(
-        &self,
-        src: usize,
-        dst: usize,
-        max_paths: usize,
-        reputation: &PeerReputation,
-        rng: &mut StdRng,
-    ) -> StreamDiscovery {
-        let mut discovery = StreamDiscovery::default();
-        let mut queue = VecDeque::new();
-        let mut completed_first_hops = HashSet::new();
-        let expansion_limit = self
+        let root = self
             .nodes
-            .len()
-            .saturating_mul(max_paths.max(1))
-            .saturating_mul(8)
-            .max(1);
-        let mut expansions = 0usize;
-        queue.push_back(vec![src]);
-
-        while let Some(path) = queue.pop_front() {
-            if discovery.paths.len() >= max_paths || expansions >= expansion_limit {
-                break;
-            }
-            expansions += 1;
-
-            let current = *path.last().expect("discovery path is non-empty");
-            if current != src && current != dst {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => continue,
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            if current == dst {
-                let routed_path = RoutedPath {
-                    malicious_transit: self.path_has_malicious_transit(&path),
-                    nodes: path,
-                };
-                let reply = self.confirm_reply(&routed_path.nodes, rng);
-                discovery.transmissions += reply.transmissions;
-                if reply.confirmed
-                    && let Some(first_hop) = routed_path.nodes.get(1).copied()
-                    && (completed_first_hops.insert(first_hop) || max_paths == 1)
-                {
-                    discovery.paths.push(routed_path);
-                }
-                continue;
-            }
-
-            let previous = path
-                .len()
-                .checked_sub(2)
-                .and_then(|index| path.get(index))
-                .copied();
-            let (neighbors, reputation_uses) =
-                self.ranked_neighbors(current, previous, &path, reputation);
-            discovery.peer_reputation_uses += reputation_uses;
-            for neighbor in neighbors {
-                discovery.transmissions += 1;
-                let mut next_path = path.clone();
-                next_path.push(neighbor);
-                queue.push_back(next_path);
-            }
-        }
-
-        discovery
-    }
-
-    fn ranked_neighbors(
-        &self,
-        current: usize,
-        previous: Option<usize>,
-        path: &[usize],
-        reputation: &PeerReputation,
-    ) -> (Vec<usize>, usize) {
-        let mut reputation_uses = 0usize;
-        let mut neighbors = self.nodes[current]
-            .neighbors
             .iter()
-            .filter(|link| Some(link.neighbor) != previous && !path.contains(&link.neighbor))
-            .map(|link| {
-                let reputation_score = reputation.score(current, link.neighbor);
-                if reputation.has_score(current, link.neighbor) {
-                    reputation_uses += 1;
-                }
-                let link_score = link.throughput_mbps.sqrt() / (1.0 + link.latency_ms / 100.0);
-                (link.neighbor, reputation_score * link_score)
-            })
-            .collect::<Vec<_>>();
-        neighbors.sort_by(|(_, left), (_, right)| right.total_cmp(left));
-        (
-            neighbors
-                .into_iter()
-                .map(|(neighbor, _)| neighbor)
-                .collect(),
-            reputation_uses,
-        )
-    }
+            .map(|node| node.node_addr)
+            .min()
+            .expect("non-empty topology");
 
-    fn select_stream_routes(
-        &self,
-        candidates: &[RoutedPath],
-        max_routes: usize,
-        reputation: Option<&PeerReputation>,
-    ) -> Vec<RoutedPath> {
-        let mut scored = candidates
-            .iter()
-            .cloned()
-            .map(|path| {
-                let metrics = self.path_metrics(&path.nodes);
-                let first_hop_score = path
-                    .nodes
-                    .get(1)
-                    .copied()
-                    .map(|first_hop| {
-                        reputation
-                            .map(|rep| rep.score(path.nodes[0], first_hop))
-                            .unwrap_or(1.0)
-                    })
-                    .unwrap_or(1.0);
-                let score = scheduler_weight(metrics, first_hop_score);
-                (path, score)
-            })
-            .collect::<Vec<_>>();
-        scored.sort_by(|(_, left), (_, right)| right.total_cmp(left));
-
-        let mut selected = Vec::new();
-        let mut first_hops = HashSet::new();
-        for (path, _) in scored.iter() {
-            let first_hop = path.nodes.get(1).copied();
-            if first_hop.is_some_and(|hop| !first_hops.insert(hop)) {
-                continue;
-            }
-            selected.push(path.clone());
-            if selected.len() >= max_routes {
-                return selected;
-            }
-        }
-        for (path, _) in scored {
-            if selected.iter().any(|existing| existing.nodes == path.nodes) {
-                continue;
-            }
-            selected.push(path);
-            if selected.len() >= max_routes {
-                break;
-            }
-        }
-        selected
-    }
-
-    fn schedule_stream(
-        &self,
-        paths: &[RoutedPath],
-        active_route_limit: usize,
-        candidate_route_limit: usize,
-        reputation: Option<&PeerReputation>,
-    ) -> StreamSchedule {
-        let active_route_limit = active_route_limit.max(1);
-        let candidate_route_limit = candidate_route_limit.max(active_route_limit);
-        let selected = self.select_stream_routes(paths, candidate_route_limit, reputation);
-        let mut candidates = Vec::new();
-        for path in selected {
-            let metrics = self.path_metrics(&path.nodes);
-            let first_hop_score = path
-                .nodes
-                .get(1)
-                .copied()
-                .map(|first_hop| {
-                    reputation
-                        .map(|rep| rep.score(path.nodes[0], first_hop))
-                        .unwrap_or(1.0)
-                })
-                .unwrap_or(1.0);
-            candidates.push(WeightedRoute {
-                path,
-                metrics,
-                weight: scheduler_weight(metrics, first_hop_score),
-            });
-        }
-
-        if candidates.is_empty() {
-            return StreamSchedule::default();
-        }
-
-        let mut selected = Vec::new();
-        let mut adaptive_route_improvements = 0usize;
-        let mut adaptive_route_rejections = 0usize;
-        for candidate in candidates.iter().cloned() {
-            if selected.is_empty() {
-                selected.push(candidate);
-                continue;
-            }
-            if selected.len() >= active_route_limit {
-                adaptive_route_rejections += 1;
-                continue;
-            }
-
-            let current = self.weighted_stream_schedule(&selected);
-            let mut proposed = selected.clone();
-            proposed.push(candidate.clone());
-            let next = self.weighted_stream_schedule(&proposed);
-            if route_addition_improves_stream(&current, &next) {
-                selected.push(candidate);
-                adaptive_route_improvements += 1;
-            } else {
-                adaptive_route_rejections += 1;
-            }
-        }
-
-        let mut schedule = self.weighted_stream_schedule(&selected);
-        schedule.standby_route_count = candidates.len().saturating_sub(selected.len());
-        schedule.adaptive_route_improvements = adaptive_route_improvements;
-        schedule.adaptive_route_rejections = adaptive_route_rejections;
-        schedule
-    }
-
-    fn weighted_stream_schedule(&self, weighted: &[WeightedRoute]) -> StreamSchedule {
-        if weighted.is_empty() {
-            return StreamSchedule::default();
-        }
-
-        let total_weight = weighted.iter().map(|route| route.weight).sum::<f64>();
-        let total_weight = total_weight.max(f64::EPSILON);
-        let mut completion_ms = 0.0f64;
-        let mut first_byte_latency_ms = f64::MAX;
-        let mut transmissions = 0usize;
-        let mut packets_sent = 0usize;
-        let mut active_routes = Vec::new();
-
-        for route in weighted {
-            let byte_share = self.config.stream_size_bytes as f64 * (route.weight / total_weight);
-            let transfer_ms = transfer_time_ms(byte_share, route.metrics.throughput_mbps);
-            completion_ms = completion_ms.max(route.metrics.latency_ms + transfer_ms);
-            first_byte_latency_ms = first_byte_latency_ms.min(route.metrics.latency_ms);
-            let packet_share = stream_packet_count(byte_share as usize);
-            packets_sent += packet_share;
-            transmissions += packet_share.saturating_mul(route.path.hops());
-            active_routes.push(ScheduledRoute {
-                path: route.path.clone(),
-                packet_count: packet_share,
-            });
-        }
-
-        StreamSchedule {
-            route_count: weighted.len(),
-            standby_route_count: 0,
-            latency_ms: first_byte_latency_ms,
-            completion_ms,
-            throughput_mbps: stream_throughput_mbps(self.config.stream_size_bytes, completion_ms),
-            transmissions,
-            packets_sent,
-            active_routes,
-            adaptive_route_improvements: 0,
-            adaptive_route_rejections: 0,
+        TopologyStats {
+            node_count: self.nodes.len(),
+            edge_count: self.edges.len(),
+            avg_degree: self.edges.len() as f64 * 2.0 / self.nodes.len() as f64,
+            min_degree: degrees.iter().copied().min().unwrap_or(0),
+            max_degree: degrees.iter().copied().max().unwrap_or(0),
+            backbone_links,
+            regional_links,
+            long_haul_links,
+            avg_latency_ms: mean(&latencies),
+            avg_loss_probability: mean(&losses),
+            min_throughput_mbps: throughputs.iter().copied().fold(f64::INFINITY, f64::min),
+            max_throughput_mbps: throughputs.iter().copied().fold(0.0, f64::max),
+            root_node_addr: root.to_string(),
         }
     }
+}
 
-    fn try_tcp_stream_paths(
-        &self,
-        candidates: &[RoutedPath],
-        candidate_route_limit: usize,
-        reputation: &mut PeerReputation,
-        rng: &mut StdRng,
-    ) -> StreamPathSelection {
-        let ranked =
-            self.select_stream_routes(candidates, candidate_route_limit.max(1), Some(reputation));
-        let mut failed_routes = 0usize;
-        let mut failed_transmissions = 0usize;
-        let mut packets_lost = 0usize;
-        let payload_packets = stream_packet_count(self.config.stream_size_bytes);
+/// Simulation failure.
+#[derive(Debug)]
+pub enum SimError {
+    Endpoint(FipsEndpointError),
+}
 
-        for path in ranked {
-            if self.path_stream_survives(&path.nodes, rng) {
-                let metrics = self.path_metrics(&path.nodes);
-                reputation.update_success(&path.nodes, metrics);
-                packets_lost += self.transient_path_packet_loss(&path.nodes, payload_packets, rng);
-                return StreamPathSelection {
-                    survivors: vec![path],
-                    failed_active_routes: failed_routes,
-                    failover_penalty_ms: tcp_failover_penalty_ms(failed_routes),
-                    failed_transmissions,
-                    packets_lost,
-                };
-            }
-
-            reputation.update_failure(&path.nodes);
-            failed_routes += 1;
-            failed_transmissions += failed_stream_probe_transmissions(&path);
-            packets_lost += failed_stream_probe_packet_count();
-        }
-
-        StreamPathSelection {
-            survivors: Vec::new(),
-            failed_active_routes: failed_routes,
-            failover_penalty_ms: tcp_failover_penalty_ms(failed_routes),
-            failed_transmissions,
-            packets_lost,
+impl fmt::Display for SimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SimError::Endpoint(error) => write!(f, "{error}"),
         }
     }
+}
 
-    fn simulate_route_path(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> LearnedPathAttempt {
-        let ttl = self.nodes.len().saturating_mul(2).max(1);
-        let mut visited = HashSet::new();
-        let mut current = src;
-        let mut path = vec![src];
-        let mut transmissions = 0;
-        let mut malicious_transit = false;
-        visited.insert(current);
+impl std::error::Error for SimError {}
 
-        for _ in 0..=ttl {
-            if current == dst {
-                return LearnedPathAttempt {
-                    result: PathResult::Delivered(RoutedPath {
-                        nodes: path,
-                        malicious_transit,
-                    }),
-                    transmissions,
-                };
-            }
+impl From<FipsEndpointError> for SimError {
+    fn from(value: FipsEndpointError) -> Self {
+        Self::Endpoint(value)
+    }
+}
 
-            if current != src {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => {
-                        return LearnedPathAttempt {
-                            result: PathResult::Blackholed,
-                            transmissions,
-                        };
-                    }
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            return LearnedPathAttempt {
-                                result: PathResult::FlakyDrop,
-                                transmissions,
-                            };
-                        }
-                    }
-                }
-                if self.nodes[current].is_malicious_or_misbehaving() {
-                    malicious_transit = true;
-                }
-            }
+fn assign_roles(node_count: usize, adversary: AdversaryConfig, rng: &mut StdRng) -> Vec<NodeRole> {
+    let mut indices = (0..node_count).collect::<Vec<_>>();
+    shuffle(&mut indices, rng);
 
-            let Some(next) = self.next_hop(states, views, current, dst) else {
-                return LearnedPathAttempt {
-                    result: PathResult::NoRoute,
-                    transmissions,
-                };
-            };
-            transmissions += 1;
-            if !visited.insert(next) {
-                return LearnedPathAttempt {
-                    result: PathResult::Loop,
-                    transmissions,
-                };
-            }
-            path.push(next);
-            current = next;
-        }
+    let blackholes = fraction_count(node_count, adversary.blackhole_fraction);
+    let flaky = fraction_count(node_count, adversary.flaky_fraction);
+    let churned = fraction_count(node_count, adversary.churned_node_fraction);
+    let mut roles = vec![NodeRole::Honest; node_count];
+    let mut cursor = 0usize;
 
-        LearnedPathAttempt {
-            result: PathResult::TtlExpired,
-            transmissions,
+    for _ in 0..blackholes {
+        if let Some(index) = indices.get(cursor) {
+            roles[*index] = NodeRole::Blackhole;
+            cursor += 1;
         }
     }
-
-    fn path_metrics(&self, path: &[usize]) -> PathMetrics {
-        let mut latency_ms = 0.0;
-        let mut throughput_mbps = f64::MAX;
-        let mut delivery_probability = 1.0;
-        for pair in path.windows(2) {
-            if let Some(link) = self.link_between(pair[0], pair[1]) {
-                latency_ms += link.latency_ms;
-                throughput_mbps = throughput_mbps.min(link.throughput_mbps);
-                delivery_probability *= 1.0 - link.loss_probability.clamp(0.0, 1.0);
-            }
-        }
-        PathMetrics {
-            latency_ms,
-            throughput_mbps: if throughput_mbps.is_finite() {
-                throughput_mbps
-            } else {
-                0.0
-            },
-            loss_probability: 1.0 - delivery_probability,
+    for _ in 0..flaky {
+        if let Some(index) = indices.get(cursor) {
+            roles[*index] = NodeRole::Flaky;
+            cursor += 1;
         }
     }
-
-    fn link_between(&self, a: usize, b: usize) -> Option<&LinkSpec> {
-        self.nodes[a]
-            .neighbors
-            .iter()
-            .find(|link| link.neighbor == b)
-    }
-
-    fn path_edges_exist(&self, path: &[usize]) -> bool {
-        path.windows(2)
-            .all(|pair| self.link_between(pair[0], pair[1]).is_some())
-    }
-
-    fn path_stream_survives(&self, path: &[usize], rng: &mut StdRng) -> bool {
-        let chunks = stream_packet_count(self.config.stream_size_bytes).max(1);
-        let trials = (chunks as f64).sqrt().min(32.0);
-        for node in path.iter().skip(1).take(path.len().saturating_sub(2)) {
-            match self.nodes[*node].forward {
-                ForwardBehavior::Honest => {}
-                ForwardBehavior::Blackhole => return false,
-                ForwardBehavior::Flaky { drop_probability } => {
-                    let stream_drop_probability =
-                        1.0 - (1.0 - drop_probability.clamp(0.0, 1.0)).powf(trials);
-                    if rng.random::<f64>() < stream_drop_probability {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
-    }
-
-    fn transient_path_packet_loss(
-        &self,
-        path: &[usize],
-        packet_count: usize,
-        rng: &mut StdRng,
-    ) -> usize {
-        let loss_probability = self.path_metrics(path).loss_probability.clamp(0.0, 1.0);
-        sample_packet_losses(packet_count, loss_probability, rng)
-    }
-
-    fn simulate_reply_learned_probe(
-        &self,
-        learned_routes: &mut LearnedRouteTable,
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> ReplyLearnedProbe {
-        let mut probe = ReplyLearnedProbe::default();
-
-        if learned_routes.contains_key(&(src, dst)) {
-            probe.learned_route_attempt = true;
-            let attempt = self.follow_learned_route(learned_routes, src, dst, rng);
-            probe.transmissions += attempt.transmissions;
-
-            match attempt.result {
-                PathResult::Delivered(path) => {
-                    let reply = self.confirm_reply(&path.nodes, rng);
-                    probe.transmissions += reply.transmissions;
-                    if reply.confirmed {
-                        learn_path(learned_routes, &path.nodes);
-                        probe.result = RouteResult::Delivered {
-                            hops: path.hops(),
-                            malicious_transit: path.malicious_transit,
-                        };
-                        return probe;
-                    }
-
-                    probe.reply_failure = true;
-                    invalidate_path(learned_routes, &path.nodes, dst);
-                    let result = RouteResult::UnconfirmedDelivery {
-                        hops: path.hops(),
-                        malicious_transit: path.malicious_transit,
-                    };
-                    if reply.dropped_by_blackhole || reply.dropped_by_flaky {
-                        probe.result = self
-                            .flood_after_failed_learned_route(
-                                learned_routes,
-                                src,
-                                dst,
-                                rng,
-                                &mut probe,
-                            )
-                            .unwrap_or(result);
-                    } else {
-                        probe.result = result;
-                    }
-                    return probe;
-                }
-                PathResult::NoRoute | PathResult::Loop | PathResult::TtlExpired => {
-                    learned_routes.remove(&(src, dst));
-                }
-                PathResult::Blackholed | PathResult::FlakyDrop => {
-                    learned_routes.remove(&(src, dst));
-                }
-            }
-        }
-
-        probe.result = self
-            .flood_after_failed_learned_route(learned_routes, src, dst, rng, &mut probe)
-            .unwrap_or(RouteResult::NoRoute);
-        probe
-    }
-
-    fn flood_after_failed_learned_route(
-        &self,
-        learned_routes: &mut LearnedRouteTable,
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-        probe: &mut ReplyLearnedProbe,
-    ) -> Option<RouteResult> {
-        probe.discovery_flood = true;
-        let flood = self.flood_discover_confirmed_path(src, dst, rng);
-        probe.transmissions += flood.transmissions;
-        if flood.reply_failures > 0 {
-            probe.reply_failure = true;
-        }
-
-        if let Some(path) = flood.confirmed_path {
-            learn_path(learned_routes, &path.nodes);
-            return Some(RouteResult::Delivered {
-                hops: path.hops(),
-                malicious_transit: path.malicious_transit,
-            });
-        }
-
-        if let Some(path) = flood.unconfirmed_path {
-            return Some(RouteResult::UnconfirmedDelivery {
-                hops: path.hops(),
-                malicious_transit: path.malicious_transit,
-            });
-        }
-
-        if flood.dropped_by_blackhole {
-            Some(RouteResult::Blackholed)
-        } else if flood.dropped_by_flaky {
-            Some(RouteResult::FlakyDrop)
-        } else {
-            None
+    for _ in 0..churned {
+        if let Some(index) = indices.get(cursor) {
+            roles[*index] = NodeRole::Churned;
+            cursor += 1;
         }
     }
+    roles
+}
 
-    fn follow_learned_route(
-        &self,
-        learned_routes: &LearnedRouteTable,
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> LearnedPathAttempt {
-        let ttl = self.nodes.len().saturating_mul(2).max(1);
-        let mut visited = HashSet::new();
-        let mut current = src;
-        let mut path = vec![src];
-        let mut transmissions = 0;
-        let mut malicious_transit = false;
-        visited.insert(current);
+fn choose_backbone_nodes(node_count: usize, rng: &mut StdRng) -> HashSet<usize> {
+    let count = (node_count / 8).clamp(2, node_count);
+    let mut indices = (0..node_count).collect::<Vec<_>>();
+    shuffle(&mut indices, rng);
+    indices.into_iter().take(count).collect()
+}
 
-        for _ in 0..=ttl {
-            if current == dst {
-                return LearnedPathAttempt {
-                    result: PathResult::Delivered(RoutedPath {
-                        nodes: path,
-                        malicious_transit,
-                    }),
-                    transmissions,
-                };
-            }
+fn generate_edges(config: &SimConfig, nodes: &[NodeSpec], rng: &mut StdRng) -> Vec<EdgeSpec> {
+    let mut edges = Vec::new();
+    let mut seen = HashSet::new();
 
-            if current != src {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => {
-                        return LearnedPathAttempt {
-                            result: PathResult::Blackholed,
-                            transmissions,
-                        };
-                    }
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            return LearnedPathAttempt {
-                                result: PathResult::FlakyDrop,
-                                transmissions,
-                            };
-                        }
-                    }
-                }
-                if self.nodes[current].is_malicious_or_misbehaving() {
-                    malicious_transit = true;
-                }
-            }
-
-            let next = if self.has_edge(current, dst) {
-                dst
-            } else {
-                let Some(next) = learned_routes.get(&(current, dst)).copied() else {
-                    return LearnedPathAttempt {
-                        result: PathResult::NoRoute,
-                        transmissions,
-                    };
-                };
-                if !self.has_edge(current, next) {
-                    return LearnedPathAttempt {
-                        result: PathResult::NoRoute,
-                        transmissions,
-                    };
-                }
-                next
-            };
-
-            transmissions += 1;
-            if !visited.insert(next) {
-                return LearnedPathAttempt {
-                    result: PathResult::Loop,
-                    transmissions,
-                };
-            }
-            path.push(next);
-            current = next;
-        }
-
-        LearnedPathAttempt {
-            result: PathResult::TtlExpired,
-            transmissions,
-        }
+    for node in 1..nodes.len() {
+        let peer = rng.random_range(0..node);
+        push_edge(
+            node,
+            peer,
+            nodes,
+            rng,
+            config.topology,
+            &mut seen,
+            &mut edges,
+        );
     }
 
-    fn flood_discover_confirmed_path(
-        &self,
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> FloodAttempt {
-        let ttl = self.nodes.len().max(1);
-        let mut attempt = FloodAttempt::default();
-        let mut queue = VecDeque::new();
-        let mut processed = HashSet::new();
-        queue.push_back(vec![src]);
-
-        while let Some(path) = queue.pop_front() {
-            if path.len().saturating_sub(1) > ttl {
-                continue;
+    let max_edges = nodes.len() * (nodes.len() - 1) / 2;
+    let target = config.target_edges.clamp(nodes.len() - 1, max_edges);
+    let mut attempts = 0usize;
+    while edges.len() < target && attempts < target * 100 {
+        attempts += 1;
+        let (a, b) = match config.topology {
+            TopologyProfile::Standard => pick_standard_edge(nodes, rng),
+            TopologyProfile::RandomMesh => {
+                let a = rng.random_range(0..nodes.len());
+                let mut b = rng.random_range(0..nodes.len() - 1);
+                if b >= a {
+                    b += 1;
+                }
+                (a, b)
             }
-
-            let current = *path.last().expect("flood path is non-empty");
-            if !processed.insert(current) {
-                continue;
-            }
-
-            if current != src && current != dst {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => {
-                        attempt.dropped_by_blackhole = true;
-                        continue;
-                    }
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            attempt.dropped_by_flaky = true;
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            if current == dst {
-                let routed_path = RoutedPath {
-                    malicious_transit: self.path_has_malicious_transit(&path),
-                    nodes: path,
-                };
-                let reply = self.confirm_reply(&routed_path.nodes, rng);
-                attempt.transmissions += reply.transmissions;
-                if reply.confirmed {
-                    attempt.confirmed_path = Some(routed_path);
-                    break;
-                }
-
-                attempt.reply_failures += 1;
-                attempt.unconfirmed_path = Some(routed_path);
-                if reply.dropped_by_blackhole {
-                    attempt.dropped_by_blackhole = true;
-                }
-                if reply.dropped_by_flaky {
-                    attempt.dropped_by_flaky = true;
-                }
-                continue;
-            }
-
-            let previous = path
-                .len()
-                .checked_sub(2)
-                .and_then(|index| path.get(index))
-                .copied();
-            for link in &self.nodes[current].neighbors {
-                let neighbor = link.neighbor;
-                if Some(neighbor) == previous {
-                    continue;
-                }
-
-                attempt.transmissions += 1;
-                if processed.contains(&neighbor) || path.contains(&neighbor) {
-                    continue;
-                }
-
-                let mut next_path = path.clone();
-                next_path.push(neighbor);
-                queue.push_back(next_path);
-            }
-        }
-
-        attempt
-    }
-
-    fn confirm_reply(&self, path: &[usize], rng: &mut StdRng) -> ReplyAttempt {
-        let mut attempt = ReplyAttempt {
-            confirmed: true,
-            transmissions: 0,
-            dropped_by_blackhole: false,
-            dropped_by_flaky: false,
         };
-        if path.len() < 2 {
-            return attempt;
-        }
-
-        let dst = *path.last().expect("path is non-empty");
-        for index in (1..path.len()).rev() {
-            let current = path[index];
-            if current != dst {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => {
-                        attempt.confirmed = false;
-                        attempt.dropped_by_blackhole = true;
-                        return attempt;
-                    }
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            attempt.confirmed = false;
-                            attempt.dropped_by_flaky = true;
-                            return attempt;
-                        }
-                    }
-                }
-            }
-            attempt.transmissions += 1;
-        }
-
-        attempt
+        push_edge(a, b, nodes, rng, config.topology, &mut seen, &mut edges);
     }
 
-    fn path_has_malicious_transit(&self, path: &[usize]) -> bool {
-        path.iter()
-            .skip(1)
-            .take(path.len().saturating_sub(2))
-            .any(|node| self.nodes[*node].is_malicious_or_misbehaving())
-    }
+    edges
+}
 
-    fn simulate_route(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        src: usize,
-        dst: usize,
-        rng: &mut StdRng,
-    ) -> RouteProbeAttempt {
-        let ttl = self.nodes.len().saturating_mul(2).max(1);
-        let mut visited = HashSet::new();
-        let mut current = src;
-        let mut malicious_transit = false;
-        visited.insert(current);
-
-        for hops in 0..=ttl {
-            if current == dst {
-                return RouteProbeAttempt {
-                    result: RouteResult::Delivered {
-                        hops,
-                        malicious_transit,
-                    },
-                    transmissions: hops,
-                };
-            }
-
-            if current != src {
-                match self.nodes[current].forward {
-                    ForwardBehavior::Honest => {}
-                    ForwardBehavior::Blackhole => {
-                        return RouteProbeAttempt {
-                            result: RouteResult::Blackholed,
-                            transmissions: hops,
-                        };
-                    }
-                    ForwardBehavior::Flaky { drop_probability } => {
-                        if rng.random::<f64>() < drop_probability {
-                            return RouteProbeAttempt {
-                                result: RouteResult::FlakyDrop,
-                                transmissions: hops,
-                            };
-                        }
-                    }
-                }
-                if self.nodes[current].is_malicious_or_misbehaving() {
-                    malicious_transit = true;
-                }
-            }
-
-            let Some(next) = self.next_hop(states, views, current, dst) else {
-                return RouteProbeAttempt {
-                    result: RouteResult::NoRoute,
-                    transmissions: hops,
-                };
-            };
-            if visited.contains(&next) {
-                return RouteProbeAttempt {
-                    result: RouteResult::Loop,
-                    transmissions: hops + 1,
-                };
-            }
-            visited.insert(next);
-            current = next;
-        }
-
-        RouteProbeAttempt {
-            result: RouteResult::TtlExpired,
-            transmissions: ttl,
+fn pick_standard_edge(nodes: &[NodeSpec], rng: &mut StdRng) -> (usize, usize) {
+    let roll = rng.random::<f64>();
+    if roll < 0.20 {
+        let backbone = nodes
+            .iter()
+            .filter(|node| node.backbone)
+            .map(|node| node.index)
+            .collect::<Vec<_>>();
+        if backbone.len() >= 2 {
+            return pick_pair(&backbone, rng);
         }
     }
 
-    fn next_hop(
-        &self,
-        states: &[NodeState],
-        views: &[HashMap<usize, Vec<NodeAddr>>],
-        current: usize,
-        dst: usize,
-    ) -> Option<usize> {
-        if self.has_edge(current, dst) {
-            return Some(dst);
-        }
-
-        let dest_coord = &states[dst].coord;
-        let my_coord = &states[current].coord;
-        let my_distance = tree_distance(my_coord, dest_coord)?;
-
-        let mut best: Option<(usize, usize, NodeAddr)> = None;
-        for (&peer, peer_coord) in &views[current] {
-            let distance = tree_distance(peer_coord, dest_coord).unwrap_or(usize::MAX);
-            if distance >= my_distance {
-                continue;
-            }
-            let peer_addr = self.nodes[peer].addr;
-            let better = match best {
-                None => true,
-                Some((_, best_distance, best_addr)) => {
-                    distance < best_distance || (distance == best_distance && peer_addr < best_addr)
-                }
-            };
-            if better {
-                best = Some((peer, distance, peer_addr));
-            }
-        }
-        best.map(|(peer, _, _)| peer)
-    }
-}
-
-#[derive(Debug)]
-struct ParentDecision {
-    parent: Option<(usize, Vec<NodeAddr>)>,
-    accepted_coords: HashMap<usize, Vec<NodeAddr>>,
-}
-
-type LearnedRouteTable = HashMap<(usize, usize), usize>;
-
-#[derive(Debug)]
-struct ReplyLearnedProbe {
-    result: RouteResult,
-    transmissions: usize,
-    discovery_flood: bool,
-    learned_route_attempt: bool,
-    reply_failure: bool,
-}
-
-impl Default for ReplyLearnedProbe {
-    fn default() -> Self {
-        Self {
-            result: RouteResult::NoRoute,
-            transmissions: 0,
-            discovery_flood: false,
-            learned_route_attempt: false,
-            reply_failure: false,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct LearnedPathAttempt {
-    result: PathResult,
-    transmissions: usize,
-}
-
-#[derive(Debug)]
-enum PathResult {
-    Delivered(RoutedPath),
-    NoRoute,
-    Loop,
-    TtlExpired,
-    Blackholed,
-    FlakyDrop,
-}
-
-#[derive(Debug, Clone)]
-struct RoutedPath {
-    nodes: Vec<usize>,
-    malicious_transit: bool,
-}
-
-impl RoutedPath {
-    fn hops(&self) -> usize {
-        self.nodes.len().saturating_sub(1)
-    }
-}
-
-#[derive(Debug, Default)]
-struct FloodAttempt {
-    confirmed_path: Option<RoutedPath>,
-    unconfirmed_path: Option<RoutedPath>,
-    transmissions: usize,
-    dropped_by_blackhole: bool,
-    dropped_by_flaky: bool,
-    reply_failures: usize,
-}
-
-#[derive(Debug)]
-struct ReplyAttempt {
-    confirmed: bool,
-    transmissions: usize,
-    dropped_by_blackhole: bool,
-    dropped_by_flaky: bool,
-}
-
-#[derive(Debug)]
-struct RouteProbeAttempt {
-    result: RouteResult,
-    transmissions: usize,
-}
-
-#[derive(Debug, Default)]
-struct StreamLearningState {
-    route_cache: HashMap<(usize, usize), Vec<RoutedPath>>,
-    reputation: PeerReputation,
-}
-
-#[derive(Debug, Default)]
-struct PeerReputation {
-    scores: HashMap<(usize, usize), PeerScore>,
-}
-
-impl PeerReputation {
-    fn score(&self, local: usize, peer: usize) -> f64 {
-        self.scores
-            .get(&(local, peer))
-            .map(|score| score.value)
-            .unwrap_or(1.0)
-    }
-
-    fn has_score(&self, local: usize, peer: usize) -> bool {
-        self.scores.contains_key(&(local, peer))
-    }
-
-    fn len(&self) -> usize {
-        self.scores.len()
-    }
-
-    fn update_success(&mut self, path: &[usize], metrics: PathMetrics) {
-        let sample = scheduler_weight(metrics, 1.0).clamp(0.20, 8.0);
-        for pair in path.windows(2) {
-            let score = self.scores.entry((pair[0], pair[1])).or_default();
-            score.successes += 1;
-            score.value = ewma(score.value, sample, 0.25).clamp(0.10, 10.0);
+    if roll < 0.75 {
+        let region = rng.random_range(0..4);
+        let regional = nodes
+            .iter()
+            .filter(|node| node.region == region)
+            .map(|node| node.index)
+            .collect::<Vec<_>>();
+        if regional.len() >= 2 {
+            return pick_pair(&regional, rng);
         }
     }
 
-    fn update_failure(&mut self, path: &[usize]) {
-        for pair in path.windows(2) {
-            let score = self.scores.entry((pair[0], pair[1])).or_default();
-            score.failures += 1;
-            score.value = (score.value * 0.65).clamp(0.05, 10.0);
-        }
+    let a = rng.random_range(0..nodes.len());
+    let mut b = rng.random_range(0..nodes.len() - 1);
+    if b >= a {
+        b += 1;
     }
+    (a, b)
 }
 
-#[derive(Debug)]
-struct PeerScore {
-    value: f64,
-    successes: usize,
-    failures: usize,
-}
-
-impl Default for PeerScore {
-    fn default() -> Self {
-        Self {
-            value: 1.0,
-            successes: 0,
-            failures: 0,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct StreamAttempt {
-    completed: bool,
-    route_count: usize,
-    standby_route_count: usize,
-    latency_ms: f64,
-    completion_ms: f64,
-    throughput_mbps: f64,
-    failover_used: bool,
-    discovery_flood: bool,
-    learned_route_use: bool,
-    peer_reputation_uses: usize,
-    transmissions: usize,
-    packets_sent: usize,
-    packets_delivered: usize,
-    packets_lost: usize,
-    adaptive_route_improvements: usize,
-    adaptive_route_rejections: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PathMetrics {
-    latency_ms: f64,
-    throughput_mbps: f64,
-    loss_probability: f64,
-}
-
-#[derive(Debug, Clone)]
-struct WeightedRoute {
-    path: RoutedPath,
-    metrics: PathMetrics,
-    weight: f64,
-}
-
-#[derive(Debug, Clone)]
-struct ScheduledRoute {
-    path: RoutedPath,
-    packet_count: usize,
-}
-
-#[derive(Debug, Default)]
-struct StreamDiscovery {
-    paths: Vec<RoutedPath>,
-    transmissions: usize,
-    peer_reputation_uses: usize,
-}
-
-#[derive(Debug, Default)]
-struct StreamSchedule {
-    route_count: usize,
-    standby_route_count: usize,
-    latency_ms: f64,
-    completion_ms: f64,
-    throughput_mbps: f64,
-    transmissions: usize,
-    packets_sent: usize,
-    active_routes: Vec<ScheduledRoute>,
-    adaptive_route_improvements: usize,
-    adaptive_route_rejections: usize,
-}
-
-#[derive(Debug, Default)]
-struct StreamPathSelection {
-    survivors: Vec<RoutedPath>,
-    failed_active_routes: usize,
-    failover_penalty_ms: f64,
-    failed_transmissions: usize,
-    packets_lost: usize,
-}
-
-#[derive(Debug)]
-enum RouteResult {
-    Delivered {
-        hops: usize,
-        malicious_transit: bool,
-    },
-    UnconfirmedDelivery {
-        hops: usize,
-        malicious_transit: bool,
-    },
-    NoRoute,
-    Loop,
-    TtlExpired,
-    Blackholed,
-    FlakyDrop,
-}
-
-/// Run several simulation configs and return one comparison report per config.
-pub fn run_parameter_sweep(configs: &[SimConfig]) -> Vec<ComparisonReport> {
-    configs
-        .iter()
-        .cloned()
-        .map(|config| Simulation::new(config).run())
-        .collect()
-}
-
-fn learn_path(learned_routes: &mut LearnedRouteTable, path: &[usize]) {
-    if path.len() < 2 {
+fn push_edge(
+    a: usize,
+    b: usize,
+    nodes: &[NodeSpec],
+    rng: &mut StdRng,
+    profile: TopologyProfile,
+    seen: &mut HashSet<(usize, usize)>,
+    edges: &mut Vec<EdgeSpec>,
+) {
+    if a == b {
         return;
     }
+    let key = if a < b { (a, b) } else { (b, a) };
+    if !seen.insert(key) {
+        return;
+    }
+    let class = classify_edge(&nodes[a], &nodes[b], profile);
+    edges.push(EdgeSpec {
+        a: key.0,
+        b: key.1,
+        link: generate_link(class, rng, profile),
+        class,
+        churned: false,
+    });
+}
 
-    let src = path[0];
-    let dst = *path.last().expect("path is non-empty");
-    for pair in path.windows(2) {
-        learned_routes.insert((pair[0], dst), pair[1]);
-        learned_routes.insert((pair[1], src), pair[0]);
+fn classify_edge(a: &NodeSpec, b: &NodeSpec, profile: TopologyProfile) -> LinkClass {
+    match profile {
+        TopologyProfile::RandomMesh => LinkClass::Regional,
+        TopologyProfile::Standard if a.backbone && b.backbone => LinkClass::Backbone,
+        TopologyProfile::Standard if a.region == b.region => LinkClass::Regional,
+        TopologyProfile::Standard => LinkClass::LongHaul,
     }
 }
 
-fn invalidate_path(learned_routes: &mut LearnedRouteTable, path: &[usize], dst: usize) {
-    for pair in path.windows(2) {
-        if learned_routes.get(&(pair[0], dst)).copied() == Some(pair[1]) {
-            learned_routes.remove(&(pair[0], dst));
+fn generate_link(class: LinkClass, rng: &mut StdRng, profile: TopologyProfile) -> SimLink {
+    if profile == TopologyProfile::RandomMesh {
+        return SimLink {
+            latency_ms: 5 + rng.random_range(0..60),
+            throughput_mbps: 25.0 + rng.random::<f64>().powf(1.2) * 975.0,
+            loss_probability: rng.random::<f64>().powf(2.0) * 0.015,
+            up: true,
+        };
+    }
+
+    match class {
+        LinkClass::Backbone => SimLink {
+            latency_ms: 15 + rng.random_range(0..90),
+            throughput_mbps: 5_000.0 + rng.random::<f64>().powf(0.6) * 35_000.0,
+            loss_probability: 0.00005 + rng.random::<f64>().powf(2.0) * 0.001,
+            up: true,
+        },
+        LinkClass::Regional => SimLink {
+            latency_ms: 2 + rng.random_range(0..25),
+            throughput_mbps: 100.0 + rng.random::<f64>().powf(0.9) * 4_900.0,
+            loss_probability: 0.0005 + rng.random::<f64>().powf(1.5) * 0.006,
+            up: true,
+        },
+        LinkClass::LongHaul => SimLink {
+            latency_ms: 65 + rng.random_range(0..170),
+            throughput_mbps: 10.0 + rng.random::<f64>().powf(1.7) * 390.0,
+            loss_probability: 0.004 + rng.random::<f64>().powf(1.2) * 0.035,
+            up: true,
+        },
+    }
+}
+
+fn mark_churned_links(edges: &mut [EdgeSpec], fraction: f64, rng: &mut StdRng) {
+    let count = fraction_count(edges.len(), fraction);
+    let mut indices = (0..edges.len()).collect::<Vec<_>>();
+    shuffle(&mut indices, rng);
+    for index in indices.into_iter().take(count) {
+        edges[index].churned = true;
+    }
+}
+
+fn build_adjacency(node_count: usize, edges: &[EdgeSpec]) -> HashMap<usize, Vec<usize>> {
+    let mut adjacency = HashMap::new();
+    for node in 0..node_count {
+        adjacency.insert(node, Vec::new());
+    }
+    for edge in edges {
+        adjacency
+            .get_mut(&edge.a)
+            .expect("node exists")
+            .push(edge.b);
+        adjacency
+            .get_mut(&edge.b)
+            .expect("node exists")
+            .push(edge.a);
+    }
+    adjacency
+}
+
+fn deterministic_identity(seed: u64, index: usize) -> (Identity, String) {
+    let mut rng =
+        StdRng::seed_from_u64(seed ^ (index as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    loop {
+        let mut secret = [0u8; 32];
+        rng.fill_bytes(&mut secret);
+        if let Ok(identity) = Identity::from_secret_bytes(&secret) {
+            return (identity, hex::encode(secret));
         }
     }
 }
 
-fn dedupe_paths(paths: Vec<RoutedPath>) -> Vec<RoutedPath> {
-    let mut seen = HashSet::new();
-    let mut deduped = Vec::new();
-    for path in paths {
-        if seen.insert(path.nodes.clone()) {
-            deduped.push(path);
+async fn recv_exact(endpoint: &FipsEndpoint, expected: &[u8], timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        match tokio::time::timeout(remaining, endpoint.recv()).await {
+            Ok(Some(message)) if message.data == expected => return true,
+            Ok(Some(_)) => continue,
+            _ => return false,
         }
     }
-    deduped
 }
 
-fn scheduler_weight(metrics: PathMetrics, peer_score: f64) -> f64 {
-    if metrics.throughput_mbps <= 0.0 {
-        return 0.0;
+async fn recv_payload_set(
+    endpoint: &FipsEndpoint,
+    expected: &mut HashSet<Vec<u8>>,
+    timeout: Duration,
+) -> usize {
+    let deadline = Instant::now() + timeout;
+    let mut delivered = 0usize;
+    while !expected.is_empty() {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        match tokio::time::timeout(remaining, endpoint.recv()).await {
+            Ok(Some(message)) => {
+                if expected.remove(&message.data) {
+                    delivered += 1;
+                }
+            }
+            _ => break,
+        }
     }
-    let loss_score = (1.0 - metrics.loss_probability.clamp(0.0, 0.95)).powf(2.0);
-    metrics.throughput_mbps * peer_score.max(0.05) * loss_score / (1.0 + metrics.latency_ms / 100.0)
+    delivered
 }
 
-fn route_addition_improves_stream(current: &StreamSchedule, next: &StreamSchedule) -> bool {
-    if next.completion_ms >= current.completion_ms {
-        return false;
+fn make_stream_payloads(
+    label: &str,
+    stream: usize,
+    src: usize,
+    dst: usize,
+    stream_size: usize,
+    chunk_size: usize,
+) -> Vec<Vec<u8>> {
+    let mut payloads = Vec::new();
+    let mut remaining = stream_size;
+    let mut chunk = 0usize;
+    while remaining > 0 {
+        let size = remaining.min(chunk_size);
+        let header = format!("fips-sim|stream|{label}|{stream}|{src}|{dst}|{chunk}|");
+        payloads.push(fixed_payload(header.as_bytes(), size));
+        remaining -= size;
+        chunk += 1;
     }
-    let absolute_gain_ms = current.completion_ms - next.completion_ms;
-    let relative_gain = absolute_gain_ms / current.completion_ms.max(1.0);
-    absolute_gain_ms >= 25.0 || relative_gain >= 0.03
+    payloads
 }
 
-fn stream_throughput_mbps(bytes: usize, completion_ms: f64) -> f64 {
-    if completion_ms > 0.0 && completion_ms.is_finite() {
-        (bytes as f64 * 8.0) / (completion_ms * 1_000.0)
-    } else {
+fn fixed_payload(prefix: &[u8], size: usize) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(size);
+    payload.extend_from_slice(prefix);
+    payload.truncate(size);
+    while payload.len() < size {
+        payload.push((payload.len() % 251) as u8);
+    }
+    payload
+}
+
+fn probe_stats(
+    attempted: usize,
+    failed_send: usize,
+    timed_out: usize,
+    latencies: Vec<f64>,
+) -> ProbeStats {
+    let delivered = latencies.len();
+    ProbeStats {
+        attempted,
+        delivered,
+        failed_send,
+        timed_out,
+        success_rate: rate(delivered, attempted),
+        avg_latency_ms: mean(&latencies),
+        p50_latency_ms: percentile(latencies.clone(), 0.50),
+        p95_latency_ms: percentile(latencies, 0.95),
+    }
+}
+
+fn pick_pair(indices: &[usize], rng: &mut StdRng) -> (usize, usize) {
+    let src_pos = rng.random_range(0..indices.len());
+    let mut dst_pos = rng.random_range(0..indices.len() - 1);
+    if dst_pos >= src_pos {
+        dst_pos += 1;
+    }
+    (indices[src_pos], indices[dst_pos])
+}
+
+fn shuffle(values: &mut [usize], rng: &mut StdRng) {
+    for i in (1..values.len()).rev() {
+        let j = rng.random_range(0..=i);
+        values.swap(i, j);
+    }
+}
+
+fn fraction_count(total: usize, fraction: f64) -> usize {
+    ((total as f64 * fraction.clamp(0.0, 1.0)).round() as usize).min(total)
+}
+
+fn rate(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
         0.0
+    } else {
+        numerator as f64 / denominator as f64
     }
 }
 
-fn failed_stream_probe_transmissions(path: &RoutedPath) -> usize {
-    failed_stream_probe_packet_count().saturating_mul(path.hops())
-}
-
-fn failed_stream_probe_packet_count() -> usize {
-    stream_packet_count(256 * 1024)
-}
-
-fn native_failover_penalty_ms(failed_routes: usize) -> f64 {
-    failed_routes as f64 * 250.0
-}
-
-fn tcp_failover_penalty_ms(failed_routes: usize) -> f64 {
-    if failed_routes == 0 {
-        return 0.0;
-    }
-    let base_rto_ms = 1_000.0;
-    (0..failed_routes)
-        .map(|attempt| base_rto_ms * 2f64.powi(attempt.min(4) as i32))
-        .sum()
-}
-
-fn transfer_time_ms(bytes: f64, throughput_mbps: f64) -> f64 {
-    if throughput_mbps <= 0.0 {
-        return f64::MAX;
-    }
-    bytes * 8.0 / (throughput_mbps * 1_000.0)
-}
-
-fn stream_packet_count(bytes: usize) -> usize {
-    const STREAM_CHUNK_BYTES: usize = 64 * 1024;
-    bytes.div_ceil(STREAM_CHUNK_BYTES).max(1)
-}
-
-fn sample_packet_losses(packet_count: usize, loss_probability: f64, rng: &mut StdRng) -> usize {
-    if packet_count == 0 || loss_probability <= 0.0 {
-        return 0;
-    }
-    if loss_probability >= 1.0 {
-        return packet_count;
-    }
-    (0..packet_count)
-        .filter(|_| rng.random::<f64>() < loss_probability)
-        .count()
-}
-
-fn average_f64(values: &[f64]) -> f64 {
+fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         0.0
     } else {
@@ -2534,396 +1000,49 @@ fn average_f64(values: &[f64]) -> f64 {
     }
 }
 
-fn percentile_f64(sorted: &[f64], percentile: f64) -> f64 {
-    if sorted.is_empty() {
+fn percentile(mut values: Vec<f64>, percentile: f64) -> f64 {
+    if values.is_empty() {
         return 0.0;
     }
-    let p = percentile.clamp(0.0, 1.0);
-    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted[idx]
-}
-
-fn ewma(old: f64, sample: f64, alpha: f64) -> f64 {
-    old * (1.0 - alpha) + sample * alpha
-}
-
-fn assign_identity_behaviors(n: usize, adversary: AdversaryConfig) -> Vec<IdentityBehavior> {
-    let root_grinders = fraction_count(n, adversary.root_grinder_fraction);
-    let phantom_roots = fraction_count(n, adversary.phantom_root_fraction);
-    (0..n)
-        .map(|index| {
-            if index < root_grinders {
-                IdentityBehavior::RootGrinder
-            } else if index < root_grinders + phantom_roots {
-                IdentityBehavior::PhantomRoot
-            } else {
-                IdentityBehavior::Honest
-            }
-        })
-        .collect()
-}
-
-fn assign_forward_behaviors(n: usize, adversary: AdversaryConfig) -> Vec<ForwardBehavior> {
-    let blackholes = fraction_count(n, adversary.blackhole_fraction);
-    let flaky = fraction_count(n, adversary.flaky_fraction);
-    (0..n)
-        .map(|index| {
-            if index < blackholes {
-                ForwardBehavior::Blackhole
-            } else if index < blackholes + flaky {
-                ForwardBehavior::Flaky {
-                    drop_probability: adversary.flaky_drop_probability.clamp(0.0, 1.0),
-                }
-            } else {
-                ForwardBehavior::Honest
-            }
-        })
-        .collect()
-}
-
-fn fraction_count(n: usize, fraction: f64) -> usize {
-    ((n as f64 * fraction.clamp(0.0, 1.0)).round() as usize).min(n)
-}
-
-fn addr_from_rank(rank: u128) -> NodeAddr {
-    NodeAddr::from_bytes(rank.to_be_bytes())
-}
-
-fn fake_root() -> NodeAddr {
-    NodeAddr::from_bytes([0u8; 16])
-}
-
-fn generate_connected_edges(
-    n: usize,
-    target_edges: usize,
-    rng: &mut StdRng,
-) -> Vec<(usize, usize)> {
-    if n <= 1 {
-        return Vec::new();
-    }
-
-    let target_edges = target_edges.max(n - 1).min(n * (n - 1) / 2);
-    let mut edges = Vec::with_capacity(target_edges);
-    let mut adj = vec![vec![false; n]; n];
-    let mut connected = vec![false; n];
-    connected[0] = true;
-    let mut connected_count = 1;
-
-    while connected_count < n {
-        let from = rng.random_range(0..n);
-        if !connected[from] {
-            continue;
-        }
-        let to = rng.random_range(0..n);
-        if connected[to] || from == to {
-            continue;
-        }
-        edges.push((from, to));
-        adj[from][to] = true;
-        adj[to][from] = true;
-        connected[to] = true;
-        connected_count += 1;
-    }
-
-    let mut attempts = 0usize;
-    while edges.len() < target_edges && attempts < target_edges * 20 {
-        attempts += 1;
-        let a = rng.random_range(0..n);
-        let b = rng.random_range(0..n);
-        if a == b || adj[a][b] {
-            continue;
-        }
-        edges.push((a, b));
-        adj[a][b] = true;
-        adj[b][a] = true;
-    }
-
-    edges
-}
-
-fn tree_distance(a: &[NodeAddr], b: &[NodeAddr]) -> Option<usize> {
-    if a.is_empty() || b.is_empty() || a.last() != b.last() {
-        return None;
-    }
-    let common = a
-        .iter()
-        .rev()
-        .zip(b.iter().rev())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let lca_depth_from_root = common.checked_sub(1)?;
-    let a_depth = a.len() - 1;
-    let b_depth = b.len() - 1;
-    Some((a_depth - lca_depth_from_root) + (b_depth - lca_depth_from_root))
-}
-
-fn percentile_usize(sorted: &[usize], percentile: f64) -> usize {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let p = percentile.clamp(0.0, 1.0);
-    let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted[idx]
-}
-
-fn strategy_seed(strategy: RoutingStrategy) -> u64 {
-    match strategy {
-        RoutingStrategy::CurrentFips => 0xF1F5_0001,
-        RoutingStrategy::VerifiedAncestry => 0xF1F5_0002,
-        RoutingStrategy::PinnedRoot => 0xF1F5_0003,
-        RoutingStrategy::ReplyLearnedFlood => 0xF1F5_0004,
-        RoutingStrategy::ReplyLearnedMultipath => 0xF1F5_0005,
-    }
-}
-
-fn stream_seed(strategy: RoutingStrategy) -> u64 {
-    match strategy {
-        RoutingStrategy::CurrentFips => 0xF1F5_1001,
-        RoutingStrategy::VerifiedAncestry => 0xF1F5_1002,
-        RoutingStrategy::PinnedRoot => 0xF1F5_1003,
-        RoutingStrategy::ReplyLearnedFlood => 0xF1F5_1004,
-        RoutingStrategy::ReplyLearnedMultipath => 0xF1F5_1005,
-    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let index = ((values.len() - 1) as f64 * percentile.clamp(0.0, 1.0)).round() as usize;
+    values[index]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn report_for(report: &ComparisonReport, strategy: RoutingStrategy) -> &StrategyReport {
-        report
-            .strategies
-            .iter()
-            .find(|candidate| candidate.strategy == strategy)
-            .expect("strategy report")
-    }
-
-    #[test]
-    fn honest_network_routes_with_current_strategy() {
-        let config = SimConfig {
-            node_count: 40,
-            target_edges: 90,
-            route_probe_count: 250,
-            seed: 11,
-            adversary: AdversaryConfig::default(),
-            strategies: vec![RoutingStrategy::CurrentFips],
-            ..SimConfig::default()
-        };
-
-        let report = Simulation::new(config).run();
-        let current = report_for(&report, RoutingStrategy::CurrentFips);
-
-        assert!(current.converged, "tree should converge");
-        assert_eq!(current.tree.root_capture_rate, 0.0);
-        assert!(
-            current.routing.success_rate >= 0.98,
-            "expected near-perfect honest routing, got {:.3}",
-            current.routing.success_rate
-        );
-    }
-
-    #[test]
-    fn phantom_root_attack_is_exposed_by_strategy_comparison() {
-        let config = SimConfig {
-            node_count: 60,
-            target_edges: 140,
-            route_probe_count: 500,
-            seed: 21,
+    #[tokio::test(flavor = "current_thread")]
+    async fn production_sim_uses_real_endpoints_over_sim_transport() {
+        let report = Simulation::new(SimConfig {
+            node_count: 18,
+            target_edges: 44,
+            route_probe_count: 6,
+            stream_probe_count: 2,
+            stream_size_bytes: 8 * 1024,
+            chunk_size_bytes: 512,
+            convergence_wait_ms: 1_500,
+            reconvergence_wait_ms: 800,
+            delivery_timeout_ms: 3_000,
+            stream_timeout_ms: 4_000,
             adversary: AdversaryConfig {
-                phantom_root_fraction: 0.08,
-                blackhole_fraction: 0.08,
-                ..AdversaryConfig::default()
+                blackhole_fraction: 0.10,
+                flaky_fraction: 0.10,
+                flaky_drop_probability: 0.35,
+                churned_node_fraction: 0.05,
+                churned_link_fraction: 0.10,
             },
-            strategies: vec![
-                RoutingStrategy::CurrentFips,
-                RoutingStrategy::VerifiedAncestry,
-                RoutingStrategy::PinnedRoot,
-            ],
             ..SimConfig::default()
-        };
+        })
+        .run()
+        .await
+        .expect("production simulation should run");
 
-        let report = Simulation::new(config).run();
-        let current = report_for(&report, RoutingStrategy::CurrentFips);
-        let verified = report_for(&report, RoutingStrategy::VerifiedAncestry);
-        let pinned = report_for(&report, RoutingStrategy::PinnedRoot);
-
-        assert!(
-            current.tree.honest_on_fake_root > 0,
-            "current FIPS should expose phantom-root capture in this scenario"
-        );
-        assert_eq!(
-            verified.tree.honest_on_fake_root, 0,
-            "verified ancestry should reject phantom roots"
-        );
-        assert_eq!(
-            pinned.tree.honest_on_fake_root, 0,
-            "pinned root should reject phantom roots"
-        );
-        assert!(
-            verified.routing.success_rate >= current.routing.success_rate,
-            "verified ancestry should not route worse than current under phantom roots"
-        );
-        assert!(
-            pinned.routing.success_rate >= current.routing.success_rate,
-            "pinned root should not route worse than current under phantom roots"
-        );
-    }
-
-    #[test]
-    fn root_grinding_remains_gameable_without_root_membership() {
-        let config = SimConfig {
-            node_count: 60,
-            target_edges: 140,
-            route_probe_count: 500,
-            seed: 31,
-            adversary: AdversaryConfig {
-                root_grinder_fraction: 0.05,
-                blackhole_fraction: 0.05,
-                ..AdversaryConfig::default()
-            },
-            strategies: vec![
-                RoutingStrategy::CurrentFips,
-                RoutingStrategy::VerifiedAncestry,
-                RoutingStrategy::PinnedRoot,
-            ],
-            ..SimConfig::default()
-        };
-
-        let report = Simulation::new(config).run();
-        let current = report_for(&report, RoutingStrategy::CurrentFips);
-        let verified = report_for(&report, RoutingStrategy::VerifiedAncestry);
-        let pinned = report_for(&report, RoutingStrategy::PinnedRoot);
-
-        assert!(
-            current.tree.honest_on_malicious_root > 0,
-            "smallest-root strategy should be vulnerable to ground low node_addr"
-        );
-        assert!(
-            verified.tree.honest_on_malicious_root > 0,
-            "ancestry validation alone cannot reject an honestly advertised grinder root"
-        );
-        assert_eq!(
-            pinned.tree.honest_on_malicious_root, 0,
-            "pinned root should avoid grinder-root capture"
-        );
-        assert!(
-            pinned.routing.success_rate >= current.routing.success_rate,
-            "pinned root should improve or preserve routing under grinder blackholes"
-        );
-    }
-
-    #[test]
-    fn reply_learned_flood_uses_reply_confirmed_routes() {
-        let config = SimConfig {
-            node_count: 60,
-            target_edges: 140,
-            route_probe_count: 500,
-            seed: 41,
-            adversary: AdversaryConfig {
-                root_grinder_fraction: 0.04,
-                phantom_root_fraction: 0.08,
-                blackhole_fraction: 0.05,
-                flaky_fraction: 0.05,
-                flaky_drop_probability: 0.20,
-            },
-            strategies: vec![RoutingStrategy::ReplyLearnedFlood],
-            ..SimConfig::default()
-        };
-
-        let report = Simulation::new(config).run();
-        let reply_learned = report_for(&report, RoutingStrategy::ReplyLearnedFlood);
-
-        assert_eq!(
-            reply_learned.tree.root_capture_rate, 0.0,
-            "reply-learned flooding should not depend on a tree root"
-        );
-        assert!(
-            reply_learned.routing.discovery_floods > 0,
-            "first-contact routes should use discovery floods"
-        );
-        assert!(
-            reply_learned.routing.learned_route_attempts > 0,
-            "successful replies should populate the learned route cache"
-        );
-        assert!(
-            reply_learned.routing.success_rate >= 0.75,
-            "expected most bidirectional probes to confirm, got {:.3}",
-            reply_learned.routing.success_rate
-        );
-        assert!(
-            reply_learned.routing.avg_transmissions_per_probe > reply_learned.routing.avg_hops,
-            "flood discovery should expose bandwidth cost beyond route hop count"
-        );
-    }
-
-    #[test]
-    fn multipath_streams_use_reputation_and_improve_throughput() {
-        let config = SimConfig {
-            node_count: 70,
-            target_edges: 180,
-            route_probe_count: 300,
-            stream_probe_count: 90,
-            stream_size_bytes: 32 * 1024 * 1024,
-            max_multipath_routes: 3,
-            seed: 52,
-            adversary: AdversaryConfig {
-                root_grinder_fraction: 0.03,
-                phantom_root_fraction: 0.05,
-                blackhole_fraction: 0.04,
-                flaky_fraction: 0.04,
-                flaky_drop_probability: 0.20,
-            },
-            strategies: vec![
-                RoutingStrategy::ReplyLearnedFlood,
-                RoutingStrategy::ReplyLearnedMultipath,
-            ],
-            ..SimConfig::default()
-        };
-
-        let report = Simulation::new(config).run();
-        let single = report_for(&report, RoutingStrategy::ReplyLearnedFlood);
-        let multipath = report_for(&report, RoutingStrategy::ReplyLearnedMultipath);
-
-        assert_eq!(multipath.streams.stream_size_bytes, 32 * 1024 * 1024);
-        assert!(
-            multipath.streams.multi_route_streams > 0,
-            "multipath strategy should schedule some streams over multiple routes"
-        );
-        assert!(
-            multipath.streams.avg_routes_per_stream > single.streams.avg_routes_per_stream,
-            "multipath should use more routes per completed stream"
-        );
-        assert!(
-            multipath.streams.peer_reputation_entries > 0,
-            "confirmed stream paths should build peer reputation"
-        );
-        assert!(
-            multipath.streams.peer_reputation_uses > 0,
-            "route discovery should consult peer reputation"
-        );
-        assert!(
-            multipath.streams.avg_throughput_mbps >= single.streams.avg_throughput_mbps,
-            "bandwidth scheduling should not underperform single-route streams"
-        );
-        assert!(
-            multipath.streams.adaptive_route_improvements > 0,
-            "multipath should track when adding a route improves completion time"
-        );
-        assert!(
-            multipath.streams.packets_sent > 0 && multipath.streams.packets_delivered > 0,
-            "stream simulation should account source and delivered packets"
-        );
-        assert!(
-            multipath.streams.packet_loss_rate > 0.0,
-            "stream simulation should expose first-pass packet loss"
-        );
-        assert_eq!(
-            multipath.tcp_streams.multi_route_streams, 0,
-            "ordinary TCP-over-FIPS should use only one active route per flow"
-        );
-        assert!(
-            multipath.tcp_streams.avg_standby_routes_per_stream > 0.0,
-            "TCP-over-FIPS should keep warm route candidates for failover"
-        );
+        assert_eq!(report.topology.node_count, 18);
+        assert!(report.topology.edge_count >= 17);
+        assert!(report.baseline.network.packets_sent > 0);
+        assert!(report.baseline.route_probes.delivered > 0);
+        assert!(report.impaired.network.packets_sent > 0);
     }
 }

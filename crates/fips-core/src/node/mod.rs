@@ -873,6 +873,28 @@ impl Node {
             transports.push(TransportHandle::Udp(udp));
         }
 
+        #[cfg(feature = "sim-transport")]
+        {
+            let sim_instances: Vec<_> = self
+                .config
+                .transports
+                .sim
+                .iter()
+                .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
+                .collect();
+
+            for (name, sim_config) in sim_instances {
+                let transport_id = self.allocate_transport_id();
+                let sim = crate::transport::sim::SimTransport::new(
+                    transport_id,
+                    name,
+                    sim_config,
+                    packet_tx.clone(),
+                );
+                transports.push(TransportHandle::Sim(sim));
+            }
+        }
+
         // Create Ethernet transport instances (Unix only — requires raw sockets)
         #[cfg(unix)]
         {

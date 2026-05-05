@@ -38,6 +38,8 @@ pub use node::{
     RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig, TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
+#[cfg(feature = "sim-transport")]
+pub use transport::SimTransportConfig;
 pub use transport::{
     BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
     TransportsConfig, UdpConfig,

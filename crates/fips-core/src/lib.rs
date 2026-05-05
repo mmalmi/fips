@@ -32,6 +32,8 @@ pub use fips_identity::{
 };
 
 // Re-export config types
+#[cfg(feature = "sim-transport")]
+pub use config::SimTransportConfig;
 pub use config::{Config, ConfigError, IdentityConfig, TorConfig, UdpConfig};
 pub use upper::config::{DnsConfig, TunConfig};
 
@@ -45,6 +47,11 @@ pub use tree::{CoordEntry, ParentDeclaration, TreeCoordinate, TreeError, TreeSta
 pub use bloom::{BloomError, BloomFilter, BloomState};
 
 // Re-export transport types
+#[cfg(feature = "sim-transport")]
+pub use transport::sim::{
+    SimLink, SimNetwork, SimNetworkStats, SimNodeBehavior, SimTransport, register_sim_network,
+    unregister_sim_network,
+};
 pub use transport::udp::UdpTransport;
 pub use transport::{
     DiscoveredPeer, Link, LinkDirection, LinkId, LinkState, LinkStats, PacketRx, PacketTx,

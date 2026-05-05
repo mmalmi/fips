@@ -172,6 +172,68 @@ impl UdpConfig {
     }
 }
 
+/// Default simulated transport MTU (IPv6 minimum).
+#[cfg(feature = "sim-transport")]
+const DEFAULT_SIM_MTU: u16 = 1280;
+
+/// Default simulated network registry name.
+#[cfg(feature = "sim-transport")]
+const DEFAULT_SIM_NETWORK: &str = "default";
+
+/// In-memory simulated transport instance configuration.
+///
+/// This transport is intended for production-backed simulations. It uses the
+/// normal node/session/routing stack, but delivers transport packets through a
+/// registered in-process network that can model latency, throughput, loss, and
+/// churn without binding real sockets.
+#[cfg(feature = "sim-transport")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SimTransportConfig {
+    /// Registry name of the in-process simulated network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+
+    /// Address of this simulated endpoint within the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+
+    /// Transport MTU. Defaults to 1280.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u16>,
+
+    /// Whether discovery should auto-connect to discovered peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_connect: Option<bool>,
+
+    /// Accept inbound handshake msg1 from new peers. Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_connections: Option<bool>,
+}
+
+#[cfg(feature = "sim-transport")]
+impl SimTransportConfig {
+    /// Registry name of the in-process simulated network.
+    pub fn network(&self) -> &str {
+        self.network.as_deref().unwrap_or(DEFAULT_SIM_NETWORK)
+    }
+
+    /// Get the simulated MTU.
+    pub fn mtu(&self) -> u16 {
+        self.mtu.unwrap_or(DEFAULT_SIM_MTU)
+    }
+
+    /// Whether this transport auto-connects to discovered peers.
+    pub fn auto_connect(&self) -> bool {
+        self.auto_connect.unwrap_or(false)
+    }
+
+    /// Whether this transport accepts inbound handshakes.
+    pub fn accept_connections(&self) -> bool {
+        self.accept_connections.unwrap_or(true)
+    }
+}
+
 /// Transport instances - either a single config or named instances.
 ///
 /// Allows both simple single-instance config:
@@ -813,6 +875,11 @@ pub struct TransportsConfig {
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub udp: TransportInstances<UdpConfig>,
 
+    /// In-memory simulated transport instances.
+    #[cfg(feature = "sim-transport")]
+    #[serde(default, skip_serializing_if = "is_transport_empty")]
+    pub sim: TransportInstances<SimTransportConfig>,
+
     /// Ethernet transport instances.
     #[serde(default, skip_serializing_if = "is_transport_empty")]
     pub ethernet: TransportInstances<EthernetConfig>,
@@ -839,6 +906,16 @@ impl TransportsConfig {
     /// Check if any transports are configured.
     pub fn is_empty(&self) -> bool {
         self.udp.is_empty()
+            && {
+                #[cfg(feature = "sim-transport")]
+                {
+                    self.sim.is_empty()
+                }
+                #[cfg(not(feature = "sim-transport"))]
+                {
+                    true
+                }
+            }
             && self.ethernet.is_empty()
             && self.tcp.is_empty()
             && self.tor.is_empty()
@@ -851,6 +928,10 @@ impl TransportsConfig {
     pub fn merge(&mut self, other: TransportsConfig) {
         if !other.udp.is_empty() {
             self.udp = other.udp;
+        }
+        #[cfg(feature = "sim-transport")]
+        if !other.sim.is_empty() {
+            self.sim = other.sim;
         }
         if !other.ethernet.is_empty() {
             self.ethernet = other.ethernet;
