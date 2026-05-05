@@ -21,6 +21,7 @@
 //! ```
 //!
 //! Port 256 (0x100) = IPv6 shim with header compression.
+//! Port 257 (0x101) = app-owned protocol sessions.
 //!
 //! ## Message Classes
 //!
@@ -76,6 +77,9 @@ pub const FSP_PORT_HEADER_SIZE: usize = 4;
 
 /// FSP port: IPv6 shim service.
 pub const FSP_PORT_IPV6_SHIM: u16 = 256;
+
+/// FSP port: app-owned protocol session service.
+pub const FSP_PORT_APP_PROTOCOL: u16 = 257;
 
 // Cleartext flag bit constants (byte 1 of common prefix, phase 0x0 only).
 

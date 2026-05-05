@@ -28,6 +28,7 @@ use self::wire::{
     FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
     prepend_inner_header,
 };
+use crate::app_protocol::AppProtocolFrame;
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::node::session::SessionEntry;
@@ -165,6 +166,56 @@ pub struct ExternalPacketIo {
     pub outbound_tx: crate::upper::tun::TunOutboundTx,
     /// Receive inbound IPv6 packets delivered by FIPS sessions.
     pub inbound_rx: tokio::sync::mpsc::Receiver<NodeDeliveredPacket>,
+}
+
+/// App-owned application protocol channels for embedding FIPS without a daemon.
+#[derive(Debug)]
+pub(crate) struct AppProtocolIo {
+    /// Send application protocol commands into the node RX loop.
+    pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeAppCommand>,
+    /// Receive application protocol events delivered by FIPS sessions.
+    pub(crate) event_rx: tokio::sync::mpsc::Receiver<NodeAppEvent>,
+}
+
+/// Commands accepted by the node app-protocol service.
+#[derive(Debug)]
+pub(crate) enum NodeAppCommand {
+    Open {
+        remote: PeerIdentity,
+        session_id: u64,
+        protocol: Vec<u8>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
+    Send {
+        remote_node_addr: NodeAddr,
+        session_id: u64,
+        payload: Vec<u8>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
+    Close {
+        remote_node_addr: NodeAddr,
+        session_id: u64,
+    },
+}
+
+/// Application protocol events emitted by the node session receive path.
+#[derive(Debug)]
+pub(crate) enum NodeAppEvent {
+    Open {
+        source_node_addr: NodeAddr,
+        source_npub: Option<String>,
+        session_id: u64,
+        protocol: Vec<u8>,
+    },
+    Data {
+        source_node_addr: NodeAddr,
+        session_id: u64,
+        payload: Vec<u8>,
+    },
+    Close {
+        source_node_addr: NodeAddr,
+        session_id: u64,
+    },
 }
 
 /// Node operational state.
@@ -373,6 +424,8 @@ pub struct Node {
     /// Packets queued while waiting for session establishment.
     /// Keyed by destination NodeAddr, bounded per-dest and total.
     pending_tun_packets: HashMap<NodeAddr, VecDeque<Vec<u8>>>,
+    /// Application protocol frames queued while waiting for session establishment.
+    pending_app_protocol_frames: HashMap<NodeAddr, VecDeque<AppProtocolFrame>>,
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups. Maps target NodeAddr to the
     /// initiation timestamp (Unix ms). Prevents duplicate flood queries.
@@ -410,6 +463,10 @@ pub struct Node {
     tun_outbound_rx: Option<TunOutboundRx>,
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
+    /// App protocol command receiver used by embedded/no-daemon integrations.
+    app_command_rx: Option<tokio::sync::mpsc::Receiver<NodeAppCommand>>,
+    /// App protocol event sink used by embedded/no-daemon integrations.
+    app_event_tx: Option<tokio::sync::mpsc::Sender<NodeAppEvent>>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -604,6 +661,7 @@ impl Node {
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
+            pending_app_protocol_frames: HashMap::new(),
             pending_lookups: HashMap::new(),
             max_connections,
             max_peers,
@@ -617,6 +675,8 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
+            app_command_rx: None,
+            app_event_tx: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -737,6 +797,7 @@ impl Node {
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
+            pending_app_protocol_frames: HashMap::new(),
             pending_lookups: HashMap::new(),
             max_connections,
             max_peers,
@@ -750,6 +811,8 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
+            app_command_rx: None,
+            app_event_tx: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -1914,6 +1977,41 @@ impl Node {
             outbound_tx,
             inbound_rx,
         })
+    }
+
+    /// Attach app-owned application protocol I/O for embedded operation.
+    ///
+    /// Commands sent to the returned sender are processed by the node RX loop.
+    /// Incoming app protocol frames are emitted as source-attributed events.
+    pub(crate) fn attach_app_protocol_io(
+        &mut self,
+        capacity: usize,
+    ) -> Result<AppProtocolIo, NodeError> {
+        if self.state != NodeState::Created {
+            return Err(NodeError::Config(ConfigError::Validation(
+                "app protocol I/O must be attached before node start".to_string(),
+            )));
+        }
+
+        let capacity = capacity.max(1);
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(capacity);
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(capacity);
+        self.app_command_rx = Some(command_rx);
+        self.app_event_tx = Some(event_tx);
+
+        Ok(AppProtocolIo {
+            command_tx,
+            event_rx,
+        })
+    }
+
+    pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {
+        let mut prefix = [0u8; 15];
+        prefix.copy_from_slice(&addr.as_bytes()[0..15]);
+        self.identity_cache
+            .get(&prefix)
+            .filter(|(node_addr, _, _)| node_addr == addr)
+            .map(|(_, pubkey, _)| *pubkey)
     }
 
     pub(crate) fn npub_for_node_addr(&self, addr: &NodeAddr) -> Option<String> {

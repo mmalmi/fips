@@ -1,6 +1,6 @@
 # Nostr-VPN In-App Data Plane Integration
 
-> **Status**: Proposed.
+> **Status**: In progress.
 > This plan describes the FIPS library and broker work needed for
 > `nostr-vpn` to move its private mesh data plane from WireGuard to FIPS
 > without exposing a FIPS-owned network adapter to the host system.
@@ -167,6 +167,8 @@ this system".
 
 ### 1. Embedded Runtime Without TUN
 
+Status: implemented for the library endpoint API.
+
 Add a runtime mode that disables all system network integration:
 
 ```rust
@@ -192,6 +194,8 @@ impl FipsEndpointBuilder {
 
 ### 2. External Packet I/O
 
+Status: implemented for app-owned packet send/receive with source attribution.
+
 Expose app-owned packet I/O:
 
 ```rust
@@ -211,6 +215,8 @@ pub struct FipsDeliveredPacket {
 writing a packet to its VPN file descriptor or app packet sink.
 
 ### 3. Application Protocol Handlers
+
+Status: implemented for loopback sessions and remote FSP session data frames.
 
 Add explicit protocol routing:
 
@@ -236,6 +242,15 @@ impl FipsEndpoint {
 
 Unknown protocols must be rejected or ignored. They must not fall through to
 host networking.
+
+The current remote wire path uses an app-owned FSP service port and frames:
+
+- open protocol session
+- data frame
+- close frame
+
+Open and data frames are queued while the underlying end-to-end FSP session is
+establishing, then flushed once the Noise XK session reaches Established.
 
 ### 4. Local Delivery vs Transit
 

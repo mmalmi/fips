@@ -259,6 +259,91 @@ async fn test_session_direct_peer_data_transfer() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_app_protocol_open_flushes_after_session_establishment() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let mut node0_app = nodes[0]
+        .node
+        .attach_app_protocol_io(8)
+        .expect("node 0 app protocol I/O should attach");
+    let mut node1_app = nodes[1]
+        .node
+        .attach_app_protocol_io(8)
+        .expect("node 1 app protocol I/O should attach");
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .open_app_protocol_session(node1_identity, 42, b"nostr-vpn/ip/1".to_vec())
+        .await
+        .expect("open should queue behind session establishment");
+
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(1), node1_app.event_rx.recv())
+        .await
+        .expect("app open event should not time out")
+        .expect("app open event should arrive");
+    match event {
+        NodeAppEvent::Open {
+            source_node_addr,
+            source_npub,
+            session_id,
+            protocol,
+        } => {
+            assert_eq!(source_node_addr, node0_addr);
+            assert_eq!(source_npub, Some(nodes[0].node.npub()));
+            assert_eq!(session_id, 42);
+            assert_eq!(protocol, b"nostr-vpn/ip/1");
+        }
+        other => panic!("expected open event, got {other:?}"),
+    }
+
+    nodes[1]
+        .node
+        .send_app_protocol_frame(
+            &node0_addr,
+            crate::app_protocol::AppProtocolFrame::Data {
+                session_id: 42,
+                payload: b"pong".to_vec(),
+            },
+        )
+        .await
+        .expect("reply data should send");
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    process_available_packets(&mut nodes).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), node0_app.event_rx.recv())
+        .await
+        .expect("app data event should not time out")
+        .expect("app data event should arrive");
+    match event {
+        NodeAppEvent::Data {
+            source_node_addr,
+            session_id,
+            payload,
+        } => {
+            assert_eq!(source_node_addr, node1_addr);
+            assert_eq!(session_id, 42);
+            assert_eq!(payload, b"pong");
+        }
+        other => panic!("expected data event, got {other:?}"),
+    }
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 // ============================================================================
 // Integration tests: 3-node forwarded session
 // ============================================================================

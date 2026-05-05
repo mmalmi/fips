@@ -6,16 +6,19 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 use crate::NodeAddr;
+use crate::app_protocol::{
+    AppProtocolFrame, MAX_APP_PROTOCOL_NAME_LEN, MAX_APP_PROTOCOL_PAYLOAD_LEN,
+};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED,
-    FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM,
-    FspCommonPrefix, FspEncryptedHeader, build_fsp_header, fsp_prepend_inner_header,
-    fsp_strip_inner_header, parse_encrypted_coords,
+    FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_APP_PROTOCOL, FSP_PORT_HEADER_SIZE,
+    FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
+    fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
-use crate::node::{Node, NodeError};
+use crate::node::{Node, NodeAppCommand, NodeAppEvent, NodeError};
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
@@ -334,6 +337,18 @@ impl Node {
                             }
                         }
                     }
+                    FSP_PORT_APP_PROTOCOL => match AppProtocolFrame::decode(service_payload) {
+                        Ok(frame) => {
+                            self.deliver_app_protocol_frame(src_addr, frame);
+                        }
+                        Err(error) => {
+                            debug!(
+                                src = %self.peer_display_name(src_addr),
+                                error = %error,
+                                "Malformed app protocol frame"
+                            );
+                        }
+                    },
                     _ => {
                         debug!(
                             src = %self.peer_display_name(src_addr),
@@ -1429,6 +1444,188 @@ impl Node {
         .await
     }
 
+    /// Handle an embedded endpoint application protocol command.
+    pub(in crate::node) async fn handle_app_protocol_command(&mut self, command: NodeAppCommand) {
+        match command {
+            NodeAppCommand::Open {
+                remote,
+                session_id,
+                protocol,
+                response_tx,
+            } => {
+                let result = self
+                    .open_app_protocol_session(remote, session_id, protocol)
+                    .await;
+                let _ = response_tx.send(result);
+            }
+            NodeAppCommand::Send {
+                remote_node_addr,
+                session_id,
+                payload,
+                response_tx,
+            } => {
+                let result = self
+                    .send_or_queue_app_protocol_frame(
+                        remote_node_addr,
+                        None,
+                        AppProtocolFrame::Data {
+                            session_id,
+                            payload,
+                        },
+                    )
+                    .await;
+                let _ = response_tx.send(result);
+            }
+            NodeAppCommand::Close {
+                remote_node_addr,
+                session_id,
+            } => {
+                let _ = self
+                    .send_or_queue_app_protocol_frame(
+                        remote_node_addr,
+                        None,
+                        AppProtocolFrame::Close { session_id },
+                    )
+                    .await;
+            }
+        }
+    }
+
+    pub(in crate::node) async fn open_app_protocol_session(
+        &mut self,
+        remote: crate::PeerIdentity,
+        session_id: u64,
+        protocol: Vec<u8>,
+    ) -> Result<(), NodeError> {
+        if protocol.is_empty() {
+            return Err(NodeError::SendFailed {
+                node_addr: *remote.node_addr(),
+                reason: "empty app protocol".into(),
+            });
+        }
+
+        let dest_addr = *remote.node_addr();
+        let dest_pubkey = remote.pubkey_full();
+        self.register_identity(dest_addr, dest_pubkey);
+        self.send_or_queue_app_protocol_frame(
+            dest_addr,
+            Some(dest_pubkey),
+            AppProtocolFrame::Open {
+                session_id,
+                protocol,
+            },
+        )
+        .await
+    }
+
+    async fn send_or_queue_app_protocol_frame(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: Option<PublicKey>,
+        frame: AppProtocolFrame,
+    ) -> Result<(), NodeError> {
+        if let Some(entry) = self.sessions.get(&dest_addr) {
+            if entry.is_established() {
+                return self.send_app_protocol_frame(&dest_addr, frame).await;
+            }
+            self.queue_pending_app_protocol_frame(dest_addr, frame);
+            return Ok(());
+        }
+
+        let dest_pubkey = dest_pubkey
+            .or_else(|| self.pubkey_for_node_addr(&dest_addr))
+            .ok_or_else(|| NodeError::SendFailed {
+                node_addr: dest_addr,
+                reason: "unknown remote identity for app protocol session".into(),
+            })?;
+        self.initiate_session(dest_addr, dest_pubkey).await?;
+        self.queue_pending_app_protocol_frame(dest_addr, frame);
+        Ok(())
+    }
+
+    pub(in crate::node) async fn send_app_protocol_frame(
+        &mut self,
+        dest_addr: &NodeAddr,
+        frame: AppProtocolFrame,
+    ) -> Result<(), NodeError> {
+        match &frame {
+            AppProtocolFrame::Open { protocol, .. } if protocol.is_empty() => {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "empty app protocol".into(),
+                });
+            }
+            AppProtocolFrame::Open { protocol, .. }
+                if protocol.len() > MAX_APP_PROTOCOL_NAME_LEN =>
+            {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "app protocol name too long".into(),
+                });
+            }
+            AppProtocolFrame::Data { payload, .. }
+                if payload.len() > MAX_APP_PROTOCOL_PAYLOAD_LEN =>
+            {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "app protocol payload too long".into(),
+                });
+            }
+            _ => {}
+        }
+
+        let payload = frame.encode();
+        self.send_session_data(
+            dest_addr,
+            FSP_PORT_APP_PROTOCOL,
+            FSP_PORT_APP_PROTOCOL,
+            &payload,
+        )
+        .await
+    }
+
+    fn deliver_app_protocol_frame(&self, src_addr: &NodeAddr, frame: AppProtocolFrame) {
+        let Some(app_event_tx) = &self.app_event_tx else {
+            trace!(
+                src = %self.peer_display_name(src_addr),
+                "App protocol frame received without an attached endpoint"
+            );
+            return;
+        };
+
+        let event = match frame {
+            AppProtocolFrame::Open {
+                session_id,
+                protocol,
+            } => NodeAppEvent::Open {
+                source_node_addr: *src_addr,
+                source_npub: self.npub_for_node_addr(src_addr),
+                session_id,
+                protocol,
+            },
+            AppProtocolFrame::Data {
+                session_id,
+                payload,
+            } => NodeAppEvent::Data {
+                source_node_addr: *src_addr,
+                session_id,
+                payload,
+            },
+            AppProtocolFrame::Close { session_id } => NodeAppEvent::Close {
+                source_node_addr: *src_addr,
+                session_id,
+            },
+        };
+
+        if let Err(error) = app_event_tx.try_send(event) {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                error = %error,
+                "Failed to deliver app protocol event"
+            );
+        }
+    }
+
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
     /// Similar to `send_session_data()` but:
@@ -1829,16 +2026,42 @@ impl Node {
         queue.push_back(packet);
     }
 
+    /// Queue an app protocol frame while waiting for session establishment.
+    fn queue_pending_app_protocol_frame(&mut self, dest_addr: NodeAddr, frame: AppProtocolFrame) {
+        let max_dests = self.config.node.session.pending_max_destinations;
+        if !self.pending_app_protocol_frames.contains_key(&dest_addr)
+            && self.pending_app_protocol_frames.len() >= max_dests
+        {
+            return;
+        }
+
+        let queue = self
+            .pending_app_protocol_frames
+            .entry(dest_addr)
+            .or_default();
+        if queue.len() >= self.config.node.session.pending_packets_per_dest {
+            queue.pop_front();
+        }
+        queue.push_back(frame);
+    }
+
     /// Flush pending packets for a destination whose session just reached Established.
     async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
-        let packets = match self.pending_tun_packets.remove(dest_addr) {
-            Some(q) => q,
-            None => return,
-        };
-        for packet in packets {
-            if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
-                debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
-                break;
+        if let Some(packets) = self.pending_tun_packets.remove(dest_addr) {
+            for packet in packets {
+                if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
+                    break;
+                }
+            }
+        }
+
+        if let Some(frames) = self.pending_app_protocol_frames.remove(dest_addr) {
+            for frame in frames {
+                if let Err(e) = self.send_app_protocol_frame(dest_addr, frame).await {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued app protocol frame");
+                    break;
+                }
             }
         }
     }

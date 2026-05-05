@@ -3,6 +3,7 @@
 //! A distributed, decentralized network routing protocol for mesh nodes
 //! connecting over arbitrary transports.
 
+pub(crate) mod app_protocol;
 pub mod bloom;
 pub mod cache;
 pub mod config;
