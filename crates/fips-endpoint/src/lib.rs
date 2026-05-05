@@ -5,7 +5,7 @@ pub use fips_core::config::{
     TransportInstances, TransportsConfig, UdpConfig,
 };
 pub use fips_core::endpoint::{
-    FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage,
+    FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
 };
 pub use fips_core::identity::{
     FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, decode_npub, decode_nsec,

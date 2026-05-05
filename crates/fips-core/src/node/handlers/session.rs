@@ -15,7 +15,7 @@ use crate::node::session_wire::{
     FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
     fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
-use crate::node::{Node, NodeEndpointCommand, NodeEndpointEvent, NodeError};
+use crate::node::{Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeError};
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
@@ -1457,6 +1457,16 @@ impl Node {
             } => {
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
+            }
+            NodeEndpointCommand::PeerSnapshot { response_tx } => {
+                let peers = self
+                    .peers()
+                    .map(|peer| NodeEndpointPeer {
+                        npub: peer.npub(),
+                        transport_addr: peer.current_addr().map(|addr| addr.to_string()),
+                    })
+                    .collect();
+                let _ = response_tx.send(peers);
             }
         }
     }

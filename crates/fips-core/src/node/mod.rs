@@ -187,6 +187,9 @@ pub(crate) enum NodeEndpointCommand {
         payload: Vec<u8>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
+    PeerSnapshot {
+        response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
+    },
 }
 
 /// Endpoint data events emitted by the node session receive path.
@@ -197,6 +200,13 @@ pub(crate) enum NodeEndpointEvent {
         source_npub: Option<String>,
         payload: Vec<u8>,
     },
+}
+
+/// Authenticated peer state exposed to embedded endpoint callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NodeEndpointPeer {
+    pub(crate) npub: String,
+    pub(crate) transport_addr: Option<String>,
 }
 
 /// Node operational state.

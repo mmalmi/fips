@@ -3,7 +3,7 @@
 //! This module exposes a no-system-TUN runtime shape for apps that want to own
 //! peer admission and local routing policy while reusing FIPS connectivity.
 
-use crate::node::{NodeEndpointCommand, NodeEndpointEvent};
+use crate::node::{NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer};
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -38,6 +38,15 @@ pub struct FipsEndpointMessage {
     pub source_npub: Option<String>,
     /// Application-owned payload bytes.
     pub data: Vec<u8>,
+}
+
+/// Authenticated FIPS peer state visible to an embedded application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointPeer {
+    /// Peer Nostr public key.
+    pub npub: String,
+    /// Current underlay transport address, when a link has authenticated.
+    pub transport_addr: Option<String>,
 }
 
 /// Builder for an embedded FIPS endpoint.
@@ -274,6 +283,20 @@ impl FipsEndpoint {
         self.inbound_endpoint_rx.lock().await.recv().await
     }
 
+    /// Snapshot authenticated peers known by the endpoint.
+    pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::PeerSnapshot { response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        response_rx
+            .await
+            .map(|peers| peers.into_iter().map(FipsEndpointPeer::from).collect())
+            .map_err(|_| FipsEndpointError::Closed)
+    }
+
     /// Send an outbound IPv6 packet into the FIPS session pipeline.
     pub async fn send_ip_packet(
         &self,
@@ -299,6 +322,15 @@ impl FipsEndpoint {
         let _ = self.event_task.await;
         task_result??;
         Ok(())
+    }
+}
+
+impl From<NodeEndpointPeer> for FipsEndpointPeer {
+    fn from(peer: NodeEndpointPeer) -> Self {
+        Self {
+            npub: peer.npub,
+            transport_addr: peer.transport_addr,
+        }
     }
 }
 
@@ -358,6 +390,20 @@ mod tests {
             .await
             .expect_err("invalid npub should fail");
         assert!(matches!(error, FipsEndpointError::InvalidRemoteNpub { .. }));
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn endpoint_peer_snapshot_starts_empty() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let peers = endpoint.peers().await.expect("peer snapshot");
+        assert!(peers.is_empty());
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
