@@ -1,16 +1,14 @@
 //! Library-first endpoint API for embedding FIPS in applications.
 //!
 //! This module exposes a no-system-TUN runtime shape for apps that want to own
-//! packet admission and local routing policy while reusing FIPS connectivity.
+//! peer admission and local routing policy while reusing FIPS connectivity.
 
-use crate::node::{NodeAppCommand, NodeAppEvent};
+use crate::node::{NodeEndpointCommand, NodeEndpointEvent};
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
 };
-use futures::future::BoxFuture;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -27,14 +25,19 @@ pub enum FipsEndpointError {
     #[error("endpoint is closed")]
     Closed,
 
-    #[error("protocol is empty")]
-    EmptyProtocol,
-
-    #[error("unsupported protocol: {0}")]
-    UnknownProtocol(String),
-
     #[error("invalid remote npub '{npub}': {reason}")]
     InvalidRemoteNpub { npub: String, reason: String },
+}
+
+/// Source-attributed endpoint data delivered to an embedded application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub source_node_addr: NodeAddr,
+    /// Source Nostr public key when the node has learned it.
+    pub source_npub: Option<String>,
+    /// Application-owned payload bytes.
+    pub data: Vec<u8>,
 }
 
 /// Builder for an embedded FIPS endpoint.
@@ -84,7 +87,7 @@ impl FipsEndpointBuilder {
         self
     }
 
-    /// Set the app packet channel capacity.
+    /// Set the app packet/data channel capacity.
     pub fn packet_channel_capacity(mut self, capacity: usize) -> Self {
         self.packet_channel_capacity = capacity.max(1);
         self
@@ -109,20 +112,16 @@ impl FipsEndpointBuilder {
         let node_addr = *node.node_addr();
         let address = *node.identity().address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
-        let app_protocol_io = node.attach_app_protocol_io(self.packet_channel_capacity)?;
+        let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
         node.start().await?;
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
-        let protocols = Arc::new(RwLock::new(HashMap::new()));
-        let app_sessions = Arc::new(Mutex::new(HashMap::new()));
-        let app_commands = app_protocol_io.command_tx;
-        let event_task = spawn_app_event_task(
-            app_protocol_io.event_rx,
-            app_commands.clone(),
-            Arc::clone(&protocols),
-            Arc::clone(&app_sessions),
-        );
+        let (inbound_endpoint_tx, inbound_endpoint_rx) =
+            mpsc::channel(self.packet_channel_capacity);
+        let endpoint_commands = endpoint_data_io.command_tx;
+        let event_task =
+            spawn_endpoint_event_task(endpoint_data_io.event_rx, inbound_endpoint_tx.clone());
 
         Ok(FipsEndpoint {
             npub,
@@ -131,9 +130,9 @@ impl FipsEndpointBuilder {
             discovery_scope: self.discovery_scope,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
-            protocols,
-            app_commands,
-            app_sessions,
+            endpoint_commands,
+            inbound_endpoint_tx,
+            inbound_endpoint_rx: Arc::new(Mutex::new(inbound_endpoint_rx)),
             shutdown_tx: Some(shutdown_tx),
             task,
             event_task,
@@ -161,78 +160,24 @@ fn spawn_node_task(
     })
 }
 
-type AppSessionKey = (NodeAddr, u64);
-type AppSessions = Arc<Mutex<HashMap<AppSessionKey, mpsc::Sender<Vec<u8>>>>>;
-
-fn spawn_app_event_task(
-    mut app_events: mpsc::Receiver<NodeAppEvent>,
-    app_commands: mpsc::Sender<NodeAppCommand>,
-    protocols: Arc<RwLock<HashMap<Vec<u8>, ProtocolHandler>>>,
-    app_sessions: AppSessions,
+fn spawn_endpoint_event_task(
+    mut endpoint_events: mpsc::Receiver<NodeEndpointEvent>,
+    inbound_endpoint_tx: mpsc::Sender<FipsEndpointMessage>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        while let Some(event) = app_events.recv().await {
-            match event {
-                NodeAppEvent::Open {
-                    source_node_addr,
-                    source_npub,
-                    session_id,
-                    protocol,
-                } => {
-                    let handler = {
-                        let protocols = protocols.read().expect("protocol registry poisoned");
-                        protocols.get(&protocol).cloned()
-                    };
-                    let Some(handler) = handler else {
-                        continue;
-                    };
-
-                    let (inbound_tx, inbound_rx) = mpsc::channel(64);
-                    app_sessions
-                        .lock()
-                        .await
-                        .insert((source_node_addr, session_id), inbound_tx);
-                    let remote_npub = source_npub.unwrap_or_else(|| source_node_addr.to_string());
-                    let session = FipsSession::remote(
-                        remote_npub,
-                        protocol,
-                        app_commands.clone(),
-                        source_node_addr,
-                        session_id,
-                        inbound_rx,
-                    );
-                    let app_sessions_for_cleanup = Arc::clone(&app_sessions);
-                    tokio::spawn(async move {
-                        let _ = handler.accept(session).await;
-                        app_sessions_for_cleanup
-                            .lock()
-                            .await
-                            .remove(&(source_node_addr, session_id));
-                    });
-                }
-                NodeAppEvent::Data {
-                    source_node_addr,
-                    session_id,
-                    payload,
-                } => {
-                    let inbound_tx = app_sessions
-                        .lock()
-                        .await
-                        .get(&(source_node_addr, session_id))
-                        .cloned();
-                    if let Some(inbound_tx) = inbound_tx {
-                        let _ = inbound_tx.send(payload).await;
-                    }
-                }
-                NodeAppEvent::Close {
-                    source_node_addr,
-                    session_id,
-                } => {
-                    app_sessions
-                        .lock()
-                        .await
-                        .remove(&(source_node_addr, session_id));
-                }
+        while let Some(event) = endpoint_events.recv().await {
+            let NodeEndpointEvent::Data {
+                source_node_addr,
+                source_npub,
+                payload,
+            } = event;
+            let message = FipsEndpointMessage {
+                source_node_addr,
+                source_npub,
+                data: payload,
+            };
+            if inbound_endpoint_tx.send(message).await.is_err() {
+                break;
             }
         }
     })
@@ -246,9 +191,9 @@ pub struct FipsEndpoint {
     discovery_scope: Option<String>,
     outbound_packets: mpsc::Sender<Vec<u8>>,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
-    protocols: Arc<RwLock<HashMap<Vec<u8>, ProtocolHandler>>>,
-    app_commands: mpsc::Sender<NodeAppCommand>,
-    app_sessions: AppSessions,
+    endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
+    inbound_endpoint_tx: mpsc::Sender<FipsEndpointMessage>,
+    inbound_endpoint_rx: Arc<Mutex<mpsc::Receiver<FipsEndpointMessage>>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), NodeError>>,
     event_task: JoinHandle<()>,
@@ -280,6 +225,55 @@ impl FipsEndpoint {
         self.discovery_scope.as_deref()
     }
 
+    /// Send application-owned endpoint data to a remote npub.
+    pub async fn send(
+        &self,
+        remote_npub: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let remote_npub = remote_npub.into();
+        let data = data.into();
+        if remote_npub == self.npub {
+            self.inbound_endpoint_tx
+                .send(FipsEndpointMessage {
+                    source_node_addr: self.node_addr,
+                    source_npub: Some(self.npub.clone()),
+                    data,
+                })
+                .await
+                .map_err(|_| FipsEndpointError::Closed)?;
+            return Ok(());
+        }
+
+        let remote = PeerIdentity::from_npub(&remote_npub).map_err(|error| {
+            FipsEndpointError::InvalidRemoteNpub {
+                npub: remote_npub,
+                reason: error.to_string(),
+            }
+        })?;
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::Send {
+                remote,
+                payload: data,
+                response_tx,
+            })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        match response_rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_) => Err(FipsEndpointError::Closed),
+        }
+    }
+
+    /// Receive the next source-attributed endpoint data message.
+    pub async fn recv(&self) -> Option<FipsEndpointMessage> {
+        self.inbound_endpoint_rx.lock().await.recv().await
+    }
+
     /// Send an outbound IPv6 packet into the FIPS session pipeline.
     pub async fn send_ip_packet(
         &self,
@@ -296,117 +290,6 @@ impl FipsEndpoint {
         self.delivered_packets.lock().await.recv().await
     }
 
-    /// Register a local application protocol handler.
-    pub fn accept_protocol(
-        &self,
-        protocol: &'static [u8],
-        handler: impl FipsProtocolHandler,
-    ) -> Result<(), FipsEndpointError> {
-        if protocol.is_empty() {
-            return Err(FipsEndpointError::EmptyProtocol);
-        }
-        let mut protocols = self.protocols.write().expect("protocol registry poisoned");
-        protocols.insert(protocol.to_vec(), Arc::new(handler));
-        Ok(())
-    }
-
-    /// Open an application protocol session.
-    ///
-    /// Loopback sessions are dispatched in-process. Remote sessions are carried
-    /// as app protocol frames inside the FIPS session data path.
-    pub async fn connect_protocol(
-        &self,
-        remote_npub: impl Into<String>,
-        protocol: &'static [u8],
-    ) -> Result<FipsSession, FipsEndpointError> {
-        if protocol.is_empty() {
-            return Err(FipsEndpointError::EmptyProtocol);
-        }
-
-        let remote_npub = remote_npub.into();
-        if remote_npub != self.npub {
-            let remote = PeerIdentity::from_npub(&remote_npub).map_err(|error| {
-                FipsEndpointError::InvalidRemoteNpub {
-                    npub: remote_npub.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
-            let remote_node_addr = *remote.node_addr();
-            let (inbound_tx, inbound_rx) = mpsc::channel(64);
-            let session_id = {
-                let mut app_sessions = self.app_sessions.lock().await;
-                let session_id = loop {
-                    let candidate = random_session_id();
-                    if !app_sessions.contains_key(&(remote_node_addr, candidate)) {
-                        break candidate;
-                    }
-                };
-                app_sessions.insert((remote_node_addr, session_id), inbound_tx);
-                session_id
-            };
-
-            let (response_tx, response_rx) = oneshot::channel();
-            if self
-                .app_commands
-                .send(NodeAppCommand::Open {
-                    remote,
-                    session_id,
-                    protocol: protocol.to_vec(),
-                    response_tx,
-                })
-                .await
-                .is_err()
-            {
-                self.app_sessions
-                    .lock()
-                    .await
-                    .remove(&(remote_node_addr, session_id));
-                return Err(FipsEndpointError::Closed);
-            }
-
-            match response_rx.await {
-                Ok(Ok(())) => {
-                    return Ok(FipsSession::remote(
-                        remote_npub,
-                        protocol.to_vec(),
-                        self.app_commands.clone(),
-                        remote_node_addr,
-                        session_id,
-                        inbound_rx,
-                    ));
-                }
-                Ok(Err(error)) => {
-                    self.app_sessions
-                        .lock()
-                        .await
-                        .remove(&(remote_node_addr, session_id));
-                    return Err(error.into());
-                }
-                Err(_) => {
-                    self.app_sessions
-                        .lock()
-                        .await
-                        .remove(&(remote_node_addr, session_id));
-                    return Err(FipsEndpointError::Closed);
-                }
-            }
-        }
-
-        let handler = {
-            let protocols = self.protocols.read().expect("protocol registry poisoned");
-            protocols
-                .get(protocol)
-                .cloned()
-                .ok_or_else(|| FipsEndpointError::UnknownProtocol(protocol_name(protocol)))?
-        };
-
-        let (local, remote) = FipsSession::pair(self.npub.clone(), remote_npub, protocol.to_vec());
-        tokio::spawn(async move {
-            let _ = handler.accept(remote).await;
-        });
-        Ok(local)
-    }
-
     /// Shut down the endpoint and wait for the node task to stop.
     pub async fn shutdown(mut self) -> Result<(), FipsEndpointError> {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
@@ -417,158 +300,6 @@ impl FipsEndpoint {
         task_result??;
         Ok(())
     }
-}
-
-type ProtocolHandler = Arc<dyn FipsProtocolHandler>;
-
-/// Handler for accepted application protocol sessions.
-pub trait FipsProtocolHandler: Send + Sync + 'static {
-    fn accept(&self, session: FipsSession) -> BoxFuture<'static, Result<(), FipsEndpointError>>;
-}
-
-impl<F, Fut> FipsProtocolHandler for F
-where
-    F: Fn(FipsSession) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<(), FipsEndpointError>> + Send + 'static,
-{
-    fn accept(&self, session: FipsSession) -> BoxFuture<'static, Result<(), FipsEndpointError>> {
-        Box::pin(self(session))
-    }
-}
-
-/// Bidirectional application protocol session.
-#[derive(Debug)]
-pub struct FipsSession {
-    remote_npub: String,
-    protocol: Vec<u8>,
-    tx: FipsSessionTransport,
-    rx: Mutex<mpsc::Receiver<Vec<u8>>>,
-}
-
-#[derive(Debug)]
-enum FipsSessionTransport {
-    Local(mpsc::Sender<Vec<u8>>),
-    Remote {
-        command_tx: mpsc::Sender<NodeAppCommand>,
-        remote_node_addr: NodeAddr,
-        session_id: u64,
-    },
-}
-
-impl FipsSession {
-    fn pair(initiator_npub: String, responder_npub: String, protocol: Vec<u8>) -> (Self, Self) {
-        let (a_tx, a_rx) = mpsc::channel(64);
-        let (b_tx, b_rx) = mpsc::channel(64);
-        (
-            Self {
-                remote_npub: responder_npub,
-                protocol: protocol.clone(),
-                tx: FipsSessionTransport::Local(a_tx),
-                rx: Mutex::new(b_rx),
-            },
-            Self {
-                remote_npub: initiator_npub,
-                protocol,
-                tx: FipsSessionTransport::Local(b_tx),
-                rx: Mutex::new(a_rx),
-            },
-        )
-    }
-
-    fn remote(
-        remote_npub: String,
-        protocol: Vec<u8>,
-        command_tx: mpsc::Sender<NodeAppCommand>,
-        remote_node_addr: NodeAddr,
-        session_id: u64,
-        inbound_rx: mpsc::Receiver<Vec<u8>>,
-    ) -> Self {
-        Self {
-            remote_npub,
-            protocol,
-            tx: FipsSessionTransport::Remote {
-                command_tx,
-                remote_node_addr,
-                session_id,
-            },
-            rx: Mutex::new(inbound_rx),
-        }
-    }
-
-    /// Remote peer npub for this session.
-    pub fn remote_npub(&self) -> &str {
-        &self.remote_npub
-    }
-
-    /// Protocol identifier for this session.
-    pub fn protocol(&self) -> &[u8] {
-        &self.protocol
-    }
-
-    /// Send one application frame.
-    pub async fn send(&self, frame: impl Into<Vec<u8>>) -> Result<(), FipsEndpointError> {
-        match &self.tx {
-            FipsSessionTransport::Local(tx) => tx
-                .send(frame.into())
-                .await
-                .map_err(|_| FipsEndpointError::Closed),
-            FipsSessionTransport::Remote {
-                command_tx,
-                remote_node_addr,
-                session_id,
-            } => {
-                let (response_tx, response_rx) = oneshot::channel();
-                command_tx
-                    .send(NodeAppCommand::Send {
-                        remote_node_addr: *remote_node_addr,
-                        session_id: *session_id,
-                        payload: frame.into(),
-                        response_tx,
-                    })
-                    .await
-                    .map_err(|_| FipsEndpointError::Closed)?;
-                match response_rx.await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(error)) => Err(error.into()),
-                    Err(_) => Err(FipsEndpointError::Closed),
-                }
-            }
-        }
-    }
-
-    /// Receive one application frame.
-    pub async fn recv(&self) -> Option<Vec<u8>> {
-        self.rx.lock().await.recv().await
-    }
-
-    /// Close the remote application protocol session.
-    pub async fn close(&self) -> Result<(), FipsEndpointError> {
-        if let FipsSessionTransport::Remote {
-            command_tx,
-            remote_node_addr,
-            session_id,
-        } = &self.tx
-        {
-            command_tx
-                .send(NodeAppCommand::Close {
-                    remote_node_addr: *remote_node_addr,
-                    session_id: *session_id,
-                })
-                .await
-                .map_err(|_| FipsEndpointError::Closed)?;
-        }
-        Ok(())
-    }
-}
-
-fn random_session_id() -> u64 {
-    let mut bytes = [0u8; 8];
-    rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
-    u64::from_le_bytes(bytes)
-}
-
-fn protocol_name(protocol: &[u8]) -> String {
-    String::from_utf8(protocol.to_vec()).unwrap_or_else(|_| hex::encode(protocol))
 }
 
 #[cfg(test)]
@@ -590,7 +321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_protocol_dispatches_registered_handler() {
+    async fn loopback_endpoint_data_roundtrips() {
         let endpoint = FipsEndpoint::builder()
             .without_system_tun()
             .discovery_scope("nostr-vpn:test")
@@ -599,30 +330,23 @@ mod tests {
             .expect("endpoint should bind");
 
         endpoint
-            .accept_protocol(b"nostr-vpn/ip/1", |session: FipsSession| async move {
-                let frame = session.recv().await.expect("frame should arrive");
-                assert_eq!(frame, b"ping");
-                session.send(b"pong".to_vec()).await
-            })
-            .expect("handler should register");
-
-        let session = endpoint
-            .connect_protocol(endpoint.npub().to_string(), b"nostr-vpn/ip/1")
+            .send(endpoint.npub().to_string(), b"ping".to_vec())
             .await
-            .expect("loopback connect should succeed");
-        session.send(b"ping".to_vec()).await.expect("send works");
-        let reply = tokio::time::timeout(Duration::from_secs(1), session.recv())
+            .expect("loopback send should succeed");
+        let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
             .await
-            .expect("reply should not time out")
-            .expect("reply should arrive");
-        assert_eq!(reply, b"pong");
+            .expect("recv should not time out")
+            .expect("message should arrive");
+        assert_eq!(message.source_node_addr, *endpoint.node_addr());
+        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(message.data, b"ping");
         assert_eq!(endpoint.discovery_scope(), Some("nostr-vpn:test"));
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
 
     #[tokio::test]
-    async fn unknown_loopback_protocol_is_rejected() {
+    async fn invalid_remote_npub_is_rejected() {
         let endpoint = FipsEndpoint::builder()
             .without_system_tun()
             .bind()
@@ -630,10 +354,10 @@ mod tests {
             .expect("endpoint should bind");
 
         let error = endpoint
-            .connect_protocol(endpoint.npub().to_string(), b"unknown/1")
+            .send("not-an-npub", b"hello".to_vec())
             .await
-            .expect_err("unknown protocol should fail");
-        assert!(matches!(error, FipsEndpointError::UnknownProtocol(_)));
+            .expect_err("invalid npub should fail");
+        assert!(matches!(error, FipsEndpointError::InvalidRemoteNpub { .. }));
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }

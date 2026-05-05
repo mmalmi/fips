@@ -37,6 +37,8 @@ pub enum SessionMessageType {
     PathMtuNotification = 0x13,
     /// Standalone coordinate cache warming (empty body, coords in CP flag).
     CoordsWarmup = 0x14,
+    /// App-facing endpoint payload, without DataPacket port dispatch.
+    EndpointData = 0x15,
 
     // Link-layer error signals (0x20-0x2F) — plaintext, from transit routers
     /// Router cache miss — needs coordinates (link-layer error signal).
@@ -58,6 +60,7 @@ impl SessionMessageType {
             0x12 => Some(SessionMessageType::ReceiverReport),
             0x13 => Some(SessionMessageType::PathMtuNotification),
             0x14 => Some(SessionMessageType::CoordsWarmup),
+            0x15 => Some(SessionMessageType::EndpointData),
             0x20 => Some(SessionMessageType::CoordsRequired),
             0x21 => Some(SessionMessageType::PathBroken),
             0x22 => Some(SessionMessageType::MtuExceeded),
@@ -81,6 +84,7 @@ impl fmt::Display for SessionMessageType {
             SessionMessageType::ReceiverReport => "ReceiverReport",
             SessionMessageType::PathMtuNotification => "PathMtuNotification",
             SessionMessageType::CoordsWarmup => "CoordsWarmup",
+            SessionMessageType::EndpointData => "EndpointData",
             SessionMessageType::CoordsRequired => "CoordsRequired",
             SessionMessageType::PathBroken => "PathBroken",
             SessionMessageType::MtuExceeded => "MtuExceeded",
@@ -1162,6 +1166,8 @@ mod tests {
             SessionMessageType::SenderReport,
             SessionMessageType::ReceiverReport,
             SessionMessageType::PathMtuNotification,
+            SessionMessageType::CoordsWarmup,
+            SessionMessageType::EndpointData,
             SessionMessageType::CoordsRequired,
             SessionMessageType::PathBroken,
             SessionMessageType::MtuExceeded,
@@ -1463,6 +1469,8 @@ mod tests {
         assert_eq!(SessionMessageType::SenderReport.to_byte(), 0x11);
         assert_eq!(SessionMessageType::ReceiverReport.to_byte(), 0x12);
         assert_eq!(SessionMessageType::PathMtuNotification.to_byte(), 0x13);
+        assert_eq!(SessionMessageType::CoordsWarmup.to_byte(), 0x14);
+        assert_eq!(SessionMessageType::EndpointData.to_byte(), 0x15);
     }
 
     #[test]
@@ -1478,6 +1486,14 @@ mod tests {
         assert_eq!(
             format!("{}", SessionMessageType::PathMtuNotification),
             "PathMtuNotification"
+        );
+        assert_eq!(
+            format!("{}", SessionMessageType::CoordsWarmup),
+            "CoordsWarmup"
+        );
+        assert_eq!(
+            format!("{}", SessionMessageType::EndpointData),
+            "EndpointData"
         );
     }
 

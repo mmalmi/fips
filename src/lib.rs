@@ -3,7 +3,6 @@
 //! A distributed, decentralized network routing protocol for mesh nodes
 //! connecting over arbitrary transports.
 
-pub(crate) mod app_protocol;
 pub mod bloom;
 pub mod cache;
 pub mod config;
@@ -68,7 +67,5 @@ pub use peer::{
 };
 
 // Re-export node types
-pub use endpoint::{
-    FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsProtocolHandler, FipsSession,
-};
+pub use endpoint::{FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage};
 pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};

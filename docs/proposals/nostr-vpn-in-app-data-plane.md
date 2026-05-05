@@ -9,19 +9,14 @@
 
 `nostr-vpn` should keep owning membership, policy, user experience, private
 routes, and any OS-visible VPN adapter. FIPS should become an embedded
-connectivity substrate that can carry named application protocols between
+connectivity substrate that can carry source-attributed endpoint bytes between
 Nostr identities.
 
-The first application protocol is:
-
-```text
-nostr-vpn/ip/1
-```
-
-That protocol carries private VPN IP packets only between `nostr-vpn` roster
-members. Other FIPS peers may still be used for reachability, bridge, relay,
-or transit paths, but they do not automatically become members of the private
-network and cannot inject packets into the local host or app.
+Private VPN packets are application payloads carried over FIPS EndpointData.
+`nostr-vpn` decides which npubs are roster members before it accepts bytes into
+the private network. Other FIPS peers may still be used for reachability,
+bridge, relay, or transit paths, but they do not automatically become members
+of the private network and cannot inject packets into the local host or app.
 
 ## Goals
 
@@ -49,9 +44,8 @@ The useful Iroh pattern is endpoint-oriented application integration:
 
 - one local endpoint owns identity, sockets, discovery, relays, and connection
   reuse
-- applications register explicit protocol handlers
-- accepted connections are delivered to handlers, not to the host network
-- unsupported protocols are rejected or ignored
+- applications receive source-attributed endpoint messages
+- endpoint messages are delivered to the app, not to the host network
 - identity and reachability are separate concepts
 - relays and bridges improve reachability but are not membership grants
 
@@ -66,18 +60,16 @@ let endpoint = FipsEndpoint::builder()
     .bind()
     .await?;
 
-endpoint.accept_protocol(
-    b"nostr-vpn/ip/1",
-    NostrVpnIpHandler {
-        roster,
-        route_policy,
-        packet_sink,
-    },
-);
+while let Some(message) = endpoint.recv().await {
+    if let Some(source_npub) = &message.source_npub {
+        if roster.contains(source_npub) {
+            handle_private_payload(message, route_policy, packet_sink).await?;
+        }
+    }
+}
 ```
 
-The application handler decides whether a peer is allowed into the private
-network.
+The application decides whether a peer is allowed into the private network.
 
 ## Target Architecture
 
@@ -93,7 +85,7 @@ nostr-vpn runtime
 ```
 
 In this mode, FIPS does not create a TUN interface, configure routes, install
-DNS state, or expose host services. It receives packets and sessions through
+DNS state, or expose host services. It receives packets and endpoint data through
 app-owned channels.
 
 When system-wide VPN behavior is needed, the visible adapter remains the
@@ -126,11 +118,10 @@ The broker owns reusable connectivity resources:
 - metrics and path selection
 
 The broker must not be an ambient network adapter for this use case. It must
-only deliver app-registered protocols over authenticated local IPC:
+only deliver source-attributed endpoint data over authenticated local IPC:
 
 ```rust
-broker.register_protocol(
-    b"nostr-vpn/ip/1",
+broker.open_endpoint_data(
     allowed_remote_npubs,
     app_packet_channel,
 );
@@ -214,43 +205,33 @@ pub struct FipsDeliveredPacket {
 `source_npub` is required so `nostr-vpn` can enforce roster membership before
 writing a packet to its VPN file descriptor or app packet sink.
 
-### 3. Application Protocol Handlers
+### 3. EndpointData
 
-Status: implemented for loopback sessions and remote FSP session data frames.
+Status: implemented for loopback delivery and remote FSP EndpointData messages.
 
-Add explicit protocol routing:
+Expose one plain endpoint-data primitive:
 
 ```rust
-pub trait FipsProtocolHandler: Send + Sync + 'static {
-    async fn accept(&self, session: FipsSession) -> Result<()>;
+pub struct FipsEndpointMessage {
+    pub source_node_addr: NodeAddr,
+    pub source_npub: Option<String>,
+    pub data: Vec<u8>,
 }
 
 impl FipsEndpoint {
-    pub fn accept_protocol(
-        &self,
-        protocol: &'static [u8],
-        handler: impl FipsProtocolHandler,
-    );
-
-    pub async fn connect_protocol(
-        &self,
-        remote: Npub,
-        protocol: &'static [u8],
-    ) -> Result<FipsSession>;
+    pub async fn send(&self, remote: Npub, data: impl Into<Vec<u8>>) -> Result<()>;
+    pub async fn recv(&self) -> Option<FipsEndpointMessage>;
 }
 ```
 
-Unknown protocols must be rejected or ignored. They must not fall through to
-host networking.
+There is no app protocol selector in FIPS. Applications that need streams,
+subprotocols, packet envelopes, request ids, or multiplexing define that inside
+their own payload bytes.
 
-The current remote wire path uses an app-owned FSP service port and frames:
-
-- open protocol session
-- data frame
-- close frame
-
-Open and data frames are queued while the underlying end-to-end FSP session is
-establishing, then flushed once the Noise XK session reaches Established.
+The remote wire path uses FSP `EndpointData` encrypted messages, not a
+DataPacket service port. Payloads are queued while the underlying end-to-end
+FSP session is establishing, then flushed once the Noise XK session reaches
+Established.
 
 ### 4. Local Delivery vs Transit
 
@@ -258,7 +239,7 @@ Expose hooks that let an application distinguish private local delivery from
 transit forwarding:
 
 - app can disable all automatic local packet delivery
-- app receives only registered application protocols
+- app receives source-attributed endpoint data
 - app can inspect source npub before accepting payload
 - app can choose whether to forward transit traffic
 
@@ -282,14 +263,13 @@ network reachability without joining the global FIPS mesh as a private member.
 
 Minimum fields:
 
-- application protocol name
 - network id or invite id hash
-- supported protocol versions
+- payload format versions
 - optional bridge capability
 - optional public bridge endpoint metadata
 
-FIPS may discover broad connectivity peers. Only the app protocol handler may
-grant private membership.
+FIPS may discover broad connectivity peers. Only the application may grant
+private membership.
 
 ### 6. Broker IPC
 
@@ -300,10 +280,9 @@ Minimum operations:
 - version and capability check
 - authenticate local app
 - open or reuse endpoint identity
-- register application protocol
-- connect protocol to remote npub
-- accept protocol sessions
-- send and receive packet frames
+- send endpoint data to remote npub
+- receive source-attributed endpoint data
+- send and receive private packet payloads
 - report peer/path status
 
 The broker should support at least two identity modes:
@@ -352,7 +331,6 @@ The Nostr control plane should publish data-plane capabilities in node records:
 {
   "data_plane": "fips",
   "fips": {
-    "protocol": "nostr-vpn/ip/1",
     "endpoint_npub": "<npub>",
     "network_scope": "<network-id>",
     "bridge_ok": false
@@ -370,20 +348,20 @@ when possible.
 - Add `fips` as a local path dependency in a `nostr-vpn` integration branch or
   worktree.
 - Build a tiny executable that starts a FIPS endpoint without TUN.
-- Connect two endpoints by npub using `nostr-vpn/ip/1`.
-- Send framed bytes and verify source npub attribution.
+- Send endpoint data between two endpoints by npub.
+- Verify source npub attribution.
 
 Exit criteria:
 
 - no FIPS-owned adapter appears on the system
-- unknown protocol names are rejected
+- invalid remote npubs are rejected
 - source npub is visible to the application
 
 ### Phase 1: FIPS Library Boundary
 
 - Split node runtime from TUN/DNS/system setup.
 - Introduce `FipsEndpointBuilder`.
-- Introduce protocol handler registration.
+- Introduce source-attributed EndpointData send/receive.
 - Add source-attributed delivered packets.
 - Add tests for no-TUN mode.
 
@@ -391,7 +369,7 @@ Exit criteria:
 
 - existing FIPS TUN mode still works
 - embedded mode runs without system network changes
-- protocol dispatch has deny-by-default behavior
+- endpoint data delivery is source-attributed and host-network denied by default
 
 ### Phase 2: Nostr-VPN Backend Abstraction
 
@@ -409,7 +387,6 @@ Exit criteria:
 
 - Implement `FipsMeshBackend`.
 - Map roster npubs to FIPS remote identities.
-- Register `nostr-vpn/ip/1`.
 - Drop incoming private packets from non-roster npubs.
 - Send private route traffic over FIPS.
 
@@ -477,9 +454,9 @@ Exit criteria:
 
 Prefer end-to-end tests over mocks:
 
-- two embedded FIPS endpoints exchange `nostr-vpn/ip/1` frames
+- two embedded FIPS endpoints exchange EndpointData bytes
 - no TUN interface is created in embedded mode
-- unknown protocol is rejected
+- invalid remote npub is rejected
 - non-roster peer cannot deliver private packets
 - bridge peer can assist connectivity without private membership
 - private route goes to FIPS while default route goes to WireGuard
@@ -490,21 +467,22 @@ Unit tests are useful only for route classification and policy edge cases.
 
 ## Open Questions
 
-- Should `nostr-vpn/ip/1` carry raw IP packets, length-prefixed packet frames,
-  or a small envelope with network id and route metadata?
+- Should `nostr-vpn` EndpointData payloads carry raw IP packets,
+  length-prefixed packet frames, or a small envelope with network id and route
+  metadata?
 - Does FIPS need per-application sub-identities, or is an app-owned Nostr
   identity enough for the first version?
 - Which FIPS bridge policy is safe as a default for personal devices?
-- Should broker IPC use Unix sockets/named pipes first, or reuse a FIPS local
-  protocol over loopback?
+- Should broker IPC use Unix sockets/named pipes first, or reuse local
+  EndpointData loopback?
 - How much of WireGuard peer config should remain in node records during the
   migration window?
 
 ## First Patch Set
 
 1. Add a no-TUN `FipsEndpointBuilder` API behind an experimental cargo feature.
-2. Add protocol registration and source-attributed session delivery.
-3. Add an embedded two-node example for `nostr-vpn/ip/1` framed bytes.
+2. Add EndpointData send/receive with source attribution.
+3. Add an embedded two-node example for EndpointData bytes.
 4. Add tests proving no system adapter is created in embedded mode.
 5. Add a `nostr-vpn` `PrivateMeshBackend` abstraction while preserving the
    current WireGuard backend.

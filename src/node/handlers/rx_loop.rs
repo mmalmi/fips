@@ -54,15 +54,16 @@ impl Node {
             }
         };
 
-        // Take the app-protocol command receiver, or create a dummy channel
+        // Take the endpoint-data command receiver, or create a dummy channel
         // when the embedded endpoint API is not in use.
-        let (mut app_command_rx, _app_command_guard) = match self.app_command_rx.take() {
-            Some(rx) => (rx, None),
-            None => {
-                let (tx, rx) = tokio::sync::mpsc::channel(1);
-                (rx, Some(tx))
-            }
-        };
+        let (mut endpoint_command_rx, _endpoint_command_guard) =
+            match self.endpoint_command_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
+                    (rx, Some(tx))
+                }
+            };
 
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
@@ -108,8 +109,8 @@ impl Node {
                     );
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
-                Some(command) = app_command_rx.recv() => {
-                    self.handle_app_protocol_command(command).await;
+                Some(command) = endpoint_command_rx.recv() => {
+                    self.handle_endpoint_data_command(command).await;
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
                     let response = if request.command.starts_with("show_") {

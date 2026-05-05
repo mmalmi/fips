@@ -6,19 +6,16 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 use crate::NodeAddr;
-use crate::app_protocol::{
-    AppProtocolFrame, MAX_APP_PROTOCOL_NAME_LEN, MAX_APP_PROTOCOL_PAYLOAD_LEN,
-};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
 use crate::node::session::{EndToEndState, SessionEntry};
 use crate::node::session_wire::{
-    FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED,
-    FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_APP_PROTOCOL, FSP_PORT_HEADER_SIZE,
+    FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
+    FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE,
     FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
     fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
-use crate::node::{Node, NodeAppCommand, NodeAppEvent, NodeError};
+use crate::node::{Node, NodeEndpointCommand, NodeEndpointEvent, NodeError};
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
@@ -337,18 +334,6 @@ impl Node {
                             }
                         }
                     }
-                    FSP_PORT_APP_PROTOCOL => match AppProtocolFrame::decode(service_payload) {
-                        Ok(frame) => {
-                            self.deliver_app_protocol_frame(src_addr, frame);
-                        }
-                        Err(error) => {
-                            debug!(
-                                src = %self.peer_display_name(src_addr),
-                                error = %error,
-                                "Malformed app protocol frame"
-                            );
-                        }
-                    },
                     _ => {
                         debug!(
                             src = %self.peer_display_name(src_addr),
@@ -357,6 +342,9 @@ impl Node {
                         );
                     }
                 }
+            }
+            Some(SessionMessageType::EndpointData) => {
+                self.deliver_endpoint_data(src_addr, rest.to_vec());
             }
             Some(SessionMessageType::SenderReport) => {
                 self.handle_session_sender_report(src_addr, rest);
@@ -379,7 +367,8 @@ impl Node {
 
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        if msg_type == SessionMessageType::DataPacket.to_byte()
+        if (msg_type == SessionMessageType::DataPacket.to_byte()
+            || msg_type == SessionMessageType::EndpointData.to_byte())
             && let Some(entry) = self.sessions.get_mut(src_addr)
         {
             entry.record_recv(rest.len());
@@ -1444,91 +1433,46 @@ impl Node {
         .await
     }
 
-    /// Handle an embedded endpoint application protocol command.
-    pub(in crate::node) async fn handle_app_protocol_command(&mut self, command: NodeAppCommand) {
+    /// Handle an embedded endpoint data command.
+    pub(in crate::node) async fn handle_endpoint_data_command(
+        &mut self,
+        command: NodeEndpointCommand,
+    ) {
         match command {
-            NodeAppCommand::Open {
+            NodeEndpointCommand::Send {
                 remote,
-                session_id,
-                protocol,
-                response_tx,
-            } => {
-                let result = self
-                    .open_app_protocol_session(remote, session_id, protocol)
-                    .await;
-                let _ = response_tx.send(result);
-            }
-            NodeAppCommand::Send {
-                remote_node_addr,
-                session_id,
                 payload,
                 response_tx,
             } => {
-                let result = self
-                    .send_or_queue_app_protocol_frame(
-                        remote_node_addr,
-                        None,
-                        AppProtocolFrame::Data {
-                            session_id,
-                            payload,
-                        },
-                    )
-                    .await;
+                let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
-            }
-            NodeAppCommand::Close {
-                remote_node_addr,
-                session_id,
-            } => {
-                let _ = self
-                    .send_or_queue_app_protocol_frame(
-                        remote_node_addr,
-                        None,
-                        AppProtocolFrame::Close { session_id },
-                    )
-                    .await;
             }
         }
     }
 
-    pub(in crate::node) async fn open_app_protocol_session(
+    pub(in crate::node) async fn send_endpoint_data(
         &mut self,
         remote: crate::PeerIdentity,
-        session_id: u64,
-        protocol: Vec<u8>,
+        payload: Vec<u8>,
     ) -> Result<(), NodeError> {
-        if protocol.is_empty() {
-            return Err(NodeError::SendFailed {
-                node_addr: *remote.node_addr(),
-                reason: "empty app protocol".into(),
-            });
-        }
-
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
-        self.send_or_queue_app_protocol_frame(
-            dest_addr,
-            Some(dest_pubkey),
-            AppProtocolFrame::Open {
-                session_id,
-                protocol,
-            },
-        )
-        .await
+        self.send_or_queue_endpoint_data(dest_addr, Some(dest_pubkey), payload)
+            .await
     }
 
-    async fn send_or_queue_app_protocol_frame(
+    async fn send_or_queue_endpoint_data(
         &mut self,
         dest_addr: NodeAddr,
         dest_pubkey: Option<PublicKey>,
-        frame: AppProtocolFrame,
+        payload: Vec<u8>,
     ) -> Result<(), NodeError> {
         if let Some(entry) = self.sessions.get(&dest_addr) {
             if entry.is_established() {
-                return self.send_app_protocol_frame(&dest_addr, frame).await;
+                return self.send_session_endpoint_data(&dest_addr, &payload).await;
             }
-            self.queue_pending_app_protocol_frame(dest_addr, frame);
+            self.queue_pending_endpoint_data(dest_addr, payload);
             return Ok(());
         }
 
@@ -1536,92 +1480,149 @@ impl Node {
             .or_else(|| self.pubkey_for_node_addr(&dest_addr))
             .ok_or_else(|| NodeError::SendFailed {
                 node_addr: dest_addr,
-                reason: "unknown remote identity for app protocol session".into(),
+                reason: "unknown remote identity for endpoint data".into(),
             })?;
         self.initiate_session(dest_addr, dest_pubkey).await?;
-        self.queue_pending_app_protocol_frame(dest_addr, frame);
+        self.queue_pending_endpoint_data(dest_addr, payload);
         Ok(())
     }
 
-    pub(in crate::node) async fn send_app_protocol_frame(
+    /// Send app-owned endpoint bytes over an established session without DataPacket ports.
+    async fn send_session_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
-        frame: AppProtocolFrame,
+        payload: &[u8],
     ) -> Result<(), NodeError> {
-        match &frame {
-            AppProtocolFrame::Open { protocol, .. } if protocol.is_empty() => {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "empty app protocol".into(),
-                });
-            }
-            AppProtocolFrame::Open { protocol, .. }
-                if protocol.len() > MAX_APP_PROTOCOL_NAME_LEN =>
-            {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "app protocol name too long".into(),
-                });
-            }
-            AppProtocolFrame::Data { payload, .. }
-                if payload.len() > MAX_APP_PROTOCOL_PAYLOAD_LEN =>
-            {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "app protocol payload too long".into(),
-                });
-            }
-            _ => {}
+        if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "endpoint data payload too long".into(),
+            });
         }
 
-        let payload = frame.encode();
-        self.send_session_data(
-            dest_addr,
-            FSP_PORT_APP_PROTOCOL,
-            FSP_PORT_APP_PROTOCOL,
-            &payload,
-        )
-        .await
+        let now_ms = Self::now_ms();
+
+        let entry = self
+            .sessions
+            .get(dest_addr)
+            .ok_or_else(|| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "no session".into(),
+            })?;
+        let wants_coords = entry.coords_warmup_remaining() > 0;
+        let timestamp = entry.session_timestamp(now_ms);
+        let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
+        if !entry.is_established() {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "session not established".into(),
+            });
+        }
+
+        let msg_type = SessionMessageType::EndpointData.to_byte();
+        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
+        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
+
+        let (include_coords, my_coords, dest_coords) = if wants_coords {
+            let src = self.tree_state.my_coords().clone();
+            let dst = self.get_dest_coords(dest_addr);
+            let coords_size = coords_wire_size(&src) + coords_wire_size(&dst);
+            let total_wire = FIPS_OVERHEAD as usize + coords_size + payload.len();
+            if total_wire <= self.transport_mtu() as usize {
+                (true, Some(src), Some(dst))
+            } else {
+                if let Err(e) = self.send_coords_warmup(dest_addr).await {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %e,
+                        "Failed to send standalone CoordsWarmup before endpoint data");
+                }
+                (false, None, None)
+            }
+        } else {
+            (false, None, None)
+        };
+
+        if wants_coords && let Some(entry) = self.sessions.get_mut(dest_addr) {
+            entry.set_coords_warmup_remaining(entry.coords_warmup_remaining() - 1);
+        }
+
+        let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
+        if let Some(entry) = self.sessions.get(dest_addr)
+            && entry.current_k_bit()
+        {
+            flags |= FSP_FLAG_K;
+        }
+
+        let entry = self
+            .sessions
+            .get_mut(dest_addr)
+            .ok_or_else(|| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "no session".into(),
+            })?;
+        let session = match entry.state_mut() {
+            EndToEndState::Established(s) => s,
+            _ => {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "session not established".into(),
+                });
+            }
+        };
+        let counter = session.current_send_counter();
+        let payload_len = inner_plaintext.len() as u16;
+        let header = build_fsp_header(counter, flags, payload_len);
+        let ciphertext = session
+            .encrypt_with_aad(&inner_plaintext, &header)
+            .map_err(|e| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("session encrypt failed: {}", e),
+            })?;
+
+        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
+        fsp_payload.extend_from_slice(&header);
+        if let (Some(src), Some(dst)) = (&my_coords, &dest_coords) {
+            encode_coords(src, &mut fsp_payload);
+            encode_coords(dst, &mut fsp_payload);
+        }
+        fsp_payload.extend_from_slice(&ciphertext);
+
+        let my_addr = *self.node_addr();
+        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
+            .with_ttl(self.config.node.session.default_ttl);
+
+        self.send_session_datagram(&mut datagram).await?;
+
+        if let Some(entry) = self.sessions.get_mut(dest_addr) {
+            entry.record_sent(payload.len());
+            if let Some(mmp) = entry.mmp_mut() {
+                mmp.sender.record_sent(counter, timestamp, ciphertext.len());
+            }
+            entry.touch(now_ms);
+        }
+
+        Ok(())
     }
 
-    fn deliver_app_protocol_frame(&self, src_addr: &NodeAddr, frame: AppProtocolFrame) {
-        let Some(app_event_tx) = &self.app_event_tx else {
+    fn deliver_endpoint_data(&self, src_addr: &NodeAddr, payload: Vec<u8>) {
+        let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
             trace!(
                 src = %self.peer_display_name(src_addr),
-                "App protocol frame received without an attached endpoint"
+                "Endpoint data received without an attached endpoint"
             );
             return;
         };
 
-        let event = match frame {
-            AppProtocolFrame::Open {
-                session_id,
-                protocol,
-            } => NodeAppEvent::Open {
-                source_node_addr: *src_addr,
-                source_npub: self.npub_for_node_addr(src_addr),
-                session_id,
-                protocol,
-            },
-            AppProtocolFrame::Data {
-                session_id,
-                payload,
-            } => NodeAppEvent::Data {
-                source_node_addr: *src_addr,
-                session_id,
-                payload,
-            },
-            AppProtocolFrame::Close { session_id } => NodeAppEvent::Close {
-                source_node_addr: *src_addr,
-                session_id,
-            },
+        let event = NodeEndpointEvent::Data {
+            source_node_addr: *src_addr,
+            source_npub: self.npub_for_node_addr(src_addr),
+            payload,
         };
 
-        if let Err(error) = app_event_tx.try_send(event) {
+        if let Err(error) = endpoint_event_tx.try_send(event) {
             debug!(
                 src = %self.peer_display_name(src_addr),
                 error = %error,
-                "Failed to deliver app protocol event"
+                "Failed to deliver endpoint data event"
             );
         }
     }
@@ -2026,23 +2027,20 @@ impl Node {
         queue.push_back(packet);
     }
 
-    /// Queue an app protocol frame while waiting for session establishment.
-    fn queue_pending_app_protocol_frame(&mut self, dest_addr: NodeAddr, frame: AppProtocolFrame) {
+    /// Queue endpoint data while waiting for session establishment.
+    fn queue_pending_endpoint_data(&mut self, dest_addr: NodeAddr, payload: Vec<u8>) {
         let max_dests = self.config.node.session.pending_max_destinations;
-        if !self.pending_app_protocol_frames.contains_key(&dest_addr)
-            && self.pending_app_protocol_frames.len() >= max_dests
+        if !self.pending_endpoint_data.contains_key(&dest_addr)
+            && self.pending_endpoint_data.len() >= max_dests
         {
             return;
         }
 
-        let queue = self
-            .pending_app_protocol_frames
-            .entry(dest_addr)
-            .or_default();
+        let queue = self.pending_endpoint_data.entry(dest_addr).or_default();
         if queue.len() >= self.config.node.session.pending_packets_per_dest {
             queue.pop_front();
         }
-        queue.push_back(frame);
+        queue.push_back(payload);
     }
 
     /// Flush pending packets for a destination whose session just reached Established.
@@ -2056,10 +2054,10 @@ impl Node {
             }
         }
 
-        if let Some(frames) = self.pending_app_protocol_frames.remove(dest_addr) {
-            for frame in frames {
-                if let Err(e) = self.send_app_protocol_frame(dest_addr, frame).await {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued app protocol frame");
+        if let Some(payloads) = self.pending_endpoint_data.remove(dest_addr) {
+            for payload in payloads {
+                if let Err(e) = self.send_session_endpoint_data(dest_addr, &payload).await {
+                    debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
                     break;
                 }
             }
