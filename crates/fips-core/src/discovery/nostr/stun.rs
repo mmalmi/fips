@@ -324,6 +324,7 @@ fn private_interface_ips() -> Vec<IpAddr> {
     Vec::new()
 }
 
+#[cfg(any(unix, test))]
 fn is_private_overlay_candidate_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_private(),
