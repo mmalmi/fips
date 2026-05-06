@@ -59,10 +59,13 @@ fn parse_args() -> (SimConfig, bool, bool, bool) {
     let mut config = SimConfig {
         node_count: 72,
         target_edges: 190,
-        route_probe_count: 40,
-        stream_probe_count: 10,
-        stream_size_bytes: 256 * 1024,
+        route_probe_count: 200,
+        stream_probe_count: 8,
+        stream_size_bytes: 1024 * 1024,
         chunk_size_bytes: 1024,
+        background_packet_count: 2_000,
+        background_payload_bytes: 512,
+        background_send_interval_ms: 1,
         seed: 42,
         topology: TopologyProfile::Standard,
         adversary: AdversaryConfig {
@@ -96,6 +99,16 @@ fn parse_args() -> (SimConfig, bool, bool, bool) {
             }
             "--stream-bytes" => config.stream_size_bytes = parse_next(&mut args, "--stream-bytes"),
             "--chunk-bytes" => config.chunk_size_bytes = parse_next(&mut args, "--chunk-bytes"),
+            "--background-packets" => {
+                config.background_packet_count = parse_next(&mut args, "--background-packets")
+            }
+            "--background-bytes" => {
+                config.background_payload_bytes = parse_next(&mut args, "--background-bytes")
+            }
+            "--background-interval-ms" => {
+                config.background_send_interval_ms =
+                    parse_next(&mut args, "--background-interval-ms")
+            }
             "--convergence-wait-ms" => {
                 config.convergence_wait_ms = parse_next(&mut args, "--convergence-wait-ms")
             }
@@ -149,7 +162,7 @@ where
 
 fn print_help() {
     println!(
-        "usage: cargo run -p fips-sim --example production_mesh -- [--compare] [--nodes N] [--edges N] [--route-probes N] [--stream-probes N] [--stream-bytes N] [--mode tree|reply_learned] [--delivery-timeout-ms N] [--stream-timeout-ms N] [--json-only|--summary-only]"
+        "usage: cargo run -p fips-sim --example production_mesh -- [--compare] [--nodes N] [--edges N] [--route-probes N] [--stream-probes N] [--stream-bytes N] [--background-packets N] [--mode tree|reply_learned] [--delivery-timeout-ms N] [--stream-timeout-ms N] [--json-only|--summary-only]"
     );
 }
 
@@ -166,11 +179,11 @@ fn print_report(label: &str, report: &ProductionSimReport) {
         report.topology.long_haul_links,
     );
     println!(
-        "run,mode,phase,probe_success,probe_delivered,probe_failed_send,probe_timed_out,probe_p95_ms,stream_success,stream_mbps,chunk_loss,packets_sent,packets_delivered,loss_drops,egress_drops,down_drops,no_route_drops"
+        "run,mode,phase,probe_success,probe_delivered,probe_failed_send,probe_timed_out,probe_p95_ms,stream_setup,chunk_delivery,chunk_loss,stream_mbps,bg_sent,bg_failed,packets_sent,packets_delivered,loss_drops,egress_drops,down_drops,no_route_drops"
     );
     for phase in [&report.baseline, &report.impaired] {
         println!(
-            "{},{},{},{:.3},{},{},{},{:.1},{:.3},{:.1},{:.3},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{},{},{},{:.1},{},{:.3},{:.3},{:.1},{},{},{},{},{},{},{},{}",
             label,
             report.config.routing_mode,
             phase.label,
@@ -179,9 +192,12 @@ fn print_report(label: &str, report: &ProductionSimReport) {
             phase.route_probes.failed_send,
             phase.route_probes.timed_out,
             phase.route_probes.p95_latency_ms,
-            phase.streams.success_rate,
-            phase.streams.avg_throughput_mbps,
+            phase.streams.setup_delivered,
+            phase.streams.chunk_delivery_rate,
             phase.streams.chunk_loss_rate,
+            phase.streams.avg_delivered_mbps,
+            phase.background.sent,
+            phase.background.failed_send,
             phase.network.packets_sent,
             phase.network.packets_delivered,
             phase.network.packets_dropped_loss,

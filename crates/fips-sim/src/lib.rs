@@ -73,6 +73,12 @@ pub struct SimConfig {
     pub stream_size_bytes: usize,
     /// Endpoint payload bytes per stream chunk.
     pub chunk_size_bytes: usize,
+    /// Fire-and-forget background endpoint packets per phase.
+    pub background_packet_count: usize,
+    /// Payload bytes per background packet.
+    pub background_payload_bytes: usize,
+    /// Virtual spacing between background packet sends.
+    pub background_send_interval_ms: u64,
     /// Random seed for topology, identities, roles, and traffic pairs.
     pub seed: u64,
     /// Initial settling time before clean traffic starts.
@@ -98,8 +104,11 @@ impl Default for SimConfig {
             target_edges: 160,
             route_probe_count: 32,
             stream_probe_count: 8,
-            stream_size_bytes: 256 * 1024,
+            stream_size_bytes: 1024 * 1024,
             chunk_size_bytes: 1024,
+            background_packet_count: 0,
+            background_payload_bytes: 512,
+            background_send_interval_ms: 1,
             seed: 42,
             convergence_wait_ms: 2_500,
             reconvergence_wait_ms: 1_500,
@@ -153,6 +162,7 @@ pub struct PhaseReport {
     pub label: &'static str,
     pub route_probes: ProbeStats,
     pub streams: StreamStats,
+    pub background: BackgroundTrafficStats,
     pub network: SimNetworkStats,
     pub elapsed_ms: u64,
 }
@@ -174,19 +184,32 @@ pub struct ProbeStats {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct StreamStats {
     pub streams: usize,
-    pub completed: usize,
-    pub failed: usize,
-    pub success_rate: f64,
+    pub setup_delivered: usize,
+    pub setup_failed_send: usize,
+    pub setup_timed_out: usize,
     pub stream_size_bytes: usize,
     pub chunk_size_bytes: usize,
+    pub chunks_attempted: usize,
     pub chunks_sent: usize,
+    pub chunks_send_failed: usize,
     pub chunks_delivered: usize,
     pub chunks_lost: usize,
+    pub chunk_delivery_rate: f64,
     pub chunk_loss_rate: f64,
-    pub avg_completion_ms: f64,
-    pub p95_completion_ms: f64,
-    pub avg_throughput_mbps: f64,
-    pub p95_throughput_mbps: f64,
+    pub bytes_attempted: usize,
+    pub bytes_delivered: usize,
+    pub avg_delivered_mbps: f64,
+    pub p95_delivered_mbps: f64,
+}
+
+/// Fire-and-forget background packet traffic.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct BackgroundTrafficStats {
+    pub attempted: usize,
+    pub sent: usize,
+    pub failed_send: usize,
+    pub payload_bytes: usize,
+    pub send_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -413,14 +436,20 @@ impl Simulation {
     ) -> PhaseReport {
         let before = network.stats();
         let start = Instant::now();
-        let route_probes = self.run_route_probes(label, endpoints, phase_index).await;
-        let streams = self.run_streams(label, endpoints, phase_index).await;
+        let measured = async {
+            let route_probes = self.run_route_probes(label, endpoints, phase_index).await;
+            let streams = self.run_streams(label, endpoints, phase_index).await;
+            (route_probes, streams)
+        };
+        let background = self.run_background_traffic(label, endpoints, phase_index);
+        let ((route_probes, streams), background) = tokio::join!(measured, background);
         let network_delta = network.stats().delta_since(&before);
 
         PhaseReport {
             label,
             route_probes,
             streams,
+            background,
             network: network_delta,
             elapsed_ms: start.elapsed().as_millis() as u64,
         }
@@ -507,10 +536,16 @@ impl Simulation {
         }
 
         let mut rng = StdRng::seed_from_u64(self.config.seed ^ 0x53_54_52_45_41_4d ^ phase_index);
-        let mut completions = Vec::new();
-        let mut throughputs = Vec::new();
+        let mut delivered_mbps = Vec::new();
+        let mut setup_delivered = 0usize;
+        let mut setup_failed_send = 0usize;
+        let mut setup_timed_out = 0usize;
+        let mut chunks_attempted = 0usize;
         let mut chunks_sent = 0usize;
+        let mut chunks_send_failed = 0usize;
         let mut chunks_delivered = 0usize;
+        let mut bytes_attempted = 0usize;
+        let mut bytes_delivered = 0usize;
 
         for stream in 0..self.config.stream_probe_count {
             let (src, dst) = pick_pair(&eligible, &mut rng);
@@ -527,57 +562,123 @@ impl Simulation {
                 self.config.chunk_size_bytes,
             );
 
-            let start = Instant::now();
             if endpoints[src]
                 .send(self.nodes[dst].npub.clone(), warmup.clone())
                 .await
                 .is_err()
             {
+                setup_failed_send += 1;
                 continue;
             }
             let warmup_timeout = Duration::from_millis(self.config.delivery_timeout_ms);
             if !recv_exact(&endpoints[dst], &warmup, warmup_timeout).await {
+                setup_timed_out += 1;
                 continue;
             }
+            setup_delivered += 1;
 
-            chunks_sent += chunks.len();
-            let mut expected = chunks.iter().cloned().collect::<HashSet<_>>();
+            let start = Instant::now();
+            chunks_attempted += chunks.len();
+            bytes_attempted += chunks.iter().map(Vec::len).sum::<usize>();
+            let mut expected = HashSet::new();
             for chunk in &chunks {
-                let _ = endpoints[dst]
+                match endpoints[dst]
                     .send(self.nodes[src].npub.clone(), chunk.clone())
-                    .await;
+                    .await
+                {
+                    Ok(()) => {
+                        chunks_sent += 1;
+                        expected.insert(chunk.clone());
+                    }
+                    Err(_) => chunks_send_failed += 1,
+                }
             }
 
             let timeout = Duration::from_millis(self.config.stream_timeout_ms);
-            let delivered = recv_payload_set(&endpoints[src], &mut expected, timeout).await;
+            let (delivered, delivered_bytes) =
+                recv_payload_set(&endpoints[src], &mut expected, timeout).await;
             chunks_delivered += delivered;
-            if expected.is_empty() {
-                let completion_ms = start.elapsed().as_secs_f64() * 1000.0;
-                completions.push(completion_ms);
-                let throughput_mbps =
-                    (self.config.stream_size_bytes as f64 * 8.0) / completion_ms / 1000.0;
-                throughputs.push(throughput_mbps);
+            bytes_delivered += delivered_bytes;
+
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+            if elapsed_ms > 0.0 {
+                delivered_mbps.push((delivered_bytes as f64 * 8.0) / elapsed_ms / 1000.0);
             }
         }
 
-        let completed = completions.len();
-        let failed = self.config.stream_probe_count.saturating_sub(completed);
-        let chunks_lost = chunks_sent.saturating_sub(chunks_delivered);
+        let chunks_lost = chunks_attempted.saturating_sub(chunks_delivered);
         StreamStats {
             streams: self.config.stream_probe_count,
-            completed,
-            failed,
-            success_rate: rate(completed, self.config.stream_probe_count),
+            setup_delivered,
+            setup_failed_send,
+            setup_timed_out,
             stream_size_bytes: self.config.stream_size_bytes,
             chunk_size_bytes: self.config.chunk_size_bytes,
+            chunks_attempted,
             chunks_sent,
+            chunks_send_failed,
             chunks_delivered,
             chunks_lost,
-            chunk_loss_rate: rate(chunks_lost, chunks_sent),
-            avg_completion_ms: mean(&completions),
-            p95_completion_ms: percentile(completions.clone(), 0.95),
-            avg_throughput_mbps: mean(&throughputs),
-            p95_throughput_mbps: percentile(throughputs, 0.95),
+            chunk_delivery_rate: rate(chunks_delivered, chunks_attempted),
+            chunk_loss_rate: rate(chunks_lost, chunks_attempted),
+            bytes_attempted,
+            bytes_delivered,
+            avg_delivered_mbps: mean(&delivered_mbps),
+            p95_delivered_mbps: percentile(delivered_mbps, 0.95),
+        }
+    }
+
+    async fn run_background_traffic(
+        &self,
+        label: &'static str,
+        endpoints: &[FipsEndpoint],
+        phase_index: u64,
+    ) -> BackgroundTrafficStats {
+        let eligible = self.eligible_endpoint_indices();
+        if eligible.len() < 2 || self.config.background_packet_count == 0 {
+            return BackgroundTrafficStats {
+                attempted: self.config.background_packet_count,
+                payload_bytes: self.config.background_payload_bytes,
+                send_interval_ms: self.config.background_send_interval_ms,
+                ..BackgroundTrafficStats::default()
+            };
+        }
+
+        let mut rng = StdRng::seed_from_u64(self.config.seed ^ 0x42_47_54_52_41_46 ^ phase_index);
+        let mut sent = 0usize;
+        let mut failed_send = 0usize;
+
+        for packet in 0..self.config.background_packet_count {
+            let (src, dst) = pick_pair(&eligible, &mut rng);
+            let payload = fixed_payload(
+                format!("fips-sim|background|{label}|{packet}|{src}|{dst}|").as_bytes(),
+                self.config.background_payload_bytes,
+            );
+
+            match endpoints[src]
+                .send(self.nodes[dst].npub.clone(), payload)
+                .await
+            {
+                Ok(()) => sent += 1,
+                Err(_) => failed_send += 1,
+            }
+
+            if self.config.background_send_interval_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(
+                    self.config.background_send_interval_ms,
+                ))
+                .await;
+            } else if packet % 128 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        BackgroundTrafficStats {
+            attempted: self.config.background_packet_count,
+            sent,
+            failed_send,
+            payload_bytes: self.config.background_payload_bytes,
+            send_interval_ms: self.config.background_send_interval_ms,
         }
     }
 
@@ -957,23 +1058,26 @@ async fn recv_payload_set(
     endpoint: &FipsEndpoint,
     expected: &mut HashSet<Vec<u8>>,
     timeout: Duration,
-) -> usize {
+) -> (usize, usize) {
     let deadline = Instant::now() + timeout;
     let mut delivered = 0usize;
+    let mut delivered_bytes = 0usize;
     while !expected.is_empty() {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
         match tokio::time::timeout(remaining, endpoint.recv()).await {
             Ok(Some(message)) => {
+                let len = message.data.len();
                 if expected.remove(&message.data) {
                     delivered += 1;
+                    delivered_bytes += len;
                 }
             }
             _ => break,
         }
     }
-    delivered
+    (delivered, delivered_bytes)
 }
 
 fn make_stream_payloads(

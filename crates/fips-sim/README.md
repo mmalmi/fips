@@ -47,14 +47,21 @@ Run a 1000-node comparison of original tree routing and reply-learned routing:
 
 ```sh
 cargo run -p fips-sim --example production_mesh -- \
-  --compare --nodes 1000 --route-probes 100 --stream-probes 8 --summary-only
+  --compare --nodes 1000 --route-probes 1000 --stream-probes 8 \
+  --stream-bytes 8388608 --background-packets 50000 --summary-only
+```
+
+Run the heavier benchmark scenario explicitly:
+
+```sh
+cargo bench -p fips-sim --bench production_mesh
 ```
 
 The default topology is a regional mesh with stronger backbone links and weaker
 long-haul links. Reports include clean baseline and impaired phases, endpoint
-probe delivery, chunked stream completion, throughput, packet loss, link/node
-churn drops, blackhole/flaky egress drops, topology mix, latency, loss, and
-throughput distribution.
+probe delivery, chunk-level stream packet delivery/loss, delivered goodput,
+background traffic volume, link/node churn drops, blackhole/flaky egress drops,
+topology mix, latency, loss, and throughput distribution.
 
 The old analytical routing-strategy model was removed. This crate no longer
 pretends to implement alternate routing protocols in parallel with FIPS; it
