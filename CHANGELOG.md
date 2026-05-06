@@ -392,6 +392,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the TUN-side `path_mtu_lookup` so later flows pick up forward-path
   bottlenecks without re-discovery. Windows TUN reader receives the
   same per-destination plumbing.
+- Proactive end-to-end `PathMtuNotification` now mirrors into the
+  TUN-side `path_mtu_lookup` (TCP MSS clamp store), parallel to the
+  reactive `MtuExceeded` mirror that already existed. Previously the
+  proactive handler only updated the session-canonical
+  `MmpSessionState.path_mtu`; on stable long-lived paths where the
+  destination's echo had tightened the session MTU but no transit
+  router had emitted a fresh `MtuExceeded` (because all current
+  traffic was already sized by the tighter session value), new TCP
+  flows opened in that window kept getting clamped by the staler
+  discovery-time value. The proactive mirror closes that gap with
+  the same tighter-only semantics — never loosens the clamp.
 - Auto-connect peers now reconnect after a graceful `Disconnect`
   notification from the remote side. `handle_disconnect` previously
   removed the peer without scheduling a reconnect, orphaning the
