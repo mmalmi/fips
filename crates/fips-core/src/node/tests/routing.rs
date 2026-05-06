@@ -339,6 +339,118 @@ fn test_reply_learned_mode_uses_observed_route_without_coords() {
 }
 
 #[test]
+fn test_reply_learned_mode_multipaths_observed_routes() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let link_id1 = LinkId::new(1);
+    let (conn1, id1) = make_completed_connection(&mut node, link_id1, transport_id, 1000);
+    let peer1_addr = *id1.node_addr();
+    node.add_connection(conn1).unwrap();
+    node.promote_connection(link_id1, id1, 2000).unwrap();
+
+    let link_id2 = LinkId::new(2);
+    let (conn2, id2) = make_completed_connection(&mut node, link_id2, transport_id, 1000);
+    let peer2_addr = *id2.node_addr();
+    node.add_connection(conn2).unwrap();
+    node.promote_connection(link_id2, id2, 2000).unwrap();
+
+    let dest = make_node_addr(99);
+    node.learn_reverse_route(dest, peer1_addr);
+    for _ in 0..4 {
+        node.learn_reverse_route(dest, peer2_addr);
+    }
+
+    let mut selected = Vec::new();
+    for _ in 0..20 {
+        selected.push(
+            *node
+                .find_next_hop(&dest)
+                .expect("learned route")
+                .node_addr(),
+        );
+    }
+
+    let peer1_count = selected.iter().filter(|addr| **addr == peer1_addr).count();
+    let peer2_count = selected.iter().filter(|addr| **addr == peer2_addr).count();
+
+    assert!(
+        peer1_count > 0,
+        "lower-score learned route should remain in exploratory rotation"
+    );
+    assert!(
+        peer2_count > peer1_count,
+        "higher-score learned route should carry most packets"
+    );
+}
+
+#[test]
+fn test_reply_learned_mode_periodically_explores_coordinate_route() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.node.routing.learned_fallback_explore_interval = 2;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let my_addr = *node.node_addr();
+
+    let tree_link = LinkId::new(1);
+    let (tree_conn, tree_id) = make_completed_connection(&mut node, tree_link, transport_id, 1000);
+    let tree_peer_addr = *tree_id.node_addr();
+    node.add_connection(tree_conn).unwrap();
+    node.promote_connection(tree_link, tree_id, 2000).unwrap();
+
+    let learned_link = LinkId::new(2);
+    let (learned_conn, learned_id) =
+        make_completed_connection(&mut node, learned_link, transport_id, 1000);
+    let learned_peer_addr = *learned_id.node_addr();
+    node.add_connection(learned_conn).unwrap();
+    node.promote_connection(learned_link, learned_id, 2000)
+        .unwrap();
+
+    let tree_peer_coords = TreeCoordinate::from_addrs(vec![tree_peer_addr, my_addr]).unwrap();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(tree_peer_addr, my_addr, 1, 1000),
+        tree_peer_coords,
+    );
+    let learned_peer_coords = TreeCoordinate::from_addrs(vec![learned_peer_addr, my_addr]).unwrap();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(learned_peer_addr, my_addr, 1, 1000),
+        learned_peer_coords,
+    );
+
+    let dest = make_node_addr(99);
+    let dest_coords = TreeCoordinate::from_addrs(vec![dest, tree_peer_addr, my_addr]).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    node.coord_cache_mut().insert(dest, dest_coords, now_ms);
+    node.learn_reverse_route(dest, learned_peer_addr);
+
+    let first = *node
+        .find_next_hop(&dest)
+        .expect("learned route")
+        .node_addr();
+    let second = *node
+        .find_next_hop(&dest)
+        .expect("learned route")
+        .node_addr();
+    let third = *node
+        .find_next_hop(&dest)
+        .expect("coordinate exploration route")
+        .node_addr();
+
+    assert_eq!(first, learned_peer_addr);
+    assert_eq!(second, learned_peer_addr);
+    assert_eq!(
+        third, tree_peer_addr,
+        "fallback exploration should periodically try the coordinate route"
+    );
+}
+
+#[test]
 fn test_tree_mode_ignores_learned_route_without_coords() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);

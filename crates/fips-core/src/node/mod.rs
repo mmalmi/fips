@@ -1844,14 +1844,17 @@ impl Node {
     /// Routing priority:
     /// 1. Destination is self → `None` (local delivery)
     /// 2. Destination is a direct peer → that peer
-    /// 3. Bloom filter candidates with cached dest coords → among peers whose
+    /// 3. Reply-learned routes in `reply_learned` mode. These are locally
+    ///    observed reverse paths, selected with weighted multipath plus
+    ///    periodic coordinate/tree exploration.
+    /// 4. Bloom filter candidates with cached dest coords → among peers whose
     ///    bloom filter contains the destination, pick the one that minimizes
     ///    tree distance to the destination, with
     ///    `(link_cost, tree_distance_to_dest, node_addr)` tie-breaking.
     ///    The self-distance check ensures only peers strictly closer to the
     ///    destination than us are considered (prevents routing loops).
-    /// 4. Greedy tree routing fallback (requires cached dest coords)
-    /// 5. No route → `None`
+    /// 5. Greedy tree routing fallback (requires cached dest coords)
+    /// 6. No route → `None`
     ///
     /// Both the bloom filter and tree routing paths require cached destination
     /// coordinates (checked in `coord_cache`). Without coordinates, the node
@@ -1873,43 +1876,101 @@ impl Node {
 
         let now_ms = Self::now_ms();
 
+        let sendable_learned_peers = if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            Some(
+                self.peers
+                    .iter()
+                    .filter(|(_, peer)| peer.can_send())
+                    .map(|(addr, _)| *addr)
+                    .collect::<HashSet<_>>(),
+            )
+        } else {
+            None
+        };
+
         // 3. Optional reply-learned routing. These entries are not peer
         // claims; they are local observations of which peer carried traffic
-        // or a verified lookup response back from the destination.
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
-            let sendable_peers = self
-                .peers
-                .iter()
-                .filter(|(_, peer)| peer.can_send())
-                .map(|(addr, _)| *addr)
-                .collect::<HashSet<_>>();
-            if let Some(next_hop_addr) =
+        // or a verified lookup response back from the destination. Most
+        // packets use weighted multipath over learned routes, but periodic
+        // fallback exploration lets coord/bloom/tree routes discover better
+        // candidates.
+        let explore_fallback = sendable_learned_peers.as_ref().is_some_and(|sendable| {
+            self.learned_routes.should_explore_fallback(
+                dest_node_addr,
+                now_ms,
+                self.config.node.routing.learned_fallback_explore_interval,
+                |addr| sendable.contains(addr),
+            )
+        });
+        if let Some(sendable) = &sendable_learned_peers
+            && !explore_fallback
+            && let Some(next_hop_addr) =
                 self.learned_routes
-                    .best_next_hop(dest_node_addr, now_ms, |addr| sendable_peers.contains(addr))
-            {
-                return self.peers.get(&next_hop_addr);
-            }
+                    .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+        {
+            return self.peers.get(&next_hop_addr);
         }
 
         // Look up cached destination coordinates (required by both bloom and tree paths).
-        let dest_coords = self
+        let Some(dest_coords) = self
             .coord_cache
-            .get_and_touch(dest_node_addr, now_ms)?
-            .clone();
+            .get_and_touch(dest_node_addr, now_ms)
+            .cloned()
+        else {
+            if let Some(sendable) = &sendable_learned_peers
+                && let Some(next_hop_addr) =
+                    self.learned_routes
+                        .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+            {
+                return self.peers.get(&next_hop_addr);
+            }
+            return None;
+        };
 
-        // 3. Bloom filter candidates — requires dest_coords for loop-free selection.
+        // 4. Bloom filter candidates — requires dest_coords for loop-free selection.
         //    If no candidate is strictly closer, fall through to tree routing.
-        let candidates: Vec<&ActivePeer> = self.destination_in_filters(dest_node_addr);
-        if !candidates.is_empty()
-            && let Some(peer) = self.select_best_candidate(&candidates, &dest_coords)
-        {
-            return Some(peer);
+        let coordinate_route_addr = {
+            let candidates: Vec<&ActivePeer> = self.destination_in_filters(dest_node_addr);
+            if !candidates.is_empty() {
+                self.select_best_candidate(&candidates, &dest_coords)
+                    .map(|peer| *peer.node_addr())
+            } else {
+                None
+            }
+        };
+        if let Some(next_hop_addr) = coordinate_route_addr {
+            return self.peers.get(&next_hop_addr);
         }
 
-        // 4. Greedy tree routing fallback
-        let next_hop_id = self.tree_state.find_next_hop(&dest_coords)?;
+        // 5. Greedy tree routing fallback
+        let tree_route_addr = self
+            .tree_state
+            .find_next_hop(&dest_coords)
+            .filter(|next_hop_id| {
+                self.peers
+                    .get(next_hop_id)
+                    .is_some_and(|peer| peer.can_send())
+            });
+        if let Some(next_hop_addr) = tree_route_addr {
+            return self.peers.get(&next_hop_addr);
+        }
+        if explore_fallback {
+            return sendable_learned_peers.as_ref().and_then(|sendable| {
+                self.learned_routes
+                    .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+                    .and_then(|next_hop_addr| self.peers.get(&next_hop_addr))
+            });
+        }
 
-        self.peers.get(&next_hop_id).filter(|p| p.can_send())
+        if let Some(sendable) = &sendable_learned_peers
+            && let Some(next_hop_addr) =
+                self.learned_routes
+                    .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+        {
+            return self.peers.get(&next_hop_addr);
+        }
+
+        None
     }
 
     pub(in crate::node) fn learn_reverse_route(

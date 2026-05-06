@@ -781,7 +781,8 @@ node:
   routing:
     mode: tree                           # tree | reply_learned
     learned_ttl_secs: 300                # TTL for locally learned reverse-path routes
-    max_learned_routes_per_dest: 4       # standby next-hop candidates per destination
+    max_learned_routes_per_dest: 4       # observed multipath candidates per destination
+    learned_fallback_explore_interval: 16 # try coord/bloom/tree route every N learned sends (0 = disabled)
   bloom:
     update_debounce_ms: 500
   session:

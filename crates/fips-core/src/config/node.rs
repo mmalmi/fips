@@ -613,10 +613,15 @@ pub struct RoutingConfig {
     /// TTL for learned reverse-path routes in seconds (`node.routing.learned_ttl_secs`).
     #[serde(default = "RoutingConfig::default_learned_ttl_secs")]
     pub learned_ttl_secs: u64,
-    /// Maximum learned next-hop candidates per destination
+    /// Maximum locally observed next-hop candidates kept per destination for
+    /// reply-learned multipath/exploration
     /// (`node.routing.max_learned_routes_per_dest`).
     #[serde(default = "RoutingConfig::default_max_learned_routes_per_dest")]
     pub max_learned_routes_per_dest: usize,
+    /// Every N learned-route selections, try the coordinate/bloom/tree route
+    /// instead so new paths can be discovered (`0` disables fallback exploration).
+    #[serde(default = "RoutingConfig::default_learned_fallback_explore_interval")]
+    pub learned_fallback_explore_interval: u64,
 }
 
 impl Default for RoutingConfig {
@@ -625,6 +630,7 @@ impl Default for RoutingConfig {
             mode: RoutingMode::default(),
             learned_ttl_secs: 300,
             max_learned_routes_per_dest: 4,
+            learned_fallback_explore_interval: 16,
         }
     }
 }
@@ -636,6 +642,10 @@ impl RoutingConfig {
 
     fn default_max_learned_routes_per_dest() -> usize {
         4
+    }
+
+    fn default_learned_fallback_explore_interval() -> u64 {
+        16
     }
 }
 
@@ -1151,15 +1161,17 @@ mod tests {
         assert_eq!(c.mode, RoutingMode::Tree);
         assert_eq!(c.learned_ttl_secs, 300);
         assert_eq!(c.max_learned_routes_per_dest, 4);
+        assert_eq!(c.learned_fallback_explore_interval, 16);
     }
 
     #[test]
     fn test_routing_config_yaml() {
-        let yaml = "mode: reply_learned\nlearned_ttl_secs: 120\nmax_learned_routes_per_dest: 2\n";
+        let yaml = "mode: reply_learned\nlearned_ttl_secs: 120\nmax_learned_routes_per_dest: 2\nlearned_fallback_explore_interval: 8\n";
         let c: RoutingConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(c.mode, RoutingMode::ReplyLearned);
         assert_eq!(c.learned_ttl_secs, 120);
         assert_eq!(c.max_learned_routes_per_dest, 2);
+        assert_eq!(c.learned_fallback_explore_interval, 8);
     }
 
     #[test]

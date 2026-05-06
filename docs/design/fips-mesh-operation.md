@@ -222,16 +222,26 @@ priority chain. This is the core routing algorithm.
 2. **Direct peer** — The destination is an authenticated neighbor. Forward
    directly. No coordinates or bloom filters needed.
 
-3. **Bloom-guided routing** — One or more peers' bloom filters contain the
+3. **Reply-learned routing** — In `reply_learned` mode, prefer locally
+   observed reverse paths before coordinate-based routing. These are not peer
+   reachability claims; they are learned from inbound traffic and verified
+   lookup responses. Multiple live candidates are selected with smooth weighted
+   round-robin, so high-score routes carry more packets while weaker candidates
+   still receive exploratory traffic. Every
+   `node.routing.learned_fallback_explore_interval` learned-route selections,
+   the node tries the coordinate/bloom/tree route instead, giving non-learned
+   paths a chance to prove themselves with return traffic.
+
+4. **Bloom-guided routing** — One or more peers' bloom filters contain the
    destination. Select the best peer by composite key:
    `(link_cost, tree_distance, node_addr)`. This requires the destination's
    tree coordinates to be in the local coordinate cache.
 
-4. **Greedy tree routing** — Fallback when bloom filters haven't converged
+5. **Greedy tree routing** — Fallback when bloom filters haven't converged
    for this destination. Forward to the peer that minimizes tree distance.
    Also requires destination coordinates.
 
-5. **No route** — Destination unreachable. Generate an error signal
+6. **No route** — Destination unreachable. Generate an error signal
    (CoordsRequired or PathBroken) back to the source.
 
 ### The Coordinate Requirement
