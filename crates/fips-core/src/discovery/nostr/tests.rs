@@ -1,6 +1,6 @@
 use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
 
-use super::runtime::NostrDiscovery;
+use super::runtime::{NostrDiscovery, VerifiedEvent};
 use super::signal::{
     FreshnessOutcome, build_signal_event, create_traversal_answer, create_traversal_offer,
     estimate_clock_skew, validate_offer_freshness, validate_traversal_answer_for_offer,
@@ -130,8 +130,9 @@ fn rejects_invalid_overlay_adverts() {
 #[test]
 fn parses_only_signed_overlay_advert_events() {
     let event = signed_overlay_advert_event_for_app("fips-test");
+    let event = VerifiedEvent::try_from(&event).expect("signed advert should verify");
 
-    let advert = NostrDiscovery::parse_overlay_advert_event(&event, "fips-test")
+    let advert = NostrDiscovery::parse_overlay_advert_event(event, "fips-test")
         .expect("signed advert should parse");
 
     assert_eq!(advert.identifier, ADVERT_IDENTIFIER);
@@ -143,7 +144,7 @@ fn rejects_tampered_overlay_advert_event_content() {
     let mut event = signed_overlay_advert_event_for_app("fips-test");
     event.content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"198.51.100.20:443"}]}"#.to_string();
 
-    let err = NostrDiscovery::parse_overlay_advert_event(&event, "fips-test")
+    let err = VerifiedEvent::try_from(&event)
         .expect_err("tampered advert content must fail event verification");
 
     assert!(err.to_string().contains("signature"), "{err}");

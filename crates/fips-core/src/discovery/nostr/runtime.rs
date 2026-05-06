@@ -389,7 +389,11 @@ impl NostrDiscovery {
                 let Some(valid_until_ms) = self.event_valid_until_ms(ev) else {
                     return NostrRefetchOutcome::Skipped;
                 };
-                let Ok(advert) = Self::parse_overlay_advert_event(ev, &self.config.app) else {
+                let Ok(verified_event) = VerifiedEvent::try_from(ev) else {
+                    return NostrRefetchOutcome::Skipped;
+                };
+                let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app)
+                else {
                     return NostrRefetchOutcome::Skipped;
                 };
                 let updated = CachedOverlayAdvert {
@@ -497,10 +501,13 @@ impl NostrDiscovery {
             while let Ok(notification) = notifications.recv().await {
                 if let RelayPoolNotification::Event { event, .. } = notification {
                     if event.kind == Kind::Custom(ADVERT_KIND) {
-                        let author_npub = event.pubkey.to_bech32().expect("infallible");
+                        let Ok(verified_event) = VerifiedEvent::try_from(event.as_ref()) else {
+                            continue;
+                        };
+                        let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
                         if let Some(valid_until_ms) = self.event_valid_until_ms(&event)
                             && let Ok(advert) =
-                                Self::parse_overlay_advert_event(&event, &self.config.app)
+                                Self::parse_overlay_advert_event(verified_event, &self.config.app)
                         {
                             let mut cache = self.advert_cache.write().await;
                             let should_replace = cache
@@ -1097,10 +1104,14 @@ impl NostrDiscovery {
             let Some(valid_until_ms) = self.event_valid_until_ms(event) else {
                 continue;
             };
-            let Ok(advert) = Self::parse_overlay_advert_event(event, &self.config.app) else {
+            let Ok(verified_event) = VerifiedEvent::try_from(event) else {
                 continue;
             };
-            let author_npub = event.pubkey.to_bech32().expect("infallible");
+            let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
+            let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app)
+            else {
+                continue;
+            };
             if author_npub != peer_npub {
                 continue;
             }
@@ -1199,12 +1210,10 @@ impl NostrDiscovery {
     }
 
     pub(super) fn parse_overlay_advert_event(
-        event: &Event,
+        event: VerifiedEvent<'_>,
         expected_app: &str,
     ) -> Result<OverlayAdvert, BootstrapError> {
-        event
-            .verify()
-            .map_err(|e| BootstrapError::InvalidAdvert(format!("invalid event signature: {e}")))?;
+        let event = event.as_event();
         if event.kind != Kind::Custom(ADVERT_KIND) {
             return Err(BootstrapError::InvalidAdvert(
                 "unexpected advert event kind".to_string(),
@@ -1411,6 +1420,32 @@ impl NostrDiscovery {
             );
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct VerifiedEvent<'a> {
+    event: &'a Event,
+}
+
+impl<'a> VerifiedEvent<'a> {
+    fn as_event(&self) -> &'a Event {
+        self.event
+    }
+
+    fn pubkey(&self) -> &'a PublicKey {
+        &self.event.pubkey
+    }
+}
+
+impl<'a> TryFrom<&'a Event> for VerifiedEvent<'a> {
+    type Error = BootstrapError;
+
+    fn try_from(event: &'a Event) -> Result<Self, Self::Error> {
+        event
+            .verify()
+            .map_err(|e| BootstrapError::InvalidAdvert(format!("invalid event signature: {e}")))?;
+        Ok(Self { event })
     }
 }
 
