@@ -533,6 +533,13 @@ pub struct Node {
     startup_open_discovery_sweep_done: bool,
     /// Per-peer UDP transports adopted from NAT traversal handoff.
     bootstrap_transports: HashSet<TransportId>,
+    /// Originating peer npub (bech32) for each adopted bootstrap
+    /// transport, captured at `adopt_established_traversal` time.
+    /// Populated alongside `bootstrap_transports`; cleared in
+    /// `cleanup_bootstrap_transport_if_unused`. Used by the rx loop to
+    /// route fatal-protocol-mismatch observations back to the
+    /// Nostr-discovery `failure_state` for long cooldown application.
+    bootstrap_transport_npubs: HashMap<TransportId, String>,
 
     // === Periodic Parent Re-evaluation ===
     /// Timestamp of last periodic parent re-evaluation (for pacing).
@@ -690,6 +697,7 @@ impl Node {
             nostr_discovery_started_at_ms: None,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
+            bootstrap_transport_npubs: HashMap::new(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -814,6 +822,7 @@ impl Node {
             nostr_discovery_started_at_ms: None,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
+            bootstrap_transport_npubs: HashMap::new(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -1584,6 +1593,7 @@ impl Node {
         );
 
         self.bootstrap_transports.remove(&transport_id);
+        self.bootstrap_transport_npubs.remove(&transport_id);
         self.transport_drops.remove(&transport_id);
         self.transports.remove(&transport_id);
     }
