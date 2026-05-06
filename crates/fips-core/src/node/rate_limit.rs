@@ -16,7 +16,7 @@
 //! - Refill rate: 10 tokens/second (sustained handshake rate)
 //! - This allows handling burst traffic while limiting sustained attack impact
 
-use std::time::Instant;
+use crate::time::{Instant, instant_now};
 
 /// Default burst capacity (max tokens).
 pub const DEFAULT_BURST_CAPACITY: u32 = 100;
@@ -61,7 +61,7 @@ impl TokenBucket {
             capacity,
             tokens: capacity as f64,
             refill_rate,
-            last_refill: Instant::now(),
+            last_refill: instant_now(),
         }
     }
 
@@ -110,7 +110,7 @@ impl TokenBucket {
 
     /// Refill tokens based on elapsed time.
     fn refill(&mut self) {
-        let now = Instant::now();
+        let now = instant_now();
         let elapsed = now.duration_since(self.last_refill);
         let elapsed_secs = elapsed.as_secs_f64();
 
@@ -129,7 +129,7 @@ impl TokenBucket {
     #[cfg(test)]
     pub fn reset(&mut self) {
         self.tokens = self.capacity as f64;
-        self.last_refill = Instant::now();
+        self.last_refill = instant_now();
     }
 
     /// Time until the next token is available.

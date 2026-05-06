@@ -163,10 +163,7 @@ impl Node {
 
         let inner = &datagram.payload[FSP_COMMON_PREFIX_SIZE..];
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         match prefix.phase {
             FSP_PHASE_MSG1 => match SessionSetup::decode(inner) {
@@ -253,10 +250,7 @@ impl Node {
 
         let my_addr = *self.node_addr();
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         let error_payload =
             if let Some(coords) = self.coord_cache().get(&original.dest_addr, now_ms) {

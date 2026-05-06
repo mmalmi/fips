@@ -226,10 +226,7 @@ impl Node {
                 );
                 let addr = *node_addr;
                 self.remove_active_peer(node_addr);
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
+                let now_ms = Self::now_ms();
                 self.schedule_reconnect(addr, now_ms);
             }
         }

@@ -529,7 +529,7 @@ pub struct Node {
 
     // === Periodic Parent Re-evaluation ===
     /// Timestamp of last periodic parent re-evaluation (for pacing).
-    last_parent_reeval: Option<std::time::Instant>,
+    last_parent_reeval: Option<crate::time::Instant>,
 
     // === Congestion Logging ===
     /// Timestamp of last congestion detection log (rate-limited to 5s).
@@ -1871,10 +1871,7 @@ impl Node {
             return Some(peer);
         }
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         // 3. Optional reply-learned routing. These entries are not peer
         // claims; they are local observations of which peer carried traffic

@@ -1503,7 +1503,23 @@ impl Node {
                 node_addr: dest_addr,
                 reason: "unknown remote identity for endpoint data".into(),
             })?;
-        self.initiate_session(dest_addr, dest_pubkey).await?;
+        if self.find_next_hop(&dest_addr).is_none() {
+            self.queue_pending_endpoint_data(dest_addr, payload);
+            self.maybe_initiate_lookup(&dest_addr).await;
+            return Ok(());
+        }
+
+        match self.initiate_session(dest_addr, dest_pubkey).await {
+            Ok(()) => {}
+            Err(NodeError::SendFailed { node_addr, reason })
+                if node_addr == dest_addr && reason == "no route to destination" =>
+            {
+                self.queue_pending_endpoint_data(dest_addr, payload);
+                self.maybe_initiate_lookup(&dest_addr).await;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
         self.queue_pending_endpoint_data(dest_addr, payload);
         Ok(())
     }
@@ -1893,10 +1909,7 @@ impl Node {
 
     /// Current Unix time in milliseconds.
     pub(in crate::node) fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+        crate::time::now_ms()
     }
 
     // === TUN Outbound (Data Plane) ===
@@ -2092,8 +2105,8 @@ impl Node {
 
     /// Retry session initiation after discovery provided coordinates.
     ///
-    /// Called when a LookupResponse arrives and we have pending TUN packets
-    /// for the discovered target. The coord_cache now has coords, so
+    /// Called when a LookupResponse arrives and we have pending TUN packets or
+    /// endpoint data for the discovered target. The coord_cache now has coords, so
     /// `find_next_hop()` should succeed and the SessionSetup can be sent.
     pub(in crate::node) async fn retry_session_after_discovery(&mut self, dest_addr: NodeAddr) {
         // Look up the destination's public key from the identity cache

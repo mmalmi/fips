@@ -5,6 +5,7 @@
 //! bloom filter contains the target. TTL and request_id dedup provide
 //! safety bounds.
 
+use crate::config::RoutingMode;
 use crate::node::{Node, RecentRequest};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
@@ -84,7 +85,7 @@ impl Node {
                 return;
             }
             self.stats_mut().discovery.req_forwarded += 1;
-            self.forward_lookup_request(request).await;
+            self.forward_lookup_request(from, request).await;
         } else {
             self.stats_mut().discovery.req_ttl_exhausted += 1;
             debug!(
@@ -252,14 +253,22 @@ impl Node {
                 );
             }
 
-            // If we have pending TUN packets for this target, retry session
-            // initiation. The coord_cache now has coords, so find_next_hop()
-            // should succeed.
-            if let Some(packets) = self.pending_tun_packets.get(&target) {
+            // If we have queued application traffic for this target, retry
+            // session initiation. The coord_cache now has coords, so
+            // find_next_hop() should succeed.
+            if self.pending_tun_packets.contains_key(&target)
+                || self.pending_endpoint_data.contains_key(&target)
+            {
+                let tun_packets = self.pending_tun_packets.get(&target).map_or(0, |p| p.len());
+                let endpoint_payloads = self
+                    .pending_endpoint_data
+                    .get(&target)
+                    .map_or(0, |p| p.len());
                 debug!(
                     dest = %self.peer_display_name(&target),
-                    queued_packets = packets.len(),
-                    "Retrying queued packets after discovery"
+                    queued_tun_packets = tun_packets,
+                    queued_endpoint_payloads = endpoint_payloads,
+                    "Retrying queued traffic after discovery"
                 );
                 self.retry_session_after_discovery(target).await;
             }
@@ -328,10 +337,11 @@ impl Node {
     /// contains the target. Restricting to tree peers follows the spanning
     /// tree partition, producing a single directed path.
     ///
-    /// Fallback: if no tree peer's bloom matches, try non-tree peers whose
-    /// bloom contains the target. This recovers from dead ends caused by
-    /// stale bloom filters, tree restructuring, or transit node failures.
-    async fn forward_lookup_request(&mut self, mut request: LookupRequest) {
+    /// Fallback: if no tree peer's bloom matches, original routing tries
+    /// non-tree bloom-matching peers. Reply-learned routing floods sendable
+    /// tree peers instead, which avoids trusting reachability claims for
+    /// first-contact discovery at the cost of more traffic.
+    async fn forward_lookup_request(&mut self, from: &NodeAddr, mut request: LookupRequest) {
         if !request.forward() {
             return;
         }
@@ -340,18 +350,35 @@ impl Node {
         let forward_to: Vec<NodeAddr> = self
             .peers
             .iter()
-            .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.may_reach(&request.target))
+            .filter(|(addr, peer)| {
+                **addr != *from && self.is_tree_peer(addr) && peer.may_reach(&request.target)
+            })
             .map(|(addr, _)| *addr)
             .collect();
 
-        // Fallback: if no tree peer matches, try non-tree bloom-matching peers
+        // Fallback: either non-tree bloom matches (original) or a tree flood
+        // (reply-learned first-contact discovery).
         let (forward_to, used_fallback) = if forward_to.is_empty() {
-            let fallback: Vec<NodeAddr> = self
-                .peers
-                .iter()
-                .filter(|(addr, peer)| !self.is_tree_peer(addr) && peer.may_reach(&request.target))
-                .map(|(addr, _)| *addr)
-                .collect();
+            let fallback: Vec<NodeAddr> =
+                if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+                    self.peers
+                        .iter()
+                        .filter(|(addr, peer)| {
+                            **addr != *from && self.is_tree_peer(addr) && peer.can_send()
+                        })
+                        .map(|(addr, _)| *addr)
+                        .collect()
+                } else {
+                    self.peers
+                        .iter()
+                        .filter(|(addr, peer)| {
+                            **addr != *from
+                                && !self.is_tree_peer(addr)
+                                && peer.may_reach(&request.target)
+                        })
+                        .map(|(addr, _)| *addr)
+                        .collect()
+                };
             if fallback.is_empty() {
                 self.stats_mut().discovery.req_no_tree_peer += 1;
                 trace!(
@@ -372,7 +399,7 @@ impl Node {
                 target = %self.peer_display_name(&request.target),
                 ttl = request.ttl,
                 peer_count = forward_to.len(),
-                "Forwarding LookupRequest via non-tree fallback"
+                "Forwarding LookupRequest via fallback discovery"
             );
         } else {
             debug!(
@@ -410,13 +437,25 @@ impl Node {
         let origin_coords = self.tree_state().my_coords().clone();
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
-        // Send only to tree peers whose bloom filter contains the target
-        let peer_addrs: Vec<NodeAddr> = self
+        // Send only to tree peers whose bloom filter contains the target.
+        // Reply-learned mode can fall back to all sendable tree peers so the
+        // first contact does not depend on peer reachability claims.
+        let mut peer_addrs: Vec<NodeAddr> = self
             .peers
             .iter()
             .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.may_reach(target))
             .map(|(addr, _)| *addr)
             .collect();
+        let used_fallback =
+            peer_addrs.is_empty() && self.config.node.routing.mode == RoutingMode::ReplyLearned;
+        if used_fallback {
+            peer_addrs = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.can_send())
+                .map(|(addr, _)| *addr)
+                .collect();
+        }
 
         let peer_count = peer_addrs.len();
 
@@ -426,6 +465,7 @@ impl Node {
             ttl = ttl,
             peer_count = peer_count,
             total_peers = self.peers.len(),
+            fallback = used_fallback,
             "Discovery lookup initiated"
         );
 
@@ -480,10 +520,11 @@ impl Node {
             return;
         }
 
-        // Bloom filter pre-check: if no peer's filter contains the target,
-        // it's not in the mesh — skip the lookup and record as failure.
+        // Bloom filter pre-check: original routing skips if no peer's filter
+        // contains the target. Reply-learned mode intentionally allows a
+        // first-contact tree flood when bloom reachability is missing.
         let reachable = self.peers.values().any(|peer| peer.may_reach(dest));
-        if !reachable {
+        if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
             self.discovery_backoff.record_failure(dest);
             debug!(
@@ -569,9 +610,14 @@ impl Node {
 
             let queued = self.pending_tun_packets.remove(&addr);
             let pkt_count = queued.as_ref().map_or(0, |p| p.len());
+            let endpoint_count = self
+                .pending_endpoint_data
+                .remove(&addr)
+                .map_or(0, |p| p.len());
             info!(
                 target_node = %self.peer_display_name(&addr),
                 queued_packets = pkt_count,
+                queued_endpoint_payloads = endpoint_count,
                 failures = failures,
                 "Discovery lookup timed out, destination unreachable"
             );

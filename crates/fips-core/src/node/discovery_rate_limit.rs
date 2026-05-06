@@ -14,8 +14,9 @@
 //!   nodes generating fresh request_ids at high rate.
 
 use crate::NodeAddr;
+use crate::time::{Instant, instant_now};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ============================================================================
 // Originator-side: Discovery Backoff
@@ -71,7 +72,7 @@ impl DiscoveryBackoff {
     /// looked up yet.
     pub fn is_suppressed(&self, target: &NodeAddr) -> bool {
         if let Some(entry) = self.entries.get(target) {
-            Instant::now() < entry.suppress_until
+            instant_now() < entry.suppress_until
         } else {
             false
         }
@@ -82,7 +83,7 @@ impl DiscoveryBackoff {
     /// Increments the failure count and sets the next suppression
     /// window using exponential backoff.
     pub fn record_failure(&mut self, target: &NodeAddr) {
-        let now = Instant::now();
+        let now = instant_now();
         let failures = self.entries.get(target).map_or(0, |e| e.failures) + 1;
 
         let backoff_secs = self
@@ -185,7 +186,7 @@ impl DiscoveryForwardRateLimiter {
     /// Returns true if enough time has passed since the last forward
     /// for this target. Updates internal state when returning true.
     pub fn should_forward(&mut self, target: &NodeAddr) -> bool {
-        let now = Instant::now();
+        let now = instant_now();
 
         if let Some(&last) = self.last_forwarded.get(target)
             && now.duration_since(last) < self.min_interval

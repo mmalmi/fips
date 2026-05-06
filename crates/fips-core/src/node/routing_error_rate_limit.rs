@@ -4,8 +4,9 @@
 //! rate-limiting error signals per destination address at transit nodes.
 
 use crate::NodeAddr;
+use crate::time::{Instant, instant_now};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Rate limiter for routing error signals (CoordsRequired / PathBroken).
 ///
@@ -47,7 +48,7 @@ impl RoutingErrorRateLimiter {
     /// this destination, or if this is the first error. Updates internal
     /// state when returning true.
     pub fn should_send(&mut self, dest_addr: &NodeAddr) -> bool {
-        let now = Instant::now();
+        let now = instant_now();
 
         if let Some(&last) = self.last_sent.get(dest_addr)
             && now.duration_since(last) < self.min_interval

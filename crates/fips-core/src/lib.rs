@@ -19,6 +19,7 @@ pub mod node;
 pub mod noise;
 pub mod peer;
 pub mod protocol;
+pub(crate) mod time;
 pub mod transport;
 pub mod tree;
 pub mod upper;

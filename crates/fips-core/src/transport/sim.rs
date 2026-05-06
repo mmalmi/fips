@@ -16,8 +16,9 @@ use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 /// Default in-memory link used when no per-link override is configured.
 pub const DEFAULT_SIM_LINK: SimLink = SimLink {

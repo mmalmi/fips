@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{CoordEntry, ParentDeclaration, TreeCoordinate, TreeError};
+use crate::time::{Instant, instant_now};
 use crate::{Identity, NodeAddr};
 
 /// Local spanning tree state for a node.
@@ -51,10 +52,7 @@ impl TreeState {
     /// The node starts as its own root until it learns of a smaller node_addr.
     /// Initial sequence is 1 per protocol spec; timestamp is current Unix time.
     pub fn new(my_node_addr: NodeAddr) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = crate::time::now_secs();
         let my_declaration = ParentDeclaration::self_root(my_node_addr, 1, timestamp);
         let my_coords = TreeCoordinate::root_with_meta(my_node_addr, 1, timestamp);
 
@@ -159,7 +157,7 @@ impl TreeState {
         let parent_changed = self.is_root() || *self.my_declaration.parent_id() != parent_id;
         self.my_declaration =
             ParentDeclaration::new(self.my_node_addr, parent_id, sequence, timestamp);
-        self.last_parent_switch = Some(Instant::now());
+        self.last_parent_switch = Some(instant_now());
         // Record switch for flap detection only when parent actually changes;
         // coordinates will be recomputed when ancestry is available
         if parent_changed {
@@ -264,7 +262,7 @@ impl TreeState {
     /// Record a parent switch for flap detection.
     /// Returns true if dampening was just engaged.
     pub fn record_parent_switch(&mut self) -> bool {
-        let now = Instant::now();
+        let now = instant_now();
 
         // Reset window if expired or not started
         match self.flap_window_start {
@@ -288,7 +286,7 @@ impl TreeState {
     /// Check if flap dampening is currently active.
     pub fn is_flap_dampened(&self) -> bool {
         match self.flap_dampening_until {
-            Some(until) => Instant::now() < until,
+            Some(until) => instant_now() < until,
             None => false,
         }
     }
@@ -441,10 +439,7 @@ impl TreeState {
     pub fn handle_parent_lost(&mut self, peer_costs: &HashMap<NodeAddr, f64>) -> bool {
         // Try to find an alternative parent
         if let Some(new_parent) = self.evaluate_parent(peer_costs) {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let timestamp = crate::time::now_secs();
             let new_seq = self.my_declaration.sequence() + 1;
             self.set_parent(new_parent, new_seq, timestamp);
             self.recompute_coords();
@@ -452,10 +447,7 @@ impl TreeState {
         }
 
         // No alternative: become own root
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = crate::time::now_secs();
         let new_seq = self.my_declaration.sequence() + 1;
         self.my_declaration = ParentDeclaration::self_root(self.my_node_addr, new_seq, timestamp);
         self.recompute_coords();

@@ -6,6 +6,8 @@
 //! actual FIPS handshake, tree, discovery, session, and forwarding code handles
 //! routing.
 
+pub use fips_core::config::RoutingMode;
+
 use fips_core::config::{PeerConfig, SimTransportConfig, TransportInstances};
 use fips_core::{
     Config, FipsEndpoint, FipsEndpointError, Identity, IdentityConfig, SimLink, SimNetwork,
@@ -16,7 +18,8 @@ use rand::{Rng, RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Topology generator used by the production simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +85,8 @@ pub struct SimConfig {
     pub stream_timeout_ms: u64,
     /// Topology shape.
     pub topology: TopologyProfile,
+    /// Production FIPS routing mode used by all nodes.
+    pub routing_mode: RoutingMode,
     /// Misbehavior and churn mix applied after the clean baseline phase.
     pub adversary: AdversaryConfig,
 }
@@ -101,6 +106,7 @@ impl Default for SimConfig {
             delivery_timeout_ms: 4_000,
             stream_timeout_ms: 8_000,
             topology: TopologyProfile::Standard,
+            routing_mode: RoutingMode::Tree,
             adversary: AdversaryConfig::default(),
         }
     }
@@ -114,6 +120,13 @@ pub struct ProductionSimReport {
     pub behavior_counts: BTreeMap<String, usize>,
     pub baseline: PhaseReport,
     pub impaired: PhaseReport,
+}
+
+/// Side-by-side report for original FIPS routing and the reply-learned mode.
+#[derive(Debug, Clone, Serialize)]
+pub struct RoutingComparisonReport {
+    pub original: ProductionSimReport,
+    pub ours: ProductionSimReport,
 }
 
 /// Topology summary.
@@ -365,6 +378,7 @@ impl Simulation {
         config.node.tree.parent_hysteresis = 0.0;
         config.node.tree.hold_down_secs = 0;
         config.node.tree.reeval_interval_secs = 1;
+        config.node.routing.mode = self.config.routing_mode;
         config.node.heartbeat_interval_secs = 1;
         config.node.link_dead_timeout_secs = 4;
         config.tun.enabled = false;
@@ -430,18 +444,36 @@ impl Simulation {
 
         for probe in 0..self.config.route_probe_count {
             let (src, dst) = pick_pair(&eligible, &mut rng);
-            let payload = fixed_payload(
+            let request = fixed_payload(
                 format!("fips-sim|probe|{label}|{probe}|{src}|{dst}|").as_bytes(),
+                192,
+            );
+            let reply = fixed_payload(
+                format!("fips-sim|probe-reply|{label}|{probe}|{dst}|{src}|").as_bytes(),
                 192,
             );
             let start = Instant::now();
             match endpoints[src]
-                .send(self.nodes[dst].npub.clone(), payload.clone())
+                .send(self.nodes[dst].npub.clone(), request.clone())
                 .await
             {
                 Ok(()) => {
                     let timeout = Duration::from_millis(self.config.delivery_timeout_ms);
-                    if recv_exact(&endpoints[dst], &payload, timeout).await {
+                    if !recv_exact(&endpoints[dst], &request, timeout).await {
+                        timed_out += 1;
+                        continue;
+                    }
+
+                    if endpoints[dst]
+                        .send(self.nodes[src].npub.clone(), reply.clone())
+                        .await
+                        .is_err()
+                    {
+                        failed_send += 1;
+                        continue;
+                    }
+
+                    if recv_exact(&endpoints[src], &reply, timeout).await {
                         latencies.push(start.elapsed().as_secs_f64() * 1000.0);
                     } else {
                         timed_out += 1;
@@ -482,26 +514,42 @@ impl Simulation {
 
         for stream in 0..self.config.stream_probe_count {
             let (src, dst) = pick_pair(&eligible, &mut rng);
+            let warmup = fixed_payload(
+                format!("fips-sim|stream-request|{label}|{stream}|{src}|{dst}|").as_bytes(),
+                192,
+            );
             let chunks = make_stream_payloads(
                 label,
                 stream,
-                src,
                 dst,
+                src,
                 self.config.stream_size_bytes,
                 self.config.chunk_size_bytes,
             );
-            chunks_sent += chunks.len();
 
             let start = Instant::now();
+            if endpoints[src]
+                .send(self.nodes[dst].npub.clone(), warmup.clone())
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            let warmup_timeout = Duration::from_millis(self.config.delivery_timeout_ms);
+            if !recv_exact(&endpoints[dst], &warmup, warmup_timeout).await {
+                continue;
+            }
+
+            chunks_sent += chunks.len();
             let mut expected = chunks.iter().cloned().collect::<HashSet<_>>();
             for chunk in &chunks {
-                let _ = endpoints[src]
-                    .send(self.nodes[dst].npub.clone(), chunk.clone())
+                let _ = endpoints[dst]
+                    .send(self.nodes[src].npub.clone(), chunk.clone())
                     .await;
             }
 
             let timeout = Duration::from_millis(self.config.stream_timeout_ms);
-            let delivered = recv_payload_set(&endpoints[dst], &mut expected, timeout).await;
+            let delivered = recv_payload_set(&endpoints[src], &mut expected, timeout).await;
             chunks_delivered += delivered;
             if expected.is_empty() {
                 let completion_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -637,6 +685,20 @@ impl Simulation {
             root_node_addr: root.to_string(),
         }
     }
+}
+
+/// Run the same deterministic scenario once with original tree routing and once
+/// with reply-learned routing.
+pub async fn compare_original_vs_ours(
+    mut config: SimConfig,
+) -> Result<RoutingComparisonReport, SimError> {
+    config.routing_mode = RoutingMode::Tree;
+    let original = Simulation::new(config.clone()).run().await?;
+
+    config.routing_mode = RoutingMode::ReplyLearned;
+    let ours = Simulation::new(config).run().await?;
+
+    Ok(RoutingComparisonReport { original, ours })
 }
 
 /// Simulation failure.
@@ -1013,7 +1075,7 @@ fn percentile(mut values: Vec<f64>, percentile: f64) -> f64 {
 mod tests {
     use super::*;
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn production_sim_uses_real_endpoints_over_sim_transport() {
         let report = Simulation::new(SimConfig {
             node_count: 18,

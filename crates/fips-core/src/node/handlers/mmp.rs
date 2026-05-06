@@ -143,10 +143,7 @@ impl Node {
                 .collect();
             if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
                 let new_seq = self.tree_state.my_declaration().sequence() + 1;
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                let timestamp = crate::time::now_secs();
                 let flap_dampened = self.tree_state.set_parent(new_parent, new_seq, timestamp);
                 if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
                     warn!(error = %e, "Failed to sign declaration after first-RTT parent eval");
@@ -533,10 +530,7 @@ impl Node {
         }
 
         // Remove dead peers and schedule auto-reconnect
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         for addr in &dead_peers {
             warn!(

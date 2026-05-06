@@ -8,8 +8,13 @@ latency, bandwidth, packet loss, blackhole/flaky peers, and churn, but routing
 itself is the production FIPS handshake, tree, discovery, session, and
 forwarding code.
 
+The example binary runs under Tokio's paused clock. Simulated link latency,
+convergence waits, delivery timeouts, and the production routing/discovery
+timers that use FIPS' shared clock advance virtual time instead of wall-clock
+time.
+
 ```rust
-use fips_sim::{AdversaryConfig, SimConfig, Simulation, TopologyProfile};
+use fips_sim::{AdversaryConfig, RoutingMode, SimConfig, Simulation, TopologyProfile};
 
 let report = Simulation::new(SimConfig {
     node_count: 72,
@@ -18,6 +23,7 @@ let report = Simulation::new(SimConfig {
     stream_probe_count: 10,
     stream_size_bytes: 256 * 1024,
     topology: TopologyProfile::Standard,
+    routing_mode: RoutingMode::Tree,
     adversary: AdversaryConfig {
         blackhole_fraction: 0.06,
         flaky_fraction: 0.06,
@@ -35,6 +41,13 @@ Run the standard production mesh scenario:
 
 ```sh
 cargo run -p fips-sim --example production_mesh
+```
+
+Run a 1000-node comparison of original tree routing and reply-learned routing:
+
+```sh
+cargo run -p fips-sim --example production_mesh -- \
+  --compare --nodes 1000 --route-probes 100 --stream-probes 8 --summary-only
 ```
 
 The default topology is a regional mesh with stronger backbone links and weaker

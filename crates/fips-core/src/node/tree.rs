@@ -35,10 +35,7 @@ impl Node {
         &mut self,
         peer_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         // Check rate limit
         let peer = match self.peers.get_mut(peer_addr) {
@@ -97,10 +94,7 @@ impl Node {
 
     /// Send pending rate-limited tree announces whose cooldown has expired.
     pub(super) async fn send_pending_tree_announces(&mut self) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         let ready: Vec<NodeAddr> = self
             .peers
@@ -181,10 +175,7 @@ impl Node {
             return;
         }
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = Self::now_ms();
 
         // Update peer's tree state in ActivePeer
         if let Some(peer) = self.peers.get_mut(from) {
@@ -232,10 +223,7 @@ impl Node {
             .collect();
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let timestamp = crate::time::now_secs();
 
             let flap_dampened = self.tree_state.set_parent(new_parent, new_seq, timestamp);
             if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
@@ -303,10 +291,7 @@ impl Node {
             let old_depth = self.tree_state.my_coords().depth();
 
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let timestamp = crate::time::now_secs();
 
             self.tree_state.set_parent(*from, new_seq, timestamp);
             if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
@@ -363,7 +348,7 @@ impl Node {
             return;
         }
 
-        let now = std::time::Instant::now();
+        let now = crate::time::instant_now();
         let interval = std::time::Duration::from_secs(interval_secs);
 
         if let Some(last) = self.last_parent_reeval
@@ -383,10 +368,7 @@ impl Node {
 
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let timestamp = crate::time::now_secs();
 
             let flap_dampened = self.tree_state.set_parent(new_parent, new_seq, timestamp);
             if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
