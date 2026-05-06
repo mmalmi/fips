@@ -18,7 +18,7 @@ mod platform;
 #[path = "socket_macos.rs"]
 mod platform;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use platform::PacketSocket;
 
 // =============================================================================
@@ -264,10 +264,10 @@ mod async_impl {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use async_impl::AsyncPacketSocket;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl PacketSocket {
     /// Wrap this socket in an async wrapper for tokio integration.
     pub fn into_async(self) -> Result<AsyncPacketSocket, TransportError> {

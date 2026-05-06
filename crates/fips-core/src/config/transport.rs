@@ -318,7 +318,7 @@ const MIN_BEACON_INTERVAL_SECS: u64 = 10;
 /// Ethernet transport instance configuration.
 ///
 /// EthernetConfig is always compiled (for config parsing on any platform),
-/// but the transport runtime requires Linux (`#[cfg(target_os = "linux")]`).
+/// but the transport runtime currently requires Linux or macOS raw sockets.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EthernetConfig {

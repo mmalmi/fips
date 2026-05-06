@@ -9,29 +9,32 @@
 //! - macOS: Uses the `tun` crate with `ifconfig`/`route` for interface configuration
 //! - Windows: Uses the `wintun` crate for TUN device support
 
-#[cfg(windows)]
 use crate::FipsAddress;
-#[cfg(unix)]
-use crate::{FipsAddress, TunConfig};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    not(any(target_os = "linux", target_os = "macos", windows))
+))]
+use crate::TunConfig;
 use std::collections::HashMap;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fs::File;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::Read;
 #[cfg(not(target_os = "macos"))]
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::io::Write;
 use std::net::Ipv6Addr;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::{Arc, RwLock, mpsc};
 use thiserror::Error;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tracing::error;
 use tracing::{debug, trace};
 #[cfg(windows)]
 use tracing::{error, warn};
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
 
 /// Read-only handle to the per-destination path MTU map. Populated by
@@ -66,6 +69,7 @@ pub type PathMtuLookup = Arc<RwLock<HashMap<FipsAddress, u16>>>;
 ///
 /// Path MTU bytes-on-wire to TCP MSS: subtract 77 bytes of FIPS encap
 /// overhead, then 40 bytes IPv6 + 20 bytes TCP headers.
+#[cfg(any(test, target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn per_flow_max_mss(
     lookup: &PathMtuLookup,
     addr_bytes: &[u8],
@@ -160,12 +164,15 @@ pub enum TunError {
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[error("IPv6 is disabled (set net.ipv6.conf.all.disable_ipv6=0)")]
     Ipv6Disabled,
+
+    #[error("system TUN is not supported on this platform")]
+    UnsupportedPlatform,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl From<tun::Error> for TunError {
     fn from(e: tun::Error) -> Self {
         TunError::Create(Box::new(e))
@@ -201,7 +208,7 @@ impl std::fmt::Display for TunState {
 // ============================================================================
 
 /// FIPS TUN device wrapper.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct TunDevice {
     device: tun::Device,
     name: String,
@@ -209,7 +216,7 @@ pub struct TunDevice {
     address: FipsAddress,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunDevice {
     /// Create or open a TUN device.
     ///
@@ -402,7 +409,7 @@ fn parse_utun_af_prefix(buf: &[u8]) -> Option<u32> {
 /// Multiple producers can send packets via the TunTx channel.
 ///
 /// Also performs TCP MSS clamping on inbound SYN-ACK packets.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub struct TunWriter {
     file: File,
     rx: mpsc::Receiver<Vec<u8>>,
@@ -411,7 +418,7 @@ pub struct TunWriter {
     path_mtu_lookup: PathMtuLookup,
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl TunWriter {
     /// Run the writer loop.
     ///
@@ -504,7 +511,7 @@ impl TunWriter {
 /// The loop exits when the TUN interface is deleted (EFAULT) or an unrecoverable
 /// error occurs.
 #[cfg(not(target_os = "macos"))]
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn run_tun_reader(
     mut device: TunDevice,
     mtu: u16,
@@ -656,6 +663,7 @@ pub fn run_tun_reader(
 }
 
 /// Common setup for TUN reader: allocates buffer, computes max MSS.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn tun_reader_setup(device_name: &str, mtu: u16, transport_mtu: u16) -> (String, Vec<u8>, u16) {
     use super::icmp::effective_ipv6_mtu;
 
@@ -682,6 +690,7 @@ fn tun_reader_setup(device_name: &str, mtu: u16, transport_mtu: u16) -> (String,
 }
 
 /// Process a single TUN packet. Returns `false` if the reader should exit.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn handle_tun_packet(
     packet: &mut [u8],
     max_mss: u16,
@@ -727,7 +736,7 @@ fn handle_tun_packet(
     true
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl std::fmt::Debug for TunDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunDevice")
@@ -777,7 +786,7 @@ pub fn log_ipv6_packet(packet: &[u8]) {
 /// This deletes the interface, which will cause any blocking reads
 /// to return an error. Use this for graceful shutdown when the TUN device
 /// has been moved to another thread.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
     debug!("Shutting down TUN interface {}", name);
     platform::delete_interface(name).await?;
@@ -1198,6 +1207,104 @@ mod windows_tun {
 // Re-export Windows TUN types at module level
 #[cfg(windows)]
 pub use windows_tun::{TunDevice, TunWriter, run_tun_reader, shutdown_tun_interface};
+
+// ============================================================================
+// Unsupported system TUN platforms
+// ============================================================================
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+mod unsupported_tun {
+    use super::*;
+
+    /// Placeholder TUN device for platforms where apps must own packet I/O.
+    pub struct TunDevice {
+        name: String,
+        mtu: u16,
+        address: FipsAddress,
+    }
+
+    impl TunDevice {
+        /// System TUN creation is not available on this platform.
+        pub async fn create(config: &TunConfig, address: FipsAddress) -> Result<Self, TunError> {
+            let _ = (config, address);
+            Err(TunError::UnsupportedPlatform)
+        }
+
+        /// Get the configured device name.
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        /// Get the configured MTU.
+        pub fn mtu(&self) -> u16 {
+            self.mtu
+        }
+
+        /// Get the FIPS address assigned to this device.
+        pub fn address(&self) -> &FipsAddress {
+            &self.address
+        }
+
+        /// Creating a system TUN writer is not available on this platform.
+        pub fn create_writer(
+            &self,
+            max_mss: u16,
+            path_mtu_lookup: PathMtuLookup,
+        ) -> Result<(TunWriter, TunTx), TunError> {
+            let _ = (max_mss, path_mtu_lookup);
+            Err(TunError::UnsupportedPlatform)
+        }
+    }
+
+    impl std::fmt::Debug for TunDevice {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("TunDevice")
+                .field("name", &self.name)
+                .field("mtu", &self.mtu)
+                .field("address", &self.address)
+                .finish()
+        }
+    }
+
+    /// Placeholder writer for type-checking unreachable system-TUN paths.
+    pub struct TunWriter;
+
+    impl TunWriter {
+        /// No-op: system TUN is unavailable on this platform.
+        pub fn run(self) {}
+    }
+
+    /// No-op reader placeholder for platforms where apps own packet I/O.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_tun_reader(
+        device: TunDevice,
+        mtu: u16,
+        our_addr: FipsAddress,
+        tun_tx: TunTx,
+        outbound_tx: TunOutboundTx,
+        transport_mtu: u16,
+        path_mtu_lookup: PathMtuLookup,
+    ) {
+        let _ = (
+            device,
+            mtu,
+            our_addr,
+            tun_tx,
+            outbound_tx,
+            transport_mtu,
+            path_mtu_lookup,
+        );
+    }
+
+    /// No-op shutdown for platforms without a FIPS-created system TUN.
+    pub async fn shutdown_tun_interface(name: &str) -> Result<(), TunError> {
+        let _ = name;
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub use unsupported_tun::{TunDevice, TunWriter, run_tun_reader, shutdown_tun_interface};
 
 #[cfg(target_os = "linux")]
 mod platform {

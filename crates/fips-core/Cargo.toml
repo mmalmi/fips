@@ -37,8 +37,10 @@ nostr = { version = "0.44", features = ["std", "nip59"] }
 nostr-sdk = "0.44"
 
 [target.'cfg(unix)'.dependencies]
-tun = { version = "0.8.5", features = ["async"] }
 libc = "0.2"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tun = { version = "0.8.5", features = ["async"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.20.0"

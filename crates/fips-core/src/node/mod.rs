@@ -35,7 +35,7 @@ use crate::cache::CoordCache;
 use crate::config::RoutingMode;
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
@@ -895,8 +895,8 @@ impl Node {
             }
         }
 
-        // Create Ethernet transport instances (Unix only — requires raw sockets)
-        #[cfg(unix)]
+        // Create Ethernet transport instances where raw-socket support exists.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let eth_instances: Vec<_> = self
                 .config
@@ -1009,7 +1009,7 @@ impl Node {
         &self,
         addr_str: &str,
     ) -> Result<(TransportId, TransportAddr), NodeError> {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let (iface, mac_str) = addr_str.split_once('/').ok_or_else(|| {
                 NodeError::NoTransportForType(format!(
@@ -1041,7 +1041,7 @@ impl Node {
 
             Ok((transport_id, TransportAddr::from_bytes(&mac)))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(NodeError::NoTransportForType(
                 "Ethernet transport is not supported on this platform".to_string(),
