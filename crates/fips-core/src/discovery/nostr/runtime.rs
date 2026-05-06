@@ -1198,10 +1198,19 @@ impl NostrDiscovery {
         Ok(self.config.dm_relays.clone())
     }
 
-    fn parse_overlay_advert_event(
+    pub(super) fn parse_overlay_advert_event(
         event: &Event,
         expected_app: &str,
     ) -> Result<OverlayAdvert, BootstrapError> {
+        event
+            .verify()
+            .map_err(|e| BootstrapError::InvalidAdvert(format!("invalid event signature: {e}")))?;
+        if event.kind != Kind::Custom(ADVERT_KIND) {
+            return Err(BootstrapError::InvalidAdvert(
+                "unexpected advert event kind".to_string(),
+            ));
+        }
+
         let advertised_app = event
             .tags
             .find(TagKind::custom("protocol"))

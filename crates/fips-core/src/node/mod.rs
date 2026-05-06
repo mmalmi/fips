@@ -1727,7 +1727,22 @@ impl Node {
     // === Identity Cache ===
 
     /// Register a node in the identity cache for FipsAddress → NodeAddr lookup.
-    pub(crate) fn register_identity(&mut self, node_addr: NodeAddr, pubkey: secp256k1::PublicKey) {
+    pub(crate) fn register_identity(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+    ) -> bool {
+        let (xonly, _) = pubkey.x_only_public_key();
+        let derived_node_addr = NodeAddr::from_pubkey(&xonly);
+        if derived_node_addr != node_addr {
+            debug!(
+                claimed_node_addr = %node_addr,
+                derived_node_addr = %derived_node_addr,
+                "Rejected identity cache entry with mismatched public key"
+            );
+            return false;
+        }
+
         let mut prefix = [0u8; 15];
         prefix.copy_from_slice(&node_addr.as_bytes()[0..15]);
         self.identity_cache
@@ -1743,6 +1758,7 @@ impl Node {
         {
             self.identity_cache.remove(&oldest_key);
         }
+        true
     }
 
     /// Look up a destination by FipsAddress prefix (bytes 1-15 of the IPv6 address).

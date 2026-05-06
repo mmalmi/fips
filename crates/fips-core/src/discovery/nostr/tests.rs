@@ -1,4 +1,4 @@
-use nostr::prelude::{EventBuilder, Kind, Tag, Timestamp};
+use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
 
 use super::runtime::NostrDiscovery;
 use super::signal::{
@@ -46,6 +46,15 @@ fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64
         builder = builder.tags([Tag::expiration(Timestamp::from(expiration_secs))]);
     }
     builder.sign_with_keys(&keys).unwrap()
+}
+
+fn signed_overlay_advert_event_for_app(app: &str) -> nostr::Event {
+    let keys = nostr::Keys::generate();
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"203.0.113.10:443"}]}"#;
+    EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
+        .tags([Tag::custom(TagKind::custom("protocol"), [app.to_string()])])
+        .sign_with_keys(&keys)
+        .unwrap()
 }
 
 #[test]
@@ -116,6 +125,28 @@ fn rejects_invalid_overlay_adverts() {
         stun_servers: None,
     };
     assert!(NostrDiscovery::validate_overlay_advert(wrong_identifier).is_err());
+}
+
+#[test]
+fn parses_only_signed_overlay_advert_events() {
+    let event = signed_overlay_advert_event_for_app("fips-test");
+
+    let advert = NostrDiscovery::parse_overlay_advert_event(&event, "fips-test")
+        .expect("signed advert should parse");
+
+    assert_eq!(advert.identifier, ADVERT_IDENTIFIER);
+    assert_eq!(advert.endpoints.len(), 1);
+}
+
+#[test]
+fn rejects_tampered_overlay_advert_event_content() {
+    let mut event = signed_overlay_advert_event_for_app("fips-test");
+    event.content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"198.51.100.20:443"}]}"#.to_string();
+
+    let err = NostrDiscovery::parse_overlay_advert_event(&event, "fips-test")
+        .expect_err("tampered advert content must fail event verification");
+
+    assert!(err.to_string().contains("signature"), "{err}");
 }
 
 #[test]

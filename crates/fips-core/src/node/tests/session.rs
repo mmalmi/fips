@@ -1698,6 +1698,25 @@ fn test_identity_cache_lookup() {
     assert_eq!(pk, remote.pubkey_full());
 }
 
+#[test]
+fn test_identity_cache_rejects_mismatched_pubkey_claim() {
+    let mut node = make_node();
+    let claimed = Identity::generate();
+    let actual = Identity::generate();
+
+    assert!(
+        !node.register_identity(*claimed.node_addr(), actual.pubkey_full()),
+        "identity cache must reject node_addr/pubkey pairs that do not derive from each other"
+    );
+
+    let mut claimed_prefix = [0u8; 15];
+    claimed_prefix.copy_from_slice(&claimed.node_addr().as_bytes()[0..15]);
+    assert!(
+        node.lookup_by_fips_prefix(&claimed_prefix).is_none(),
+        "mismatched identity claim must not be cached under the claimed address"
+    );
+}
+
 // ============================================================================
 // Session-layer handshake resend tests
 // ============================================================================
