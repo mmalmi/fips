@@ -43,6 +43,10 @@ Run the standard production mesh scenario:
 cargo run -p fips-sim --example production_mesh
 ```
 
+The example prints wall-clock progress to stderr every 10 seconds. Use
+`--progress-interval-ms N` to change the interval, or `--no-progress` for
+machine-only output.
+
 Run a 1000-node comparison of original tree routing and reply-learned routing:
 
 ```sh
@@ -59,9 +63,14 @@ cargo bench -p fips-sim --bench production_mesh
 
 The default topology is a regional mesh with stronger backbone links and weaker
 long-haul links. Reports include clean baseline and impaired phases, endpoint
-probe delivery, chunk-level stream packet delivery/loss, delivered goodput,
+probe delivery, stream setup counts, chunk-level stream packet delivery/loss, delivered goodput,
 background traffic volume, link/node churn drops, blackhole/flaky egress drops,
 topology mix, latency, loss, and throughput distribution.
+
+`stream_setup` is the number of stream warmup packets that reached the chosen
+destination before chunk sending began. It is a path/session readiness metric,
+not a whole-stream completion metric; large-stream quality is represented by
+chunk delivery, chunk loss, and delivered goodput.
 
 The old analytical routing-strategy model was removed. This crate no longer
 pretends to implement alternate routing protocols in parallel with FIPS; it

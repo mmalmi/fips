@@ -25,6 +25,7 @@ async fn run(label: &str, routing_mode: RoutingMode) {
         background_packet_count: 50_000,
         background_payload_bytes: 512,
         background_send_interval_ms: 1,
+        progress_interval_ms: 10_000,
         delivery_timeout_ms: 4_000,
         stream_timeout_ms: 12_000,
         topology: TopologyProfile::Standard,

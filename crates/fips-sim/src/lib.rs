@@ -21,6 +21,9 @@ use std::fmt;
 use std::time::Duration;
 use tokio::time::Instant;
 
+mod progress;
+use progress::{ProgressReporter, ProgressSession};
+
 /// Topology generator used by the production simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,6 +82,8 @@ pub struct SimConfig {
     pub background_payload_bytes: usize,
     /// Virtual spacing between background packet sends.
     pub background_send_interval_ms: u64,
+    /// Wall-clock interval for progress reports written to stderr. Zero disables progress.
+    pub progress_interval_ms: u64,
     /// Random seed for topology, identities, roles, and traffic pairs.
     pub seed: u64,
     /// Initial settling time before clean traffic starts.
@@ -109,6 +114,7 @@ impl Default for SimConfig {
             background_packet_count: 0,
             background_payload_bytes: 512,
             background_send_interval_ms: 1,
+            progress_interval_ms: 0,
             seed: 42,
             convergence_wait_ms: 2_500,
             reconvergence_wait_ms: 1_500,
@@ -305,6 +311,10 @@ impl Simulation {
     /// phase. All traffic uses real FIPS endpoint data over the production
     /// session and forwarding stack.
     pub async fn run(&self) -> Result<ProductionSimReport, SimError> {
+        let progress_session = ProgressSession::start(&self.config, self.edges.len());
+        let progress = progress_session.reporter();
+
+        progress.stage("registering-links");
         let network = SimNetwork::new(self.config.seed ^ 0x51_4d_4e_45_54);
         for edge in &self.edges {
             network.set_link(
@@ -315,7 +325,7 @@ impl Simulation {
         }
         register_sim_network(self.network_id.clone(), network.clone());
 
-        let mut endpoints = match self.start_endpoints().await {
+        let mut endpoints = match self.start_endpoints(&progress).await {
             Ok(endpoints) => endpoints,
             Err(error) => {
                 unregister_sim_network(&self.network_id);
@@ -323,13 +333,21 @@ impl Simulation {
             }
         };
 
+        progress.stage("converging");
         tokio::time::sleep(Duration::from_millis(self.config.convergence_wait_ms)).await;
-        let baseline = self.run_phase("baseline", &endpoints, &network, 0).await;
+        let baseline = self
+            .run_phase("baseline", &endpoints, &network, 0, &progress)
+            .await;
 
+        progress.stage("applying-impairments");
         self.apply_impairments(&network);
+        progress.stage("reconverging");
         tokio::time::sleep(Duration::from_millis(self.config.reconvergence_wait_ms)).await;
-        let impaired = self.run_phase("impaired", &endpoints, &network, 1).await;
+        let impaired = self
+            .run_phase("impaired", &endpoints, &network, 1, &progress)
+            .await;
 
+        progress.stage("shutting-down");
         let mut shutdown_error = None;
         while let Some(endpoint) = endpoints.pop() {
             if let Err(error) = endpoint.shutdown().await {
@@ -337,6 +355,7 @@ impl Simulation {
             }
         }
         unregister_sim_network(&self.network_id);
+        progress.stage("done");
         if let Some(error) = shutdown_error {
             return Err(error.into());
         }
@@ -355,7 +374,11 @@ impl Simulation {
         Ok(serde_json::to_value(self.run().await?).expect("simulation report serializes"))
     }
 
-    async fn start_endpoints(&self) -> Result<Vec<FipsEndpoint>, SimError> {
+    async fn start_endpoints(
+        &self,
+        progress: &ProgressReporter,
+    ) -> Result<Vec<FipsEndpoint>, SimError> {
+        progress.start_endpoints(self.nodes.len());
         let mut endpoints = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
             match FipsEndpoint::builder()
@@ -365,7 +388,10 @@ impl Simulation {
                 .bind()
                 .await
             {
-                Ok(endpoint) => endpoints.push(endpoint),
+                Ok(endpoint) => {
+                    endpoints.push(endpoint);
+                    progress.endpoint_started(endpoints.len());
+                }
                 Err(error) => {
                     while let Some(endpoint) = endpoints.pop() {
                         let _ = endpoint.shutdown().await;
@@ -433,15 +459,21 @@ impl Simulation {
         endpoints: &[FipsEndpoint],
         network: &SimNetwork,
         phase_index: u64,
+        progress: &ProgressReporter,
     ) -> PhaseReport {
+        progress.start_phase(label, &self.config);
         let before = network.stats();
         let start = Instant::now();
         let measured = async {
-            let route_probes = self.run_route_probes(label, endpoints, phase_index).await;
-            let streams = self.run_streams(label, endpoints, phase_index).await;
+            let route_probes = self
+                .run_route_probes(label, endpoints, phase_index, progress)
+                .await;
+            let streams = self
+                .run_streams(label, endpoints, phase_index, progress)
+                .await;
             (route_probes, streams)
         };
-        let background = self.run_background_traffic(label, endpoints, phase_index);
+        let background = self.run_background_traffic(label, endpoints, phase_index, progress);
         let ((route_probes, streams), background) = tokio::join!(measured, background);
         let network_delta = network.stats().delta_since(&before);
 
@@ -460,7 +492,9 @@ impl Simulation {
         label: &'static str,
         endpoints: &[FipsEndpoint],
         phase_index: u64,
+        progress: &ProgressReporter,
     ) -> ProbeStats {
+        progress.stage("route-probes");
         let eligible = self.eligible_endpoint_indices();
         if eligible.len() < 2 || self.config.route_probe_count == 0 {
             return ProbeStats::default();
@@ -472,6 +506,7 @@ impl Simulation {
         let mut timed_out = 0usize;
 
         for probe in 0..self.config.route_probe_count {
+            progress.route_attempted();
             let (src, dst) = pick_pair(&eligible, &mut rng);
             let request = fixed_payload(
                 format!("fips-sim|probe|{label}|{probe}|{src}|{dst}|").as_bytes(),
@@ -490,6 +525,7 @@ impl Simulation {
                     let timeout = Duration::from_millis(self.config.delivery_timeout_ms);
                     if !recv_exact(&endpoints[dst], &request, timeout).await {
                         timed_out += 1;
+                        progress.route_timed_out();
                         continue;
                     }
 
@@ -499,16 +535,22 @@ impl Simulation {
                         .is_err()
                     {
                         failed_send += 1;
+                        progress.route_failed_send();
                         continue;
                     }
 
                     if recv_exact(&endpoints[src], &reply, timeout).await {
                         latencies.push(start.elapsed().as_secs_f64() * 1000.0);
+                        progress.route_delivered();
                     } else {
                         timed_out += 1;
+                        progress.route_timed_out();
                     }
                 }
-                Err(_) => failed_send += 1,
+                Err(_) => {
+                    failed_send += 1;
+                    progress.route_failed_send();
+                }
             }
         }
 
@@ -525,7 +567,9 @@ impl Simulation {
         label: &'static str,
         endpoints: &[FipsEndpoint],
         phase_index: u64,
+        progress: &ProgressReporter,
     ) -> StreamStats {
+        progress.stage("streams");
         let eligible = self.eligible_endpoint_indices();
         if eligible.len() < 2 || self.config.stream_probe_count == 0 {
             return StreamStats {
@@ -548,6 +592,7 @@ impl Simulation {
         let mut bytes_delivered = 0usize;
 
         for stream in 0..self.config.stream_probe_count {
+            progress.stream_started();
             let (src, dst) = pick_pair(&eligible, &mut rng);
             let warmup = fixed_payload(
                 format!("fips-sim|stream-request|{label}|{stream}|{src}|{dst}|").as_bytes(),
@@ -568,17 +613,21 @@ impl Simulation {
                 .is_err()
             {
                 setup_failed_send += 1;
+                progress.stream_setup_failed_send();
                 continue;
             }
             let warmup_timeout = Duration::from_millis(self.config.delivery_timeout_ms);
             if !recv_exact(&endpoints[dst], &warmup, warmup_timeout).await {
                 setup_timed_out += 1;
+                progress.stream_setup_timed_out();
                 continue;
             }
             setup_delivered += 1;
+            progress.stream_setup_delivered();
 
             let start = Instant::now();
             chunks_attempted += chunks.len();
+            progress.chunks_attempted(chunks.len());
             bytes_attempted += chunks.iter().map(Vec::len).sum::<usize>();
             let mut expected = HashSet::new();
             for chunk in &chunks {
@@ -588,9 +637,13 @@ impl Simulation {
                 {
                     Ok(()) => {
                         chunks_sent += 1;
+                        progress.chunk_sent();
                         expected.insert(chunk.clone());
                     }
-                    Err(_) => chunks_send_failed += 1,
+                    Err(_) => {
+                        chunks_send_failed += 1;
+                        progress.chunk_send_failed();
+                    }
                 }
             }
 
@@ -598,6 +651,7 @@ impl Simulation {
             let (delivered, delivered_bytes) =
                 recv_payload_set(&endpoints[src], &mut expected, timeout).await;
             chunks_delivered += delivered;
+            progress.chunks_delivered(delivered);
             bytes_delivered += delivered_bytes;
 
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -633,6 +687,7 @@ impl Simulation {
         label: &'static str,
         endpoints: &[FipsEndpoint],
         phase_index: u64,
+        progress: &ProgressReporter,
     ) -> BackgroundTrafficStats {
         let eligible = self.eligible_endpoint_indices();
         if eligible.len() < 2 || self.config.background_packet_count == 0 {
@@ -649,6 +704,7 @@ impl Simulation {
         let mut failed_send = 0usize;
 
         for packet in 0..self.config.background_packet_count {
+            progress.background_attempted();
             let (src, dst) = pick_pair(&eligible, &mut rng);
             let payload = fixed_payload(
                 format!("fips-sim|background|{label}|{packet}|{src}|{dst}|").as_bytes(),
@@ -659,8 +715,14 @@ impl Simulation {
                 .send(self.nodes[dst].npub.clone(), payload)
                 .await
             {
-                Ok(()) => sent += 1,
-                Err(_) => failed_send += 1,
+                Ok(()) => {
+                    sent += 1;
+                    progress.background_sent();
+                }
+                Err(_) => {
+                    failed_send += 1;
+                    progress.background_failed_send();
+                }
             }
 
             if self.config.background_send_interval_ms > 0 {

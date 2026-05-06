@@ -66,6 +66,7 @@ fn parse_args() -> (SimConfig, bool, bool, bool) {
         background_packet_count: 2_000,
         background_payload_bytes: 512,
         background_send_interval_ms: 1,
+        progress_interval_ms: 10_000,
         seed: 42,
         topology: TopologyProfile::Standard,
         adversary: AdversaryConfig {
@@ -109,6 +110,10 @@ fn parse_args() -> (SimConfig, bool, bool, bool) {
                 config.background_send_interval_ms =
                     parse_next(&mut args, "--background-interval-ms")
             }
+            "--progress-interval-ms" => {
+                config.progress_interval_ms = parse_next(&mut args, "--progress-interval-ms")
+            }
+            "--no-progress" => config.progress_interval_ms = 0,
             "--convergence-wait-ms" => {
                 config.convergence_wait_ms = parse_next(&mut args, "--convergence-wait-ms")
             }
@@ -162,7 +167,7 @@ where
 
 fn print_help() {
     println!(
-        "usage: cargo run -p fips-sim --example production_mesh -- [--compare] [--nodes N] [--edges N] [--route-probes N] [--stream-probes N] [--stream-bytes N] [--background-packets N] [--mode tree|reply_learned] [--delivery-timeout-ms N] [--stream-timeout-ms N] [--json-only|--summary-only]"
+        "usage: cargo run -p fips-sim --example production_mesh -- [--compare] [--nodes N] [--edges N] [--route-probes N] [--stream-probes N] [--stream-bytes N] [--background-packets N] [--progress-interval-ms N|--no-progress] [--mode tree|reply_learned] [--delivery-timeout-ms N] [--stream-timeout-ms N] [--json-only|--summary-only]"
     );
 }
 
