@@ -912,19 +912,21 @@ impl NostrDiscovery {
             ));
         }
 
-        let remotes = planned_remote_endpoints(
+        let planned_remotes = planned_remote_endpoints(
             &offer.local_addresses,
             offer.reflexive_address.as_ref(),
             &answer.payload.local_addresses,
             answer.payload.reflexive_address.as_ref(),
+            true,
         )?;
 
         let remote_addr = run_punch_attempt(
             &base_socket,
             &session_id,
-            &remotes,
+            &planned_remotes.remotes,
             self.punch_hint(),
             Duration::from_secs(self.config.attempt_timeout_secs),
+            planned_remotes.preferred_count,
         )
         .await
         .map_err(|_| BootstrapError::PunchTimeout(peer_config.npub.clone()))?;
@@ -1030,22 +1032,24 @@ impl NostrDiscovery {
             return Ok(());
         }
 
-        let remotes = planned_remote_endpoints(
+        let planned_remotes = planned_remote_endpoints(
             &answer.local_addresses,
             answer.reflexive_address.as_ref(),
             &offer.local_addresses,
             offer.reflexive_address.as_ref(),
+            true,
         )?;
 
         if let Ok(remote_addr) = run_punch_attempt(
             &base_socket,
             &offer.session_id,
-            &remotes,
+            &planned_remotes.remotes,
             answer
                 .punch
                 .clone()
                 .expect("accepted answers always include a punch hint"),
             Duration::from_secs(self.config.attempt_timeout_secs),
+            planned_remotes.preferred_count,
         )
         .await
         {

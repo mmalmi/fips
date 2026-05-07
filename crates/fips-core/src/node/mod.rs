@@ -207,6 +207,13 @@ pub(crate) enum NodeEndpointEvent {
 pub(crate) struct NodeEndpointPeer {
     pub(crate) npub: String,
     pub(crate) transport_addr: Option<String>,
+    pub(crate) transport_type: Option<String>,
+    pub(crate) link_id: u64,
+    pub(crate) srtt_ms: Option<u64>,
+    pub(crate) packets_sent: u64,
+    pub(crate) packets_recv: u64,
+    pub(crate) bytes_sent: u64,
+    pub(crate) bytes_recv: u64,
 }
 
 /// Node operational state.

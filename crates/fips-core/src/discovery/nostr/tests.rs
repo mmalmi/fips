@@ -366,10 +366,25 @@ fn plans_reflexive_targets_before_lan() {
         Some(&addr("203.0.113.10", 62000)),
         &[addr("192.168.1.20", 63000)],
         Some(&addr("198.51.100.20", 63000)),
+        false,
     );
 
     assert_eq!(planned[0].strategy, PunchStrategy::Reflexive);
     assert_eq!(planned[1].strategy, PunchStrategy::Lan);
+}
+
+#[test]
+fn plans_lan_targets_before_reflexive_when_preferred() {
+    let planned = plan_punch_targets(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 63000)],
+        Some(&addr("198.51.100.20", 63000)),
+        true,
+    );
+
+    assert_eq!(planned[0].strategy, PunchStrategy::Lan);
+    assert_eq!(planned[1].strategy, PunchStrategy::Reflexive);
 }
 
 #[test]
@@ -379,6 +394,7 @@ fn simulated_lan_scenario_includes_lan_target_and_succeeds() {
         Some(&addr("203.0.113.10", 62000)),
         &[addr("192.168.1.20", 63000)],
         Some(&addr("198.51.100.20", 63000)),
+        false,
     );
 
     assert!(
@@ -396,6 +412,7 @@ fn simulated_symmetric_nat_scenario_requires_fallback() {
         Some(&addr("203.0.113.10", 62000)),
         &[addr("10.0.1.10", 63000)],
         Some(&addr("198.51.100.20", 63000)),
+        false,
     );
 
     assert!(
@@ -413,11 +430,21 @@ fn planned_remote_endpoints_include_private_and_reflexive_paths() {
         Some(&addr("203.0.113.10", 62000)),
         &[addr("192.168.1.20", 63000)],
         Some(&addr("198.51.100.20", 63000)),
+        true,
     )
     .expect("endpoint planning should succeed");
 
-    assert!(endpoints.contains(&"192.168.1.20:63000".parse().unwrap()));
-    assert!(endpoints.contains(&"198.51.100.20:63000".parse().unwrap()));
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"192.168.1.20:63000".parse().unwrap())
+    );
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"198.51.100.20:63000".parse().unwrap())
+    );
+    assert_eq!(endpoints.preferred_count, 1);
 }
 
 /// B4: strict-fresh path returns Fresh; the offer is well within TTL and

@@ -47,6 +47,20 @@ pub struct FipsEndpointPeer {
     pub npub: String,
     /// Current underlay transport address, when a link has authenticated.
     pub transport_addr: Option<String>,
+    /// Current underlay transport kind, when known.
+    pub transport_type: Option<String>,
+    /// Authenticated link id.
+    pub link_id: u64,
+    /// Smoothed RTT in milliseconds, once measured by FIPS MMP.
+    pub srtt_ms: Option<u64>,
+    /// Link packets sent.
+    pub packets_sent: u64,
+    /// Link packets received.
+    pub packets_recv: u64,
+    /// Link bytes sent.
+    pub bytes_sent: u64,
+    /// Link bytes received.
+    pub bytes_recv: u64,
 }
 
 /// Builder for an embedded FIPS endpoint.
@@ -331,6 +345,13 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
         Self {
             npub: peer.npub,
             transport_addr: peer.transport_addr,
+            transport_type: peer.transport_type,
+            link_id: peer.link_id,
+            srtt_ms: peer.srtt_ms,
+            packets_sent: peer.packets_sent,
+            packets_recv: peer.packets_recv,
+            bytes_sent: peer.bytes_sent,
+            bytes_recv: peer.bytes_recv,
         }
     }
 }

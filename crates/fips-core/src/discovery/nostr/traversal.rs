@@ -31,6 +31,12 @@ pub(super) struct PlannedPunchTarget {
     pub(super) remote: TraversalAddress,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PlannedRemoteEndpoints {
+    pub(super) remotes: Vec<SocketAddr>,
+    pub(super) preferred_count: usize,
+}
+
 fn same_subnet_24(left: &TraversalAddress, right: &TraversalAddress) -> bool {
     let left_parts = left.ip.split('.').collect::<Vec<_>>();
     let right_parts = right.ip.split('.').collect::<Vec<_>>();
@@ -42,6 +48,7 @@ pub(super) fn plan_punch_targets(
     local_reflexive_address: Option<&TraversalAddress>,
     remote_addresses: &[TraversalAddress],
     remote_reflexive_address: Option<&TraversalAddress>,
+    prefer_same_lan: bool,
 ) -> Vec<PlannedPunchTarget> {
     let mut planned = Vec::new();
 
@@ -51,10 +58,45 @@ pub(super) fn plan_punch_targets(
         }
     };
 
-    // Reflexive ↔ Reflexive first: the only path that's reliable across
-    // arbitrary network topologies. Try this before any host-candidate path
-    // so we don't latch onto a misleading asymmetric route (e.g. an offer's
-    // private host candidate that we can reach one-way via a routed VPN).
+    if prefer_same_lan {
+        push_same_lan_targets(local_addresses, remote_addresses, &mut push_unique);
+        push_reflexive_target(
+            local_reflexive_address,
+            remote_reflexive_address,
+            &mut push_unique,
+        );
+    } else {
+        // Reflexive ↔ Reflexive first: the only path that's reliable across
+        // arbitrary network topologies. Try this before any host-candidate path
+        // so we don't latch onto a misleading asymmetric route (e.g. an offer's
+        // private host candidate that we can reach one-way via a routed VPN).
+        push_reflexive_target(
+            local_reflexive_address,
+            remote_reflexive_address,
+            &mut push_unique,
+        );
+        // Same-LAN paths (matching /24 between local and remote host candidates).
+        // Only fires when both sides exposed local candidates AND they share a
+        // /24 prefix.
+        push_same_lan_targets(local_addresses, remote_addresses, &mut push_unique);
+    }
+
+    push_mixed_targets(
+        local_addresses,
+        local_reflexive_address,
+        remote_addresses,
+        remote_reflexive_address,
+        &mut push_unique,
+    );
+
+    planned
+}
+
+fn push_reflexive_target(
+    local_reflexive_address: Option<&TraversalAddress>,
+    remote_reflexive_address: Option<&TraversalAddress>,
+    push_unique: &mut impl FnMut(PlannedPunchTarget),
+) {
     if let (Some(local), Some(remote)) = (local_reflexive_address, remote_reflexive_address) {
         push_unique(PlannedPunchTarget {
             strategy: PunchStrategy::Reflexive,
@@ -64,10 +106,13 @@ pub(super) fn plan_punch_targets(
             remote: remote.clone(),
         });
     }
+}
 
-    // Same-LAN paths (matching /24 between local and remote host candidates).
-    // Only fires when both sides exposed local candidates AND they share a
-    // /24 prefix.
+fn push_same_lan_targets(
+    local_addresses: &[TraversalAddress],
+    remote_addresses: &[TraversalAddress],
+    push_unique: &mut impl FnMut(PlannedPunchTarget),
+) {
     for local in local_addresses {
         for remote in remote_addresses {
             if same_subnet_24(local, remote) {
@@ -81,8 +126,15 @@ pub(super) fn plan_punch_targets(
             }
         }
     }
+}
 
-    // Mixed paths cover hairpin and one-side-public scenarios.
+fn push_mixed_targets(
+    local_addresses: &[TraversalAddress],
+    local_reflexive_address: Option<&TraversalAddress>,
+    remote_addresses: &[TraversalAddress],
+    remote_reflexive_address: Option<&TraversalAddress>,
+    push_unique: &mut impl FnMut(PlannedPunchTarget),
+) {
     if let Some(remote) = remote_reflexive_address {
         for local in local_addresses {
             push_unique(PlannedPunchTarget {
@@ -106,8 +158,6 @@ pub(super) fn plan_punch_targets(
             });
         }
     }
-
-    planned
 }
 
 pub(super) fn planned_remote_endpoints(
@@ -115,13 +165,16 @@ pub(super) fn planned_remote_endpoints(
     local_reflexive_address: Option<&TraversalAddress>,
     remote_addresses: &[TraversalAddress],
     remote_reflexive_address: Option<&TraversalAddress>,
-) -> Result<Vec<SocketAddr>, BootstrapError> {
+    prefer_same_lan: bool,
+) -> Result<PlannedRemoteEndpoints, BootstrapError> {
     let mut remotes = Vec::new();
+    let mut preferred_count = 0usize;
     for target in plan_punch_targets(
         local_addresses,
         local_reflexive_address,
         remote_addresses,
         remote_reflexive_address,
+        prefer_same_lan,
     ) {
         let remote = SocketAddr::new(
             target
@@ -132,13 +185,64 @@ pub(super) fn planned_remote_endpoints(
             target.remote.port,
         );
         if !remotes.contains(&remote) {
+            if prefer_same_lan && target.strategy == PunchStrategy::Lan {
+                preferred_count += 1;
+            }
             remotes.push(remote);
         }
     }
-    Ok(remotes)
+    Ok(PlannedRemoteEndpoints {
+        remotes,
+        preferred_count,
+    })
 }
 
 pub(super) async fn run_punch_attempt(
+    socket: &std::net::UdpSocket,
+    session_id: &str,
+    targets: &[SocketAddr],
+    punch: PunchHint,
+    timeout: Duration,
+    preferred_count: usize,
+) -> Result<SocketAddr, BootstrapError> {
+    if targets.is_empty() {
+        return Err(BootstrapError::Protocol("no-punch-targets".to_string()));
+    }
+
+    if preferred_count > 0 && preferred_count < targets.len() {
+        let preferred_timeout = preferred_probe_timeout(timeout);
+        if let Ok(remote) = run_punch_attempt_once(
+            socket,
+            session_id,
+            &targets[..preferred_count],
+            punch.clone(),
+            preferred_timeout,
+        )
+        .await
+        {
+            return Ok(remote);
+        }
+
+        let fallback_timeout = timeout
+            .checked_sub(preferred_timeout)
+            .filter(|remaining| *remaining >= Duration::from_millis(250))
+            .unwrap_or(timeout);
+        return run_punch_attempt_once(socket, session_id, targets, punch, fallback_timeout).await;
+    }
+
+    run_punch_attempt_once(socket, session_id, targets, punch, timeout).await
+}
+
+fn preferred_probe_timeout(timeout: Duration) -> Duration {
+    let timeout_ms = timeout.as_millis();
+    if timeout_ms <= 250 {
+        timeout
+    } else {
+        Duration::from_millis(timeout_ms.min(900) as u64)
+    }
+}
+
+async fn run_punch_attempt_once(
     socket: &std::net::UdpSocket,
     session_id: &str,
     targets: &[SocketAddr],

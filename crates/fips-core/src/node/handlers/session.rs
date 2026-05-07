@@ -1461,9 +1461,27 @@ impl Node {
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
                 let peers = self
                     .peers()
-                    .map(|peer| NodeEndpointPeer {
-                        npub: peer.npub(),
-                        transport_addr: peer.current_addr().map(|addr| addr.to_string()),
+                    .map(|peer| {
+                        let link_id = peer.link_id();
+                        let transport_type = self.get_link(&link_id).and_then(|link| {
+                            self.get_transport(&link.transport_id())
+                                .map(|handle| handle.transport_type().name.to_string())
+                        });
+                        let stats = peer.link_stats();
+                        NodeEndpointPeer {
+                            npub: peer.npub(),
+                            transport_addr: peer.current_addr().map(|addr| addr.to_string()),
+                            transport_type,
+                            link_id: link_id.as_u64(),
+                            srtt_ms: peer
+                                .mmp()
+                                .and_then(|mmp| mmp.metrics.srtt_ms())
+                                .map(|srtt| srtt.round() as u64),
+                            packets_sent: stats.packets_sent,
+                            packets_recv: stats.packets_recv,
+                            bytes_sent: stats.bytes_sent,
+                            bytes_recv: stats.bytes_recv,
+                        }
                     })
                     .collect();
                 let _ = response_tx.send(peers);
