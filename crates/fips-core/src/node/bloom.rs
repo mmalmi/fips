@@ -16,7 +16,7 @@ impl Node {
     ///
     /// Returns a map of (peer_node_addr -> filter) for peers that
     /// have sent us a FilterAnnounce.
-    fn peer_inbound_filters(&self) -> HashMap<NodeAddr, BloomFilter> {
+    pub(super) fn peer_inbound_filters(&self) -> HashMap<NodeAddr, BloomFilter> {
         let mut filters = HashMap::new();
         for (addr, peer) in &self.peers {
             if self.is_tree_peer(addr)
