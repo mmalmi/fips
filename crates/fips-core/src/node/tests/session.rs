@@ -335,6 +335,99 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
+    // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS
+    // overlay transport and must not receive app-owned endpoint payloads.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let mut alice_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("alice endpoint data I/O should attach");
+    let mut transit_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("transit endpoint data I/O should attach");
+    let mut bob_endpoint = nodes[2]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("bob endpoint data I/O should attach");
+
+    let alice_addr = *nodes[0].node.node_addr();
+    let bob_addr = *nodes[2].node.node_addr();
+    let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .send_endpoint_data(bob_identity, b"alice-to-bob".to_vec())
+        .await
+        .expect("alice endpoint data should send");
+    drain_to_quiescence(&mut nodes).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
+        .await
+        .expect("bob endpoint data should not time out")
+        .expect("bob endpoint data should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } => {
+            assert_eq!(source_node_addr, alice_addr);
+            assert_eq!(source_npub, Some(nodes[0].node.npub()));
+            assert_eq!(payload, b"alice-to-bob");
+        }
+    }
+
+    assert!(
+        nodes[1].node.get_session(&alice_addr).is_none(),
+        "transit node must not create an app endpoint session for Alice"
+    );
+    assert!(
+        nodes[1].node.get_session(&bob_addr).is_none(),
+        "transit node must not create an app endpoint session for Bob"
+    );
+    assert!(
+        transit_endpoint.event_rx.try_recv().is_err(),
+        "transit node must not receive app endpoint data"
+    );
+
+    nodes[2]
+        .node
+        .send_endpoint_data(alice_identity, b"bob-to-alice".to_vec())
+        .await
+        .expect("bob endpoint data should send");
+    drain_to_quiescence(&mut nodes).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), alice_endpoint.event_rx.recv())
+        .await
+        .expect("alice endpoint data should not time out")
+        .expect("alice endpoint data should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } => {
+            assert_eq!(source_node_addr, bob_addr);
+            assert_eq!(source_npub, Some(nodes[2].node.npub()));
+            assert_eq!(payload, b"bob-to-alice");
+        }
+    }
+    assert!(
+        transit_endpoint.event_rx.try_recv().is_err(),
+        "transit node must stay outside the app endpoint flow"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 // ============================================================================
 // Integration tests: 3-node forwarded session
 // ============================================================================
