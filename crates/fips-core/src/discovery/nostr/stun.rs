@@ -251,16 +251,22 @@ async fn resolve_udp_target(host: &str, port: u16) -> Result<Option<SocketAddr>,
 
 fn local_addresses_from_port(port: u16) -> Vec<String> {
     let mut addresses = Vec::new();
-    push_private_interface_ips(&mut addresses);
-    push_local_probe(&mut addresses, "0.0.0.0:0", "8.8.8.8:80");
-    push_local_probe(&mut addresses, "[::]:0", "[2001:4860:4860::8888]:80");
+    let interface_ips = private_interface_ips();
+    push_private_interface_ips(&mut addresses, &interface_ips);
+    push_local_probe(&mut addresses, "0.0.0.0:0", "8.8.8.8:80", &interface_ips);
+    push_local_probe(
+        &mut addresses,
+        "[::]:0",
+        "[2001:4860:4860::8888]:80",
+        &interface_ips,
+    );
     push_bound_addr(&mut addresses, ("0.0.0.0", port));
     push_bound_addr(&mut addresses, ("::", port));
     addresses
 }
 
-fn push_private_interface_ips(addresses: &mut Vec<String>) {
-    for ip in private_interface_ips() {
+fn push_private_interface_ips(addresses: &mut Vec<String>, interface_ips: &[IpAddr]) {
+    for ip in interface_ips.iter().copied() {
         push_ip(addresses, ip);
     }
 }
@@ -282,10 +288,8 @@ fn private_interface_ips() -> Vec<IpAddr> {
         // SAFETY: `cursor` points at a valid node from the `getifaddrs` list.
         let entry = unsafe { &*cursor };
         let flags = entry.ifa_flags as i32;
-        let is_up = (flags & libc::IFF_UP) != 0;
-        let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
 
-        if is_up && !is_loopback && !entry.ifa_addr.is_null() {
+        if interface_flags_allow_private_candidate(flags) && !entry.ifa_addr.is_null() {
             // SAFETY: `ifa_addr` is non-null and its concrete type matches
             // `sa_family` for this entry.
             let maybe_ip = unsafe {
@@ -332,12 +336,29 @@ fn is_private_overlay_candidate_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn push_local_probe(addresses: &mut Vec<String>, bind_addr: &str, connect_addr: &str) {
+#[cfg(any(unix, test))]
+fn interface_flags_allow_private_candidate(flags: i32) -> bool {
+    let is_up = (flags & libc::IFF_UP) != 0;
+    let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
+    let is_point_to_point = (flags & libc::IFF_POINTOPOINT) != 0;
+    is_up && !is_loopback && !is_point_to_point
+}
+
+fn push_local_probe(
+    addresses: &mut Vec<String>,
+    bind_addr: &str,
+    connect_addr: &str,
+    interface_ips: &[IpAddr],
+) {
     if let Ok(socket) = std::net::UdpSocket::bind(bind_addr)
         && socket.connect(connect_addr).is_ok()
         && let Ok(local_addr) = socket.local_addr()
     {
-        push_ip(addresses, local_addr.ip());
+        let ip = local_addr.ip();
+        if !interface_ips.is_empty() && !interface_ips.contains(&ip) {
+            return;
+        }
+        push_ip(addresses, ip);
     }
 }
 
@@ -369,7 +390,10 @@ fn random_txn_id() -> [u8; 12] {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_private_overlay_candidate_ip, parse_stun_binding_success};
+    use super::{
+        interface_flags_allow_private_candidate, is_private_overlay_candidate_ip,
+        parse_stun_binding_success,
+    };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;
@@ -521,5 +545,18 @@ mod tests {
         assert!(!is_private_overlay_candidate_ip(IpAddr::V6(
             "2001:db8::1".parse::<Ipv6Addr>().unwrap()
         )));
+    }
+
+    #[test]
+    fn interface_candidate_filter_excludes_point_to_point_tunnels() {
+        assert!(interface_flags_allow_private_candidate(
+            libc::IFF_UP | libc::IFF_BROADCAST | libc::IFF_MULTICAST
+        ));
+        assert!(!interface_flags_allow_private_candidate(
+            libc::IFF_UP | libc::IFF_POINTOPOINT | libc::IFF_MULTICAST
+        ));
+        assert!(!interface_flags_allow_private_candidate(
+            libc::IFF_UP | libc::IFF_LOOPBACK
+        ));
     }
 }
