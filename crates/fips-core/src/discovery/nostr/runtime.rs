@@ -1374,8 +1374,9 @@ impl NostrDiscovery {
             Timestamp::from((now_ms() + self.config.signal_ttl_secs * 1000) / 1000),
         )
         .await?;
+        let relays = self.ensure_signal_relays(relays).await?;
         self.client
-            .send_event_to(relays.to_vec(), &signal)
+            .send_event_to(relays, &signal)
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         Ok(signal)
@@ -1388,11 +1389,29 @@ impl NostrDiscovery {
         let event = EventBuilder::delete(nostr::nips::nip09::EventDeletionRequest::new().ids(ids))
             .sign_with_keys(&self.keys)
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        let relays = self.ensure_signal_relays(relays).await?;
         self.client
-            .send_event_to(relays.to_vec(), &event)
+            .send_event_to(relays, &event)
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         Ok(())
+    }
+
+    async fn ensure_signal_relays(&self, relays: &[String]) -> Result<Vec<String>, BootstrapError> {
+        let mut usable = Vec::new();
+        for relay in relays {
+            match self.client.add_relay(relay).await {
+                Ok(_) => usable.push(relay.clone()),
+                Err(error) => {
+                    debug!(relay = %relay, error = %error, "failed to add signal relay");
+                }
+            }
+        }
+        if usable.is_empty() {
+            return Err(BootstrapError::Nostr("no usable signal relays".to_string()));
+        }
+        self.client.connect().await;
+        Ok(usable)
     }
 
     async fn mark_session_seen(&self, session_id: &str) -> Result<(), BootstrapError> {
