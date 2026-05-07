@@ -1077,6 +1077,11 @@ pub struct NodeConfig {
     #[serde(default)]
     pub rekey: RekeyConfig,
 
+    /// Enable daemon-oriented system files such as `/etc/fips/hosts` and
+    /// `/etc/fips/peers.{allow,deny}`. Embedded endpoints disable this.
+    #[serde(default = "NodeConfig::default_system_files_enabled")]
+    pub system_files_enabled: bool,
+
     /// Log level (`node.log_level`). Case-insensitive.
     /// Valid values: trace, debug, info, warn, error. Default: info.
     #[serde(default)]
@@ -1107,6 +1112,7 @@ impl Default for NodeConfig {
             session_mmp: SessionMmpConfig::default(),
             ecn: EcnConfig::default(),
             rekey: RekeyConfig::default(),
+            system_files_enabled: true,
             log_level: None,
         }
     }
@@ -1140,6 +1146,9 @@ impl NodeConfig {
     }
     fn default_link_dead_timeout_secs() -> u64 {
         30
+    }
+    fn default_system_files_enabled() -> bool {
+        true
     }
 }
 

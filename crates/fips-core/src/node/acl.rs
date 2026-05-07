@@ -286,6 +286,7 @@ impl PeerAcl {
 pub struct PeerAclReloader {
     acl: PeerAcl,
     hosts: HostMapReloader,
+    file_backed: bool,
     allow_path: PathBuf,
     deny_path: PathBuf,
     last_allow_mtime: Option<SystemTime>,
@@ -330,10 +331,27 @@ impl PeerAclReloader {
         Self {
             acl,
             hosts,
+            file_backed: true,
             allow_path,
             deny_path,
             last_allow_mtime,
             last_deny_mtime,
+        }
+    }
+
+    /// Create a memory-only ACL reloader.
+    ///
+    /// This preserves configured peer aliases for display and DNS host-map
+    /// lookups while avoiding system ACL/hosts file probes.
+    pub(crate) fn memory_only(base_hosts: HostMap) -> Self {
+        Self {
+            acl: PeerAcl::new(),
+            hosts: HostMapReloader::memory_only(base_hosts),
+            file_backed: false,
+            allow_path: PathBuf::new(),
+            deny_path: PathBuf::new(),
+            last_allow_mtime: None,
+            last_deny_mtime: None,
         }
     }
 
@@ -361,6 +379,10 @@ impl PeerAclReloader {
 
     /// Check whether ACL or hosts alias sources changed and reload if needed.
     pub fn check_reload(&mut self) -> bool {
+        if !self.file_backed {
+            return false;
+        }
+
         let allow_mtime = file_mtime(&self.allow_path);
         let deny_mtime = file_mtime(&self.deny_path);
         let hosts_changed = self.hosts.check_reload();

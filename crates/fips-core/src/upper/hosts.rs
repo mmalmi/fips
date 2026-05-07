@@ -205,6 +205,8 @@ pub struct HostMapReloader {
     base: HostMap,
     /// Current effective map (base merged with hosts file).
     effective: HostMap,
+    /// Whether to watch and reload an operator-managed hosts file.
+    file_backed: bool,
     /// Path to the hosts file.
     path: std::path::PathBuf,
     /// Last observed modification time (None if file didn't exist).
@@ -224,8 +226,23 @@ impl HostMapReloader {
         Self {
             base,
             effective,
+            file_backed: true,
             path,
             last_mtime,
+        }
+    }
+
+    /// Create a memory-only reloader from the base host map.
+    ///
+    /// Embedded applications use this to avoid probing daemon-oriented system
+    /// paths such as `/etc/fips/hosts` inside mobile sandboxes.
+    pub fn memory_only(base: HostMap) -> Self {
+        Self {
+            effective: base.clone(),
+            base,
+            file_backed: false,
+            path: std::path::PathBuf::new(),
+            last_mtime: None,
         }
     }
 
@@ -238,6 +255,10 @@ impl HostMapReloader {
     ///
     /// Returns `true` if the map was reloaded.
     pub fn check_reload(&mut self) -> bool {
+        if !self.file_backed {
+            return false;
+        }
+
         let current_mtime = file_mtime(&self.path);
 
         if current_mtime == self.last_mtime {

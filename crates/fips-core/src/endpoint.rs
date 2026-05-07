@@ -114,6 +114,7 @@ impl FipsEndpointBuilder {
         if self.disable_system_networking {
             config.tun.enabled = false;
             config.dns.enabled = false;
+            config.node.system_files_enabled = false;
         }
 
         let mut node = Node::new(config)?;

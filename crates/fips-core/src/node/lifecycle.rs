@@ -777,10 +777,14 @@ impl Node {
                             let base_hosts = crate::upper::hosts::HostMap::from_peer_configs(
                                 self.config.peers(),
                             );
-                            let hosts_path =
-                                std::path::PathBuf::from(crate::upper::hosts::DEFAULT_HOSTS_PATH);
-                            let reloader =
-                                crate::upper::hosts::HostMapReloader::new(base_hosts, hosts_path);
+                            let reloader = if self.config.node.system_files_enabled {
+                                let hosts_path = std::path::PathBuf::from(
+                                    crate::upper::hosts::DEFAULT_HOSTS_PATH,
+                                );
+                                crate::upper::hosts::HostMapReloader::new(base_hosts, hosts_path)
+                            } else {
+                                crate::upper::hosts::HostMapReloader::memory_only(base_hosts)
+                            };
                             // Resolve the TUN ifindex so the responder can
                             // drop queries arriving on the mesh interface
                             // (fips0). Without this, the `::` bind exposes

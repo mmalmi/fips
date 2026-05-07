@@ -24,6 +24,20 @@ fn deny_path(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().join("peers.deny")
 }
 
+#[test]
+fn test_system_files_disabled_uses_memory_only_acl() {
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    let mut node = Node::new(config).unwrap();
+
+    let status = node.peer_acl_status();
+    assert_eq!(status.allow_file, "");
+    assert_eq!(status.deny_file, "");
+    assert_eq!(status.effective_mode, "default_open");
+    assert!(!status.enforcement_active);
+    assert!(!node.reload_peer_acl());
+}
+
 #[tokio::test]
 async fn test_outbound_connect_denied_by_denylist() {
     let (dir, mut node) = make_acl_node();
