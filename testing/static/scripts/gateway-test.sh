@@ -37,49 +37,27 @@ inject_gateway_config() {
     fi
 
     echo "Injecting gateway config into $config_file"
-    python3 -c "
-import yaml
+    cat >>"$config_file" <<'YAML'
 
-with open('$config_file') as f:
-    cfg = yaml.safe_load(f)
-
-cfg['gateway'] = {
-    'enabled': True,
-    'pool': 'fd01::/112',
-    # Docker assigns gateway-lan to eth1 (fips-net is eth0). The
-    # LAN-side masquerade for inbound port forwards gates on this.
-    'lan_interface': 'eth1',
-    'dns': {
-        'listen': '[::]:53',
-        'ttl': 5,
-    },
-    'pool_grace_period': 5,
-    'port_forwards': [
-        {
-            'listen_port': 18080,
-            'proto': 'tcp',
-            'target': '[fd02::20]:8080',
-        },
-        # 6B: second TCP forward — exercises multiple simultaneous TCP
-        # rules sharing the same LAN backend on a different listen port.
-        {
-            'listen_port': 18082,
-            'proto': 'tcp',
-            'target': '[fd02::20]:8081',
-        },
-        # 6A: UDP forward — exercises the runtime UDP DNAT path (rule
-        # shape + conntrack handling) end-to-end.
-        {
-            'listen_port': 18081,
-            'proto': 'udp',
-            'target': '[fd02::20]:8081',
-        },
-    ],
-}
-
-with open('$config_file', 'w') as f:
-    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
-"
+gateway:
+  enabled: true
+  pool: "fd01::/112"
+  lan_interface: eth1
+  dns:
+    listen: "[::]:53"
+    ttl: 5
+  pool_grace_period: 5
+  port_forwards:
+    - listen_port: 18080
+      proto: tcp
+      target: "[fd02::20]:8080"
+    - listen_port: 18082
+      proto: tcp
+      target: "[fd02::20]:8081"
+    - listen_port: 18081
+      proto: udp
+      target: "[fd02::20]:8081"
+YAML
     echo "  ✓ Gateway config injected"
 }
 

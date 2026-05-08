@@ -55,6 +55,40 @@ cleanup_container() {
     docker rm -f "$name" >/dev/null 2>&1 || true
 }
 
+file_mtime() {
+    local path="$1"
+    stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null || echo 0
+}
+
+file_size() {
+    local path="$1"
+    stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path" 2>/dev/null || echo 0
+}
+
+newest_source_mtime() {
+    local newest=0 path m
+    while IFS= read -r path; do
+        m=$(file_mtime "$path")
+        if [ "$m" -gt "$newest" ]; then
+            newest="$m"
+        fi
+    done < <(find \
+        "$REPO_ROOT/src" \
+        "$REPO_ROOT/crates" \
+        "$REPO_ROOT/packaging" \
+        "$REPO_ROOT/docs" \
+        "$REPO_ROOT/Cargo.toml" \
+        "$REPO_ROOT/Cargo.lock" \
+        "$REPO_ROOT/LICENSE" \
+        "$REPO_ROOT/README.md" \
+        -type f 2>/dev/null)
+    echo "$newest"
+}
+
+find_cached_deb() {
+    ls "$DEB_CACHE_DIR"/fips_*.deb 2>/dev/null | head -1
+}
+
 build_image() {
     local tag="$1"
     shift
@@ -113,16 +147,14 @@ build_deb() {
     mkdir -p "$DEB_CACHE_DIR"
 
     local cached_deb
-    cached_deb=$(ls "$DEB_CACHE_DIR"/fips_*_amd64.deb 2>/dev/null | head -1)
+    cached_deb=$(find_cached_deb)
 
     if [ -n "$cached_deb" ] && [ -f "$cached_deb" ]; then
         local newest_src
-        newest_src=$(find "$REPO_ROOT/src" "$REPO_ROOT/Cargo.toml" \
-            "$REPO_ROOT/Cargo.lock" "$REPO_ROOT/packaging" \
-            -type f -printf '%T@\n' 2>/dev/null | sort -nr | head -1)
+        newest_src=$(newest_source_mtime)
         local cached_age
-        cached_age=$(stat -c '%Y' "$cached_deb" 2>/dev/null || echo 0)
-        if awk "BEGIN { exit !($cached_age >= $newest_src) }"; then
+        cached_age=$(file_mtime "$cached_deb")
+        if [ "$cached_age" -ge "$newest_src" ]; then
             log "Using cached .deb at $cached_deb"
             return 0
         fi
@@ -145,8 +177,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo-deb --version 3.6.3 --locked
 WORKDIR /src
-COPY Cargo.toml Cargo.lock build.rs LICENSE README.md ./
+COPY Cargo.toml Cargo.lock LICENSE README.md ./
 COPY src ./src
+COPY crates ./crates
 COPY packaging ./packaging
 COPY docs ./docs
 RUN cargo build --release && cargo deb --no-build
@@ -164,10 +197,10 @@ DOCKERFILE
     docker cp "$cid:/src/target/debian/." "$DEB_CACHE_DIR/" >/dev/null 2>&1
     docker rm "$cid" >/dev/null
     # Cargo-deb leaves intermediate artifacts; keep just the .deb.
-    find "$DEB_CACHE_DIR" -mindepth 1 -not -name 'fips_*_amd64.deb' -delete 2>/dev/null || true
-    cached_deb=$(ls "$DEB_CACHE_DIR"/fips_*_amd64.deb 2>/dev/null | head -1)
+    find "$DEB_CACHE_DIR" -mindepth 1 -not -name 'fips_*.deb' -delete 2>/dev/null || true
+    cached_deb=$(find_cached_deb)
     if [ -n "$cached_deb" ]; then
-        log "Cached at $cached_deb ($(stat -c %s "$cached_deb") bytes)"
+        log "Cached at $cached_deb ($(file_size "$cached_deb") bytes)"
     else
         echo "  ERROR: no .deb produced by cargo-deb"
         return 1
@@ -193,7 +226,7 @@ _run_deb_install_scenario() {
     build_deb || { fail ".deb build failed"; return; }
 
     local cached_deb
-    cached_deb=$(ls "$DEB_CACHE_DIR"/fips_*_amd64.deb 2>/dev/null | head -1)
+    cached_deb=$(find_cached_deb)
     if [ -z "$cached_deb" ] || [ ! -f "$cached_deb" ]; then
         fail "no .deb available at $DEB_CACHE_DIR"
         return

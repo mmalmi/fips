@@ -48,17 +48,10 @@ echo ""
 # ── Phase 0: Setup ───────────────────────────────────────────────
 echo "Phase 0: Setup..."
 
-# Copy binaries from common (built externally)
-if [ ! -f fips ] || [ ! -f fipsctl ]; then
-    if [ -f ../common/fips ] && [ -f ../common/fipsctl ]; then
-        cp ../common/fips ../common/fipsctl .
-        echo "  Copied binaries from ../common/"
-    else
-        echo "  ERROR: fips and fipsctl binaries not found."
-        echo "  Build them first: cargo build --release"
-        echo "  Then copy to testing/tor/common/ or testing/tor/directory-mode/"
-        exit 1
-    fi
+if ! docker image inspect fips-test:latest >/dev/null 2>&1; then
+    echo "  ERROR: fips-test:latest image not found."
+    echo "  Build it first with testing/scripts/build.sh."
+    exit 1
 fi
 
 # Generate ephemeral identities

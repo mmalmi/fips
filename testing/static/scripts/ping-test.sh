@@ -53,15 +53,21 @@ ping_test() {
     fi
 }
 
+lower_label() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 # Quietly ping all pairs to check FSP-level convergence.
 ping_all_quiet() {
     PASSED=0
     FAILED=0
     local n=${#LABELS[@]}
     for ((i=0; i<n; i++)); do
+        local from_node
+        from_node="node-$(lower_label "${LABELS[$i]}")"
         for ((j=0; j<n; j++)); do
             [ "$i" -eq "$j" ] && continue
-            if docker exec "fips-node-${LABELS[$i],,}" \
+            if docker exec "fips-$from_node" \
                 ping6 -c 1 -W 1 "${NPUBS[$j]}.fips" >/dev/null 2>&1; then
                 PASSED=$((PASSED + 1))
             else

@@ -171,12 +171,24 @@ done
 
 # ── Results tracking ──────────────────────────────────────────────────────
 
-declare -A RESULTS
+RESULT_NAMES=()
+RESULT_RCS=()
 OVERALL=0
 
 record() {
     local name="$1" rc="$2"
-    RESULTS["$name"]=$rc
+    local idx found=false
+    for idx in "${!RESULT_NAMES[@]}"; do
+        if [[ "${RESULT_NAMES[$idx]}" == "$name" ]]; then
+            RESULT_RCS[$idx]=$rc
+            found=true
+            break
+        fi
+    done
+    if [[ "$found" != true ]]; then
+        RESULT_NAMES+=("$name")
+        RESULT_RCS+=("$rc")
+    fi
     if [[ $rc -ne 0 ]]; then
         OVERALL=1
         fail "$name"
@@ -185,12 +197,23 @@ record() {
     fi
 }
 
+result_rc() {
+    local name="$1" default="${2:-1}" idx
+    for idx in "${!RESULT_NAMES[@]}"; do
+        if [[ "${RESULT_NAMES[$idx]}" == "$name" ]]; then
+            echo "${RESULT_RCS[$idx]}"
+            return
+        fi
+    done
+    echo "$default"
+}
+
 # ── Stage 1: Build ─────────────────────────────────────────────────────────
 
 run_build() {
     stage "Stage 1: Build"
 
-    info "sudo nft -c -f packaging/common/fips.nft (nftables ruleset syntax check)"
+    info "nft -c -f packaging/common/fips.nft (nftables ruleset syntax check)"
     if command -v nft &>/dev/null; then
         if sudo nft -c -f packaging/common/fips.nft 2>&1; then
             record "nft-syntax" 0
@@ -199,9 +222,17 @@ run_build() {
             return 1
         fi
     else
-        info "nftables not installed; install with 'apt install nftables' to validate fips.nft"
-        record "nft-syntax" 1
-        return 1
+        info "nftables not installed locally; checking fips.nft inside Docker"
+        if command -v docker &>/dev/null \
+            && docker run --rm --cap-add NET_ADMIN \
+                -v "$PROJECT_ROOT:/repo:ro" \
+                debian:stable-slim \
+                sh -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends nftables >/dev/null && nft -c -f /repo/packaging/common/fips.nft' 2>&1; then
+            record "nft-syntax" 0
+        else
+            record "nft-syntax" 1
+            return 1
+        fi
     fi
 
     info "cargo build --release"
@@ -259,10 +290,16 @@ run_tests() {
 # Copy release binaries into a testing subdirectory
 install_binaries() {
     local dest="$1"
-    cp target/release/fips "$dest/fips"
-    cp target/release/fipsctl "$dest/fipsctl"
-    [[ -f target/release/fipstop ]] && cp target/release/fipstop "$dest/fipstop" || true
-    [[ -f target/release/fips-gateway ]] && cp target/release/fips-gateway "$dest/fips-gateway" || true
+    local target_dir="${CARGO_TARGET_DIR:-}"
+    if [[ -z "$target_dir" ]]; then
+        target_dir="$(cargo metadata --no-deps --format-version=1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+    fi
+    target_dir="${target_dir:-target}/release"
+
+    cp "$target_dir/fips" "$dest/fips"
+    cp "$target_dir/fipsctl" "$dest/fipsctl"
+    [[ -f "$target_dir/fipstop" ]] && cp "$target_dir/fipstop" "$dest/fipstop" || true
+    [[ -f "$target_dir/fips-gateway" ]] && cp "$target_dir/fips-gateway" "$dest/fips-gateway" || true
     chmod +x "$dest/fips" "$dest/fipsctl"
     [[ -f "$dest/fipstop" ]] && chmod +x "$dest/fipstop" || true
     [[ -f "$dest/fips-gateway" ]] && chmod +x "$dest/fips-gateway" || true
@@ -540,14 +577,15 @@ run_tor_directory() {
 run_integration() {
     stage "Stage 3: Integration Tests"
 
-    # Install binaries to shared docker context
-    info "Installing release binaries"
-    install_binaries testing/docker
-
-    # Build unified test image once (used by all harnesses)
-    info "Building fips-test Docker image"
-    docker build -t fips-test:latest testing/docker --quiet || { record "docker-build" 1; return; }
-    docker build -t fips-test-app:latest -f testing/docker/Dockerfile.app testing/docker --quiet || { record "docker-build-app" 1; return; }
+    # Build Linux binaries and the unified test images once (used by all harnesses).
+    info "Building fips-test Docker images"
+    if bash testing/scripts/build.sh 2>&1; then
+        record "docker-build" 0
+        record "docker-build-app" 0
+    else
+        record "docker-build" 1
+        return
+    fi
 
     # Single suite mode
     if [[ -n "$ONLY_SUITE" ]]; then
@@ -718,8 +756,9 @@ print_summary() {
     stage "Summary"
 
     local passed=0 failed=0 total=0
-    for name in $(echo "${!RESULTS[@]}" | tr ' ' '\n' | sort); do
-        local rc="${RESULTS[$name]}"
+    for name in $(printf '%s\n' "${RESULT_NAMES[@]}" | sort); do
+        local rc
+        rc="$(result_rc "$name")"
         total=$((total + 1))
         if [[ $rc -eq 0 ]]; then
             passed=$((passed + 1))
@@ -756,7 +795,7 @@ main() {
         run_build
     else
         run_build
-        if [[ "${RESULTS[build]:-1}" -ne 0 ]]; then
+        if [[ "$(result_rc build 1)" -ne 0 ]]; then
             fail "Build failed, skipping remaining stages"
         else
             run_tests

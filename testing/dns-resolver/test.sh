@@ -55,6 +55,27 @@ cleanup_container() {
     docker rm -f "$name" >/dev/null 2>&1 || true
 }
 
+file_mtime() {
+    local path="$1"
+    stat -f '%m' "$path" 2>/dev/null || stat -c '%Y' "$path" 2>/dev/null || echo 0
+}
+
+file_size() {
+    local path="$1"
+    stat -f '%z' "$path" 2>/dev/null || stat -c '%s' "$path" 2>/dev/null || echo 0
+}
+
+newest_source_mtime() {
+    local newest=0 path m
+    while IFS= read -r path; do
+        m=$(file_mtime "$path")
+        if [ "$m" -gt "$newest" ]; then
+            newest="$m"
+        fi
+    done < <(find "$REPO_ROOT/src" "$REPO_ROOT/crates" "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" -type f 2>/dev/null)
+    echo "$newest"
+}
+
 # Build an image from an inline Dockerfile.
 build_image() {
     local tag="$1"
@@ -228,14 +249,13 @@ build_fips_for_e2e() {
 
     if [ -f "$FIPS_BIN_CACHE" ] && [ -f "$FIPS_GATEWAY_BIN_CACHE" ]; then
         local newest_src
-        newest_src=$(find "$REPO_ROOT/src" "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" \
-            -type f -printf '%T@\n' 2>/dev/null | sort -nr | head -1)
+        newest_src=$(newest_source_mtime)
         local cached_age
-        cached_age=$(stat -c '%Y' "$FIPS_BIN_CACHE" 2>/dev/null || echo 0)
+        cached_age=$(file_mtime "$FIPS_BIN_CACHE")
         local cached_gateway_age
-        cached_gateway_age=$(stat -c '%Y' "$FIPS_GATEWAY_BIN_CACHE" 2>/dev/null || echo 0)
+        cached_gateway_age=$(file_mtime "$FIPS_GATEWAY_BIN_CACHE")
         local oldest_cached=$((cached_age < cached_gateway_age ? cached_age : cached_gateway_age))
-        if awk "BEGIN { exit !($oldest_cached >= $newest_src) }"; then
+        if [ "$oldest_cached" -ge "$newest_src" ]; then
             log "Using cached fips + fips-gateway binaries at $CACHE_DIR"
             return 0
         fi
@@ -257,8 +277,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /src
-COPY Cargo.toml Cargo.lock build.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY crates ./crates
 RUN cargo build --release --bin fips --bin fips-gateway
 DOCKERFILE
 
@@ -274,7 +295,7 @@ DOCKERFILE
     docker cp "$cid:/src/target/release/fips-gateway" "$FIPS_GATEWAY_BIN_CACHE" >/dev/null 2>&1
     docker rm "$cid" >/dev/null
     chmod +x "$FIPS_BIN_CACHE" "$FIPS_GATEWAY_BIN_CACHE"
-    log "Cached fips ($(stat -c %s "$FIPS_BIN_CACHE") bytes) + fips-gateway ($(stat -c %s "$FIPS_GATEWAY_BIN_CACHE") bytes)"
+    log "Cached fips ($(file_size "$FIPS_BIN_CACHE") bytes) + fips-gateway ($(file_size "$FIPS_GATEWAY_BIN_CACHE") bytes)"
 }
 
 # ─────────────────────────────────────────────────────────────────────

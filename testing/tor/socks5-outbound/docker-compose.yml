@@ -36,6 +36,7 @@ services:
       - tor-daemon
     volumes:
       - ./configs/node-a.yaml:/etc/fips/fips.yaml:ro
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
     environment:
       - RUST_LOG=info,fips::transport::tor=debug
       - FIPS_TEST_MODE=tor-socks5
@@ -57,6 +58,7 @@ services:
       - tor-daemon
     volumes:
       - ./configs/node-b.yaml:/etc/fips/fips.yaml:ro
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
     environment:
       - RUST_LOG=info,fips::transport::tor=debug
       - FIPS_TEST_MODE=tor-socks5

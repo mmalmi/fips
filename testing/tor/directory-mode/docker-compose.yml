@@ -27,6 +27,7 @@ services:
     volumes:
       - ./configs/node-a.yaml:/etc/fips/fips.yaml:ro
       - ./torrc:/etc/tor/torrc:ro
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
     environment:
       - RUST_LOG=info,fips::transport::tor=debug
       - FIPS_TEST_MODE=tor-directory
@@ -47,6 +48,7 @@ services:
     volumes:
       - ./configs/node-b.yaml:/etc/fips/fips.yaml:ro
       - ./torrc.socks5:/etc/tor/torrc:ro
+      - ../../docker/resolv.conf:/etc/resolv.conf:ro
     environment:
       - RUST_LOG=info,fips::transport::tor=debug
       - FIPS_TEST_MODE=tor-directory

@@ -19,6 +19,7 @@ if [ ! -f "$PROJECT_ROOT/Cargo.toml" ]; then
 fi
 
 BUILD_DOCKER=true
+TARGET_BASE="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 # Default flags for the container-image cargo build. Empty by default;
 # every subsystem is governed by platform cfg gates with no feature
 # flags required.
@@ -36,9 +37,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Detect host OS
+# Detect host OS and the Linux architecture used by the local Docker daemon.
 UNAME_S=$(uname -s)
-CARGO_TARGET="x86_64-unknown-linux-musl"
+if [ -n "${FIPS_CARGO_TARGET:-}" ]; then
+    CARGO_TARGET="$FIPS_CARGO_TARGET"
+else
+    CARGO_TARGET="x86_64-unknown-linux-musl"
+    if [ "$UNAME_S" = "Darwin" ] && command -v docker >/dev/null 2>&1; then
+        DOCKER_ARCH="$(docker info --format '{{.Architecture}}' 2>/dev/null || true)"
+        case "$DOCKER_ARCH" in
+            aarch64|arm64) CARGO_TARGET="aarch64-unknown-linux-musl" ;;
+            x86_64|amd64) CARGO_TARGET="x86_64-unknown-linux-musl" ;;
+        esac
+    fi
+fi
 
 if [ "$UNAME_S" = "Darwin" ]; then
     echo "Detected macOS host — using cross-compilation for Linux..."
@@ -57,12 +69,12 @@ if [ "$UNAME_S" = "Darwin" ]; then
     echo "Building FIPS for Linux (release) using cargo-zigbuild..."
     cargo zigbuild --release --target "$CARGO_TARGET" --manifest-path="$PROJECT_ROOT/Cargo.toml" "${CARGO_BUILD_ARGS[@]}"
 
-    TARGET_DIR="$PROJECT_ROOT/target/$CARGO_TARGET/release"
+    TARGET_DIR="$TARGET_BASE/$CARGO_TARGET/release"
 else
     echo "Building FIPS (release)..."
     cargo build --release --manifest-path="$PROJECT_ROOT/Cargo.toml" "${CARGO_BUILD_ARGS[@]}"
 
-    TARGET_DIR="$PROJECT_ROOT/target/release"
+    TARGET_DIR="$TARGET_BASE/release"
 fi
 
 echo "Copying binaries to $DOCKER_DIR/"
