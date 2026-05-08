@@ -207,8 +207,21 @@ table install, and pool initialisation.
 
 ## Step 4: Test the outbound half from a LAN client
 
-From a phone or laptop on the AP's LAN — anything that does IPv6 and
-DNS, with no FIPS software installed — try one of the public test
+Before bringing a LAN client into the picture, confirm from the AP
+itself that the mesh side is still healthy after the gateway start:
+
+```sh
+ping6 -c 2 test-us01.fips
+```
+
+This isolates the router-to-mesh path before involving the LAN
+segment. If this fails, the troubleshooting target is the daemon /
+mesh side, not the gateway-to-client side. If it succeeds and the
+LAN-client test below fails, the target is the LAN segment —
+`proxy_ndp`, the RA pool route, or DNS forwarding through dnsmasq.
+
+Now from a phone or laptop on the AP's LAN — anything that does IPv6
+and DNS, with no FIPS software installed — try one of the public test
 mesh nodes:
 
 ```sh
@@ -272,7 +285,7 @@ nft list table inet fips_gateway
 You will see DNAT, SNAT, and masquerade chains populated with one
 rule per active mapping.
 
-## Step 6: Add an inbound port-forward for a LAN service
+## Step 6 (Optional): Add an inbound port-forward for a LAN service
 
 The outbound half is the steady-state use of a gateway. The inbound
 half — exposing a LAN service to mesh peers — is a separate decision,
