@@ -30,10 +30,18 @@ npub_b="$(echo "$keys_b" | awk -F= '/^npub=/{print $2}')"
 
 relay_addr="ws://172.31.254.30:7777"
 stun_addr="stun:172.31.254.40:3478"
+share_local_candidates=false
 if [ "$SCENARIO" = "lan" ] || [ "$SCENARIO" = "nostr-publish-consume" ] \
         || [ "$SCENARIO" = "stun-faults" ]; then
     relay_addr="ws://172.31.10.30:7777"
     stun_addr="stun:172.31.10.40:3478"
+fi
+if [ "$SCENARIO" = "lan" ]; then
+    # Force the LAN scenario to prove local candidate exchange. Nostr UDP NAT
+    # adverts require a non-empty STUN list, but traversal must still succeed
+    # when STUN observation times out and only same-LAN host candidates remain.
+    stun_addr="stun:127.0.0.1:9"
+    share_local_candidates=true
 fi
 
 peer_block_a=$(cat <<EOF
@@ -89,6 +97,7 @@ node:
         - "$relay_addr"
       stun_servers:
         - "$stun_addr"
+      share_local_candidates: $share_local_candidates
       signal_ttl_secs: 30
       attempt_timeout_secs: 6
       replay_window_secs: 60

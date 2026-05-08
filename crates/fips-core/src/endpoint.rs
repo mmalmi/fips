@@ -3,6 +3,7 @@
 //! This module exposes a no-system-TUN runtime shape for apps that want to own
 //! peer admission and local routing policy while reusing FIPS connectivity.
 
+use crate::config::{NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer};
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -98,7 +99,13 @@ impl FipsEndpointBuilder {
         self
     }
 
-    /// Store an application-level discovery scope for callers that need it.
+    /// Set an application-level discovery scope.
+    ///
+    /// When the builder owns the default empty connectivity config, this also
+    /// enables scoped Nostr discovery, open same-scope peer discovery, local
+    /// LAN candidates, and a UDP NAT advert. If an explicit transport or
+    /// Nostr config was supplied, the explicit config is left in control and
+    /// the scope is retained as endpoint metadata.
     pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
         self.discovery_scope = Some(scope.into());
         self
@@ -116,12 +123,11 @@ impl FipsEndpointBuilder {
         self
     }
 
-    /// Bind and start the embedded endpoint.
-    pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
-        let mut config = self.config;
-        if let Some(nsec) = self.identity_nsec {
+    fn prepared_config(&self) -> Config {
+        let mut config = self.config.clone();
+        if let Some(nsec) = &self.identity_nsec {
             config.node.identity = IdentityConfig {
-                nsec: Some(nsec),
+                nsec: Some(nsec.clone()),
                 persistent: false,
             };
         }
@@ -130,6 +136,15 @@ impl FipsEndpointBuilder {
             config.dns.enabled = false;
             config.node.system_files_enabled = false;
         }
+        if let Some(scope) = self.discovery_scope.as_deref() {
+            apply_default_scoped_discovery(&mut config, scope);
+        }
+        config
+    }
+
+    /// Bind and start the embedded endpoint.
+    pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
+        let config = self.prepared_config();
 
         let mut node = Node::new(config)?;
         let npub = node.npub();
@@ -162,6 +177,26 @@ impl FipsEndpointBuilder {
             event_task,
         })
     }
+}
+
+fn apply_default_scoped_discovery(config: &mut Config, scope: &str) {
+    if config.node.discovery.nostr.enabled || !config.transports.is_empty() {
+        return;
+    }
+
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.advertise = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.share_local_candidates = true;
+    config.node.discovery.nostr.app = format!("fips-overlay-v1:{scope}");
+    config.transports.udp = TransportInstances::Single(UdpConfig {
+        bind_addr: Some("0.0.0.0:0".to_string()),
+        advertise_on_nostr: Some(true),
+        public: Some(false),
+        outbound_only: Some(false),
+        accept_connections: Some(true),
+        ..UdpConfig::default()
+    });
 }
 
 fn spawn_node_task(
@@ -378,7 +413,6 @@ mod tests {
     async fn loopback_endpoint_data_roundtrips() {
         let endpoint = FipsEndpoint::builder()
             .without_system_tun()
-            .discovery_scope("nostr-vpn:test")
             .bind()
             .await
             .expect("endpoint should bind");
@@ -394,9 +428,76 @@ mod tests {
         assert_eq!(message.source_node_addr, *endpoint.node_addr());
         assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
         assert_eq!(message.data, b"ping");
-        assert_eq!(endpoint.discovery_scope(), Some("nostr-vpn:test"));
+        assert!(endpoint.discovery_scope().is_none());
 
         endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[test]
+    fn discovery_scope_enables_default_scoped_udp_discovery() {
+        let config = FipsEndpoint::builder()
+            .discovery_scope("nostr-vpn:test")
+            .prepared_config();
+
+        assert!(!config.tun.enabled);
+        assert!(!config.dns.enabled);
+        assert!(!config.node.system_files_enabled);
+        assert!(config.node.discovery.nostr.enabled);
+        assert!(config.node.discovery.nostr.advertise);
+        assert_eq!(
+            config.node.discovery.nostr.policy,
+            NostrDiscoveryPolicy::Open
+        );
+        assert!(config.node.discovery.nostr.share_local_candidates);
+        assert_eq!(
+            config.node.discovery.nostr.app,
+            "fips-overlay-v1:nostr-vpn:test"
+        );
+
+        let udp = match config.transports.udp {
+            TransportInstances::Single(udp) => udp,
+            TransportInstances::Named(_) => panic!("expected a default UDP transport"),
+        };
+        assert_eq!(udp.bind_addr(), "0.0.0.0:0");
+        assert!(udp.advertise_on_nostr());
+        assert!(!udp.is_public());
+        assert!(!udp.outbound_only());
+        assert!(udp.accept_connections());
+    }
+
+    #[test]
+    fn discovery_scope_preserves_explicit_connectivity_config() {
+        let mut explicit = Config::new();
+        explicit.node.discovery.nostr.enabled = true;
+        explicit.node.discovery.nostr.app = "custom-app".to_string();
+        explicit.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+        explicit.node.discovery.nostr.share_local_candidates = false;
+        explicit.transports.udp = TransportInstances::Single(UdpConfig {
+            bind_addr: Some("127.0.0.1:34567".to_string()),
+            advertise_on_nostr: Some(false),
+            outbound_only: Some(true),
+            ..UdpConfig::default()
+        });
+
+        let config = FipsEndpoint::builder()
+            .config(explicit)
+            .discovery_scope("nostr-vpn:test")
+            .prepared_config();
+
+        assert_eq!(config.node.discovery.nostr.app, "custom-app");
+        assert_eq!(
+            config.node.discovery.nostr.policy,
+            NostrDiscoveryPolicy::ConfiguredOnly
+        );
+        assert!(!config.node.discovery.nostr.share_local_candidates);
+        let udp = match config.transports.udp {
+            TransportInstances::Single(udp) => udp,
+            TransportInstances::Named(_) => panic!("expected explicit UDP transport"),
+        };
+        assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
+        assert_eq!(udp.bind_addr(), "0.0.0.0:0");
+        assert!(!udp.advertise_on_nostr());
+        assert!(udp.outbound_only());
     }
 
     #[tokio::test]
