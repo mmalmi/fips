@@ -95,7 +95,7 @@ pub struct PeerConfig {
 
     /// Transport addresses for reaching this peer.
     ///
-    /// At least one address is required unless `via_nostr` is `true`,
+    /// At least one address is required unless Nostr discovery is enabled,
     /// in which case the address list may be empty and endpoints are
     /// resolved from the peer's Nostr advert at dial time.
     #[serde(default)]
@@ -110,13 +110,6 @@ pub struct PeerConfig {
     /// backoff after MMP removes this peer due to liveness timeout.
     #[serde(default = "default_auto_reconnect")]
     pub auto_reconnect: bool,
-
-    /// Whether to append Nostr-advertised endpoints when dialing this peer.
-    ///
-    /// Static addresses are still attempted first; advert-derived endpoints are
-    /// appended as fallback candidates.
-    #[serde(default)]
-    pub via_nostr: bool,
 }
 
 impl Default for PeerConfig {
@@ -127,7 +120,6 @@ impl Default for PeerConfig {
             addresses: Vec::new(),
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
-            via_nostr: false,
         }
     }
 }
@@ -145,7 +137,6 @@ impl PeerConfig {
             addresses: vec![PeerAddress::new(transport, addr)],
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
-            via_nostr: false,
         }
     }
 

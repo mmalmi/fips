@@ -1053,7 +1053,6 @@ impl Node {
         existing: &[PeerAddress],
     ) -> Vec<PeerAddress> {
         if !self.config.node.discovery.nostr.enabled
-            || !peer_config.via_nostr
             || self.config.node.discovery.nostr.policy
                 == crate::config::NostrDiscoveryPolicy::Disabled
         {
@@ -1350,7 +1349,6 @@ impl Node {
                 addresses,
                 connect_policy: ConnectPolicy::AutoConnect,
                 auto_reconnect: true,
-                via_nostr: false,
             });
             state.reconnect = false;
             state.retry_after_ms = now_ms;
@@ -1739,7 +1737,6 @@ impl Node {
             addresses: vec![PeerAddress::new(transport, address)],
             connect_policy: ConnectPolicy::Manual,
             auto_reconnect: false,
-            via_nostr: false,
         };
 
         // Pre-seed identity cache (same as initiate_peer_connections does)

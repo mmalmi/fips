@@ -263,8 +263,7 @@ impl DiscoveryConfig {
 ///
 /// Controls how overlay endpoint adverts are consumed:
 /// - `disabled`: ignore advert-derived endpoints for all peers
-/// - `configured_only`: allow advert fallback only for configured peers with
-///   `peers[].via_nostr = true`
+/// - `configured_only`: allow advert fallback for configured peers
 /// - `open`: also consider adverts for non-configured peers
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

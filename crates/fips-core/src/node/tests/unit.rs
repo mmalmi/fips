@@ -32,7 +32,6 @@ fn test_node_with_identity_validates_config() {
     config.node.discovery.nostr.enabled = false;
     config.peers = vec![crate::config::PeerConfig {
         npub: "npub1peer".to_string(),
-        via_nostr: true,
         ..Default::default()
     }];
 
@@ -80,7 +79,6 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
-        via_nostr: false,
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 

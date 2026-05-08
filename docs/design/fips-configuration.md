@@ -641,7 +641,10 @@ Static peer list. Each entry defines a peer to connect to.
 | `peers[].addresses[].priority` | u8 | `100` | Address priority (lower = preferred) |
 | `peers[].connect_policy` | string | `"auto_connect"` | Connection policy: `auto_connect`, `on_demand`, or `manual` |
 | `peers[].auto_reconnect` | bool | `true` | Automatically reconnect after MMP link-dead removal (exponential backoff, unlimited retries) |
-| `peers[].via_nostr` | bool | `false` | Append Nostr advert-derived endpoints after static addresses for this peer |
+
+When `node.discovery.nostr.enabled` is true, configured peers may omit
+static addresses. Nostr advert-derived endpoints are appended after any
+static addresses.
 
 ## Minimal Example
 

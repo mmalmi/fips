@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as Nostr kind `37195` parameterized replaceable events listing
   reachable transport endpoints to a configurable set of public relays,
   and consume peer adverts to populate fallback addresses for
-  `via_nostr` peers or, under `policy: open`, for non-configured peers
+  configured peers or, under `policy: open`, for non-configured peers
   within a budget cap. The kind value is FIPS-specific: `37195` sits in
   the application-defined replaceable range `30000–39999`, and the
   digits visually spell `FIPS` (7=F, 1=I, 9=P, 5=S)
@@ -66,9 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parallel). Successful punches hand the live socket into the standard
   FIPS UDP transport via a bootstrap-handoff API
 - New `node.discovery.nostr.*` configuration tree with operator-tunable
-  resource caps, replay tracking, and punch timing; new `peers[].via_nostr`
-  and per-transport `advertise_on_nostr` / `public` flags. Cross-field
-  validation at startup catches mis-configured combinations
+  resource caps, replay tracking, and punch timing; new per-transport
+  `advertise_on_nostr` / `public` flags. Cross-field validation at
+  startup catches mis-configured combinations
 - Docker NAT lab covering cone, symmetric (TCP-fallback), and LAN
   scenarios, wired into the integration CI matrix
 

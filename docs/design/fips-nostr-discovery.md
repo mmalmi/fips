@@ -28,10 +28,10 @@ The feature adds three capabilities on top of FIPS's static peer model:
   `udp:nat` rendezvous token) as a signed Nostr event. The advert is
   anchored to the node's FIPS identity key — a peer that knows the npub
   knows the advert is authentic.
-- **Lookup.** When dialing a configured peer marked `via_nostr`, or any
-  peer in `policy: open` mode, the node fetches that peer's advert from
-  the configured relays and appends the advertised endpoints to its
-  dial list. Static addresses are always tried first.
+- **Lookup.** When dialing a configured peer, or any peer in `policy:
+  open` mode, the node fetches that peer's advert from the configured
+  relays and appends the advertised endpoints to its dial list. Static
+  addresses are always tried first.
 - **UDP NAT hole-punch.** When both sides of a connection have UDP NAT
   endpoints, the advert carries enough information to run a STUN-based
   offer/answer exchange over encrypted ([NIP-59](https://github.com/nostr-protocol/nips/blob/master/59.md))
@@ -123,12 +123,11 @@ What this achieves: the node publishes a single `udp:<public-ip>:2121`
 endpoint to the three default advert relays
 (`wss://relay.damus.io`, `wss://nos.lol`, `wss://offchain.pub`).
 
-What the other side needs: either a static `addresses` entry for this
-peer, or a peer entry with `via_nostr: true` and an empty (or omitted)
-`addresses` list — the advert-resolved endpoint will be used at dial
-time. Static and Nostr-resolved addresses can also be combined: when
-both are present, static addresses are tried first and Nostr-resolved
-endpoints are appended as fallback.
+What the other side needs: with `node.discovery.nostr.enabled`, a
+configured peer can have either static `addresses` or an empty
+`addresses` list. Static and Nostr-resolved addresses can also be
+combined: when both are present, static addresses are tried first and
+Nostr-resolved endpoints are appended as fallback.
 
 ### Scenario 2: Advertise a Tor onion node
 
@@ -165,9 +164,9 @@ data plane, not the discovery plane. See
 ### Scenario 3: Lookup a configured peer by npub (no advertising)
 
 The node does not publish any advert of its own. It only consumes
-adverts for peers it has explicitly listed with `via_nostr: true`. This
-is the right shape for a client that wants Nostr-mediated resolution
-without becoming a rendezvous target itself.
+adverts for configured peers. This is the right shape for a client that
+wants Nostr-mediated resolution without becoming a rendezvous target
+itself.
 
 ```yaml
 node:
@@ -190,7 +189,6 @@ peers:
       - transport: udp
         addr: "203.0.113.45:2121"
         priority: 10
-    via_nostr: true
     connect_policy: auto_connect
 ```
 
@@ -200,8 +198,7 @@ changed), those addresses are appended as additional candidates.
 `configured_only` is the default — it is shown here for clarity.
 
 If you have no static address for the peer at all, omit `addresses`
-entirely (or leave it empty) — `via_nostr: true` is sufficient on its
-own and dial endpoints are taken from the advert.
+entirely or leave it empty. Dial endpoints are taken from the advert.
 
 ### Scenario 4: UDP NAT hole-punch with a configured peer
 
@@ -238,7 +235,6 @@ peers:
       - transport: udp
         addr: "nat"
         priority: 1
-    via_nostr: true
     connect_policy: auto_connect
     auto_reconnect: true
 ```
@@ -333,7 +329,6 @@ The per-transport keys are:
 | --- | --- | --- | --- | --- |
 | `advertise_on_nostr` | bool | `transports.{udp,tcp,tor}` | `false` | Include this transport's endpoint in the overlay advert. |
 | `public` | bool | `transports.udp` | `false` | When `advertise_on_nostr` is true: `true` publishes `udp:host:port`, `false` publishes `udp:nat`. |
-| `via_nostr` | bool | `peers[]` | `false` | Append advert-resolved endpoints to this peer's dial list. |
 
 ## Validation rules at startup
 
@@ -341,8 +336,8 @@ The following combinations are rejected with `ConfigError::Validation`:
 
 - Any transport sets `advertise_on_nostr: true` while
   `node.discovery.nostr.enabled` is `false` or absent.
-- Any peer sets `via_nostr: true` while
-  `node.discovery.nostr.enabled` is `false` or absent.
+- A peer has no static addresses while `node.discovery.nostr.enabled` is
+  `false` or absent.
 - A UDP transport sets `advertise_on_nostr: true` with `public: false`
   (a `udp:nat` advert) but `dm_relays` is empty.
 - A UDP transport sets `advertise_on_nostr: true` with `public: false`
@@ -441,7 +436,7 @@ no explicit failover — relay redundancy is implicit.
 ### Phase 2 — Lookup
 
 When the node decides to dial a peer that is eligible for Nostr
-resolution (a `via_nostr` peer, or any peer under `policy: open`), it
+resolution (a configured peer, or any peer under `policy: open`), it
 issues a Nostr REQ filtered by `author = peer_pubkey`, `kind = 37195`,
 `#d = <app>`. The fetch is time-bounded (~2 s) and runs against all
 configured `advert_relays` in parallel. The first valid advert wins.
@@ -559,9 +554,9 @@ addresses. Dial attempts originate from the existing peer-connection
 machinery:
 
 - **Configured peers** (`peers[]` with `connect_policy: auto_connect`)
-  are dialed on startup and on retry. When `via_nostr` is set, advert
-  endpoints are appended to the dial list with lower priority than
-  static entries.
+  are dialed on startup and on retry. When Nostr discovery is enabled,
+  advert endpoints are appended to the dial list with lower priority
+  than static entries.
 - **Open discovery peers** are assembled from the advert cache, fenced
   by the peer ACL, and enqueued into a bounded retry queue sized by
   `open_discovery_max_pending`. There is no event-driven

@@ -590,16 +590,10 @@ impl Config {
             ));
         }
 
-        if self.peers.iter().any(|peer| peer.via_nostr) && !nostr.enabled {
-            return Err(ConfigError::Validation(
-                "at least one peer has `via_nostr = true`, but `node.discovery.nostr.enabled` is false".to_string(),
-            ));
-        }
-
         for (i, peer) in self.peers.iter().enumerate() {
-            if peer.addresses.is_empty() && !peer.via_nostr {
+            if peer.addresses.is_empty() && !nostr.enabled {
                 return Err(ConfigError::Validation(format!(
-                    "peers[{i}] ({}): must specify at least one address, or set `via_nostr = true` to resolve endpoints from the Nostr advert",
+                    "peers[{i}] ({}): must specify at least one address, or enable `node.discovery.nostr` to resolve endpoints from Nostr adverts",
                     peer.npub
                 )));
             }
@@ -1246,7 +1240,6 @@ node:
         - "stun:stun.example.org:3478"
 peers:
   - npub: "npub1peer"
-    via_nostr: true
     addresses:
       - transport: udp
         addr: "nat"
@@ -1277,7 +1270,6 @@ peers:
             config.peers[0].addresses[0].addr, "nat",
             "udp:nat address should parse without special-casing in YAML"
         );
-        assert!(config.peers[0].via_nostr);
     }
 
     #[test]
@@ -1294,11 +1286,10 @@ peers:
     }
 
     #[test]
-    fn test_validate_peer_via_nostr_requires_nostr_enabled() {
+    fn test_validate_empty_peer_addresses_require_nostr_enabled() {
         let mut config = Config {
             peers: vec![PeerConfig {
                 npub: "npub1peer".to_string(),
-                via_nostr: true,
                 ..Default::default()
             }],
             ..Default::default()
@@ -1306,12 +1297,12 @@ peers:
         config.node.discovery.nostr.enabled = false;
 
         let err = config.validate().expect_err("validation should fail");
-        assert!(err.to_string().contains("via_nostr"));
+        assert!(err.to_string().contains("node.discovery.nostr"));
     }
 
     #[test]
-    fn test_validate_peer_addresses_required_unless_via_nostr() {
-        // Empty addresses + via_nostr=false → error.
+    fn test_validate_peer_addresses_optional_with_nostr_enabled() {
+        // Empty addresses + Nostr discovery disabled -> error.
         let mut config = Config {
             peers: vec![PeerConfig {
                 npub: "npub1peer".to_string(),
@@ -1322,12 +1313,11 @@ peers:
         let err = config.validate().expect_err("validation should fail");
         assert!(err.to_string().contains("at least one address"));
 
-        // Empty addresses + via_nostr=true + nostr.enabled=true → ok.
-        config.peers[0].via_nostr = true;
+        // Empty addresses + Nostr discovery enabled -> ok.
         config.node.discovery.nostr.enabled = true;
         config
             .validate()
-            .expect("via_nostr should allow empty addresses");
+            .expect("Nostr discovery should allow empty addresses");
     }
 
     #[test]
