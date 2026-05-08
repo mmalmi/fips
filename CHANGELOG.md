@@ -302,6 +302,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decrypt-failure thresholds, STUN parser, gateway, NAT traversal,
   packaging install paths) alongside CI-side hardening for the new
   Windows and macOS platforms.
+- Gateway `dns.listen` source default changed from `[::]:53` to
+  `[::1]:5353` to match the canonical deployment model (a host
+  already serving DHCP/DNS to a LAN segment, where port 53 is
+  taken by the existing resolver and `.fips` queries are forwarded
+  to the gateway over loopback). The OpenWrt ipk previously
+  overrode this in its packaged config; the override is now
+  redundant and has been dropped. Operators on a host without a
+  pre-existing resolver on port 53 can opt back into the wildcard
+  bind by setting `dns.listen: "[::]:53"` explicitly. The new
+  default binds IPv6 loopback only — forwarders that reach the
+  gateway over IPv4 loopback need an explicit IPv4 listen address.
 
 ### Fixed
 
