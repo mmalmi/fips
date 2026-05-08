@@ -403,7 +403,7 @@ Ethernet, Tor, and Bluetooth (BLE) with a small live mesh of deployed nodes.
   NAT traversal — peers publish endpoint adverts on public Nostr
   relays, exchange candidates via NIP-59 gift-wrapped offers/answers,
   and establish direct paths through NATs using STUN-assisted
-  punching (behind the `nostr-discovery` cargo feature)
+  punching
 
 ### Near-term priorities
 
