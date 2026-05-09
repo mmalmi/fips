@@ -10,7 +10,6 @@ use crate::node::wire::{EncryptedHeader, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, strip
 const INNER_TIMESTAMP_LEN: usize = 4;
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
-use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
@@ -361,13 +360,10 @@ impl Node {
         }
 
         let key_current = match session.recv_cipher_clone() {
-            Some(k) => Arc::new(k),
+            Some(k) => k,
             None => return InboundClassify::Inline(packet),
         };
-        let key_previous = peer
-            .previous_session()
-            .and_then(|s| s.recv_cipher_clone())
-            .map(Arc::new);
+        let key_previous = peer.previous_session().and_then(|s| s.recv_cipher_clone());
 
         let counter = header.counter;
         let aad = header.header_bytes;
