@@ -29,6 +29,43 @@ use crate::upper::icmp::FIPS_OVERHEAD;
 use secp256k1::PublicKey;
 use tracing::{debug, info, trace, warn};
 
+/// Output of the single-borrow steady-state block in
+/// [`Node::handle_encrypted_session_msg`]. Carries the small amount of
+/// state the post-borrow path needs (the decrypted plaintext +
+/// inner-header fields), or which slow path (UnknownSession,
+/// NotEstablished, BadInnerHeader, DecryptFailed) to take after the
+/// `&mut entry` borrow on `self.sessions` drops. Lets the steady-state
+/// AEAD + MMP + path-MTU work all run under one `get_mut(src_addr)`
+/// instead of seven `self.sessions` operations per packet.
+enum FspFrameOutcome {
+    /// FSP frame decrypted successfully; ready to dispatch by msg_type.
+    /// `plaintext` is the full inner-decoded payload — the per-msg_type
+    /// payload starts at offset `FSP_INNER_HEADER_SIZE`.
+    Authentic {
+        plaintext: Vec<u8>,
+        msg_type: u8,
+        inner_flags_byte: u8,
+        timestamp: u32,
+    },
+    /// `self.sessions` had no entry for the source address.
+    UnknownSession,
+    /// Session entry exists but the XK handshake hasn't completed yet.
+    NotEstablished,
+    /// Decrypted payload was shorter than `FSP_INNER_HEADER_SIZE`.
+    BadInnerHeader,
+    /// Both current and previous (drain-window) AEAD attempts failed.
+    /// `consecutive` tracks the post-failure counter; if it crossed the
+    /// threshold, `reinit_pubkey` is `Some(remote_pubkey)` so the
+    /// post-borrow path can drop the stale session and start a fresh
+    /// XK handshake against the same peer.
+    DecryptFailed {
+        error: crate::noise::NoiseError,
+        counter: u64,
+        consecutive: u32,
+        reinit_pubkey: Option<PublicKey>,
+    },
+}
+
 /// Drop the end-to-end session and start a fresh XK handshake after this
 /// many consecutive AEAD decryption failures from a peer. Recovers from
 /// stale session state on either side (e.g. peer restarted with new keys
@@ -171,159 +208,203 @@ impl Node {
         }
 
         let ciphertext = &payload[ciphertext_offset..];
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
 
-        // Look up session entry — must be Established to decrypt
-        {
-            let entry = match self.sessions.get(src_addr) {
+        // Single &mut sessions[src_addr] borrow for is_established,
+        // K-bit detect+handle, AEAD decrypt, drain-window fallback,
+        // failure-counter bookkeeping (rehandshake threshold), inner-
+        // header strip, MMP receive, and path-MTU observation. Down
+        // from 7 `self.sessions` operations per packet
+        // (get + get + get_mut + remove + insert + get_mut + get_mut)
+        // to a single `get_mut`. Slow-path operations that need
+        // `&mut self` (decrypt-failure logging, msg_type dispatch into
+        // sub-handlers, session re-initiation after threshold) run
+        // after the borrow drops, communicated via `FspFrameOutcome`.
+        let outcome: FspFrameOutcome = 'outcome: {
+            let entry = match self.sessions.get_mut(src_addr) {
                 Some(e) => e,
-                None => {
-                    debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
-                    return;
+                None => break 'outcome FspFrameOutcome::UnknownSession,
+            };
+            if !entry.is_established() {
+                break 'outcome FspFrameOutcome::NotEstablished;
+            }
+
+            // K-bit flip detection. Read + cutover share the borrow.
+            // Logging uses `src_addr` (a NodeAddr) directly because
+            // `self.peer_display_name` would conflict with the &mut
+            // borrow on `self.sessions`. K-bit flips are rare so a
+            // less-friendly log identifier on this line is acceptable.
+            if received_k_bit != entry.current_k_bit() && entry.pending_new_session().is_some() {
+                info!(
+                    src = %src_addr,
+                    "Peer FSP K-bit flip detected, promoting new session"
+                );
+                let now_ms = Self::now_ms();
+                entry.handle_peer_kbit_flip(now_ms);
+            }
+
+            let session = match entry.state_mut() {
+                EndToEndState::Established(s) => s,
+                _ => break 'outcome FspFrameOutcome::NotEstablished,
+            };
+
+            let primary = session.decrypt_with_replay_check_and_aad(
+                ciphertext,
+                header.counter,
+                &header.header_bytes,
+            );
+            let plaintext = match primary {
+                Ok(pt) => pt,
+                Err(primary_err) => {
+                    // Drain-window fallback on the same &mut entry borrow.
+                    let drain = entry.previous_noise_session_mut().and_then(|prev| {
+                        prev.decrypt_with_replay_check_and_aad(
+                            ciphertext,
+                            header.counter,
+                            &header.header_bytes,
+                        )
+                        .ok()
+                    });
+                    match drain {
+                        Some(pt) => pt,
+                        None => {
+                            // Both current and previous failed. Bump
+                            // the per-session consecutive-failure
+                            // counter and surface a re-handshake hint
+                            // if the threshold is crossed; the post-
+                            // borrow path drops the session and calls
+                            // `self.initiate_session` since that needs
+                            // `&mut self`.
+                            let consecutive = entry.record_decrypt_failure();
+                            let reinit_pubkey = if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
+                                Some(*entry.remote_pubkey())
+                            } else {
+                                None
+                            };
+                            break 'outcome FspFrameOutcome::DecryptFailed {
+                                error: primary_err,
+                                counter: header.counter,
+                                consecutive,
+                                reinit_pubkey,
+                            };
+                        }
+                    }
                 }
             };
-            // Drop encrypted data if session is not yet established.
-            // With XK, the responder must wait for msg3 before it can decrypt.
-            if !entry.is_established() {
+
+            // Successful decrypt — reset the per-session failure
+            // counter so a single bad packet doesn't carry forward
+            // toward the threshold.
+            entry.reset_decrypt_failures();
+
+            // Strip FSP inner header (6 bytes) for the timestamp +
+            // msg_type + inner_flags fields. The rest of the buffer
+            // (the per-msg_type payload) is re-derived as
+            // `&plaintext[FSP_INNER_HEADER_SIZE..]` outside the borrow
+            // scope, since `rest` would otherwise borrow from
+            // `plaintext` and prevent us from returning owned
+            // `plaintext` from the labeled block.
+            let (timestamp, msg_type, inner_flags_byte) = match fsp_strip_inner_header(&plaintext) {
+                Some((ts, mt, inf, _rest)) => (ts, mt, inf),
+                None => break 'outcome FspFrameOutcome::BadInnerHeader,
+            };
+
+            // MMP receive bookkeeping + path-MTU observation. Same
+            // &mut entry borrow — collapses the two consecutive
+            // `self.sessions.get_mut(src_addr) + entry.mmp_mut()`
+            // blocks (and the matching pair of `Instant::now()`
+            // calls) from the original implementation into one.
+            if let Some(mmp) = entry.mmp_mut() {
+                let now = std::time::Instant::now();
+                mmp.receiver
+                    .record_recv(header.counter, timestamp, plaintext.len(), ce_flag, now);
+                // Spin bit: advance state machine for correct TX
+                // reflection. RTT samples not fed into SRTT —
+                // timestamp-echo provides accurate RTT; spin bit
+                // includes variable inter-frame delays.
+                let inner_flags = FspInnerFlags::from_byte(inner_flags_byte);
+                let _spin_rtt = mmp
+                    .spin_bit
+                    .rx_observe(inner_flags.spin_bit, header.counter, now);
+                // Feed path_mtu from datagram envelope to MMP path
+                // MTU tracking. Done for ALL session messages, not
+                // just DataPackets, so the destination learns the
+                // path MTU even when only reports flow.
+                mmp.path_mtu.observe_incoming_mtu(path_mtu);
+            }
+
+            FspFrameOutcome::Authentic {
+                plaintext,
+                msg_type,
+                inner_flags_byte,
+                timestamp,
+            }
+        };
+
+        // The &mut entry borrow on self.sessions has dropped. Handle
+        // slow-path outcomes and dispatch by msg_type (which calls
+        // other &mut self handlers).
+        let (plaintext, msg_type, _inner_flags_byte, _timestamp) = match outcome {
+            FspFrameOutcome::Authentic {
+                plaintext,
+                msg_type,
+                inner_flags_byte,
+                timestamp,
+            } => (plaintext, msg_type, inner_flags_byte, timestamp),
+            FspFrameOutcome::UnknownSession => {
+                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
+                return;
+            }
+            FspFrameOutcome::NotEstablished => {
                 debug!(
                     src = %self.peer_display_name(src_addr),
                     "Encrypted message but session not established (awaiting handshake completion)"
                 );
                 return;
             }
-        }
-
-        // K-bit flip detection: peer has cut over to the new session.
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        {
-            let entry = self.sessions.get(src_addr).unwrap();
-            let k_bit_flipped =
-                received_k_bit != entry.current_k_bit() && entry.pending_new_session().is_some();
-
-            if k_bit_flipped {
-                let display_name = self.peer_display_name(src_addr);
-                info!(
-                    peer = %display_name,
-                    "Peer FSP K-bit flip detected, promoting new session"
-                );
-                let now_ms = Self::now_ms();
-                let entry = self.sessions.get_mut(src_addr).unwrap();
-                entry.handle_peer_kbit_flip(now_ms);
+            FspFrameOutcome::BadInnerHeader => {
+                debug!(src = %self.peer_display_name(src_addr), "Decrypted payload too short for FSP inner header");
+                return;
             }
-        }
-
-        let mut entry = match self.sessions.remove(src_addr) {
-            Some(e) => e,
-            None => return,
-        };
-
-        // Decrypt with AAD = the 12-byte header
-        let session = match entry.state_mut() {
-            EndToEndState::Established(s) => s,
-            _ => {
-                debug!(src = %self.peer_display_name(src_addr), "Encrypted message but session not established");
-                self.sessions.insert(*src_addr, entry);
+            FspFrameOutcome::DecryptFailed {
+                error,
+                counter,
+                consecutive,
+                reinit_pubkey,
+            } => {
+                debug!(
+                    error = %error, src = %self.peer_display_name(src_addr),
+                    counter, consecutive_failures = consecutive,
+                    "Session AEAD decryption failed"
+                );
+                if let Some(dest_pubkey) = reinit_pubkey {
+                    warn!(
+                        peer = %self.peer_display_name(src_addr),
+                        consecutive_failures = consecutive,
+                        "Session AEAD failures exceeded threshold; dropping session and re-initiating"
+                    );
+                    // Remove the stale session so initiate_session
+                    // sees no existing entry and starts fresh.
+                    self.sessions.remove(src_addr);
+                    if let Err(re_err) = self.initiate_session(*src_addr, dest_pubkey).await {
+                        debug!(
+                            error = %re_err,
+                            peer = %self.peer_display_name(src_addr),
+                            "Failed to re-initiate session after decrypt-failure threshold"
+                        );
+                    }
+                }
                 return;
             }
         };
 
-        let primary = session.decrypt_with_replay_check_and_aad(
-            ciphertext,
-            header.counter,
-            &header.header_bytes,
-        );
-
-        let plaintext = match primary {
-            Ok(pt) => pt,
-            Err(e) => {
-                // Current session failed — try previous session (drain window)
-                let drain_recovered = entry.previous_noise_session_mut().and_then(|prev_session| {
-                    prev_session
-                        .decrypt_with_replay_check_and_aad(
-                            ciphertext,
-                            header.counter,
-                            &header.header_bytes,
-                        )
-                        .ok()
-                });
-
-                match drain_recovered {
-                    Some(pt) => pt,
-                    None => {
-                        let consecutive = entry.record_decrypt_failure();
-                        debug!(
-                            error = %e, src = %self.peer_display_name(src_addr),
-                            counter = header.counter,
-                            consecutive_failures = consecutive,
-                            "Session AEAD decryption failed"
-                        );
-                        if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
-                            let dest_pubkey = *entry.remote_pubkey();
-                            warn!(
-                                peer = %self.peer_display_name(src_addr),
-                                consecutive_failures = consecutive,
-                                "Session AEAD failures exceeded threshold; dropping session and re-initiating"
-                            );
-                            // Drop the entry (do not re-insert) so
-                            // initiate_session sees no existing entry
-                            // and starts a fresh XK handshake.
-                            drop(entry);
-                            if let Err(re_err) = self.initiate_session(*src_addr, dest_pubkey).await
-                            {
-                                debug!(
-                                    error = %re_err,
-                                    peer = %self.peer_display_name(src_addr),
-                                    "Failed to re-initiate session after decrypt-failure threshold"
-                                );
-                            }
-                        } else {
-                            self.sessions.insert(*src_addr, entry);
-                        }
-                        return;
-                    }
-                }
-            }
-        };
-
-        entry.reset_decrypt_failures();
-        self.sessions.insert(*src_addr, entry);
+        // Reverse-route learning runs after the borrow drops
+        // (`learn_reverse_route` takes `&mut self`).
         if let Some(next_hop) = previous_hop {
             self.learn_reverse_route(*src_addr, next_hop);
         }
 
-        // Strip FSP inner header (6 bytes)
-        let (timestamp, msg_type, inner_flags_byte, rest) = match fsp_strip_inner_header(&plaintext)
-        {
-            Some(parts) => parts,
-            None => {
-                debug!(src = %self.peer_display_name(src_addr), "Decrypted payload too short for FSP inner header");
-                return;
-            }
-        };
-
-        // MMP per-message recording on RX path
-        if let Some(entry) = self.sessions.get_mut(src_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            let now = std::time::Instant::now();
-            mmp.receiver
-                .record_recv(header.counter, timestamp, plaintext.len(), ce_flag, now);
-            // Spin bit: advance state machine for correct TX reflection.
-            // RTT samples not fed into SRTT — timestamp-echo provides
-            // accurate RTT; spin bit includes variable inter-frame delays.
-            let inner_flags = FspInnerFlags::from_byte(inner_flags_byte);
-            let _spin_rtt = mmp
-                .spin_bit
-                .rx_observe(inner_flags.spin_bit, header.counter, now);
-        }
-
-        // Feed path_mtu from datagram envelope to MMP path MTU tracking.
-        // Done for ALL session messages, not just DataPackets, so the
-        // destination learns the path MTU even when only reports flow.
-        if let Some(entry) = self.sessions.get_mut(src_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            mmp.path_mtu.observe_incoming_mtu(path_mtu);
-        }
+        let rest = &plaintext[FSP_INNER_HEADER_SIZE..];
 
         // Dispatch by msg_type
         match SessionMessageType::from_byte(msg_type) {
