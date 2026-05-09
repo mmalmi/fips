@@ -93,14 +93,42 @@ impl Node {
 
         loop {
             tokio::select! {
+                biased;
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => self.process_packet(p).await,
                         None => break, // channel closed
                     }
+                    // Drain remaining ready inbound packets in a tight loop
+                    // before yielding back to select! — every yield is a
+                    // futex hop on tokio's multi-thread scheduler, and at
+                    // line rate the kernel UDP queue typically has several
+                    // datagrams available per wake. Caps at a batch
+                    // boundary so other branches (tick, control) eventually
+                    // get a turn even under sustained load.
+                    let mut drained = 0;
+                    while drained < 64 {
+                        match packet_rx.try_recv() {
+                            Ok(p) => {
+                                self.process_packet(p).await;
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
+                    let mut drained = 0;
+                    while drained < 64 {
+                        match tun_outbound_rx.try_recv() {
+                            Ok(p) => {
+                                self.handle_tun_outbound(p).await;
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
                 Some(identity) = dns_identity_rx.recv() => {
                     debug!(
@@ -111,6 +139,19 @@ impl Node {
                 }
                 Some(command) = endpoint_command_rx.recv() => {
                     self.handle_endpoint_data_command(command).await;
+                    // Same drain pattern: when the application is shoving
+                    // tunnel data in via send_oneway, several Send commands
+                    // typically queue up between scheduler hops.
+                    let mut drained = 0;
+                    while drained < 64 {
+                        match endpoint_command_rx.try_recv() {
+                            Ok(c) => {
+                                self.handle_endpoint_data_command(c).await;
+                                drained += 1;
+                            }
+                            Err(_) => break,
+                        }
+                    }
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
                     let response = if request.command.starts_with("show_") {
