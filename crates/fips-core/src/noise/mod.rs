@@ -180,10 +180,20 @@ impl fmt::Display for HandshakeProgress {
 }
 
 /// Symmetric cipher state for post-handshake encryption.
+///
+/// The `cipher` field caches the AEAD instance so we don't re-derive it
+/// per packet. `ChaCha20Poly1305::new_from_slice` is cheap on its own but
+/// it's still allocator + key-clone work that we'd otherwise pay on every
+/// transport datagram; caching it costs ~80 bytes of struct width and
+/// eliminates that overhead from the bulk-data hot path.
 #[derive(Clone)]
 pub struct CipherState {
-    /// Encryption key (32 bytes).
+    /// Encryption key (32 bytes). Retained alongside the cached cipher so
+    /// `Clone` can rebuild the cipher independently and rekey paths can
+    /// re-derive without re-reading from the cipher.
     key: [u8; 32],
+    /// Cached AEAD instance, valid iff `has_key`.
+    cipher: Option<ChaCha20Poly1305>,
     /// Nonce counter (8 bytes used, 4 bytes zero prefix).
     pub(super) nonce: u64,
     /// Whether this cipher has a valid key.
@@ -193,8 +203,10 @@ pub struct CipherState {
 impl CipherState {
     /// Create a new cipher state with the given key.
     pub(crate) fn new(key: [u8; 32]) -> Self {
+        let cipher = ChaCha20Poly1305::new_from_slice(&key).ok();
         Self {
             key,
+            cipher,
             nonce: 0,
             has_key: true,
         }
@@ -204,6 +216,7 @@ impl CipherState {
     pub(super) fn empty() -> Self {
         Self {
             key: [0u8; 32],
+            cipher: None,
             nonce: 0,
             has_key: false,
         }
@@ -212,6 +225,7 @@ impl CipherState {
     /// Initialize with a key.
     pub(super) fn initialize_key(&mut self, key: [u8; 32]) {
         self.key = key;
+        self.cipher = ChaCha20Poly1305::new_from_slice(&key).ok();
         self.nonce = 0;
         self.has_key = true;
     }
@@ -230,10 +244,11 @@ impl CipherState {
             });
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
         let nonce = self.next_nonce()?;
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(NoiseError::EncryptionFailed)?;
         let ciphertext = cipher
             .encrypt(&nonce, plaintext)
             .map_err(|_| NoiseError::EncryptionFailed)?;
@@ -258,10 +273,11 @@ impl CipherState {
             });
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-
         let nonce = self.next_nonce()?;
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(NoiseError::DecryptionFailed)?;
         let plaintext = cipher
             .decrypt(&nonce, ciphertext)
             .map_err(|_| NoiseError::DecryptionFailed)?;
@@ -290,8 +306,10 @@ impl CipherState {
             });
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(NoiseError::DecryptionFailed)?;
 
         let nonce = Self::counter_to_nonce(counter);
         let plaintext = cipher
@@ -322,10 +340,11 @@ impl CipherState {
             });
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
         let nonce = self.next_nonce()?;
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(NoiseError::EncryptionFailed)?;
         let ciphertext = cipher
             .encrypt(
                 &nonce,
@@ -361,8 +380,10 @@ impl CipherState {
             });
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
+        let cipher = self
+            .cipher
+            .as_ref()
+            .ok_or(NoiseError::DecryptionFailed)?;
 
         let nonce = Self::counter_to_nonce(counter);
         let plaintext = cipher
