@@ -2,7 +2,7 @@
 
 pub(crate) mod discovery;
 mod dispatch;
-mod encrypted;
+pub(in crate::node) mod encrypted;
 mod forwarding;
 mod handshake;
 mod mmp;

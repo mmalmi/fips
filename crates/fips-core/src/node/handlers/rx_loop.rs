@@ -2,6 +2,8 @@
 
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
+use crate::node::aead_pool::AeadInboundElem;
+use crate::node::handlers::encrypted::InboundClassify;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
@@ -33,6 +35,10 @@ impl Node {
     /// until the channel is closed (typically when stop() is called).
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
         let mut packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
+        // Take the AEAD-pool completion receiver if the pool is enabled.
+        // We hold it in a local so a `select!` arm can `&mut` it without
+        // racing the `&self`-borrow of `aead_pool` in the submit path.
+        let mut aead_completion_rx = self.aead_completion_rx.take();
 
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
@@ -96,30 +102,61 @@ impl Node {
             tokio::select! {
                 biased;
                 packet = packet_rx.recv() => {
-                    match packet {
-                        Some(p) => self.process_packet(p).await,
+                    let p = match packet {
+                        Some(p) => p,
                         None => break, // channel closed
-                    }
-                    // Drain remaining ready inbound packets in a tight loop
-                    // before yielding back to select! — every yield is a
-                    // futex hop on tokio's multi-thread scheduler, and at
-                    // line rate the kernel UDP queue typically has several
-                    // datagrams available per wake. Caps at a batch
-                    // boundary so other branches (tick, control) eventually
-                    // get a turn even under sustained load.
-                    let mut drained = 0;
-                    while drained < 256 {
-                        match packet_rx.try_recv() {
-                            Ok(p) => {
-                                self.process_packet(p).await;
-                                drained += 1;
+                    };
+                    if aead_completion_rx.is_some() {
+                        // Pool is enabled: classify this packet and
+                        // anything else already queued, then dispatch.
+                        self.handle_inbound_with_pool(p, &mut packet_rx).await;
+                    } else {
+                        // Legacy inline path.
+                        self.process_packet(p).await;
+                        let mut drained = 0;
+                        while drained < 256 {
+                            match packet_rx.try_recv() {
+                                Ok(p) => {
+                                    self.process_packet(p).await;
+                                    drained += 1;
+                                }
+                                Err(_) => break,
                             }
-                            Err(_) => break,
                         }
                     }
                     // Flush any batched sends triggered by inbound
                     // packets (e.g. forwarded SessionDatagrams, MMP
                     // reports, tree announces).
+                    self.flush_pending_sends().await;
+                }
+                // Pool completion arm. The `if let` guard makes this arm
+                // a no-op (`std::future::pending`) when the pool is
+                // disabled, so legacy nodes pay no scheduler cost for it.
+                Some(decrypted_batch) = async {
+                    match aead_completion_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    for elem in decrypted_batch {
+                        self.apply_decrypted_elem(elem).await;
+                    }
+                    // Drain any further completed batches that landed
+                    // while we were processing the first.
+                    if let Some(rx) = aead_completion_rx.as_mut() {
+                        let mut drained = 0;
+                        while drained < 16 {
+                            match rx.try_recv() {
+                                Some(b) => {
+                                    for elem in b {
+                                        self.apply_decrypted_elem(elem).await;
+                                    }
+                                    drained += 1;
+                                }
+                                None => break,
+                            }
+                        }
+                    }
                     self.flush_pending_sends().await;
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
@@ -207,6 +244,71 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    /// Drain `packet_rx` (starting with `first`), classify each packet
+    /// for the parallel-decrypt pool, and dispatch.
+    ///
+    /// Order rules within one drain batch:
+    ///   • AEAD-eligible packets are accumulated into `aead_batch` and
+    ///     submitted together at the end as a single `DecryptJob`. The
+    ///     pool processes batch elements in `Vec` order, so per-peer
+    ///     ordering is preserved within a batch.
+    ///   • Inline packets (handshake, unknown session, K-bit-flip needed,
+    ///     ciphers not yet keyed) run through `process_packet` *first*,
+    ///     synchronously, before submitting the AEAD batch. This
+    ///     preserves the legacy "msg2 establishes session, established
+    ///     frame on the new session sees it" ordering when both arrive
+    ///     in the same drain cycle.
+    ///   • Replays are dropped silently — they don't deserve a worker
+    ///     slot.
+    async fn handle_inbound_with_pool(
+        &mut self,
+        first: ReceivedPacket,
+        packet_rx: &mut crate::transport::PacketRx,
+    ) {
+        let mut aead_batch: Vec<AeadInboundElem> = Vec::with_capacity(64);
+        let mut inline_packets: Vec<ReceivedPacket> = Vec::new();
+
+        // Classify the first packet, then drain anything else that's
+        // already queued. The 256-cap matches the legacy non-pool path.
+        match self.classify_inbound_packet(first) {
+            InboundClassify::Aead(e) => aead_batch.push(e),
+            InboundClassify::Inline(p) => inline_packets.push(p),
+            InboundClassify::Replay => {}
+        }
+        let mut drained = 0;
+        while drained < 256 {
+            match packet_rx.try_recv() {
+                Ok(p) => {
+                    match self.classify_inbound_packet(p) {
+                        InboundClassify::Aead(e) => aead_batch.push(e),
+                        InboundClassify::Inline(p) => inline_packets.push(p),
+                        InboundClassify::Replay => {}
+                    }
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        // Run inline packets first. The intended invariant is "any
+        // session that an aead packet in this batch refers to was
+        // already established on a previous tick; any session being
+        // established by an inline packet THIS tick will be picked up by
+        // future ticks' aead packets, not packets in this same batch."
+        // The classifier enforces this by punting unknown-session
+        // packets to inline, so re-handshake transitions interleave
+        // correctly.
+        for p in inline_packets {
+            self.process_packet(p).await;
+        }
+
+        if !aead_batch.is_empty()
+            && let Some(pool) = self.aead_pool.as_ref()
+        {
+            pool.submit_batch(aead_batch).await;
+        }
     }
 
     /// Flush any pending batched sends across all transports. Each

@@ -5,6 +5,7 @@
 //! Bloom filters, coordinate caches, transports, links, and peers.
 
 mod acl;
+pub(crate) mod aead_pool;
 mod bloom;
 mod discovery_rate_limit;
 mod handlers;
@@ -400,6 +401,18 @@ pub struct Node {
     /// Packet receiver (for event loop).
     packet_rx: Option<PacketRx>,
 
+    // === Parallel-Decrypt AEAD Pool (FMP receive path) ===
+    /// Optional worker pool for off-task FMP `open` rounds. `None` means
+    /// the rx_loop decrypts inline (legacy path); `Some` means the
+    /// rx_loop classifies + dispatches to workers and processes completed
+    /// batches via `aead_completion_rx`. See `aead_pool` module
+    /// for architecture. Configured via `node.aead_decrypt_workers`.
+    aead_pool: Option<aead_pool::AeadPool>,
+    /// Completion-side receiver for the AEAD pool. Held separately so
+    /// the rx_loop can `&mut`-borrow it in a `select!` arm while
+    /// `&self`-borrowing `aead_pool` for submits.
+    aead_completion_rx: Option<aead_pool::AeadCompletionRx>,
+
     // === Connections (Handshake Phase) ===
     /// Pending connections (handshake in progress).
     /// Indexed by LinkId since we don't know the peer's identity yet.
@@ -651,6 +664,8 @@ impl Node {
             addr_to_link: HashMap::new(),
             packet_tx: None,
             packet_rx: None,
+            aead_pool: None,
+            aead_completion_rx: None,
             connections: HashMap::new(),
             peers: HashMap::new(),
             sessions: HashMap::new(),
@@ -778,6 +793,8 @@ impl Node {
             addr_to_link: HashMap::new(),
             packet_tx: None,
             packet_rx: None,
+            aead_pool: None,
+            aead_completion_rx: None,
             connections: HashMap::new(),
             peers: HashMap::new(),
             sessions: HashMap::new(),

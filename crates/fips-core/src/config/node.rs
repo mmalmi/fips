@@ -1098,6 +1098,19 @@ pub struct NodeConfig {
     /// Valid values: trace, debug, info, warn, error. Default: info.
     #[serde(default)]
     pub log_level: Option<String>,
+
+    /// Number of parallel-decrypt worker tasks for the FMP receive
+    /// pipeline (`node.aead_decrypt_workers`).
+    ///
+    /// `0` (default) disables the pool — packets are decrypted inline on
+    /// the rx_loop task, matching legacy behaviour. `>=1` enables the
+    /// pool: the rx_loop fans batches out to N worker tasks for AEAD
+    /// `open`, a sequencer enforces in-order delivery, and the rx_loop
+    /// processes completed batches via the shared completion queue.
+    /// Reasonable values for small meshes are 2-4; the default is 0
+    /// while the feature is being validated.
+    #[serde(default)]
+    pub aead_decrypt_workers: usize,
 }
 
 impl Default for NodeConfig {
@@ -1126,6 +1139,7 @@ impl Default for NodeConfig {
             rekey: RekeyConfig::default(),
             system_files_enabled: true,
             log_level: None,
+            aead_decrypt_workers: 0,
         }
     }
 }
