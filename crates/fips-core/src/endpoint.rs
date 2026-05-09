@@ -224,23 +224,52 @@ fn spawn_endpoint_event_task(
     mut endpoint_events: mpsc::Receiver<NodeEndpointEvent>,
     inbound_endpoint_tx: mpsc::Sender<FipsEndpointMessage>,
 ) -> JoinHandle<()> {
+    // Relay events from the node task's outbound endpoint queue to the
+    // application's inbound queue. This is a hot-path relay for every
+    // received tunnel packet; drain in bursts after the recv() await so
+    // we pay one scheduler hop per ready-batch instead of per packet.
     tokio::spawn(async move {
-        while let Some(event) = endpoint_events.recv().await {
-            let NodeEndpointEvent::Data {
-                source_node_addr,
-                source_npub,
-                payload,
-            } = event;
-            let message = FipsEndpointMessage {
-                source_node_addr,
-                source_npub,
-                data: payload,
-            };
-            if inbound_endpoint_tx.send(message).await.is_err() {
+        loop {
+            let Some(event) = endpoint_events.recv().await else {
                 break;
+            };
+            if forward_event(&inbound_endpoint_tx, event).await.is_err() {
+                break;
+            }
+            // Drain ready follow-on events without yielding, capped to
+            // keep one busy peer from starving the runtime.
+            let mut drained = 0;
+            while drained < 64 {
+                match endpoint_events.try_recv() {
+                    Ok(event) => {
+                        if forward_event(&inbound_endpoint_tx, event).await.is_err() {
+                            return;
+                        }
+                        drained += 1;
+                    }
+                    Err(_) => break,
+                }
             }
         }
     })
+}
+
+async fn forward_event(
+    inbound_endpoint_tx: &mpsc::Sender<FipsEndpointMessage>,
+    event: NodeEndpointEvent,
+) -> Result<(), mpsc::error::SendError<FipsEndpointMessage>> {
+    let NodeEndpointEvent::Data {
+        source_node_addr,
+        source_npub,
+        payload,
+    } = event;
+    inbound_endpoint_tx
+        .send(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
+        .await
 }
 
 /// A running embedded FIPS endpoint.
