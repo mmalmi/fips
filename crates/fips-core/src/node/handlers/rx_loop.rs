@@ -7,6 +7,7 @@ use crate::node::wire::{
 };
 use crate::node::{Node, NodeError};
 use crate::transport::ReceivedPacket;
+use crate::transport::TransportHandle;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -116,6 +117,10 @@ impl Node {
                             Err(_) => break,
                         }
                     }
+                    // Flush any batched sends triggered by inbound
+                    // packets (e.g. forwarded SessionDatagrams, MMP
+                    // reports, tree announces).
+                    self.flush_pending_sends().await;
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
@@ -129,6 +134,10 @@ impl Node {
                             Err(_) => break,
                         }
                     }
+                    // Flush any trailing batched sends so the last
+                    // packets of a burst don't sit in the per-transport
+                    // sendmmsg buffer waiting for the threshold.
+                    self.flush_pending_sends().await;
                 }
                 Some(identity) = dns_identity_rx.recv() => {
                     debug!(
@@ -152,6 +161,9 @@ impl Node {
                             Err(_) => break,
                         }
                     }
+                    // Flush any trailing batched sends from the
+                    // per-transport sendmmsg buffer.
+                    self.flush_pending_sends().await;
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
                     let response = if request.command.starts_with("show_") {
@@ -195,6 +207,23 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    /// Flush any pending batched sends across all transports. Each
+    /// transport may buffer outbound packets (the UDP transport uses
+    /// `sendmmsg(2)` to amortise per-syscall overhead); this drains
+    /// whatever's still buffered so trailing packets in a burst don't
+    /// sit in the buffer past a drain cycle. Cheap when there's
+    /// nothing to flush — each transport just checks an empty queue.
+    async fn flush_pending_sends(&self) {
+        for transport in self.transports.values() {
+            // Avoid hard-coding the UDP-only check here so future
+            // transports can opt into batching by overriding
+            // `flush_pending_send`.
+            if matches!(transport, TransportHandle::Udp(_)) {
+                transport.flush_pending_send().await;
+            }
+        }
     }
 
     /// Process a single received packet.

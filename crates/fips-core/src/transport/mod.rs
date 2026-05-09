@@ -926,6 +926,17 @@ impl TransportHandle {
         }
     }
 
+    /// Flush any pending outbound batch buffered by the transport.
+    /// Called by the rx_loop at end-of-drain so that trailing packets
+    /// of a burst don't sit in the buffer waiting for the threshold.
+    /// Only the UDP transport batches today (via `sendmmsg(2)`); other
+    /// transports treat this as a no-op.
+    pub async fn flush_pending_send(&self) {
+        if let TransportHandle::Udp(t) = self {
+            t.flush_pending_send().await;
+        }
+    }
+
     /// Get the transport ID.
     pub fn transport_id(&self) -> TransportId {
         match self {

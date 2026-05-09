@@ -229,6 +229,11 @@ mod platform {
         /// Synchronous send to a destination address.
         ///
         /// Returns the number of bytes sent, or an `io::Error`.
+        ///
+        /// On Linux the production send path uses `send_batch` (sendmmsg);
+        /// this single-packet variant remains for non-Linux unix targets
+        /// and for the local `tests` module.
+        #[cfg_attr(target_os = "linux", allow(dead_code))]
         pub fn send_to(&self, data: &[u8], dest: &SocketAddr) -> std::io::Result<usize> {
             let dest: socket2::SockAddr = (*dest).into();
             self.inner.send_to(data, &dest)
@@ -391,6 +396,51 @@ mod platform {
             Ok((count, drops))
         }
 
+        /// Send up to `BATCH_SIZE` datagrams in a single sendmmsg syscall
+        /// (Linux only). Returns the count actually sent. Caller is
+        /// responsible for retrying remaining packets if `n < packets.len()`.
+        #[cfg(target_os = "linux")]
+        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
+            let n = packets.len().min(BATCH_SIZE);
+            if n == 0 {
+                return Ok(0);
+            }
+            let fd = self.inner.as_raw_fd();
+
+            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storage_lens: [libc::socklen_t; BATCH_SIZE] = [0; BATCH_SIZE];
+            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                let (data, dest) = packets[i];
+                let sa: socket2::SockAddr = (dest).into();
+                let sa_len = sa.len();
+                debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        sa.as_ptr() as *const u8,
+                        &mut storages[i] as *mut _ as *mut u8,
+                        sa_len as usize,
+                    );
+                }
+                storage_lens[i] = sa_len;
+
+                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = data.len();
+                msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+                msgs[i].msg_hdr.msg_iov = &mut iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+            }
+
+            let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(r as usize)
+        }
+
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
         pub fn into_async(self) -> Result<AsyncUdpSocket, TransportError> {
             let async_fd = AsyncFd::new(self)
@@ -418,6 +468,11 @@ mod platform {
 
     impl AsyncUdpSocket {
         /// Send a payload to a destination address.
+        ///
+        /// On Linux the production send path uses `send_batch`; this
+        /// single-packet variant remains for non-Linux unix targets and
+        /// for the local `tests` module.
+        #[cfg_attr(target_os = "linux", allow(dead_code))]
         pub async fn send_to(
             &self,
             data: &[u8],
@@ -490,6 +545,29 @@ mod platform {
                     }
                     Ok(Ok(result)) => return Ok(result),
                     Ok(Err(e)) => return Err(TransportError::RecvFailed(format!("{}", e))),
+                    Err(_would_block) => continue,
+                }
+            }
+        }
+
+        /// Push up to `BATCH_SIZE` datagrams to the kernel via `sendmmsg`
+        /// (Linux). Returns the count actually sent. Caller is responsible
+        /// for retrying remaining packets if `n < packets.len()`.
+        #[cfg(target_os = "linux")]
+        pub async fn send_batch(
+            &self,
+            packets: &[(&[u8], SocketAddr)],
+        ) -> Result<usize, TransportError> {
+            loop {
+                let mut guard = self
+                    .inner
+                    .writable()
+                    .await
+                    .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
+
+                match guard.try_io(|inner| inner.get_ref().send_batch(packets)) {
+                    Ok(Ok(n)) => return Ok(n),
+                    Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
                     Err(_would_block) => continue,
                 }
             }
