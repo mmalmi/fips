@@ -90,6 +90,42 @@ fn test_session_entry_touch() {
 }
 
 #[test]
+fn test_session_entry_decrypt_failure_counter() {
+    use crate::noise::HandshakeState;
+
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+
+    let handshake = HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
+
+    let mut entry = crate::node::session::SessionEntry::new(
+        *identity_b.node_addr(),
+        identity_b.pubkey_full(),
+        EndToEndState::Initiating(handshake),
+        1000,
+        true,
+    );
+
+    assert_eq!(entry.consecutive_decrypt_failures(), 0);
+
+    for expected in 1..=5 {
+        let count = entry.record_decrypt_failure();
+        assert_eq!(count, expected);
+        assert_eq!(entry.consecutive_decrypt_failures(), expected);
+    }
+
+    entry.reset_decrypt_failures();
+    assert_eq!(entry.consecutive_decrypt_failures(), 0);
+
+    // Idempotent reset on already-zero counter.
+    entry.reset_decrypt_failures();
+    assert_eq!(entry.consecutive_decrypt_failures(), 0);
+
+    let count = entry.record_decrypt_failure();
+    assert_eq!(count, 1);
+}
+
+#[test]
 fn test_session_table_operations() {
     use crate::noise::HandshakeState;
 

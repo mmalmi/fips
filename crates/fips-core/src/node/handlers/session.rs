@@ -29,6 +29,13 @@ use crate::upper::icmp::FIPS_OVERHEAD;
 use secp256k1::PublicKey;
 use tracing::{debug, info, trace, warn};
 
+/// Drop the end-to-end session and start a fresh XK handshake after this
+/// many consecutive AEAD decryption failures from a peer. Recovers from
+/// stale session state on either side (e.g. peer restarted with new keys
+/// but our entry still holds the old keys, or vice versa) without
+/// requiring a manual daemon restart.
+const DECRYPT_FAILURE_REINIT_THRESHOLD: u32 = 32;
+
 impl Node {
     /// Handle a locally-delivered session datagram payload.
     ///
@@ -219,41 +226,65 @@ impl Node {
             }
         };
 
-        let plaintext = match session.decrypt_with_replay_check_and_aad(
+        let primary = session.decrypt_with_replay_check_and_aad(
             ciphertext,
             header.counter,
             &header.header_bytes,
-        ) {
+        );
+
+        let plaintext = match primary {
             Ok(pt) => pt,
             Err(e) => {
                 // Current session failed — try previous session (drain window)
-                if let Some(prev_session) = entry.previous_noise_session_mut() {
-                    match prev_session.decrypt_with_replay_check_and_aad(
-                        ciphertext,
-                        header.counter,
-                        &header.header_bytes,
-                    ) {
-                        Ok(pt) => pt,
-                        Err(_) => {
-                            debug!(
-                                error = %e, src = %self.peer_display_name(src_addr), counter = header.counter,
-                                "Session AEAD decryption failed (current and previous)"
+                let drain_recovered = entry.previous_noise_session_mut().and_then(|prev_session| {
+                    prev_session
+                        .decrypt_with_replay_check_and_aad(
+                            ciphertext,
+                            header.counter,
+                            &header.header_bytes,
+                        )
+                        .ok()
+                });
+
+                match drain_recovered {
+                    Some(pt) => pt,
+                    None => {
+                        let consecutive = entry.record_decrypt_failure();
+                        debug!(
+                            error = %e, src = %self.peer_display_name(src_addr),
+                            counter = header.counter,
+                            consecutive_failures = consecutive,
+                            "Session AEAD decryption failed"
+                        );
+                        if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
+                            let dest_pubkey = *entry.remote_pubkey();
+                            warn!(
+                                peer = %self.peer_display_name(src_addr),
+                                consecutive_failures = consecutive,
+                                "Session AEAD failures exceeded threshold; dropping session and re-initiating"
                             );
+                            // Drop the entry (do not re-insert) so
+                            // initiate_session sees no existing entry
+                            // and starts a fresh XK handshake.
+                            drop(entry);
+                            if let Err(re_err) = self.initiate_session(*src_addr, dest_pubkey).await
+                            {
+                                debug!(
+                                    error = %re_err,
+                                    peer = %self.peer_display_name(src_addr),
+                                    "Failed to re-initiate session after decrypt-failure threshold"
+                                );
+                            }
+                        } else {
                             self.sessions.insert(*src_addr, entry);
-                            return;
                         }
+                        return;
                     }
-                } else {
-                    debug!(
-                        error = %e, src = %self.peer_display_name(src_addr), counter = header.counter,
-                        "Session AEAD decryption failed"
-                    );
-                    self.sessions.insert(*src_addr, entry);
-                    return;
                 }
             }
         };
 
+        entry.reset_decrypt_failures();
         self.sessions.insert(*src_addr, entry);
         if let Some(next_hop) = previous_hop {
             self.learn_reverse_route(*src_addr, next_hop);

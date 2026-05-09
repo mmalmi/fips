@@ -121,6 +121,12 @@ pub(crate) struct SessionEntry {
     /// When the FSP rekey handshake completed (initiator sent msg3, Unix ms).
     /// Used to defer cutover until msg3 has time to reach the responder.
     rekey_completed_ms: u64,
+
+    /// Consecutive AEAD decryption failures from this peer.
+    /// Reset on every successful decrypt. Drives auto re-handshake when
+    /// the session keys diverge (e.g. peer restart with stale state on
+    /// our side, or vice versa) — see `DECRYPT_FAILURE_REINIT_THRESHOLD`.
+    consecutive_decrypt_failures: u32,
 }
 
 impl SessionEntry {
@@ -157,6 +163,7 @@ impl SessionEntry {
             rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
+            consecutive_decrypt_failures: 0,
         }
     }
 
@@ -501,5 +508,25 @@ impl SessionEntry {
         self.rekey_state = None;
         self.pending_new_session = None;
         self.rekey_initiator = false;
+    }
+
+    // === Decrypt Failure Tracking ===
+
+    /// Record one AEAD decryption failure and return the new consecutive
+    /// count. Both current-session and drain-window decrypt must have
+    /// failed before calling.
+    pub(crate) fn record_decrypt_failure(&mut self) -> u32 {
+        self.consecutive_decrypt_failures = self.consecutive_decrypt_failures.saturating_add(1);
+        self.consecutive_decrypt_failures
+    }
+
+    /// Reset the consecutive AEAD failure counter on any successful decrypt.
+    pub(crate) fn reset_decrypt_failures(&mut self) {
+        self.consecutive_decrypt_failures = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consecutive_decrypt_failures(&self) -> u32 {
+        self.consecutive_decrypt_failures
     }
 }
