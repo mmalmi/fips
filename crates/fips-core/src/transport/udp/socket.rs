@@ -287,6 +287,124 @@ mod platform {
             Ok((n as usize, addr, drops))
         }
 
+        /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
+        /// will pull from / push to the kernel. Tuned to amortise syscall
+        /// overhead across a useful burst without blowing the stack.
+        #[cfg(target_os = "linux")]
+        pub(super) const BATCH_SIZE: usize = 32;
+
+        /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
+        /// (Linux only — macOS falls through to per-packet recvmsg).
+        ///
+        /// Returns the number of datagrams populated. Caller pre-sizes
+        /// `bufs` (each must be at least the configured MTU) and the
+        /// matching `addrs` / `lens` slices; on return, slots `[0..n)` are
+        /// valid.
+        ///
+        /// `kernel_drops` (SO_RXQ_OVFL) is sampled out-of-band on
+        /// `recv_from`; the batch path skips cmsg parsing for speed.
+        #[cfg(target_os = "linux")]
+        pub fn recv_batch(
+            &self,
+            bufs: &mut [&mut [u8]],
+            addrs: &mut [Option<SocketAddr>],
+            lens: &mut [usize],
+        ) -> std::io::Result<usize> {
+            let n = bufs.len().min(addrs.len()).min(lens.len()).min(BATCH_SIZE);
+            if n == 0 {
+                return Ok(0);
+            }
+            let fd = self.inner.as_raw_fd();
+
+            // Stack-allocated parallel arrays; lifetime tied to this call.
+            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                iovs[i].iov_base = bufs[i].as_mut_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = bufs[i].len();
+                msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                msgs[i].msg_hdr.msg_iov = &mut iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+                msgs[i].msg_len = 0;
+            }
+
+            let r = unsafe {
+                libc::recvmmsg(
+                    fd,
+                    msgs.as_mut_ptr(),
+                    n as libc::c_uint,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let count = r as usize;
+            for i in 0..count {
+                lens[i] = msgs[i].msg_len as usize;
+                addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
+            }
+            Ok(count)
+        }
+
+        /// Send up to `BATCH_SIZE` datagrams in a single sendmmsg syscall
+        /// (Linux only). Returns the count actually sent.
+        #[cfg(target_os = "linux")]
+        pub fn send_batch(
+            &self,
+            packets: &[(&[u8], SocketAddr)],
+        ) -> std::io::Result<usize> {
+            let n = packets.len().min(BATCH_SIZE);
+            if n == 0 {
+                return Ok(0);
+            }
+            let fd = self.inner.as_raw_fd();
+
+            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut storage_lens: [libc::socklen_t; BATCH_SIZE] = [0; BATCH_SIZE];
+            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                let (data, dest) = packets[i];
+                let sa: socket2::SockAddr = (dest).into();
+                let sa_len = sa.len();
+                debug_assert!(
+                    sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>()
+                );
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        sa.as_ptr() as *const u8,
+                        &mut storages[i] as *mut _ as *mut u8,
+                        sa_len as usize,
+                    );
+                }
+                storage_lens[i] = sa_len;
+
+                iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = data.len();
+                msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+                msgs[i].msg_hdr.msg_iov = &mut iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+            }
+
+            let r = unsafe {
+                libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0)
+            };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(r as usize)
+        }
+
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
         pub fn into_async(self) -> Result<AsyncUdpSocket, TransportError> {
             let async_fd = AsyncFd::new(self)
@@ -351,6 +469,60 @@ mod platform {
                 match guard.try_io(|inner| inner.get_ref().recv_from(buf)) {
                     Ok(Ok(result)) => return Ok(result),
                     Ok(Err(e)) => return Err(TransportError::RecvFailed(format!("{}", e))),
+                    Err(_would_block) => continue,
+                }
+            }
+        }
+
+        /// Drain up to `BATCH_SIZE` datagrams from the kernel via
+        /// `recvmmsg` (Linux). Returns the number filled. Same buffer/
+        /// addr/len contract as `UdpRawSocket::recv_batch`.
+        #[cfg(target_os = "linux")]
+        pub async fn recv_batch(
+            &self,
+            bufs: &mut [&mut [u8]],
+            addrs: &mut [Option<SocketAddr>],
+            lens: &mut [usize],
+        ) -> Result<usize, TransportError> {
+            loop {
+                let mut guard = self
+                    .inner
+                    .readable()
+                    .await
+                    .map_err(|e| TransportError::RecvFailed(format!("readable wait: {}", e)))?;
+
+                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs, lens)) {
+                    Ok(Ok(0)) => {
+                        // Spurious wakeup or no datagrams ready — yield
+                        // back to the reactor instead of busy-looping.
+                        guard.clear_ready();
+                        continue;
+                    }
+                    Ok(Ok(n)) => return Ok(n),
+                    Ok(Err(e)) => return Err(TransportError::RecvFailed(format!("{}", e))),
+                    Err(_would_block) => continue,
+                }
+            }
+        }
+
+        /// Push up to `BATCH_SIZE` datagrams to the kernel via `sendmmsg`
+        /// (Linux). Returns count sent. Caller responsibility to retry
+        /// remaining packets if `n < packets.len()`.
+        #[cfg(target_os = "linux")]
+        pub async fn send_batch(
+            &self,
+            packets: &[(&[u8], SocketAddr)],
+        ) -> Result<usize, TransportError> {
+            loop {
+                let mut guard = self
+                    .inner
+                    .writable()
+                    .await
+                    .map_err(|e| TransportError::SendFailed(format!("writable wait: {}", e)))?;
+
+                match guard.try_io(|inner| inner.get_ref().send_batch(packets)) {
+                    Ok(Ok(n)) => return Ok(n),
+                    Ok(Err(e)) => return Err(TransportError::SendFailed(format!("{}", e))),
                     Err(_would_block) => continue,
                 }
             }
