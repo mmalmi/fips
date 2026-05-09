@@ -107,7 +107,7 @@ impl Node {
                     // boundary so other branches (tick, control) eventually
                     // get a turn even under sustained load.
                     let mut drained = 0;
-                    while drained < 64 {
+                    while drained < 256 {
                         match packet_rx.try_recv() {
                             Ok(p) => {
                                 self.process_packet(p).await;
@@ -120,7 +120,7 @@ impl Node {
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
                     let mut drained = 0;
-                    while drained < 64 {
+                    while drained < 256 {
                         match tun_outbound_rx.try_recv() {
                             Ok(p) => {
                                 self.handle_tun_outbound(p).await;
@@ -143,7 +143,7 @@ impl Node {
                     // tunnel data in via send_oneway, several Send commands
                     // typically queue up between scheduler hops.
                     let mut drained = 0;
-                    while drained < 64 {
+                    while drained < 256 {
                         match endpoint_command_rx.try_recv() {
                             Ok(c) => {
                                 self.handle_endpoint_data_command(c).await;
