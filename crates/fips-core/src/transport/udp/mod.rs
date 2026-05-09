@@ -546,12 +546,7 @@ async fn udp_receive_loop(
                 }
             }
         }
-
-        #[allow(unreachable_code)]
-        ()
     }
-
-    debug!(transport_id = %transport_id, "UDP receive loop stopped");
 }
 
 // ============================================================================
