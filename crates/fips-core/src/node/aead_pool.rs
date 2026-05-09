@@ -119,14 +119,27 @@ pub struct DecryptedElem {
     pub used_previous_session: bool,
 }
 
-/// Worker job: a Vec of elems to decrypt + a oneshot to deliver results.
+/// Worker job: a Vec of elems to decrypt + a back-channel for results.
+///
+/// When the sequencer is enabled, the worker sends a `Vec<DecryptedElem>`
+/// down `result_tx` and the sequencer forwards it to the rx_loop in
+/// submit order. When `FIPS_AEAD_NO_SEQUENCER=1` the build skips the
+/// sequencer entirely and the worker sends directly to the rx_loop's
+/// completion mpsc — order is lost but channel hops drop from 4 per
+/// batch to 2.
+enum ResultSink {
+    Sequenced(oneshot::Sender<Vec<DecryptedElem>>),
+    Direct(mpsc::Sender<Vec<DecryptedElem>>),
+}
+
 struct DecryptJob {
     elems: Vec<AeadInboundElem>,
-    result_tx: oneshot::Sender<Vec<DecryptedElem>>,
+    result_tx: ResultSink,
 }
 
 /// Sequencer job: hold the oneshot's receive end and wait for it. This
-/// is what enforces submit-order delivery.
+/// is what enforces submit-order delivery. Only used when the sequencer
+/// is enabled.
 struct OrderedJob {
     result_rx: oneshot::Receiver<Vec<DecryptedElem>>,
 }
@@ -138,12 +151,17 @@ struct OrderedJob {
 pub struct AeadPool {
     decrypt_tx: mpsc::Sender<DecryptJob>,
     ordered_tx: mpsc::Sender<OrderedJob>,
+    /// When set (FIPS_AEAD_NO_SEQUENCER mode), the dispatcher attaches
+    /// this sender to each `DecryptJob` so workers send their result
+    /// straight to the rx_loop. When `None`, results route through the
+    /// sequencer for in-order delivery.
+    direct_completion_tx: Option<mpsc::Sender<Vec<DecryptedElem>>>,
     /// Worker join handles; retained so a future `shutdown` can wait on
     /// them. Currently unused under steady-state operation — the pool
     /// shuts down when `Node` is dropped and tokio cancels the tasks.
     #[allow(dead_code)]
     worker_handles: Vec<JoinHandle<()>>,
-    /// Sequencer join handle; same lifecycle as worker handles.
+    /// Sequencer join handle. `None` in `FIPS_AEAD_NO_SEQUENCER` mode.
     #[allow(dead_code)]
     sequencer_handle: Option<JoinHandle<()>>,
     /// Number of workers spawned, retained for diagnostics / metrics.
@@ -184,6 +202,16 @@ impl AeadPool {
         completion_q_depth: usize,
     ) -> (Self, AeadCompletionRx) {
         assert!(num_workers > 0, "AeadPool requires >=1 worker");
+        // Build-time toggle: with FIPS_AEAD_NO_SEQUENCER=1 the workers
+        // send results directly to the completion mpsc, skipping the
+        // sequencer task and its per-batch oneshot. Order across
+        // batches is no longer guaranteed but channel hops drop from
+        // 4/batch to 2/batch. Used to A/B whether the sequencer is
+        // the dominant overhead vs the AEAD-pool architecture itself.
+        let no_sequencer = std::env::var("FIPS_AEAD_NO_SEQUENCER")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let (decrypt_tx, decrypt_rx) = mpsc::channel::<DecryptJob>(decrypt_q_depth);
         let (ordered_tx, ordered_rx) = mpsc::channel::<OrderedJob>(ordered_q_depth);
         let (completion_tx, completion_rx) =
@@ -210,15 +238,30 @@ impl AeadPool {
             }));
         }
 
-        let sequencer_handle = tokio::spawn(async move {
-            sequencer_loop(ordered_rx, completion_tx).await;
-        });
+        let direct_completion_tx = if no_sequencer {
+            Some(completion_tx.clone())
+        } else {
+            None
+        };
+        let sequencer_handle = if no_sequencer {
+            // Drop ordered_rx so the dispatcher's send to ordered_tx
+            // returns Err quickly. We still keep ordered_tx around to
+            // avoid restructuring AeadPool's fields.
+            drop(ordered_rx);
+            drop(completion_tx);
+            None
+        } else {
+            Some(tokio::spawn(async move {
+                sequencer_loop(ordered_rx, completion_tx).await;
+            }))
+        };
 
         let pool = Self {
             decrypt_tx,
             ordered_tx,
+            direct_completion_tx,
             worker_handles,
-            sequencer_handle: Some(sequencer_handle),
+            sequencer_handle,
             num_workers,
         };
         (pool, AeadCompletionRx(completion_rx))
@@ -243,28 +286,39 @@ impl AeadPool {
         if elems.is_empty() {
             return;
         }
-        let (result_tx, result_rx) = oneshot::channel();
-        let job = DecryptJob { elems, result_tx };
-        let ordered = OrderedJob { result_rx };
+        match self.direct_completion_tx.as_ref() {
+            Some(direct_tx) => {
+                // No-sequencer fast path: workers send straight to the
+                // rx_loop's completion mpsc. Ordering is lost across
+                // batches; within a batch the elem `Vec` order is
+                // preserved.
+                let job = DecryptJob {
+                    elems,
+                    result_tx: ResultSink::Direct(direct_tx.clone()),
+                };
+                if let Err(e) = self.decrypt_tx.send(job).await {
+                    warn!(error = %e, "AEAD pool decrypt_tx closed; dropping batch");
+                }
+            }
+            None => {
+                let (result_tx, result_rx) = oneshot::channel();
+                let job = DecryptJob {
+                    elems,
+                    result_tx: ResultSink::Sequenced(result_tx),
+                };
+                let ordered = OrderedJob { result_rx };
 
-        // Order matters: push the ordered slot FIRST so the sequencer
-        // sees the in-order placeholder before the worker can possibly
-        // race ahead and try to send results into a oneshot whose
-        // receiver hasn't been queued yet. (In practice the oneshot
-        // tolerates either order, but conceptually the sequencer's
-        // queue is the source of truth for order.)
-        if let Err(e) = self.ordered_tx.send(ordered).await {
-            warn!(error = %e, "AEAD pool ordered_tx closed; dropping batch");
-            // result_tx was moved into `e.0` (the OrderedJob), recover
-            // it to avoid leaking a oneshot. Actually e.0 contains the
-            // OrderedJob with result_rx; we can't get result_tx back.
-            // The DecryptJob's result_tx will eventually be dropped if
-            // the worker is also gone.
-            return;
-        }
-        if let Err(e) = self.decrypt_tx.send(job).await {
-            warn!(error = %e, "AEAD pool decrypt_tx closed; orphaning ordered slot");
-            return;
+                // Push the ordered slot FIRST so the sequencer sees the
+                // in-order placeholder before the worker tries to fire
+                // its oneshot.
+                if let Err(e) = self.ordered_tx.send(ordered).await {
+                    warn!(error = %e, "AEAD pool ordered_tx closed; dropping batch");
+                    return;
+                }
+                if let Err(e) = self.decrypt_tx.send(job).await {
+                    warn!(error = %e, "AEAD pool decrypt_tx closed; orphaning ordered slot");
+                }
+            }
         }
     }
 
@@ -342,8 +396,17 @@ async fn worker_loop(_worker_id: usize, rx: Arc<tokio::sync::Mutex<mpsc::Receive
             });
         }
 
-        // If the receiver is gone (sequencer shut down), drop results.
-        let _ = job.result_tx.send(out);
+        match job.result_tx {
+            ResultSink::Sequenced(tx) => {
+                // If the receiver is gone (sequencer shut down), drop results.
+                let _ = tx.send(out);
+            }
+            ResultSink::Direct(tx) => {
+                // No-sequencer fast path: send directly to rx_loop.
+                // Drop on closed channel (rx_loop gone).
+                let _ = tx.send(out).await;
+            }
+        }
     }
 }
 
