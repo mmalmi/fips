@@ -29,6 +29,13 @@ mod platform {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
 
+    /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
+    /// will pull from / push to the kernel. Tuned to amortise syscall +
+    /// per-task-wakeup overhead across a useful burst without blowing
+    /// the stack (each slot owns an mmsghdr + sockaddr_storage + iovec).
+    #[cfg(target_os = "linux")]
+    const BATCH_SIZE: usize = 32;
+
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
     pub struct UdpRawSocket {
@@ -286,12 +293,6 @@ mod platform {
 
             Ok((n as usize, addr, drops))
         }
-
-        /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
-        /// will pull from / push to the kernel. Tuned to amortise syscall
-        /// overhead across a useful burst without blowing the stack.
-        #[cfg(target_os = "linux")]
-        pub(super) const BATCH_SIZE: usize = 32;
 
         /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
         /// (Linux only — macOS falls through to per-packet recvmsg).
