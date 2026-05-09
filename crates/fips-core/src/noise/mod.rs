@@ -245,10 +245,7 @@ impl CipherState {
         }
 
         let nonce = self.next_nonce()?;
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(NoiseError::EncryptionFailed)?;
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
         let ciphertext = cipher
             .encrypt(&nonce, plaintext)
             .map_err(|_| NoiseError::EncryptionFailed)?;
@@ -274,10 +271,7 @@ impl CipherState {
         }
 
         let nonce = self.next_nonce()?;
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(NoiseError::DecryptionFailed)?;
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
         let plaintext = cipher
             .decrypt(&nonce, ciphertext)
             .map_err(|_| NoiseError::DecryptionFailed)?;
@@ -306,10 +300,7 @@ impl CipherState {
             });
         }
 
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(NoiseError::DecryptionFailed)?;
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
 
         let nonce = Self::counter_to_nonce(counter);
         let plaintext = cipher
@@ -341,10 +332,7 @@ impl CipherState {
         }
 
         let nonce = self.next_nonce()?;
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(NoiseError::EncryptionFailed)?;
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
         let ciphertext = cipher
             .encrypt(
                 &nonce,
@@ -356,6 +344,90 @@ impl CipherState {
             .map_err(|_| NoiseError::EncryptionFailed)?;
 
         Ok(ciphertext)
+    }
+
+    /// Encrypt plaintext with an explicit counter (no AAD).
+    ///
+    /// Symmetric to `decrypt_with_counter`: takes `&self` and a caller-
+    /// supplied counter rather than mutating the internal nonce. Intended
+    /// for pipelined encrypt paths where a dispatcher pre-assigns counters
+    /// and fans the AEAD work out across worker threads. Callers are
+    /// responsible for ensuring counter uniqueness — typically by holding
+    /// the cipher behind a lock or queue that hands out counters in order.
+    pub fn encrypt_with_counter(
+        &self,
+        plaintext: &[u8],
+        counter: u64,
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
+
+        let nonce = Self::counter_to_nonce(counter);
+        let ciphertext = cipher
+            .encrypt(&nonce, plaintext)
+            .map_err(|_| NoiseError::EncryptionFailed)?;
+
+        Ok(ciphertext)
+    }
+
+    /// Encrypt plaintext with an explicit counter and AAD.
+    ///
+    /// Symmetric to `decrypt_with_counter_and_aad`: takes `&self` and a
+    /// caller-supplied counter rather than mutating the internal nonce.
+    /// Same uniqueness contract as `encrypt_with_counter`.
+    pub fn encrypt_with_counter_and_aad(
+        &self,
+        plaintext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        if !self.has_key {
+            return Ok(plaintext.to_vec());
+        }
+
+        if plaintext.len() > MAX_MESSAGE_SIZE - TAG_SIZE {
+            return Err(NoiseError::MessageTooLarge {
+                size: plaintext.len(),
+                max: MAX_MESSAGE_SIZE - TAG_SIZE,
+            });
+        }
+
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
+
+        let nonce = Self::counter_to_nonce(counter);
+        let ciphertext = cipher
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .map_err(|_| NoiseError::EncryptionFailed)?;
+
+        Ok(ciphertext)
+    }
+
+    /// Clone the underlying AEAD instance, if a key has been installed.
+    ///
+    /// Returns `None` for an empty (un-keyed) state. The returned cipher
+    /// is a 32-byte key copy and can be moved across threads. Combined
+    /// with `decrypt_with_counter[_and_aad]` and the matching nonce, this
+    /// lets a dispatcher offload the AEAD rounds to a worker pool while
+    /// the main task keeps the replay window and counter assignment
+    /// sequential.
+    pub fn cipher_clone(&self) -> Option<ChaCha20Poly1305> {
+        self.cipher.clone()
     }
 
     /// Decrypt with an explicit counter and AAD (for transport phase).
@@ -380,10 +452,7 @@ impl CipherState {
             });
         }
 
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(NoiseError::DecryptionFailed)?;
+        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
 
         let nonce = Self::counter_to_nonce(counter);
         let plaintext = cipher

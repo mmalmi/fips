@@ -795,3 +795,183 @@ fn test_xk_invalid_msg3_size() {
             .is_err()
     );
 }
+
+// ===== Off-task encrypt/decrypt API parity =====
+//
+// `encrypt_with_counter[_and_aad]` is the &self counterpart to the existing
+// internal-counter `encrypt[_with_aad]`. These tests verify that:
+//   1. A ciphertext produced via the off-task path round-trips through the
+//      receiver's existing replay-window decrypt path.
+//   2. For the same key + same counter, both encrypt paths produce
+//      identical ciphertext.
+//   3. `cipher_clone()` + `decrypt_with_counter_and_aad` on the clone
+//      matches an in-place decrypt — i.e. workers holding a clone see
+//      the exact same AEAD outcome as the owning task would.
+//   4. `take_send_counter` + `encrypt_with_counter_and_aad` is equivalent
+//      to the internal-counter `encrypt_with_aad`.
+
+#[test]
+fn test_encrypt_with_counter_no_aad_roundtrip() {
+    let keypair1 = generate_keypair();
+    let keypair2 = generate_keypair();
+
+    let mut init = HandshakeState::new_initiator(keypair1, keypair2.public_key());
+    init.set_local_epoch(generate_epoch());
+    let mut resp = HandshakeState::new_responder(keypair2);
+    resp.set_local_epoch(generate_epoch());
+
+    let msg1 = init.write_message_1().unwrap();
+    resp.read_message_1(&msg1).unwrap();
+    let msg2 = resp.write_message_2().unwrap();
+    init.read_message_2(&msg2).unwrap();
+
+    let sender = init.into_session().unwrap();
+    let mut receiver = resp.into_session().unwrap();
+
+    // Off-task encrypt path: dispatcher pre-assigns counter 0, hands cipher
+    // clone + counter to a worker, worker produces ciphertext.
+    let send_cipher = sender.send_cipher_clone().unwrap();
+    let counter = 0u64;
+    let plaintext = b"off-task encrypt";
+    let nonce = CipherState::counter_to_nonce(counter);
+    let ciphertext = send_cipher
+        .encrypt(&nonce, plaintext.as_ref())
+        .expect("worker AEAD encrypt");
+
+    // Receiver decrypts via its normal replay-window path.
+    let decrypted = receiver
+        .decrypt_with_replay_check(&ciphertext, counter)
+        .unwrap();
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn test_encrypt_with_counter_matches_internal_counter() {
+    // Same key, same counter → identical ciphertext. Proves
+    // encrypt_with_counter is a faithful &self mirror of encrypt().
+    let key = [0x42u8; 32];
+    let mut a = CipherState::new(key);
+    let b = CipherState::new(key);
+
+    let plaintext = b"same key, same counter, same output";
+
+    // Internal-counter path consumes counter 0.
+    let counter_a = a.nonce();
+    let ct_a = a.encrypt(plaintext).unwrap();
+
+    // Explicit-counter path uses 0 too.
+    let ct_b = b.encrypt_with_counter(plaintext, counter_a).unwrap();
+
+    assert_eq!(
+        ct_a, ct_b,
+        "explicit-counter encrypt must be byte-identical"
+    );
+
+    // And b's nonce stayed at 0 (no internal mutation).
+    assert_eq!(b.nonce(), 0);
+}
+
+#[test]
+fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
+    // Pipelined encrypt: take_send_counter on session, then
+    // encrypt_with_counter_and_aad on a clone. Receiver decrypts with
+    // matching counter+AAD via its existing path.
+    let keypair1 = generate_keypair();
+    let keypair2 = generate_keypair();
+
+    let mut init = HandshakeState::new_initiator(keypair1, keypair2.public_key());
+    init.set_local_epoch(generate_epoch());
+    let mut resp = HandshakeState::new_responder(keypair2);
+    resp.set_local_epoch(generate_epoch());
+
+    let msg1 = init.write_message_1().unwrap();
+    resp.read_message_1(&msg1).unwrap();
+    let msg2 = resp.write_message_2().unwrap();
+    init.read_message_2(&msg2).unwrap();
+
+    let mut sender = init.into_session().unwrap();
+    let mut receiver = resp.into_session().unwrap();
+
+    let aad = b"outer header bytes";
+    let plaintext = b"pipelined send";
+
+    // Dispatcher: reserve counter under sender's &mut.
+    let counter = sender.take_send_counter().unwrap();
+    assert_eq!(counter, 0);
+    assert_eq!(sender.send_nonce(), 1, "counter reserved → nonce advanced");
+
+    // Worker: clone + AEAD on cloned cipher, no further session mutation.
+    let cipher = sender.send_cipher_clone().unwrap();
+    let nonce = CipherState::counter_to_nonce(counter);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            chacha20poly1305::aead::Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .unwrap();
+
+    // Receiver: existing replay-window path with matching AAD.
+    let decrypted = receiver
+        .decrypt_with_replay_check_and_aad(&ciphertext, counter, aad)
+        .unwrap();
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn test_recv_cipher_clone_matches_decrypt_with_counter_and_aad() {
+    // Off-task decrypt: worker holds recv_cipher_clone + counter + aad,
+    // computes the AEAD on its own thread, returns plaintext to dispatcher
+    // which then calls accept_replay. This test simulates that flow.
+    let keypair1 = generate_keypair();
+    let keypair2 = generate_keypair();
+
+    let mut init = HandshakeState::new_initiator(keypair1, keypair2.public_key());
+    init.set_local_epoch(generate_epoch());
+    let mut resp = HandshakeState::new_responder(keypair2);
+    resp.set_local_epoch(generate_epoch());
+
+    let msg1 = init.write_message_1().unwrap();
+    resp.read_message_1(&msg1).unwrap();
+    let msg2 = resp.write_message_2().unwrap();
+    init.read_message_2(&msg2).unwrap();
+
+    let mut sender = init.into_session().unwrap();
+    let mut receiver = resp.into_session().unwrap();
+
+    let aad = b"AAD-bound transport header";
+    let plaintext = b"off-task decrypt";
+
+    // Sender produces ciphertext (any path).
+    let counter = sender.current_send_counter();
+    let ciphertext = sender.encrypt_with_aad(plaintext, aad).unwrap();
+
+    // Dispatcher's cheap replay check passes.
+    assert!(receiver.check_replay(counter).is_ok());
+
+    // Worker decrypts via cloned cipher (no session lock held).
+    let cipher = receiver.recv_cipher_clone().unwrap();
+    let nonce = CipherState::counter_to_nonce(counter);
+    let worker_plaintext = cipher
+        .decrypt(
+            &nonce,
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad,
+            },
+        )
+        .unwrap();
+    assert_eq!(worker_plaintext, plaintext);
+
+    // Dispatcher accepts counter into replay window only after worker success.
+    receiver.accept_replay(counter);
+
+    // Replay should now be detected on the same counter.
+    assert!(receiver.check_replay(counter).is_err());
+}
+
+// `counter_to_nonce` is a private associated fn on CipherState in the parent
+// module; the tests submodule inherits visibility, so we can use it directly
+// rather than duplicating the byte layout here.

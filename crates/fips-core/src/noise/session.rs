@@ -1,4 +1,5 @@
 use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
+use chacha20poly1305::ChaCha20Poly1305;
 use secp256k1::{PublicKey, XOnlyPublicKey};
 use std::fmt;
 
@@ -146,6 +147,47 @@ impl NoiseSession {
     /// Get the highest received counter.
     pub fn highest_received_counter(&self) -> u64 {
         self.replay_window.highest()
+    }
+
+    /// Clone the recv-side AEAD instance, for off-task decrypt.
+    ///
+    /// Returns `None` if the recv cipher has no key (transport phase has
+    /// not begun). The cloned cipher pairs with `decrypt_with_counter[_and_aad]`
+    /// on `CipherState`: a dispatcher can `check_replay` here, fan the
+    /// AEAD work out to a worker holding the clone + counter + aad, then
+    /// call `accept_replay` here once the worker reports success.
+    pub fn recv_cipher_clone(&self) -> Option<ChaCha20Poly1305> {
+        self.recv_cipher.cipher_clone()
+    }
+
+    /// Clone the send-side AEAD instance, for off-task encrypt.
+    ///
+    /// Returns `None` if the send cipher has no key. Pairs with
+    /// `encrypt_with_counter[_and_aad]` on `CipherState`. The caller must
+    /// own counter sequencing — `take_send_counter` hands out monotonic
+    /// counters under the session's own &mut.
+    pub fn send_cipher_clone(&self) -> Option<ChaCha20Poly1305> {
+        self.send_cipher.cipher_clone()
+    }
+
+    /// Reserve and return the next send counter, advancing the internal
+    /// nonce. For pipelined encrypt paths that call `encrypt_with_counter`
+    /// on a cloned cipher: the dispatcher pre-assigns the counter here
+    /// (under the session's &mut) and the worker performs the AEAD with
+    /// no further mutation of session state.
+    pub fn take_send_counter(&mut self) -> Result<u64, NoiseError> {
+        if self.send_cipher.nonce == u64::MAX {
+            return Err(NoiseError::NonceOverflow);
+        }
+        let counter = self.send_cipher.nonce;
+        self.send_cipher.nonce += 1;
+        Ok(counter)
+    }
+
+    /// Accept a counter into the replay window after a successful out-of-task
+    /// decrypt. Caller is responsible for verifying decrypt success first.
+    pub fn accept_replay(&mut self, counter: u64) {
+        self.replay_window.accept(counter);
     }
 
     /// Reset the replay window (use when rekeying).
