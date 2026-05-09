@@ -829,14 +829,17 @@ fn test_encrypt_with_counter_no_aad_roundtrip() {
     let mut receiver = resp.into_session().unwrap();
 
     // Off-task encrypt path: dispatcher pre-assigns counter 0, hands cipher
-    // clone + counter to a worker, worker produces ciphertext.
+    // clone + counter to a worker, worker produces ciphertext using ring's
+    // in-place seal — same code the future pipelined dispatcher will run.
     let send_cipher = sender.send_cipher_clone().unwrap();
     let counter = 0u64;
     let plaintext = b"off-task encrypt";
     let nonce = CipherState::counter_to_nonce(counter);
-    let ciphertext = send_cipher
-        .encrypt(&nonce, plaintext.as_ref())
+    let mut buf = plaintext.to_vec();
+    send_cipher
+        .seal_in_place_append_tag(nonce, ring::aead::Aad::empty(), &mut buf)
         .expect("worker AEAD encrypt");
+    let ciphertext = buf;
 
     // Receiver decrypts via its normal replay-window path.
     let decrypted = receiver
@@ -903,15 +906,11 @@ fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
     // Worker: clone + AEAD on cloned cipher, no further session mutation.
     let cipher = sender.send_cipher_clone().unwrap();
     let nonce = CipherState::counter_to_nonce(counter);
-    let ciphertext = cipher
-        .encrypt(
-            &nonce,
-            chacha20poly1305::aead::Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
+    let mut buf = plaintext.to_vec();
+    cipher
+        .seal_in_place_append_tag(nonce, ring::aead::Aad::from(aad), &mut buf)
         .unwrap();
+    let ciphertext = buf;
 
     // Receiver: existing replay-window path with matching AAD.
     let decrypted = receiver
@@ -951,18 +950,17 @@ fn test_recv_cipher_clone_matches_decrypt_with_counter_and_aad() {
     // Dispatcher's cheap replay check passes.
     assert!(receiver.check_replay(counter).is_ok());
 
-    // Worker decrypts via cloned cipher (no session lock held).
+    // Worker decrypts via cloned cipher (no session lock held). ring's
+    // open_in_place mutates the buffer in place and returns the plaintext
+    // sub-slice; the dispatcher would normally take ownership of that
+    // subslice and forward it to the link-message handler.
     let cipher = receiver.recv_cipher_clone().unwrap();
     let nonce = CipherState::counter_to_nonce(counter);
+    let mut buf = ciphertext.clone();
     let worker_plaintext = cipher
-        .decrypt(
-            &nonce,
-            chacha20poly1305::aead::Payload {
-                msg: &ciphertext,
-                aad,
-            },
-        )
-        .unwrap();
+        .open_in_place(nonce, ring::aead::Aad::from(aad), &mut buf)
+        .unwrap()
+        .to_vec();
     assert_eq!(worker_plaintext, plaintext);
 
     // Dispatcher accepts counter into replay window only after worker success.

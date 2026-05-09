@@ -1,5 +1,5 @@
 use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
-use chacha20poly1305::ChaCha20Poly1305;
+use ring::aead::LessSafeKey;
 use secp256k1::{PublicKey, XOnlyPublicKey};
 use std::fmt;
 
@@ -156,7 +156,7 @@ impl NoiseSession {
     /// on `CipherState`: a dispatcher can `check_replay` here, fan the
     /// AEAD work out to a worker holding the clone + counter + aad, then
     /// call `accept_replay` here once the worker reports success.
-    pub fn recv_cipher_clone(&self) -> Option<ChaCha20Poly1305> {
+    pub fn recv_cipher_clone(&self) -> Option<LessSafeKey> {
         self.recv_cipher.cipher_clone()
     }
 
@@ -166,7 +166,7 @@ impl NoiseSession {
     /// `encrypt_with_counter[_and_aad]` on `CipherState`. The caller must
     /// own counter sequencing — `take_send_counter` hands out monotonic
     /// counters under the session's own &mut.
-    pub fn send_cipher_clone(&self) -> Option<ChaCha20Poly1305> {
+    pub fn send_cipher_clone(&self) -> Option<LessSafeKey> {
         self.send_cipher.cipher_clone()
     }
 

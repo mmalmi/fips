@@ -39,10 +39,7 @@ mod handshake;
 mod replay;
 mod session;
 
-use chacha20poly1305::{
-    ChaCha20Poly1305, Nonce,
-    aead::{Aead, KeyInit, Payload},
-};
+use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use std::fmt;
 use thiserror::Error;
 
@@ -181,29 +178,45 @@ impl fmt::Display for HandshakeProgress {
 
 /// Symmetric cipher state for post-handshake encryption.
 ///
-/// The `cipher` field caches the AEAD instance so we don't re-derive it
-/// per packet. `ChaCha20Poly1305::new_from_slice` is cheap on its own but
-/// it's still allocator + key-clone work that we'd otherwise pay on every
-/// transport datagram; caching it costs ~80 bytes of struct width and
-/// eliminates that overhead from the bulk-data hot path.
-#[derive(Clone)]
+/// AEAD is `ring`'s ChaCha20-Poly1305 (BoringSSL backend), which dispatches
+/// to NEON on aarch64 and AVX-512/AVX2 on x86_64. The `cipher` field caches
+/// a constructed `LessSafeKey` so we don't re-derive it per packet.
+/// `LessSafeKey` itself isn't `Clone`, so `CipherState`'s `Clone` impl
+/// rebuilds it from the retained 32-byte key on demand — for the
+/// off-task-decrypt path see `cipher_clone`.
 pub struct CipherState {
-    /// Encryption key (32 bytes). Retained alongside the cached cipher so
-    /// `Clone` can rebuild the cipher independently and rekey paths can
-    /// re-derive without re-reading from the cipher.
+    /// Encryption key (32 bytes). Retained so we can rebuild the keyed
+    /// AEAD on `Clone` and `cipher_clone()` (ring's `UnboundKey`/`LessSafeKey`
+    /// don't implement `Clone` deliberately for safety).
     key: [u8; 32],
-    /// Cached AEAD instance, valid iff `has_key`.
-    cipher: Option<ChaCha20Poly1305>,
+    /// Cached keyed AEAD, valid iff `has_key`. None for an un-keyed state.
+    cipher: Option<LessSafeKey>,
     /// Nonce counter (8 bytes used, 4 bytes zero prefix).
     pub(super) nonce: u64,
     /// Whether this cipher has a valid key.
     has_key: bool,
 }
 
+impl Clone for CipherState {
+    fn clone(&self) -> Self {
+        let cipher = if self.has_key {
+            Self::build_cipher(&self.key)
+        } else {
+            None
+        };
+        Self {
+            key: self.key,
+            cipher,
+            nonce: self.nonce,
+            has_key: self.has_key,
+        }
+    }
+}
+
 impl CipherState {
     /// Create a new cipher state with the given key.
     pub(crate) fn new(key: [u8; 32]) -> Self {
-        let cipher = ChaCha20Poly1305::new_from_slice(&key).ok();
+        let cipher = Self::build_cipher(&key);
         Self {
             key,
             cipher,
@@ -225,9 +238,18 @@ impl CipherState {
     /// Initialize with a key.
     pub(super) fn initialize_key(&mut self, key: [u8; 32]) {
         self.key = key;
-        self.cipher = ChaCha20Poly1305::new_from_slice(&key).ok();
+        self.cipher = Self::build_cipher(&key);
         self.nonce = 0;
         self.has_key = true;
+    }
+
+    /// Build a ring `LessSafeKey` from raw key bytes. Centralized so the
+    /// cipher-cache rebuild paths (`new`, `initialize_key`, `Clone`,
+    /// `cipher_clone`) all agree on construction.
+    fn build_cipher(key: &[u8; 32]) -> Option<LessSafeKey> {
+        UnboundKey::new(&CHACHA20_POLY1305, key)
+            .ok()
+            .map(LessSafeKey::new)
     }
 
     /// Encrypt plaintext, returning ciphertext with appended tag.
@@ -244,13 +266,8 @@ impl CipherState {
             });
         }
 
-        let nonce = self.next_nonce()?;
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
-        let ciphertext = cipher
-            .encrypt(&nonce, plaintext)
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
-        Ok(ciphertext)
+        let counter = self.advance_nonce()?;
+        seal(self.cipher.as_ref(), counter, &[], plaintext)
     }
 
     /// Decrypt ciphertext (with appended tag), returning plaintext.
@@ -270,13 +287,8 @@ impl CipherState {
             });
         }
 
-        let nonce = self.next_nonce()?;
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
-        let plaintext = cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-
-        Ok(plaintext)
+        let counter = self.advance_nonce()?;
+        open(self.cipher.as_ref(), counter, &[], ciphertext)
     }
 
     /// Decrypt with an explicit counter value (for transport phase).
@@ -300,14 +312,7 @@ impl CipherState {
             });
         }
 
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
-
-        let nonce = Self::counter_to_nonce(counter);
-        let plaintext = cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-
-        Ok(plaintext)
+        open(self.cipher.as_ref(), counter, &[], ciphertext)
     }
 
     /// Encrypt plaintext with Additional Authenticated Data (AAD).
@@ -331,19 +336,8 @@ impl CipherState {
             });
         }
 
-        let nonce = self.next_nonce()?;
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
-        let ciphertext = cipher
-            .encrypt(
-                &nonce,
-                Payload {
-                    msg: plaintext,
-                    aad,
-                },
-            )
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
-        Ok(ciphertext)
+        let counter = self.advance_nonce()?;
+        seal(self.cipher.as_ref(), counter, aad, plaintext)
     }
 
     /// Encrypt plaintext with an explicit counter (no AAD).
@@ -370,14 +364,7 @@ impl CipherState {
             });
         }
 
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
-
-        let nonce = Self::counter_to_nonce(counter);
-        let ciphertext = cipher
-            .encrypt(&nonce, plaintext)
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
-        Ok(ciphertext)
+        seal(self.cipher.as_ref(), counter, &[], plaintext)
     }
 
     /// Encrypt plaintext with an explicit counter and AAD.
@@ -402,32 +389,26 @@ impl CipherState {
             });
         }
 
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::EncryptionFailed)?;
-
-        let nonce = Self::counter_to_nonce(counter);
-        let ciphertext = cipher
-            .encrypt(
-                &nonce,
-                Payload {
-                    msg: plaintext,
-                    aad,
-                },
-            )
-            .map_err(|_| NoiseError::EncryptionFailed)?;
-
-        Ok(ciphertext)
+        seal(self.cipher.as_ref(), counter, aad, plaintext)
     }
 
-    /// Clone the underlying AEAD instance, if a key has been installed.
+    /// Construct an independent keyed AEAD pinned to this cipher's key.
     ///
-    /// Returns `None` for an empty (un-keyed) state. The returned cipher
-    /// is a 32-byte key copy and can be moved across threads. Combined
-    /// with `decrypt_with_counter[_and_aad]` and the matching nonce, this
-    /// lets a dispatcher offload the AEAD rounds to a worker pool while
-    /// the main task keeps the replay window and counter assignment
-    /// sequential.
-    pub fn cipher_clone(&self) -> Option<ChaCha20Poly1305> {
-        self.cipher.clone()
+    /// Returns `None` for an empty (un-keyed) state. The returned key is
+    /// freshly built from the retained 32-byte key material — ring's
+    /// `LessSafeKey` doesn't implement `Clone` deliberately, but for
+    /// ChaCha20-Poly1305 the construction is essentially a key copy plus
+    /// a constant-time check, so this is cheap. Combined with
+    /// `decrypt_with_counter[_and_aad]` (which already takes `&self`),
+    /// this lets a dispatcher offload the AEAD rounds to a worker pool
+    /// while the main task keeps the replay window and counter
+    /// assignment sequential.
+    pub fn cipher_clone(&self) -> Option<LessSafeKey> {
+        if self.has_key {
+            Self::build_cipher(&self.key)
+        } else {
+            None
+        }
     }
 
     /// Decrypt with an explicit counter and AAD (for transport phase).
@@ -452,43 +433,27 @@ impl CipherState {
             });
         }
 
-        let cipher = self.cipher.as_ref().ok_or(NoiseError::DecryptionFailed)?;
-
-        let nonce = Self::counter_to_nonce(counter);
-        let plaintext = cipher
-            .decrypt(
-                &nonce,
-                Payload {
-                    msg: ciphertext,
-                    aad,
-                },
-            )
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-
-        Ok(plaintext)
+        open(self.cipher.as_ref(), counter, aad, ciphertext)
     }
 
-    /// Convert a counter value to a nonce.
-    fn counter_to_nonce(counter: u64) -> Nonce {
+    /// Build a ring `Nonce` from a counter value (8-byte LE counter, with
+    /// 4-byte zero prefix to match the Noise/WireGuard wire format).
+    /// Public-in-crate helper so the off-task encrypt/decrypt path on
+    /// callers (e.g. `recv_cipher_clone`) can produce a matching nonce.
+    pub(crate) fn counter_to_nonce(counter: u64) -> Nonce {
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
-        *Nonce::from_slice(&nonce_bytes)
+        Nonce::assume_unique_for_key(nonce_bytes)
     }
 
-    /// Get the next nonce, incrementing the counter.
-    fn next_nonce(&mut self) -> Result<Nonce, NoiseError> {
+    /// Reserve and return the next nonce, advancing the internal counter.
+    fn advance_nonce(&mut self) -> Result<u64, NoiseError> {
         if self.nonce == u64::MAX {
             return Err(NoiseError::NonceOverflow);
         }
-
         let n = self.nonce;
         self.nonce += 1;
-
-        // Noise uses 8-byte counter with 4-byte zero prefix
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&n.to_le_bytes());
-
-        Ok(*Nonce::from_slice(&nonce_bytes))
+        Ok(n)
     }
 
     /// Get the current nonce value (for debugging/testing).
@@ -510,6 +475,50 @@ impl fmt::Debug for CipherState {
             .field("key", &"[redacted]")
             .finish()
     }
+}
+
+/// Encrypt `plaintext` with the given keyed AEAD, counter, and AAD,
+/// returning a `Vec<u8>` of `plaintext.len() + TAG_SIZE` bytes (ring's
+/// `seal_in_place_append_tag` works on a single buffer; we own it here
+/// to keep the public Vec-returning API of `CipherState`).
+///
+/// Module-private so other paths inside `noise` (e.g. a future pipelined
+/// dispatcher consuming `cipher_clone`) can reuse the exact same
+/// allocation + AEAD pattern.
+pub(crate) fn seal(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::EncryptionFailed)?;
+    let mut buf = Vec::with_capacity(plaintext.len() + TAG_SIZE);
+    buf.extend_from_slice(plaintext);
+    let nonce = CipherState::counter_to_nonce(counter);
+    cipher
+        .seal_in_place_append_tag(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| NoiseError::EncryptionFailed)?;
+    Ok(buf)
+}
+
+/// Decrypt `ciphertext` (with appended tag) with the given keyed AEAD,
+/// counter, and AAD, returning the plaintext as a `Vec<u8>`. Truncates
+/// in place to drop the AEAD tag.
+pub(crate) fn open(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::DecryptionFailed)?;
+    let mut buf = ciphertext.to_vec();
+    let nonce = CipherState::counter_to_nonce(counter);
+    let plaintext_len = cipher
+        .open_in_place(nonce, Aad::from(aad), &mut buf)
+        .map_err(|_| NoiseError::DecryptionFailed)?
+        .len();
+    buf.truncate(plaintext_len);
+    Ok(buf)
 }
 
 #[cfg(test)]
