@@ -612,7 +612,10 @@ fn test_handle_parent_lost_becomes_root_when_self_smaller_than_remaining() {
     assert!(changed);
 
     // Must become root (we're the smallest visible), NOT pick bigger1/bigger2.
-    assert!(state.is_root(), "must self-root when no smaller peer remains");
+    assert!(
+        state.is_root(),
+        "must self-root when no smaller peer remains"
+    );
     assert_eq!(state.root(), &my_node);
     assert_eq!(state.my_coords().entries().len(), 1);
 

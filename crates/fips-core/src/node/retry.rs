@@ -273,7 +273,9 @@ impl Node {
             // (one Filter fetch with 2s timeout) and bounded by the retry
             // backoff cadence.
             if let Some(bootstrap) = self.nostr_discovery.clone() {
-                let _ = bootstrap.refetch_advert_for_stale_check(&peer_config.npub).await;
+                let _ = bootstrap
+                    .refetch_advert_for_stale_check(&peer_config.npub)
+                    .await;
             }
 
             match self.initiate_peer_connection(&peer_config).await {

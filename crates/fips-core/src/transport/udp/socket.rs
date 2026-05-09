@@ -319,8 +319,7 @@ mod platform {
 
             // Stack-allocated parallel arrays; lifetime tied to this call.
             let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] =
-                unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
             let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
@@ -357,10 +356,7 @@ mod platform {
         /// Send up to `BATCH_SIZE` datagrams in a single sendmmsg syscall
         /// (Linux only). Returns the count actually sent.
         #[cfg(target_os = "linux")]
-        pub fn send_batch(
-            &self,
-            packets: &[(&[u8], SocketAddr)],
-        ) -> std::io::Result<usize> {
+        pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
             let n = packets.len().min(BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
@@ -368,8 +364,7 @@ mod platform {
             let fd = self.inner.as_raw_fd();
 
             let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] =
-                unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
             let mut storage_lens: [libc::socklen_t; BATCH_SIZE] = [0; BATCH_SIZE];
             let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
@@ -377,9 +372,7 @@ mod platform {
                 let (data, dest) = packets[i];
                 let sa: socket2::SockAddr = (dest).into();
                 let sa_len = sa.len();
-                debug_assert!(
-                    sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>()
-                );
+                debug_assert!(sa_len as usize <= std::mem::size_of::<libc::sockaddr_storage>());
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         sa.as_ptr() as *const u8,
@@ -397,9 +390,7 @@ mod platform {
                 msgs[i].msg_hdr.msg_iovlen = 1;
             }
 
-            let r = unsafe {
-                libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0)
-            };
+            let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
             if r < 0 {
                 return Err(std::io::Error::last_os_error());
             }

@@ -450,7 +450,9 @@ async fn udp_receive_loop(
                 Ok(count) => {
                     for i in 0..count {
                         let len = lens[i];
-                        let Some(remote_addr) = addrs[i] else { continue };
+                        let Some(remote_addr) = addrs[i] else {
+                            continue;
+                        };
                         stats.record_recv(len);
 
                         let buf = &backing[i][..len];

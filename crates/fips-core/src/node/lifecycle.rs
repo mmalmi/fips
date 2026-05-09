@@ -1854,10 +1854,7 @@ impl Node {
         // external address fields are cleared since the socket is already
         // bound.
         let inherited_config = traversal.transport_config.clone().unwrap_or_else(|| {
-            let mut cfg = self
-                .lookup_udp_config(None)
-                .cloned()
-                .unwrap_or_default();
+            let mut cfg = self.lookup_udp_config(None).cloned().unwrap_or_default();
             cfg.bind_addr = None;
             cfg.external_addr = None;
             cfg

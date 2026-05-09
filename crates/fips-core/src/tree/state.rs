@@ -195,8 +195,7 @@ impl TreeState {
                 let seq = self.my_declaration.sequence();
                 let ts = self.my_declaration.timestamp();
                 self.my_declaration = ParentDeclaration::self_root(self.my_node_addr, seq, ts);
-                self.my_coords =
-                    TreeCoordinate::root_with_meta(self.my_node_addr, seq, ts);
+                self.my_coords = TreeCoordinate::root_with_meta(self.my_node_addr, seq, ts);
                 self.root = self.my_node_addr;
                 return;
             }
@@ -233,8 +232,7 @@ impl TreeState {
     pub fn become_root(&mut self) {
         let new_seq = self.my_declaration.sequence() + 1;
         let timestamp = crate::time::now_secs();
-        self.my_declaration =
-            ParentDeclaration::self_root(self.my_node_addr, new_seq, timestamp);
+        self.my_declaration = ParentDeclaration::self_root(self.my_node_addr, new_seq, timestamp);
         self.recompute_coords();
     }
 

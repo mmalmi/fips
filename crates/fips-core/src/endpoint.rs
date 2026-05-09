@@ -367,15 +367,13 @@ impl FipsEndpoint {
         Ok(())
     }
 
-    fn resolve_peer_identity(
-        &self,
-        remote_npub: &str,
-    ) -> Result<PeerIdentity, FipsEndpointError> {
-        // Fast path: cached identity (cheap clone of fixed-size struct).
+    fn resolve_peer_identity(&self, remote_npub: &str) -> Result<PeerIdentity, FipsEndpointError> {
+        // Fast path: cached identity (PeerIdentity is Copy after eager
+        // pubkey_full precompute landed in b1e92af, so dereference is free).
         if let Ok(cache) = self.peer_identity_cache.lock()
             && let Some(remote) = cache.get(remote_npub)
         {
-            return Ok(remote.clone());
+            return Ok(*remote);
         }
 
         let remote = PeerIdentity::from_npub(remote_npub).map_err(|error| {
@@ -386,9 +384,7 @@ impl FipsEndpoint {
         })?;
 
         if let Ok(mut cache) = self.peer_identity_cache.lock() {
-            cache
-                .entry(remote_npub.to_string())
-                .or_insert_with(|| remote.clone());
+            cache.entry(remote_npub.to_string()).or_insert(remote);
         }
         Ok(remote)
     }
