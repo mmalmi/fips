@@ -1844,17 +1844,28 @@ impl Node {
         self.register_identity(peer_node_addr, peer_identity.pubkey_full());
 
         let transport_id = self.allocate_transport_id();
-        // Adopted ephemeral UDP transports use UdpConfig::default() when the
-        // bootstrap runtime doesn't pass an override. Default MTU resolves to
-        // 1280 (IPv6 minimum), which is the only value guaranteed to survive
-        // arbitrary NAT-traversal middlebox paths. Inheriting from the named
-        // [transports.udp] config (Option 3 in ISSUE-2026-0013) would track
-        // operator config more closely but risks regressions on hostile paths;
-        // accepted as-is until a concrete use case justifies the change.
+        // Adopted ephemeral UDP transports inherit MTU + socket-buffer sizing
+        // (and accept_connections / advertise flags) from the operator's
+        // primary [transports.udp] config when the bootstrap runtime doesn't
+        // pass an explicit override. Without this inheritance the adopted
+        // transport falls back to UdpConfig::default (MTU 1280) and silently
+        // drops every full-sized tunnel datagram on any path where the
+        // operator picked a higher MTU on the primary listener. Bind /
+        // external address fields are cleared since the socket is already
+        // bound.
+        let inherited_config = traversal.transport_config.clone().unwrap_or_else(|| {
+            let mut cfg = self
+                .lookup_udp_config(None)
+                .cloned()
+                .unwrap_or_default();
+            cfg.bind_addr = None;
+            cfg.external_addr = None;
+            cfg
+        });
         let mut transport = crate::transport::udp::UdpTransport::new(
             transport_id,
             traversal.transport_name.clone(),
-            traversal.transport_config.clone().unwrap_or_default(),
+            inherited_config,
             packet_tx,
         );
 
