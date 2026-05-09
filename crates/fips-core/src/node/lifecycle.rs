@@ -1846,15 +1846,29 @@ impl Node {
         let transport_id = self.allocate_transport_id();
         // Adopted ephemeral UDP transports inherit MTU + socket-buffer sizing
         // (and accept_connections / advertise flags) from the operator's
-        // primary [transports.udp] config when the bootstrap runtime doesn't
-        // pass an explicit override. Without this inheritance the adopted
-        // transport falls back to UdpConfig::default (MTU 1280) and silently
-        // drops every full-sized tunnel datagram on any path where the
-        // operator picked a higher MTU on the primary listener. Bind /
-        // external address fields are cleared since the socket is already
-        // bound.
+        // configured [transports.udp] when the bootstrap runtime doesn't
+        // pass an explicit override. Lookup tries `transport_name` first
+        // (covers the `Named` multi-listener variant) and falls back to the
+        // unnamed `Single` listener, so single- and named-listener configs
+        // both inherit cleanly.
+        //
+        // Tradeoff: `UdpConfig::default()` sets MTU 1280 (IPv6 minimum), the
+        // only value guaranteed to survive arbitrary middlebox paths.
+        // Inheriting a higher operator-chosen MTU means NAT-traversed flows
+        // initially attempt that MTU and may black-hole on tighter paths
+        // until reactive `MtuExceeded` recovery kicks in. Operators who
+        // raise the primary MTU based on known-clean topology accept that
+        // tradeoff; the silent drop on a too-low default was strictly
+        // worse for the common case where the primary MTU is reachable.
+        //
+        // Bind / external address fields are cleared since the socket is
+        // already bound.
         let inherited_config = traversal.transport_config.clone().unwrap_or_else(|| {
-            let mut cfg = self.lookup_udp_config(None).cloned().unwrap_or_default();
+            let mut cfg = self
+                .lookup_udp_config(traversal.transport_name.as_deref())
+                .or_else(|| self.lookup_udp_config(None))
+                .cloned()
+                .unwrap_or_default();
             cfg.bind_addr = None;
             cfg.external_addr = None;
             cfg
