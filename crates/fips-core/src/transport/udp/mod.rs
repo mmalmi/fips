@@ -437,17 +437,16 @@ async fn udp_receive_loop(
 
         loop {
             // Build mutable slice references for the syscall layer.
+            // Drawing from a single `iter_mut()` keeps the borrows disjoint
+            // without `MaybeUninit`/`transmute`.
             let mut bufs: [&mut [u8]; BATCH] = {
-                let mut out: [std::mem::MaybeUninit<&mut [u8]>; BATCH] =
-                    unsafe { std::mem::MaybeUninit::uninit().assume_init() };
-                for (i, b) in backing.iter_mut().enumerate() {
-                    out[i] = std::mem::MaybeUninit::new(b.as_mut_slice());
-                }
-                unsafe { std::mem::transmute::<_, [&mut [u8]; BATCH]>(out) }
+                let mut iter = backing.iter_mut();
+                std::array::from_fn(|_| iter.next().unwrap().as_mut_slice())
             };
 
             match socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await {
-                Ok(count) => {
+                Ok((count, kernel_drops)) => {
+                    stats.set_kernel_drops(kernel_drops as u64);
                     for i in 0..count {
                         let len = lens[i];
                         let Some(remote_addr) = addrs[i] else {
