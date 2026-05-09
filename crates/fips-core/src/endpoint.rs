@@ -285,6 +285,11 @@ impl FipsEndpoint {
     }
 
     /// Send application-owned endpoint data to a remote npub.
+    ///
+    /// Awaits a per-packet round-trip with the node task to surface send
+    /// errors. Use `send_oneway` for bulk tunnel-data paths where the caller
+    /// can't act on per-packet failures and the round-trip cost dominates
+    /// throughput.
     pub async fn send(
         &self,
         remote_npub: impl Into<String>,
@@ -326,6 +331,56 @@ impl FipsEndpoint {
             Ok(Err(error)) => Err(error.into()),
             Err(_) => Err(FipsEndpointError::Closed),
         }
+    }
+
+    /// Fire-and-forget variant of `send` for high-throughput data paths.
+    ///
+    /// Enqueues the Send command on the node task's command channel and
+    /// returns as soon as the channel accepts it. Skips the per-packet
+    /// oneshot round-trip used by `send` to surface send-side errors.
+    /// Suitable for bulk tunnel data where the upper layer (e.g. TCP)
+    /// handles loss recovery and per-packet failures (peer not connected,
+    /// session not established, etc.) would only manifest as silently
+    /// dropped packets — which is what `send` does anyway, just slower.
+    pub async fn send_oneway(
+        &self,
+        remote_npub: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let remote_npub = remote_npub.into();
+        let data = data.into();
+        if remote_npub == self.npub {
+            self.inbound_endpoint_tx
+                .send(FipsEndpointMessage {
+                    source_node_addr: self.node_addr,
+                    source_npub: Some(self.npub.clone()),
+                    data,
+                })
+                .await
+                .map_err(|_| FipsEndpointError::Closed)?;
+            return Ok(());
+        }
+
+        let remote = PeerIdentity::from_npub(&remote_npub).map_err(|error| {
+            FipsEndpointError::InvalidRemoteNpub {
+                npub: remote_npub,
+                reason: error.to_string(),
+            }
+        })?;
+
+        // Create a oneshot we never await; the node task's send/Err path will
+        // fire into a dropped receiver, which is fine — the result is already
+        // discarded inside handle_endpoint_data_command via `let _ = ...`.
+        let (response_tx, _response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::Send {
+                remote,
+                payload: data,
+                response_tx,
+            })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+        Ok(())
     }
 
     /// Receive the next source-attributed endpoint data message.
