@@ -48,7 +48,8 @@ impl Node {
             return true;
         }
         if self.peers.values().any(|p| {
-            p.transport_id() == Some(transport_id) && p.current_addr() == Some(remote_addr)
+            p.transport_id() == Some(transport_id)
+                && p.current_addr().as_ref() == Some(remote_addr)
         }) {
             return true;
         }

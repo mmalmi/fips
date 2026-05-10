@@ -111,10 +111,13 @@ pub struct ActivePeer {
     our_index: Option<SessionIndex>,
     /// Their session index (we include this when sending TO them).
     their_index: Option<SessionIndex>,
-    /// Transport ID for this peer's link.
-    transport_id: Option<TransportId>,
-    /// Current transport address (for roaming support).
-    current_addr: Option<TransportAddr>,
+    /// Transport ID + current transport address. Bundled under one
+    /// `Mutex` because the two are always set together by
+    /// `set_current_addr` (and the receive hot path needs to update
+    /// them without `&mut self` to keep the parallel-decrypt /
+    /// per-peer-actor design viable). Reads `transport_id()` /
+    /// `current_addr()` lock briefly; updates on roaming are rare.
+    transport: std::sync::Mutex<Option<(TransportId, TransportAddr)>>,
 
     // === Spanning Tree ===
     /// Their latest parent declaration.
@@ -231,8 +234,7 @@ impl ActivePeer {
             noise_session: None,
             our_index: None,
             their_index: None,
-            transport_id: None,
-            current_addr: None,
+            transport: std::sync::Mutex::new(None),
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -311,8 +313,7 @@ impl ActivePeer {
             noise_session: Some(noise_session),
             our_index: Some(our_index),
             their_index: Some(their_index),
-            transport_id: Some(transport_id),
-            current_addr: Some(current_addr),
+            transport: std::sync::Mutex::new(Some((transport_id, current_addr))),
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -463,20 +464,41 @@ impl ActivePeer {
 
     /// Get the transport ID for this peer.
     pub fn transport_id(&self) -> Option<TransportId> {
-        self.transport_id
+        self.transport
+            .lock()
+            .expect("transport poisoned")
+            .as_ref()
+            .map(|(tid, _)| *tid)
     }
 
-    /// Get the current transport address.
-    pub fn current_addr(&self) -> Option<&TransportAddr> {
-        self.current_addr.as_ref()
+    /// Get a clone of the current transport address.
+    ///
+    /// Returns `Option<TransportAddr>` (cloned) rather than a reference
+    /// because the addr lives behind a Mutex; a borrow would tie the
+    /// caller to the lock guard. Cloning a `TransportAddr` is one
+    /// `Vec<u8>` heap copy — acceptable for the per-packet send path
+    /// in exchange for `&self` access.
+    pub fn current_addr(&self) -> Option<TransportAddr> {
+        self.transport
+            .lock()
+            .expect("transport poisoned")
+            .as_ref()
+            .map(|(_, addr)| addr.clone())
+    }
+
+    /// Get both transport_id and current_addr as a single atomic
+    /// snapshot — saves one lock acquisition for the common
+    /// `if let Some((tid, addr)) = peer.transport_pair() {` pattern
+    /// the send path uses today.
+    pub fn transport_pair(&self) -> Option<(TransportId, TransportAddr)> {
+        self.transport.lock().expect("transport poisoned").clone()
     }
 
     /// Update the current address (for roaming support).
     ///
     /// Called when we receive a valid authenticated packet from a new address.
-    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) {
-        self.transport_id = Some(transport_id);
-        self.current_addr = Some(addr);
+    pub fn set_current_addr(&self, transport_id: TransportId, addr: TransportAddr) {
+        *self.transport.lock().expect("transport poisoned") = Some((transport_id, addr));
     }
 
     // === Handshake Resend ===

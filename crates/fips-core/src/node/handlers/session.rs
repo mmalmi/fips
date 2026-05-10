@@ -2040,7 +2040,7 @@ impl Node {
             && let Some(transport) = self.transports.get(&tid)
         {
             if let Some(addr) = peer.current_addr() {
-                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(addr));
+                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(&addr));
             } else {
                 datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
             }

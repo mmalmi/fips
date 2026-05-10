@@ -664,7 +664,7 @@ impl Node {
             && let Some(transport) = self.transports.get(&tid)
         {
             let link_mtu = if let Some(addr) = peer.current_addr() {
-                transport.link_mtu(addr)
+                transport.link_mtu(&addr)
             } else {
                 transport.mtu()
             };
