@@ -29,12 +29,40 @@ mod platform {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
 
-    /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
-    /// will pull from / push to the kernel. Tuned to amortise syscall +
-    /// per-task-wakeup overhead across a useful burst without blowing
-    /// the stack (each slot owns an mmsghdr + sockaddr_storage + iovec).
-    #[cfg(target_os = "linux")]
+    /// Maximum number of datagrams a single recvmmsg / recvmsg_x / sendmmsg
+    /// syscall will pull from / push to the kernel. Tuned to amortise syscall +
+    /// per-task-wakeup overhead across a useful burst without blowing the
+    /// stack (each slot owns an mmsghdr/msghdr_x + sockaddr_storage + iovec).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     const BATCH_SIZE: usize = 32;
+
+    /// Darwin-private `msghdr_x` for the `recvmsg_x` / `sendmsg_x` syscalls.
+    /// Layout matches `bsd/sys/socket_private.h` in xnu — same as `msghdr` plus
+    /// a trailing `msg_datalen` (per-message bytes-received output, in lieu of
+    /// the `msg_len` field that `mmsghdr` uses on Linux).
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    #[allow(non_camel_case_types)]
+    struct msghdr_x {
+        msg_name: *mut libc::c_void,
+        msg_namelen: libc::socklen_t,
+        msg_iov: *mut libc::iovec,
+        msg_iovlen: libc::c_int,
+        msg_control: *mut libc::c_void,
+        msg_controllen: libc::socklen_t,
+        msg_flags: libc::c_int,
+        msg_datalen: usize,
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        fn recvmsg_x(
+            s: libc::c_int,
+            msgp: *const msghdr_x,
+            cnt: libc::c_uint,
+            flags: libc::c_int,
+        ) -> isize;
+    }
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
@@ -240,10 +268,10 @@ mod platform {
         /// value is a cumulative counter since socket creation; it is 0 if
         /// `SO_RXQ_OVFL` is not supported.
         ///
-        /// On Linux the production receive path uses `recv_batch` (recvmmsg);
-        /// this single-packet variant remains for non-Linux unix targets and
-        /// for the local `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
+        /// The production receive path on Linux/macOS uses `recv_batch`
+        /// (recvmmsg / recvmsg_x); this single-packet variant remains for
+        /// other unix targets and for the local `tests` module.
+        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
         pub fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr, u32)> {
             let fd = self.inner.as_raw_fd();
 
@@ -391,6 +419,56 @@ mod platform {
             Ok((count, drops))
         }
 
+        /// Receive up to `BATCH_SIZE` datagrams in a single `recvmsg_x` syscall
+        /// (macOS). Same `(count, drops)` contract as the Linux `recv_batch`,
+        /// except `drops` is always 0 — Darwin has no `SO_RXQ_OVFL` equivalent.
+        ///
+        /// `recvmsg_x` is a Darwin-private syscall (not in the public SDK) but
+        /// is shipped in production xnu and is used by quinn-udp for the same
+        /// per-syscall-amortisation reason as our Linux `recvmmsg` path.
+        #[cfg(target_os = "macos")]
+        pub fn recv_batch(
+            &self,
+            bufs: &mut [&mut [u8]],
+            addrs: &mut [Option<SocketAddr>],
+            lens: &mut [usize],
+        ) -> std::io::Result<(usize, u32)> {
+            let n = bufs.len().min(addrs.len()).min(lens.len()).min(BATCH_SIZE);
+            if n == 0 {
+                return Ok((0, 0));
+            }
+            let fd = self.inner.as_raw_fd();
+
+            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut msgs: [msghdr_x; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+
+            for i in 0..n {
+                iovs[i].iov_base = bufs[i].as_mut_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = bufs[i].len();
+                msgs[i].msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+                msgs[i].msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                msgs[i].msg_iov = &mut iovs[i];
+                msgs[i].msg_iovlen = 1;
+                // No cmsg consumption — leave msg_control null. (msg_controllen
+                // is documented as not overwritten by macOS recvmsg_x; zeroed
+                // init keeps it sane.)
+            }
+
+            let r = unsafe { recvmsg_x(fd, msgs.as_ptr(), n as libc::c_uint, 0) };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let count = r as usize;
+            for i in 0..count {
+                lens[i] = msgs[i].msg_datalen;
+                addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
+            }
+
+            Ok((count, 0))
+        }
+
         /// Wrap this socket in a tokio `AsyncFd` for async I/O.
         pub fn into_async(self) -> Result<AsyncUdpSocket, TransportError> {
             let async_fd = AsyncFd::new(self)
@@ -440,11 +518,11 @@ mod platform {
 
         /// Receive a payload, source address, and kernel drop counter.
         ///
-        /// Returns `(bytes_read, source_addr, kernel_drops)`. On Linux the
-        /// production receive path uses `recv_batch`; this single-packet
-        /// variant remains for non-Linux unix targets and for the local
-        /// `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
+        /// Returns `(bytes_read, source_addr, kernel_drops)`. On Linux/macOS
+        /// the production receive path uses `recv_batch`; this single-packet
+        /// variant remains for other unix targets and for the local `tests`
+        /// module.
+        #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
         pub async fn recv_from(
             &self,
             buf: &mut [u8],
@@ -465,9 +543,10 @@ mod platform {
         }
 
         /// Drain up to `BATCH_SIZE` datagrams from the kernel via
-        /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
-        /// buffer / addr / len contract as `UdpRawSocket::recv_batch`.
-        #[cfg(target_os = "linux")]
+        /// `recvmmsg` (Linux) or `recvmsg_x` (macOS). Returns
+        /// `(count, kernel_drops)`; same buffer / addr / len contract as
+        /// `UdpRawSocket::recv_batch`. `kernel_drops` is always 0 on macOS.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         pub async fn recv_batch(
             &self,
             bufs: &mut [&mut [u8]],
