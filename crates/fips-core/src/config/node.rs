@@ -1112,6 +1112,22 @@ pub struct NodeConfig {
     /// pattern is being validated; tests stay on the inline path.
     #[serde(default)]
     pub peer_actor_enabled: bool,
+
+    /// Migrate `SessionEntry` ownership into the per-peer actor task
+    /// for direct-peer sessions (`node.actor_owns_sessions`).
+    ///
+    /// `false` (default) keeps `Node.sessions` as the single owner —
+    /// every Node-side path uses `self.sessions.get(...)` as today.
+    /// `true` ships every newly-created direct-peer SessionEntry to
+    /// the peer actor on `initiate_session` / `handle_session_setup`,
+    /// and routes all subsequent FSP work (handshake processing,
+    /// encrypt, decrypt, MMP reports, rekey, queries, removal) to
+    /// that actor via inbound channel messages. Transit-endpoint
+    /// sessions (rare 3+-hop case where dest isn't a direct peer)
+    /// stay in `Node.sessions`. Off by default while the pure-
+    /// ownership migration (step 7c-2) is being wired.
+    #[serde(default)]
+    pub actor_owns_sessions: bool,
 }
 
 impl Default for NodeConfig {
@@ -1141,6 +1157,7 @@ impl Default for NodeConfig {
             system_files_enabled: true,
             log_level: None,
             peer_actor_enabled: false,
+            actor_owns_sessions: false,
         }
     }
 }

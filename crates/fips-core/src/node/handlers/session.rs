@@ -729,8 +729,25 @@ impl Node {
             false,
         );
         entry.set_handshake_payload(ack_payload, now_ms + resend_interval);
-        self.sessions
-            .insert(*src_addr, crate::node::session::session_entry_slot(entry));
+
+        // Direct-peer single-owner path: ship to the peer actor.
+        // Otherwise (or with the feature flag off) keep the entry in
+        // Node.sessions as today.
+        let actor = if self.config.node.actor_owns_sessions {
+            self.peer_actor_for(src_addr)
+        } else {
+            None
+        };
+        if let Some(actor) = actor {
+            if !actor.try_take_session(Box::new(entry)) {
+                debug!(src = %self.peer_display_name(src_addr),
+                    "peer actor inbound channel full/closed; dropping responder session");
+                return;
+            }
+        } else {
+            self.sessions
+                .insert(*src_addr, crate::node::session::session_entry_slot(entry));
+        }
 
         debug!(src = %self.peer_display_name(src_addr), "SessionSetup processed (XK), SessionAck sent, awaiting msg3");
     }
@@ -756,6 +773,69 @@ impl Node {
             return;
         }
 
+        // Direct-peer + actor path: route msg2 processing into the
+        // peer actor that owns the SessionEntry.
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(src_addr)
+        {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::ProcessFspMsg2 {
+                    handshake_payload: ack.handshake_payload.clone(),
+                    respond: tx,
+                })
+                .await
+            {
+                debug!(src = %self.peer_display_name(src_addr),
+                    "peer actor channel closed before ProcessFspMsg2");
+                return;
+            }
+            let result = match rx.await {
+                Ok(r) => r,
+                Err(_) => {
+                    debug!(src = %self.peer_display_name(src_addr),
+                        "peer actor dropped ProcessFspMsg2 oneshot");
+                    return;
+                }
+            };
+            let output = match result {
+                Ok(o) => o,
+                Err(e) => {
+                    debug!(src = %self.peer_display_name(src_addr), error = %e,
+                        "Peer actor ProcessFspMsg2 failed");
+                    return;
+                }
+            };
+
+            // Send the msg3 datagram on the wire.
+            let msg3_wire = SessionMsg3::new(output.msg3_payload);
+            let msg3_payload = msg3_wire.encode();
+            let my_addr = *self.node_addr();
+            let mut datagram = SessionDatagram::new(my_addr, *src_addr, msg3_payload)
+                .with_ttl(self.config.node.session.default_ttl);
+            if let Err(e) = self.send_session_datagram(&mut datagram).await {
+                debug!(error = %e, dest = %self.peer_display_name(src_addr),
+                    "Failed to send SessionMsg3 (actor path)");
+                return;
+            }
+
+            // FreshEstablish post-work: cache initiator-known coords +
+            // flush queued packets. RekeyPending: nothing extra.
+            use crate::peer::actor::ProcessMsg2Flow;
+            if matches!(output.flow, ProcessMsg2Flow::FreshEstablish) {
+                let now_ms = Self::now_ms();
+                self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
+                self.flush_pending_packets(src_addr).await;
+                info!(src = %self.peer_display_name(src_addr),
+                    "Session established (initiator, XK, actor path)");
+            } else {
+                debug!(src = %self.peer_display_name(src_addr),
+                    "FSP rekey: completed XK as initiator (actor path), pending cutover");
+            }
+            return;
+        }
+
+        // Legacy path — Node.sessions is the single owner.
         // Take a write lock on the entry to mutate its handshake state
         // in place. The slot stays in `self.sessions` for the duration —
         // no remove/insert dance — and the lock is released when the
@@ -923,6 +1003,55 @@ impl Node {
                 expected = XK_HANDSHAKE_MSG3_SIZE,
                 "Invalid handshake payload size in SessionMsg3"
             );
+            return;
+        }
+
+        // Direct-peer + actor path: route msg3 processing into the
+        // peer actor that owns the SessionEntry.
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(src_addr)
+        {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::ProcessFspMsg3 {
+                    handshake_payload: msg3.handshake_payload.clone(),
+                    respond: tx,
+                })
+                .await
+            {
+                debug!(src = %self.peer_display_name(src_addr),
+                    "peer actor channel closed before ProcessFspMsg3");
+                return;
+            }
+            let result = match rx.await {
+                Ok(r) => r,
+                Err(_) => {
+                    debug!(src = %self.peer_display_name(src_addr),
+                        "peer actor dropped ProcessFspMsg3 oneshot");
+                    return;
+                }
+            };
+            let output = match result {
+                Ok(o) => o,
+                Err(e) => {
+                    debug!(src = %self.peer_display_name(src_addr), error = %e,
+                        "Peer actor ProcessFspMsg3 failed");
+                    return;
+                }
+            };
+
+            // Register the (now-known) initiator identity for TUN routing.
+            self.register_identity(*src_addr, output.remote_pubkey);
+
+            use crate::peer::actor::ProcessMsg3Flow;
+            if matches!(output.flow, ProcessMsg3Flow::FreshEstablish) {
+                self.flush_pending_packets(src_addr).await;
+                info!(src = %self.peer_display_name(src_addr),
+                    "Session established (responder, XK, actor path)");
+            } else {
+                debug!(src = %self.peer_display_name(src_addr),
+                    "FSP rekey: processed peer's msg3 (actor path), pending cutover");
+            }
             return;
         }
 
@@ -1453,15 +1582,45 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: PublicKey,
     ) -> Result<(), NodeError> {
-        // Check for existing session
-        if let Some(slot) = self.sessions.get(&dest_addr) {
+        // Snapshot once: if peer-actor session ownership is on AND
+        // the destination is a direct peer with a running actor task,
+        // route through that actor for the rest of this call. Snapshot
+        // includes the actor handle clone (cheap — mpsc::Sender +
+        // Arc<Config> ref-count bump).
+        let actor = if self.config.node.actor_owns_sessions {
+            self.peer_actor_for(&dest_addr)
+        } else {
+            None
+        };
+
+        // Check for existing session.
+        if let Some(actor) = &actor {
+            // Ask the peer actor whether it already owns a session for
+            // us. `QuerySnapshot` returns `None` if no session, or
+            // `Some(snapshot)` we can inspect for state.
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::QuerySnapshot(tx))
+                .await
+            {
+                // Actor task is gone — fall back to legacy path.
+            } else if let Ok(Some(snap)) = rx.await {
+                use crate::peer::actor::SessionStateLabel;
+                if matches!(
+                    snap.state,
+                    SessionStateLabel::Established | SessionStateLabel::Initiating
+                ) {
+                    return Ok(());
+                }
+            }
+        } else if let Some(slot) = self.sessions.get(&dest_addr) {
             let existing = crate::node::session::session_read(slot);
             if existing.is_established() || existing.is_initiating() {
                 return Ok(());
             }
         }
 
-        // Create Noise XK initiator handshake
+        // Create Noise XK initiator handshake.
         let our_keypair = self.identity.keypair();
         let mut handshake = HandshakeState::new_xk_initiator(our_keypair, dest_pubkey);
         handshake.set_local_epoch(self.startup_epoch);
@@ -1472,24 +1631,24 @@ impl Node {
                 reason: format!("Noise XK msg1 generation failed: {}", e),
             })?;
 
-        // Build SessionSetup with coordinates
+        // Build SessionSetup with coordinates.
         let our_coords = self.tree_state.my_coords().clone();
         let dest_coords = self.get_dest_coords(&dest_addr);
         let setup = SessionSetup::new(our_coords, dest_coords).with_handshake(msg1);
         let setup_payload = setup.encode();
 
-        // Wrap in SessionDatagram
+        // Wrap in SessionDatagram.
         let my_addr = *self.node_addr();
         let mut datagram = SessionDatagram::new(my_addr, dest_addr, setup_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
-        // Route toward destination
+        // Route toward destination.
         self.send_session_datagram(&mut datagram).await?;
 
-        // Register destination identity for TUN → session routing
+        // Register destination identity for TUN → session routing.
         self.register_identity(dest_addr, dest_pubkey);
 
-        // Store session entry with handshake payload for potential resend
+        // Build the SessionEntry with handshake payload for potential resend.
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
         let mut entry = SessionEntry::new(
@@ -1500,8 +1659,25 @@ impl Node {
             true,
         );
         entry.set_handshake_payload(setup_payload, now_ms + resend_interval);
-        self.sessions
-            .insert(dest_addr, crate::node::session::session_entry_slot(entry));
+
+        // Ship to peer actor (single owner) or insert into Node.sessions
+        // (transit-endpoint or feature-flag-disabled fallback).
+        if let Some(actor) = actor {
+            if !actor.try_take_session(Box::new(entry)) {
+                // Channel full / actor exited — surface as a transient
+                // SendFailed; caller will retry. We DROP the freshly
+                // built entry — no fallback to self.sessions because we
+                // already started the handshake on the wire and the
+                // duplication would be a single-owner-violation.
+                return Err(NodeError::SendFailed {
+                    node_addr: dest_addr,
+                    reason: "peer actor inbound channel full or closed".into(),
+                });
+            }
+        } else {
+            self.sessions
+                .insert(dest_addr, crate::node::session::session_entry_slot(entry));
+        }
 
         debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
         Ok(())

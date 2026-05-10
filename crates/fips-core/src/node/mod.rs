@@ -1143,6 +1143,22 @@ impl Node {
         self.identity.node_addr()
     }
 
+    /// Get a clone of the peer actor handle for `addr`, if `addr` is
+    /// a direct peer with an actor task running. Used by the
+    /// pure-actor session-ownership path: Node-side handlers that
+    /// need to read or mutate a direct-peer session ship their work
+    /// as a `PeerInboundJob` to this handle. `None` indicates the
+    /// destination is not a direct peer (transit-endpoint session;
+    /// fall back to `self.sessions`) or peer-actor mode is disabled.
+    pub(crate) fn peer_actor_for(
+        &self,
+        addr: &NodeAddr,
+    ) -> Option<crate::peer::actor::PeerActorHandle> {
+        let slot = self.peers.get(addr)?;
+        let peer = crate::peer::peer_read(slot);
+        peer.actor().cloned()
+    }
+
     /// Build a `PeerActorIoCtx` snapshot for spawning a peer actor.
     /// Cheap — clones the IO-sink mpsc senders (themselves Arc-backed)
     /// and bumps the `Arc<Config>` ref-count once. The actor then reads
