@@ -680,8 +680,20 @@ async fn peer_actor_loop(
     // per-peer mutations + link dispatch all happen here, freeing
     // rx_loop to keep reading packets for other peers.
     let mut owned_peer: Option<Box<ActivePeer>> = None;
-    while let Some(job) = inbound_rx.recv().await {
-        match job {
+    // recv_many batches up to N ready jobs per wakeup — amortises the
+    // per-packet tokio scheduling cost that single-packet recv pays
+    // (roughly 5–10µs per task wakeup × 80kpps drains 80% of one
+    // core just on context switches). This is the WireGuard-go
+    // QueueOutboundElementsContainer pattern in spirit.
+    let mut batch: Vec<PeerInboundJob> = Vec::with_capacity(64);
+    loop {
+        batch.clear();
+        let n = inbound_rx.recv_many(&mut batch, 64).await;
+        if n == 0 {
+            break;
+        }
+        for job in batch.drain(..) {
+            match job {
             PeerInboundJob::Decrypted(decrypted) => {
                 handle_decrypted(
                     *decrypted,
@@ -846,6 +858,7 @@ async fn peer_actor_loop(
                     }
                 }
             }
+        }
         }
     }
     // Drop owned state explicitly so destructors run before the task
