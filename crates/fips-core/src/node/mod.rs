@@ -416,6 +416,16 @@ pub struct Node {
     /// suffices for them. The few residual `&mut self` methods
     /// (handshake/rekey/tree/bloom updates, off the per-packet path)
     /// take `peer_write(slot)`.
+    ///
+    /// **Remaining horror, scope-too-large-for-this-turn**: this
+    /// wrapper still exists. The proper end-state is
+    /// `peer_actors: HashMap<NodeAddr, PeerActorHandle>` (handles
+    /// only), with `ActivePeer` state living in the per-peer actor
+    /// task as owned `&mut self` data. ~120 Node-side call sites need
+    /// migration to actor messages. After that goes:
+    /// `NoiseSession.replay_window: Mutex<ReplayWindow>` reverts to
+    /// plain, and ActivePeer's interior atomics/Mutex (steps 1-4
+    /// of the refactor) revert to plain too, since single owner.
     peers: HashMap<NodeAddr, ActivePeerSlot>,
 
     // === Per-peer actor link-dispatch return channel ===

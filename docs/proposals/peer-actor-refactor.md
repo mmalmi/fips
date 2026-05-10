@@ -156,7 +156,70 @@ the only task doing the receive work.
   Clone` is the next prereq before `SessionEntry: clone_for_actor` is
   feasible.
 
-#### Step 7c-2 — single-owner `SessionEntry` in peer actor (next)
+#### Step 7c-2 — single-owner `SessionEntry` in peer actor (DONE — fcb0b3a + 42b365e)
+
+Multi-commit lockstep migration completed:
+* df72315 — full message vocabulary
+* 4f338eb — Encrypt handler over owned SessionEntry
+* 153d120 — Arc<Config> + ProcessFspMsg2/3 lifecycle handlers
+* b417151 — gated session-creation paths (`actor_owns_sessions` flag)
+* bddb714 — actor hot-path FSP receive (DataPacket → IPv6 shim → tun_tx)
+* 08687fc — `send_session_data` via actor.Encrypt
+* bd9447e — `send_session_msg` / `send_coords_warmup` /
+  `send_session_endpoint_data` via actor
+* fcb0b3a — Arc<RwLock<SessionEntry>> wrapper deleted; plain
+  `HashMap<NodeAddr, SessionEntry>`
+* 42b365e — `Mutex<MmpSessionState>` and `AtomicU32 decrypt_failures`
+  reverted to plain types (single owner doesn't need them)
+
+Bench (TCP single stream, 20s, 2-node Docker): actor on 1483 Mbps,
+off 1442 Mbps — both within noise of pre-actor baseline (~1530).
+
+#### Step 7d — single-owner `ActivePeer` (NEXT, the remaining horror)
+
+Currently `Node.peers: HashMap<NodeAddr, Arc<RwLock<ActivePeer>>>` is
+the last big shared-state wrapper. The peer actor task gets a clone
+of the slot Arc to do per-peer state mutations on inbound packets
+(replay accept, MMP record, link_stats, set_current_addr, touch).
+The rx_loop reads peer state for FMP decrypt and many other paths.
+
+The proper end-state mirrors 7c-2:
+* `Node.peer_actors: HashMap<NodeAddr, PeerActorHandle>` — channel
+  handles only.
+* `ActivePeer` state lives in the per-peer actor task as owned
+  `&mut self` data — no Arc, no RwLock.
+* All Node-side `peer_read(slot)` / `peer_write(slot)` sites become
+  actor channel calls (oneshot for queries, fire-and-forget for
+  mutations like `record_recv` / `touch`).
+* rx_loop's inbound packet path: classify by transport_id + index →
+  peer NodeAddr → route raw packet to actor; actor does FMP decrypt
+  + per-peer mutations + (post-7c-2) FSP work entirely on owned
+  state.
+* Some "thin" rx_loop-side index data may need to move to a
+  separate `peer_metadata: HashMap<NodeAddr, PeerMetadata>` map
+  (transport_id, our_index, link_id, current_addr) so reverse-
+  direction sends can find next-hop without an actor round-trip.
+
+~120 call sites of `peer_read` / `peer_write` / `active_peer_slot`
+need migration. The actor's existing `peer_actor_loop` already
+holds the slot Arc; with this step the actor owns `ActivePeer`
+directly (struct field, not Arc).
+
+After 7d:
+* `NoiseSession.replay_window: Mutex<ReplayWindow>` reverts to plain
+  `ReplayWindow` (decrypt methods become `&mut self`).
+* `ActivePeer.connectivity: AtomicU8`, `last_seen: AtomicU64`,
+  `transport_id+current_addr: Mutex<...>`, `mmp: Option<Mutex<...>>`,
+  `consecutive_decrypt_failures: AtomicU32`, etc — all step 1-4 of
+  the original refactor — revert to plain types since single owner.
+
+Result: zero `Arc<RwLock<...>>` / `Mutex<...>` / `AtomicXX` on the
+data plane (apart from `Arc<Config>` which is read-only shared
+config). Truly elegant, wireguard-go-style "one task per peer,
+owns everything."
+
+#### (former) Step 7c-2 design notes (kept for reference)
+
 
 After step 7a/7b the FSP receive path *can* run from a read lock on
 `Arc<RwLock<SessionEntry>>`, but the lock + atomic + mutex overhead is
