@@ -6,6 +6,7 @@
 use crate::bloom::BloomFilter;
 use crate::mmp::{MmpConfig, MmpPeerState};
 use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseError, NoiseSession};
+use crate::node::wire::{ESTABLISHED_HEADER_SIZE, strip_inner_header};
 use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 use crate::utils::index::SessionIndex;
@@ -78,6 +79,63 @@ impl fmt::Display for ConnectivityState {
         };
         write!(f, "{}", s)
     }
+}
+
+/// Inputs to `ActivePeer::process_inbound_fmp_frame`. Borrowed slices are
+/// valid for the duration of the call only — the method runs synchronously,
+/// produces an owned `InboundFrameOutcome`, and never escapes references.
+///
+/// Bundled into a struct so the method signature stays readable at the
+/// rx_loop call site (and at the future per-peer-actor call site once
+/// `Packet(ReceivedPacket)` jobs land).
+pub struct InboundFrame<'a> {
+    /// AEAD ciphertext (everything after the 16-byte outer header).
+    pub ciphertext: &'a [u8],
+    /// Per-frame counter (used as AEAD nonce + replay-window key).
+    pub counter: u64,
+    /// Full 16-byte outer header. Used as AAD; bound to the ciphertext.
+    pub header_bytes: &'a [u8; ESTABLISHED_HEADER_SIZE],
+    /// K-bit observed in this frame's flags (for rekey cutover detection).
+    pub received_k_bit: bool,
+    /// CE bit (congestion experienced) — propagated to the link-layer
+    /// dispatcher and used by the IP layer to set ECN on the inner packet.
+    pub ce_flag: bool,
+    /// SP bit (spin) — fed into MMP's spin-bit RTT estimator.
+    pub sp_flag: bool,
+    /// Total wire length of the original packet (link-stats + MMP record).
+    pub packet_len: usize,
+    /// Wall-clock millis when the packet was read off the socket
+    /// (`link_stats.record_recv` + `peer.touch`).
+    pub packet_timestamp_ms: u64,
+    /// Transport that received the packet (used to update peer's current
+    /// address for roaming).
+    pub packet_transport_id: TransportId,
+    /// Source address the packet arrived from (roaming address update).
+    pub packet_remote_addr: TransportAddr,
+}
+
+/// Outcome of `ActivePeer::process_inbound_fmp_frame`.
+///
+/// Mirrors the inline `FmpFrameOutcome` in the encrypted handler — the
+/// difference is that the method runs entirely on a `&mut ActivePeer`
+/// borrow, so peer-not-found / peer-gone variants live at the caller level
+/// (the `Node`-side handler), not here.
+pub enum InboundFrameOutcome {
+    /// Frame decrypted, replay-window advanced, MMP / link-stats / touch
+    /// already applied. `plaintext` still includes the 4-byte inner
+    /// timestamp prefix; the link-layer body starts at `plaintext[4..]`.
+    /// `inner_timestamp` is the parsed prefix.
+    Authentic {
+        plaintext: Vec<u8>,
+        inner_timestamp: u32,
+    },
+    /// Plaintext was too short for the inner header. Drop quietly.
+    InnerHeaderTooShort { plaintext_len: usize },
+    /// Both current and previous (drain-window) sessions failed AEAD.
+    /// `error` is the failure on the *current* session.
+    DecryptFailed { error: NoiseError },
+    /// Peer has no live session (legacy peer, or pre-handshake state).
+    NoSession,
 }
 
 /// A fully authenticated remote FIPS node.
@@ -488,6 +546,98 @@ impl ActivePeer {
     /// Update the current address (for roaming support).
     pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) {
         self.transport = Some((transport_id, addr));
+    }
+
+    // === FMP Receive Pipeline ===
+
+    /// Process an inbound encrypted FMP frame end-to-end on this peer.
+    ///
+    /// Single `&mut self` borrow that does (in order):
+    ///   1. K-bit cutover when the peer flips into a pending new session
+    ///      (rare — once per rekey).
+    ///   2. AEAD decrypt against the current session, with replay window
+    ///      pre-check + inline `accept` (no separate `accept_replay` call —
+    ///      `decrypt_with_replay_check_and_aad` advances the window).
+    ///   3. Drain-window fallback: try the previous session if the current
+    ///      one fails.
+    ///   4. Inner header strip (4-byte timestamp prefix).
+    ///   5. Per-peer mutations: reset_decrypt_failures, MMP record_recv +
+    ///      spin-bit observe, set_current_addr (roaming), link_stats
+    ///      record_recv, touch.
+    ///
+    /// Designed to be called from two contexts that look identical from
+    /// here: rx_loop (`Node.peers.get_mut(&addr)`) today, and the per-peer
+    /// actor task (which will own the `ActivePeer` directly) after the
+    /// ActivePeer-to-actor migration. Both have already parsed the outer
+    /// header, so we take the bundled `InboundFrame` rather than the raw
+    /// packet.
+    pub fn process_inbound_fmp_frame(&mut self, frame: InboundFrame<'_>) -> InboundFrameOutcome {
+        // K-bit flip — once per rekey, branch-free in steady state.
+        if frame.received_k_bit != self.current_k_bit() && self.pending_new_session().is_some() {
+            let _ = self.handle_peer_kbit_flip();
+            // Index was pre-registered during msg1 handling; the caller
+            // owns peers_by_index and doesn't need to do anything here.
+        }
+
+        // FMP decrypt: try current, then drain-window. Each call advances
+        // its replay window inline on success — no separate accept_replay.
+        let try_current = if let Some(s) = self.noise_session_mut() {
+            if s.check_replay(frame.counter).is_err() {
+                None
+            } else {
+                s.decrypt_with_replay_check_and_aad(frame.ciphertext, frame.counter, frame.header_bytes)
+                    .ok()
+            }
+        } else {
+            None
+        };
+        let plaintext = match try_current {
+            Some(pt) => pt,
+            None => {
+                let try_prev = self.previous_session_mut().and_then(|s| {
+                    s.decrypt_with_replay_check_and_aad(frame.ciphertext, frame.counter, frame.header_bytes)
+                        .ok()
+                });
+                match try_prev {
+                    Some(pt) => pt,
+                    None => {
+                        return if self.noise_session().is_some() {
+                            InboundFrameOutcome::DecryptFailed {
+                                error: NoiseError::DecryptionFailed,
+                            }
+                        } else {
+                            InboundFrameOutcome::NoSession
+                        };
+                    }
+                }
+            }
+        };
+
+        let inner_timestamp = match strip_inner_header(&plaintext) {
+            Some((ts, _link)) => ts,
+            None => {
+                return InboundFrameOutcome::InnerHeaderTooShort {
+                    plaintext_len: plaintext.len(),
+                };
+            }
+        };
+
+        // Per-peer mutations under the same `&mut self` borrow.
+        self.reset_decrypt_failures();
+        let now = Instant::now();
+        if let Some(mmp) = self.mmp_mut() {
+            mmp.receiver
+                .record_recv(frame.counter, inner_timestamp, frame.packet_len, frame.ce_flag, now);
+            let _spin_rtt = mmp.spin_bit.rx_observe(frame.sp_flag, frame.counter, now);
+        }
+        self.set_current_addr(frame.packet_transport_id, frame.packet_remote_addr);
+        self.link_stats().record_recv(frame.packet_len, frame.packet_timestamp_ms);
+        self.touch(frame.packet_timestamp_ms);
+
+        InboundFrameOutcome::Authentic {
+            plaintext,
+            inner_timestamp,
+        }
     }
 
     // === Handshake Resend ===

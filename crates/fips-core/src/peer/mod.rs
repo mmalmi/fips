@@ -7,11 +7,11 @@
 //! The PeerSlot enum represents either phase, enabling unified storage
 //! while maintaining type safety for phase-specific operations.
 
-mod active;
+pub(crate) mod active;
 pub(crate) mod actor;
 mod connection;
 
-pub use active::{ActivePeer, ConnectivityState};
+pub use active::{ActivePeer, ConnectivityState, InboundFrame, InboundFrameOutcome};
 pub use connection::{HandshakeState, PeerConnection};
 
 // 7d cleanup: `Node.peers` is now `HashMap<NodeAddr, ActivePeer>` —
