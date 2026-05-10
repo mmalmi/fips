@@ -520,6 +520,17 @@ pub struct Node {
     /// removed via `remove_active_peer` (the actor task terminates as
     /// soon as the last handle drops).
     peer_actors: HashMap<NodeAddr, crate::peer::actor::PeerActorHandle>,
+    /// Handles for peers that have been temporarily recalled from
+    /// their actor task (e.g. for a cold-path mutation that hasn't
+    /// been migrated to actor messages yet). The peer itself sits
+    /// back in `Node.peers` for the duration of the recall; the
+    /// handle is parked here so `reship_peer` can hand the peer
+    /// back to the actor when the cold path completes.
+    ///
+    /// While a peer is recalled, rx_loop's `peer_actors.get(addr)`
+    /// lookup returns None — the inline FMP path runs instead, which
+    /// works because the peer is back in `Node.peers`.
+    recalled_handles: HashMap<NodeAddr, crate::peer::actor::PeerActorHandle>,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: HashMap<(TransportId, u32), LinkId>,
@@ -720,6 +731,7 @@ impl Node {
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
             peer_actors: HashMap::new(),
+            recalled_handles: HashMap::new(),
             pending_outbound: HashMap::new(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -853,6 +865,7 @@ impl Node {
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
             peer_actors: HashMap::new(),
+            recalled_handles: HashMap::new(),
             pending_outbound: HashMap::new(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -1198,6 +1211,98 @@ impl Node {
     /// warning is logged — the actor is reachable in principle but the
     /// queue must be unexpectedly full or the task already exited; the
     /// inline rx_loop path remains a working fallback.
+    /// Pull an actor-owned peer back into `Node.peers` for the duration
+    /// of a cold-path operation. While recalled, `peer_actors[addr]` is
+    /// removed so rx_loop's hot path falls through to the inline FMP
+    /// path (peer is in `Node.peers` so that path works). Pair with
+    /// `reship_peer(addr)` once the cold-path work completes.
+    ///
+    /// No-op when `addr` isn't an actor-owned peer (already in
+    /// `Node.peers` or doesn't exist).
+    ///
+    /// Async because release_peer is a oneshot round-trip on the
+    /// actor's mpsc — typically tens of microseconds when the actor
+    /// task is idle.
+    pub(crate) async fn recall_peer(&mut self, addr: &NodeAddr) {
+        let Some(handle) = self.peer_actors.remove(addr) else {
+            return;
+        };
+        // While the actor processes ReleasePeer, packets shipped via
+        // `try_dispatch_packet` could still arrive — but since we just
+        // removed the peer_actors entry, rx_loop won't ship any new
+        // ones. Any in-flight Packet jobs already in the actor's queue
+        // will be processed before ReleasePeer (FIFO), then the peer
+        // is released back to us.
+        if let Some(peer) = handle.release_peer().await {
+            self.peers.insert(*addr, *peer);
+        }
+        // Park the handle for reship_peer to find later. Important: we
+        // do NOT drop it here — that would race with the actor's task
+        // exit (peer.actor inside owned_peer also held a clone, but
+        // we just took the peer back so that clone is dropped now).
+        // If we let the handle drop, the actor task would exit before
+        // reship_peer can re-use it. Park it instead.
+        self.recalled_handles.insert(*addr, handle);
+    }
+
+    /// Hand a recalled peer back to its actor. Pairs with `recall_peer`.
+    /// No-op when the peer isn't currently recalled.
+    pub(crate) fn reship_peer(&mut self, addr: &NodeAddr) {
+        let Some(handle) = self.recalled_handles.remove(addr) else {
+            return;
+        };
+        let Some(peer) = self.peers.remove(addr) else {
+            // Peer was removed during the cold-path window
+            // (e.g. via remove_active_peer). Drop the handle — the
+            // actor task exits as its inbound_tx clones drop.
+            return;
+        };
+        match handle.try_take_peer(Box::new(peer)) {
+            Ok(()) => {
+                // Re-register so rx_loop's hot path resumes shipping
+                // packets to the actor.
+                self.peer_actors.insert(*addr, handle);
+            }
+            Err(boxed_peer) => {
+                tracing::warn!(
+                    peer = %self.peer_display_name(addr),
+                    "Failed to re-ship recalled peer to actor; staying in Node.peers"
+                );
+                self.peers.insert(*addr, *boxed_peer);
+                // Handle drops here, terminating the actor task.
+            }
+        }
+    }
+
+    /// Recall every actor-owned peer back into `Node.peers`. Used at
+    /// the start of broad cold-path passes (e.g. tick handlers) so
+    /// `self.peers.values()` and friends see the full peer set.
+    /// Pair with `reship_all_actor_peers()` at the end of the pass.
+    ///
+    /// No-op when `peer_actors` is empty (the typical case when
+    /// `actor_owns_peer` is false).
+    pub(crate) async fn recall_all_actor_peers(&mut self) {
+        if self.peer_actors.is_empty() {
+            return;
+        }
+        let addrs: Vec<NodeAddr> = self.peer_actors.keys().copied().collect();
+        for addr in addrs {
+            self.recall_peer(&addr).await;
+        }
+    }
+
+    /// Re-ship every recalled peer back to its actor. Pairs with
+    /// `recall_all_actor_peers()`.
+    pub(crate) fn reship_all_actor_peers(&mut self) {
+        if self.recalled_handles.is_empty() {
+            return;
+        }
+        let addrs: Vec<NodeAddr> = self.recalled_handles.keys().copied().collect();
+        for addr in addrs {
+            self.reship_peer(&addr);
+        }
+    }
+
     pub(crate) fn maybe_ship_peer_to_actor(&mut self, addr: &NodeAddr) {
         if !self.config.node.actor_owns_peer {
             return;

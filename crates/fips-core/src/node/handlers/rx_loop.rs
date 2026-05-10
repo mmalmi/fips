@@ -234,6 +234,13 @@ impl Node {
                     let _ = response_tx.send(response);
                 }
                 _ = tick.tick() => {
+                    // Recall actor-owned peers into Node.peers for the
+                    // duration of the tick handlers — they iterate /
+                    // mutate `self.peers` directly. Reship at the end
+                    // so the rx_loop hot path resumes via the actor.
+                    // No-op when actor_owns_peer is false.
+                    self.recall_all_actor_peers().await;
+
                     self.check_timeouts();
                     let now_ms = Self::now_ms();
                     self.reload_peer_acl();
@@ -257,6 +264,8 @@ impl Node {
                     self.check_pending_lookups(now_ms).await;
                     self.poll_transport_discovery().await;
                     self.sample_transport_congestion();
+
+                    self.reship_all_actor_peers();
                 }
             }
         }

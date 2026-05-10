@@ -21,6 +21,22 @@ impl Node {
         let msg_type = plaintext[0];
         let payload = &plaintext[1..];
 
+        // Hot-path message types (SessionDatagram and Heartbeat) don't
+        // touch `Node.peers` for the *from* side — SessionDatagram uses
+        // session state for FSP and the next-hop peer for forwarding,
+        // Heartbeat is a no-op. Skip the recall round-trip for those
+        // so the actor keeps the data peer the whole time.
+        //
+        // Cold-path types (TreeAnnounce, FilterAnnounce, sender/receiver
+        // reports, etc.) read/mutate `peer.coords()`, `peer.update_filter`,
+        // `peer.mmp_mut()`, etc. — recall the peer first so direct
+        // `self.peers[from]` access works, then reship to actor at the
+        // end. No-op when `from` isn't an actor-owned peer.
+        let needs_peer = !matches!(msg_type, 0x00 | 0x51);
+        if needs_peer {
+            self.recall_peer(from).await;
+        }
+
         match msg_type {
             0x00 => {
                 // SessionDatagram
@@ -61,6 +77,10 @@ impl Node {
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
             }
+        }
+
+        if needs_peer {
+            self.reship_peer(from);
         }
     }
 
