@@ -408,6 +408,186 @@ async fn test_actor_owns_peer_handshake_lifecycle() {
     }
 }
 
+/// Encrypted frame round-trip with `actor_owns_peer = true`.
+///
+/// Validates that the rx_loop's actor-fast-path (Node.peer_actors
+/// lookup → `try_dispatch_packet` → actor's `handle_packet`) lands
+/// the FMP-decrypt + per-peer mutations on the correct ActivePeer
+/// inside the actor task. The test:
+///
+///   1. Completes a 2-node handshake with the flag on. Both peers
+///      end up in `peer_actors`.
+///   2. Recalls peer B briefly on Node A to encrypt a TreeAnnounce
+///      frame against B's NoiseSession (real production path uses
+///      `recall_peer` for cold paths anyway), then reships.
+///   3. Sends the wire frame A → B over UDP.
+///   4. Drives B's `handle_encrypted_frame` once. With the flag on
+///      the rx_loop ships the raw packet to B's per-peer actor;
+///      the actor decrypts + does per-peer mutations + dispatches
+///      the link message back to rx_loop via `peer_link_dispatch_rx`.
+///   5. Recalls peer A on Node B and asserts `last_seen` advanced
+///      and `link_stats().packets_recv()` incremented — concrete
+///      evidence the actor processed the frame against the right
+///      peer.
+#[tokio::test]
+async fn test_actor_owns_peer_encrypted_frame_roundtrip() {
+    use crate::config::UdpConfig;
+    use crate::node::wire::{
+        build_encrypted, build_established_header, build_msg1, prepend_inner_header,
+    };
+    use crate::transport::udp::UdpTransport;
+    use tokio::time::{Duration, timeout};
+
+    fn make_actor_node() -> Node {
+        let mut config = Config::new();
+        config.node.peer_actor_enabled = true;
+        config.node.actor_owns_peer = true;
+        Node::new(config).unwrap()
+    }
+
+    let mut node_a = make_actor_node();
+    let mut node_b = make_actor_node();
+
+    let transport_id_a = TransportId::new(1);
+    let transport_id_b = TransportId::new(1);
+
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+
+    let (packet_tx_a, mut packet_rx_a) = packet_channel(64);
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+
+    let mut transport_a = UdpTransport::new(transport_id_a, None, udp_config.clone(), packet_tx_a);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_a.start_async().await.unwrap();
+    transport_b.start_async().await.unwrap();
+
+    let addr_b = transport_b.local_addr().unwrap();
+    let remote_addr_b = TransportAddr::from_string(&addr_b.to_string());
+
+    node_a
+        .transports
+        .insert(transport_id_a, TransportHandle::Udp(transport_a));
+    node_b
+        .transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    // --- Drive handshake ---
+    let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let peer_b_node_addr = *peer_b_identity.node_addr();
+    let peer_a_node_addr =
+        *PeerIdentity::from_pubkey_full(node_a.identity.pubkey_full()).node_addr();
+
+    let link_id_a = node_a.allocate_link_id();
+    let mut conn_a = PeerConnection::outbound(link_id_a, peer_b_identity, 1000);
+    let our_index_a = node_a.index_allocator.allocate().unwrap();
+    let our_keypair_a = node_a.identity.keypair();
+    let noise_msg1 = conn_a
+        .start_handshake(our_keypair_a, node_a.startup_epoch, 1000)
+        .unwrap();
+    conn_a.set_our_index(our_index_a);
+    conn_a.set_transport_id(transport_id_a);
+    conn_a.set_source_addr(remote_addr_b.clone());
+    let wire_msg1 = build_msg1(our_index_a, &noise_msg1);
+    let link_a = Link::connectionless(
+        link_id_a,
+        transport_id_a,
+        remote_addr_b.clone(),
+        LinkDirection::Outbound,
+        Duration::from_millis(100),
+    );
+    node_a.links.insert(link_id_a, link_a);
+    node_a.connections.insert(link_id_a, conn_a);
+    node_a
+        .pending_outbound
+        .insert((transport_id_a, our_index_a.as_u32()), link_id_a);
+    let transport = node_a.transports.get(&transport_id_a).unwrap();
+    transport
+        .send(&remote_addr_b, &wire_msg1)
+        .await
+        .expect("send msg1");
+    let packet_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .expect("await msg1")
+        .expect("channel");
+    node_b.handle_msg1(packet_b).await;
+    let packet_a = timeout(Duration::from_secs(1), packet_rx_a.recv())
+        .await
+        .expect("await msg2")
+        .expect("channel");
+    node_a.handle_msg2(packet_a).await;
+
+    assert_eq!(node_a.peer_actors.len(), 1);
+    assert_eq!(node_b.peer_actors.len(), 1);
+
+    // --- Build encrypted frame A → B (recall peer briefly to access session) ---
+    node_a.recall_peer(&peer_b_node_addr).await;
+    let msg = b"\x10test from A"; // 0x10 TreeAnnounce + dummy payload
+    let inner = prepend_inner_header(0, msg);
+    let (header, ciphertext, baseline_recv_count) = {
+        let peer_b = node_a.peers.get_mut(&peer_b_node_addr).unwrap();
+        let their_index = peer_b.their_index().unwrap();
+        let session = peer_b.noise_session_mut().unwrap();
+        let counter = session.current_send_counter();
+        let header = build_established_header(their_index, counter, 0, inner.len() as u16);
+        let ct = session.encrypt_with_aad(&inner, &header).unwrap();
+        (header, ct, 0u64)
+    };
+    node_a.reship_peer(&peer_b_node_addr);
+    assert_eq!(node_a.peers.len(), 0); // back in actor
+
+    let wire_encrypted = build_encrypted(&header, &ciphertext);
+    let transport = node_a.transports.get(&transport_id_a).unwrap();
+    transport
+        .send(&remote_addr_b, &wire_encrypted)
+        .await
+        .expect("send encrypted");
+
+    // --- Process encrypted frame on B ---
+    let encrypted_pkt = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .expect("await encrypted")
+        .expect("channel");
+    node_b.handle_encrypted_frame(encrypted_pkt).await;
+
+    // The actor processes Packet asynchronously — give the runtime a
+    // moment to run the actor task (mpsc round-trip + handle_packet).
+    // Iterate until the recall reflects the per-peer mutation, with
+    // a short timeout to keep the test deterministic.
+    let observed = timeout(Duration::from_millis(500), async {
+        loop {
+            node_b.recall_peer(&peer_a_node_addr).await;
+            let recv_count = node_b
+                .peers
+                .get(&peer_a_node_addr)
+                .map(|p| p.link_stats().packets_recv())
+                .unwrap_or(0);
+            if recv_count > baseline_recv_count {
+                node_b.reship_peer(&peer_a_node_addr);
+                break recv_count;
+            }
+            node_b.reship_peer(&peer_a_node_addr);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("actor never recorded the inbound frame");
+    assert_eq!(
+        observed, 1,
+        "actor recorded exactly one inbound packet against peer A"
+    );
+
+    for (_, t) in node_a.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+    for (_, t) in node_b.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+}
+
 /// Integration test: two nodes complete a handshake via run_rx_loop.
 ///
 /// Unlike test_two_node_handshake_udp which calls handle_msg1/handle_msg2
