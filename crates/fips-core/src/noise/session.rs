@@ -2,13 +2,13 @@ use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
 use ring::aead::LessSafeKey;
 use secp256k1::{PublicKey, XOnlyPublicKey};
 use std::fmt;
-use std::sync::Mutex;
 
 /// Completed Noise session for transport encryption.
 ///
 /// Provides bidirectional authenticated encryption with replay protection.
 /// The send counter is monotonically incremented; received counters are
 /// validated against a sliding window to prevent replay attacks.
+#[derive(Clone)]
 pub struct NoiseSession {
     /// Our role in the original handshake.
     role: HandshakeRole,
@@ -20,31 +20,10 @@ pub struct NoiseSession {
     handshake_hash: [u8; 32],
     /// Remote peer's static public key.
     remote_static: PublicKey,
-    /// Replay window for received packets, behind a `Mutex` so the
-    /// FMP receive path can call `decrypt_with_replay_check_and_aad`
-    /// through a `&NoiseSession` borrowed from the peer's read guard
-    /// (since `Node.peers` is still `Arc<RwLock<ActivePeer>>`). When
-    /// the ActivePeer wrapper goes (next horror), this can revert to
-    /// a plain `ReplayWindow` with `&mut self` on the decrypt methods.
-    replay_window: Mutex<ReplayWindow>,
-}
-
-impl Clone for NoiseSession {
-    fn clone(&self) -> Self {
-        let replay_window = self
-            .replay_window
-            .lock()
-            .expect("replay_window poisoned during clone")
-            .clone();
-        Self {
-            role: self.role,
-            send_cipher: self.send_cipher.clone(),
-            recv_cipher: self.recv_cipher.clone(),
-            handshake_hash: self.handshake_hash,
-            remote_static: self.remote_static,
-            replay_window: Mutex::new(replay_window),
-        }
-    }
+    /// Replay window for received packets. Plain owned — receive runs
+    /// through a single owner (rx_loop's `&mut Node.peers[addr]` for
+    /// link-layer FMP, or the actor's `&mut SessionEntry` for FSP).
+    replay_window: ReplayWindow,
 }
 
 impl NoiseSession {
@@ -62,7 +41,7 @@ impl NoiseSession {
             recv_cipher,
             handshake_hash,
             remote_static,
-            replay_window: Mutex::new(ReplayWindow::new()),
+            replay_window: ReplayWindow::new(),
         }
     }
 
@@ -95,12 +74,7 @@ impl NoiseSession {
     /// Returns Ok(()) if the counter is acceptable, Err if it should be rejected.
     /// Call this before attempting decryption to avoid wasting CPU on replay attacks.
     pub fn check_replay(&self, counter: u64) -> Result<(), NoiseError> {
-        if self
-            .replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .check(counter)
-        {
+        if self.replay_window.check(counter) {
             Ok(())
         } else {
             Err(NoiseError::ReplayDetected(counter))
@@ -115,23 +89,15 @@ impl NoiseSession {
     ///
     /// On success, the counter is accepted into the replay window.
     pub fn decrypt_with_replay_check(
-        &self,
+        &mut self,
         ciphertext: &[u8],
         counter: u64,
     ) -> Result<Vec<u8>, NoiseError> {
-        if !self
-            .replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .check(counter)
-        {
+        if !self.replay_window.check(counter) {
             return Err(NoiseError::ReplayDetected(counter));
         }
         let plaintext = self.recv_cipher.decrypt_with_counter(ciphertext, counter)?;
-        self.replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .accept(counter);
+        self.replay_window.accept(counter);
         Ok(plaintext)
     }
 
@@ -153,35 +119,24 @@ impl NoiseSession {
     /// with AAD binding. The AAD (typically the 16-byte outer header) must
     /// match what was used during encryption.
     pub fn decrypt_with_replay_check_and_aad(
-        &self,
+        &mut self,
         ciphertext: &[u8],
         counter: u64,
         aad: &[u8],
     ) -> Result<Vec<u8>, NoiseError> {
-        if !self
-            .replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .check(counter)
-        {
+        if !self.replay_window.check(counter) {
             return Err(NoiseError::ReplayDetected(counter));
         }
         let plaintext = self
             .recv_cipher
             .decrypt_with_counter_and_aad(ciphertext, counter, aad)?;
-        self.replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .accept(counter);
+        self.replay_window.accept(counter);
         Ok(plaintext)
     }
 
     /// Get the highest received counter.
     pub fn highest_received_counter(&self) -> u64 {
-        self.replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .highest()
+        self.replay_window.highest()
     }
 
     /// Clone the recv-side AEAD instance, for off-task decrypt.
@@ -221,19 +176,13 @@ impl NoiseSession {
 
     /// Accept a counter into the replay window after a successful out-of-task
     /// decrypt. Caller is responsible for verifying decrypt success first.
-    pub fn accept_replay(&self, counter: u64) {
-        self.replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .accept(counter);
+    pub fn accept_replay(&mut self, counter: u64) {
+        self.replay_window.accept(counter);
     }
 
     /// Reset the replay window (use when rekeying).
-    pub fn reset_replay_window(&self) {
-        self.replay_window
-            .lock()
-            .expect("replay_window poisoned")
-            .reset();
+    pub fn reset_replay_window(&mut self) {
+        self.replay_window.reset();
     }
 
     /// Get the handshake hash for channel binding.

@@ -979,18 +979,27 @@ async fn try_actor_fast_path_receive(
     let path_mtu = datagram.path_mtu;
     let src_addr = datagram.src_addr;
 
-    // Try current then drain-window decrypt. Both via `&self` after step
-    // 7b-1 (replay window in Mutex, decrypt counter atomic).
+    // Try current then drain-window decrypt. After 7d single-owner,
+    // `decrypt_with_replay_check_and_aad` is `&mut self`. We have
+    // `&mut SessionEntry` so this works without locks.
     let plaintext = {
-        let noise = match session.state() {
+        let noise = match session.state_mut() {
             EndToEndState::Established(s) => s,
             _ => return false,
         };
-        match noise.decrypt_with_replay_check_and_aad(ciphertext, header.counter, &header.header_bytes) {
+        match noise.decrypt_with_replay_check_and_aad(
+            ciphertext,
+            header.counter,
+            &header.header_bytes,
+        ) {
             Ok(pt) => pt,
-            Err(_) => match session.previous_noise_session().and_then(|prev| {
-                prev.decrypt_with_replay_check_and_aad(ciphertext, header.counter, &header.header_bytes)
-                    .ok()
+            Err(_) => match session.previous_noise_session_mut().and_then(|prev| {
+                prev.decrypt_with_replay_check_and_aad(
+                    ciphertext,
+                    header.counter,
+                    &header.header_bytes,
+                )
+                .ok()
             }) {
                 Some(pt) => pt,
                 None => {

@@ -259,7 +259,7 @@ impl Node {
                 break 'outcome FspFrameOutcome::NotEstablished;
             }
 
-            let session = match entry.state() {
+            let session = match entry.state_mut() {
                 EndToEndState::Established(s) => s,
                 _ => break 'outcome FspFrameOutcome::NotEstablished,
             };
@@ -272,8 +272,8 @@ impl Node {
             let plaintext = match primary {
                 Ok(pt) => pt,
                 Err(primary_err) => {
-                    // Drain-window fallback via `&self` previous_noise_session.
-                    let drain = entry.previous_noise_session().and_then(|prev| {
+                    // Drain-window fallback via `&mut self` previous_noise_session.
+                    let drain = entry.previous_noise_session_mut().and_then(|prev| {
                         prev.decrypt_with_replay_check_and_aad(
                             ciphertext,
                             header.counter,

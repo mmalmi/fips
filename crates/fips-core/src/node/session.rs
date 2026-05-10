@@ -382,10 +382,14 @@ impl SessionEntry {
     }
 
     /// Get the previous session for decryption fallback during drain.
-    /// `decrypt_with_replay_check_and_aad` is `&self` after step 2 so
-    /// the hot receive path doesn't need a write lock.
     pub(crate) fn previous_noise_session(&self) -> Option<&NoiseSession> {
         self.previous_noise_session.as_ref()
+    }
+
+    /// Get a mutable reference to the previous session for drain-window
+    /// decrypt (which needs `&mut self` on `NoiseSession` post-7d).
+    pub(crate) fn previous_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
+        self.previous_noise_session.as_mut()
     }
 
     /// Whether we initiated the current rekey.

@@ -133,32 +133,31 @@ impl Node {
         let ciphertext = &packet.data[ciphertext_offset..];
 
         let outcome: FmpFrameOutcome = 'outcome: {
-            let Some(slot) = self.peers.get(&node_addr) else {
+            let Some(peer) = self.peers.get_mut(&node_addr) else {
                 // Race vs. K-bit block: peer was removed between checks.
                 break 'outcome FmpFrameOutcome::PeerGone;
             };
-            let peer = slot;
 
-            // Try current session first. After step 2, NoiseSession's
-            // decrypt_with_replay_check_and_aad takes `&self`, so the
-            // shared `peer_read` guard suffices. Note: this version
-            // does NOT advance the replay window — the actor / inline
-            // post-decrypt path does, once we know which session
-            // succeeded.
-            let try_current = peer.noise_session().and_then(|s| {
+            // Try current session first. After step 7d single-owner,
+            // NoiseSession's decrypt+replay-accept methods take
+            // `&mut self`; we have `&mut ActivePeer` so this is fine.
+            let try_current = if let Some(s) = peer.noise_session_mut() {
                 if s.check_replay(counter).is_err() {
-                    return None;
+                    None
+                } else {
+                    s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
+                        .ok()
+                        .map(|pt| (pt, false))
                 }
-                s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
-                    .ok()
-                    .map(|pt| (pt, false))
-            });
+            } else {
+                None
+            };
 
             let (plaintext, used_previous) = match try_current {
                 Some(out) => out,
                 None => {
                     // Try previous (drain-window) session.
-                    let try_prev = peer.previous_session().and_then(|s| {
+                    let try_prev = peer.previous_session_mut().and_then(|s| {
                         s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
                             .ok()
                             .map(|pt| (pt, true))
@@ -207,13 +206,12 @@ impl Node {
                 // owner of `Node.peers`). After step 7d there's no
                 // peer-actor cohabitation — the actor handles only
                 // session work, not ActivePeer mutations.
-                if let Some(slot) = self.peers.get(&node_addr) {
-                    let peer = slot;
+                if let Some(peer) = self.peers.get_mut(&node_addr) {
                     if used_previous {
-                        if let Some(prev) = peer.previous_session() {
+                        if let Some(prev) = peer.previous_session_mut() {
                             prev.accept_replay(counter);
                         }
-                    } else if let Some(s) = peer.noise_session() {
+                    } else if let Some(s) = peer.noise_session_mut() {
                         s.accept_replay(counter);
                     }
                     peer.reset_decrypt_failures();
