@@ -47,8 +47,6 @@ enum FspFrameOutcome {
         inner_flags_byte: u8,
         timestamp: u32,
     },
-    /// `self.sessions` had no entry for the source address.
-    UnknownSession,
     /// Session entry exists but the XK handshake hasn't completed yet.
     NotEstablished,
     /// Decrypted payload was shorter than `FSP_INNER_HEADER_SIZE`.
@@ -220,25 +218,38 @@ impl Node {
         // `&mut self` (decrypt-failure logging, msg_type dispatch into
         // sub-handlers, session re-initiation after threshold) run
         // after the borrow drops, communicated via `FspFrameOutcome`.
-        // Cold-path: peer K-bit flip detection. Once per rekey, takes a
-        // write lock to perform the cutover. Done before the steady-state
-        // read-lock path so the hot path stays branch-free on K-bit.
-        if let Some(slot) = self.sessions.get(src_addr).cloned() {
-            let needs_flip = {
-                let entry = crate::node::session::session_read(&slot);
-                entry.is_established()
-                    && received_k_bit != entry.current_k_bit()
-                    && entry.pending_new_session().is_some()
-            };
-            if needs_flip {
-                info!(
-                    src = %src_addr,
-                    "Peer FSP K-bit flip detected, promoting new session"
-                );
-                let now_ms = Self::now_ms();
-                let mut entry = crate::node::session::session_write(&slot);
-                entry.handle_peer_kbit_flip(now_ms);
+        // Single Arc clone + read lock for the hot path. Both K-bit flip
+        // detection (cold) and decrypt + MMP record (hot) share the same
+        // slot lookup so per-packet overhead is one HashMap get + one
+        // Arc clone + one read-lock acquisition. K-bit flips fire once
+        // per rekey and only at that point do we drop the read lock and
+        // re-acquire as a write lock.
+        let slot = match self.sessions.get(src_addr).cloned() {
+            Some(s) => s,
+            None => {
+                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
+                return;
             }
+        };
+
+        // Cold-path: peer K-bit flip detection. Done first so the hot
+        // path can use the read guard exclusively. The needs_flip check
+        // is a single AtomicBool/bool field comparison; the rare write
+        // lock only fires when the peer has actually rotated keys.
+        let needs_flip = {
+            let entry = crate::node::session::session_read(&slot);
+            entry.is_established()
+                && received_k_bit != entry.current_k_bit()
+                && entry.pending_new_session().is_some()
+        };
+        if needs_flip {
+            info!(
+                src = %src_addr,
+                "Peer FSP K-bit flip detected, promoting new session"
+            );
+            let now_ms = Self::now_ms();
+            let mut entry = crate::node::session::session_write(&slot);
+            entry.handle_peer_kbit_flip(now_ms);
         }
 
         // Hot path: read lock on the SessionEntrySlot. Decrypt + replay
@@ -246,10 +257,6 @@ impl Node {
         // (atomic after step 7b-1), MMP record / spin-bit / path-MTU
         // (Mutex inside `Option<Mutex<MmpSessionState>>` after 7b-1).
         let outcome: FspFrameOutcome = 'outcome: {
-            let slot = match self.sessions.get(src_addr) {
-                Some(s) => s.clone(),
-                None => break 'outcome FspFrameOutcome::UnknownSession,
-            };
             let entry = crate::node::session::session_read(&slot);
             if !entry.is_established() {
                 break 'outcome FspFrameOutcome::NotEstablished;
@@ -357,10 +364,6 @@ impl Node {
                 inner_flags_byte,
                 timestamp,
             } => (plaintext, msg_type, inner_flags_byte, timestamp),
-            FspFrameOutcome::UnknownSession => {
-                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
-                return;
-            }
             FspFrameOutcome::NotEstablished => {
                 debug!(
                     src = %self.peer_display_name(src_addr),
