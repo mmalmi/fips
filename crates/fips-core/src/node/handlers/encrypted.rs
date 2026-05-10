@@ -78,49 +78,9 @@ impl Node {
             }
         };
 
-        // K-bit flip detection: peer has cut over to the new session. This
-        // is rare (only at rekey), so we do it as a separate borrow rather
-        // than baking it into the fast-path block below — keeping the fast
-        // path's `peers.get_mut` straight-line.
+        // Pre-extract everything off `packet` so we can move data into
+        // the single `&mut peer` borrow below without aliasing.
         let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
-        let need_kbit_flip = match self.peers.get(&node_addr) {
-            Some(slot) => {
-                let peer = slot;
-                received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some()
-            }
-            None => {
-                // Stale index entry; drop the index and let next handshake repopulate.
-                self.peers_by_index.remove(&key);
-                return;
-            }
-        };
-        if need_kbit_flip {
-            let display_name = self.peer_display_name(&node_addr);
-            info!(
-                peer = %display_name,
-                "Peer K-bit flip detected, promoting new session"
-            );
-            let peer = self.peers.get_mut(&node_addr).unwrap();
-            if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
-                // New index was pre-registered in peers_by_index during
-                // msg1 handling (handshake.rs). Verify, don't duplicate.
-                debug_assert!(
-                    peer.transport_id().is_some()
-                        && peer.our_index().is_some()
-                        && self.peers_by_index.contains_key(&(
-                            peer.transport_id().unwrap(),
-                            peer.our_index().unwrap().as_u32()
-                        )),
-                    "peers_by_index should contain pre-registered new index after K-bit flip"
-                );
-            }
-        }
-
-        // Single-borrow fast path: decrypt, parse inner header, and update
-        // all per-peer counters (MMP, link stats, last-seen) inside one
-        // `peers.get_mut` lookup. Hands the plaintext back to the caller
-        // via `FmpFrameOutcome::Authentic` so dispatch (which needs
-        // `&mut self`) can run after the peer borrow is dropped.
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
@@ -132,15 +92,27 @@ impl Node {
         let packet_remote_addr = packet.remote_addr.clone();
         let ciphertext = &packet.data[ciphertext_offset..];
 
+        // Single `&mut peer` borrow for everything: K-bit cutover (rare,
+        // free if not needed), FMP decrypt+replay-accept (advances replay
+        // window inline post-step-7d-cleanup), inner-header parse, and all
+        // per-peer mutations (MMP record, link_stats, set_current_addr,
+        // touch). One HashMap lookup per packet, no redundant
+        // accept_replay calls.
         let outcome: FmpFrameOutcome = 'outcome: {
             let Some(peer) = self.peers.get_mut(&node_addr) else {
-                // Race vs. K-bit block: peer was removed between checks.
-                break 'outcome FmpFrameOutcome::PeerGone;
+                self.peers_by_index.remove(&key);
+                return;
             };
 
-            // Try current session first. After step 7d single-owner,
-            // NoiseSession's decrypt+replay-accept methods take
-            // `&mut self`; we have `&mut ActivePeer` so this is fine.
+            // K-bit flip — once per rekey, branch-free in steady state.
+            if received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some() {
+                let _ = peer.handle_peer_kbit_flip();
+                // Index was pre-registered during msg1 handling.
+            }
+
+            // FMP decrypt: try current, then drain-window. Each call
+            // already advances its replay window on success (post 7d
+            // replay_window-Mutex revert) so no separate accept_replay.
             let try_current = if let Some(s) = peer.noise_session_mut() {
                 if s.check_replay(counter).is_err() {
                     None
@@ -152,11 +124,9 @@ impl Node {
             } else {
                 None
             };
-
-            let (plaintext, used_previous) = match try_current {
+            let (plaintext, _used_previous) = match try_current {
                 Some(out) => out,
                 None => {
-                    // Try previous (drain-window) session.
                     let try_prev = peer.previous_session_mut().and_then(|s| {
                         s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
                             .ok()
@@ -165,8 +135,6 @@ impl Node {
                     match try_prev {
                         Some(out) => out,
                         None => {
-                            // Both failed (or no current session at all).
-                            // Distinguish "no session" from "decrypt fail".
                             break 'outcome if peer.noise_session().is_some() {
                                 FmpFrameOutcome::DecryptFailed {
                                     error: NoiseError::DecryptionFailed,
@@ -179,7 +147,6 @@ impl Node {
                 }
             };
 
-            // Inner header parse — needed for timestamp.
             let timestamp = match strip_inner_header(&plaintext) {
                 Some((ts, _link)) => ts,
                 None => {
@@ -189,9 +156,21 @@ impl Node {
                 }
             };
 
+            // Per-peer mutations under the same `&mut peer` borrow.
+            peer.reset_decrypt_failures();
+            let now = Instant::now();
+            if let Some(mmp) = peer.mmp_mut() {
+                mmp.receiver
+                    .record_recv(counter, timestamp, packet_len, ce_flag, now);
+                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+            }
+            peer.set_current_addr(packet_transport_id, packet_remote_addr);
+            peer.link_stats().record_recv(packet_len, packet_timestamp_ms);
+            peer.touch(packet_timestamp_ms);
+
             FmpFrameOutcome::Authentic {
                 plaintext,
-                used_previous,
+                used_previous: false, // unused post-cleanup
                 inner_timestamp: timestamp,
             }
         };
@@ -199,42 +178,11 @@ impl Node {
         match outcome {
             FmpFrameOutcome::Authentic {
                 plaintext,
-                used_previous,
-                inner_timestamp,
+                used_previous: _,
+                inner_timestamp: _,
             } => {
-                // Per-peer state mutations always run on rx_loop (the
-                // owner of `Node.peers`). After step 7d there's no
-                // peer-actor cohabitation — the actor handles only
-                // session work, not ActivePeer mutations.
-                if let Some(peer) = self.peers.get_mut(&node_addr) {
-                    if used_previous {
-                        if let Some(prev) = peer.previous_session_mut() {
-                            prev.accept_replay(counter);
-                        }
-                    } else if let Some(s) = peer.noise_session_mut() {
-                        s.accept_replay(counter);
-                    }
-                    peer.reset_decrypt_failures();
-                    let now = Instant::now();
-                    if let Some(mut mmp) = peer.mmp_mut() {
-                        mmp.receiver.record_recv(
-                            counter,
-                            inner_timestamp,
-                            packet_len,
-                            ce_flag,
-                            now,
-                        );
-                        let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
-                    }
-                    peer.set_current_addr(packet_transport_id, packet_remote_addr);
-                    peer.link_stats()
-                        .record_recv(packet_len, packet_timestamp_ms);
-                    peer.touch(packet_timestamp_ms);
-                }
-
-                // After per-peer mutations, hand off to actor (for FSP
-                // fast path on owned session) or dispatch_link_message
-                // (legacy / non-direct sessions).
+                // Hand off to actor (for FSP fast path on owned session)
+                // or dispatch_link_message inline (legacy / non-direct).
                 let actor_handle = self
                     .peers
                     .get(&node_addr)
