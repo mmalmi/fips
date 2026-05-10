@@ -1098,6 +1098,20 @@ pub struct NodeConfig {
     /// Valid values: trace, debug, info, warn, error. Default: info.
     #[serde(default)]
     pub log_level: Option<String>,
+
+    /// Enable per-peer actor tasks for the FMP receive post-decrypt
+    /// path (`node.peer_actor_enabled`).
+    ///
+    /// `false` (default) keeps the legacy inline path: the rx_loop
+    /// runs replay accept, MMP record, link_stats, touch, and
+    /// `dispatch_link_message` synchronously after FMP decrypt.
+    /// `true` enables the actor pattern: each promoted peer gets a
+    /// `tokio::spawn`'d task that runs the per-peer state mutations
+    /// off the rx_loop, with the link-message dispatch returning to
+    /// the rx_loop via a shared channel. Off by default while the
+    /// pattern is being validated; tests stay on the inline path.
+    #[serde(default)]
+    pub peer_actor_enabled: bool,
 }
 
 impl Default for NodeConfig {
@@ -1126,6 +1140,7 @@ impl Default for NodeConfig {
             rekey: RekeyConfig::default(),
             system_files_enabled: true,
             log_level: None,
+            peer_actor_enabled: false,
         }
     }
 }

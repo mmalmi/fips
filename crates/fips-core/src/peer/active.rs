@@ -173,6 +173,15 @@ pub struct ActivePeer {
     /// receive path mutates it, so the lock is uncontended.
     mmp: Option<std::sync::Mutex<MmpPeerState>>,
 
+    // === Per-peer actor task (step 6 of peer-actor refactor) ===
+    /// Handle to the per-peer actor task spawned in `promote_connection`.
+    /// `Some` once the peer is live; `None` for legacy peers established
+    /// before step 6 lands or in tests that bypass `promote_connection`.
+    /// The rx_loop dispatches FMP-decrypted frames into this handle so
+    /// the per-peer state mutations (replay accept, MMP record, link
+    /// stats, touch) run on the peer's task instead of inline.
+    actor: Option<crate::peer::actor::PeerActorHandle>,
+
     // === Heartbeat ===
     /// When we last sent a heartbeat to this peer.
     last_heartbeat_sent: Option<Instant>,
@@ -255,6 +264,7 @@ impl ActivePeer {
             last_seen: std::sync::atomic::AtomicU64::new(authenticated_at),
             remote_epoch: None,
             mmp: None,
+            actor: None,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: std::sync::atomic::AtomicU32::new(0),
@@ -337,6 +347,7 @@ impl ActivePeer {
                 mmp_config,
                 is_initiator,
             ))),
+            actor: None,
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: std::sync::atomic::AtomicU32::new(0),
@@ -653,6 +664,18 @@ impl ActivePeer {
         self.mmp
             .as_ref()
             .map(|m| m.lock().expect("mmp poisoned"))
+    }
+
+    /// Set the per-peer actor handle. Called once in
+    /// `promote_connection` after the peer's actor task is spawned.
+    /// Idempotent: callers typically only invoke this on a fresh peer.
+    pub fn set_actor(&mut self, handle: crate::peer::actor::PeerActorHandle) {
+        self.actor = Some(handle);
+    }
+
+    /// Get the per-peer actor handle, if one has been spawned.
+    pub fn actor(&self) -> Option<&crate::peer::actor::PeerActorHandle> {
+        self.actor.as_ref()
     }
 
     /// Get MMP state, locked for write access. Same backing storage as

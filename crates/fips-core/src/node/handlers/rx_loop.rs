@@ -33,6 +33,11 @@ impl Node {
     /// until the channel is closed (typically when stop() is called).
     pub async fn run_rx_loop(&mut self) -> Result<(), NodeError> {
         let mut packet_rx = self.packet_rx.take().ok_or(NodeError::NotStarted)?;
+        // Per-peer actor link-dispatch return channel — peer tasks
+        // push `PeerLinkDispatch` here after running per-peer state
+        // mutations; the rx_loop's `select!` drains it and runs
+        // `dispatch_link_message` (which still needs `&mut Node`).
+        let mut peer_link_dispatch_rx = self.peer_link_dispatch_rx.take();
 
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
@@ -117,6 +122,29 @@ impl Node {
                             Err(_) => break,
                         }
                     }
+                    // After draining inbound, also drain any peer-actor
+                    // link-dispatch jobs that landed while we were
+                    // processing. Without this the dispatch arm can be
+                    // starved under sustained inbound load and packets
+                    // get FMP-decrypted but never make it to
+                    // dispatch_link_message.
+                    if let Some(rx) = peer_link_dispatch_rx.as_mut() {
+                        let mut dispatched = 0;
+                        while dispatched < 64 {
+                            match rx.0.try_recv() {
+                                Ok(d) => {
+                                    self.dispatch_link_message(
+                                        &d.from,
+                                        &d.link_message,
+                                        d.ce_flag,
+                                    )
+                                    .await;
+                                    dispatched += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
                     // Flush any batched sends triggered by inbound
                     // packets (e.g. forwarded SessionDatagrams, MMP
                     // reports, tree announces).
@@ -163,6 +191,34 @@ impl Node {
                     }
                     // Flush any trailing batched sends from the
                     // per-transport sendmmsg buffer.
+                    self.flush_pending_sends().await;
+                }
+                // Per-peer actor link-dispatch arm: a peer's actor
+                // task finished its per-peer state mutations and
+                // handed the link-message body back here for
+                // dispatch_link_message (which still needs `&mut Node`).
+                Some(dispatch) = async {
+                    match peer_link_dispatch_rx.as_mut() {
+                        Some(rx) => rx.0.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.dispatch_link_message(&dispatch.from, &dispatch.link_message, dispatch.ce_flag).await;
+                    // Drain any siblings that landed while we were
+                    // running dispatch — keeps batched receive bursts
+                    // from round-tripping through select! once per packet.
+                    if let Some(rx) = peer_link_dispatch_rx.as_mut() {
+                        let mut drained = 0;
+                        while drained < 64 {
+                            match rx.0.try_recv() {
+                                Ok(d) => {
+                                    self.dispatch_link_message(&d.from, &d.link_message, d.ce_flag).await;
+                                    drained += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
                     self.flush_pending_sends().await;
                 }
                 Some((request, response_tx)) = control_rx.recv() => {

@@ -23,11 +23,16 @@ const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
 /// `&mut self` (decrypt-failure logging, dispatch).
 enum FmpFrameOutcome {
     /// Packet decrypted successfully. `plaintext` still includes the
-    /// 4-byte inner timestamp prefix — the link-layer message body starts
-    /// at `plaintext[INNER_TIMESTAMP_LEN..]`. The timestamp itself is
-    /// consumed for MMP stats inside the same borrow that decrypted the
-    /// frame, so it doesn't need to escape.
-    Authentic { plaintext: Vec<u8> },
+    /// 4-byte inner timestamp prefix — the link-layer message body
+    /// starts at `plaintext[INNER_TIMESTAMP_LEN..]`. `used_previous`
+    /// tells the actor / inline post-decrypt path which session's
+    /// replay window to advance (current vs drain-window).
+    /// `inner_timestamp` is the parsed value from the 4-byte prefix.
+    Authentic {
+        plaintext: Vec<u8>,
+        used_previous: bool,
+        inner_timestamp: u32,
+    },
     /// Plaintext was too short for the inner header. Drop quietly.
     InnerHeaderTooShort { plaintext_len: usize },
     /// Both current and previous (drain-window) sessions failed to
@@ -137,31 +142,46 @@ impl Node {
 
             // Try current session first. After step 2, NoiseSession's
             // decrypt_with_replay_check_and_aad takes `&self`, so the
-            // shared `peer_read` guard suffices.
-            let current_attempt = peer
-                .noise_session()
-                .map(|s| s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes));
+            // shared `peer_read` guard suffices. Note: this version
+            // does NOT advance the replay window — the actor / inline
+            // post-decrypt path does, once we know which session
+            // succeeded.
+            let try_current = peer.noise_session().and_then(|s| {
+                if s.check_replay(counter).is_err() {
+                    return None;
+                }
+                s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
+                    .ok()
+                    .map(|pt| (pt, false))
+            });
 
-            let plaintext = match current_attempt {
-                Some(Ok(p)) => p,
-                Some(Err(e)) => {
-                    // Drain-window fallback: previous session.
-                    let prev_attempt = peer.previous_session().map(|s| {
+            let (plaintext, used_previous) = match try_current {
+                Some(out) => out,
+                None => {
+                    // Try previous (drain-window) session.
+                    let try_prev = peer.previous_session().and_then(|s| {
                         s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
+                            .ok()
+                            .map(|pt| (pt, true))
                     });
-                    match prev_attempt {
-                        Some(Ok(p)) => p,
-                        _ => break 'outcome FmpFrameOutcome::DecryptFailed { error: e },
+                    match try_prev {
+                        Some(out) => out,
+                        None => {
+                            // Both failed (or no current session at all).
+                            // Distinguish "no session" from "decrypt fail".
+                            break 'outcome if peer.noise_session().is_some() {
+                                FmpFrameOutcome::DecryptFailed {
+                                    error: NoiseError::DecryptionFailed,
+                                }
+                            } else {
+                                FmpFrameOutcome::NoSession
+                            };
+                        }
                     }
                 }
-                None => break 'outcome FmpFrameOutcome::NoSession,
             };
 
-            // Inner header is 4-byte timestamp + at least one msg_type byte
-            // (total min INNER_HEADER_SIZE = 5). `strip_inner_header`
-            // borrows from `plaintext`; we only need the timestamp here,
-            // because the link-message slice is computed after the borrow
-            // releases.
+            // Inner header parse — needed for timestamp.
             let timestamp = match strip_inner_header(&plaintext) {
                 Some((ts, _link)) => ts,
                 None => {
@@ -171,32 +191,78 @@ impl Node {
                 }
             };
 
-            // Stats inline. After step 4 these all run via `&self` /
-            // interior mutability, so the `peer_read` guard is enough.
-            peer.reset_decrypt_failures();
-            let now = Instant::now();
-            if let Some(mut mmp) = peer.mmp_mut() {
-                mmp.receiver
-                    .record_recv(counter, timestamp, packet_len, ce_flag, now);
-                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+            FmpFrameOutcome::Authentic {
+                plaintext,
+                used_previous,
+                inner_timestamp: timestamp,
             }
-            peer.set_current_addr(packet_transport_id, packet_remote_addr);
-            peer.link_stats()
-                .record_recv(packet_len, packet_timestamp_ms);
-            peer.touch(packet_timestamp_ms);
-
-            FmpFrameOutcome::Authentic { plaintext }
         };
 
         match outcome {
-            FmpFrameOutcome::Authentic { plaintext } => {
-                // === PACKET IS AUTHENTIC ===
-                // The link message is plaintext minus the 4-byte timestamp
-                // (mirrors what `strip_inner_header` returned). We re-slice
-                // here because plaintext is owned by us at this point.
-                let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
-                self.dispatch_link_message(&node_addr, link_message, ce_flag)
-                    .await;
+            FmpFrameOutcome::Authentic {
+                plaintext,
+                used_previous,
+                inner_timestamp,
+            } => {
+                // Try to dispatch through the per-peer actor task.
+                // After step 6 this is the default for all promoted
+                // peers. Inline fallback is kept for legacy / test
+                // peers without an actor handle.
+                let actor_handle = self
+                    .peers
+                    .get(&node_addr)
+                    .and_then(|slot| crate::peer::peer_read(slot).actor().cloned());
+
+                if let Some(actor) = actor_handle {
+                    let job = crate::peer::actor::DecryptedJob {
+                        packet,
+                        plaintext,
+                        fmp_counter: counter,
+                        inner_timestamp,
+                        used_previous_session: used_previous,
+                        ce_flag,
+                        sp_flag,
+                        packet_transport_id,
+                        packet_remote_addr,
+                    };
+                    let _ = actor
+                        .dispatch(crate::peer::actor::PeerInboundJob::Decrypted(Box::new(
+                            job,
+                        )))
+                        .await;
+                } else {
+                    // Legacy inline path: do per-peer mutations + dispatch
+                    // here on the rx_loop, just like before step 6.
+                    if let Some(slot) = self.peers.get(&node_addr) {
+                        let peer = crate::peer::peer_read(slot);
+                        if used_previous {
+                            if let Some(prev) = peer.previous_session() {
+                                prev.accept_replay(counter);
+                            }
+                        } else if let Some(s) = peer.noise_session() {
+                            s.accept_replay(counter);
+                        }
+                        peer.reset_decrypt_failures();
+                        let now = Instant::now();
+                        if let Some(mut mmp) = peer.mmp_mut() {
+                            mmp.receiver.record_recv(
+                                counter,
+                                inner_timestamp,
+                                packet_len,
+                                ce_flag,
+                                now,
+                            );
+                            let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+                        }
+                        peer.set_current_addr(packet_transport_id, packet_remote_addr);
+                        peer.link_stats()
+                            .record_recv(packet_len, packet_timestamp_ms);
+                        peer.touch(packet_timestamp_ms);
+                    }
+                    let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
+                    self.dispatch_link_message(&node_addr, link_message, ce_flag)
+                        .await;
+                }
             }
             FmpFrameOutcome::InnerHeaderTooShort { plaintext_len } => {
                 debug!(

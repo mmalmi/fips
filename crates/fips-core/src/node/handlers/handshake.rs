@@ -1072,8 +1072,18 @@ impl Node {
                     self.config.node.tree.announce_min_interval_ms,
                 );
 
-                self.peers
-                    .insert(peer_node_addr, crate::peer::active_peer_slot(new_peer));
+                let slot = crate::peer::active_peer_slot(new_peer);
+                if self.config.node.peer_actor_enabled {
+                    if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
+                        peer_node_addr,
+                        slot.clone(),
+                        (*self.peer_link_dispatch_tx).clone(),
+                        256,
+                    ) {
+                        crate::peer::peer_write(&slot).set_actor(actor_handle);
+                    }
+                }
+                self.peers.insert(peer_node_addr, slot);
                 self.peers_by_index
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
                 self.retry_pending.remove(&peer_node_addr);
@@ -1170,8 +1180,18 @@ impl Node {
                 new_peer.set_last_tree_announce_sent_ms(ts);
             }
 
-            self.peers
-                .insert(peer_node_addr, crate::peer::active_peer_slot(new_peer));
+            let slot = crate::peer::active_peer_slot(new_peer);
+            if self.config.node.peer_actor_enabled {
+                if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
+                    peer_node_addr,
+                    slot.clone(),
+                    (*self.peer_link_dispatch_tx).clone(),
+                    256,
+                ) {
+                    crate::peer::peer_write(&slot).set_actor(actor_handle);
+                }
+            }
+            self.peers.insert(peer_node_addr, slot);
             self.peers_by_index
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
             self.retry_pending.remove(&peer_node_addr);

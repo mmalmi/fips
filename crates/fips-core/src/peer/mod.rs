@@ -8,6 +8,7 @@
 //! while maintaining type safety for phase-specific operations.
 
 mod active;
+pub(crate) mod actor;
 mod connection;
 
 pub use active::{ActivePeer, ConnectivityState};

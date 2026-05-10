@@ -34,9 +34,7 @@ use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::config::RoutingMode;
 use crate::node::session::SessionEntry;
-use crate::peer::{
-    ActivePeer, ActivePeerSlot, PeerConnection, active_peer_slot, peer_read, peer_write,
-};
+use crate::peer::{ActivePeer, ActivePeerSlot, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
@@ -416,6 +414,16 @@ pub struct Node {
     /// take `peer_write(slot)`.
     peers: HashMap<NodeAddr, ActivePeerSlot>,
 
+    // === Per-peer actor link-dispatch return channel ===
+    /// Sender side cloned into each per-peer actor task; the actor
+    /// pushes a `PeerLinkDispatch` here after running its per-peer
+    /// state mutations, so the rx_loop's central dispatch arm runs
+    /// `dispatch_link_message` (which still needs `&mut Node`).
+    peer_link_dispatch_tx: Arc<crate::peer::actor::PeerLinkDispatchTx>,
+    /// Receiver side held by the rx_loop's `select!`. Taken on
+    /// `run_rx_loop` start.
+    peer_link_dispatch_rx: Option<crate::peer::actor::PeerLinkDispatchRx>,
+
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
     /// Keyed by remote NodeAddr.
@@ -638,6 +646,8 @@ impl Node {
         let forward_min_interval_secs = config.node.discovery.forward_min_interval_secs;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
+        let (peer_link_dispatch_tx, peer_link_dispatch_rx) =
+            crate::peer::actor::link_dispatch_channel(256);
 
         Ok(Self {
             identity,
@@ -659,6 +669,8 @@ impl Node {
             packet_rx: None,
             connections: HashMap::new(),
             peers: HashMap::new(),
+            peer_link_dispatch_tx,
+            peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
@@ -765,6 +777,8 @@ impl Node {
         let coords_response_interval_ms = config.node.session.coords_response_interval_ms;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
+        let (peer_link_dispatch_tx, peer_link_dispatch_rx) =
+            crate::peer::actor::link_dispatch_channel(256);
 
         Ok(Self {
             identity,
@@ -786,6 +800,8 @@ impl Node {
             packet_rx: None,
             connections: HashMap::new(),
             peers: HashMap::new(),
+            peer_link_dispatch_tx,
+            peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
