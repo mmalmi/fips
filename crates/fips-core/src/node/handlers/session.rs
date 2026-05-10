@@ -1636,10 +1636,10 @@ impl Node {
                                 .mmp()
                                 .and_then(|mmp| mmp.metrics.srtt_ms())
                                 .map(|srtt| srtt.round() as u64),
-                            packets_sent: stats.packets_sent,
-                            packets_recv: stats.packets_recv,
-                            bytes_sent: stats.bytes_sent,
-                            bytes_recv: stats.bytes_recv,
+                            packets_sent: stats.packets_sent(),
+                            packets_recv: stats.packets_recv(),
+                            bytes_sent: stats.bytes_sent(),
+                            bytes_recv: stats.bytes_recv(),
                         }
                     })
                     .collect();

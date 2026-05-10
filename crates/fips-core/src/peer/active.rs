@@ -1173,14 +1173,14 @@ mod tests {
     #[test]
     fn test_with_stats() {
         let identity = make_peer_identity();
-        let mut stats = LinkStats::new();
+        let stats = LinkStats::new();
         stats.record_sent(100);
         stats.record_recv(200, 500);
 
         let peer = ActivePeer::with_stats(identity, LinkId::new(1), 1000, stats);
 
-        assert_eq!(peer.link_stats().packets_sent, 1);
-        assert_eq!(peer.link_stats().packets_recv, 1);
+        assert_eq!(peer.link_stats().packets_sent(), 1);
+        assert_eq!(peer.link_stats().packets_recv(), 1);
     }
 
     #[test]

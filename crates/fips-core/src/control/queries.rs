@@ -177,10 +177,10 @@ pub fn show_peers(node: &Node) -> Value {
             // Add link stats
             let stats = peer.link_stats();
             peer_json["stats"] = json!({
-                "packets_sent": stats.packets_sent,
-                "packets_recv": stats.packets_recv,
-                "bytes_sent": stats.bytes_sent,
-                "bytes_recv": stats.bytes_recv,
+                "packets_sent": stats.packets_sent(),
+                "packets_recv": stats.packets_recv(),
+                "bytes_sent": stats.bytes_sent(),
+                "bytes_recv": stats.bytes_recv(),
             });
 
             // Security signals
@@ -282,11 +282,11 @@ pub fn show_links(node: &Node) -> Value {
                 "state": format!("{}", link.state()),
                 "created_at_ms": link.created_at(),
                 "stats": {
-                    "packets_sent": stats.packets_sent,
-                    "packets_recv": stats.packets_recv,
-                    "bytes_sent": stats.bytes_sent,
-                    "bytes_recv": stats.bytes_recv,
-                    "last_recv_ms": stats.last_recv_ms,
+                    "packets_sent": stats.packets_sent(),
+                    "packets_recv": stats.packets_recv(),
+                    "bytes_sent": stats.bytes_sent(),
+                    "bytes_recv": stats.bytes_recv(),
+                    "last_recv_ms": stats.last_recv_ms(),
                 },
             })
         })

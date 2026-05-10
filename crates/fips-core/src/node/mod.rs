@@ -1404,10 +1404,10 @@ impl Node {
                     last_seen: now,
                     srtt_ms,
                     loss_rate,
-                    bytes_in_total: stats.bytes_recv,
-                    bytes_out_total: stats.bytes_sent,
-                    packets_in_total: stats.packets_recv,
-                    packets_out_total: stats.packets_sent,
+                    bytes_in_total: stats.bytes_recv(),
+                    bytes_out_total: stats.bytes_sent(),
+                    packets_in_total: stats.packets_recv(),
+                    packets_out_total: stats.packets_sent(),
                     ecn_ce_total: ecn_ce,
                 }
             })

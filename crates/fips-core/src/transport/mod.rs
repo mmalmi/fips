@@ -474,24 +474,74 @@ impl From<String> for TransportAddr {
 // ============================================================================
 
 /// Statistics for a link.
-#[derive(Clone, Debug, Default)]
+///
+/// All counters are atomics so the hot-path (`record_recv`, `record_sent`)
+/// only needs `&self`. Holding the link or peer struct through an `&` —
+/// instead of `&mut` — lets the rx_loop drop its borrow as soon as the
+/// counter increment is done, and is a stepping stone toward moving
+/// per-peer state into per-peer tasks (where the peer struct is owned
+/// by exactly one task and only counters need to be visible from
+/// outside via shared atomics).
+///
+/// `rtt_estimate`, `loss_rate`, and `throughput_estimate` are encoded
+/// in `AtomicU64`/`AtomicU32` so they can also be updated and read
+/// without `&mut self`. `rtt_estimate` uses `0` to mean "no estimate"
+/// (`Duration::ZERO` is otherwise unobservable here — the EMA never
+/// produces zero from a positive sample) and stores nanoseconds otherwise.
+/// `loss_rate` is encoded as `f32::to_bits` in an `AtomicU32`.
+#[derive(Debug, Default)]
 pub struct LinkStats {
-    /// Total packets sent.
-    pub packets_sent: u64,
-    /// Total packets received.
-    pub packets_recv: u64,
-    /// Total bytes sent.
-    pub bytes_sent: u64,
-    /// Total bytes received.
-    pub bytes_recv: u64,
-    /// Timestamp of last received packet (Unix milliseconds).
-    pub last_recv_ms: u64,
-    /// Estimated round-trip time.
-    rtt_estimate: Option<Duration>,
-    /// Observed packet loss rate (0.0-1.0).
-    pub loss_rate: f32,
+    packets_sent: std::sync::atomic::AtomicU64,
+    packets_recv: std::sync::atomic::AtomicU64,
+    bytes_sent: std::sync::atomic::AtomicU64,
+    bytes_recv: std::sync::atomic::AtomicU64,
+    /// Timestamp of last received packet (Unix milliseconds). `0` means
+    /// "no packet ever received" — `time_since_recv` returns `u64::MAX`
+    /// in that case.
+    last_recv_ms: std::sync::atomic::AtomicU64,
+    /// EMA of round-trip time, stored as nanoseconds. `0` means "no
+    /// sample yet".
+    rtt_estimate_nanos: std::sync::atomic::AtomicU64,
+    /// Observed packet loss rate (0.0-1.0), stored via `f32::to_bits`.
+    loss_rate_bits: std::sync::atomic::AtomicU32,
     /// Estimated throughput in bytes/second.
+    throughput_estimate: std::sync::atomic::AtomicU64,
+}
+
+/// Snapshot of LinkStats values at a point in time. Used by callers that
+/// want a consistent read across multiple counters or want to clone the
+/// stats out of a peer.
+#[derive(Clone, Debug, Default)]
+pub struct LinkStatsSnapshot {
+    pub packets_sent: u64,
+    pub packets_recv: u64,
+    pub bytes_sent: u64,
+    pub bytes_recv: u64,
+    pub last_recv_ms: u64,
+    pub rtt_estimate: Option<Duration>,
+    pub loss_rate: f32,
     pub throughput_estimate: u64,
+}
+
+impl Clone for LinkStats {
+    fn clone(&self) -> Self {
+        // Independent atomic snapshot — the resulting LinkStats does
+        // not share storage with `self`. Used by paths that historically
+        // relied on `LinkStats: Clone` (Link clone, peer-snapshot tests,
+        // handshake link-stats handoff). Acquire ordering pairs with
+        // the Release stores in `record_sent` / `record_recv`.
+        use std::sync::atomic::Ordering::Acquire;
+        Self {
+            packets_sent: self.packets_sent.load(Acquire).into(),
+            packets_recv: self.packets_recv.load(Acquire).into(),
+            bytes_sent: self.bytes_sent.load(Acquire).into(),
+            bytes_recv: self.bytes_recv.load(Acquire).into(),
+            last_recv_ms: self.last_recv_ms.load(Acquire).into(),
+            rtt_estimate_nanos: self.rtt_estimate_nanos.load(Acquire).into(),
+            loss_rate_bits: self.loss_rate_bits.load(Acquire).into(),
+            throughput_estimate: self.throughput_estimate.load(Acquire).into(),
+        }
+    }
 }
 
 impl LinkStats {
@@ -500,53 +550,144 @@ impl LinkStats {
         Self::default()
     }
 
+    // ------- Hot-path counter ops (only need `&self`) -------
+
     /// Record a sent packet.
-    pub fn record_sent(&mut self, bytes: usize) {
-        self.packets_sent += 1;
-        self.bytes_sent += bytes as u64;
+    pub fn record_sent(&self, bytes: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.packets_sent.fetch_add(1, Relaxed);
+        self.bytes_sent.fetch_add(bytes as u64, Relaxed);
     }
 
     /// Record a received packet.
-    pub fn record_recv(&mut self, bytes: usize, timestamp_ms: u64) {
-        self.packets_recv += 1;
-        self.bytes_recv += bytes as u64;
-        self.last_recv_ms = timestamp_ms;
+    pub fn record_recv(&self, bytes: usize, timestamp_ms: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.packets_recv.fetch_add(1, Relaxed);
+        self.bytes_recv.fetch_add(bytes as u64, Relaxed);
+        // Use store rather than max — under monotonic-ish wall clock
+        // it's effectively the latest write, and avoids the CAS loop
+        // of fetch_max on the hot path. Out-of-order observation just
+        // means a slightly stale "last_recv_ms" reading by another
+        // thread — which is what the legacy non-atomic code provided
+        // anyway.
+        self.last_recv_ms.store(timestamp_ms, Relaxed);
     }
+
+    // ------- Cold-path getters / setters -------
 
     /// Get the RTT estimate, if available.
     pub fn rtt_estimate(&self) -> Option<Duration> {
-        self.rtt_estimate
+        use std::sync::atomic::Ordering::Acquire;
+        let nanos = self.rtt_estimate_nanos.load(Acquire);
+        if nanos == 0 {
+            None
+        } else {
+            Some(Duration::from_nanos(nanos))
+        }
     }
 
     /// Update RTT estimate from a probe response.
     ///
-    /// Uses exponential moving average with alpha=0.2.
-    pub fn update_rtt(&mut self, rtt: Duration) {
-        match self.rtt_estimate {
-            Some(old_rtt) => {
+    /// Uses exponential moving average with alpha=0.2. Called from the
+    /// timer/probe path (off the per-packet hot loop), so a brief
+    /// non-CAS load+store is fine — concurrent updaters are rare and
+    /// EMA convergence is robust to a lost sample.
+    pub fn update_rtt(&self, rtt: Duration) {
+        use std::sync::atomic::Ordering::{Acquire, Release};
+        let new_nanos = match Duration::from_nanos(self.rtt_estimate_nanos.load(Acquire)) {
+            d if d.is_zero() => rtt.as_nanos() as u64,
+            old_rtt => {
                 let alpha = 0.2;
-                let new_rtt_nanos = (alpha * rtt.as_nanos() as f64
-                    + (1.0 - alpha) * old_rtt.as_nanos() as f64)
-                    as u64;
-                self.rtt_estimate = Some(Duration::from_nanos(new_rtt_nanos));
+                (alpha * rtt.as_nanos() as f64 + (1.0 - alpha) * old_rtt.as_nanos() as f64) as u64
             }
-            None => {
-                self.rtt_estimate = Some(rtt);
-            }
-        }
+        };
+        self.rtt_estimate_nanos.store(new_nanos.max(1), Release);
     }
 
     /// Time since last receive (for keepalive/timeout).
     pub fn time_since_recv(&self, current_time_ms: u64) -> u64 {
-        if self.last_recv_ms == 0 {
+        use std::sync::atomic::Ordering::Acquire;
+        let last = self.last_recv_ms.load(Acquire);
+        if last == 0 {
             return u64::MAX;
         }
-        current_time_ms.saturating_sub(self.last_recv_ms)
+        current_time_ms.saturating_sub(last)
+    }
+
+    /// Get loss rate (0.0-1.0).
+    pub fn loss_rate(&self) -> f32 {
+        use std::sync::atomic::Ordering::Acquire;
+        f32::from_bits(self.loss_rate_bits.load(Acquire))
+    }
+
+    /// Set loss rate (0.0-1.0).
+    pub fn set_loss_rate(&self, rate: f32) {
+        use std::sync::atomic::Ordering::Release;
+        self.loss_rate_bits.store(rate.to_bits(), Release);
+    }
+
+    /// Get throughput estimate (bytes/sec).
+    pub fn throughput_estimate(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.throughput_estimate.load(Acquire)
+    }
+
+    /// Set throughput estimate (bytes/sec).
+    pub fn set_throughput_estimate(&self, bps: u64) {
+        use std::sync::atomic::Ordering::Release;
+        self.throughput_estimate.store(bps, Release);
+    }
+
+    // ------- Counter snapshots (read u64 from atomic) -------
+
+    pub fn packets_sent(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.packets_sent.load(Acquire)
+    }
+    pub fn packets_recv(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.packets_recv.load(Acquire)
+    }
+    pub fn bytes_sent(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.bytes_sent.load(Acquire)
+    }
+    pub fn bytes_recv(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.bytes_recv.load(Acquire)
+    }
+    pub fn last_recv_ms(&self) -> u64 {
+        use std::sync::atomic::Ordering::Acquire;
+        self.last_recv_ms.load(Acquire)
+    }
+
+    /// Snapshot all counters at once. Useful for control-socket replies
+    /// and tests that want a consistent multi-field read.
+    pub fn snapshot(&self) -> LinkStatsSnapshot {
+        use std::sync::atomic::Ordering::Acquire;
+        LinkStatsSnapshot {
+            packets_sent: self.packets_sent.load(Acquire),
+            packets_recv: self.packets_recv.load(Acquire),
+            bytes_sent: self.bytes_sent.load(Acquire),
+            bytes_recv: self.bytes_recv.load(Acquire),
+            last_recv_ms: self.last_recv_ms.load(Acquire),
+            rtt_estimate: self.rtt_estimate(),
+            loss_rate: self.loss_rate(),
+            throughput_estimate: self.throughput_estimate.load(Acquire),
+        }
     }
 
     /// Reset all statistics.
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Release;
+        self.packets_sent.store(0, Release);
+        self.packets_recv.store(0, Release);
+        self.bytes_sent.store(0, Release);
+        self.bytes_recv.store(0, Release);
+        self.last_recv_ms.store(0, Release);
+        self.rtt_estimate_nanos.store(0, Release);
+        self.loss_rate_bits.store(0, Release);
+        self.throughput_estimate.store(0, Release);
     }
 }
 
@@ -1378,21 +1519,21 @@ mod tests {
 
     #[test]
     fn test_link_stats_basic() {
-        let mut stats = LinkStats::new();
+        let stats = LinkStats::new();
 
         stats.record_sent(100);
         stats.record_recv(200, 1000);
 
-        assert_eq!(stats.packets_sent, 1);
-        assert_eq!(stats.bytes_sent, 100);
-        assert_eq!(stats.packets_recv, 1);
-        assert_eq!(stats.bytes_recv, 200);
-        assert_eq!(stats.last_recv_ms, 1000);
+        assert_eq!(stats.packets_sent(), 1);
+        assert_eq!(stats.bytes_sent(), 100);
+        assert_eq!(stats.packets_recv(), 1);
+        assert_eq!(stats.bytes_recv(), 200);
+        assert_eq!(stats.last_recv_ms(), 1000);
     }
 
     #[test]
     fn test_link_stats_rtt() {
-        let mut stats = LinkStats::new();
+        let stats = LinkStats::new();
 
         assert!(stats.rtt_estimate().is_none());
 
@@ -1408,7 +1549,7 @@ mod tests {
 
     #[test]
     fn test_link_stats_time_since_recv() {
-        let mut stats = LinkStats::new();
+        let stats = LinkStats::new();
 
         // No receive yet
         assert_eq!(stats.time_since_recv(1000), u64::MAX);

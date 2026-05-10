@@ -809,7 +809,7 @@ async fn test_session_100_nodes() {
         .map(|tn| {
             tn.node
                 .peers()
-                .map(|p| (*p.node_addr(), p.link_stats().packets_sent))
+                .map(|p| (*p.node_addr(), p.link_stats().packets_sent()))
                 .collect()
         })
         .collect();
@@ -956,13 +956,13 @@ async fn test_session_100_nodes() {
                 .find(|(addr, _)| addr == peer.node_addr())
                 .map(|(_, pkts)| *pkts)
                 .unwrap_or(0);
-            data_link_pkts_sent += stats.packets_sent.saturating_sub(before);
+            data_link_pkts_sent += stats.packets_sent().saturating_sub(before);
 
             // Totals (cumulative since node creation)
-            total_link_pkts_sent += stats.packets_sent;
-            total_link_pkts_recv += stats.packets_recv;
-            total_link_bytes_sent += stats.bytes_sent;
-            total_link_bytes_recv += stats.bytes_recv;
+            total_link_pkts_sent += stats.packets_sent();
+            total_link_pkts_recv += stats.packets_recv();
+            total_link_bytes_sent += stats.bytes_sent();
+            total_link_bytes_recv += stats.bytes_recv();
         }
     }
 
