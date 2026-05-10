@@ -1253,18 +1253,17 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
-        let entry_slot = match self.sessions.get(src_addr) {
-            Some(s) => s.clone(),
+        let entry = match self.sessions.get_mut(src_addr) {
+            Some(e) => e,
             None => {
                 debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
             }
         };
-        let mut entry = &entry_slot;
 
         let our_timestamp_ms = entry.session_timestamp(now_ms);
 
-        let Some(mut mmp) = entry.mmp_mut() else {
+        let Some(mmp) = entry.mmp_mut() else {
             return;
         };
 
@@ -1321,16 +1320,15 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let entry_slot = match self.sessions.get(src_addr) {
-            Some(s) => s.clone(),
+        let entry = match self.sessions.get_mut(src_addr) {
+            Some(e) => e,
             None => {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
         };
-        let mut entry = &entry_slot;
 
-        let Some(mut mmp) = entry.mmp_mut() else {
+        let Some(mmp) = entry.mmp_mut() else {
             return;
         };
 
@@ -1553,9 +1551,8 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        if let Some(slot) = self.sessions.get(&msg.dest_addr) {
-            let mut entry = slot;
-            if let Some(mut mmp) = entry.mmp_mut() {
+        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr) {
+            if let Some(mmp) = entry.mmp_mut() {
                 let old_mtu = mmp.path_mtu.current_mtu();
                 let now = std::time::Instant::now();
                 if mmp.path_mtu.apply_notification(msg.mtu, now) {

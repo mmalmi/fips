@@ -89,9 +89,9 @@ pub(crate) struct SessionEntry {
     /// Used for spin bit role assignment in session-layer MMP.
     is_initiator: bool,
     /// Session-layer MMP state. Initialized on Established transition.
-    /// Wrapped in `Mutex` so the FSP receive hot path can record from
-    /// `&self` (no write lock on the SessionEntrySlot).
-    mmp: Option<std::sync::Mutex<MmpSessionState>>,
+    /// Plain owned — single-owner SessionEntry (post step 7c-2 cleanup),
+    /// no Mutex/Arc wrapper needed.
+    mmp: Option<MmpSessionState>,
 
     // === Traffic Counters ===
     /// Total data packets sent on this session.
@@ -135,9 +135,8 @@ pub(crate) struct SessionEntry {
     /// Reset on every successful decrypt. Drives auto re-handshake when
     /// the session keys diverge (e.g. peer restart with stale state on
     /// our side, or vice versa) — see `DECRYPT_FAILURE_REINIT_THRESHOLD`.
-    /// Atomic so the FSP receive hot path can run with `&self` (no
-    /// write lock on the SessionEntrySlot).
-    consecutive_decrypt_failures: std::sync::atomic::AtomicU32,
+    /// Plain `u32` — single-owner SessionEntry, no atomic needed.
+    consecutive_decrypt_failures: u32,
 }
 
 impl SessionEntry {
@@ -174,7 +173,7 @@ impl SessionEntry {
             rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
-            consecutive_decrypt_failures: std::sync::atomic::AtomicU32::new(0),
+            consecutive_decrypt_failures: 0,
         }
     }
 
@@ -285,31 +284,19 @@ impl SessionEntry {
         self.is_initiator
     }
 
-    /// Get a guard on the session-layer MMP state, if initialized.
-    /// Both `mmp()` and `mmp_mut()` return the same guard type now;
-    /// `mmp_mut()` is preserved for source-compatibility with the
-    /// pre-Mutex API. Callers can do `if let Some(mmp) = entry.mmp() { mmp.field }`
-    /// with a read-only intent or `mmp.method_mut()` for mutation —
-    /// the lock is held exclusively either way.
-    pub(crate) fn mmp(&self) -> Option<std::sync::MutexGuard<'_, MmpSessionState>> {
-        self.mmp
-            .as_ref()
-            .map(|m| m.lock().expect("session mmp poisoned"))
+    /// Get a reference to the session-layer MMP state, if initialized.
+    pub(crate) fn mmp(&self) -> Option<&MmpSessionState> {
+        self.mmp.as_ref()
     }
 
-    /// Get a guard on the session-layer MMP state, if initialized.
-    pub(crate) fn mmp_mut(&self) -> Option<std::sync::MutexGuard<'_, MmpSessionState>> {
-        self.mmp
-            .as_ref()
-            .map(|m| m.lock().expect("session mmp poisoned"))
+    /// Get a mutable reference to the session-layer MMP state, if initialized.
+    pub(crate) fn mmp_mut(&mut self) -> Option<&mut MmpSessionState> {
+        self.mmp.as_mut()
     }
 
     /// Initialize session-layer MMP state (called on Established transition).
     pub(crate) fn init_mmp(&mut self, config: &SessionMmpConfig) {
-        self.mmp = Some(std::sync::Mutex::new(MmpSessionState::new(
-            config,
-            self.is_initiator,
-        )));
+        self.mmp = Some(MmpSessionState::new(config, self.is_initiator));
     }
 
     // === Traffic Counters ===
@@ -485,8 +472,8 @@ impl SessionEntry {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mmp) = &self.mmp {
-            mmp.lock().expect("session mmp poisoned").reset_for_rekey(now);
+        if let Some(mmp) = &mut self.mmp {
+            mmp.reset_for_rekey(now);
         }
         true
     }
@@ -513,8 +500,8 @@ impl SessionEntry {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mmp) = &self.mmp {
-            mmp.lock().expect("session mmp poisoned").reset_for_rekey(now);
+        if let Some(mmp) = &mut self.mmp {
+            mmp.reset_for_rekey(now);
         }
         true
     }
@@ -547,26 +534,18 @@ impl SessionEntry {
     /// Record one AEAD decryption failure and return the new consecutive
     /// count. Both current-session and drain-window decrypt must have
     /// failed before calling.
-    pub(crate) fn record_decrypt_failure(&self) -> u32 {
-        // Saturating add via fetch_update; AtomicU32::fetch_add wraps on
-        // overflow which is fine for failure counts that never approach u32::MAX
-        // in practice. Use Relaxed: only ordering invariant we need is that
-        // the value is "fresh enough" for the threshold check.
-        let prev = self
-            .consecutive_decrypt_failures
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        prev.saturating_add(1)
+    pub(crate) fn record_decrypt_failure(&mut self) -> u32 {
+        self.consecutive_decrypt_failures = self.consecutive_decrypt_failures.saturating_add(1);
+        self.consecutive_decrypt_failures
     }
 
     /// Reset the consecutive AEAD failure counter on any successful decrypt.
-    pub(crate) fn reset_decrypt_failures(&self) {
-        self.consecutive_decrypt_failures
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+    pub(crate) fn reset_decrypt_failures(&mut self) {
+        self.consecutive_decrypt_failures = 0;
     }
 
     #[cfg(test)]
     pub(crate) fn consecutive_decrypt_failures(&self) -> u32 {
         self.consecutive_decrypt_failures
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }

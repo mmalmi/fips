@@ -20,28 +20,16 @@ pub struct NoiseSession {
     handshake_hash: [u8; 32],
     /// Remote peer's static public key.
     remote_static: PublicKey,
-    /// Replay window for received packets, behind a Mutex so the
-    /// receive path can run with `&self` instead of `&mut self`.
-    /// The lock is held only for the cheap `check`/`accept` steps —
-    /// the AEAD `open` round happens outside the lock and uses the
-    /// `LessSafeKey` (which is `Sync`) directly. Concurrent receive
-    /// for the same session is rare (it usually serializes through
-    /// the rx_loop or a per-peer task), but lock-on-check keeps the
-    /// API correct under the parallel-decrypt pool's possible races.
+    /// Replay window for received packets, behind a `Mutex` so the
+    /// FMP receive path can call `decrypt_with_replay_check_and_aad`
+    /// through a `&NoiseSession` borrowed from the peer's read guard
+    /// (since `Node.peers` is still `Arc<RwLock<ActivePeer>>`). When
+    /// the ActivePeer wrapper goes (next horror), this can revert to
+    /// a plain `ReplayWindow` with `&mut self` on the decrypt methods.
     replay_window: Mutex<ReplayWindow>,
 }
 
 impl Clone for NoiseSession {
-    /// Clone a session for ownership transfer (peer-actor refactor step 7c-2).
-    /// Both copies hold independent replay windows starting at the same state;
-    /// the consumer is responsible for ensuring only ONE copy processes
-    /// incoming packets for any given session, otherwise replay protection
-    /// silently weakens (the same counter could be accepted by both copies).
-    ///
-    /// `CipherState::Clone` rebuilds its keyed AEAD from the retained 32-byte
-    /// key, so the two copies have independent `LessSafeKey` instances —
-    /// fine for AEAD ops since `ring` keys are functional under their public
-    /// API (no per-call mutation).
     fn clone(&self) -> Self {
         let replay_window = self
             .replay_window
@@ -107,7 +95,12 @@ impl NoiseSession {
     /// Returns Ok(()) if the counter is acceptable, Err if it should be rejected.
     /// Call this before attempting decryption to avoid wasting CPU on replay attacks.
     pub fn check_replay(&self, counter: u64) -> Result<(), NoiseError> {
-        if self.replay_window.lock().expect("replay_window poisoned").check(counter) {
+        if self
+            .replay_window
+            .lock()
+            .expect("replay_window poisoned")
+            .check(counter)
+        {
             Ok(())
         } else {
             Err(NoiseError::ReplayDetected(counter))
@@ -126,9 +119,6 @@ impl NoiseSession {
         ciphertext: &[u8],
         counter: u64,
     ) -> Result<Vec<u8>, NoiseError> {
-        // Check replay window first (cheap). Lock briefly, drop, then run
-        // the AEAD outside the lock so concurrent receivers on the same
-        // session don't serialize on the AEAD round.
         if !self
             .replay_window
             .lock()
@@ -137,22 +127,11 @@ impl NoiseSession {
         {
             return Err(NoiseError::ReplayDetected(counter));
         }
-
-        // Attempt decryption (expensive). `recv_cipher.decrypt_with_counter`
-        // already takes `&self` and uses the cached `LessSafeKey` (which is
-        // `Sync`), so this is concurrency-safe.
         let plaintext = self.recv_cipher.decrypt_with_counter(ciphertext, counter)?;
-
-        // Only accept into window after successful decryption.
-        // The check+accept pair is not atomic, but `accept` is idempotent
-        // on the same counter — a concurrent receive of the same counter
-        // either both pass check (and both call accept, which is a no-op
-        // on duplicate) or one passes and one is rejected.
         self.replay_window
             .lock()
             .expect("replay_window poisoned")
             .accept(counter);
-
         Ok(plaintext)
     }
 
@@ -179,9 +158,6 @@ impl NoiseSession {
         counter: u64,
         aad: &[u8],
     ) -> Result<Vec<u8>, NoiseError> {
-        // Check replay window first (cheap). Lock briefly, drop, then run
-        // the AEAD outside the lock so concurrent receivers on the same
-        // session don't serialize on the AEAD round.
         if !self
             .replay_window
             .lock()
@@ -190,20 +166,13 @@ impl NoiseSession {
         {
             return Err(NoiseError::ReplayDetected(counter));
         }
-
-        // Attempt decryption with AAD (expensive). `recv_cipher` ops take
-        // `&self` and use the cached `LessSafeKey` (`Sync`).
         let plaintext = self
             .recv_cipher
             .decrypt_with_counter_and_aad(ciphertext, counter, aad)?;
-
-        // Accept into window. See `decrypt_with_replay_check` for the
-        // non-atomicity rationale.
         self.replay_window
             .lock()
             .expect("replay_window poisoned")
             .accept(counter);
-
         Ok(plaintext)
     }
 
