@@ -2205,6 +2205,18 @@ impl Node {
         {
             return Some(*dest_node_addr);
         }
+        // 2b. Direct peer that's currently owned by its actor task.
+        // We can't easily inspect connectivity here without recalling
+        // (which requires async / &mut self), so treat presence in
+        // `peer_actors` as "sendable" — peers are removed from
+        // peer_actors when they're disconnected via remove_active_peer
+        // (which fires the connectivity → Disconnected transition).
+        // A peer transiently in Stale/Reconnecting still exists in
+        // peer_actors; routing through it is what the legacy
+        // can_send() check would have allowed (Stale qualifies).
+        if self.peer_actors.contains_key(dest_node_addr) {
+            return Some(*dest_node_addr);
+        }
 
         let now_ms = Self::now_ms();
 
