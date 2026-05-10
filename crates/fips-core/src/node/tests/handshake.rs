@@ -713,6 +713,116 @@ async fn test_actor_owns_peer_send_tree_announce() {
     }
 }
 
+/// `find_next_hop` and `send_endpoint_data` work against an actor-owned
+/// direct peer.
+///
+/// Caught the "no route to destination" bug — `find_next_hop`'s direct-
+/// peer check did `self.peers.get(addr)` only, missing actor-owned
+/// peers. SessionAck and SessionSetup outbound paths fell through to
+/// the routing layer's tree/bloom code (also iterates `self.peers`),
+/// returning None → endpoint sends silently failed → mesh never got
+/// to "connected".
+#[tokio::test]
+async fn test_actor_owns_peer_find_next_hop_and_endpoint_send() {
+    use crate::config::UdpConfig;
+    use crate::node::wire::build_msg1;
+    use crate::transport::udp::UdpTransport;
+    use tokio::time::{Duration, timeout};
+
+    fn make_actor_node() -> Node {
+        let mut config = Config::new();
+        config.node.peer_actor_enabled = true;
+        config.node.actor_owns_peer = true;
+        Node::new(config).unwrap()
+    }
+
+    let mut node_a = make_actor_node();
+    let mut node_b = make_actor_node();
+
+    let transport_id_a = TransportId::new(1);
+    let transport_id_b = TransportId::new(1);
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+    let (packet_tx_a, mut packet_rx_a) = packet_channel(64);
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+    let mut transport_a = UdpTransport::new(transport_id_a, None, udp_config.clone(), packet_tx_a);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_a.start_async().await.unwrap();
+    transport_b.start_async().await.unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+    let remote_addr_b = TransportAddr::from_string(&addr_b.to_string());
+    node_a
+        .transports
+        .insert(transport_id_a, TransportHandle::Udp(transport_a));
+    node_b
+        .transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    // A → B handshake.
+    let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let peer_b_node_addr = *peer_b_identity.node_addr();
+    let link_id_a = node_a.allocate_link_id();
+    let mut conn_a = PeerConnection::outbound(link_id_a, peer_b_identity, 1000);
+    let our_index_a = node_a.index_allocator.allocate().unwrap();
+    let our_keypair_a = node_a.identity.keypair();
+    let noise_msg1 = conn_a
+        .start_handshake(our_keypair_a, node_a.startup_epoch, 1000)
+        .unwrap();
+    conn_a.set_our_index(our_index_a);
+    conn_a.set_transport_id(transport_id_a);
+    conn_a.set_source_addr(remote_addr_b.clone());
+    let wire_msg1 = build_msg1(our_index_a, &noise_msg1);
+    let link_a = Link::connectionless(
+        link_id_a,
+        transport_id_a,
+        remote_addr_b.clone(),
+        LinkDirection::Outbound,
+        Duration::from_millis(100),
+    );
+    node_a.links.insert(link_id_a, link_a);
+    node_a.connections.insert(link_id_a, conn_a);
+    node_a
+        .pending_outbound
+        .insert((transport_id_a, our_index_a.as_u32()), link_id_a);
+    node_a
+        .transports
+        .get(&transport_id_a)
+        .unwrap()
+        .send(&remote_addr_b, &wire_msg1)
+        .await
+        .unwrap();
+    let pb_msg1 = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    node_b.handle_msg1(pb_msg1).await;
+    let pa_msg2 = timeout(Duration::from_secs(1), packet_rx_a.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    node_a.handle_msg2(pa_msg2).await;
+
+    // Peer is now in A's actor. find_next_hop must still resolve it
+    // as a direct peer (legacy `self.peers.get(addr)` would miss).
+    let next_hop = node_a.find_next_hop(&peer_b_node_addr);
+    assert_eq!(
+        next_hop,
+        Some(peer_b_node_addr),
+        "find_next_hop must return the direct peer even when actor-owned (peer_actors keys: {:?})",
+        node_a.peer_actors.keys().collect::<Vec<_>>()
+    );
+
+    for (_, t) in node_a.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+    for (_, t) in node_b.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+}
+
 /// Cross-connection lifecycle with `actor_owns_peer = true`.
 ///
 /// Both nodes initiate simultaneously, receive each other's msg1
