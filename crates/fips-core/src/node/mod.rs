@@ -1704,8 +1704,15 @@ impl Node {
     }
 
     /// Number of authenticated peers.
+    ///
+    /// Counts peers stored in `Node.peers` plus peers whose ownership
+    /// has been moved into a per-peer actor task (`peer_actors`).
+    /// The two maps are disjoint: a peer is in `peer_actors` *or*
+    /// `Node.peers`, never both. (During a brief recall window the
+    /// peer is in `Node.peers` and the handle is parked in
+    /// `recalled_handles`; that doesn't double-count here.)
     pub fn peer_count(&self) -> usize {
-        self.peers.len()
+        self.peers.len() + self.peer_actors.len()
     }
 
     /// Number of active links.
