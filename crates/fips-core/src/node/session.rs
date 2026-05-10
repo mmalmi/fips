@@ -201,8 +201,7 @@ impl SessionEntry {
         &self.remote_pubkey
     }
 
-    /// Get the current session state.
-    #[cfg(test)]
+    /// Get the current session state (immutable).
     pub(crate) fn state(&self) -> &EndToEndState {
         self.state
             .as_ref()
@@ -406,8 +405,10 @@ impl SessionEntry {
     }
 
     /// Get the previous session for decryption fallback during drain.
-    pub(crate) fn previous_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
-        self.previous_noise_session.as_mut()
+    /// `decrypt_with_replay_check_and_aad` is `&self` after step 2 so
+    /// the hot receive path doesn't need a write lock.
+    pub(crate) fn previous_noise_session(&self) -> Option<&NoiseSession> {
+        self.previous_noise_session.as_ref()
     }
 
     /// Whether we initiated the current rekey.

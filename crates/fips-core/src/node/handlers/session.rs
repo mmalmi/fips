@@ -220,31 +220,42 @@ impl Node {
         // `&mut self` (decrypt-failure logging, msg_type dispatch into
         // sub-handlers, session re-initiation after threshold) run
         // after the borrow drops, communicated via `FspFrameOutcome`.
-        let outcome: FspFrameOutcome = 'outcome: {
-            let slot = match self.sessions.get(src_addr) {
-                Some(s) => s.clone(),
-                None => break 'outcome FspFrameOutcome::UnknownSession,
+        // Cold-path: peer K-bit flip detection. Once per rekey, takes a
+        // write lock to perform the cutover. Done before the steady-state
+        // read-lock path so the hot path stays branch-free on K-bit.
+        if let Some(slot) = self.sessions.get(src_addr).cloned() {
+            let needs_flip = {
+                let entry = crate::node::session::session_read(&slot);
+                entry.is_established()
+                    && received_k_bit != entry.current_k_bit()
+                    && entry.pending_new_session().is_some()
             };
-            let mut entry = crate::node::session::session_write(&slot);
-            if !entry.is_established() {
-                break 'outcome FspFrameOutcome::NotEstablished;
-            }
-
-            // K-bit flip detection. Read + cutover share the borrow.
-            // Logging uses `src_addr` (a NodeAddr) directly because
-            // `self.peer_display_name` would conflict with the &mut
-            // borrow on `self.sessions`. K-bit flips are rare so a
-            // less-friendly log identifier on this line is acceptable.
-            if received_k_bit != entry.current_k_bit() && entry.pending_new_session().is_some() {
+            if needs_flip {
                 info!(
                     src = %src_addr,
                     "Peer FSP K-bit flip detected, promoting new session"
                 );
                 let now_ms = Self::now_ms();
+                let mut entry = crate::node::session::session_write(&slot);
                 entry.handle_peer_kbit_flip(now_ms);
             }
+        }
 
-            let session = match entry.state_mut() {
+        // Hot path: read lock on the SessionEntrySlot. Decrypt + replay
+        // accept (both `&self` after step 2), reset_decrypt_failures
+        // (atomic after step 7b-1), MMP record / spin-bit / path-MTU
+        // (Mutex inside `Option<Mutex<MmpSessionState>>` after 7b-1).
+        let outcome: FspFrameOutcome = 'outcome: {
+            let slot = match self.sessions.get(src_addr) {
+                Some(s) => s.clone(),
+                None => break 'outcome FspFrameOutcome::UnknownSession,
+            };
+            let entry = crate::node::session::session_read(&slot);
+            if !entry.is_established() {
+                break 'outcome FspFrameOutcome::NotEstablished;
+            }
+
+            let session = match entry.state() {
                 EndToEndState::Established(s) => s,
                 _ => break 'outcome FspFrameOutcome::NotEstablished,
             };
@@ -257,8 +268,8 @@ impl Node {
             let plaintext = match primary {
                 Ok(pt) => pt,
                 Err(primary_err) => {
-                    // Drain-window fallback on the same &mut entry borrow.
-                    let drain = entry.previous_noise_session_mut().and_then(|prev| {
+                    // Drain-window fallback via `&self` previous_noise_session.
+                    let drain = entry.previous_noise_session().and_then(|prev| {
                         prev.decrypt_with_replay_check_and_aad(
                             ciphertext,
                             header.counter,
@@ -271,11 +282,8 @@ impl Node {
                         None => {
                             // Both current and previous failed. Bump
                             // the per-session consecutive-failure
-                            // counter and surface a re-handshake hint
-                            // if the threshold is crossed; the post-
-                            // borrow path drops the session and calls
-                            // `self.initiate_session` since that needs
-                            // `&mut self`.
+                            // counter (atomic) and surface a re-handshake
+                            // hint if the threshold is crossed.
                             let consecutive = entry.record_decrypt_failure();
                             let reinit_pubkey = if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
                                 Some(*entry.remote_pubkey())
@@ -293,9 +301,8 @@ impl Node {
                 }
             };
 
-            // Successful decrypt — reset the per-session failure
-            // counter so a single bad packet doesn't carry forward
-            // toward the threshold.
+            // Successful decrypt — reset the per-session failure counter
+            // (atomic) so a single bad packet doesn't carry forward.
             entry.reset_decrypt_failures();
 
             // Strip FSP inner header (6 bytes) for the timestamp +
@@ -310,11 +317,9 @@ impl Node {
                 None => break 'outcome FspFrameOutcome::BadInnerHeader,
             };
 
-            // MMP receive bookkeeping + path-MTU observation. Same
-            // &mut entry borrow — collapses the two consecutive
-            // `self.sessions.get_mut(src_addr) + entry.mmp_mut()`
-            // blocks (and the matching pair of `Instant::now()`
-            // calls) from the original implementation into one.
+            // MMP receive bookkeeping + path-MTU observation. The Mutex
+            // around `MmpSessionState` (step 7b-1) lets this fire from
+            // a read lock on the SessionEntrySlot.
             if let Some(mut mmp) = entry.mmp_mut() {
                 let now = std::time::Instant::now();
                 mmp.receiver
