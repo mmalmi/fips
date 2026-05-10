@@ -407,11 +407,10 @@ async fn peer_actor_loop(
                 touch,
                 respond,
             } => {
-                let _ = (msg_type, plaintext, coords_payload, touch);
-                // TODO(7c-2 step D): use owned_session to encrypt and assemble
-                // FSP payload. Until that's implemented, signal SessionGone
-                // so callers fall back to the legacy self.sessions path.
-                let _ = respond.send(Err(EncryptError::SessionGone));
+                let result =
+                    actor_encrypt(owned_session.as_deref_mut(), msg_type, plaintext,
+                                  coords_payload, touch);
+                let _ = respond.send(result);
             }
             PeerInboundJob::BuildMmpReports { now, respond } => {
                 let _ = now;
@@ -442,6 +441,97 @@ async fn peer_actor_loop(
     // intent obvious.)
     drop(owned_session);
     trace!(peer = %peer_addr, "Peer actor task exiting (channel closed)");
+}
+
+/// Run an `Encrypt` request against the actor's owned `SessionEntry`.
+///
+/// Mirrors the FSP send pipeline previously inlined in `Node::send_session_data`,
+/// but operating on `&mut SessionEntry` (no Arc/RwLock — owned by exactly
+/// one task). Caller passes the inner-header-prefixed plaintext; this
+/// function builds the FSP header (12 bytes), encrypts with AAD binding,
+/// assembles `header + [coords_payload] + ciphertext`, records the send
+/// in MMP sender state, optionally touches `last_activity`, and returns
+/// the wire bytes for Node to wrap in a `SessionDatagram` envelope.
+fn actor_encrypt(
+    session: Option<&mut SessionEntry>,
+    msg_type: u8,
+    plaintext: Vec<u8>,
+    coords_payload: Option<Vec<u8>>,
+    touch: bool,
+) -> Result<EncryptOutput, EncryptError> {
+    use crate::node::session::EndToEndState;
+    use crate::node::session_wire::{
+        FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE, build_fsp_header,
+        fsp_prepend_inner_header,
+    };
+    use crate::protocol::FspInnerFlags;
+
+    let entry = session.ok_or(EncryptError::SessionGone)?;
+    if !entry.is_established() {
+        return Err(EncryptError::NotEstablished);
+    }
+
+    // Read spin bit + session timestamp under MMP lock (mmp() is &self
+    // via the inner Mutex — step 7b-1).
+    let now_ms = crate::time::now_ms();
+    let timestamp = entry.session_timestamp(now_ms);
+    let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
+
+    // Build inner plaintext: 6-byte FSP inner header + caller's payload.
+    // Caller passes the application-layer payload; we wrap it.
+    let inner_flags = FspInnerFlags { spin_bit }.to_byte();
+    let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &plaintext);
+
+    // Build FSP outer flags (CP if coords present, K-bit for current key epoch).
+    let mut flags: u8 = 0;
+    if coords_payload.is_some() {
+        flags |= FSP_FLAG_CP;
+    }
+    if entry.current_k_bit() {
+        flags |= FSP_FLAG_K;
+    }
+
+    // Encrypt with AAD binding to the FSP header.
+    let session_state = match entry.state_mut() {
+        EndToEndState::Established(s) => s,
+        _ => return Err(EncryptError::NotEstablished),
+    };
+    let counter = session_state.current_send_counter();
+    let payload_len = inner_plaintext.len() as u16;
+    let header = build_fsp_header(counter, flags, payload_len);
+    let ciphertext = session_state
+        .encrypt_with_aad(&inner_plaintext, &header)
+        .map_err(|e| EncryptError::Crypto(format!("{}", e)))?;
+
+    // Assemble: header(12) + [coords] + ciphertext
+    let coords_len = coords_payload.as_ref().map(|c| c.len()).unwrap_or(0);
+    let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + coords_len + ciphertext.len());
+    fsp_payload.extend_from_slice(&header);
+    if let Some(coords) = &coords_payload {
+        fsp_payload.extend_from_slice(coords);
+    }
+    fsp_payload.extend_from_slice(&ciphertext);
+    let ciphertext_len = ciphertext.len();
+
+    // Bookkeeping: MMP sender record + traffic counters + last_activity.
+    if let Some(mut mmp) = entry.mmp_mut() {
+        mmp.sender.record_sent(counter, timestamp, ciphertext_len);
+    }
+    // record_sent() takes the application payload length (per session.rs's
+    // existing convention) — that's `plaintext.len()` here, which is the
+    // post-port-header / post-inner-flags caller payload.
+    entry.record_sent(plaintext.len());
+    if touch {
+        entry.touch(now_ms);
+    }
+    let _ = FSP_INNER_HEADER_SIZE; // silence unused-import path
+
+    Ok(EncryptOutput {
+        fsp_payload,
+        counter,
+        timestamp,
+        ciphertext_len,
+    })
 }
 
 /// Apply per-peer mutations for a successfully FMP-decrypted frame.
