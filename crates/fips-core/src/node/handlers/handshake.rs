@@ -1079,6 +1079,7 @@ impl Node {
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
                 self.retry_pending.remove(&peer_node_addr);
                 self.register_identity(peer_node_addr, verified_identity.pubkey_full());
+                self.maybe_ship_peer_to_actor(&peer_node_addr);
 
                 debug!(
                     peer = %self.peer_display_name(&peer_node_addr),
@@ -1188,6 +1189,7 @@ impl Node {
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
             self.retry_pending.remove(&peer_node_addr);
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
+            self.maybe_ship_peer_to_actor(&peer_node_addr);
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),

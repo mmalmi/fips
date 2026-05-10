@@ -1174,6 +1174,50 @@ impl Node {
         }
     }
 
+    /// If `actor_owns_peer` is enabled and the freshly-promoted peer at
+    /// `addr` has an actor handle, take the peer out of `Node.peers`
+    /// and ship it to the actor via `TakePeer`. The actor becomes the
+    /// sole owner from that point on; cold paths must reach the peer
+    /// via actor messages until they migrate (or via `ReleasePeer` for
+    /// a temporary take-back).
+    ///
+    /// On send failure the peer is put back into `Node.peers` and a
+    /// warning is logged — the actor is reachable in principle but the
+    /// queue must be unexpectedly full or the task already exited; the
+    /// inline rx_loop path remains a working fallback.
+    pub(crate) fn maybe_ship_peer_to_actor(&mut self, addr: &NodeAddr) {
+        if !self.config.node.actor_owns_peer {
+            return;
+        }
+        let Some(peer) = self.peers.remove(addr) else {
+            return;
+        };
+        let Some(actor) = peer.actor().cloned() else {
+            // Peer doesn't have an actor handle — actor_owns_peer
+            // requires `peer_actor_enabled` so this only happens when
+            // the actor failed to spawn (no tokio runtime, e.g. unit
+            // tests). Put the peer back; rx_loop runs the inline path.
+            self.peers.insert(*addr, peer);
+            return;
+        };
+        match actor.try_take_peer(Box::new(peer)) {
+            Ok(()) => {
+                tracing::trace!(
+                    peer = %self.peer_display_name(addr),
+                    "Shipped ActivePeer to per-peer actor"
+                );
+            }
+            Err(boxed_peer) => {
+                tracing::warn!(
+                    peer = %self.peer_display_name(addr),
+                    "Failed to ship peer to actor (queue full / closed) \
+                     — keeping in Node.peers as fallback"
+                );
+                self.peers.insert(*addr, *boxed_peer);
+            }
+        }
+    }
+
     /// Get this node's npub.
     pub fn npub(&self) -> String {
         self.identity.npub()

@@ -466,6 +466,48 @@ impl PeerActorHandle {
             .try_send(PeerInboundJob::RemoveSession)
             .is_ok()
     }
+
+    /// Hand an `ActivePeer` to the peer actor as owned state.
+    /// On failure (channel full / closed) returns the peer back so the
+    /// caller can keep it in `Node.peers` instead.
+    ///
+    /// Sync (`try_send`) because `promote_connection` is sync; the
+    /// actor's queue is fresh and 256-deep so this should always
+    /// succeed in practice.
+    #[allow(dead_code)]
+    pub(crate) fn try_take_peer(
+        &self,
+        peer: Box<ActivePeer>,
+    ) -> Result<(), Box<ActivePeer>> {
+        use tokio::sync::mpsc::error::TrySendError;
+        match self.inbound_tx.try_send(PeerInboundJob::TakePeer(peer)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(PeerInboundJob::TakePeer(p)))
+            | Err(TrySendError::Closed(PeerInboundJob::TakePeer(p))) => Err(p),
+            Err(_) => unreachable!(
+                "try_take_peer only sends PeerInboundJob::TakePeer; \
+                 mpsc returned a different variant in the error"
+            ),
+        }
+    }
+
+    /// Ask the actor to release its owned `ActivePeer`. Returns `None`
+    /// if the actor isn't holding one, or if the channel is closed
+    /// (the task has exited). Async because the response is awaited
+    /// on a oneshot.
+    #[allow(dead_code)]
+    pub(crate) async fn release_peer(&self) -> Option<Box<ActivePeer>> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inbound_tx
+            .send(PeerInboundJob::ReleasePeer { respond: tx })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
 }
 
 /// The peer task body. Pulls jobs from the inbox and processes

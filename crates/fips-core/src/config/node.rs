@@ -1128,6 +1128,23 @@ pub struct NodeConfig {
     /// ownership migration (step 7c-2) is being wired.
     #[serde(default)]
     pub actor_owns_sessions: bool,
+
+    /// Migrate `ActivePeer` ownership into the per-peer actor task
+    /// (`node.actor_owns_peer`).
+    ///
+    /// `false` (default) keeps `Node.peers` as the single owner.
+    /// `true` ships every newly-promoted ActivePeer to the peer actor
+    /// in `promote_connection`, and routes the FMP receive hot path
+    /// (header parse + `process_inbound_fmp_frame` + link dispatch)
+    /// through `PeerInboundJob::Packet` instead of running inline on
+    /// the rx_loop. The benefit is pipelining: rx_loop reads the
+    /// next packet while the previous packet's AEAD runs on the
+    /// per-peer worker. Off by default while the cold-path migration
+    /// is incomplete — turning this on without finished cold-path
+    /// migration will starve handshake / tree / bloom / rekey paths
+    /// that still expect ActivePeer to live in `Node.peers`.
+    #[serde(default)]
+    pub actor_owns_peer: bool,
 }
 
 impl Default for NodeConfig {
@@ -1158,6 +1175,7 @@ impl Default for NodeConfig {
             log_level: None,
             peer_actor_enabled: false,
             actor_owns_sessions: false,
+            actor_owns_peer: false,
         }
     }
 }
