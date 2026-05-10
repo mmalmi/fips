@@ -175,8 +175,10 @@ impl Node {
         let timed_out: Vec<crate::NodeAddr> = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                !entry.is_established() && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
+            .filter(|(_, slot)| {
+                let entry = crate::node::session::session_read(slot);
+                !entry.is_established()
+                    && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -193,14 +195,19 @@ impl Node {
         let candidates: Vec<(crate::NodeAddr, Vec<u8>)> = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                !entry.is_established()
+            .filter_map(|(addr, slot)| {
+                let entry = crate::node::session::session_read(slot);
+                if !entry.is_established()
                     && entry.handshake_payload().is_some()
                     && entry.resend_count() < max_resends
                     && entry.next_resend_at_ms() > 0
                     && now_ms >= entry.next_resend_at_ms()
+                {
+                    Some((*addr, entry.handshake_payload().unwrap().to_vec()))
+                } else {
+                    None
+                }
             })
-            .map(|(addr, entry)| (*addr, entry.handshake_payload().unwrap().to_vec()))
             .collect();
 
         for (dest_addr, payload) in candidates {
@@ -219,7 +226,8 @@ impl Node {
                 }
             };
 
-            if sent && let Some(entry) = self.sessions.get_mut(&dest_addr) {
+            if sent && let Some(slot) = self.sessions.get(&dest_addr).cloned() {
+                let mut entry = crate::node::session::session_write(&slot);
                 let count = entry.resend_count() + 1;
                 let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
                 entry.record_resend(next);
@@ -245,8 +253,10 @@ impl Node {
         let idle: Vec<_> = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                entry.is_established() && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
+            .filter(|(_, slot)| {
+                let entry = crate::node::session::session_read(slot);
+                entry.is_established()
+                    && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -256,10 +266,11 @@ impl Node {
             let name = self.peer_display_name(&addr);
 
             // Log MMP teardown metrics before removing the session
-            if let Some(entry) = self.sessions.get(&addr)
-                && let Some(mmp) = entry.mmp()
-            {
-                Self::log_session_mmp_teardown(&name, mmp);
+            if let Some(slot) = self.sessions.get(&addr) {
+                let entry = crate::node::session::session_read(slot);
+                if let Some(mmp) = entry.mmp() {
+                    Self::log_session_mmp_teardown(&name, mmp);
+                }
             }
             self.sessions.remove(&addr);
             self.pending_tun_packets.remove(&addr);

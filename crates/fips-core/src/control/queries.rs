@@ -359,7 +359,8 @@ pub fn show_tree(node: &Node) -> Value {
 pub fn show_sessions(node: &Node) -> Value {
     let sessions: Vec<Value> = node
         .session_entries()
-        .map(|(addr, entry)| {
+        .map(|(addr, slot)| {
+            let entry = crate::node::session::session_read(slot);
             let state_str = if entry.is_established() {
                 "established"
             } else if entry.is_initiating() {
@@ -542,7 +543,8 @@ pub fn show_mmp(node: &Node) -> Value {
     // Session-layer MMP
     let sessions: Vec<Value> = node
         .session_entries()
-        .filter_map(|(addr, entry)| {
+        .filter_map(|(addr, slot)| {
+            let entry = crate::node::session::session_read(slot);
             let mmp = entry.mmp()?;
             let metrics = &mmp.metrics;
 

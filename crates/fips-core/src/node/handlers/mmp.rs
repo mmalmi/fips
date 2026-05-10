@@ -328,11 +328,17 @@ impl Node {
         // Collect reports to send: (dest_addr, msg_type, encoded_body)
         let mut reports: Vec<(NodeAddr, u8, Vec<u8>)> = Vec::new();
 
-        for (dest_addr, entry) in self.sessions.iter_mut() {
+        // Snapshot the dest addresses to avoid holding a borrow on `self.sessions`
+        let dest_addrs: Vec<NodeAddr> = self.sessions.keys().copied().collect();
+        for dest_addr in dest_addrs {
+            let Some(slot) = self.sessions.get(&dest_addr).cloned() else {
+                continue;
+            };
+            let mut entry = crate::node::session::session_write(&slot);
             // Compute display name before taking mutable MMP borrow
             let session_name = self
                 .peer_aliases
-                .get(dest_addr)
+                .get(&dest_addr)
                 .cloned()
                 .unwrap_or_else(|| {
                     let (xonly, _) = entry.remote_pubkey().x_only_public_key();
@@ -352,7 +358,7 @@ impl Node {
             {
                 let session_sr: SessionSenderReport = SessionSenderReport::from(&sr);
                 reports.push((
-                    *dest_addr,
+                    dest_addr,
                     SessionMessageType::SenderReport.to_byte(),
                     session_sr.encode(),
                 ));
@@ -365,7 +371,7 @@ impl Node {
             {
                 let session_rr: SessionReceiverReport = SessionReceiverReport::from(&rr);
                 reports.push((
-                    *dest_addr,
+                    dest_addr,
                     SessionMessageType::ReceiverReport.to_byte(),
                     session_rr.encode(),
                 ));
@@ -377,7 +383,7 @@ impl Node {
             {
                 let notif = PathMtuNotification::new(mtu_value);
                 reports.push((
-                    *dest_addr,
+                    dest_addr,
                     SessionMessageType::PathMtuNotification.to_byte(),
                     notif.encode(),
                 ));
@@ -403,8 +409,13 @@ impl Node {
                     let failures = self
                         .sessions
                         .get(&dest_addr)
-                        .and_then(|entry| entry.mmp())
-                        .map(|mmp| mmp.sender.consecutive_send_failures())
+                        .map(|slot| {
+                            let entry = crate::node::session::session_read(slot);
+                            entry
+                                .mmp()
+                                .map(|mmp| mmp.sender.consecutive_send_failures())
+                                .unwrap_or(0)
+                        })
                         .unwrap_or(0);
 
                     if failures < 3 {
@@ -439,20 +450,21 @@ impl Node {
             }
         }
         for (dest_addr, success) in dest_success {
-            if let Some(entry) = self.sessions.get_mut(&dest_addr)
-                && let Some(mmp) = entry.mmp_mut()
-            {
-                if success {
-                    let prev = mmp.sender.record_send_success();
-                    if prev > 3 {
-                        debug!(
-                            dest = %self.peer_display_name(&dest_addr),
-                            consecutive_failures = prev,
-                            "Resumed session MMP reporting"
-                        );
+            if let Some(slot) = self.sessions.get(&dest_addr).cloned() {
+                let mut entry = crate::node::session::session_write(&slot);
+                if let Some(mmp) = entry.mmp_mut() {
+                    if success {
+                        let prev = mmp.sender.record_send_success();
+                        if prev > 3 {
+                            debug!(
+                                dest = %self.peer_display_name(&dest_addr),
+                                consecutive_failures = prev,
+                                "Resumed session MMP reporting"
+                            );
+                        }
+                    } else {
+                        mmp.sender.record_send_failure();
                     }
-                } else {
-                    mmp.sender.record_send_failure();
                 }
             }
         }

@@ -140,10 +140,11 @@ impl Node {
         //   2. initiate_session() finds is_established() == true on the stale entry
         //      and silently returns Ok(()), preventing a new session from being
         //      established even after the link layer reconnects successfully.
-        if let Some(session_entry) = self.sessions.remove(node_addr)
-            && let Some(mmp) = session_entry.mmp()
-        {
-            Self::log_session_mmp_teardown(&peer_name, mmp);
+        if let Some(session_slot) = self.sessions.remove(node_addr) {
+            let session_entry = crate::node::session::session_read(&session_slot);
+            if let Some(mmp) = session_entry.mmp() {
+                Self::log_session_mmp_teardown(&peer_name, mmp);
+            }
         }
         self.pending_tun_packets.remove(node_addr);
 

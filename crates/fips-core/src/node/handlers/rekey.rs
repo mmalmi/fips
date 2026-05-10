@@ -304,7 +304,8 @@ impl Node {
         let mut sessions_to_drain: Vec<NodeAddr> = Vec::new();
         let mut sessions_to_rekey: Vec<NodeAddr> = Vec::new();
 
-        for (node_addr, entry) in &self.sessions {
+        for (node_addr, slot) in &self.sessions {
+            let entry = crate::node::session::session_read(slot);
             if !entry.is_established() {
                 continue;
             }
@@ -348,19 +349,21 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in sessions_to_cutover {
-            if let Some(entry) = self.sessions.get_mut(&node_addr)
-                && entry.cutover_to_new_session(now_ms)
-            {
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "FSP rekey cutover complete (initiator), K-bit flipped"
-                );
+            if let Some(slot) = self.sessions.get(&node_addr).cloned() {
+                let mut entry = crate::node::session::session_write(&slot);
+                if entry.cutover_to_new_session(now_ms) {
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        "FSP rekey cutover complete (initiator), K-bit flipped"
+                    );
+                }
             }
         }
 
         // Execute drain completion
         for node_addr in sessions_to_drain {
-            if let Some(entry) = self.sessions.get_mut(&node_addr) {
+            if let Some(slot) = self.sessions.get(&node_addr).cloned() {
+                let mut entry = crate::node::session::session_write(&slot);
                 entry.complete_drain();
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
@@ -389,11 +392,10 @@ impl Node {
             return;
         }
 
-        let entry = match self.sessions.get(dest_addr) {
-            Some(e) => e,
+        let dest_pubkey = match self.sessions.get(dest_addr) {
+            Some(slot) => *crate::node::session::session_read(slot).remote_pubkey(),
             None => return,
         };
-        let dest_pubkey = *entry.remote_pubkey();
 
         // Create Noise XK initiator handshake
         let our_keypair = self.identity.keypair();
@@ -433,7 +435,8 @@ impl Node {
         }
 
         // Store rekey state on the existing session entry
-        if let Some(entry) = self.sessions.get_mut(dest_addr) {
+        if let Some(slot) = self.sessions.get(dest_addr).cloned() {
+            let mut entry = crate::node::session::session_write(&slot);
             entry.set_rekey_state(handshake, true);
         }
 

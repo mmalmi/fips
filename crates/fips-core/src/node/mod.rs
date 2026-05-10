@@ -33,7 +33,9 @@ use self::wire::{
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::config::RoutingMode;
-use crate::node::session::SessionEntry;
+use crate::node::session::{SessionEntrySlot, session_read};
+#[cfg(test)]
+use crate::node::session::{SessionEntry, session_write};
 use crate::peer::{ActivePeer, ActivePeerSlot, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -427,7 +429,7 @@ pub struct Node {
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
     /// Keyed by remote NodeAddr.
-    sessions: HashMap<NodeAddr, SessionEntry>,
+    sessions: HashMap<NodeAddr, SessionEntrySlot>,
 
     // === Identity Cache ===
     /// Maps FipsAddress prefix bytes (bytes 1-15) to (NodeAddr, PublicKey).
@@ -1156,8 +1158,8 @@ impl Node {
         if let Some(slot) = self.peers.get(addr) {
             return crate::peer::peer_read(slot).identity().short_npub();
         }
-        if let Some(entry) = self.sessions.get(addr) {
-            let (xonly, _) = entry.remote_pubkey().x_only_public_key();
+        if let Some(slot) = self.sessions.get(addr) {
+            let (xonly, _) = session_read(slot).remote_pubkey().x_only_public_key();
             return PeerIdentity::from_pubkey(xonly).short_npub();
         }
         addr.short_hex()
@@ -1743,19 +1745,25 @@ impl Node {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_session(&self, remote: &NodeAddr) -> Option<&SessionEntry> {
-        self.sessions.get(remote)
+    pub(crate) fn get_session(
+        &self,
+        remote: &NodeAddr,
+    ) -> Option<std::sync::RwLockReadGuard<'_, SessionEntry>> {
+        self.sessions.get(remote).map(session_read)
     }
 
-    /// Get a mutable session by remote NodeAddr.
+    /// Get a write-locked session by remote NodeAddr.
     #[cfg(test)]
-    pub(crate) fn get_session_mut(&mut self, remote: &NodeAddr) -> Option<&mut SessionEntry> {
-        self.sessions.get_mut(remote)
+    pub(crate) fn get_session_mut(
+        &self,
+        remote: &NodeAddr,
+    ) -> Option<std::sync::RwLockWriteGuard<'_, SessionEntry>> {
+        self.sessions.get(remote).map(session_write)
     }
 
-    /// Remove a session.
+    /// Remove a session slot.
     #[cfg(test)]
-    pub(crate) fn remove_session(&mut self, remote: &NodeAddr) -> Option<SessionEntry> {
+    pub(crate) fn remove_session(&mut self, remote: &NodeAddr) -> Option<SessionEntrySlot> {
         self.sessions.remove(remote)
     }
 
@@ -1781,8 +1789,11 @@ impl Node {
         self.sessions.len()
     }
 
-    /// Iterate over all session entries (for control queries).
-    pub(crate) fn session_entries(&self) -> impl Iterator<Item = (&NodeAddr, &SessionEntry)> {
+    /// Iterate over all session slots. Caller takes a per-slot lock
+    /// via `session_read(slot)`.
+    pub(crate) fn session_entries(
+        &self,
+    ) -> impl Iterator<Item = (&NodeAddr, &SessionEntrySlot)> {
         self.sessions.iter()
     }
 
