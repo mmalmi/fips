@@ -33,8 +33,9 @@ use crate::node::session::SessionEntry;
 use crate::peer::ActivePeerSlot;
 use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
+use secp256k1::PublicKey;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 
@@ -55,7 +56,15 @@ pub(crate) struct PeerActorIoCtx {
     pub endpoint_event_tx: Option<mpsc::Sender<NodeEndpointEvent>>,
 }
 
-/// One unit of work pushed from the rx_loop into a peer task.
+/// One unit of work pushed from Node into a peer task.
+///
+/// The pure-actor model (step 7c-2) routes *every* Node-side
+/// SessionEntry access through these messages — the actor is the sole
+/// owner of `SessionEntry` for direct-peer-to-this-node sessions, no
+/// `Arc<RwLock<…>>`, no shared map. Node-side ops that would have
+/// touched `self.sessions[addr]` send a request here and either
+/// fire-and-forget (lifecycle / push events) or await a response
+/// (encrypt, query stats).
 pub(crate) enum PeerInboundJob {
     /// FMP-decrypted frame on this peer. The peer task accepts the
     /// replay counter, records MMP / link stats, touches last-seen,
@@ -64,17 +73,172 @@ pub(crate) enum PeerInboundJob {
     /// Hand ownership of a (newly-Established) `SessionEntry` to the
     /// peer actor. Node calls this from its handshake-completion path
     /// when the session's `remote_addr` matches this peer's NodeAddr
-    /// (direct peer = direct session). The actor parks the entry as
-    /// owned local state so subsequent FSP-receive work can run with
-    /// no shared-state access. Step 7c — currently scaffolding; the
-    /// hot-path FSP-decrypt-in-actor will land in 7c-2.
+    /// (direct peer = direct session). The entry MOVES — Node removes
+    /// its copy from `self.sessions` at the same time, so there is
+    /// only ever one owner.
     TakeSession(Box<SessionEntry>),
     /// Tell the peer actor to drop its owned `SessionEntry` (peer
     /// disconnect, idle purge, decrypt-failure-threshold reinit).
-    /// After this the actor's owned session is `None`; FSP-receive
-    /// work falls back to the central dispatch path until a new
-    /// `TakeSession` arrives.
+    /// The actor logs MMP teardown locally, then drops the entry.
     RemoveSession,
+    /// Session-encrypt for an outbound message. Reaches into the
+    /// actor's owned `SessionEntry` to:
+    /// 1. Read the current send_counter and K-bit
+    /// 2. AEAD-encrypt the inner plaintext with `send_cipher`
+    /// 3. Build the FSP header (counter / flags / payload_len) +
+    ///    optional cleartext coords + ciphertext
+    /// 4. Record the send into the MMP sender state
+    /// 5. Reply via `respond` with `(fsp_payload, counter, timestamp)`
+    /// Node receives the reply, wraps `fsp_payload` in a
+    /// `SessionDatagram`, and routes it onto the wire.
+    /// `Err(SessionGone)` if the actor doesn't (yet / any longer)
+    /// own the session — Node falls back to its legacy path.
+    Encrypt {
+        msg_type: u8,
+        plaintext: Vec<u8>,
+        /// CP flag — coords pre-encoded by Node from its coord_cache.
+        coords_payload: Option<Vec<u8>>,
+        /// Whether this send should `touch()` the session's
+        /// last_activity (DataPacket / EndpointData) or not (MMP
+        /// reports / CoordsWarmup).
+        touch: bool,
+        respond: oneshot::Sender<Result<EncryptOutput, EncryptError>>,
+    },
+    /// Tick-driven request: the peer actor decides whether the session
+    /// is due for a periodic MMP report send (sender + receiver +
+    /// path-mtu) and returns the encoded report bodies the rx_loop
+    /// should ship via `Encrypt`.
+    BuildMmpReports {
+        now: std::time::Instant,
+        respond: oneshot::Sender<Vec<MmpReportToSend>>,
+    },
+    /// Tick-driven request: should Node initiate an FSP rekey for
+    /// this session?
+    IsRekeyDue {
+        now_ms: u64,
+        respond: oneshot::Sender<RekeyDecision>,
+    },
+    /// Control-plane snapshot for `show_sessions` / `show_mmp` queries.
+    /// Returns `None` if the actor doesn't own a session.
+    QuerySnapshot(oneshot::Sender<Option<SessionSnapshot>>),
+}
+
+/// Result of a successful `Encrypt` call.
+#[derive(Debug)]
+pub(crate) struct EncryptOutput {
+    /// Wire bytes for the FSP layer (header + optional coords + ciphertext).
+    /// Node wraps this in a `SessionDatagram` envelope.
+    pub fsp_payload: Vec<u8>,
+    /// FSP send counter used for this packet. Node uses it for
+    /// path-mtu seeding + logging.
+    pub counter: u64,
+    /// Session timestamp at encrypt time.
+    pub timestamp: u32,
+    /// Inner ciphertext length (for MMP sender record_sent — already
+    /// done inside the actor, but Node's stats track total too).
+    pub ciphertext_len: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EncryptError {
+    #[error("peer actor does not own a session")]
+    SessionGone,
+    #[error("session is not Established")]
+    NotEstablished,
+    #[error("AEAD encrypt failed: {0}")]
+    Crypto(String),
+}
+
+/// One MMP report the actor wants Node to ship via the regular send path.
+#[derive(Debug)]
+pub(crate) struct MmpReportToSend {
+    pub msg_type: u8, // SessionMessageType byte
+    pub body: Vec<u8>,
+}
+
+/// Reply for `IsRekeyDue`. The actor decides; rx_loop initiates the
+/// new XK handshake when `Yes`.
+#[derive(Debug)]
+pub(crate) enum RekeyDecision {
+    /// Not Established or rekey already in progress — no action.
+    NotApplicable,
+    /// Initiate a fresh rekey. Carries the remote pubkey so the rx_loop
+    /// doesn't need to re-fetch from the actor.
+    InitiateRekey { remote_pubkey: PublicKey },
+    /// Cutover from pending → current is due (initiator side, after
+    /// FSP_CUTOVER_DELAY_MS post-msg3-send).
+    InitiatorCutover,
+    /// Drain window expired — actor has cleaned up the previous session.
+    DrainExpired,
+    /// Nothing to do this tick.
+    Nothing,
+}
+
+/// Read-only snapshot of session state for control queries / idle purge.
+/// Computed in the actor under its owned-state assumption (no locks).
+#[derive(Debug, Clone)]
+pub(crate) struct SessionSnapshot {
+    pub last_activity_ms: u64,
+    pub session_start_ms: u64,
+    pub state: SessionStateLabel,
+    pub is_initiator: bool,
+    pub current_k_bit: bool,
+    pub coords_warmup_remaining: u8,
+    pub is_draining: bool,
+    pub resend_count: u32,
+    pub remote_pubkey: PublicKey,
+    pub traffic_counters: (u64, u64, u64, u64),
+    /// Coarse MMP snapshot. `None` if MMP not initialised.
+    pub mmp: Option<MmpSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum SessionStateLabel {
+    Established,
+    Initiating,
+    AwaitingMsg3,
+    Other,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MmpSnapshot {
+    pub mode: String,
+    pub loss_rate: f64,
+    pub etx: f64,
+    pub goodput_bps: f64,
+    pub srtt_ms: Option<f64>,
+    pub smoothed_loss: Option<f64>,
+    pub smoothed_etx: Option<f64>,
+    pub path_mtu: u16,
+    pub delivery_ratio_forward: f64,
+    pub delivery_ratio_reverse: f64,
+}
+
+/// Push events the actor emits to Node. Sent via a shared mpsc that
+/// the rx_loop drains from a dedicated `select!` arm.
+#[derive(Debug)]
+#[allow(dead_code)] // wired in 7c-2 step C+
+pub(crate) enum PeerOutboundEvent {
+    /// Actor's owned session just touched its last_activity. Node
+    /// updates a per-peer atomic for the idle-purge timer.
+    LastActivityUpdate {
+        peer_addr: crate::NodeAddr,
+        last_activity_ms: u64,
+    },
+    /// Actor's owned session has accumulated `consecutive_decrypt_
+    /// failures` >= threshold. Node should drop the session and
+    /// initiate a fresh XK handshake.
+    DecryptFailureThresholdExceeded {
+        peer_addr: crate::NodeAddr,
+        remote_pubkey: PublicKey,
+    },
+    /// Actor's owned session's drain window expired and the previous
+    /// NoiseSession has been cleaned up. Informational.
+    SessionDrained { peer_addr: crate::NodeAddr },
+    /// Actor's owned session has been removed by the actor (e.g. the
+    /// remote disconnected gracefully via a session-layer signal).
+    /// Node updates its peer-actor index / control-query caches.
+    SessionRemovedByActor { peer_addr: crate::NodeAddr },
 }
 
 pub struct DecryptedJob {
@@ -235,6 +399,41 @@ async fn peer_actor_loop(
                     );
                 }
                 owned_session = None;
+            }
+            PeerInboundJob::Encrypt {
+                msg_type,
+                plaintext,
+                coords_payload,
+                touch,
+                respond,
+            } => {
+                let _ = (msg_type, plaintext, coords_payload, touch);
+                // TODO(7c-2 step D): use owned_session to encrypt and assemble
+                // FSP payload. Until that's implemented, signal SessionGone
+                // so callers fall back to the legacy self.sessions path.
+                let _ = respond.send(Err(EncryptError::SessionGone));
+            }
+            PeerInboundJob::BuildMmpReports { now, respond } => {
+                let _ = now;
+                // TODO(7c-2 step E): build sender + receiver + path_mtu
+                // reports from owned_session.mmp(). Until then, return
+                // empty (no reports built by actor) — Node still runs
+                // its legacy iteration over self.sessions.
+                let _ = respond.send(Vec::new());
+            }
+            PeerInboundJob::IsRekeyDue { now_ms, respond } => {
+                let _ = now_ms;
+                // TODO(7c-2 step E): inspect owned_session for cutover/
+                // drain/rekey-trigger conditions. Default: nothing —
+                // Node still runs its legacy check over self.sessions.
+                let _ = respond.send(RekeyDecision::NotApplicable);
+            }
+            PeerInboundJob::QuerySnapshot(respond) => {
+                // TODO(7c-2 step F): build a SessionSnapshot from
+                // owned_session. Until then, return None — Node falls
+                // back to its legacy show_sessions path over
+                // self.sessions.
+                let _ = respond.send(None);
             }
         }
     }
