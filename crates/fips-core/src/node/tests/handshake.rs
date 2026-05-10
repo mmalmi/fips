@@ -588,6 +588,324 @@ async fn test_actor_owns_peer_encrypted_frame_roundtrip() {
     }
 }
 
+/// `send_tree_announce_to_peer` works against an actor-owned peer.
+///
+/// Caught the original `PeerNotFound` failure in `send_encrypted_link_message`
+/// (its `self.peers.get_mut(addr)` missed the actor-owned peer)
+/// and the rate-limit check inside `send_tree_announce_to_peer`.
+/// Single-direction handshake — no cross-connection needed for this
+/// reproduction.
+#[tokio::test]
+async fn test_actor_owns_peer_send_tree_announce() {
+    use crate::config::UdpConfig;
+    use crate::node::wire::build_msg1;
+    use crate::transport::udp::UdpTransport;
+    use tokio::time::{Duration, timeout};
+
+    fn make_actor_node() -> Node {
+        let mut config = Config::new();
+        config.node.peer_actor_enabled = true;
+        config.node.actor_owns_peer = true;
+        Node::new(config).unwrap()
+    }
+
+    let mut node_a = make_actor_node();
+    let mut node_b = make_actor_node();
+
+    let transport_id_a = TransportId::new(1);
+    let transport_id_b = TransportId::new(1);
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+    let (packet_tx_a, mut packet_rx_a) = packet_channel(64);
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+    let mut transport_a = UdpTransport::new(transport_id_a, None, udp_config.clone(), packet_tx_a);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_a.start_async().await.unwrap();
+    transport_b.start_async().await.unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+    let remote_addr_b = TransportAddr::from_string(&addr_b.to_string());
+    node_a
+        .transports
+        .insert(transport_id_a, TransportHandle::Udp(transport_a));
+    node_b
+        .transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    // A → B handshake (no cross-connection).
+    let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let peer_b_node_addr = *peer_b_identity.node_addr();
+    let link_id_a = node_a.allocate_link_id();
+    let mut conn_a = PeerConnection::outbound(link_id_a, peer_b_identity, 1000);
+    let our_index_a = node_a.index_allocator.allocate().unwrap();
+    let our_keypair_a = node_a.identity.keypair();
+    let noise_msg1 = conn_a
+        .start_handshake(our_keypair_a, node_a.startup_epoch, 1000)
+        .unwrap();
+    conn_a.set_our_index(our_index_a);
+    conn_a.set_transport_id(transport_id_a);
+    conn_a.set_source_addr(remote_addr_b.clone());
+    let wire_msg1 = build_msg1(our_index_a, &noise_msg1);
+    let link_a = Link::connectionless(
+        link_id_a,
+        transport_id_a,
+        remote_addr_b.clone(),
+        LinkDirection::Outbound,
+        Duration::from_millis(100),
+    );
+    node_a.links.insert(link_id_a, link_a);
+    node_a.connections.insert(link_id_a, conn_a);
+    node_a
+        .pending_outbound
+        .insert((transport_id_a, our_index_a.as_u32()), link_id_a);
+    node_a
+        .transports
+        .get(&transport_id_a)
+        .unwrap()
+        .send(&remote_addr_b, &wire_msg1)
+        .await
+        .unwrap();
+
+    let pb_msg1 = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    node_b.handle_msg1(pb_msg1).await;
+    let pa_msg2 = timeout(Duration::from_secs(1), packet_rx_a.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    node_a.handle_msg2(pa_msg2).await;
+
+    // Both peers are now in their respective actors.
+    assert!(node_a.peer_actors.contains_key(&peer_b_node_addr));
+    assert_eq!(node_a.peers.len(), 0);
+
+    // Bypass the rate-limit set in handle_msg1's initial announce (B
+    // already sent one when handling msg1). recall, set, reship.
+    node_a.recall_peer(&peer_b_node_addr).await;
+    if let Some(p) = node_a.peers.get_mut(&peer_b_node_addr) {
+        p.set_tree_announce_min_interval_ms(0);
+    }
+    node_a.reship_peer(&peer_b_node_addr);
+
+    // The cold path under test: TreeAnnounce against an actor-owned
+    // peer. Pre-fix this returned PeerNotFound from
+    // send_encrypted_link_message because `self.peers.get_mut(addr)`
+    // missed the actor-owned peer.
+    node_a
+        .send_tree_announce_to_peer(&peer_b_node_addr)
+        .await
+        .expect("send_tree_announce_to_peer must succeed against actor-owned peer");
+
+    // Peer should still be in actor (recall/reship balanced).
+    assert!(node_a.peer_actors.contains_key(&peer_b_node_addr));
+    assert_eq!(node_a.peers.len(), 0);
+    assert_eq!(node_a.recalled_handles.len(), 0);
+
+    for (_, t) in node_a.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+    for (_, t) in node_b.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+}
+
+/// Cross-connection lifecycle with `actor_owns_peer = true`.
+///
+/// Both nodes initiate simultaneously, receive each other's msg1
+/// (responder-promote shipping a peer to the actor), then receive
+/// each other's msg2. Without the cold-path migration this triggers
+/// the `consecutive_decrypt_failures` bug — the cross-connection
+/// branch in `handle_msg2` reads `self.peers.contains_key`, misses
+/// the actor-owned peer, and falls through to the fresh-promote
+/// path that allocates a SECOND ActivePeer with mismatched session
+/// keys. The test asserts `peer_count() == 1` and exactly one entry
+/// in `peer_actors` per side after the dust settles, which the bug
+/// fails (it would produce 2 peers — original LOSER promote + the
+/// fresh-promote that should have been a CrossConnectionWon).
+#[tokio::test]
+async fn test_actor_owns_peer_cross_connection() {
+    use crate::config::UdpConfig;
+    use crate::node::wire::build_msg1;
+    use crate::transport::udp::UdpTransport;
+    use tokio::time::{Duration, timeout};
+
+    fn make_actor_node() -> Node {
+        let mut config = Config::new();
+        config.node.peer_actor_enabled = true;
+        config.node.actor_owns_peer = true;
+        Node::new(config).unwrap()
+    }
+
+    let mut node_a = make_actor_node();
+    let mut node_b = make_actor_node();
+
+    let transport_id_a = TransportId::new(1);
+    let transport_id_b = TransportId::new(1);
+
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+
+    let (packet_tx_a, mut packet_rx_a) = packet_channel(64);
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+
+    let mut transport_a = UdpTransport::new(transport_id_a, None, udp_config.clone(), packet_tx_a);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_a.start_async().await.unwrap();
+    transport_b.start_async().await.unwrap();
+
+    let addr_a = transport_a.local_addr().unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+    let remote_addr_a = TransportAddr::from_string(&addr_a.to_string());
+    let remote_addr_b = TransportAddr::from_string(&addr_b.to_string());
+
+    node_a
+        .transports
+        .insert(transport_id_a, TransportHandle::Udp(transport_a));
+    node_b
+        .transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    // --- Both nodes initiate handshake simultaneously ---
+    let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let peer_a_identity = PeerIdentity::from_pubkey_full(node_a.identity.pubkey_full());
+    let peer_b_node_addr = *peer_b_identity.node_addr();
+    let peer_a_node_addr = *peer_a_identity.node_addr();
+
+    fn build_outbound(
+        node: &mut Node,
+        peer_id: PeerIdentity,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+    ) -> Vec<u8> {
+        let link_id = node.allocate_link_id();
+        let mut conn = PeerConnection::outbound(link_id, peer_id, 1000);
+        let our_index = node.index_allocator.allocate().unwrap();
+        let our_keypair = node.identity.keypair();
+        let noise_msg1 = conn
+            .start_handshake(our_keypair, node.startup_epoch, 1000)
+            .unwrap();
+        conn.set_our_index(our_index);
+        conn.set_transport_id(transport_id);
+        conn.set_source_addr(remote_addr.clone());
+        let wire_msg1 = build_msg1(our_index, &noise_msg1);
+        let link = Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        );
+        node.links.insert(link_id, link);
+        node.connections.insert(link_id, conn);
+        node.pending_outbound
+            .insert((transport_id, our_index.as_u32()), link_id);
+        wire_msg1
+    }
+
+    let msg1_a = build_outbound(&mut node_a, peer_b_identity, transport_id_a, remote_addr_b.clone());
+    let msg1_b = build_outbound(&mut node_b, peer_a_identity, transport_id_b, remote_addr_a.clone());
+
+    node_a
+        .transports
+        .get(&transport_id_a)
+        .unwrap()
+        .send(&remote_addr_b, &msg1_a)
+        .await
+        .expect("send msg1 a");
+    node_b
+        .transports
+        .get(&transport_id_b)
+        .unwrap()
+        .send(&remote_addr_a, &msg1_b)
+        .await
+        .expect("send msg1 b");
+
+    // --- Each node receives the other's msg1 (handle_msg1 → promote inbound) ---
+    let pa_msg1 = timeout(Duration::from_secs(1), packet_rx_a.recv())
+        .await
+        .expect("await msg1 on a")
+        .unwrap();
+    let pb_msg1 = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .expect("await msg1 on b")
+        .unwrap();
+    node_a.handle_msg1(pa_msg1).await;
+    node_b.handle_msg1(pb_msg1).await;
+
+    // After both inbound promotes the peer is in the actor on each side.
+    assert_eq!(node_a.peer_actors.len(), 1);
+    assert_eq!(node_b.peer_actors.len(), 1);
+    assert_eq!(node_a.peers.len(), 0, "peer is in actor, not Node.peers");
+    assert_eq!(node_b.peers.len(), 0);
+
+    // --- Each node receives the other's msg2 (handle_msg2 → cross-connection swap) ---
+    let pa_msg2 = timeout(Duration::from_secs(1), packet_rx_a.recv())
+        .await
+        .expect("await msg2 on a")
+        .unwrap();
+    let pb_msg2 = timeout(Duration::from_secs(1), packet_rx_b.recv())
+        .await
+        .expect("await msg2 on b")
+        .unwrap();
+    node_a.handle_msg2(pa_msg2).await;
+    node_b.handle_msg2(pb_msg2).await;
+
+    // After cross-connection resolution: still one peer per side, in
+    // the actor. NOT two as the bug produced.
+    assert_eq!(
+        node_a.peer_actors.len(),
+        1,
+        "cross-connection must not produce a second actor"
+    );
+    assert_eq!(node_b.peer_actors.len(), 1);
+    assert_eq!(node_a.peer_count(), 1);
+    assert_eq!(node_b.peer_count(), 1);
+
+    // Verify the sessions actually pair: recall each side and
+    // confirm `their_index` matches the peer's `our_index` on the
+    // other side. With the bug, indices would be drawn from the
+    // first (LOSER) promote and the second (fresh) promote and not
+    // line up.
+    node_a.recall_peer(&peer_b_node_addr).await;
+    node_b.recall_peer(&peer_a_node_addr).await;
+    let (a_their, b_our) = {
+        let pa = node_a.peers.get(&peer_b_node_addr).unwrap();
+        let pb = node_b.peers.get(&peer_a_node_addr).unwrap();
+        (pa.their_index().unwrap(), pb.our_index().unwrap())
+    };
+    let (b_their, a_our) = {
+        let pa = node_a.peers.get(&peer_b_node_addr).unwrap();
+        let pb = node_b.peers.get(&peer_a_node_addr).unwrap();
+        (pb.their_index().unwrap(), pa.our_index().unwrap())
+    };
+    assert_eq!(
+        a_their, b_our,
+        "A's their_index for B must equal B's our_index"
+    );
+    assert_eq!(
+        b_their, a_our,
+        "B's their_index for A must equal A's our_index"
+    );
+    node_a.reship_peer(&peer_b_node_addr);
+    node_b.reship_peer(&peer_a_node_addr);
+
+    // The frames went out on UDP; each peer should now receive a
+    // matching encrypted frame for FMP decrypt + dispatch.
+    for (_, t) in node_a.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+    for (_, t) in node_b.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+}
+
 /// Integration test: two nodes complete a handshake via run_rx_loop.
 ///
 /// Unlike test_two_node_handshake_udp which calls handle_msg1/handle_msg2

@@ -501,6 +501,13 @@ impl Node {
             Ok(result) => {
                 match result {
                     PromotionResult::Promoted(node_addr) => {
+                        // Recall the freshly-promoted peer so the
+                        // handshake_msg2 store + tree announce paths
+                        // see the peer in `Node.peers`. promote_connection
+                        // already shipped the peer to its actor when
+                        // actor_owns_peer is on; the recall round-trips
+                        // it back briefly.
+                        self.recall_peer(&node_addr).await;
                         // Store msg2 on peer for resend on duplicate msg1
                         if let Some(peer) = self.peers.get_mut(&node_addr) {
                             peer.set_handshake_msg2(wire_msg2.clone());
@@ -518,11 +525,13 @@ impl Node {
                         // Schedule filter announce (sent on next tick via debounce)
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
+                        self.reship_peer(&node_addr);
                     }
                     PromotionResult::CrossConnectionWon {
                         loser_link_id,
                         node_addr,
                     } => {
+                        self.recall_peer(&node_addr).await;
                         // Store msg2 on peer for resend on duplicate msg1
                         if let Some(peer) = self.peers.get_mut(&node_addr) {
                             peer.set_handshake_msg2(wire_msg2.clone());
@@ -549,6 +558,7 @@ impl Node {
                         // Schedule filter announce (sent on next tick via debounce)
                         self.bloom_state.mark_update_needed(node_addr);
                         self.reset_discovery_backoff();
+                        self.reship_peer(&node_addr);
                     }
                     PromotionResult::CrossConnectionLost { winner_link_id } => {
                         // Close the losing TCP connection (no-op for connectionless)

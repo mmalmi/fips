@@ -35,6 +35,20 @@ impl Node {
         &mut self,
         peer_addr: &NodeAddr,
     ) -> Result<(), NodeError> {
+        // Recall actor-owned peer for the rate-limit check + send-time
+        // record below. send_encrypted_link_message inside this fn does
+        // its own recall (refcounted, so nested calls compose).
+        // No-op when actor_owns_peer is false.
+        self.recall_peer(peer_addr).await;
+        let result = self.send_tree_announce_to_peer_inner(peer_addr).await;
+        self.reship_peer(peer_addr);
+        result
+    }
+
+    async fn send_tree_announce_to_peer_inner(
+        &mut self,
+        peer_addr: &NodeAddr,
+    ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
 
         // Check rate limit

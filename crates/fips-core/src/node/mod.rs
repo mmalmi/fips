@@ -527,10 +527,21 @@ pub struct Node {
     /// handle is parked here so `reship_peer` can hand the peer
     /// back to the actor when the cold path completes.
     ///
+    /// Tuple is `(handle, refcount)` so nested recalls compose:
+    /// outer caller recalls (refcount=1, peer moves to `peers`);
+    /// inner caller's recall increments to 2 (peer stays in
+    /// `peers`); inner caller's reship decrements to 1 (still in
+    /// `peers`); outer caller's reship decrements to 0 (peer goes
+    /// back to actor). Without refcounting, a nested
+    /// recall_peer/reship_peer pair (e.g. `dispatch_link_message`
+    /// inside the tick wrap) would ship the peer back mid-way and
+    /// the outer caller's subsequent `Node.peers[addr]` access
+    /// would miss.
+    ///
     /// While a peer is recalled, rx_loop's `peer_actors.get(addr)`
     /// lookup returns None — the inline FMP path runs instead, which
     /// works because the peer is back in `Node.peers`.
-    recalled_handles: HashMap<NodeAddr, crate::peer::actor::PeerActorHandle>,
+    recalled_handles: HashMap<NodeAddr, (crate::peer::actor::PeerActorHandle, u32)>,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: HashMap<(TransportId, u32), LinkId>,
@@ -1224,6 +1235,11 @@ impl Node {
     /// actor's mpsc — typically tens of microseconds when the actor
     /// task is idle.
     pub(crate) async fn recall_peer(&mut self, addr: &NodeAddr) {
+        // Nested recall: bump refcount, peer is already in `Node.peers`.
+        if let Some(entry) = self.recalled_handles.get_mut(addr) {
+            entry.1 = entry.1.saturating_add(1);
+            return;
+        }
         let Some(handle) = self.peer_actors.remove(addr) else {
             return;
         };
@@ -1242,14 +1258,27 @@ impl Node {
         // we just took the peer back so that clone is dropped now).
         // If we let the handle drop, the actor task would exit before
         // reship_peer can re-use it. Park it instead.
-        self.recalled_handles.insert(*addr, handle);
+        self.recalled_handles.insert(*addr, (handle, 1));
     }
 
     /// Hand a recalled peer back to its actor. Pairs with `recall_peer`.
-    /// No-op when the peer isn't currently recalled.
+    /// No-op when the peer isn't currently recalled. Decrements the
+    /// recall refcount and only reships when it hits zero, so nested
+    /// recall/reship pairs (outer + inner caller) compose cleanly.
     pub(crate) fn reship_peer(&mut self, addr: &NodeAddr) {
-        let Some(handle) = self.recalled_handles.remove(addr) else {
+        let count = match self.recalled_handles.get_mut(addr) {
+            Some(entry) => {
+                entry.1 = entry.1.saturating_sub(1);
+                entry.1
+            }
+            None => return,
+        };
+        if count > 0 {
             return;
+        }
+        let (handle, _) = match self.recalled_handles.remove(addr) {
+            Some(entry) => entry,
+            None => return,
         };
         let Some(peer) = self.peers.remove(addr) else {
             // Peer was removed during the cold-path window
