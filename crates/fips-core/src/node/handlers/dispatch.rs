@@ -102,6 +102,19 @@ impl Node {
     /// selects an alternative or becomes root, and marks remaining peers
     /// for pending tree announce (delivered on next tick).
     pub(in crate::node) fn remove_active_peer(&mut self, node_addr: &NodeAddr) {
+        // If the peer's `ActivePeer` lives inside its actor task
+        // (`actor_owns_peer == true`), tell the actor to drop it and
+        // then drop our handle clone — the channel closes once both
+        // senders are gone, and the actor task exits cleanly.
+        // We do NOT block on a release-and-cleanup round-trip here:
+        // the indices / tree / bloom cleanup paths below need direct
+        // peer field access, which doesn't work when the peer is in
+        // the actor. Cold-path migration (Phase 5) replaces those
+        // direct reads with actor queries; until then `actor_owns_peer`
+        // gives up some teardown bookkeeping precision.
+        if let Some(actor_handle) = self.peer_actors.remove(node_addr) {
+            let _ = actor_handle.try_remove_peer();
+        }
         let slot = match self.peers.remove(node_addr) {
             Some(p) => p,
             None => {

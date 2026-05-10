@@ -509,6 +509,17 @@ pub struct Node {
     /// O(1) lookup: (transport_id, our_index) → NodeAddr.
     /// This maps our session index to the peer that uses it.
     peers_by_index: HashMap<(TransportId, u32), NodeAddr>,
+    /// Peers whose `ActivePeer` ownership has been moved into a per-peer
+    /// actor task (`config.node.actor_owns_peer == true`). Stores a
+    /// clone of the actor handle so the rx_loop can ship raw inbound
+    /// packets via `PeerInboundJob::Packet` without going through the
+    /// (now-empty) `Node.peers` slot.
+    ///
+    /// Empty when `actor_owns_peer` is false. Populated in
+    /// `maybe_ship_peer_to_actor`; entries cleaned up when the peer is
+    /// removed via `remove_active_peer` (the actor task terminates as
+    /// soon as the last handle drops).
+    peer_actors: HashMap<NodeAddr, crate::peer::actor::PeerActorHandle>,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: HashMap<(TransportId, u32), LinkId>,
@@ -708,6 +719,7 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
+            peer_actors: HashMap::new(),
             pending_outbound: HashMap::new(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -840,6 +852,7 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
+            peer_actors: HashMap::new(),
             pending_outbound: HashMap::new(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -1200,6 +1213,11 @@ impl Node {
             self.peers.insert(*addr, peer);
             return;
         };
+        // Register the handle for rx_loop dispatch *before* the send
+        // succeeds — the actor doesn't process `TakePeer` until its
+        // task runs, but rx_loop only needs the handle to enqueue
+        // `Packet` jobs (which queue up behind the pending TakePeer).
+        self.peer_actors.insert(*addr, actor.clone());
         match actor.try_take_peer(Box::new(peer)) {
             Ok(()) => {
                 tracing::trace!(
@@ -1213,6 +1231,8 @@ impl Node {
                     "Failed to ship peer to actor (queue full / closed) \
                      — keeping in Node.peers as fallback"
                 );
+                // Roll back the handle registration too.
+                self.peer_actors.remove(addr);
                 self.peers.insert(*addr, *boxed_peer);
             }
         }

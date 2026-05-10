@@ -182,6 +182,12 @@ pub(crate) enum PeerInboundJob {
     ReleasePeer {
         respond: oneshot::Sender<Option<Box<ActivePeer>>>,
     },
+    /// Tell the actor to drop its owned `ActivePeer` (and the inbound_tx
+    /// clone held inside it via `peer.actor`). Once Node has dropped
+    /// its own handle in `Node.peer_actors`, processing this message
+    /// closes the channel and the actor task exits cleanly.
+    /// Non-blocking sync send via `try_remove_peer`.
+    RemovePeer,
 }
 
 /// Reply for `ProcessFspMsg2`.
@@ -467,6 +473,31 @@ impl PeerActorHandle {
             .is_ok()
     }
 
+    /// Sync fire-and-forget telling the actor to drop its owned peer.
+    /// Combined with Node dropping its `peer_actors[addr]` clone, this
+    /// closes the channel and terminates the actor task.
+    #[allow(dead_code)]
+    pub(crate) fn try_remove_peer(&self) -> bool {
+        self.inbound_tx
+            .try_send(PeerInboundJob::RemovePeer)
+            .is_ok()
+    }
+
+    /// Best-effort sync dispatch of a raw inbound packet to the actor.
+    /// Returns `true` if the job was enqueued, `false` on full / closed
+    /// channel — caller should fall back to the inline path or simply
+    /// drop the packet (FMP is lossy by design; replay window catches
+    /// up on the next packet that does land).
+    #[allow(dead_code)]
+    pub(crate) fn try_dispatch_packet(
+        &self,
+        packet: Box<crate::transport::ReceivedPacket>,
+    ) -> bool {
+        self.inbound_tx
+            .try_send(PeerInboundJob::Packet(packet))
+            .is_ok()
+    }
+
     /// Hand an `ActivePeer` to the peer actor as owned state.
     /// On failure (channel full / closed) returns the peer back so the
     /// caller can keep it in `Node.peers` instead.
@@ -645,6 +676,18 @@ async fn peer_actor_loop(
                     );
                 }
                 let _ = respond.send(peer);
+            }
+            PeerInboundJob::RemovePeer => {
+                if owned_peer.is_some() {
+                    trace!(
+                        peer = %peer_addr,
+                        "Peer actor dropped owned ActivePeer (RemovePeer)"
+                    );
+                }
+                owned_peer = None;
+                // After dropping owned_peer (which holds an inbound_tx
+                // clone via peer.actor), the channel will close as soon
+                // as Node drops its `peer_actors[addr]` clone.
             }
         }
     }

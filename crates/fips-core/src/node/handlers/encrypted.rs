@@ -46,6 +46,23 @@ impl Node {
             }
         };
 
+        // Actor-owned-peer fast path: when `node.actor_owns_peer` is
+        // enabled, the peer's `ActivePeer` lives inside the per-peer
+        // actor task. Ship the raw packet there (best-effort sync
+        // try_send) and return — the actor handles header re-parse,
+        // FMP decrypt, per-peer mutations, and link dispatch on its
+        // own task. This thins rx_loop to just header parse + lookup
+        // + enqueue, freeing it for concurrent peers.
+        if let Some(actor) = self.peer_actors.get(&node_addr) {
+            if !actor.try_dispatch_packet(Box::new(packet)) {
+                trace!(
+                    peer = %self.peer_display_name(&node_addr),
+                    "Per-peer actor queue full / closed — dropping packet"
+                );
+            }
+            return;
+        }
+
         // Pre-extract everything off `packet` so we can move data into
         // the single `&mut peer` borrow below without aliasing.
         let ce_flag = header.flags & FLAG_CE != 0;
