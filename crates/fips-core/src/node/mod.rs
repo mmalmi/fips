@@ -1135,6 +1135,17 @@ impl Node {
         self.identity.node_addr()
     }
 
+    /// Build a `PeerActorIoCtx` snapshot for spawning a peer actor.
+    /// Cheap — clones the IO sinks (`tun_tx`, `endpoint_event_tx`),
+    /// which are mpsc senders backed by `Arc`s.
+    pub(crate) fn peer_actor_io_ctx(&self) -> crate::peer::actor::PeerActorIoCtx {
+        crate::peer::actor::PeerActorIoCtx {
+            node_addr: *self.identity.node_addr(),
+            tun_tx: self.tun_tx.clone(),
+            endpoint_event_tx: self.endpoint_event_tx.clone(),
+        }
+    }
+
     /// Get this node's npub.
     pub fn npub(&self) -> String {
         self.identity.npub()

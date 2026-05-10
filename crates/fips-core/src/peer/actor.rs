@@ -28,13 +28,32 @@
 //! * Stop: `remove_active_peer` drops the handle, which closes the
 //!   sender; the peer task observes `recv() -> None` and exits.
 
+use crate::node::NodeEndpointEvent;
 use crate::node::session::SessionEntry;
 use crate::peer::ActivePeerSlot;
 use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
+use crate::upper::tun::TunTx;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
+
+/// Per-actor IO context: clones of the IO sinks the peer actor needs to
+/// deliver locally-terminated SessionDatagram payloads (TUN packets,
+/// endpoint data events) without round-tripping through the rx_loop.
+/// Built once on Node startup and passed to every `PeerActorHandle::spawn`.
+#[derive(Clone)]
+pub(crate) struct PeerActorIoCtx {
+    /// This node's own NodeAddr — used to recognise SessionDatagrams
+    /// destined for us (`datagram.dest_addr == self.node_addr`).
+    pub node_addr: crate::NodeAddr,
+    /// TUN-write sink for IPv6-shim DataPackets. `None` when no TUN
+    /// interface is attached (relay-only mode, tests).
+    pub tun_tx: Option<TunTx>,
+    /// Endpoint-event sink for app-bound EndpointData packets. `None`
+    /// when no endpoint is attached.
+    pub endpoint_event_tx: Option<mpsc::Sender<NodeEndpointEvent>>,
+}
 
 /// One unit of work pushed from the rx_loop into a peer task.
 pub(crate) enum PeerInboundJob {
@@ -117,6 +136,7 @@ impl PeerActorHandle {
         peer_addr: crate::NodeAddr,
         peer_slot: ActivePeerSlot,
         link_dispatch_tx: mpsc::Sender<PeerLinkDispatch>,
+        io_ctx: PeerActorIoCtx,
         queue_depth: usize,
     ) -> Option<Self> {
         // Probe for a current runtime — `tokio::spawn` panics when
@@ -130,6 +150,7 @@ impl PeerActorHandle {
             peer_slot,
             inbound_rx,
             link_dispatch_tx,
+            io_ctx,
         ));
         // We deliberately drop the JoinHandle: the task exits cleanly
         // when its inbound_tx half is dropped (i.e. when the peer is
@@ -183,8 +204,10 @@ async fn peer_actor_loop(
     peer_slot: ActivePeerSlot,
     mut inbound_rx: mpsc::Receiver<PeerInboundJob>,
     link_dispatch_tx: mpsc::Sender<PeerLinkDispatch>,
+    io_ctx: PeerActorIoCtx,
 ) {
     trace!(peer = %peer_addr, "Peer actor task started");
+    let _ = &io_ctx; // wired in 7c-2 step v (hot-path FSP receive)
     // Owned per-actor state. `session` is `None` until a `TakeSession`
     // job arrives from Node (handshake completion path). When present,
     // the actor can run the FSP-receive fast path entirely on owned

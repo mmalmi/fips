@@ -1074,10 +1074,12 @@ impl Node {
 
                 let slot = crate::peer::active_peer_slot(new_peer);
                 if self.config.node.peer_actor_enabled {
+                    let io_ctx = self.peer_actor_io_ctx();
                     if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
                         peer_node_addr,
                         slot.clone(),
                         (*self.peer_link_dispatch_tx).clone(),
+                        io_ctx,
                         256,
                     ) {
                         crate::peer::peer_write(&slot).set_actor(actor_handle);
@@ -1182,10 +1184,12 @@ impl Node {
 
             let slot = crate::peer::active_peer_slot(new_peer);
             if self.config.node.peer_actor_enabled {
+                let io_ctx = self.peer_actor_io_ctx();
                 if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
                     peer_node_addr,
                     slot.clone(),
                     (*self.peer_link_dispatch_tx).clone(),
+                    io_ctx,
                     256,
                 ) {
                     crate::peer::peer_write(&slot).set_actor(actor_handle);
