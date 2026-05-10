@@ -2576,18 +2576,50 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        // Recall the peer if it's currently in its actor task (cold-path
-        // outbound encryption isn't yet migrated to an actor.Encrypt
-        // message). The recall round-trip is paid per outbound link
-        // message — a known overhead until the actor.Encrypt path lands.
-        // No-op when `actor_owns_peer` is false. Inner closure runs the
-        // encrypt+send, then reship_peer fires unconditionally below.
-        self.recall_peer(node_addr).await;
-        let result = self
-            .send_encrypted_link_message_inner(node_addr, plaintext, ce_flag)
-            .await;
-        self.reship_peer(node_addr);
-        result
+        // Actor-owned fast path: the peer's NoiseSession lives inside
+        // its actor task. Ask the actor to encrypt and return the
+        // wire bytes; we fire the UDP send ourselves (transport handles
+        // aren't owned by the actor). One mpsc + one oneshot round
+        // trip per packet — same number of channel hops as the inline
+        // path, but no peer-ownership transfer (which is what made the
+        // recall_peer/reship_peer pattern ~28× slower).
+        if let Some(actor) = self.peer_actors.get(node_addr).cloned() {
+            let output = actor
+                .encrypt_link(plaintext.to_vec(), ce_flag)
+                .await
+                .map_err(|e| match e {
+                    crate::peer::actor::EncryptLinkError::PeerGone => {
+                        NodeError::PeerNotFound(*node_addr)
+                    }
+                    other => NodeError::SendFailed {
+                        node_addr: *node_addr,
+                        reason: format!("actor encrypt: {}", other),
+                    },
+                })?;
+            let transport = self
+                .transports
+                .get(&output.transport_id)
+                .ok_or(NodeError::TransportNotFound(output.transport_id))?;
+            transport
+                .send(&output.remote_addr, &output.wire_packet)
+                .await
+                .map_err(|e| match e {
+                    TransportError::MtuExceeded { packet_size, mtu } => NodeError::MtuExceeded {
+                        node_addr: *node_addr,
+                        packet_size,
+                        mtu,
+                    },
+                    other => NodeError::SendFailed {
+                        node_addr: *node_addr,
+                        reason: format!("transport send: {}", other),
+                    },
+                })?;
+            return Ok(());
+        }
+
+        // Inline path: peer lives in `Node.peers` (default mode).
+        self.send_encrypted_link_message_inner(node_addr, plaintext, ce_flag)
+            .await
     }
 
     async fn send_encrypted_link_message_inner(

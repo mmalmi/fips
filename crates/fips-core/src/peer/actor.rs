@@ -188,6 +188,48 @@ pub(crate) enum PeerInboundJob {
     /// closes the channel and the actor task exits cleanly.
     /// Non-blocking sync send via `try_remove_peer`.
     RemovePeer,
+    /// Encrypt an outbound link-layer message (TreeAnnounce,
+    /// FilterAnnounce, SessionDatagram, etc.) against the actor-owned
+    /// `ActivePeer`'s NoiseSession. The actor returns the wire bytes
+    /// + transport routing so Node can fire the UDP `send` itself
+    /// (transport handles aren't owned by the actor).
+    ///
+    /// Replaces the per-packet recall_peer/reship_peer round-trip on
+    /// the outbound hot path — that pattern paid ~100µs of channel
+    /// + tokio wakeup per packet, dragging single-stream throughput
+    /// down ~28× vs the inline path.
+    EncryptLink {
+        plaintext: Vec<u8>,
+        ce_flag: bool,
+        respond: oneshot::Sender<Result<EncryptLinkOutput, EncryptLinkError>>,
+    },
+}
+
+/// Result of a successful actor `EncryptLink`.
+#[derive(Debug)]
+pub(crate) struct EncryptLinkOutput {
+    /// Wire-format encrypted FMP frame ready for UDP send.
+    pub wire_packet: Vec<u8>,
+    /// Transport that owns the outgoing socket.
+    pub transport_id: crate::transport::TransportId,
+    /// Destination address on that transport.
+    pub remote_addr: crate::transport::TransportAddr,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EncryptLinkError {
+    #[error("peer actor does not own a peer")]
+    PeerGone,
+    #[error("peer has no their_index")]
+    NoTheirIndex,
+    #[error("peer has no transport_id")]
+    NoTransport,
+    #[error("peer has no current_addr")]
+    NoCurrentAddr,
+    #[error("peer has no Noise session")]
+    NoSession,
+    #[error("AEAD encrypt failed: {0}")]
+    Crypto(String),
 }
 
 /// Reply for `ProcessFspMsg2`.
@@ -473,6 +515,32 @@ impl PeerActorHandle {
             .is_ok()
     }
 
+    /// Encrypt an outbound link-layer message on the actor task.
+    /// Returns the wire bytes + transport routing for Node to fire
+    /// the UDP `send` itself. Replaces the per-packet
+    /// recall_peer / reship_peer round-trip on the outbound hot path.
+    #[allow(dead_code)]
+    pub(crate) async fn encrypt_link(
+        &self,
+        plaintext: Vec<u8>,
+        ce_flag: bool,
+    ) -> Result<EncryptLinkOutput, EncryptLinkError> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inbound_tx
+            .send(PeerInboundJob::EncryptLink {
+                plaintext,
+                ce_flag,
+                respond: tx,
+            })
+            .await
+            .is_err()
+        {
+            return Err(EncryptLinkError::PeerGone);
+        }
+        rx.await.unwrap_or(Err(EncryptLinkError::PeerGone))
+    }
+
     /// Sync fire-and-forget telling the actor to drop its owned peer.
     /// Combined with Node dropping its `peer_actors[addr]` clone, this
     /// closes the channel and terminates the actor task.
@@ -688,6 +756,15 @@ async fn peer_actor_loop(
                 // After dropping owned_peer (which holds an inbound_tx
                 // clone via peer.actor), the channel will close as soon
                 // as Node drops its `peer_actors[addr]` clone.
+            }
+            PeerInboundJob::EncryptLink {
+                plaintext,
+                ce_flag,
+                respond,
+            } => {
+                let result =
+                    actor_encrypt_link(owned_peer.as_deref_mut(), &plaintext, ce_flag);
+                let _ = respond.send(result);
             }
         }
     }
@@ -1160,6 +1237,74 @@ async fn handle_packet(
             );
         }
     }
+}
+
+/// Encrypt an outbound link-layer message against the actor's owned
+/// `ActivePeer`. Mirrors the inline body of
+/// `Node::send_encrypted_link_message_inner`, but operating on the
+/// peer the actor already holds — so the rx_loop side doesn't have
+/// to recall/reship the peer for every outbound packet.
+///
+/// Bookkeeping (`link_stats.record_sent` + `mmp.sender.record_sent`)
+/// happens here too, optimistically using the wire packet length —
+/// if the subsequent UDP `send` fails partially, the recorded count
+/// is slightly off. Same approximation the existing
+/// `actor_encrypt` for `SessionEntry` makes.
+fn actor_encrypt_link(
+    peer: Option<&mut ActivePeer>,
+    plaintext: &[u8],
+    ce_flag: bool,
+) -> Result<EncryptLinkOutput, EncryptLinkError> {
+    use crate::node::wire::{
+        FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
+        prepend_inner_header,
+    };
+
+    let peer = peer.ok_or(EncryptLinkError::PeerGone)?;
+    let their_index = peer.their_index().ok_or(EncryptLinkError::NoTheirIndex)?;
+    let transport_id = peer.transport_id().ok_or(EncryptLinkError::NoTransport)?;
+    let remote_addr = peer
+        .current_addr()
+        .cloned()
+        .ok_or(EncryptLinkError::NoCurrentAddr)?;
+
+    let timestamp_ms = peer.session_elapsed_ms();
+    let sp_flag = peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit());
+    let mut flags: u8 = if sp_flag { FLAG_SP } else { 0 };
+    if ce_flag {
+        flags |= FLAG_CE;
+    }
+    if peer.current_k_bit() {
+        flags |= FLAG_KEY_EPOCH;
+    }
+
+    let session = peer
+        .noise_session_mut()
+        .ok_or(EncryptLinkError::NoSession)?;
+
+    let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
+    let counter = session.current_send_counter();
+    let payload_len = inner_plaintext.len() as u16;
+    let header = build_established_header(their_index, counter, flags, payload_len);
+    let ciphertext = session
+        .encrypt_with_aad(&inner_plaintext, &header)
+        .map_err(|e| EncryptLinkError::Crypto(format!("{}", e)))?;
+    let wire_packet = build_encrypted(&header, &ciphertext);
+    let bytes_sent = wire_packet.len();
+
+    // Bookkeeping — assume the upcoming UDP send succeeds. If it
+    // doesn't the count over-reports, same compromise as the
+    // SessionEntry actor_encrypt path.
+    peer.link_stats().record_sent(bytes_sent);
+    if let Some(mut mmp) = peer.mmp_mut() {
+        mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
+    }
+
+    Ok(EncryptLinkOutput {
+        wire_packet,
+        transport_id,
+        remote_addr,
+    })
 }
 
 /// Try the actor-owned FSP receive fast path. Returns `true` iff the
