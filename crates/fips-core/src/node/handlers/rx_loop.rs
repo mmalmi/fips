@@ -127,6 +127,26 @@ impl Node {
                         }
                     }
                     // After draining inbound, also drain any peer-actor
+                    // outbound wire-send jobs (SendLink) that landed
+                    // while we were processing. Without this the
+                    // outbound arm can be starved under sustained
+                    // inbound load and the actor's encrypted bytes
+                    // never reach the wire.
+                    if let Some(rx) = udp_send_rx.as_mut() {
+                        let mut sent = 0;
+                        while sent < 4096 {
+                            match rx.0.try_recv() {
+                                Ok(o) => {
+                                    if let Some(transport) = self.transports.get(&o.transport_id) {
+                                        let _ = transport.send(&o.remote_addr, &o.wire).await;
+                                    }
+                                    sent += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    // After draining inbound, also drain any peer-actor
                     // link-dispatch jobs that landed while we were
                     // processing. Without this the dispatch arm can be
                     // starved under sustained inbound load and packets
