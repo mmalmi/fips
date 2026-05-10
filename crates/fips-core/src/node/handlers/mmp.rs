@@ -345,7 +345,7 @@ impl Node {
                     crate::PeerIdentity::from_pubkey(xonly).short_npub()
                 });
 
-            let Some(mmp) = entry.mmp_mut() else {
+            let Some(mut mmp) = entry.mmp_mut() else {
                 continue;
             };
 
@@ -391,7 +391,7 @@ impl Node {
 
             // Periodic operator logging
             if mmp.should_log(now) {
-                Self::log_session_mmp_metrics(&session_name, mmp);
+                Self::log_session_mmp_metrics(&session_name, &mmp);
                 mmp.mark_logged(now);
             }
         }
@@ -452,7 +452,7 @@ impl Node {
         for (dest_addr, success) in dest_success {
             if let Some(slot) = self.sessions.get(&dest_addr).cloned() {
                 let mut entry = crate::node::session::session_write(&slot);
-                if let Some(mmp) = entry.mmp_mut() {
+                if let Some(mut mmp) = entry.mmp_mut() {
                     if success {
                         let prev = mmp.sender.record_send_success();
                         if prev > 3 {

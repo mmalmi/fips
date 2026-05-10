@@ -143,7 +143,7 @@ impl Node {
         if let Some(session_slot) = self.sessions.remove(node_addr) {
             let session_entry = crate::node::session::session_read(&session_slot);
             if let Some(mmp) = session_entry.mmp() {
-                Self::log_session_mmp_teardown(&peer_name, mmp);
+                Self::log_session_mmp_teardown(&peer_name, &mmp);
             }
         }
         self.pending_tun_packets.remove(node_addr);

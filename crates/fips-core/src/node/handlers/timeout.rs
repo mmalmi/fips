@@ -269,7 +269,7 @@ impl Node {
             if let Some(slot) = self.sessions.get(&addr) {
                 let entry = crate::node::session::session_read(slot);
                 if let Some(mmp) = entry.mmp() {
-                    Self::log_session_mmp_teardown(&name, mmp);
+                    Self::log_session_mmp_teardown(&name, &mmp);
                 }
             }
             self.sessions.remove(&addr);

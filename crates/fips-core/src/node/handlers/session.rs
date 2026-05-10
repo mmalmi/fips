@@ -315,7 +315,7 @@ impl Node {
             // `self.sessions.get_mut(src_addr) + entry.mmp_mut()`
             // blocks (and the matching pair of `Instant::now()`
             // calls) from the original implementation into one.
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 let now = std::time::Instant::now();
                 mmp.receiver
                     .record_recv(header.counter, timestamp, plaintext.len(), ce_flag, now);
@@ -1084,7 +1084,7 @@ impl Node {
 
         let our_timestamp_ms = entry.session_timestamp(now_ms);
 
-        let Some(mmp) = entry.mmp_mut() else {
+        let Some(mut mmp) = entry.mmp_mut() else {
             return;
         };
 
@@ -1150,7 +1150,7 @@ impl Node {
         };
         let mut entry = crate::node::session::session_write(&entry_slot);
 
-        let Some(mmp) = entry.mmp_mut() else {
+        let Some(mut mmp) = entry.mmp_mut() else {
             return;
         };
 
@@ -1375,7 +1375,7 @@ impl Node {
         // Apply to PathMtuState: immediate decrease via apply_notification()
         if let Some(slot) = self.sessions.get(&msg.dest_addr) {
             let mut entry = crate::node::session::session_write(slot);
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 let old_mtu = mmp.path_mtu.current_mtu();
                 let now = std::time::Instant::now();
                 if mmp.path_mtu.apply_notification(msg.mtu, now) {
@@ -1645,7 +1645,7 @@ impl Node {
         if let Some(slot) = self.sessions.get(dest_addr) {
             let mut entry = crate::node::session::session_write(slot);
             entry.record_sent(payload.len());
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
             }
             entry.touch(now_ms);
@@ -1902,7 +1902,7 @@ impl Node {
         if let Some(slot) = self.sessions.get(dest_addr).cloned() {
             let mut entry = crate::node::session::session_write(&slot);
             entry.record_sent(payload.len());
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
             }
             entry.touch(now_ms);
@@ -2022,7 +2022,7 @@ impl Node {
         // Record in MMP sender state (no touch — MMP reports don't reset idle timer)
         if let Some(slot) = self.sessions.get(dest_addr).cloned() {
             let mut entry = crate::node::session::session_write(&slot);
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
             }
         }
@@ -2113,7 +2113,7 @@ impl Node {
         // Record in MMP (infrastructure traffic — no idle timer touch)
         if let Some(slot) = self.sessions.get(dest_addr).cloned() {
             let mut entry = crate::node::session::session_write(&slot);
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
             }
         }
@@ -2159,7 +2159,7 @@ impl Node {
         // sends a PathMtuNotification back.
         if let Some(slot) = self.sessions.get(&datagram.dest_addr).cloned() {
             let mut entry = crate::node::session::session_write(&slot);
-            if let Some(mmp) = entry.mmp_mut() {
+            if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.path_mtu.seed_source_mtu(datagram.path_mtu);
             }
         }

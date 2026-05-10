@@ -2073,8 +2073,8 @@ async fn test_tun_outbound_path_mtu_generates_ptb() {
     let local_transport_mtu = nodes[0].node.transport_mtu();
     let reduced_mtu = local_transport_mtu - 200;
     {
-        let mut entry = nodes[0].node.get_session_mut(&node1_addr).unwrap();
-        let mmp = entry.mmp_mut().unwrap();
+        let entry = nodes[0].node.get_session_mut(&node1_addr).unwrap();
+        let mut mmp = entry.mmp_mut().unwrap();
         mmp.path_mtu
             .apply_notification(reduced_mtu, std::time::Instant::now());
         assert_eq!(mmp.path_mtu.current_mtu(), reduced_mtu);
