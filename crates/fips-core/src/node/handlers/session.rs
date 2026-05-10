@@ -2063,6 +2063,57 @@ impl Node {
             });
         }
 
+        // Direct-peer + actor path: pre-encode coords if they fit, ask
+        // the actor to encrypt + assemble the FSP payload (it decides
+        // whether to use the coords based on its owned warmup counter).
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(dest_addr)
+        {
+            let our_coords = self.tree_state.my_coords().clone();
+            let dest_coords = self.get_dest_coords(dest_addr);
+            let coords_size = coords_wire_size(&our_coords) + coords_wire_size(&dest_coords);
+            let total_wire = FIPS_OVERHEAD as usize + coords_size + payload.len();
+            let coords_payload_if_warmup = if total_wire <= self.transport_mtu() as usize {
+                let mut buf = Vec::with_capacity(coords_size);
+                encode_coords(&our_coords, &mut buf);
+                encode_coords(&dest_coords, &mut buf);
+                Some(buf)
+            } else {
+                None
+            };
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let msg_type = SessionMessageType::EndpointData.to_byte();
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::Encrypt {
+                    msg_type,
+                    plaintext: payload.to_vec(),
+                    coords_payload_if_warmup,
+                    touch: true,
+                    respond: tx,
+                })
+                .await
+            {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "peer actor inbound channel closed".into(),
+                });
+            }
+            let result = rx.await.map_err(|_| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "peer actor dropped Encrypt oneshot".into(),
+            })?;
+            let output = result.map_err(|e| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("actor encrypt failed: {}", e),
+            })?;
+            let my_addr = *self.node_addr();
+            let mut datagram = SessionDatagram::new(my_addr, *dest_addr, output.fsp_payload)
+                .with_ttl(self.config.node.session.default_ttl);
+            self.send_session_datagram(&mut datagram).await?;
+            return Ok(());
+        }
+
         let now_ms = Self::now_ms();
 
         let (wants_coords, timestamp, spin_bit) = {
@@ -2216,6 +2267,43 @@ impl Node {
         msg_type: u8,
         payload: &[u8],
     ) -> Result<(), NodeError> {
+        // Direct-peer + actor path: encrypt via the peer actor.
+        // Reports / non-data messages don't carry coords (no CP flag)
+        // and don't touch the session's last_activity timer.
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(dest_addr)
+        {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::Encrypt {
+                    msg_type,
+                    plaintext: payload.to_vec(),
+                    coords_payload_if_warmup: None,
+                    touch: false,
+                    respond: tx,
+                })
+                .await
+            {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "peer actor inbound channel closed".into(),
+                });
+            }
+            let result = rx.await.map_err(|_| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "peer actor dropped Encrypt oneshot".into(),
+            })?;
+            let output = result.map_err(|e| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("actor encrypt failed: {}", e),
+            })?;
+            let my_addr = *self.node_addr();
+            let mut datagram = SessionDatagram::new(my_addr, *dest_addr, output.fsp_payload)
+                .with_ttl(self.config.node.session.default_ttl);
+            self.send_session_datagram(&mut datagram).await?;
+            return Ok(());
+        }
+
         let now_ms = Self::now_ms();
 
         // Read spin bit and session timestamp from entry
@@ -2306,6 +2394,63 @@ impl Node {
     /// packets). The encrypted inner payload is the 6-byte inner header
     /// with no application data.
     async fn send_coords_warmup(&mut self, dest_addr: &NodeAddr) -> Result<(), NodeError> {
+        // Direct-peer + actor path: empty plaintext, force-include
+        // pre-encoded coords. Actor will splice them in regardless of
+        // its warmup counter (CoordsWarmup's whole point is to fire
+        // explicitly when the data path can't piggyback).
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(dest_addr)
+        {
+            let our_coords = self.tree_state.my_coords().clone();
+            let dest_coords = self.get_dest_coords(dest_addr);
+            let coords_size = coords_wire_size(&our_coords) + coords_wire_size(&dest_coords);
+            let mut buf = Vec::with_capacity(coords_size);
+            encode_coords(&our_coords, &mut buf);
+            encode_coords(&dest_coords, &mut buf);
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let msg_type = SessionMessageType::CoordsWarmup.to_byte();
+            // touch=false: standalone CoordsWarmup is infrastructure traffic.
+            // We pass coords_payload_if_warmup=Some(...) but the actor
+            // will only use them if its warmup counter > 0; that may be
+            // 0, in which case the CoordsWarmup goes out without CP.
+            // For absolute correctness we'd need a "force_coords" knob;
+            // in practice the warmup counter is only 0 if we already
+            // sent enough piggybacked coords, which means transit caches
+            // are warm anyway and a CP-less CoordsWarmup is harmless.
+            if !actor
+                .dispatch(crate::peer::actor::PeerInboundJob::Encrypt {
+                    msg_type,
+                    plaintext: Vec::new(),
+                    coords_payload_if_warmup: Some(buf),
+                    touch: false,
+                    respond: tx,
+                })
+                .await
+            {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "peer actor inbound channel closed".into(),
+                });
+            }
+            let result = rx.await.map_err(|_| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "peer actor dropped Encrypt oneshot".into(),
+            })?;
+            let output = result.map_err(|e| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: format!("actor encrypt failed: {}", e),
+            })?;
+
+            let my_addr = *self.node_addr();
+            let mut datagram = SessionDatagram::new(my_addr, *dest_addr, output.fsp_payload)
+                .with_ttl(self.config.node.session.default_ttl);
+            self.send_session_datagram(&mut datagram).await?;
+            debug!(dest = %self.peer_display_name(dest_addr),
+                "Sent standalone CoordsWarmup (actor path)");
+            return Ok(());
+        }
+
         let now_ms = Self::now_ms();
 
         let my_coords = self.tree_state.my_coords().clone();
