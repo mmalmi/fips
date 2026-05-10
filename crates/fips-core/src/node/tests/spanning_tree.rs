@@ -46,6 +46,7 @@ async fn make_test_node_with(mtu: u16, actor_owns_peer: bool) -> TestNode {
     use crate::transport::udp::UdpTransport;
 
     let mut config = Config::new();
+    super::apply_test_intervals(&mut config);
     if actor_owns_peer {
         config.node.peer_actor_enabled = true;
         config.node.actor_owns_peer = true;
@@ -310,7 +311,7 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     // Phase 1: Fast drain — process packets as fast as they arrive.
     // This handles handshakes (msg1/msg2) and the first wave of TreeAnnounce.
     for _round in 0..200 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
 
         let count = process_available_packets(nodes).await;
         total += count;
@@ -330,9 +331,13 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     // to expire, flushes pending announces, processes resulting packets,
     // and repeats. Each cycle propagates the tree one hop further through
     // rate-limited paths. For a chain of depth D, we need D cycles.
+    //
+    // `apply_test_intervals` shrinks the production 500ms TreeAnnounce
+    // / 500ms FilterAnnounce rate-limit windows down to 5ms, so the
+    // wait per cycle is small.
     for flush in 0..20 {
-        // Wait for rate limit window (500ms) to fully expire
-        tokio::time::sleep(Duration::from_millis(550)).await;
+        // Wait for rate limit window (5ms in tests) to expire.
+        tokio::time::sleep(Duration::from_millis(8)).await;
 
         // Flush pending rate-limited tree and filter announces on all nodes
         for tn in nodes.iter_mut() {
@@ -340,8 +345,8 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
             tn.node.send_pending_filter_announces().await;
         }
 
-        // Allow flushed packets to arrive
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Allow flushed packets to arrive on the loopback transport.
+        tokio::time::sleep(Duration::from_millis(2)).await;
 
         // Process the resulting packets. Processing may trigger new
         // parent switches → new announces, but those to the same peer
@@ -351,7 +356,7 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
         // Do a few more quick rounds in case packet processing above
         // triggered non-rate-limited sends (to different peers)
         for _sub in 0..20 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
             let count = process_available_packets(nodes).await;
             flush_total += count;
             if count == 0 {

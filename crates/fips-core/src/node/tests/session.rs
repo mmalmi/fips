@@ -785,10 +785,15 @@ async fn test_session_ack_for_unknown_session() {
 // ============================================================================
 
 /// Drain packets until quiescent (2 consecutive idle rounds).
+///
+/// UDP loopback typically delivers in <100µs; 1ms per round is plenty
+/// of headroom. This used to sleep 10ms per round which, multiplied
+/// by 100 sessions × 40 rounds, dominated `test_session_100_nodes`'s
+/// runtime.
 async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     let mut idle_rounds = 0;
     for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
         let count = process_available_packets(nodes).await;
         if count == 0 {
             idle_rounds += 1;

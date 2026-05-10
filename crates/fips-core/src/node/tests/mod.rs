@@ -24,8 +24,24 @@ mod tcp;
 mod unit;
 
 pub(super) fn make_node() -> Node {
-    let config = Config::new();
+    let mut config = Config::new();
+    apply_test_intervals(&mut config);
     Node::new(config).unwrap()
+}
+
+/// Tighten the per-peer rate-limit / debounce intervals so unit tests
+/// don't burn whole-second wall-clock waits draining packets through
+/// 500ms TreeAnnounce / 500ms FilterAnnounce / 1s handshake-resend
+/// windows. Production defaults (500ms tree, 500ms bloom, 1s
+/// handshake) are sized for real WAN; tests on UDP loopback need
+/// nothing of the sort.
+///
+/// Used by `make_node()` and the `make_test_node*` helpers in
+/// spanning_tree.rs.
+pub(super) fn apply_test_intervals(config: &mut Config) {
+    config.node.tree.announce_min_interval_ms = 5;
+    config.node.bloom.update_debounce_ms = 5;
+    config.node.rate_limit.handshake_resend_interval_ms = 50;
 }
 
 #[allow(dead_code)]
