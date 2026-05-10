@@ -1988,7 +1988,14 @@ impl Node {
                 payload,
                 response_tx,
             } => {
+                // send_endpoint_data dives into the routing layer
+                // which iterates `self.peers.values()` (bloom-filter
+                // reachability check, next-hop lookup, etc). Recall
+                // all actor-owned peers so those iterations see the
+                // full set. No-op when actor_owns_peer is false.
+                self.recall_all_actor_peers().await;
                 let result = self.send_endpoint_data(remote, payload).await;
+                self.reship_all_actor_peers();
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
