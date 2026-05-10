@@ -91,6 +91,8 @@ impl Node {
         drop(control_tx);
 
         info!("RX event loop started");
+        // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
+        crate::perf_profile::maybe_spawn_reporter();
 
         loop {
             tokio::select! {

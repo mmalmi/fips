@@ -248,11 +248,16 @@ impl Node {
                 _ => break 'outcome FspFrameOutcome::NotEstablished,
             };
 
-            let primary = session.decrypt_with_replay_check_and_aad(
-                ciphertext,
-                header.counter,
-                &header.header_bytes,
-            );
+            let primary = {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::FspDecrypt,
+                );
+                session.decrypt_with_replay_check_and_aad(
+                    ciphertext,
+                    header.counter,
+                    &header.header_bytes,
+                )
+            };
             let plaintext = match primary {
                 Ok(pt) => pt,
                 Err(primary_err) => {
@@ -1545,12 +1550,17 @@ impl Node {
         let header = build_fsp_header(counter, flags, payload_len);
 
         // Encrypt with AAD binding to the FSP header
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FspEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("session encrypt failed: {}", e),
+                })?
+        };
 
         // Assemble: header(12) + [coords] + ciphertext
         let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);

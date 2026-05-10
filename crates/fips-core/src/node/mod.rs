@@ -2344,17 +2344,25 @@ impl Node {
         let header = build_established_header(their_index, counter, flags, payload_len);
 
         // Encrypt with AAD binding to the outer header
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!("encryption failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FmpEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("encryption failed: {}", e),
+                })?
+        };
 
         let wire_packet = build_encrypted(&header, &ciphertext);
 
         // Re-borrow peer for stats update after sending
         let send_result = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::UdpSend,
+            );
             let transport = self
                 .transports
                 .get(&transport_id)

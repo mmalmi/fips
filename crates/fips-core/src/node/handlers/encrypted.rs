@@ -135,9 +135,14 @@ impl Node {
             // Try current session first. We extract `Result<Vec<u8>, _>` so
             // the `&mut NoiseSession` borrow ends before we touch peer
             // again (for the previous-session fallback or for stats).
-            let current_attempt = peer
-                .noise_session_mut()
-                .map(|s| s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes));
+            let current_attempt = {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::FmpDecrypt,
+                );
+                peer.noise_session_mut().map(|s| {
+                    s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
+                })
+            };
 
             let plaintext = match current_attempt {
                 Some(Ok(p)) => p,
