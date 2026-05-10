@@ -17,16 +17,35 @@ use std::time::Instant;
 /// Connectivity state for an active peer.
 ///
 /// This is simpler than the full PeerState since authentication is complete.
+///
+/// `repr(u8)` so the enum can be packed into an `AtomicU8` on `ActivePeer`
+/// (see step 4 of the peer-actor refactor) without an enum-to-int helper
+/// table. Discriminants are stable: any new variant must be appended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ConnectivityState {
     /// Peer is fully connected and responsive.
-    Connected,
+    Connected = 0,
     /// Peer hasn't been heard from recently (potential timeout).
-    Stale,
+    Stale = 1,
     /// Connection lost, attempting to reconnect.
-    Reconnecting,
+    Reconnecting = 2,
     /// Peer has been explicitly disconnected.
-    Disconnected,
+    Disconnected = 3,
+}
+
+impl ConnectivityState {
+    /// Decode a `repr(u8)` discriminant back into a state. Used by the
+    /// AtomicU8 storage path. Defensive: unknown values map to
+    /// `Disconnected` (the safe terminal state).
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => ConnectivityState::Connected,
+            1 => ConnectivityState::Stale,
+            2 => ConnectivityState::Reconnecting,
+            _ => ConnectivityState::Disconnected,
+        }
+    }
 }
 
 impl ConnectivityState {
@@ -78,8 +97,12 @@ pub struct ActivePeer {
     // === Connection ===
     /// Link used to reach this peer.
     link_id: LinkId,
-    /// Current connectivity state.
-    connectivity: ConnectivityState,
+    /// Current connectivity state, packed in an `AtomicU8` so the
+    /// receive hot path can transition Stale→Connected (and other
+    /// state machines can mark stale / reconnecting / disconnected)
+    /// through `&self` instead of `&mut self`. Discriminant decoding
+    /// goes through `ConnectivityState::from_u8`.
+    connectivity: std::sync::atomic::AtomicU8,
 
     // === Session (Wire Protocol) ===
     /// Noise session for encryption/decryption (None if legacy peer).
@@ -128,7 +151,11 @@ pub struct ActivePeer {
     /// When this peer was authenticated (Unix milliseconds).
     authenticated_at: u64,
     /// When this peer was last seen (any activity, Unix milliseconds).
-    last_seen: u64,
+    /// Atomic so the receive hot path can `touch` / `time_since_last_seen`
+    /// through `&self`, in line with LinkStats and the other counter
+    /// fields. `0` is reserved for "never seen" — concrete values are
+    /// always > 0 in practice (Unix epoch milliseconds).
+    last_seen: std::sync::atomic::AtomicU64,
 
     // === Epoch (Restart Detection) ===
     /// Remote peer's startup epoch (from handshake). Used to detect restarts.
@@ -200,7 +227,7 @@ impl ActivePeer {
         Self {
             identity,
             link_id,
-            connectivity: ConnectivityState::Connected,
+            connectivity: std::sync::atomic::AtomicU8::new(ConnectivityState::Connected as u8),
             noise_session: None,
             our_index: None,
             their_index: None,
@@ -218,7 +245,7 @@ impl ActivePeer {
             session_start: now,
             link_stats: LinkStats::new(),
             authenticated_at,
-            last_seen: authenticated_at,
+            last_seen: std::sync::atomic::AtomicU64::new(authenticated_at),
             remote_epoch: None,
             mmp: None,
             last_heartbeat_sent: None,
@@ -280,7 +307,7 @@ impl ActivePeer {
         Self {
             identity,
             link_id,
-            connectivity: ConnectivityState::Connected,
+            connectivity: std::sync::atomic::AtomicU8::new(ConnectivityState::Connected as u8),
             noise_session: Some(noise_session),
             our_index: Some(our_index),
             their_index: Some(their_index),
@@ -298,7 +325,7 @@ impl ActivePeer {
             session_start: now,
             link_stats,
             authenticated_at,
-            last_seen: authenticated_at,
+            last_seen: std::sync::atomic::AtomicU64::new(authenticated_at),
             remote_epoch,
             mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
             last_heartbeat_sent: None,
@@ -358,22 +385,23 @@ impl ActivePeer {
 
     /// Get the connectivity state.
     pub fn connectivity(&self) -> ConnectivityState {
-        self.connectivity
+        use std::sync::atomic::Ordering::Acquire;
+        ConnectivityState::from_u8(self.connectivity.load(Acquire))
     }
 
     /// Check if peer can receive traffic.
     pub fn can_send(&self) -> bool {
-        self.connectivity.can_send()
+        self.connectivity().can_send()
     }
 
     /// Check if peer is fully healthy.
     pub fn is_healthy(&self) -> bool {
-        self.connectivity.is_healthy()
+        self.connectivity().is_healthy()
     }
 
     /// Check if peer is disconnected.
     pub fn is_disconnected(&self) -> bool {
-        self.connectivity.is_terminal()
+        self.connectivity().is_terminal()
     }
 
     // === Session Accessors ===
@@ -622,12 +650,13 @@ impl ActivePeer {
 
     /// When this peer was last seen.
     pub fn last_seen(&self) -> u64 {
-        self.last_seen
+        use std::sync::atomic::Ordering::Acquire;
+        self.last_seen.load(Acquire)
     }
 
     /// Time since last activity.
     pub fn idle_time(&self, current_time_ms: u64) -> u64 {
-        current_time_ms.saturating_sub(self.last_seen)
+        current_time_ms.saturating_sub(self.last_seen())
     }
 
     /// Connection duration since authentication.
@@ -663,35 +692,52 @@ impl ActivePeer {
     // === State Updates ===
 
     /// Update last seen timestamp.
-    pub fn touch(&mut self, current_time_ms: u64) {
-        self.last_seen = current_time_ms;
-        // If we were stale, receiving traffic makes us connected again
-        if self.connectivity == ConnectivityState::Stale {
-            self.connectivity = ConnectivityState::Connected;
-        }
+    pub fn touch(&self, current_time_ms: u64) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
+        self.last_seen.store(current_time_ms, Relaxed);
+        // If we were stale, receiving traffic makes us connected again.
+        // CAS so concurrent transitions don't accidentally roll us back —
+        // if another writer marked us Reconnecting/Disconnected meanwhile,
+        // we leave that decision in place.
+        let _ = self.connectivity.compare_exchange(
+            ConnectivityState::Stale as u8,
+            ConnectivityState::Connected as u8,
+            AcqRel,
+            Acquire,
+        );
     }
 
     /// Mark peer as stale (no recent traffic).
-    pub fn mark_stale(&mut self) {
-        if self.connectivity == ConnectivityState::Connected {
-            self.connectivity = ConnectivityState::Stale;
-        }
+    pub fn mark_stale(&self) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        let _ = self.connectivity.compare_exchange(
+            ConnectivityState::Connected as u8,
+            ConnectivityState::Stale as u8,
+            AcqRel,
+            Acquire,
+        );
     }
 
     /// Mark peer as reconnecting.
-    pub fn mark_reconnecting(&mut self) {
-        self.connectivity = ConnectivityState::Reconnecting;
+    pub fn mark_reconnecting(&self) {
+        use std::sync::atomic::Ordering::Release;
+        self.connectivity
+            .store(ConnectivityState::Reconnecting as u8, Release);
     }
 
     /// Mark peer as disconnected.
-    pub fn mark_disconnected(&mut self) {
-        self.connectivity = ConnectivityState::Disconnected;
+    pub fn mark_disconnected(&self) {
+        use std::sync::atomic::Ordering::Release;
+        self.connectivity
+            .store(ConnectivityState::Disconnected as u8, Release);
     }
 
     /// Mark peer as connected (e.g., after successful reconnect).
-    pub fn mark_connected(&mut self, current_time_ms: u64) {
-        self.connectivity = ConnectivityState::Connected;
-        self.last_seen = current_time_ms;
+    pub fn mark_connected(&self, current_time_ms: u64) {
+        use std::sync::atomic::Ordering::{Relaxed, Release};
+        self.connectivity
+            .store(ConnectivityState::Connected as u8, Release);
+        self.last_seen.store(current_time_ms, Relaxed);
     }
 
     /// Update the link ID (e.g., on reconnect).
@@ -710,7 +756,8 @@ impl ActivePeer {
     ) {
         self.declaration = Some(declaration);
         self.ancestry = Some(ancestry);
-        self.last_seen = current_time_ms;
+        use std::sync::atomic::Ordering::Relaxed;
+        self.last_seen.store(current_time_ms, Relaxed);
     }
 
     /// Clear peer's tree position.
@@ -764,7 +811,8 @@ impl ActivePeer {
         self.inbound_filter = Some(filter);
         self.filter_sequence = sequence;
         self.filter_received_at = current_time_ms;
-        self.last_seen = current_time_ms;
+        use std::sync::atomic::Ordering::Relaxed;
+        self.last_seen.store(current_time_ms, Relaxed);
     }
 
     /// Clear peer's inbound filter.
