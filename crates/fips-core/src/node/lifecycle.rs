@@ -301,8 +301,13 @@ impl Node {
         self.connections.insert(link_id, connection);
 
         // Send the wire format handshake message
-        if let Some(transport) = self.transports.get(&transport_id) {
-            match transport.send(&remote_addr, &wire_msg1).await {
+        let send_result = match self.transports.get(&transport_id) {
+            Some(transport) => Some(transport.send(&remote_addr, &wire_msg1).await),
+            None => None,
+        };
+        if let Some(send_result) = send_result {
+            self.note_local_send_outcome(&send_result);
+            match send_result {
                 Ok(bytes) => {
                     debug!(
                         link_id = %link_id,

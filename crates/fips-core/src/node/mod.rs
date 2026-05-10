@@ -562,6 +562,15 @@ pub struct Node {
     /// aggregation drift or an ingress bypass.
     last_self_warn: Option<std::time::Instant>,
 
+    // === Local Outbound Liveness ===
+    /// Set when a `transport.send` returned a local-side io error
+    /// (`NetworkUnreachable` / `HostUnreachable` / `AddrNotAvailable`),
+    /// cleared on the next successful send. Used by
+    /// `check_link_heartbeats` to compress the dead-timeout to
+    /// `fast_link_dead_timeout_secs` while our outbound is observed
+    /// broken — direct kernel evidence beats waiting on receive-silence.
+    last_local_send_failure_at: Option<std::time::Instant>,
+
     // === Display Names ===
     /// Human-readable names for configured peers (alias or short npub).
     /// Populated at startup from peer config.
@@ -703,6 +712,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
+            last_local_send_failure_at: None,
             peer_aliases: HashMap::new(),
             peer_acl,
             host_map,
@@ -828,6 +838,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
+            last_local_send_failure_at: None,
             peer_aliases: HashMap::new(),
             peer_acl,
             host_map,
@@ -2239,6 +2250,41 @@ impl Node {
             .await
     }
 
+    /// Update the local-outbound-broken signal from a `transport.send`
+    /// outcome. Sets `last_local_send_failure_at` on local-side io
+    /// errors (NetworkUnreachable / HostUnreachable / AddrNotAvailable);
+    /// clears it on success. The reaper consults this in
+    /// `check_link_heartbeats` to switch to `fast_link_dead_timeout_secs`.
+    pub(in crate::node) fn note_local_send_outcome(
+        &mut self,
+        result: &Result<usize, TransportError>,
+    ) {
+        match result {
+            Ok(_) => {
+                if self.last_local_send_failure_at.is_some() {
+                    self.last_local_send_failure_at = None;
+                }
+            }
+            Err(TransportError::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NetworkUnreachable
+                        | std::io::ErrorKind::HostUnreachable
+                        | std::io::ErrorKind::AddrNotAvailable
+                ) =>
+            {
+                self.last_local_send_failure_at = Some(std::time::Instant::now());
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// Returns the wall-clock instant of the most recent observed local
+    /// outbound failure, if any. Used by the link-dead reaper.
+    pub(in crate::node) fn last_local_send_failure_at(&self) -> Option<std::time::Instant> {
+        self.last_local_send_failure_at
+    }
+
     /// Like `send_encrypted_link_message` but allows setting the FMP CE flag.
     ///
     /// Used by the forwarding path to relay congestion signals hop-by-hop.
@@ -2308,25 +2354,25 @@ impl Node {
         let wire_packet = build_encrypted(&header, &ciphertext);
 
         // Re-borrow peer for stats update after sending
-        let transport = self
-            .transports
-            .get(&transport_id)
-            .ok_or(NodeError::TransportNotFound(transport_id))?;
-
-        let bytes_sent = transport
-            .send(&remote_addr, &wire_packet)
-            .await
-            .map_err(|e| match e {
-                TransportError::MtuExceeded { packet_size, mtu } => NodeError::MtuExceeded {
-                    node_addr: *node_addr,
-                    packet_size,
-                    mtu,
-                },
-                other => NodeError::SendFailed {
-                    node_addr: *node_addr,
-                    reason: format!("transport send: {}", other),
-                },
-            })?;
+        let send_result = {
+            let transport = self
+                .transports
+                .get(&transport_id)
+                .ok_or(NodeError::TransportNotFound(transport_id))?;
+            transport.send(&remote_addr, &wire_packet).await
+        };
+        self.note_local_send_outcome(&send_result);
+        let bytes_sent = send_result.map_err(|e| match e {
+            TransportError::MtuExceeded { packet_size, mtu } => NodeError::MtuExceeded {
+                node_addr: *node_addr,
+                packet_size,
+                mtu,
+            },
+            other => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: format!("transport send: {}", other),
+            },
+        })?;
 
         // Update send statistics
         if let Some(peer) = self.peers.get_mut(node_addr) {

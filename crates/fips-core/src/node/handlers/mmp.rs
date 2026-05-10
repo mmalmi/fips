@@ -510,10 +510,21 @@ impl Node {
     /// Called from the tick handler. Sends a 1-byte heartbeat to each peer
     /// whose heartbeat interval has elapsed, and removes any peer that
     /// hasn't sent us a frame within the link dead timeout.
+    ///
+    /// While the kernel has recently told us a `transport.send` was
+    /// locally unsendable (NetworkUnreachable / HostUnreachable /
+    /// AddrNotAvailable), the dead-timeout collapses to
+    /// `fast_link_dead_timeout_secs`. Steady-state behavior is unchanged
+    /// because the signal is set on send-error and cleared on send-success.
     pub(in crate::node) async fn check_link_heartbeats(&mut self) {
         let now = Instant::now();
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
         let dead_timeout = Duration::from_secs(self.config.node.link_dead_timeout_secs);
+        let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
+        let effective_dead_timeout = match self.last_local_send_failure_at() {
+            Some(t) if now.duration_since(t) < dead_timeout => fast_dead_timeout.min(dead_timeout),
+            _ => dead_timeout,
+        };
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
 
         // Collect heartbeats to send and dead peers to remove
@@ -528,7 +539,7 @@ impl Node {
                     .receiver
                     .last_recv_time()
                     .unwrap_or(peer.session_start());
-                now.duration_since(reference_time) >= dead_timeout
+                now.duration_since(reference_time) >= effective_dead_timeout
             } else {
                 false
             };
@@ -553,7 +564,8 @@ impl Node {
         for addr in &dead_peers {
             warn!(
                 peer = %self.peer_display_name(addr),
-                timeout_secs = self.config.node.link_dead_timeout_secs,
+                timeout_secs = effective_dead_timeout.as_secs(),
+                fast = effective_dead_timeout < dead_timeout,
                 "Removing peer: link dead timeout"
             );
             self.remove_active_peer(addr);

@@ -1029,6 +1029,18 @@ pub struct NodeConfig {
     #[serde(default = "NodeConfig::default_link_dead_timeout_secs")]
     pub link_dead_timeout_secs: u64,
 
+    /// Accelerated link dead timeout in seconds, used in place of
+    /// `link_dead_timeout_secs` while a recent `transport.send` returned
+    /// a local-side errno (`NetworkUnreachable` / `HostUnreachable` /
+    /// `AddrNotAvailable`) — direct evidence our outbound path is broken
+    /// right now (interface vanished, default route flapped, etc.). No
+    /// reason to wait the full receive-silence window when the kernel
+    /// already told us we can't send. Steady-state behavior is unchanged
+    /// because the signal is cleared on the next successful send.
+    /// (`node.fast_link_dead_timeout_secs`)
+    #[serde(default = "NodeConfig::default_fast_link_dead_timeout_secs")]
+    pub fast_link_dead_timeout_secs: u64,
+
     /// Resource limits (`node.limits.*`).
     #[serde(default)]
     pub limits: LimitsConfig,
@@ -1109,6 +1121,7 @@ impl Default for NodeConfig {
             base_rtt_ms: 100,
             heartbeat_interval_secs: 10,
             link_dead_timeout_secs: 30,
+            fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
@@ -1158,6 +1171,9 @@ impl NodeConfig {
     }
     fn default_link_dead_timeout_secs() -> u64 {
         30
+    }
+    fn default_fast_link_dead_timeout_secs() -> u64 {
+        5
     }
     fn default_system_files_enabled() -> bool {
         true
