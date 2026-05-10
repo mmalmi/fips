@@ -760,6 +760,19 @@ impl Node {
             "Outbound handshake completed"
         );
 
+        // Recall the peer if it's currently in its actor task — the
+        // cross-connection check below uses `self.peers.contains_key`,
+        // which would silently miss actor-owned peers. The recall gets
+        // the peer back into `self.peers` so detection works. We
+        // intentionally do NOT reship after the swap-session branch:
+        // when our outbound wins, `replace_session` mutates the peer
+        // and the new state needs to ride out via `maybe_ship_peer_to_actor`
+        // in the normal-path branch below (which we won't reach in
+        // the cross-connection branch — the branch returns early).
+        // See the explicit ship at the end of the cross-connection
+        // branch.
+        self.recall_peer(&peer_node_addr).await;
+
         // Cross-connection resolution: if the peer was already promoted via
         // our inbound handshake (we processed their msg1), both nodes initially
         // use mismatched sessions. The tie-breaker determines which handshake
@@ -800,6 +813,7 @@ impl Node {
                     _ => {
                         warn!(peer = %self.peer_display_name(&peer_node_addr), "Incomplete outbound connection");
                         self.pending_outbound.remove(&key);
+                        self.reship_peer(&peer_node_addr);
                         return;
                     }
                 };
@@ -883,8 +897,15 @@ impl Node {
             // Schedule filter announce (sent on next tick via debounce)
             self.bloom_state.mark_update_needed(peer_node_addr);
             self.reset_discovery_backoff();
+            // Ship the peer (now with the swapped session) back to its
+            // actor so the rx_loop hot path resumes via the actor.
+            self.reship_peer(&peer_node_addr);
             return;
         }
+
+        // Peer wasn't recalled here — recall_peer was a no-op so reship
+        // is also a no-op. Promote_connection handles the actor ship
+        // itself via `maybe_ship_peer_to_actor`.
 
         // Normal path: promote to active peer
         match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
