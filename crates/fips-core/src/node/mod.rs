@@ -5,6 +5,7 @@
 //! Bloom filters, coordinate caches, transports, links, and peers.
 
 mod acl;
+mod aead_pool;
 mod bloom;
 mod discovery_rate_limit;
 pub(crate) mod handlers;
@@ -427,6 +428,18 @@ pub struct Node {
     /// `run_rx_loop` start.
     peer_link_dispatch_rx: Option<crate::peer::actor::PeerLinkDispatchRx>,
 
+    // === Parallel-Decrypt AEAD Pool (FMP receive path) ===
+    /// Optional worker pool for off-task FMP `open` rounds. `None` means
+    /// the rx_loop decrypts inline (legacy path); `Some` means the
+    /// rx_loop classifies + dispatches to workers and processes completed
+    /// batches via `aead_completion_rx`. Configured via
+    /// `node.aead_decrypt_workers`.
+    aead_pool: Option<aead_pool::AeadPool>,
+    /// Completion-side receiver for the AEAD pool. Held separately so
+    /// the rx_loop can `&mut`-borrow it in a `select!` arm while
+    /// `&self`-borrowing `aead_pool` for submits.
+    aead_completion_rx: Option<aead_pool::AeadCompletionRx>,
+
     // === Per-peer actor outbound wire-send channel ===
     /// Sender side cloned into each per-peer actor task; the actor
     /// `try_send`s an `UdpSend { transport_id, remote_addr, wire }`
@@ -728,6 +741,8 @@ impl Node {
             peers: HashMap::new(),
             peer_link_dispatch_tx,
             peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
+            aead_pool: None,
+            aead_completion_rx: None,
             udp_send_tx,
             udp_send_rx: Some(udp_send_rx),
             sessions: HashMap::new(),
@@ -865,6 +880,8 @@ impl Node {
             peers: HashMap::new(),
             peer_link_dispatch_tx,
             peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
+            aead_pool: None,
+            aead_completion_rx: None,
             udp_send_tx,
             udp_send_rx: Some(udp_send_rx),
             sessions: HashMap::new(),

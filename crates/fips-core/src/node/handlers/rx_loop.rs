@@ -2,6 +2,8 @@
 
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
+use crate::node::aead_pool::AeadInboundElem;
+use crate::node::handlers::encrypted::InboundClassify;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
@@ -42,6 +44,9 @@ impl Node {
         // `(transport_id, addr, wire)` here when handling SendLink;
         // we drain and fire `transport.send` from the rx_loop.
         let mut udp_send_rx = self.udp_send_rx.take();
+        // AEAD-pool completion arm. None = pool disabled, in which
+        // case the rx_loop's `select!` arm becomes a `pending` no-op.
+        let mut aead_completion_rx = self.aead_completion_rx.take();
 
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
@@ -105,25 +110,25 @@ impl Node {
             tokio::select! {
                 biased;
                 packet = packet_rx.recv() => {
-                    match packet {
-                        Some(p) => self.process_packet(p).await,
+                    let p = match packet {
+                        Some(p) => p,
                         None => break, // channel closed
-                    }
-                    // Drain remaining ready inbound packets in a tight loop
-                    // before yielding back to select! — every yield is a
-                    // futex hop on tokio's multi-thread scheduler, and at
-                    // line rate the kernel UDP queue typically has several
-                    // datagrams available per wake. Caps at a batch
-                    // boundary so other branches (tick, control) eventually
-                    // get a turn even under sustained load.
-                    let mut drained = 0;
-                    while drained < 4096 {
-                        match packet_rx.try_recv() {
-                            Ok(p) => {
-                                self.process_packet(p).await;
-                                drained += 1;
+                    };
+                    if aead_completion_rx.is_some() {
+                        // Pool path: classify + dispatch a batch.
+                        self.handle_inbound_with_pool(p, &mut packet_rx).await;
+                    } else {
+                        // Legacy inline path.
+                        self.process_packet(p).await;
+                        let mut drained = 0;
+                        while drained < 4096 {
+                            match packet_rx.try_recv() {
+                                Ok(p) => {
+                                    self.process_packet(p).await;
+                                    drained += 1;
+                                }
+                                Err(_) => break,
                             }
-                            Err(_) => break,
                         }
                     }
                     // After draining inbound, also drain any peer-actor
@@ -195,6 +200,22 @@ impl Node {
                     }
                     // Flush any trailing batched sends from the
                     // per-transport sendmmsg buffer.
+                    self.flush_pending_sends().await;
+                }
+                // AEAD-pool completion arm: workers finished a batch
+                // and the sequencer ordered it. Apply each decrypted
+                // elem (replay accept, MMP record, link_stats, touch,
+                // dispatch_link_message). `pending().await` when the
+                // pool is disabled — no scheduler cost.
+                Some(decrypted_batch) = async {
+                    match aead_completion_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    for elem in decrypted_batch {
+                        self.apply_decrypted_elem(elem).await;
+                    }
                     self.flush_pending_sends().await;
                 }
                 // Per-peer actor outbound wire-send arm: a peer's
@@ -313,6 +334,48 @@ impl Node {
     /// whatever's still buffered so trailing packets in a burst don't
     /// sit in the buffer past a drain cycle. Cheap when there's
     /// nothing to flush — each transport just checks an empty queue.
+    /// Pool-enabled inbound dispatch: classify the head packet plus
+    /// up to ~256 siblings already queued, batch-submit AEAD elems to
+    /// the pool, run inline-classified packets through the legacy
+    /// path. Replay-classified are dropped silently. The sequencer
+    /// preserves submit order so the completion arm sees results
+    /// per-batch in the same order packets came off the socket.
+    async fn handle_inbound_with_pool(
+        &mut self,
+        first: ReceivedPacket,
+        packet_rx: &mut crate::transport::PacketRx,
+    ) {
+        let mut aead_batch: Vec<AeadInboundElem> = Vec::with_capacity(64);
+        let mut inline_packets: Vec<ReceivedPacket> = Vec::new();
+        match self.classify_inbound_packet(first) {
+            InboundClassify::Aead(e) => aead_batch.push(e),
+            InboundClassify::Inline(p) => inline_packets.push(p),
+            InboundClassify::Replay => {}
+        }
+        let mut drained = 0;
+        while drained < 256 {
+            match packet_rx.try_recv() {
+                Ok(p) => {
+                    match self.classify_inbound_packet(p) {
+                        InboundClassify::Aead(e) => aead_batch.push(e),
+                        InboundClassify::Inline(p) => inline_packets.push(p),
+                        InboundClassify::Replay => {}
+                    }
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        for p in inline_packets {
+            self.process_packet(p).await;
+        }
+        if !aead_batch.is_empty()
+            && let Some(pool) = self.aead_pool.as_ref()
+        {
+            pool.submit_batch(aead_batch).await;
+        }
+    }
+
     async fn flush_pending_sends(&self) {
         for transport in self.transports.values() {
             // Avoid hard-coding the UDP-only check here so future

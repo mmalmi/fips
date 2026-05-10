@@ -1145,6 +1145,20 @@ pub struct NodeConfig {
     /// that still expect ActivePeer to live in `Node.peers`.
     #[serde(default)]
     pub actor_owns_peer: bool,
+
+    /// Number of parallel-decrypt worker tasks for the FMP receive
+    /// pipeline (`node.aead_decrypt_workers`).
+    ///
+    /// `0` (default) disables the pool — packets are decrypted inline on
+    /// the rx_loop task, matching legacy behaviour. `>=1` enables the
+    /// pool: the rx_loop fans batches out to N worker tasks for AEAD
+    /// `open`, a sequencer enforces in-order delivery, and the rx_loop
+    /// processes completed batches via the shared completion queue.
+    /// Baseline single-stream is AEAD-bound on one core (~1.5 Gbps);
+    /// the pool spreads AEAD across N cores so high single-stream
+    /// throughput becomes feasible.
+    #[serde(default)]
+    pub aead_decrypt_workers: usize,
 }
 
 impl Default for NodeConfig {
@@ -1176,6 +1190,7 @@ impl Default for NodeConfig {
             peer_actor_enabled: false,
             actor_owns_sessions: false,
             actor_owns_peer: false,
+            aead_decrypt_workers: 0,
         }
     }
 }

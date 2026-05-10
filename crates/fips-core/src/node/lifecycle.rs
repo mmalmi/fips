@@ -618,6 +618,28 @@ impl Node {
         self.packet_tx = Some(packet_tx.clone());
         self.packet_rx = Some(packet_rx);
 
+        // Optional parallel-decrypt pool for the FMP receive hot path.
+        // Spawned only when configured to >=1 worker; otherwise we
+        // stay on the legacy inline-decrypt path inside
+        // `handle_encrypted_frame`. Queue depths sized so workers and
+        // the rx_loop can overlap a few batches without back-pressuring
+        // under bursty load.
+        let pool_workers = self.config.node.aead_decrypt_workers;
+        if pool_workers > 0 {
+            let (pool, completion_rx) = crate::node::aead_pool::AeadPool::new(
+                pool_workers,
+                256, // decrypt_q_depth
+                256, // ordered_q_depth
+                256, // completion_q_depth
+            );
+            self.aead_pool = Some(pool);
+            self.aead_completion_rx = Some(completion_rx);
+            info!(
+                workers = pool_workers,
+                "Parallel AEAD-decrypt pool started"
+            );
+        }
+
         // Initialize transports first (before TUN, before Nostr discovery).
         let transport_handles = self.create_transports(&packet_tx).await;
 
