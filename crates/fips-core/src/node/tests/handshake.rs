@@ -1134,7 +1134,7 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     let peer_full = crate::Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey(peer_full.pubkey());
     let peer_node_addr = *peer_identity.node_addr();
-    let peer = ActivePeer::new(peer_identity, link_id, 1000);
+    let mut peer = ActivePeer::new(peer_identity, link_id, 1000);
     let numeric_addr = TransportAddr::from_string("100.64.0.5:2121");
     peer.set_current_addr(transport_id, numeric_addr.clone());
     node.peers

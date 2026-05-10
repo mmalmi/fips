@@ -111,13 +111,9 @@ pub struct ActivePeer {
     our_index: Option<SessionIndex>,
     /// Their session index (we include this when sending TO them).
     their_index: Option<SessionIndex>,
-    /// Transport ID + current transport address. Bundled under one
-    /// `Mutex` because the two are always set together by
-    /// `set_current_addr` (and the receive hot path needs to update
-    /// them without `&mut self` to keep the parallel-decrypt /
-    /// per-peer-actor design viable). Reads `transport_id()` /
-    /// `current_addr()` lock briefly; updates on roaming are rare.
-    transport: std::sync::Mutex<Option<(TransportId, TransportAddr)>>,
+    /// Transport ID + current transport address. Single owner
+    /// (`&mut Node.peers[addr]`); plain field after step 7d.
+    transport: Option<(TransportId, TransportAddr)>,
 
     // === Spanning Tree ===
     /// Their latest parent declaration.
@@ -166,12 +162,8 @@ pub struct ActivePeer {
 
     // === MMP ===
     /// Per-peer MMP state (None for legacy peers without Noise sessions).
-    /// Wrapped in a `Mutex` so the receive hot path can mutate (record
-    /// frames, advance spin bit) and the timer/control paths can read
-    /// (build reports, snapshot metrics) without ever holding `&mut self`
-    /// on the peer. The lock is per-peer; in steady state only the peer's
-    /// receive path mutates it, so the lock is uncontended.
-    mmp: Option<std::sync::Mutex<MmpPeerState>>,
+    /// Plain owned — single-owner ActivePeer (post 7d).
+    mmp: Option<MmpPeerState>,
 
     // === Per-peer actor task (step 6 of peer-actor refactor) ===
     /// Handle to the per-peer actor task spawned in `promote_connection`.
@@ -248,7 +240,7 @@ impl ActivePeer {
             noise_session: None,
             our_index: None,
             their_index: None,
-            transport: std::sync::Mutex::new(None),
+            transport: None,
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -328,7 +320,7 @@ impl ActivePeer {
             noise_session: Some(noise_session),
             our_index: Some(our_index),
             their_index: Some(their_index),
-            transport: std::sync::Mutex::new(Some((transport_id, current_addr))),
+            transport: Some((transport_id, current_addr)),
             declaration: None,
             ancestry: None,
             tree_announce_min_interval_ms: 500,
@@ -343,10 +335,7 @@ impl ActivePeer {
             authenticated_at,
             last_seen: std::sync::atomic::AtomicU64::new(authenticated_at),
             remote_epoch,
-            mmp: Some(std::sync::Mutex::new(MmpPeerState::new(
-                mmp_config,
-                is_initiator,
-            ))),
+            mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
             actor: None,
             last_heartbeat_sent: None,
             handshake_msg2: None,
@@ -483,41 +472,22 @@ impl ActivePeer {
 
     /// Get the transport ID for this peer.
     pub fn transport_id(&self) -> Option<TransportId> {
-        self.transport
-            .lock()
-            .expect("transport poisoned")
-            .as_ref()
-            .map(|(tid, _)| *tid)
+        self.transport.as_ref().map(|(tid, _)| *tid)
     }
 
-    /// Get a clone of the current transport address.
-    ///
-    /// Returns `Option<TransportAddr>` (cloned) rather than a reference
-    /// because the addr lives behind a Mutex; a borrow would tie the
-    /// caller to the lock guard. Cloning a `TransportAddr` is one
-    /// `Vec<u8>` heap copy — acceptable for the per-packet send path
-    /// in exchange for `&self` access.
-    pub fn current_addr(&self) -> Option<TransportAddr> {
-        self.transport
-            .lock()
-            .expect("transport poisoned")
-            .as_ref()
-            .map(|(_, addr)| addr.clone())
+    /// Get a reference to the current transport address.
+    pub fn current_addr(&self) -> Option<&TransportAddr> {
+        self.transport.as_ref().map(|(_, addr)| addr)
     }
 
-    /// Get both transport_id and current_addr as a single atomic
-    /// snapshot — saves one lock acquisition for the common
-    /// `if let Some((tid, addr)) = peer.transport_pair() {` pattern
-    /// the send path uses today.
+    /// Get both transport_id and current_addr as a single snapshot.
     pub fn transport_pair(&self) -> Option<(TransportId, TransportAddr)> {
-        self.transport.lock().expect("transport poisoned").clone()
+        self.transport.clone()
     }
 
     /// Update the current address (for roaming support).
-    ///
-    /// Called when we receive a valid authenticated packet from a new address.
-    pub fn set_current_addr(&self, transport_id: TransportId, addr: TransportAddr) {
-        *self.transport.lock().expect("transport poisoned") = Some((transport_id, addr));
+    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) {
+        self.transport = Some((transport_id, addr));
     }
 
     // === Handshake Resend ===
@@ -660,10 +630,8 @@ impl ActivePeer {
     /// kept as separate methods for call-site readability and to make
     /// future migration to an `RwLock` (with read-only `mmp()`) a
     /// signature-compatible change.
-    pub fn mmp(&self) -> Option<std::sync::MutexGuard<'_, MmpPeerState>> {
-        self.mmp
-            .as_ref()
-            .map(|m| m.lock().expect("mmp poisoned"))
+    pub fn mmp(&self) -> Option<&MmpPeerState> {
+        self.mmp.as_ref()
     }
 
     /// Set the per-peer actor handle. Called once in
@@ -678,10 +646,9 @@ impl ActivePeer {
         self.actor.as_ref()
     }
 
-    /// Get MMP state, locked for write access. Same backing storage as
-    /// [`mmp`]; see that method for details.
-    pub fn mmp_mut(&self) -> Option<std::sync::MutexGuard<'_, MmpPeerState>> {
-        self.mmp()
+    /// Get a mutable reference to the per-peer MMP state.
+    pub fn mmp_mut(&mut self) -> Option<&mut MmpPeerState> {
+        self.mmp.as_mut()
     }
 
     /// Link cost for routing decisions.
@@ -1014,7 +981,7 @@ impl ActivePeer {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mut mmp) = self.mmp() {
+        if let Some(mmp) = self.mmp_mut() {
             mmp.reset_for_rekey(now);
         }
 
@@ -1049,7 +1016,7 @@ impl ActivePeer {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mut mmp) = self.mmp() {
+        if let Some(mmp) = self.mmp_mut() {
             mmp.reset_for_rekey(now);
         }
 

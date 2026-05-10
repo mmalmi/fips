@@ -87,23 +87,22 @@ impl Node {
 
         let peer_name = self.peer_display_name(from);
 
-        // Process the report inside a scoped block so the MMP MutexGuard
-        // (and the &self.peers borrow it depends on) is released before we
-        // re-borrow `self.peers.iter()` for the first-RTT parent eval.
+        // Process the report inside a scoped block so the &mut self.peers
+        // borrow is released before we re-borrow `self.peers.iter()` for
+        // the first-RTT parent eval.
         let first_rtt = {
-            let slot = match self.peers.get(from) {
+            let peer = match self.peers.get_mut(from) {
                 Some(p) => p,
                 None => {
                     debug!(from = %peer_name, "ReceiverReport from unknown peer");
                     return;
                 }
             };
-            let peer = slot;
 
-            // Get session timestamp before taking the MMP lock.
+            // Get session timestamp before taking the MMP borrow.
             let our_timestamp_ms = peer.session_elapsed_ms();
 
-            let Some(mut mmp) = peer.mmp_mut() else {
+            let Some(mmp) = peer.mmp_mut() else {
                 return;
             };
 
@@ -210,8 +209,7 @@ impl Node {
         let mut sender_reports: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
         let mut receiver_reports: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
 
-        for (node_addr, slot) in self.peers.iter() {
-            let peer = slot;
+        for (node_addr, peer) in self.peers.iter_mut() {
             // Compute display name before taking mutable MMP borrow
             let peer_name = self
                 .peer_aliases
@@ -219,7 +217,7 @@ impl Node {
                 .cloned()
                 .unwrap_or_else(|| peer.identity().short_npub());
 
-            let Some(mut mmp) = peer.mmp_mut() else {
+            let Some(mmp) = peer.mmp_mut() else {
                 continue;
             };
 

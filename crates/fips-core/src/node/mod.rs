@@ -2371,6 +2371,7 @@ impl Node {
             })?;
             let remote_addr = peer
                 .current_addr()
+                .cloned()
                 .ok_or_else(|| NodeError::SendFailed {
                     node_addr: *node_addr,
                     reason: "no current_addr".into(),
