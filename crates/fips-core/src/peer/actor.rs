@@ -1,7 +1,7 @@
 //! Per-peer actor task — step 6 of the peer-actor refactor.
 //!
 //! Spawned once per authenticated peer in `promote_connection`. Owns
-//! a clone of the peer's `ActivePeerSlot` (Arc<RwLock<ActivePeer>>)
+//! a clone of the peer's `ActivePeer` (Arc<RwLock<ActivePeer>>)
 //! and an `mpsc::Receiver` for inbound jobs. The rx_loop dispatches
 //! per-packet work into this channel after FMP-decrypt; the peer task
 //! runs the per-peer state mutations (replay accept, MMP record,
@@ -30,7 +30,7 @@
 
 use crate::node::NodeEndpointEvent;
 use crate::node::session::SessionEntry;
-use crate::peer::ActivePeerSlot;
+use crate::peer::ActivePeer;
 use crate::upper::tun::TunTx;
 use secp256k1::PublicKey;
 use std::sync::Arc;

@@ -245,7 +245,7 @@ async fn test_bloom_filter_ring() {
             let reachable = nodes[i]
                 .node
                 .peers()
-                .any(|slot| crate::peer::peer_read(slot).may_reach(&target_addr));
+                .any(|slot| slot.may_reach(&target_addr));
             assert!(
                 reachable,
                 "Node {} should see node {} as reachable via at least one peer's filter",

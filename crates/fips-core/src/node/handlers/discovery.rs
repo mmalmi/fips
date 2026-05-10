@@ -353,7 +353,7 @@ impl Node {
             .filter(|(addr, slot)| {
                 **addr != *from
                     && self.is_tree_peer(addr)
-                    && crate::peer::peer_read(slot).may_reach(&request.target)
+                    && slot.may_reach(&request.target)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -368,7 +368,7 @@ impl Node {
                         .filter(|(addr, slot)| {
                             **addr != *from
                                 && self.is_tree_peer(addr)
-                                && crate::peer::peer_read(slot).can_send()
+                                && slot.can_send()
                         })
                         .map(|(addr, _)| *addr)
                         .collect()
@@ -378,7 +378,7 @@ impl Node {
                         .filter(|(addr, slot)| {
                             **addr != *from
                                 && !self.is_tree_peer(addr)
-                                && crate::peer::peer_read(slot).may_reach(&request.target)
+                                && slot.may_reach(&request.target)
                         })
                         .map(|(addr, _)| *addr)
                         .collect()
@@ -448,7 +448,7 @@ impl Node {
             .peers
             .iter()
             .filter(|(addr, slot)| {
-                self.is_tree_peer(addr) && crate::peer::peer_read(slot).may_reach(target)
+                self.is_tree_peer(addr) && slot.may_reach(target)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -459,7 +459,7 @@ impl Node {
                 .peers
                 .iter()
                 .filter(|(addr, slot)| {
-                    self.is_tree_peer(addr) && crate::peer::peer_read(slot).can_send()
+                    self.is_tree_peer(addr) && slot.can_send()
                 })
                 .map(|(addr, _)| *addr)
                 .collect();
@@ -534,7 +534,7 @@ impl Node {
         let reachable = self
             .peers
             .values()
-            .any(|slot| crate::peer::peer_read(slot).may_reach(dest));
+            .any(|slot| slot.may_reach(dest));
         if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
             self.discovery_backoff.record_failure(dest);
@@ -671,7 +671,7 @@ impl Node {
         next_hop: &NodeAddr,
     ) {
         if let Some(slot) = self.peers.get(next_hop) {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             if let Some(tid) = peer.transport_id()
                 && let Some(transport) = self.transports.get(&tid)
             {

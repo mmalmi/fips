@@ -18,7 +18,7 @@ fn inject_peer(node: &mut Node) -> NodeAddr {
     let peer_addr = *peer_identity.node_addr();
     let peer = ActivePeer::new(peer_identity, LinkId::new(1), 0);
     node.peers
-        .insert(peer_addr, crate::peer::active_peer_slot(peer));
+        .insert(peer_addr, peer);
     peer_addr
 }
 

@@ -1032,7 +1032,7 @@ async fn test_routing_stops_after_peer_removal() {
     let node0_reaches_node3 = nodes[0]
         .node
         .peers()
-        .any(|slot| crate::peer::peer_read(slot).may_reach(&node3_addr));
+        .any(|slot| slot.may_reach(&node3_addr));
     assert!(
         !node0_reaches_node3,
         "Node 0 should not see node 3 as reachable after partition"

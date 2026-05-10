@@ -118,7 +118,7 @@ async fn test_tcp_three_node_chain() {
     let reaches = nodes[0]
         .node
         .peers()
-        .any(|slot| crate::peer::peer_read(slot).may_reach(&addr_2));
+        .any(|slot| slot.may_reach(&addr_2));
     assert!(
         reaches,
         "node 0 should see node 2 as reachable through bloom filters"

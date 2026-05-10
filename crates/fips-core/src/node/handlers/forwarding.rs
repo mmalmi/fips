@@ -85,7 +85,7 @@ impl Node {
 
         // Apply path_mtu min() from the outgoing link's transport MTU
         if let Some(slot) = self.peers.get(&next_hop_addr) {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             if let Some(tid) = peer.transport_id()
                 && let Some(transport) = self.transports.get(&tid)
             {
@@ -364,7 +364,7 @@ impl Node {
         }
         // Outgoing link MMP metrics
         if let Some(slot) = self.peers.get(next_hop) {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             if let Some(mmp) = peer.mmp() {
                 let metrics = &mmp.metrics;
                 if metrics.loss_rate() >= self.config.node.ecn.loss_threshold

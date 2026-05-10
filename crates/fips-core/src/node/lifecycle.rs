@@ -1027,7 +1027,7 @@ impl Node {
             .peers
             .iter()
             .filter(|(_, slot)| {
-                let peer = crate::peer::peer_read(slot);
+                let peer = slot;
                 peer.can_send() && peer.has_session()
             })
             .map(|(addr, _)| *addr)

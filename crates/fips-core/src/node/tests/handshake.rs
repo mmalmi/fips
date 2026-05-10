@@ -1138,7 +1138,7 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     let numeric_addr = TransportAddr::from_string("100.64.0.5:2121");
     peer.set_current_addr(transport_id, numeric_addr.clone());
     node.peers
-        .insert(peer_node_addr, crate::peer::active_peer_slot(peer));
+        .insert(peer_node_addr, peer);
 
     // Sanity: legacy carve-out still works for the hostname-form lookup.
     assert!(node.should_admit_msg1(transport_id, &hostname_addr));

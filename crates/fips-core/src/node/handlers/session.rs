@@ -1998,7 +1998,7 @@ impl Node {
                 let peer_infos: Vec<(NodeEndpointPeer,)> = self
                     .peers()
                     .map(|slot| {
-                        let peer = crate::peer::peer_read(slot);
+                        let peer = slot;
                         let link_id = peer.link_id();
                         let transport_type = self.get_link(&link_id).and_then(|link| {
                             self.get_transport(&link.transport_id())
@@ -2545,7 +2545,7 @@ impl Node {
 
         // Seed path_mtu from the first-hop transport MTU (same as forwarding path)
         if let Some(slot) = self.peers.get(&next_hop_addr) {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             if let Some(tid) = peer.transport_id()
                 && let Some(transport) = self.transports.get(&tid)
             {

@@ -129,7 +129,7 @@ pub fn show_peers(node: &Node) -> Value {
     let peers: Vec<Value> = node
         .peers()
         .map(|slot| {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             let node_addr = *peer.node_addr();
             let addr_hex = hex::encode(node_addr.as_bytes());
 
@@ -454,7 +454,7 @@ pub fn show_bloom(node: &Node) -> Value {
     let peer_filters: Vec<Value> = node
         .peers()
         .map(|slot| {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             let addr = *peer.node_addr();
             let mut pf = json!({
                 "peer": hex::encode(addr.as_bytes()),
@@ -489,7 +489,7 @@ pub fn show_bloom(node: &Node) -> Value {
 pub fn show_mmp(node: &Node) -> Value {
     // Link-layer MMP per peer
     let peers: Vec<Value> = node.peers().filter_map(|slot| {
-        let peer = crate::peer::peer_read(slot);
+        let peer = slot;
         let mmp = peer.mmp()?;
         let addr = *peer.node_addr();
         let metrics = &mmp.metrics;
@@ -985,11 +985,11 @@ pub fn show_stats_peers(node: &Node) -> Value {
             let first_seen_secs = now.duration_since(rings.first_seen()).as_secs();
             let is_active = node
                 .peers()
-                .any(|slot| crate::peer::peer_read(slot).node_addr() == addr);
+                .any(|slot| slot.node_addr() == addr);
             let npub = node
                 .peers()
-                .find(|slot| crate::peer::peer_read(slot).node_addr() == addr)
-                .map(|slot| crate::peer::peer_read(slot).npub())
+                .find(|slot| slot.node_addr() == addr)
+                .map(|slot| slot.npub())
                 .unwrap_or_else(|| hex::encode(addr.as_bytes()));
             json!({
                 "npub": npub,
@@ -1076,7 +1076,7 @@ pub fn show_stats_history_all_peers(
             let s = hist.peer_query(addr, metric, window, granularity)?;
             let is_active = node
                 .peers()
-                .any(|slot| crate::peer::peer_read(slot).node_addr() == addr);
+                .any(|slot| slot.node_addr() == addr);
             Some(json!({
                 "node_addr": hex::encode(addr.as_bytes()),
                 "display_name": node.peer_display_name(addr),

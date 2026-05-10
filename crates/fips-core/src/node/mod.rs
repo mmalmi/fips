@@ -34,7 +34,7 @@ use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::config::RoutingMode;
 use crate::node::session::SessionEntry;
-use crate::peer::{ActivePeer, ActivePeerSlot, PeerConnection};
+use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
@@ -410,23 +410,12 @@ pub struct Node {
     connections: HashMap<LinkId, PeerConnection>,
 
     // === Peers (Active Phase) ===
-    /// Authenticated peers, each behind `Arc<RwLock<...>>` (see
-    /// `ActivePeerSlot`). Hot-path methods on ActivePeer are `&self`
-    /// after step 4 of the peer-actor refactor — `peer_read(slot)`
-    /// suffices for them. The few residual `&mut self` methods
-    /// (handshake/rekey/tree/bloom updates, off the per-packet path)
-    /// take `peer_write(slot)`.
-    ///
-    /// **Remaining horror, scope-too-large-for-this-turn**: this
-    /// wrapper still exists. The proper end-state is
-    /// `peer_actors: HashMap<NodeAddr, PeerActorHandle>` (handles
-    /// only), with `ActivePeer` state living in the per-peer actor
-    /// task as owned `&mut self` data. ~120 Node-side call sites need
-    /// migration to actor messages. After that goes:
-    /// `NoiseSession.replay_window: Mutex<ReplayWindow>` reverts to
-    /// plain, and ActivePeer's interior atomics/Mutex (steps 1-4
-    /// of the refactor) revert to plain too, since single owner.
-    peers: HashMap<NodeAddr, ActivePeerSlot>,
+    /// Authenticated peers — plain owned `ActivePeer`. Single owner
+    /// (rx_loop's `&mut self.peers[addr]`). The peer-actor task does
+    /// not share access to `ActivePeer`; it handles only session work
+    /// on its owned `SessionEntry`. The previous
+    /// `Arc<RwLock<ActivePeer>>` wrapper is gone (step 7d).
+    peers: HashMap<NodeAddr, ActivePeer>,
 
     // === Per-peer actor link-dispatch return channel ===
     /// Sender side cloned into each per-peer actor task; the actor
@@ -1167,7 +1156,7 @@ impl Node {
         addr: &NodeAddr,
     ) -> Option<crate::peer::actor::PeerActorHandle> {
         let slot = self.peers.get(addr)?;
-        let peer = crate::peer::peer_read(slot);
+        let peer = slot;
         peer.actor().cloned()
     }
 
@@ -1206,7 +1195,7 @@ impl Node {
             return name.clone();
         }
         if let Some(slot) = self.peers.get(addr) {
-            return crate::peer::peer_read(slot).identity().short_npub();
+            return slot.identity().short_npub();
         }
         if let Some(entry) = self.sessions.get(addr) {
             let (xonly, _) = entry.remote_pubkey().x_only_public_key();
@@ -1351,7 +1340,7 @@ impl Node {
         if !is_root
             && let Some(slot) = self.peers.get(&parent_id)
         {
-            let parent = crate::peer::peer_read(slot);
+            let parent = slot;
             if let Some(filter) = parent.inbound_filter() {
                 match filter.estimated_count(max_fpr) {
                     Some(n) => {
@@ -1368,7 +1357,7 @@ impl Node {
 
         // Children's filters: each child's subtree is disjoint
         for (peer_addr, slot) in &self.peers {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             if let Some(decl) = self.tree_state.peer_declaration(peer_addr)
                 && *decl.parent_id() == my_addr
             {
@@ -1453,7 +1442,7 @@ impl Node {
             .peers
             .values()
             .filter_map(|slot| {
-                crate::peer::peer_read(slot)
+                slot
                     .mmp()
                     .map(|m| m.metrics.loss_rate())
             })
@@ -1482,7 +1471,7 @@ impl Node {
             .peers
             .values()
             .map(|slot| {
-                let p = crate::peer::peer_read(slot);
+                let p = slot;
                 let stats = p.link_stats();
                 let (srtt_ms, loss_rate, ecn_ce) = match p.mmp() {
                     Some(m) => (
@@ -1668,7 +1657,7 @@ impl Node {
                 .values()
                 .any(|conn| conn.transport_id() == Some(transport_id))
             || self.peers.values().any(|slot| {
-                crate::peer::peer_read(slot).transport_id() == Some(transport_id)
+                slot.transport_id() == Some(transport_id)
             })
             || self
                 .pending_connects
@@ -1738,32 +1727,26 @@ impl Node {
     // === Peer Management (Active Phase) ===
 
     /// Get a read-locked peer by NodeAddr.
-    pub fn get_peer(
-        &self,
-        node_addr: &NodeAddr,
-    ) -> Option<std::sync::RwLockReadGuard<'_, ActivePeer>> {
-        self.peers.get(node_addr).map(crate::peer::peer_read)
+    pub fn get_peer(&self, node_addr: &NodeAddr) -> Option<&ActivePeer> {
+        self.peers.get(node_addr)
     }
 
-    /// Get a write-locked peer by NodeAddr.
-    pub fn get_peer_mut(
-        &self,
-        node_addr: &NodeAddr,
-    ) -> Option<std::sync::RwLockWriteGuard<'_, ActivePeer>> {
-        self.peers.get(node_addr).map(crate::peer::peer_write)
+    /// Get a mutable reference to a peer by NodeAddr.
+    pub fn get_peer_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
+        self.peers.get_mut(node_addr)
     }
 
     /// Remove a peer slot. Returns the `Arc<RwLock<ActivePeer>>` so
     /// callers can extract the owned `ActivePeer` via `Arc::try_unwrap`
     /// when no other clones are outstanding (e.g. when a per-peer task
     /// has been joined).
-    pub fn remove_peer(&mut self, node_addr: &NodeAddr) -> Option<ActivePeerSlot> {
+    pub fn remove_peer(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
         self.peers.remove(node_addr)
     }
 
     /// Iterate over all peer slots. Caller calls `peer_read(slot)` /
     /// `peer_write(slot)` to take a lock per peer as needed.
-    pub fn peers(&self) -> impl Iterator<Item = &ActivePeerSlot> {
+    pub fn peers(&self) -> impl Iterator<Item = &ActivePeer> {
         self.peers.values()
     }
 
@@ -1781,17 +1764,17 @@ impl Node {
 
     /// Iterate over peer slots that can send traffic. Caller acquires
     /// a read lock per slot to access the peer.
-    pub fn sendable_peers(&self) -> impl Iterator<Item = &ActivePeerSlot> {
+    pub fn sendable_peers(&self) -> impl Iterator<Item = &ActivePeer> {
         self.peers
             .values()
-            .filter(|slot| crate::peer::peer_read(slot).can_send())
+            .filter(|slot| slot.can_send())
     }
 
     /// Number of peers that can send traffic.
     pub fn sendable_peer_count(&self) -> usize {
         self.peers
             .values()
-            .filter(|slot| crate::peer::peer_read(slot).can_send())
+            .filter(|slot| slot.can_send())
             .count()
     }
 
@@ -2013,7 +1996,7 @@ impl Node {
 
         // 2. Direct peer
         if let Some(slot) = self.peers.get(dest_node_addr)
-            && crate::peer::peer_read(slot).can_send()
+            && slot.can_send()
         {
             return Some(*dest_node_addr);
         }
@@ -2024,7 +2007,7 @@ impl Node {
             Some(
                 self.peers
                     .iter()
-                    .filter(|(_, slot)| crate::peer::peer_read(slot).can_send())
+                    .filter(|(_, slot)| slot.can_send())
                     .map(|(addr, _)| *addr)
                     .collect::<HashSet<_>>(),
             )
@@ -2090,7 +2073,7 @@ impl Node {
             .filter(|next_hop_id| {
                 self.peers
                     .get(next_hop_id)
-                    .is_some_and(|slot| crate::peer::peer_read(slot).can_send())
+                    .is_some_and(|slot| slot.can_send())
             });
         if let Some(next_hop_addr) = tree_route_addr {
             return Some(next_hop_addr);
@@ -2175,7 +2158,7 @@ impl Node {
             let Some(slot) = self.peers.get(candidate_addr) else {
                 continue;
             };
-            let candidate = crate::peer::peer_read(slot);
+            let candidate = slot;
             if !candidate.can_send() {
                 continue;
             }
@@ -2220,7 +2203,7 @@ impl Node {
     pub fn destination_in_filters(&self, dest: &NodeAddr) -> Vec<NodeAddr> {
         self.peers
             .iter()
-            .filter(|(_, slot)| crate::peer::peer_read(slot).may_reach(dest))
+            .filter(|(_, slot)| slot.may_reach(dest))
             .map(|(addr, _)| *addr)
             .collect()
     }
@@ -2370,16 +2353,13 @@ impl Node {
     ) -> Result<(), NodeError> {
         let slot = self
             .peers
-            .get(node_addr)
-            .ok_or(NodeError::PeerNotFound(*node_addr))?
-            .clone();
+            .get_mut(node_addr)
+            .ok_or(NodeError::PeerNotFound(*node_addr))?;
 
-        // Hold a write lock across the encrypt step (mutates send_cipher
-        // counter via NoiseSession). After step 4 the other per-packet
-        // mutations are interior-mutable, but the AEAD send counter
-        // still goes through `&mut NoiseSession`. Drop before stats.
+        // Single &mut borrow across the encrypt step (mutates
+        // send_cipher counter via NoiseSession).
         let (wire_packet, counter, timestamp_ms, transport_id, remote_addr) = {
-            let mut peer = crate::peer::peer_write(&slot);
+            let peer = slot;
 
             let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
                 node_addr: *node_addr,
@@ -2457,8 +2437,7 @@ impl Node {
 
         // Update send statistics. After steps 1+4c, link_stats and mmp
         // mutate through `&self` interior mutability — read lock fine.
-        if let Some(slot) = self.peers.get(node_addr) {
-            let peer = crate::peer::peer_read(slot);
+        if let Some(peer) = self.peers.get_mut(node_addr) {
             peer.link_stats().record_sent(bytes_sent);
             if let Some(mut mmp) = peer.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);

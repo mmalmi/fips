@@ -44,15 +44,15 @@ impl Node {
             }
         };
 
-        let slot = match self.peers.get(from) {
-            Some(p) => p.clone(),
+        let peer = match self.peers.get(from) {
+            Some(p) => p,
             None => {
                 debug!(from = %self.peer_display_name(from), "SenderReport from unknown peer");
                 return;
             }
         };
 
-        if crate::peer::peer_read(&slot).mmp().is_none() {
+        if peer.mmp().is_none() {
             return;
         }
 
@@ -98,7 +98,7 @@ impl Node {
                     return;
                 }
             };
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
 
             // Get session timestamp before taking the MMP lock.
             let our_timestamp_ms = peer.session_elapsed_ms();
@@ -147,8 +147,8 @@ impl Node {
             let peer_costs: std::collections::HashMap<crate::NodeAddr, f64> = self
                 .peers
                 .iter()
-                .filter(|(_, slot)| crate::peer::peer_read(slot).has_srtt())
-                .map(|(a, slot)| (*a, crate::peer::peer_read(slot).link_cost()))
+                .filter(|(_, slot)| slot.has_srtt())
+                .map(|(a, slot)| (*a, slot.link_cost()))
                 .collect();
             if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
                 let new_seq = self.tree_state.my_declaration().sequence() + 1;
@@ -211,7 +211,7 @@ impl Node {
         let mut receiver_reports: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
 
         for (node_addr, slot) in self.peers.iter() {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             // Compute display name before taking mutable MMP borrow
             let peer_name = self
                 .peer_aliases
@@ -552,7 +552,7 @@ impl Node {
         let mut dead_peers: Vec<NodeAddr> = Vec::new();
 
         for (node_addr, slot) in self.peers.iter() {
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
             // Check liveness via MMP receiver last_recv_time.
             // Fall back to session_start for peers that never sent data.
             let is_dead = if let Some(mmp) = peer.mmp() {
@@ -597,8 +597,8 @@ impl Node {
             if dead_peers.contains(&addr) {
                 continue;
             }
-            if let Some(slot) = self.peers.get(&addr) {
-                crate::peer::peer_write(slot).mark_heartbeat_sent(now);
+            if let Some(peer) = self.peers.get_mut(&addr) {
+                peer.mark_heartbeat_sent(now);
             }
             if let Err(e) = self
                 .send_encrypted_link_message(&addr, &heartbeat_msg)

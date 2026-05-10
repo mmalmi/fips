@@ -109,7 +109,7 @@ impl Node {
                 return;
             }
         };
-        let peer = crate::peer::peer_read(&slot);
+        let peer = &slot;
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
@@ -184,8 +184,8 @@ impl Node {
         if tree_changed {
             // Mark all remaining peers for pending tree announce.
             // These will be sent on the next tick via check_tree_state().
-            for slot in self.peers.values() {
-                crate::peer::peer_write(slot).mark_tree_announce_pending();
+            for peer in self.peers.values_mut() {
+                peer.mark_tree_announce_pending();
             }
         }
 

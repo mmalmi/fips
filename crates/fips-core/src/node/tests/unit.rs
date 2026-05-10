@@ -390,7 +390,7 @@ fn test_node_sendable_peers() {
     assert!(
         sendable
             .iter()
-            .any(|slot| crate::peer::peer_read(slot).node_addr() == &node_addr1)
+            .any(|slot| slot.node_addr() == &node_addr1)
     );
 }
 

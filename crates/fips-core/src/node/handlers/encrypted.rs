@@ -85,7 +85,7 @@ impl Node {
         let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
         let need_kbit_flip = match self.peers.get(&node_addr) {
             Some(slot) => {
-                let peer = crate::peer::peer_read(slot);
+                let peer = slot;
                 received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some()
             }
             None => {
@@ -100,8 +100,7 @@ impl Node {
                 peer = %display_name,
                 "Peer K-bit flip detected, promoting new session"
             );
-            let slot = self.peers.get(&node_addr).unwrap().clone();
-            let mut peer = crate::peer::peer_write(&slot);
+            let peer = self.peers.get_mut(&node_addr).unwrap();
             if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
                 // New index was pre-registered in peers_by_index during
                 // msg1 handling (handshake.rs). Verify, don't duplicate.
@@ -138,7 +137,7 @@ impl Node {
                 // Race vs. K-bit block: peer was removed between checks.
                 break 'outcome FmpFrameOutcome::PeerGone;
             };
-            let peer = crate::peer::peer_read(slot);
+            let peer = slot;
 
             // Try current session first. After step 2, NoiseSession's
             // decrypt_with_replay_check_and_aad takes `&self`, so the
@@ -209,7 +208,7 @@ impl Node {
                 // peer-actor cohabitation — the actor handles only
                 // session work, not ActivePeer mutations.
                 if let Some(slot) = self.peers.get(&node_addr) {
-                    let peer = crate::peer::peer_read(slot);
+                    let peer = slot;
                     if used_previous {
                         if let Some(prev) = peer.previous_session() {
                             prev.accept_replay(counter);
@@ -241,7 +240,7 @@ impl Node {
                 let actor_handle = self
                     .peers
                     .get(&node_addr)
-                    .and_then(|slot| crate::peer::peer_read(slot).actor().cloned());
+                    .and_then(|slot| slot.actor().cloned());
 
                 if let Some(actor) = actor_handle {
                     let job = crate::peer::actor::DecryptedJob {
@@ -291,7 +290,7 @@ impl Node {
     ) {
         if matches!(error, NoiseError::ReplayDetected(_)) {
             if let Some(slot) = self.peers.get(node_addr) {
-                let count = crate::peer::peer_read(slot).increment_replay_suppressed();
+                let count = slot.increment_replay_suppressed();
                 if count <= 3 {
                     debug!(
                         peer = %self.peer_display_name(node_addr),
@@ -326,7 +325,7 @@ impl Node {
     /// Increment decrypt failure counter and force-remove peer if threshold exceeded.
     pub(in crate::node) fn handle_decrypt_failure(&mut self, node_addr: &crate::NodeAddr) {
         if let Some(slot) = self.peers.get(node_addr) {
-            let count = crate::peer::peer_read(slot).increment_decrypt_failures();
+            let count = slot.increment_decrypt_failures();
             if count >= DECRYPT_FAILURE_THRESHOLD {
                 warn!(
                     peer = %self.peer_display_name(node_addr),
