@@ -1992,6 +1992,11 @@ impl Node {
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
+                // Recall actor-owned peers so they appear in the
+                // snapshot — `Node.peers()` only iterates the local
+                // map. Reship at the end. No-op when actor_owns_peer
+                // is false.
+                self.recall_all_actor_peers().await;
                 // Pre-collect link/transport info while we still have
                 // immutable access to self.peers; otherwise the closure
                 // would re-borrow self for every peer iteration.
@@ -2023,6 +2028,7 @@ impl Node {
                     .collect();
                 let peers = peer_infos.into_iter().map(|(p,)| p).collect();
                 let _ = response_tx.send(peers);
+                self.reship_all_actor_peers();
             }
         }
     }
