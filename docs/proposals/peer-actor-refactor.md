@@ -123,33 +123,85 @@ the only task doing the receive work.
   Tests: 1092 passed, 0 failed. Step 7a only flips the storage
   type; FSP decrypt + dispatch is still on the rx_loop.
 
-#### Step 7b — Move FSP decrypt + dispatch into peer actor (next)
+* **Step 7b-1 (1fa33b8)** — `consecutive_decrypt_failures` → `AtomicU32`,
+  `mmp` → `Option<Mutex<MmpSessionState>>`. After this all per-packet
+  receive-side mutations on `SessionEntry` are `&self`-callable.
+* **Step 7b-2 (6fb2f8c)** — `handle_encrypted_session_msg` hot path now
+  runs from a read lock on `SessionEntrySlot`. K-bit flip is hoisted
+  into a separate cold-path block that takes a write lock on its rare
+  path. `state()` is no longer `#[cfg(test)]`-gated.
+* **Step 7b-3 (84f13fe)** — single Arc clone + read-lock acquisition per
+  packet (was two — one for K-bit detect, one for hot path).
 
-After 7a the session entry is an `Arc<RwLock<SessionEntry>>` that the
-actor *could* clone, but the actor still doesn't have the surrounding
-state it needs (the sessions map itself, `tun_tx`, `endpoint_event_tx`,
-identity cache, coord_cache). 7b introduces an `Arc<NodeShared>`
-holding those clones and threads it into the actor's `spawn` call,
-matching the original plan's `SharedNodeState`:
+  Bench (TCP single stream, 20s, 2-node Docker, peer_actor=disabled):
+  ~1459 Mbps — within noise of pre-step-7 baseline. With
+  peer_actor=enabled ~1342 Mbps — a ~10% regression from the actor's
+  channel-hop overhead, since the dispatch chain (FSP decrypt + TUN
+  write) is still on the rx_loop and the actor's channel work now adds
+  net latency without offloading useful work. Step 7c is what makes
+  the actor-enabled path pay off.
+
+#### Step 7c — pure channel-based actor for FSP decrypt (next, no Arc<RwLock>)
+
+After step 7a/7b the FSP receive path *can* run from a read lock on
+`Arc<RwLock<SessionEntry>>`, but the lock + atomic + mutex overhead is
+visible at line rate (~5% regression observed). And philosophically,
+adding more `Arc<RwLock<…>>` to thread state into the actor pushes us
+further into shared-state-with-locks territory rather than the
+wireguard-go-style "owned by one task, message-passed" model the
+proposal opens with.
+
+7c pivots: drop the `Arc<RwLock<SessionEntry>>` layer and have the peer
+actor *own* `Option<SessionEntry>` directly. Lifecycle is driven by
+channel messages:
 
 ```rust
-pub struct NodeShared {
-    sessions: Arc<RwLock<HashMap<NodeAddr, SessionEntrySlot>>>,
-    coord_cache: Arc<RwLock<CoordCache>>,
-    tun_tx: Option<Arc<TunSender>>,
-    endpoint_event_tx: Option<Arc<Sender<NodeEndpointEvent>>>,
-    node_addr: NodeAddr,
-    identity: PeerIdentity,
+pub enum PeerInboundJob {
+    Packet(ReceivedPacket),                 // raw packet, actor does FMP
+    TakeSession(Box<SessionEntry>),         // Node hands ownership over
+    RemoveSession,                          // Node tells actor to drop
+    Decrypted(Box<DecryptedJob>),           // legacy step-6 path (kept
+                                            // until 7c migration is done)
+}
+
+pub enum PeerOutboundEvent {
+    SessionStatsSnapshot {                  // periodic push for control
+        last_activity_ms: u64,              // queries / idle timeout /
+        traffic_counters: (u64, u64, u64, u64),
+        ...
+    },
+    DecryptFailureThresholdExceeded {       // ask Node to re-init session
+        remote_pubkey: PublicKey,
+    },
+    NeedsCentralDispatch(PeerLinkDispatch), // current step-6 path,
+                                            // for non-data-fast-path msgs
 }
 ```
 
-Actor's `handle_decrypted` then parses the link-message bytes inline:
+The hot path stays *fully inside* one actor task: receive raw packet →
+FMP decrypt with owned `ActivePeer` → if SessionDatagram-for-me with
+`msg_type == DataPacket`, FSP decrypt with owned `SessionEntry` → IPv6
+shim decompress → `tun_tx.send(...)`. No locks, no Arc, no channel hops
+back to rx_loop on the data plane.
 
-* If it's a `SessionDatagram` whose `dest_addr == node_shared.node_addr`,
-  the actor FSP-decrypts via `sessions.read().get(src_addr)`, delivers
-  to TUN/endpoint directly, and never wakes the rx_loop.
-* Anything else (forwarding, infrastructure messages) falls through to
-  the existing `peer_link_dispatch` channel that the rx_loop drains.
+Cold paths (handshake setup/ack/msg3, rekey msg1/2/3 + cutover, idle
+purge, MMP report send, control queries that read session state) stay
+on the rx_loop with `&mut Node`, but interact with peer actors purely
+via `PeerInboundJob` messages. Sessions live in exactly one place at
+any moment: either in `Node.sessions` (during handshake / rekey
+transient state) or in the peer actor (Established).
+
+For mesh forwarding cases where this node is transit (no FSP keys
+held), no session ownership is involved — the actor just emits
+`NeedsCentralDispatch` for the SessionDatagram and rx_loop routes it
+onward as today. For sessions where `session.remote_addr` isn't also a
+direct peer (rare 3+-hop case where we're an endpoint), the session
+stays in `Node.sessions` and falls back to the legacy path.
+
+This sequence keeps step 7a/7b's groundwork (helpers, atomic counters,
+Mutex MMP) — the pieces that make `&self` receive callable still apply
+once the entry moves into the actor. We just stop wrapping it in
+`Arc<RwLock<…>>` for sharing.
 
 ### Remaining
 
