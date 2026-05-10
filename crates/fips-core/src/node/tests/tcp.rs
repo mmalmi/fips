@@ -173,8 +173,8 @@ async fn test_tcp_connection_loss_detection() {
 
     // Short heartbeat/link-dead timeouts for faster test execution
     for tn in nodes.iter_mut() {
-        tn.node.config.node.heartbeat_interval_secs = 1;
-        tn.node.config.node.link_dead_timeout_secs = 3;
+        tn.node.config_mut().node.heartbeat_interval_secs = 1;
+        tn.node.config_mut().node.link_dead_timeout_secs = 3;
     }
 
     // Establish peering
@@ -222,8 +222,8 @@ async fn test_tcp_reconnection_after_link_death() {
 
     // Short timeouts
     for tn in nodes.iter_mut() {
-        tn.node.config.node.heartbeat_interval_secs = 1;
-        tn.node.config.node.link_dead_timeout_secs = 3;
+        tn.node.config_mut().node.heartbeat_interval_secs = 1;
+        tn.node.config_mut().node.link_dead_timeout_secs = 3;
     }
 
     // Establish initial peering

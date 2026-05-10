@@ -201,6 +201,14 @@ impl SessionEntry {
         &self.remote_pubkey
     }
 
+    /// Replace the entry's remote pubkey. Used by the responder-side
+    /// XK msg3 handler in the peer actor: the responder created the
+    /// SessionEntry with a placeholder pubkey before knowing the
+    /// initiator's identity, and now (post-msg3) we know the real one.
+    pub(crate) fn set_remote_pubkey(&mut self, pubkey: PublicKey) {
+        self.remote_pubkey = pubkey;
+    }
+
     /// Get the current session state (immutable).
     pub(crate) fn state(&self) -> &EndToEndState {
         self.state

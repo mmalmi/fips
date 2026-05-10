@@ -41,7 +41,17 @@ use tracing::{debug, trace};
 
 /// Per-actor IO context: clones of the IO sinks the peer actor needs to
 /// deliver locally-terminated SessionDatagram payloads (TUN packets,
-/// endpoint data events) without round-tripping through the rx_loop.
+/// endpoint data events) without round-tripping through the rx_loop,
+/// plus a shared `Arc<Config>` for read-only access to deployment-time
+/// settings (coords warmup count, MMP config, handshake-resend tuning,
+/// rate-limit thresholds, etc).
+///
+/// The `Arc<Config>` pattern is the standard "actor owns its config"
+/// approach for read-mostly settings: every actor holds an `Arc::clone`
+/// of the same immutable `Config` object — cheap (one ref-count bump
+/// per spawn), no synchronisation. If we ever add hot-reload, swap-the-
+/// Arc (`arc_swap`) slots in without touching this struct's API.
+///
 /// Built once on Node startup and passed to every `PeerActorHandle::spawn`.
 #[derive(Clone)]
 pub(crate) struct PeerActorIoCtx {
@@ -54,6 +64,10 @@ pub(crate) struct PeerActorIoCtx {
     /// Endpoint-event sink for app-bound EndpointData packets. `None`
     /// when no endpoint is attached.
     pub endpoint_event_tx: Option<mpsc::Sender<NodeEndpointEvent>>,
+    /// Shared, read-only config. Actor reads the relevant sub-configs
+    /// (`config.node.session`, `config.node.session_mmp`,
+    /// `config.node.rate_limit`, …) directly via the Arc.
+    pub config: Arc<crate::config::Config>,
 }
 
 /// One unit of work pushed from Node into a peer task.
@@ -121,6 +135,82 @@ pub(crate) enum PeerInboundJob {
     /// Control-plane snapshot for `show_sessions` / `show_mmp` queries.
     /// Returns `None` if the actor doesn't own a session.
     QuerySnapshot(oneshot::Sender<Option<SessionSnapshot>>),
+    /// Process inbound FSP msg2 (Noise XK) — initiator-side handshake
+    /// advance from `Initiating` to `Established` (or from rekey-in-
+    /// progress to pending-cutover for rekey path). Actor advances its
+    /// owned `SessionEntry`'s state machine and returns the msg3 bytes
+    /// for Node to wrap in a `SessionDatagram` and send.
+    ProcessFspMsg2 {
+        handshake_payload: Vec<u8>,
+        respond: oneshot::Sender<Result<ProcessMsg2Output, ProcessHandshakeError>>,
+    },
+    /// Process inbound FSP msg3 (Noise XK) — responder-side handshake
+    /// advance from `AwaitingMsg3` to `Established`. Reveals the
+    /// initiator's static pubkey, which the actor returns so Node can
+    /// register identity / fix any placeholder entries.
+    ProcessFspMsg3 {
+        handshake_payload: Vec<u8>,
+        respond: oneshot::Sender<Result<ProcessMsg3Output, ProcessHandshakeError>>,
+    },
+}
+
+/// Reply for `ProcessFspMsg2`.
+#[derive(Debug)]
+pub(crate) struct ProcessMsg2Output {
+    /// XK msg3 bytes — Node wraps this in a `SessionMsg3` body and
+    /// sends as a `SessionDatagram`.
+    pub msg3_payload: Vec<u8>,
+    /// Distinguishes the fresh-establish path (Initiating →
+    /// Established) from the rekey-in-progress path (was already
+    /// Established, now has a pending NoiseSession waiting for K-bit
+    /// cutover).
+    pub flow: ProcessMsg2Flow,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessMsg2Flow {
+    /// Fresh handshake completing — Node should `coord_cache.insert(
+    /// src_addr, ack.src_coords)` and `flush_pending_packets(src_addr)`.
+    FreshEstablish,
+    /// Rekey msg2 — actor parked the new session as `pending_new_session`
+    /// awaiting K-bit cutover. No coord-cache or pending-packet
+    /// updates needed.
+    RekeyPending,
+}
+
+/// Reply for `ProcessFspMsg3`.
+#[derive(Debug)]
+pub(crate) struct ProcessMsg3Output {
+    /// Initiator's real static pubkey, learned from XK msg3. Node
+    /// uses this to update its identity_cache (replacing any
+    /// placeholder previously associated with this NodeAddr).
+    pub remote_pubkey: PublicKey,
+    /// As with msg2, distinguishes fresh-establish from rekey.
+    pub flow: ProcessMsg3Flow,
+}
+
+#[derive(Debug)]
+pub(crate) enum ProcessMsg3Flow {
+    /// AwaitingMsg3 → Established. Node should
+    /// `flush_pending_packets(src_addr)`.
+    FreshEstablish,
+    /// Rekey msg3 — actor parked new session as pending; awaiting
+    /// initiator's K-bit-flipped data to trigger cutover.
+    RekeyPending,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProcessHandshakeError {
+    #[error("peer actor does not own a session")]
+    SessionGone,
+    #[error("session not in expected handshake state")]
+    UnexpectedState,
+    #[error("Noise read failed: {0}")]
+    NoiseRead(String),
+    #[error("Noise write failed: {0}")]
+    NoiseWrite(String),
+    #[error("Noise into_session failed: {0}")]
+    IntoSession(String),
 }
 
 /// Result of a successful `Encrypt` call.
@@ -434,6 +524,28 @@ async fn peer_actor_loop(
                 // self.sessions.
                 let _ = respond.send(None);
             }
+            PeerInboundJob::ProcessFspMsg2 {
+                handshake_payload,
+                respond,
+            } => {
+                let result = actor_process_fsp_msg2(
+                    owned_session.as_deref_mut(),
+                    handshake_payload,
+                    &io_ctx,
+                );
+                let _ = respond.send(result);
+            }
+            PeerInboundJob::ProcessFspMsg3 {
+                handshake_payload,
+                respond,
+            } => {
+                let result = actor_process_fsp_msg3(
+                    owned_session.as_deref_mut(),
+                    handshake_payload,
+                    &io_ctx,
+                );
+                let _ = respond.send(result);
+            }
         }
     }
     // Drop owned_session explicitly so its destructor runs before the
@@ -531,6 +643,200 @@ fn actor_encrypt(
         counter,
         timestamp,
         ciphertext_len,
+    })
+}
+
+/// Process inbound Noise XK msg2 (initiator side).
+///
+/// Two flows multiplexed on entry state:
+///
+/// * **Fresh handshake** — `state == Initiating(handshake)`. Take
+///   handshake out, advance through `read_xk_message_2` +
+///   `write_xk_message_3`, convert to `NoiseSession`, set state to
+///   `Established(...)`, init MMP, mark established. Return msg3
+///   payload + `FreshEstablish` flow flag.
+///
+/// * **Rekey** — `state == Established(...)` and `rekey_state.is_some()`
+///   and `is_rekey_initiator`. Run the rekey handshake from
+///   `rekey_state` instead, store the result as
+///   `pending_new_session`. Established session keeps running on
+///   current keys until peer's K-bit flip triggers cutover. Return
+///   msg3 + `RekeyPending`.
+///
+/// On any Noise failure the entry's state field is left as `None`
+/// (handshake taken, not put back) — mirrors the existing
+/// `handle_session_ack` behaviour. Caller (Node) on Err should
+/// `RemoveSession` the actor / re-init.
+fn actor_process_fsp_msg2(
+    session: Option<&mut SessionEntry>,
+    handshake_payload: Vec<u8>,
+    io_ctx: &PeerActorIoCtx,
+) -> Result<ProcessMsg2Output, ProcessHandshakeError> {
+    use crate::node::session::EndToEndState;
+
+    let entry = session.ok_or(ProcessHandshakeError::SessionGone)?;
+
+    // Rekey path: established session with rekey_state and we're the
+    // initiator of the rekey.
+    if entry.is_established() && entry.has_rekey_in_progress() && entry.is_rekey_initiator() {
+        let mut handshake = entry
+            .take_rekey_state()
+            .ok_or(ProcessHandshakeError::UnexpectedState)?;
+
+        if let Err(e) = handshake.read_xk_message_2(&handshake_payload) {
+            entry.abandon_rekey();
+            return Err(ProcessHandshakeError::NoiseRead(format!("{}", e)));
+        }
+        let msg3 = handshake.write_xk_message_3().map_err(|e| {
+            entry.abandon_rekey();
+            ProcessHandshakeError::NoiseWrite(format!("{}", e))
+        })?;
+        let new_session = handshake.into_session().map_err(|e| {
+            entry.abandon_rekey();
+            ProcessHandshakeError::IntoSession(format!("{}", e))
+        })?;
+
+        entry.set_pending_session(new_session);
+        entry.set_rekey_completed_ms(crate::time::now_ms());
+
+        return Ok(ProcessMsg2Output {
+            msg3_payload: msg3,
+            flow: ProcessMsg2Flow::RekeyPending,
+        });
+    }
+
+    // Fresh-establish path: must be Initiating.
+    if !entry.is_initiating() {
+        return Err(ProcessHandshakeError::UnexpectedState);
+    }
+
+    // Take the handshake state out; the entry's state slot is now None
+    // until we put Established back at the end.
+    let mut handshake = match entry.take_state() {
+        Some(EndToEndState::Initiating(hs)) => hs,
+        // Re-establish the slot if we got something else (defensive),
+        // then bail.
+        Some(other) => {
+            entry.set_state(other);
+            return Err(ProcessHandshakeError::UnexpectedState);
+        }
+        None => return Err(ProcessHandshakeError::UnexpectedState),
+    };
+
+    handshake
+        .read_xk_message_2(&handshake_payload)
+        .map_err(|e| ProcessHandshakeError::NoiseRead(format!("{}", e)))?;
+
+    let msg3 = handshake
+        .write_xk_message_3()
+        .map_err(|e| ProcessHandshakeError::NoiseWrite(format!("{}", e)))?;
+
+    let new_session = handshake
+        .into_session()
+        .map_err(|e| ProcessHandshakeError::IntoSession(format!("{}", e)))?;
+
+    let now_ms = crate::time::now_ms();
+    entry.set_state(EndToEndState::Established(new_session));
+    entry.set_coords_warmup_remaining(io_ctx.config.node.session.coords_warmup_packets);
+    entry.mark_established(now_ms);
+    entry.init_mmp(&io_ctx.config.node.session_mmp);
+    entry.clear_handshake_payload();
+    entry.touch(now_ms);
+
+    Ok(ProcessMsg2Output {
+        msg3_payload: msg3,
+        flow: ProcessMsg2Flow::FreshEstablish,
+    })
+}
+
+/// Process inbound Noise XK msg3 (responder side).
+///
+/// Two flows analogous to msg2:
+///
+/// * **Fresh handshake** — `state == AwaitingMsg3(handshake)`. Take
+///   the handshake out, run `read_xk_message_3` (which discloses the
+///   initiator's static pubkey), convert to NoiseSession, set state
+///   to `Established`, init MMP. Returns the learned
+///   `remote_pubkey` so Node can register identity.
+///
+/// * **Rekey** — `state == Established(...)` with rekey_state and
+///   we're the responder. Process msg3 against rekey_state, park
+///   the resulting NoiseSession as `pending_new_session`, awaiting
+///   peer's K-bit flip on the next data packet to trigger cutover.
+fn actor_process_fsp_msg3(
+    session: Option<&mut SessionEntry>,
+    handshake_payload: Vec<u8>,
+    io_ctx: &PeerActorIoCtx,
+) -> Result<ProcessMsg3Output, ProcessHandshakeError> {
+    use crate::node::session::EndToEndState;
+
+    let entry = session.ok_or(ProcessHandshakeError::SessionGone)?;
+
+    // Rekey responder path.
+    if entry.is_established() && entry.has_rekey_in_progress() && !entry.is_rekey_initiator() {
+        let mut handshake = entry
+            .take_rekey_state()
+            .ok_or(ProcessHandshakeError::UnexpectedState)?;
+
+        if let Err(e) = handshake.read_xk_message_3(&handshake_payload) {
+            entry.abandon_rekey();
+            return Err(ProcessHandshakeError::NoiseRead(format!("{}", e)));
+        }
+        let remote_pubkey = *handshake.remote_static().ok_or_else(|| {
+            entry.abandon_rekey();
+            ProcessHandshakeError::IntoSession("missing remote_static after msg3".into())
+        })?;
+        let new_session = handshake.into_session().map_err(|e| {
+            entry.abandon_rekey();
+            ProcessHandshakeError::IntoSession(format!("{}", e))
+        })?;
+
+        entry.set_pending_session(new_session);
+
+        return Ok(ProcessMsg3Output {
+            remote_pubkey,
+            flow: ProcessMsg3Flow::RekeyPending,
+        });
+    }
+
+    // Fresh-establish path.
+    if !entry.is_awaiting_msg3() {
+        return Err(ProcessHandshakeError::UnexpectedState);
+    }
+
+    let mut handshake = match entry.take_state() {
+        Some(EndToEndState::AwaitingMsg3(hs)) => hs,
+        Some(other) => {
+            entry.set_state(other);
+            return Err(ProcessHandshakeError::UnexpectedState);
+        }
+        None => return Err(ProcessHandshakeError::UnexpectedState),
+    };
+
+    handshake
+        .read_xk_message_3(&handshake_payload)
+        .map_err(|e| ProcessHandshakeError::NoiseRead(format!("{}", e)))?;
+
+    let remote_pubkey = *handshake
+        .remote_static()
+        .ok_or_else(|| ProcessHandshakeError::IntoSession("missing remote_static after msg3".into()))?;
+
+    let new_session = handshake
+        .into_session()
+        .map_err(|e| ProcessHandshakeError::IntoSession(format!("{}", e)))?;
+
+    let now_ms = crate::time::now_ms();
+    entry.set_state(EndToEndState::Established(new_session));
+    entry.set_coords_warmup_remaining(io_ctx.config.node.session.coords_warmup_packets);
+    entry.mark_established(now_ms);
+    entry.init_mmp(&io_ctx.config.node.session_mmp);
+    entry.clear_handshake_payload();
+    entry.touch(now_ms);
+    entry.set_remote_pubkey(remote_pubkey);
+
+    Ok(ProcessMsg3Output {
+        remote_pubkey,
+        flow: ProcessMsg3Flow::FreshEstablish,
     })
 }
 

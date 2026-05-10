@@ -756,7 +756,7 @@ fn test_detect_congestion_with_transport_drops() {
 #[test]
 fn test_detect_congestion_disabled_ecn() {
     let mut node = make_node();
-    node.config.node.ecn.enabled = false;
+    node.config_mut().node.ecn.enabled = false;
 
     // Even with transport drops, disabled ECN should return false
     let tid = TransportId::new(1);

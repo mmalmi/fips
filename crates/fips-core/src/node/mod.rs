@@ -353,8 +353,12 @@ pub struct Node {
     started_at: std::time::Instant,
 
     // === Configuration ===
-    /// Loaded configuration.
-    config: Config,
+    /// Loaded configuration. Held in `Arc<…>` so peer-actor tasks can
+    /// share an immutable view without cloning the whole Config struct
+    /// (which is large — many sub-configs across transports / session /
+    /// MMP / rate-limit / etc.). Effectively immutable post-construction;
+    /// any future hot-reload would swap the Arc atomically (`arc_swap`).
+    config: Arc<Config>,
 
     // === State ===
     /// Node operational state.
@@ -599,6 +603,9 @@ impl Node {
         let identity = config.create_identity()?;
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
+        // Hoist into Arc for cheap sharing with per-peer actor tasks.
+        // All `&self.config.*` accesses keep working via Deref.
+        let config = Arc::new(config);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -737,6 +744,7 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
+        let config = Arc::new(config);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -1136,13 +1144,16 @@ impl Node {
     }
 
     /// Build a `PeerActorIoCtx` snapshot for spawning a peer actor.
-    /// Cheap — clones the IO sinks (`tun_tx`, `endpoint_event_tx`),
-    /// which are mpsc senders backed by `Arc`s.
+    /// Cheap — clones the IO-sink mpsc senders (themselves Arc-backed)
+    /// and bumps the `Arc<Config>` ref-count once. The actor then reads
+    /// any config field via `io_ctx.config.<sub-config>.<field>` without
+    /// further allocation.
     pub(crate) fn peer_actor_io_ctx(&self) -> crate::peer::actor::PeerActorIoCtx {
         crate::peer::actor::PeerActorIoCtx {
             node_addr: *self.identity.node_addr(),
             tun_tx: self.tun_tx.clone(),
             endpoint_event_tx: self.endpoint_event_tx.clone(),
+            config: Arc::clone(&self.config),
         }
     }
 
@@ -1181,6 +1192,17 @@ impl Node {
     /// Get the configuration.
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Get a mutable reference to the configuration. Uses
+    /// `Arc::make_mut` — clone-on-write if any peer-actor task is
+    /// holding an Arc clone of the same Config. In practice this only
+    /// fires from test fixtures (tweaking knobs before traffic
+    /// starts, before any peer-actor spawns), so the Arc is unique
+    /// and the call is just a deref.
+    #[cfg(test)]
+    pub(crate) fn config_mut(&mut self) -> &mut Config {
+        Arc::make_mut(&mut self.config)
     }
 
     /// Calculate the effective IPv6 MTU that can be sent over FIPS.

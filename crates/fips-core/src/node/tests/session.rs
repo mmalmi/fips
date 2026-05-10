@@ -1617,7 +1617,7 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
 #[test]
 fn test_purge_idle_sessions_disabled_when_zero() {
     let mut node = make_node();
-    node.config.node.session.idle_timeout_secs = 0;
+    node.config_mut().node.session.idle_timeout_secs = 0;
 
     let remote = Identity::generate();
     let remote_addr = *remote.node_addr();
@@ -1776,7 +1776,7 @@ fn test_coords_warmup_config_default() {
 #[test]
 fn test_identity_cache_lru_eviction() {
     let mut node = make_node();
-    node.config.node.cache.identity_size = 2;
+    node.config_mut().node.cache.identity_size = 2;
 
     let id1 = Identity::generate();
     let id2 = Identity::generate();
@@ -1975,7 +1975,7 @@ async fn test_session_handshake_timeout() {
     assert!(node.sessions.contains_key(&dest_addr));
 
     // Before timeout: session should remain
-    let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
+    let timeout_secs = node.config_mut().node.rate_limit.handshake_timeout_secs;
     let before_timeout = 1000 + timeout_secs * 1000 - 1;
     node.resend_pending_session_handshakes(before_timeout).await;
     assert!(
@@ -2019,7 +2019,7 @@ async fn test_session_awaiting_msg3_timeout() {
     assert!(node.sessions.contains_key(&src_addr));
 
     // After timeout: session should be removed
-    let timeout_secs = node.config.node.rate_limit.handshake_timeout_secs;
+    let timeout_secs = node.config_mut().node.rate_limit.handshake_timeout_secs;
     let after_timeout = 1000 + timeout_secs * 1000 + 1;
     node.resend_pending_session_handshakes(after_timeout).await;
     assert!(
@@ -2465,7 +2465,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
         1000,
         true,
     );
-    entry.init_mmp(&node.config.node.session_mmp);
+    entry.init_mmp(&node.config_mut().node.session_mmp);
     node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
 }
 
