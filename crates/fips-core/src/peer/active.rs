@@ -149,9 +149,15 @@ pub struct ActivePeer {
 
     // === Replay Detection Suppression ===
     /// Number of replay detections suppressed since last session reset.
-    replay_suppressed_count: u32,
+    /// Atomic so the receive hot path can increment / reset this through
+    /// `&self`, same rationale as `consecutive_decrypt_failures` below.
+    replay_suppressed_count: std::sync::atomic::AtomicU32,
     /// Consecutive decryption failures (reset on any successful decrypt).
-    consecutive_decrypt_failures: u32,
+    /// Atomic so the receive hot path can `reset_decrypt_failures` /
+    /// `increment_decrypt_failures` through `&self`, in line with
+    /// LinkStats counters and the ReplayWindow lock-only-on-mutate
+    /// pattern from steps 1 and 2 of the peer-actor refactor.
+    consecutive_decrypt_failures: std::sync::atomic::AtomicU32,
 
     // === Rekey (Key Rotation) ===
     /// When the current Noise session was established (for rekey timer).
@@ -217,8 +223,8 @@ impl ActivePeer {
             mmp: None,
             last_heartbeat_sent: None,
             handshake_msg2: None,
-            replay_suppressed_count: 0,
-            consecutive_decrypt_failures: 0,
+            replay_suppressed_count: std::sync::atomic::AtomicU32::new(0),
+            consecutive_decrypt_failures: std::sync::atomic::AtomicU32::new(0),
             session_established_at: now,
             current_k_bit: false,
             previous_session: None,
@@ -297,8 +303,8 @@ impl ActivePeer {
             mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
             last_heartbeat_sent: None,
             handshake_msg2: None,
-            replay_suppressed_count: 0,
-            consecutive_decrypt_failures: 0,
+            replay_suppressed_count: std::sync::atomic::AtomicU32::new(0),
+            consecutive_decrypt_failures: std::sync::atomic::AtomicU32::new(0),
             session_established_at: now,
             current_k_bit: false,
             previous_session: None,
@@ -465,39 +471,41 @@ impl ActivePeer {
     // === Replay Detection Suppression ===
 
     /// Increment replay suppression counter. Returns the new count.
-    pub fn increment_replay_suppressed(&mut self) -> u32 {
-        self.replay_suppressed_count += 1;
-        self.replay_suppressed_count
+    pub fn increment_replay_suppressed(&self) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.replay_suppressed_count.fetch_add(1, Relaxed) + 1
     }
 
     /// Reset replay suppression counter, returning previous count.
-    pub fn reset_replay_suppressed(&mut self) -> u32 {
-        let count = self.replay_suppressed_count;
-        self.replay_suppressed_count = 0;
-        count
+    pub fn reset_replay_suppressed(&self) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.replay_suppressed_count.swap(0, Relaxed)
     }
 
     /// Current replay suppression count.
     pub fn replay_suppressed_count(&self) -> u32 {
-        self.replay_suppressed_count
+        use std::sync::atomic::Ordering::Relaxed;
+        self.replay_suppressed_count.load(Relaxed)
     }
 
     // === Decryption Failure Tracking ===
 
     /// Increment consecutive decryption failure counter, returning new count.
-    pub fn increment_decrypt_failures(&mut self) -> u32 {
-        self.consecutive_decrypt_failures += 1;
-        self.consecutive_decrypt_failures
+    pub fn increment_decrypt_failures(&self) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.consecutive_decrypt_failures.fetch_add(1, Relaxed) + 1
     }
 
     /// Reset consecutive decryption failure counter.
-    pub fn reset_decrypt_failures(&mut self) {
-        self.consecutive_decrypt_failures = 0;
+    pub fn reset_decrypt_failures(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.consecutive_decrypt_failures.store(0, Relaxed);
     }
 
     /// Current consecutive decryption failure count.
     pub fn consecutive_decrypt_failures(&self) -> u32 {
-        self.consecutive_decrypt_failures
+        use std::sync::atomic::Ordering::Relaxed;
+        self.consecutive_decrypt_failures.load(Relaxed)
     }
 
     // === Epoch Accessors ===
