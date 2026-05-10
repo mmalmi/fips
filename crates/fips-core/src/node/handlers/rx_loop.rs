@@ -117,6 +117,28 @@ impl Node {
                     if aead_completion_rx.is_some() {
                         // Pool path: classify + dispatch a batch.
                         self.handle_inbound_with_pool(p, &mut packet_rx).await;
+                        // Drain whatever the pool has already produced
+                        // before yielding back to select!. Without
+                        // this, sustained inbound at line rate starves
+                        // the completion arm (biased select picks
+                        // packet_rx first as long as it has data),
+                        // batches pile up in the sequencer's queue,
+                        // and dispatch_link_message never fires —
+                        // catastrophic TCP retransmit cascade.
+                        if let Some(rx) = aead_completion_rx.as_mut() {
+                            let mut done = 0;
+                            while done < 4096 {
+                                match rx.try_recv() {
+                                    Some(batch) => {
+                                        for elem in batch {
+                                            self.apply_decrypted_elem(elem).await;
+                                        }
+                                        done += 1;
+                                    }
+                                    None => break,
+                                }
+                            }
+                        }
                     } else {
                         // Legacy inline path.
                         self.process_packet(p).await;
