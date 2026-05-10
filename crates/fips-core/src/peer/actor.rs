@@ -28,6 +28,7 @@
 //! * Stop: `remove_active_peer` drops the handle, which closes the
 //!   sender; the peer task observes `recv() -> None` and exits.
 
+use crate::node::session::SessionEntry;
 use crate::peer::ActivePeerSlot;
 use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
 use std::sync::Arc;
@@ -36,11 +37,25 @@ use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 
 /// One unit of work pushed from the rx_loop into a peer task.
-pub enum PeerInboundJob {
+pub(crate) enum PeerInboundJob {
     /// FMP-decrypted frame on this peer. The peer task accepts the
     /// replay counter, records MMP / link stats, touches last-seen,
     /// and forwards the link message to the rx_loop's dispatch queue.
     Decrypted(Box<DecryptedJob>),
+    /// Hand ownership of a (newly-Established) `SessionEntry` to the
+    /// peer actor. Node calls this from its handshake-completion path
+    /// when the session's `remote_addr` matches this peer's NodeAddr
+    /// (direct peer = direct session). The actor parks the entry as
+    /// owned local state so subsequent FSP-receive work can run with
+    /// no shared-state access. Step 7c — currently scaffolding; the
+    /// hot-path FSP-decrypt-in-actor will land in 7c-2.
+    TakeSession(Box<SessionEntry>),
+    /// Tell the peer actor to drop its owned `SessionEntry` (peer
+    /// disconnect, idle purge, decrypt-failure-threshold reinit).
+    /// After this the actor's owned session is `None`; FSP-receive
+    /// work falls back to the central dispatch path until a new
+    /// `TakeSession` arrives.
+    RemoveSession,
 }
 
 pub struct DecryptedJob {
@@ -125,7 +140,7 @@ impl PeerActorHandle {
 
     /// Push a job into the peer's inbox. Returns false if the channel
     /// is closed (the task has exited).
-    pub async fn dispatch(&self, job: PeerInboundJob) -> bool {
+    pub(crate) async fn dispatch(&self, job: PeerInboundJob) -> bool {
         self.inbound_tx.send(job).await.is_ok()
     }
 
@@ -133,8 +148,31 @@ impl PeerActorHandle {
     /// full or closed. The rx_loop uses this to avoid blocking the
     /// drain loop on a slow peer.
     #[allow(dead_code)]
-    pub fn try_dispatch(&self, job: PeerInboundJob) -> bool {
+    pub(crate) fn try_dispatch(&self, job: PeerInboundJob) -> bool {
         self.inbound_tx.try_send(job).is_ok()
+    }
+
+    /// Hand a `SessionEntry` over to the peer actor as owned state.
+    /// Falls back to `try_send` (non-blocking) since the rx_loop calls
+    /// this from cold paths (handshake completion / rekey cutover);
+    /// dropping the message under back-pressure is acceptable — the
+    /// session stays usable via central dispatch until the next
+    /// hand-off attempt.
+    #[allow(dead_code)]
+    pub(crate) fn try_take_session(&self, entry: Box<SessionEntry>) -> bool {
+        self.inbound_tx
+            .try_send(PeerInboundJob::TakeSession(entry))
+            .is_ok()
+    }
+
+    /// Tell the peer actor to drop its owned session, if any.
+    /// Non-blocking; if the channel is full the actor's owned copy
+    /// stays for now and Node retries on the next removal trigger.
+    #[allow(dead_code)]
+    pub fn try_remove_session(&self) -> bool {
+        self.inbound_tx
+            .try_send(PeerInboundJob::RemoveSession)
+            .is_ok()
     }
 }
 
@@ -147,13 +185,40 @@ async fn peer_actor_loop(
     link_dispatch_tx: mpsc::Sender<PeerLinkDispatch>,
 ) {
     trace!(peer = %peer_addr, "Peer actor task started");
+    // Owned per-actor state. `session` is `None` until a `TakeSession`
+    // job arrives from Node (handshake completion path). When present,
+    // the actor can run the FSP-receive fast path entirely on owned
+    // state — no Arc<RwLock>, no central HashMap lookup. Step 7c-1
+    // installs the channel scaffolding; 7c-2 wires the fast-path
+    // decrypt + TUN write here.
+    let mut owned_session: Option<Box<SessionEntry>> = None;
     while let Some(job) = inbound_rx.recv().await {
         match job {
             PeerInboundJob::Decrypted(decrypted) => {
                 handle_decrypted(&peer_slot, *decrypted, &link_dispatch_tx, &peer_addr).await;
             }
+            PeerInboundJob::TakeSession(entry) => {
+                trace!(
+                    peer = %peer_addr,
+                    "Peer actor took ownership of SessionEntry"
+                );
+                owned_session = Some(entry);
+            }
+            PeerInboundJob::RemoveSession => {
+                if owned_session.is_some() {
+                    trace!(
+                        peer = %peer_addr,
+                        "Peer actor dropped owned SessionEntry"
+                    );
+                }
+                owned_session = None;
+            }
         }
     }
+    // Drop owned_session explicitly so its destructor runs before the
+    // task exits. (Implicit drop would do the same; explicit makes the
+    // intent obvious.)
+    drop(owned_session);
     trace!(peer = %peer_addr, "Peer actor task exiting (channel closed)");
 }
 
