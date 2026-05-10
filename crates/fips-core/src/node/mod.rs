@@ -2527,6 +2527,26 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
+        // Recall the peer if it's currently in its actor task (cold-path
+        // outbound encryption isn't yet migrated to an actor.Encrypt
+        // message). The recall round-trip is paid per outbound link
+        // message — a known overhead until the actor.Encrypt path lands.
+        // No-op when `actor_owns_peer` is false. Inner closure runs the
+        // encrypt+send, then reship_peer fires unconditionally below.
+        self.recall_peer(node_addr).await;
+        let result = self
+            .send_encrypted_link_message_inner(node_addr, plaintext, ce_flag)
+            .await;
+        self.reship_peer(node_addr);
+        result
+    }
+
+    async fn send_encrypted_link_message_inner(
+        &mut self,
+        node_addr: &NodeAddr,
+        plaintext: &[u8],
+        ce_flag: bool,
+    ) -> Result<(), NodeError> {
         let slot = self
             .peers
             .get_mut(node_addr)
