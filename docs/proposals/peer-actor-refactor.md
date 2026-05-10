@@ -156,7 +156,7 @@ the only task doing the receive work.
   Clone` is the next prereq before `SessionEntry: clone_for_actor` is
   feasible.
 
-#### Step 7c-2 — wire SessionEntry ownership into actor (next)
+#### Step 7c-2 — single-owner `SessionEntry` in peer actor (next)
 
 After step 7a/7b the FSP receive path *can* run from a read lock on
 `Arc<RwLock<SessionEntry>>`, but the lock + atomic + mutex overhead is
@@ -166,80 +166,137 @@ further into shared-state-with-locks territory rather than the
 wireguard-go-style "owned by one task, message-passed" model the
 proposal opens with.
 
-7c pivots: drop the `Arc<RwLock<SessionEntry>>` layer and have the peer
-actor *own* `Option<SessionEntry>` directly. Lifecycle is driven by
-channel messages:
+**7c-2 design — single owner, no copies, no shared state.** A
+fully-Established session lives in *exactly one place*: the peer
+actor that handles the direct link to its remote endpoint. Node has
+no `Arc<RwLock<SessionEntry>>`, no `SessionMetadata` mirror, no
+duplicate copy. Every Node-side touch of the session goes through a
+channel call to the owning actor.
 
 ```rust
-pub enum PeerInboundJob {
-    Packet(ReceivedPacket),                 // raw packet, actor does FMP
-    TakeSession(Box<SessionEntry>),         // Node hands ownership over
-    RemoveSession,                          // Node tells actor to drop
-    Decrypted(Box<DecryptedJob>),           // legacy step-6 path (kept
-                                            // until 7c migration is done)
+// Inbound (Node → actor):
+pub(crate) enum PeerInboundJob {
+    Packet(ReceivedPacket),                       // FMP work (existing)
+    TakeSession(Box<SessionEntry>),               // hand ownership
+    RemoveSession,                                // teardown
+    Encrypt {                                     // send-side: build a
+        msg_type: u8,                             //   SessionDatagram
+        plaintext: Vec<u8>,                       //   payload via the
+        flags: u8,                                //   actor's owned
+        respond: oneshot::Sender<EncryptResult>,  //   send_cipher
+    },
+    BuildMmpReports {                             // periodic timer →
+        now: Instant,                             //   actor builds its
+        respond: oneshot::Sender<Vec<...>>,       //   own reports
+    },
+    QueryStats(oneshot::Sender<SessionStats>),    // control query
+    IsRekeyDue { now_ms: u64,
+        respond: oneshot::Sender<bool> },
 }
 
-pub enum PeerOutboundEvent {
-    SessionStatsSnapshot {                  // periodic push for control
-        last_activity_ms: u64,              // queries / idle timeout /
-        traffic_counters: (u64, u64, u64, u64),
-        ...
-    },
-    DecryptFailureThresholdExceeded {       // ask Node to re-init session
-        remote_pubkey: PublicKey,
-    },
-    NeedsCentralDispatch(PeerLinkDispatch), // current step-6 path,
-                                            // for non-data-fast-path msgs
+// Outbound (actor → Node, push only):
+pub(crate) enum PeerOutboundEvent {
+    NeedsCentralDispatch(PeerLinkDispatch),       // forwarded msg, etc.
+    DecryptFailureThresholdExceeded { remote_pubkey: PublicKey },
+    SessionDrained,                               // drain window expired
+    LastActivityUpdate { last_activity_ms: u64 }, // for idle purge —
+                                                  //   Node maintains a
+                                                  //   `last_activity`
+                                                  //   atomic per peer
+                                                  //   (not a mirror of
+                                                  //   SessionEntry, just
+                                                  //   the one field)
 }
 ```
 
-The hot path stays *fully inside* one actor task: receive raw packet →
-FMP decrypt with owned `ActivePeer` → if SessionDatagram-for-me with
-`msg_type == DataPacket`, FSP decrypt with owned `SessionEntry` → IPv6
-shim decompress → `tun_tx.send(...)`. No locks, no Arc, no channel hops
+Hot path stays fully inside one actor task: raw packet → FMP decrypt
+with owned `ActivePeer` → if SessionDatagram-for-me with `msg_type
+== DataPacket`, FSP decrypt with owned `SessionEntry` → IPv6 shim
+decompress → `tun_tx.send(...)`. No locks, no Arc, no channel hops
 back to rx_loop on the data plane.
 
 Cold paths (handshake setup/ack/msg3, rekey msg1/2/3 + cutover, idle
-purge, MMP report send, control queries that read session state) stay
-on the rx_loop with `&mut Node`, but interact with peer actors purely
-via `PeerInboundJob` messages. Sessions live in exactly one place at
-any moment: either in `Node.sessions` (during handshake / rekey
-transient state) or in the peer actor (Established).
+purge, MMP report timer, control queries) stay on the rx_loop with
+`&mut Node`, but reach session state *only* via inbound-channel
+calls to the actor. The pre-Established lifecycle (Initiating /
+AwaitingMsg3 — handshake state in flight, no NoiseSession yet) lives
+on Node in a small `pending_sessions` HashMap; the moment the
+session transitions to Established, Node ships it via `TakeSession`
+to the right peer actor and removes it from `pending_sessions`.
 
-For mesh forwarding cases where this node is transit (no FSP keys
-held), no session ownership is involved — the actor just emits
-`NeedsCentralDispatch` for the SessionDatagram and rx_loop routes it
-onward as today. For sessions where `session.remote_addr` isn't also a
-direct peer (rare 3+-hop case where we're an endpoint), the session
-stays in `Node.sessions` and falls back to the legacy path.
+For mesh forwarding (this node is transit, no FSP keys): no session
+ownership involved — the actor just emits `NeedsCentralDispatch` for
+the SessionDatagram and rx_loop routes it onward as today.
 
-This sequence keeps step 7a/7b's groundwork (helpers, atomic counters,
-Mutex MMP) — the pieces that make `&self` receive callable still apply
-once the entry moves into the actor. We just stop wrapping it in
-`Arc<RwLock<…>>` for sharing.
+For sessions where `session.remote_addr` isn't also a direct peer
+(rare 3+-hop case where we're an endpoint): the session has no
+"natural" peer actor home. Such sessions live in a separate
+`Node.transit_sessions: HashMap<NodeAddr, SessionEntry>` owned by
+the rx_loop directly (no Arc, no lock — only rx_loop touches them).
+This is uncommon enough that the rx_loop running its own FSP
+decrypt for them is acceptable.
 
-**Open issue blocking 7c-2 wire-up**: today `Node.sessions` is the only
-copy of `SessionEntry`. Handing ownership to the actor means *moving*
-the entry out, but Node-side cold paths (`send_session_data`,
-`check_session_mmp_reports`, `check_session_rekey`,
-`purge_idle_sessions`, control queries) currently access sessions
-directly via `self.sessions.get(addr)`. Those sites need to either:
+This sequence keeps step 7a/7b's groundwork (helpers, atomic
+counters, Mutex MMP) where they help — but `Arc<RwLock<…>>` and the
+session_read/session_write helpers go away once the migration is
+done. We don't share at all.
 
-  a. become "send a message to the actor and act on the reply"
-     (oneshot-channel request/response per call), or
-  b. consume periodic `SessionStatsSnapshot` events the actor pushes
-     (best-effort stale view; fine for control queries / idle
-     timeout / report timer triggers but wrong for `send_session_data`),
-  c. or have Node hold a small `SessionMetadata` (no keys / replay
-     state, just last_activity, traffic_counters, K-bit, etc.) that
-     the actor refreshes via push events.
+**Migration order** (concrete chunks for incremental commits):
 
-The simplest split is **(c) for cold metadata + (a) for send-side
-encryption**: peer actor owns the cipher state and replay window;
-Node holds a metadata mirror; `send_session_data` wraps an
-`ActorRequest::Encrypt(plaintext)` -> `oneshot<ciphertext>` pair, then
-emits the encrypted SessionDatagram on the central tx path as
-today.
+  i. `MmpSessionState: Clone` (and sub-fields). Last prereq before
+     `SessionEntry: clone_for_actor` is feasible.
+
+  ii. `SessionEntry::clone_for_actor() -> Option<SessionEntry>`
+      (returns `Some` only when state is Established; skips
+      uncloneable `HandshakeState` fields).
+
+  iii. New `pending_sessions: HashMap<NodeAddr, SessionEntry>` on
+       Node, initially empty. New session creation paths
+       (`handle_session_setup`, `initiate_session`,
+       `handle_session_ack`'s msg3-send path) put entries here
+       instead of `self.sessions`.
+
+  iv. When a pending session reaches Established, ship it to the
+      peer actor via `TakeSession`. Remove from `pending_sessions`.
+
+  v. Migrate hot-path receive: actor's `handle_decrypted` checks
+     for SessionDatagram with `dest_addr == my_node_addr` and
+     `msg_type == DataPacket`. If `owned_session.is_some()`, run
+     the FSP receive pipeline inline. Otherwise emit
+     `NeedsCentralDispatch` (current path).
+
+  vi. Migrate `send_session_data` / `send_session_msg` /
+      `send_coords_warmup` / `send_session_endpoint_data` to
+      `Encrypt` request via oneshot to the peer actor.
+
+  vii. Migrate `check_session_mmp_reports`, `check_session_rekey`
+       to actor messages (`BuildMmpReports`, `IsRekeyDue`).
+
+  viii. Migrate `purge_idle_sessions` to use `LastActivityUpdate`
+        push events (Node maintains a per-peer
+        `last_session_activity_ms: AtomicU64` updated by these
+        events).
+
+  ix. Migrate control queries (`show_sessions`, `show_mmp`) to
+      `QueryStats` request. (Expensive across many peers —
+      acceptable for control-plane.)
+
+  x. Migrate session removal triggers (`handle_disconnect`,
+     `remove_active_peer`'s session cleanup, idle purge,
+     decrypt-failure-threshold reinit) to send `RemoveSession` to
+     the peer actor.
+
+  xi. Delete `Node.sessions` field. Delete `SessionEntrySlot`,
+      `session_entry_slot`, `session_read`, `session_write`. Add
+      `transit_sessions` for the rare endpoint-via-transit case
+      that doesn't fit a peer actor.
+
+The critical correctness rule throughout: **at any given moment a
+SessionEntry is reachable from exactly one task's owned state** —
+either Node's `pending_sessions` (during handshake), Node's
+`transit_sessions` (rare endpoint-via-transit case), or one peer
+actor's `owned_session`. Never two. No locks needed because no
+sharing.
 
 ### Remaining
 
