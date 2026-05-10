@@ -166,12 +166,53 @@ further into shared-state-with-locks territory rather than the
 wireguard-go-style "owned by one task, message-passed" model the
 proposal opens with.
 
-**7c-2 design — single owner, no copies, no shared state.** A
-fully-Established session lives in *exactly one place*: the peer
-actor that handles the direct link to its remote endpoint. Node has
-no `Arc<RwLock<SessionEntry>>`, no `SessionMetadata` mirror, no
-duplicate copy. Every Node-side touch of the session goes through a
-channel call to the owning actor.
+**7c-2 design — single owner, no copies, no shared state.** Per-user
+direction: *the peer actor owns the SessionEntry from creation, not
+transferred at Established*. The session lives in *exactly one place*
+for its entire lifetime — initiator-side from `initiate_session`'s
+`SessionEntry::new(... Initiating ...)` until removal; responder-side
+from `handle_session_setup`'s `SessionEntry::new(... AwaitingMsg3 ...)`
+until removal.
+
+Sessions where `session.remote_addr` matches a direct peer's NodeAddr
+(direct peer = direct session — the bench case) live in that peer
+actor. Sessions where `session.remote_addr` isn't a direct peer
+(uncommon: 3+-hop where we're an endpoint) live in `Node.transit_endpoint_sessions:
+HashMap<NodeAddr, SessionEntry>` owned exclusively by rx_loop.
+
+Node has *no* `Arc<RwLock<SessionEntry>>`, *no* `SessionMetadata`
+mirror, *no* duplicate copy. Every Node-side touch of a direct-peer
+session goes through a channel call to the owning peer actor; every
+touch of a transit-endpoint session goes through rx_loop's owned
+HashMap directly. The `Node.sessions: HashMap<NodeAddr, SessionEntrySlot>`
+field is *deleted*.
+
+Implications:
+
+* The actor must drive the **full session lifecycle**, not just hot-
+  path receive: process inbound XK msg2 (initiator side, advances
+  Initiating → Established), process inbound XK msg3 (responder side,
+  advances AwaitingMsg3 → Established), drive rekey state machine
+  (msg1 / msg2 / msg3 + K-bit cutover + drain), handshake-resend
+  retransmits.
+* All Node-side `self.sessions.get(addr)` use sites for direct-peer
+  sessions become channel calls to the right peer actor:
+  - `Encrypt { msg_type, plaintext, … }` — outbound send-side
+  - `Decrypt { … }` — inbound receive-side (via the existing
+    `Decrypted` job, extended to also FSP-decrypt when applicable)
+  - `BuildMmpReports`, `IsRekeyDue`, `QuerySnapshot` — periodic timers
+    + control queries
+  - `RemoveSession` — peer disconnect / idle purge
+* Routing of inbound `SessionDatagram` from rx_loop: rx_loop strips
+  the SessionDatagram envelope, then routes the inner FSP payload to
+  the right place by `(src_addr, dest_addr)`:
+  - If `dest_addr == self.node_addr` and `peers.contains(src_addr)` →
+    send to `peers[src_addr]`'s actor as a `Decrypted` job.
+  - If `dest_addr == self.node_addr` and *not* a direct peer →
+    rx_loop runs the FSP path against `transit_endpoint_sessions[src_addr]`.
+  - Otherwise (we're transit) → forward via `find_next_hop` as today.
+* On peer disconnect, the actor task ends and any owned session goes
+  with it (RAII cleanup via `Drop`).
 
 ```rust
 // Inbound (Node → actor):
@@ -241,55 +282,88 @@ counters, Mutex MMP) where they help — but `Arc<RwLock<…>>` and the
 session_read/session_write helpers go away once the migration is
 done. We don't share at all.
 
-**Migration order** (concrete chunks for incremental commits):
+**Migration order** (lockstep — Node call sites and actor handlers
+flip together. The whole sequence is one atomic logical change; can
+be split across commits as long as the final state lands together.)
 
-  i. `MmpSessionState: Clone` (and sub-fields). Last prereq before
-     `SessionEntry: clone_for_actor` is feasible.
+  i. **Vocabulary** (df72315): `PeerInboundJob` enum extended with
+     `TakeSession`, `RemoveSession`, `Encrypt`, `BuildMmpReports`,
+     `IsRekeyDue`, `QuerySnapshot`. Companion result types
+     `EncryptOutput`/`EncryptError`/`MmpReportToSend`/`RekeyDecision`/
+     `SessionSnapshot`/`MmpSnapshot`. `PeerOutboundEvent` enum:
+     `LastActivityUpdate`, `DecryptFailureThresholdExceeded`,
+     `SessionDrained`, `SessionRemovedByActor`.
 
-  ii. `SessionEntry::clone_for_actor() -> Option<SessionEntry>`
-      (returns `Some` only when state is Established; skips
-      uncloneable `HandshakeState` fields).
+  ii. **Encrypt handler** (4f338eb): `actor_encrypt(&mut SessionEntry,
+      msg_type, plaintext, coords_payload, touch) -> Result<EncryptOutput,
+      EncryptError>` operating on owned session. Mirrors
+      `Node::send_session_data`'s FSP send pipeline. Tests pass —
+      handler unreachable until creation paths ship sessions to actor.
 
-  iii. New `pending_sessions: HashMap<NodeAddr, SessionEntry>` on
-       Node, initially empty. New session creation paths
-       (`handle_session_setup`, `initiate_session`,
-       `handle_session_ack`'s msg3-send path) put entries here
-       instead of `self.sessions`.
+  iii. **TODO — Add lifecycle handlers** in actor: `ProcessFspMsg2`
+       (advances Initiating → Established), `ProcessFspMsg3` (advances
+       AwaitingMsg3 → Established), `InitiateRekey`, `ProcessRekeyMsg2/3`,
+       handshake-resend logic. The actor's `handle_decrypted` extended
+       to dispatch by FSP phase: `MSG1` (responder, but receiving
+       MSG1 means we're being initiated to — happens at peer-actor-
+       creation time, see step iv). `MSG2` (initiator, advances our
+       handshake). `MSG3` (responder, advances our handshake).
+       `ESTABLISHED` (FSP-decrypt + msg-type dispatch).
 
-  iv. When a pending session reaches Established, ship it to the
-      peer actor via `TakeSession`. Remove from `pending_sessions`.
+  iv. **TODO — Migrate session-creation paths** to ship straight to
+      peer actor (no Node.sessions touch):
+      - `initiate_session(dest_addr, dest_pubkey)` — if `peers.contains(
+        dest_addr)` and that peer's actor exists, build the
+        SessionEntry and `try_take_session` it. Otherwise (transit
+        endpoint), put in `transit_endpoint_sessions`.
+      - `handle_session_setup(src_addr)` — same; ship to peer actor
+        if direct, else `transit_endpoint_sessions`.
 
-  v. Migrate hot-path receive: actor's `handle_decrypted` checks
-     for SessionDatagram with `dest_addr == my_node_addr` and
-     `msg_type == DataPacket`. If `owned_session.is_some()`, run
-     the FSP receive pipeline inline. Otherwise emit
-     `NeedsCentralDispatch` (current path).
+  v.  **TODO — Migrate hot-path receive**: actor's `handle_decrypted`
+      checks if it owns a session for `src_addr`. If so, runs the
+      FSP receive pipeline (parse FSP header → decrypt with replay
+      check → strip inner header → dispatch by msg_type: DataPacket →
+      IPv6 shim decompress → tun_tx.send; EndpointData →
+      endpoint_event_tx.send; SR/RR/PMtu/CoordsWarmup → reach back
+      to Node via NeedsCentralDispatch for handler invocation,
+      passing the decrypted plaintext + msg_type).
 
-  vi. Migrate `send_session_data` / `send_session_msg` /
-      `send_coords_warmup` / `send_session_endpoint_data` to
-      `Encrypt` request via oneshot to the peer actor.
+  vi. **TODO — Migrate send paths**: `send_session_data`,
+      `send_session_msg`, `send_coords_warmup`,
+      `send_session_endpoint_data`. For direct-peer destination,
+      Node pre-encodes coords (using own `coord_cache` +
+      `tree_state`), calls `peer_actor.encrypt(...)` via oneshot,
+      receives `EncryptOutput`, wraps in `SessionDatagram`, routes.
+      For transit-endpoint destination, fall through to `transit_endpoint_sessions`
+      direct access.
 
-  vii. Migrate `check_session_mmp_reports`, `check_session_rekey`
-       to actor messages (`BuildMmpReports`, `IsRekeyDue`).
+  vii. **TODO — Migrate periodic timers**: `check_session_mmp_reports`
+       and `check_session_rekey` broadcast to all peer actors via
+       their handles, await responses, dispatch each report/rekey
+       decision. Iterate `peers` for direct-peer sessions plus
+       `transit_endpoint_sessions` for the rest.
 
-  viii. Migrate `purge_idle_sessions` to use `LastActivityUpdate`
-        push events (Node maintains a per-peer
-        `last_session_activity_ms: AtomicU64` updated by these
-        events).
+  viii. **TODO — Migrate purge_idle_sessions**: drain
+        `PeerOutboundEvent::LastActivityUpdate` events into a
+        per-peer `last_session_activity_ms: HashMap<NodeAddr, u64>`
+        on Node. Iterate that map for stale entries; send
+        `RemoveSession` to those actors.
 
-  ix. Migrate control queries (`show_sessions`, `show_mmp`) to
-      `QueryStats` request. (Expensive across many peers —
-      acceptable for control-plane.)
+  ix. **TODO — Migrate control queries**: `show_sessions` /
+      `show_mmp` broadcast `QuerySnapshot` to every peer actor,
+      collect responses, render. Plus iterate
+      `transit_endpoint_sessions` directly.
 
-  x. Migrate session removal triggers (`handle_disconnect`,
-     `remove_active_peer`'s session cleanup, idle purge,
-     decrypt-failure-threshold reinit) to send `RemoveSession` to
-     the peer actor.
+  x. **TODO — Migrate session removal triggers**:
+     `handle_disconnect`, `remove_active_peer`'s session cleanup,
+     idle purge, decrypt-failure-threshold reinit all send
+     `RemoveSession` to the peer actor (or remove from
+     `transit_endpoint_sessions`).
 
-  xi. Delete `Node.sessions` field. Delete `SessionEntrySlot`,
-      `session_entry_slot`, `session_read`, `session_write`. Add
-      `transit_sessions` for the rare endpoint-via-transit case
-      that doesn't fit a peer actor.
+  xi. **TODO — Final cleanup**: delete `Node.sessions` field. Delete
+      `SessionEntrySlot`, `session_entry_slot`, `session_read`,
+      `session_write` helpers. Rename `transit_endpoint_sessions`
+      if needed.
 
 The critical correctness rule throughout: **at any given moment a
 SessionEntry is reachable from exactly one task's owned state** —
