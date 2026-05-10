@@ -64,9 +64,29 @@ Bench check after step 4c (TCP single stream, 20s, 2-node Docker):
 requires the rest of the refactor (steps 5+) — the rx_loop is still
 the only task doing the receive work.
 
+* **Step 5 (bca3230)** — `Node.peers` field type flipped to
+  `HashMap<NodeAddr, ActivePeerSlot>` where
+  `ActivePeerSlot = Arc<RwLock<ActivePeer>>`. New `peer_read(slot)`
+  / `peer_write(slot)` helpers in `crates/fips-core/src/peer/mod.rs`.
+  All ~200 call sites migrated:
+  - hot-path sites (encrypted.rs, mmp.rs, etc.) take `peer_read`
+    (after step 4 the receive path mutations are all `&self`-callable
+    via interior mutability, so multiple readers can coexist with no
+    write contention)
+  - cold-path sites (handshake.rs, rekey.rs, tree.rs, bloom.rs, etc.)
+    take `peer_write` for the residual `&mut self` ActivePeer methods
+  - public Node API (`get_peer` / `get_peer_mut` / `peers()` /
+    `remove_peer`) returns guards or slots; `find_next_hop` returns
+    `Option<NodeAddr>` (callers already used the address only)
+  Bench (TCP single stream, 20s): 1551 / 1556 / 1555 Mbps — slightly
+  *better* than the ~1530 pre-step-5 baseline. The 25 file diff is
+  large but mechanical; the borrow-extension pitfall noted in the
+  earlier "Pitfalls" section was hit several times and worked around
+  with scoped guard blocks.
+
 ### Remaining
 
-#### Step 5 — Move peers behind `Arc<RwLock<ActivePeer>>`
+#### Step 5 — Move peers behind `Arc<RwLock<ActivePeer>>` (DONE — bca3230)
 
 ```rust
 // Today:
