@@ -1077,7 +1077,6 @@ impl Node {
                     let io_ctx = self.peer_actor_io_ctx();
                     if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
                         peer_node_addr,
-                        slot.clone(),
                         (*self.peer_link_dispatch_tx).clone(),
                         io_ctx,
                         256,
@@ -1187,7 +1186,6 @@ impl Node {
                 let io_ctx = self.peer_actor_io_ctx();
                 if let Some(actor_handle) = crate::peer::actor::PeerActorHandle::spawn(
                     peer_node_addr,
-                    slot.clone(),
                     (*self.peer_link_dispatch_tx).clone(),
                     io_ctx,
                     256,

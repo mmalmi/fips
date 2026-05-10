@@ -204,10 +204,40 @@ impl Node {
                 used_previous,
                 inner_timestamp,
             } => {
-                // Try to dispatch through the per-peer actor task.
-                // After step 6 this is the default for all promoted
-                // peers. Inline fallback is kept for legacy / test
-                // peers without an actor handle.
+                // Per-peer state mutations always run on rx_loop (the
+                // owner of `Node.peers`). After step 7d there's no
+                // peer-actor cohabitation — the actor handles only
+                // session work, not ActivePeer mutations.
+                if let Some(slot) = self.peers.get(&node_addr) {
+                    let peer = crate::peer::peer_read(slot);
+                    if used_previous {
+                        if let Some(prev) = peer.previous_session() {
+                            prev.accept_replay(counter);
+                        }
+                    } else if let Some(s) = peer.noise_session() {
+                        s.accept_replay(counter);
+                    }
+                    peer.reset_decrypt_failures();
+                    let now = Instant::now();
+                    if let Some(mut mmp) = peer.mmp_mut() {
+                        mmp.receiver.record_recv(
+                            counter,
+                            inner_timestamp,
+                            packet_len,
+                            ce_flag,
+                            now,
+                        );
+                        let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+                    }
+                    peer.set_current_addr(packet_transport_id, packet_remote_addr);
+                    peer.link_stats()
+                        .record_recv(packet_len, packet_timestamp_ms);
+                    peer.touch(packet_timestamp_ms);
+                }
+
+                // After per-peer mutations, hand off to actor (for FSP
+                // fast path on owned session) or dispatch_link_message
+                // (legacy / non-direct sessions).
                 let actor_handle = self
                     .peers
                     .get(&node_addr)
@@ -215,15 +245,8 @@ impl Node {
 
                 if let Some(actor) = actor_handle {
                     let job = crate::peer::actor::DecryptedJob {
-                        packet,
                         plaintext,
-                        fmp_counter: counter,
-                        inner_timestamp,
-                        used_previous_session: used_previous,
                         ce_flag,
-                        sp_flag,
-                        packet_transport_id,
-                        packet_remote_addr,
                     };
                     let _ = actor
                         .dispatch(crate::peer::actor::PeerInboundJob::Decrypted(Box::new(
@@ -231,34 +254,6 @@ impl Node {
                         )))
                         .await;
                 } else {
-                    // Legacy inline path: do per-peer mutations + dispatch
-                    // here on the rx_loop, just like before step 6.
-                    if let Some(slot) = self.peers.get(&node_addr) {
-                        let peer = crate::peer::peer_read(slot);
-                        if used_previous {
-                            if let Some(prev) = peer.previous_session() {
-                                prev.accept_replay(counter);
-                            }
-                        } else if let Some(s) = peer.noise_session() {
-                            s.accept_replay(counter);
-                        }
-                        peer.reset_decrypt_failures();
-                        let now = Instant::now();
-                        if let Some(mut mmp) = peer.mmp_mut() {
-                            mmp.receiver.record_recv(
-                                counter,
-                                inner_timestamp,
-                                packet_len,
-                                ce_flag,
-                                now,
-                            );
-                            let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
-                        }
-                        peer.set_current_addr(packet_transport_id, packet_remote_addr);
-                        peer.link_stats()
-                            .record_recv(packet_len, packet_timestamp_ms);
-                        peer.touch(packet_timestamp_ms);
-                    }
                     let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
                     self.dispatch_link_message(&node_addr, link_message, ce_flag)
                         .await;

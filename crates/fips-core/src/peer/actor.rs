@@ -31,7 +31,6 @@
 use crate::node::NodeEndpointEvent;
 use crate::node::session::SessionEntry;
 use crate::peer::ActivePeerSlot;
-use crate::transport::{ReceivedPacket, TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use secp256k1::PublicKey;
 use std::sync::Arc;
@@ -346,30 +345,12 @@ pub(crate) enum PeerOutboundEvent {
 }
 
 pub struct DecryptedJob {
-    /// Original packet. Used for `record_recv(packet.data.len(), ...)`
-    /// and for `set_current_addr(transport_id, remote_addr)`.
-    pub packet: ReceivedPacket,
     /// FMP-decrypted plaintext (still includes the 4-byte inner
     /// timestamp prefix; the link message body is at index 4).
     pub plaintext: Vec<u8>,
-    /// Counter from the FMP outer header. Replay accept uses this.
-    pub fmp_counter: u64,
-    /// Inner-header timestamp (already extracted by the rx_loop).
-    pub inner_timestamp: u32,
-    /// Did the rx_loop fall back to the previous (drain-window)
-    /// session for this frame? Used to direct `accept_replay` to the
-    /// right NoiseSession.
-    pub used_previous_session: bool,
-    /// CE flag from the FMP header — propagated into MMP and into
-    /// the downstream link-message dispatch.
+    /// CE flag from the FMP header — propagated into the link-message
+    /// dispatch.
     pub ce_flag: bool,
-    /// SP flag from the FMP header — fed into the spin-bit observer.
-    pub sp_flag: bool,
-    /// Convenience copy of `packet.transport_id` so `set_current_addr`
-    /// doesn't need to touch the packet again.
-    pub packet_transport_id: TransportId,
-    /// Convenience copy of `packet.remote_addr.clone()`.
-    pub packet_remote_addr: TransportAddr,
 }
 
 /// What the peer task hands back to the rx_loop after its per-peer
@@ -402,7 +383,6 @@ impl PeerActorHandle {
     /// callers fall back to the legacy inline path in that case.
     pub fn spawn(
         peer_addr: crate::NodeAddr,
-        peer_slot: ActivePeerSlot,
         link_dispatch_tx: mpsc::Sender<PeerLinkDispatch>,
         io_ctx: PeerActorIoCtx,
         queue_depth: usize,
@@ -415,7 +395,6 @@ impl PeerActorHandle {
         let (inbound_tx, inbound_rx) = mpsc::channel(queue_depth);
         let _join: JoinHandle<()> = tokio::spawn(peer_actor_loop(
             peer_addr,
-            peer_slot,
             inbound_rx,
             link_dispatch_tx,
             io_ctx,
@@ -465,29 +444,24 @@ impl PeerActorHandle {
     }
 }
 
-/// The peer task body. Pulls jobs from the inbox and runs the
-/// per-peer state mutations.
+/// The peer task body. Pulls jobs from the inbox and processes
+/// session-related work. Per-peer state mutations (replay accept,
+/// MMP record, link_stats, set_current_addr, touch) are NOT done
+/// here — those run on rx_loop where ActivePeer lives plain owned in
+/// `Node.peers` (post 7d wrapper removal). The actor's job is purely
+/// session lifecycle + FSP work on its owned `SessionEntry`.
 async fn peer_actor_loop(
     peer_addr: crate::NodeAddr,
-    peer_slot: ActivePeerSlot,
     mut inbound_rx: mpsc::Receiver<PeerInboundJob>,
     link_dispatch_tx: mpsc::Sender<PeerLinkDispatch>,
     io_ctx: PeerActorIoCtx,
 ) {
     trace!(peer = %peer_addr, "Peer actor task started");
-    let _ = &io_ctx; // wired in 7c-2 step v (hot-path FSP receive)
-    // Owned per-actor state. `session` is `None` until a `TakeSession`
-    // job arrives from Node (handshake completion path). When present,
-    // the actor can run the FSP-receive fast path entirely on owned
-    // state — no Arc<RwLock>, no central HashMap lookup. Step 7c-1
-    // installs the channel scaffolding; 7c-2 wires the fast-path
-    // decrypt + TUN write here.
     let mut owned_session: Option<Box<SessionEntry>> = None;
     while let Some(job) = inbound_rx.recv().await {
         match job {
             PeerInboundJob::Decrypted(decrypted) => {
                 handle_decrypted(
-                    &peer_slot,
                     *decrypted,
                     &link_dispatch_tx,
                     &peer_addr,
@@ -881,7 +855,6 @@ fn actor_process_fsp_msg3(
 /// rx_loop and the peer task can hold concurrent read locks on the
 /// same slot without contention.
 async fn handle_decrypted(
-    peer_slot: &ActivePeerSlot,
     job: DecryptedJob,
     link_dispatch_tx: &mpsc::Sender<PeerLinkDispatch>,
     peer_addr: &crate::NodeAddr,
@@ -889,44 +862,10 @@ async fn handle_decrypted(
     io_ctx: &PeerActorIoCtx,
 ) {
     let DecryptedJob {
-        packet,
         plaintext,
-        fmp_counter,
-        inner_timestamp,
-        used_previous_session,
         ce_flag,
-        sp_flag,
-        packet_transport_id,
-        packet_remote_addr,
+        ..
     } = job;
-
-    let packet_len = packet.data.len();
-    let packet_timestamp_ms = packet.timestamp_ms;
-
-    // Per-peer state mutations. After step 4, all of these go through
-    // `&self`/interior mutability, so a read lock is enough.
-    {
-        let peer = crate::peer::peer_read(peer_slot);
-        if used_previous_session {
-            if let Some(prev) = peer.previous_session() {
-                prev.accept_replay(fmp_counter);
-            }
-        } else if let Some(s) = peer.noise_session() {
-            s.accept_replay(fmp_counter);
-        }
-
-        peer.reset_decrypt_failures();
-        let now = std::time::Instant::now();
-        if let Some(mut mmp) = peer.mmp_mut() {
-            mmp.receiver
-                .record_recv(fmp_counter, inner_timestamp, packet_len, ce_flag, now);
-            let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
-        }
-        peer.set_current_addr(packet_transport_id, packet_remote_addr);
-        peer.link_stats()
-            .record_recv(packet_len, packet_timestamp_ms);
-        peer.touch(packet_timestamp_ms);
-    }
 
     const INNER_TIMESTAMP_LEN: usize = 4;
     if plaintext.len() <= INNER_TIMESTAMP_LEN {
