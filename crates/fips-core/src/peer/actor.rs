@@ -158,6 +158,30 @@ pub(crate) enum PeerInboundJob {
         handshake_payload: Vec<u8>,
         respond: oneshot::Sender<Result<ProcessMsg3Output, ProcessHandshakeError>>,
     },
+    /// Raw inbound encrypted packet for actor-owned ActivePeer
+    /// processing (post ActivePeer-to-actor migration). Actor parses
+    /// the FMP header, calls `ActivePeer::process_inbound_fmp_frame`
+    /// against its owned peer, and dispatches the resulting link
+    /// message via `link_dispatch_tx` (or the FSP fast path when the
+    /// owned `SessionEntry` allows). Dropped silently if the actor
+    /// doesn't own a peer — Node falls back to its inline path.
+    ///
+    /// Boxed because `ReceivedPacket` carries a `Vec<u8>` and we want
+    /// to keep the `PeerInboundJob` enum size small (every variant
+    /// pays for the largest one).
+    Packet(Box<crate::transport::ReceivedPacket>),
+    /// Hand ownership of an `ActivePeer` to the peer actor. After this
+    /// the actor is the sole owner — Node removes the `ActivePeer`
+    /// from `self.peers` at the same time. Used by `promote_connection`
+    /// to enable the `Packet` fast path for newly-authenticated peers.
+    TakePeer(Box<ActivePeer>),
+    /// Take the `ActivePeer` back from the actor, e.g. for cold-path
+    /// reads/writes that haven't been migrated to actor messages yet,
+    /// or for `remove_active_peer` cleanup. Returns `None` if the
+    /// actor isn't currently holding a peer.
+    ReleasePeer {
+        respond: oneshot::Sender<Option<Box<ActivePeer>>>,
+    },
 }
 
 /// Reply for `ProcessFspMsg2`.
@@ -458,6 +482,12 @@ async fn peer_actor_loop(
 ) {
     trace!(peer = %peer_addr, "Peer actor task started");
     let mut owned_session: Option<Box<SessionEntry>> = None;
+    // ActivePeer ownership — `Some` once Node hands the peer over via
+    // `TakePeer` (in `promote_connection` post-migration). When set,
+    // `Packet` jobs run end-to-end on the actor task: FMP decrypt +
+    // per-peer mutations + link dispatch all happen here, freeing
+    // rx_loop to keep reading packets for other peers.
+    let mut owned_peer: Option<Box<ActivePeer>> = None;
     while let Some(job) = inbound_rx.recv().await {
         match job {
             PeerInboundJob::Decrypted(decrypted) => {
@@ -546,12 +576,41 @@ async fn peer_actor_loop(
                 );
                 let _ = respond.send(result);
             }
+            PeerInboundJob::Packet(packet) => {
+                handle_packet(
+                    *packet,
+                    &link_dispatch_tx,
+                    &peer_addr,
+                    owned_peer.as_deref_mut(),
+                    owned_session.as_deref_mut(),
+                    &io_ctx,
+                )
+                .await;
+            }
+            PeerInboundJob::TakePeer(peer) => {
+                trace!(
+                    peer = %peer_addr,
+                    "Peer actor took ownership of ActivePeer"
+                );
+                owned_peer = Some(peer);
+            }
+            PeerInboundJob::ReleasePeer { respond } => {
+                let peer = owned_peer.take();
+                if peer.is_some() {
+                    trace!(
+                        peer = %peer_addr,
+                        "Peer actor released owned ActivePeer back to Node"
+                    );
+                }
+                let _ = respond.send(peer);
+            }
         }
     }
-    // Drop owned_session explicitly so its destructor runs before the
-    // task exits. (Implicit drop would do the same; explicit makes the
-    // intent obvious.)
+    // Drop owned state explicitly so destructors run before the task
+    // exits. (Implicit drop would do the same; explicit makes intent
+    // obvious.)
     drop(owned_session);
+    drop(owned_peer);
     trace!(peer = %peer_addr, "Peer actor task exiting (channel closed)");
 }
 
@@ -899,6 +958,123 @@ async fn handle_decrypted(
             ce_flag,
         })
         .await;
+}
+
+/// Handle a raw inbound encrypted packet end-to-end on the actor.
+///
+/// Mirrors `Node::handle_encrypted_frame` but without any access to
+/// `Node.peers` / `Node.peers_by_index` — the FMP receive pipeline runs
+/// against the actor's owned `ActivePeer` (post ActivePeer-to-actor
+/// migration). Successful frames flow through the same FSP fast path /
+/// link_dispatch_tx fallback as `handle_decrypted`.
+///
+/// If the actor doesn't own a peer (e.g. Node hasn't called `TakePeer`
+/// yet, or it's been released), the packet is dropped — the rx_loop
+/// is the source of truth in that case and would have run the inline
+/// path itself.
+///
+/// `peers_by_index` cleanup on stale-index / decrypt-failure-threshold
+/// removal is currently best-effort: the actor logs and increments
+/// counters but does not escalate to Node yet (no PeerOutboundEvent
+/// channel wired in this phase). Subsequent phases will route those
+/// through `peer_event_tx` so feature parity matches the inline path.
+async fn handle_packet(
+    packet: crate::transport::ReceivedPacket,
+    link_dispatch_tx: &mpsc::Sender<PeerLinkDispatch>,
+    peer_addr: &crate::NodeAddr,
+    owned_peer: Option<&mut ActivePeer>,
+    owned_session: Option<&mut SessionEntry>,
+    io_ctx: &PeerActorIoCtx,
+) {
+    use crate::node::wire::{EncryptedHeader, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP};
+    use crate::peer::{InboundFrame, InboundFrameOutcome};
+
+    let Some(peer) = owned_peer else {
+        debug!(
+            peer = %peer_addr,
+            "Packet job dropped — actor does not own peer"
+        );
+        return;
+    };
+
+    // Parse outer FMP header — fail fast on malformed.
+    let header = match EncryptedHeader::parse(&packet.data) {
+        Some(h) => h,
+        None => return,
+    };
+
+    let ce_flag = header.flags & FLAG_CE != 0;
+    let frame = InboundFrame {
+        ciphertext: &packet.data[header.ciphertext_offset()..],
+        counter: header.counter,
+        header_bytes: &header.header_bytes,
+        received_k_bit: header.flags & FLAG_KEY_EPOCH != 0,
+        ce_flag,
+        sp_flag: header.flags & FLAG_SP != 0,
+        packet_len: packet.data.len(),
+        packet_timestamp_ms: packet.timestamp_ms,
+        packet_transport_id: packet.transport_id,
+        packet_remote_addr: packet.remote_addr.clone(),
+    };
+
+    let outcome = peer.process_inbound_fmp_frame(frame);
+
+    match outcome {
+        InboundFrameOutcome::Authentic { plaintext, .. } => {
+            const INNER_TIMESTAMP_LEN: usize = 4;
+            if plaintext.len() <= INNER_TIMESTAMP_LEN {
+                debug!(
+                    peer = %peer_addr,
+                    len = plaintext.len(),
+                    "Decrypted payload too short for inner header (peer actor packet)"
+                );
+                return;
+            }
+            let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
+
+            // Fast path: actor-owned SessionEntry, SessionDatagram → us,
+            // FSP ESTABLISHED, DataPacket → IPv6 shim → TUN. Same
+            // preconditions as `handle_decrypted`'s fast path.
+            if let Some(session) = owned_session
+                && try_actor_fast_path_receive(session, link_message, ce_flag, peer_addr, io_ctx)
+                    .await
+            {
+                return;
+            }
+
+            let _ = link_dispatch_tx
+                .send(PeerLinkDispatch {
+                    from: *peer_addr,
+                    link_message: link_message.to_vec(),
+                    ce_flag,
+                })
+                .await;
+        }
+        InboundFrameOutcome::InnerHeaderTooShort { plaintext_len } => {
+            debug!(
+                peer = %peer_addr,
+                len = plaintext_len,
+                "Decrypted payload too short for inner header (peer actor packet)"
+            );
+        }
+        InboundFrameOutcome::DecryptFailed { error } => {
+            // Increment for telemetry; threshold-driven removal is
+            // wired in a follow-up phase via PeerOutboundEvent.
+            let count = peer.increment_decrypt_failures();
+            debug!(
+                peer = %peer_addr,
+                error = %error,
+                consecutive_failures = count,
+                "Decryption failed (peer actor packet)"
+            );
+        }
+        InboundFrameOutcome::NoSession => {
+            debug!(
+                peer = %peer_addr,
+                "Packet for actor-owned peer with no Noise session"
+            );
+        }
+    }
 }
 
 /// Try the actor-owned FSP receive fast path. Returns `true` iff the
