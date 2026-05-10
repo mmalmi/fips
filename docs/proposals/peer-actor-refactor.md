@@ -141,7 +141,16 @@ the only task doing the receive work.
   net latency without offloading useful work. Step 7c is what makes
   the actor-enabled path pay off.
 
-#### Step 7c — pure channel-based actor for FSP decrypt (next, no Arc<RwLock>)
+* **Step 7c-1 (ed3ed63)** — Channel-message scaffolding for pure-actor
+  session ownership. `PeerInboundJob::TakeSession(Box<SessionEntry>)` /
+  `RemoveSession`, with `PeerActorHandle::try_take_session` /
+  `try_remove_session` non-blocking helpers. The actor task carries
+  `owned_session: Option<Box<SessionEntry>>` local state. No call
+  sites yet route to `try_take_session` — Node still inserts into
+  `self.sessions` only. 7c-2 wires the hand-off and starts using the
+  owned session for the fast-path DataPacket flow.
+
+#### Step 7c-2 — wire SessionEntry ownership into actor (next)
 
 After step 7a/7b the FSP receive path *can* run from a read lock on
 `Arc<RwLock<SessionEntry>>`, but the lock + atomic + mutex overhead is
@@ -202,6 +211,29 @@ This sequence keeps step 7a/7b's groundwork (helpers, atomic counters,
 Mutex MMP) — the pieces that make `&self` receive callable still apply
 once the entry moves into the actor. We just stop wrapping it in
 `Arc<RwLock<…>>` for sharing.
+
+**Open issue blocking 7c-2 wire-up**: today `Node.sessions` is the only
+copy of `SessionEntry`. Handing ownership to the actor means *moving*
+the entry out, but Node-side cold paths (`send_session_data`,
+`check_session_mmp_reports`, `check_session_rekey`,
+`purge_idle_sessions`, control queries) currently access sessions
+directly via `self.sessions.get(addr)`. Those sites need to either:
+
+  a. become "send a message to the actor and act on the reply"
+     (oneshot-channel request/response per call), or
+  b. consume periodic `SessionStatsSnapshot` events the actor pushes
+     (best-effort stale view; fine for control queries / idle
+     timeout / report timer triggers but wrong for `send_session_data`),
+  c. or have Node hold a small `SessionMetadata` (no keys / replay
+     state, just last_activity, traffic_counters, K-bit, etc.) that
+     the actor refreshes via push events.
+
+The simplest split is **(c) for cold metadata + (a) for send-side
+encryption**: peer actor owns the cipher state and replay window;
+Node holds a metadata mirror; `send_session_data` wraps an
+`ActorRequest::Encrypt(plaintext)` -> `oneshot<ciphertext>` pair, then
+emits the encrypted SessionDatagram on the central tx path as
+today.
 
 ### Remaining
 
