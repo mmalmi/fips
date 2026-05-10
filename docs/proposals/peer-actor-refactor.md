@@ -149,6 +149,12 @@ the only task doing the receive work.
   sites yet route to `try_take_session` — Node still inserts into
   `self.sessions` only. 7c-2 wires the hand-off and starts using the
   owned session for the fast-path DataPacket flow.
+* **Step 7c-2 prep (f31d5a1)** — `impl Clone for NoiseSession`. Both
+  copies hold independent replay windows starting at the same state;
+  consumer must ensure only one copy processes incoming packets.
+  Building block for the actor-takeover hand-off. `MmpSessionState:
+  Clone` is the next prereq before `SessionEntry: clone_for_actor` is
+  feasible.
 
 #### Step 7c-2 — wire SessionEntry ownership into actor (next)
 
