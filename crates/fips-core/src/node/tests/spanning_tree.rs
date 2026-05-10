@@ -282,6 +282,16 @@ pub(super) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
     // when no actor has posted (or when the flag is off).
     tokio::task::yield_now().await;
     for node in nodes.iter_mut() {
+        // Drain outbound wire-send queue (SendLink path) so the
+        // bytes actually leave the host transport.
+        if let Some(mut rx) = node.node.udp_send_rx.take() {
+            while let Ok(out) = rx.0.try_recv() {
+                if let Some(transport) = node.node.transports.get(&out.transport_id) {
+                    let _ = transport.send(&out.remote_addr, &out.wire).await;
+                }
+            }
+            node.node.udp_send_rx = Some(rx);
+        }
         // Temporarily take the rx so we can borrow `node.node` for
         // dispatch_link_message; restore at the end.
         if let Some(mut rx) = node.node.peer_link_dispatch_rx.take() {

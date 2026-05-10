@@ -67,6 +67,30 @@ pub(crate) struct PeerActorIoCtx {
     /// (`config.node.session`, `config.node.session_mmp`,
     /// `config.node.rate_limit`, …) directly via the Arc.
     pub config: Arc<crate::config::Config>,
+    /// Outbound wire-send queue. The actor encrypts on its owned
+    /// `ActivePeer` and `try_send`s `(transport_id, remote_addr, wire_bytes)`
+    /// here; rx_loop drains this and fires the UDP send.
+    /// This unblocks the per-packet call from Node — `send_encrypted_link_message_with_ce`
+    /// becomes sync `try_send(SendLink)` instead of three awaits.
+    pub udp_send_tx: mpsc::Sender<UdpSend>,
+}
+
+/// One outbound wire packet the per-peer actor wants the rx_loop to
+/// fire onto the network. `transport_id` selects the transport;
+/// `remote_addr` is the destination on that transport.
+#[derive(Debug)]
+pub(crate) struct UdpSend {
+    pub transport_id: crate::transport::TransportId,
+    pub remote_addr: crate::transport::TransportAddr,
+    pub wire: Vec<u8>,
+}
+
+pub type UdpSendTx = mpsc::Sender<UdpSend>;
+pub struct UdpSendRx(pub mpsc::Receiver<UdpSend>);
+
+pub fn udp_send_channel(queue_depth: usize) -> (UdpSendTx, UdpSendRx) {
+    let (tx, rx) = mpsc::channel(queue_depth);
+    (tx, UdpSendRx(rx))
 }
 
 /// One unit of work pushed from Node into a peer task.
@@ -198,10 +222,25 @@ pub(crate) enum PeerInboundJob {
     /// the outbound hot path — that pattern paid ~100µs of channel
     /// + tokio wakeup per packet, dragging single-stream throughput
     /// down ~28× vs the inline path.
+    ///
+    /// Used for cold-path / control-frame outbound where the caller
+    /// wants synchronous per-call error reporting. For the hot data
+    /// path (TUN → encrypted-link), `SendLink` is preferred (fire-
+    /// and-forget; actor pushes the wire bytes to `udp_send_tx`).
     EncryptLink {
         plaintext: Vec<u8>,
         ce_flag: bool,
         respond: oneshot::Sender<Result<EncryptLinkOutput, EncryptLinkError>>,
+    },
+    /// Fire-and-forget outbound encrypt + send. The actor encrypts
+    /// on its owned `ActivePeer` and `try_send`s the wire bytes to
+    /// `udp_send_tx`; rx_loop drains that queue and fires the actual
+    /// UDP send. From Node's POV the call is sync (one `try_send`,
+    /// no oneshot await), eliminating two of the three awaits the
+    /// `EncryptLink` path costs per packet.
+    SendLink {
+        plaintext: Vec<u8>,
+        ce_flag: bool,
     },
 }
 
@@ -541,6 +580,18 @@ impl PeerActorHandle {
         rx.await.unwrap_or(Err(EncryptLinkError::PeerGone))
     }
 
+    /// Fire-and-forget hot-path outbound: actor encrypts on its
+    /// owned ActivePeer and pushes the resulting wire packet onto
+    /// `udp_send_tx` (drained by rx_loop). One sync `try_send`, no
+    /// oneshot reply. Returns false if the actor's inbound queue is
+    /// full or closed; caller drops the packet (FMP-lossy contract).
+    #[allow(dead_code)]
+    pub(crate) fn try_send_link(&self, plaintext: Vec<u8>, ce_flag: bool) -> bool {
+        self.inbound_tx
+            .try_send(PeerInboundJob::SendLink { plaintext, ce_flag })
+            .is_ok()
+    }
+
     /// Sync fire-and-forget telling the actor to drop its owned peer.
     /// Combined with Node dropping its `peer_actors[addr]` clone, this
     /// closes the channel and terminates the actor task.
@@ -765,6 +816,35 @@ async fn peer_actor_loop(
                 let result =
                     actor_encrypt_link(owned_peer.as_deref_mut(), &plaintext, ce_flag);
                 let _ = respond.send(result);
+            }
+            PeerInboundJob::SendLink { plaintext, ce_flag } => {
+                match actor_encrypt_link(owned_peer.as_deref_mut(), &plaintext, ce_flag) {
+                    Ok(out) => {
+                        // try_send: the rx_loop's outbound drain
+                        // arm pulls these. If the queue is full,
+                        // the wire packet is dropped — FMP-lossy
+                        // contract; TCP-on-top retransmits if the
+                        // application layer cares.
+                        if let Err(e) = io_ctx.udp_send_tx.try_send(UdpSend {
+                            transport_id: out.transport_id,
+                            remote_addr: out.remote_addr,
+                            wire: out.wire_packet,
+                        }) {
+                            trace!(
+                                peer = %peer_addr,
+                                err = ?e,
+                                "udp_send_tx full or closed (SendLink) — dropped wire packet"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        trace!(
+                            peer = %peer_addr,
+                            err = %e,
+                            "actor SendLink encrypt failed"
+                        );
+                    }
+                }
             }
         }
     }
@@ -1113,13 +1193,24 @@ async fn handle_decrypted(
     }
 
     // Fallback: forward link message to rx_loop for dispatch.
-    let _ = link_dispatch_tx
-        .send(PeerLinkDispatch {
-            from: *peer_addr,
-            link_message: link_message.to_vec(),
-            ce_flag,
-        })
-        .await;
+    // try_send rather than send().await — under heavy inbound load the
+    // central dispatch channel can saturate and `send().await` would
+    // block the actor mid-Packet, fanning back-pressure into the
+    // per-peer `inbound_tx` and getting hot-path packets dropped at
+    // the front of the queue. Dropping the link message instead is
+    // the FMP-lossy contract (replay window catches up on the next
+    // delivered packet).
+    if let Err(e) = link_dispatch_tx.try_send(PeerLinkDispatch {
+        from: *peer_addr,
+        link_message: link_message.to_vec(),
+        ce_flag,
+    }) {
+        trace!(
+            peer = %peer_addr,
+            err = ?e,
+            "link_dispatch_tx full or closed — dropped decrypted link message"
+        );
+    }
 }
 
 /// Handle a raw inbound encrypted packet end-to-end on the actor.
@@ -1204,13 +1295,19 @@ async fn handle_packet(
                 return;
             }
 
-            let _ = link_dispatch_tx
-                .send(PeerLinkDispatch {
-                    from: *peer_addr,
-                    link_message: link_message.to_vec(),
-                    ce_flag,
-                })
-                .await;
+            // try_send (drop on full) — see handle_decrypted's
+            // fallback for rationale.
+            if let Err(e) = link_dispatch_tx.try_send(PeerLinkDispatch {
+                from: *peer_addr,
+                link_message: link_message.to_vec(),
+                ce_flag,
+            }) {
+                trace!(
+                    peer = %peer_addr,
+                    err = ?e,
+                    "link_dispatch_tx full or closed (handle_packet) — dropped decrypted link message"
+                );
+            }
         }
         InboundFrameOutcome::InnerHeaderTooShort { plaintext_len } => {
             debug!(

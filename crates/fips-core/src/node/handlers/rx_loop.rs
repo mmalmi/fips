@@ -38,6 +38,10 @@ impl Node {
         // mutations; the rx_loop's `select!` drains it and runs
         // `dispatch_link_message` (which still needs `&mut Node`).
         let mut peer_link_dispatch_rx = self.peer_link_dispatch_rx.take();
+        // Per-peer actor outbound wire-send queue — actors push
+        // `(transport_id, addr, wire)` here when handling SendLink;
+        // we drain and fire `transport.send` from the rx_loop.
+        let mut udp_send_rx = self.udp_send_rx.take();
 
         // Take the TUN outbound receiver, or create a dummy channel that never
         // produces messages (when TUN is disabled). Holding the sender prevents
@@ -113,7 +117,7 @@ impl Node {
                     // boundary so other branches (tick, control) eventually
                     // get a turn even under sustained load.
                     let mut drained = 0;
-                    while drained < 256 {
+                    while drained < 4096 {
                         match packet_rx.try_recv() {
                             Ok(p) => {
                                 self.process_packet(p).await;
@@ -130,7 +134,7 @@ impl Node {
                     // dispatch_link_message.
                     if let Some(rx) = peer_link_dispatch_rx.as_mut() {
                         let mut dispatched = 0;
-                        while dispatched < 64 {
+                        while dispatched < 4096 {
                             match rx.0.try_recv() {
                                 Ok(d) => {
                                     self.dispatch_link_message(
@@ -153,7 +157,7 @@ impl Node {
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
                     let mut drained = 0;
-                    while drained < 256 {
+                    while drained < 4096 {
                         match tun_outbound_rx.try_recv() {
                             Ok(p) => {
                                 self.handle_tun_outbound(p).await;
@@ -180,7 +184,7 @@ impl Node {
                     // tunnel data in via send_oneway, several Send commands
                     // typically queue up between scheduler hops.
                     let mut drained = 0;
-                    while drained < 256 {
+                    while drained < 4096 {
                         match endpoint_command_rx.try_recv() {
                             Ok(c) => {
                                 self.handle_endpoint_data_command(c).await;
@@ -191,6 +195,35 @@ impl Node {
                     }
                     // Flush any trailing batched sends from the
                     // per-transport sendmmsg buffer.
+                    self.flush_pending_sends().await;
+                }
+                // Per-peer actor outbound wire-send arm: a peer's
+                // actor task encrypted an outbound packet (SendLink)
+                // and posted the wire bytes here. Fire the actual
+                // UDP send and drain any siblings that piled up.
+                Some(out) = async {
+                    match udp_send_rx.as_mut() {
+                        Some(rx) => rx.0.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(transport) = self.transports.get(&out.transport_id) {
+                        let _ = transport.send(&out.remote_addr, &out.wire).await;
+                    }
+                    if let Some(rx) = udp_send_rx.as_mut() {
+                        let mut drained = 0;
+                        while drained < 4096 {
+                            match rx.0.try_recv() {
+                                Ok(o) => {
+                                    if let Some(transport) = self.transports.get(&o.transport_id) {
+                                        let _ = transport.send(&o.remote_addr, &o.wire).await;
+                                    }
+                                    drained += 1;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
                     self.flush_pending_sends().await;
                 }
                 // Per-peer actor link-dispatch arm: a peer's actor
@@ -209,7 +242,7 @@ impl Node {
                     // from round-tripping through select! once per packet.
                     if let Some(rx) = peer_link_dispatch_rx.as_mut() {
                         let mut drained = 0;
-                        while drained < 64 {
+                        while drained < 4096 {
                             match rx.0.try_recv() {
                                 Ok(d) => {
                                     self.dispatch_link_message(&d.from, &d.link_message, d.ce_flag).await;

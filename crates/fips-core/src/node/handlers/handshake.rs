@@ -1100,7 +1100,7 @@ impl Node {
                         peer_node_addr,
                         (*self.peer_link_dispatch_tx).clone(),
                         io_ctx,
-                        256,
+                        4096,
                     ) {
                         slot.set_actor(actor_handle);
                     }
@@ -1210,7 +1210,7 @@ impl Node {
                     peer_node_addr,
                     (*self.peer_link_dispatch_tx).clone(),
                     io_ctx,
-                    256,
+                    4096,
                 ) {
                     slot.set_actor(actor_handle);
                 }

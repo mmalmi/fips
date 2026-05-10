@@ -427,6 +427,19 @@ pub struct Node {
     /// `run_rx_loop` start.
     peer_link_dispatch_rx: Option<crate::peer::actor::PeerLinkDispatchRx>,
 
+    // === Per-peer actor outbound wire-send channel ===
+    /// Sender side cloned into each per-peer actor task; the actor
+    /// `try_send`s an `UdpSend { transport_id, remote_addr, wire }`
+    /// here after encrypting an outbound link message via the
+    /// `SendLink` job. rx_loop drains this and fires the actual
+    /// `transport.send().await`. Keeps the per-packet outbound path
+    /// from Node sync (one mpsc try_send into the per-peer actor's
+    /// inbound queue, no oneshot reply) — the inline encrypt path
+    /// pre-actor-owns_peer was 1 await per packet, this matches.
+    udp_send_tx: crate::peer::actor::UdpSendTx,
+    /// Receiver side held by the rx_loop's `select!`.
+    udp_send_rx: Option<crate::peer::actor::UdpSendRx>,
+
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions, keyed by
     /// remote `NodeAddr`. **Plain owned `SessionEntry`** — no Arc,
@@ -690,7 +703,8 @@ impl Node {
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
         let (peer_link_dispatch_tx, peer_link_dispatch_rx) =
-            crate::peer::actor::link_dispatch_channel(256);
+            crate::peer::actor::link_dispatch_channel(8192);
+        let (udp_send_tx, udp_send_rx) = crate::peer::actor::udp_send_channel(8192);
 
         Ok(Self {
             identity,
@@ -714,6 +728,8 @@ impl Node {
             peers: HashMap::new(),
             peer_link_dispatch_tx,
             peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
+            udp_send_tx,
+            udp_send_rx: Some(udp_send_rx),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
@@ -824,7 +840,8 @@ impl Node {
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
         let (peer_link_dispatch_tx, peer_link_dispatch_rx) =
-            crate::peer::actor::link_dispatch_channel(256);
+            crate::peer::actor::link_dispatch_channel(8192);
+        let (udp_send_tx, udp_send_rx) = crate::peer::actor::udp_send_channel(8192);
 
         Ok(Self {
             identity,
@@ -848,6 +865,8 @@ impl Node {
             peers: HashMap::new(),
             peer_link_dispatch_tx,
             peer_link_dispatch_rx: Some(peer_link_dispatch_rx),
+            udp_send_tx,
+            udp_send_rx: Some(udp_send_rx),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_tun_packets: HashMap::new(),
@@ -1208,6 +1227,7 @@ impl Node {
             tun_tx: self.tun_tx.clone(),
             endpoint_event_tx: self.endpoint_event_tx.clone(),
             config: Arc::clone(&self.config),
+            udp_send_tx: self.udp_send_tx.clone(),
         }
     }
 
@@ -2576,48 +2596,26 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        // Actor-owned fast path: the peer's NoiseSession lives inside
-        // its actor task. Ask the actor to encrypt and return the
-        // wire bytes; we fire the UDP send ourselves (transport handles
-        // aren't owned by the actor). One mpsc + one oneshot round
-        // trip per packet — same number of channel hops as the inline
-        // path, but no peer-ownership transfer (which is what made the
-        // recall_peer/reship_peer pattern ~28× slower).
-        if let Some(actor) = self.peer_actors.get(node_addr).cloned() {
-            let output = actor
-                .encrypt_link(plaintext.to_vec(), ce_flag)
-                .await
-                .map_err(|e| match e {
-                    crate::peer::actor::EncryptLinkError::PeerGone => {
-                        NodeError::PeerNotFound(*node_addr)
-                    }
-                    other => NodeError::SendFailed {
-                        node_addr: *node_addr,
-                        reason: format!("actor encrypt: {}", other),
-                    },
-                })?;
-            let transport = self
-                .transports
-                .get(&output.transport_id)
-                .ok_or(NodeError::TransportNotFound(output.transport_id))?;
-            transport
-                .send(&output.remote_addr, &output.wire_packet)
-                .await
-                .map_err(|e| match e {
-                    TransportError::MtuExceeded { packet_size, mtu } => NodeError::MtuExceeded {
-                        node_addr: *node_addr,
-                        packet_size,
-                        mtu,
-                    },
-                    other => NodeError::SendFailed {
-                        node_addr: *node_addr,
-                        reason: format!("transport send: {}", other),
-                    },
-                })?;
-            return Ok(());
+        // Actor-owned fast path: fire-and-forget `SendLink` to the
+        // per-peer actor. The actor encrypts on its owned `ActivePeer`
+        // and pushes the wire bytes onto `udp_send_rx`, which the
+        // rx_loop drains and ships via `transport.send`. One sync
+        // try_send from here, no oneshot await, no per-packet
+        // peer-ownership transfer. Lossy on actor-inbox saturation
+        // (FMP-by-design); falls back to error so callers that need
+        // confirmed delivery can retry.
+        if let Some(actor) = self.peer_actors.get(node_addr) {
+            if actor.try_send_link(plaintext.to_vec(), ce_flag) {
+                return Ok(());
+            }
+            return Err(NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "actor inbound queue full or closed".into(),
+            });
         }
 
-        // Inline path: peer lives in `Node.peers` (default mode).
+        // Inline path: peer lives in `Node.peers` (default mode, or
+        // recalled briefly for a cold-path mutation).
         self.send_encrypted_link_message_inner(node_addr, plaintext, ce_flag)
             .await
     }
