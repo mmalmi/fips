@@ -30,7 +30,7 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// also flushed explicitly by the rx_loop at the end of each drain so
 /// the last-packet-of-burst case isn't penalised.
 #[cfg(target_os = "linux")]
-const SEND_FLUSH_THRESHOLD: usize = 8;
+const SEND_FLUSH_THRESHOLD: usize = 32;
 
 /// UDP transport for FIPS.
 ///
@@ -543,7 +543,7 @@ async fn udp_receive_loop(
 
     #[cfg(target_os = "linux")]
     {
-        const BATCH: usize = 32;
+        const BATCH: usize = 64;
         let buf_size = mtu as usize + 100;
         // One contiguous backing alloc; slice it for recvmmsg.
         let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; buf_size]).collect();

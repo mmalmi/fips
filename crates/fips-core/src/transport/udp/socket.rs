@@ -34,7 +34,7 @@ mod platform {
     /// per-task-wakeup overhead across a useful burst without blowing
     /// the stack (each slot owns an mmsghdr + sockaddr_storage + iovec).
     #[cfg(target_os = "linux")]
-    const BATCH_SIZE: usize = 32;
+    const BATCH_SIZE: usize = 64;
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
