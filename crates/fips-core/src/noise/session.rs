@@ -31,6 +31,34 @@ pub struct NoiseSession {
     replay_window: Mutex<ReplayWindow>,
 }
 
+impl Clone for NoiseSession {
+    /// Clone a session for ownership transfer (peer-actor refactor step 7c-2).
+    /// Both copies hold independent replay windows starting at the same state;
+    /// the consumer is responsible for ensuring only ONE copy processes
+    /// incoming packets for any given session, otherwise replay protection
+    /// silently weakens (the same counter could be accepted by both copies).
+    ///
+    /// `CipherState::Clone` rebuilds its keyed AEAD from the retained 32-byte
+    /// key, so the two copies have independent `LessSafeKey` instances —
+    /// fine for AEAD ops since `ring` keys are functional under their public
+    /// API (no per-call mutation).
+    fn clone(&self) -> Self {
+        let replay_window = self
+            .replay_window
+            .lock()
+            .expect("replay_window poisoned during clone")
+            .clone();
+        Self {
+            role: self.role,
+            send_cipher: self.send_cipher.clone(),
+            recv_cipher: self.recv_cipher.clone(),
+            handshake_hash: self.handshake_hash,
+            remote_static: self.remote_static,
+            replay_window: Mutex::new(replay_window),
+        }
+    }
+}
+
 impl NoiseSession {
     /// Create a new session from completed handshake data.
     pub(super) fn from_handshake(
