@@ -25,7 +25,7 @@ Inspired directly by `~/src/wireguard-go/device/{receive.go,peer.go}`.
 The wg-go code is the reference implementation worth re-reading
 before each step.
 
-## Status (2026-05-10)
+## Status (2026-05-11)
 
 ### Done
 
@@ -102,6 +102,54 @@ the only task doing the receive work.
   hundred ns/pkt of per-peer mutations; the dispatch chain
   (FSP decrypt + handle_session_datagram + TUN write) is still
   on the rx_loop. Step 7+ moves that.
+
+* **Step 7a (7b63904)** — `Node.sessions` field type flipped to
+  `HashMap<NodeAddr, SessionEntrySlot>` where
+  `SessionEntrySlot = Arc<RwLock<SessionEntry>>`. New helpers
+  `session_entry_slot(entry)` / `session_read(slot)` /
+  `session_write(slot)` in `crate::node::session`. All ~150 call
+  sites in handlers (session, rekey, mmp, timeout, dispatch,
+  discovery), control queries, and tests migrated.
+
+  Hot-path callers take `session_read(slot)` for `&self` access;
+  mutation paths clone the slot then take `session_write(&slot)` so
+  the borrow on `self.sessions` is released before re-borrowing
+  `&mut self` for downstream sends. Several handlers had to be
+  restructured to avoid holding a guard across `.await`
+  (RwLockWriteGuard is not Send): `handle_session_setup` now
+  snapshots the existing entry's state into a local enum, drops
+  the read guard, then drives the rekey / re-establishment path.
+
+  Tests: 1092 passed, 0 failed. Step 7a only flips the storage
+  type; FSP decrypt + dispatch is still on the rx_loop.
+
+#### Step 7b — Move FSP decrypt + dispatch into peer actor (next)
+
+After 7a the session entry is an `Arc<RwLock<SessionEntry>>` that the
+actor *could* clone, but the actor still doesn't have the surrounding
+state it needs (the sessions map itself, `tun_tx`, `endpoint_event_tx`,
+identity cache, coord_cache). 7b introduces an `Arc<NodeShared>`
+holding those clones and threads it into the actor's `spawn` call,
+matching the original plan's `SharedNodeState`:
+
+```rust
+pub struct NodeShared {
+    sessions: Arc<RwLock<HashMap<NodeAddr, SessionEntrySlot>>>,
+    coord_cache: Arc<RwLock<CoordCache>>,
+    tun_tx: Option<Arc<TunSender>>,
+    endpoint_event_tx: Option<Arc<Sender<NodeEndpointEvent>>>,
+    node_addr: NodeAddr,
+    identity: PeerIdentity,
+}
+```
+
+Actor's `handle_decrypted` then parses the link-message bytes inline:
+
+* If it's a `SessionDatagram` whose `dest_addr == node_shared.node_addr`,
+  the actor FSP-decrypts via `sessions.read().get(src_addr)`, delivers
+  to TUN/endpoint directly, and never wakes the rx_loop.
+* Anything else (forwarding, infrastructure messages) falls through to
+  the existing `peer_link_dispatch` channel that the rx_loop drains.
 
 ### Remaining
 
