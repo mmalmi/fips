@@ -97,21 +97,28 @@ pub(crate) enum PeerInboundJob {
     RemoveSession,
     /// Session-encrypt for an outbound message. Reaches into the
     /// actor's owned `SessionEntry` to:
-    /// 1. Read the current send_counter and K-bit
+    /// 1. Read the current send_counter, K-bit, and coords_warmup
+    ///    counter — actor decides whether to splice coords on this
+    ///    send (CP flag) and decrements the warmup counter atomically
+    ///    with the encrypt
     /// 2. AEAD-encrypt the inner plaintext with `send_cipher`
     /// 3. Build the FSP header (counter / flags / payload_len) +
     ///    optional cleartext coords + ciphertext
-    /// 4. Record the send into the MMP sender state
-    /// 5. Reply via `respond` with `(fsp_payload, counter, timestamp)`
-    /// Node receives the reply, wraps `fsp_payload` in a
-    /// `SessionDatagram`, and routes it onto the wire.
-    /// `Err(SessionGone)` if the actor doesn't (yet / any longer)
-    /// own the session — Node falls back to its legacy path.
+    /// 4. Record the send into the MMP sender state, traffic counters,
+    ///    and (if `touch`) last_activity
+    /// 5. Reply via `respond` with `EncryptOutput` carrying the wire
+    ///    bytes Node wraps in a `SessionDatagram`.
+    /// `Err(SessionGone)` if the actor doesn't own the session — Node
+    /// falls back to its legacy path.
     Encrypt {
         msg_type: u8,
         plaintext: Vec<u8>,
-        /// CP flag — coords pre-encoded by Node from its coord_cache.
-        coords_payload: Option<Vec<u8>>,
+        /// Pre-encoded coords (src+dest) ready for the actor to splice
+        /// in if its warmup counter still has tokens AND the caller
+        /// requested coords. None when Node already decided coords
+        /// don't fit in transport MTU. Actor returns
+        /// `included_coords: false` if it chose not to use them.
+        coords_payload_if_warmup: Option<Vec<u8>>,
         /// Whether this send should `touch()` the session's
         /// last_activity (DataPacket / EndpointData) or not (MMP
         /// reports / CoordsWarmup).
@@ -227,6 +234,13 @@ pub(crate) struct EncryptOutput {
     /// Inner ciphertext length (for MMP sender record_sent — already
     /// done inside the actor, but Node's stats track total too).
     pub ciphertext_len: usize,
+    /// True iff actor included coords on this send (CP flag set).
+    /// Node uses this to decide whether to fire a standalone
+    /// CoordsWarmup as a follow-up if the caller wanted coords but
+    /// they didn't fit (Node would pass `coords_payload_if_warmup =
+    /// None` in that case anyway, so this mostly mirrors back the
+    /// actor's accounting).
+    pub included_coords: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -501,13 +515,17 @@ async fn peer_actor_loop(
             PeerInboundJob::Encrypt {
                 msg_type,
                 plaintext,
-                coords_payload,
+                coords_payload_if_warmup,
                 touch,
                 respond,
             } => {
-                let result =
-                    actor_encrypt(owned_session.as_deref_mut(), msg_type, plaintext,
-                                  coords_payload, touch);
+                let result = actor_encrypt(
+                    owned_session.as_deref_mut(),
+                    msg_type,
+                    plaintext,
+                    coords_payload_if_warmup,
+                    touch,
+                );
                 let _ = respond.send(result);
             }
             PeerInboundJob::BuildMmpReports { now, respond } => {
@@ -576,7 +594,7 @@ fn actor_encrypt(
     session: Option<&mut SessionEntry>,
     msg_type: u8,
     plaintext: Vec<u8>,
-    coords_payload: Option<Vec<u8>>,
+    coords_payload_if_warmup: Option<Vec<u8>>,
     touch: bool,
 ) -> Result<EncryptOutput, EncryptError> {
     use crate::node::session::EndToEndState;
@@ -597,8 +615,18 @@ fn actor_encrypt(
     let timestamp = entry.session_timestamp(now_ms);
     let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
 
+    // Decide whether to actually splice coords on this send. Actor is
+    // the sole reader/writer of `coords_warmup_remaining` so this is
+    // race-free.
+    let include_coords =
+        coords_payload_if_warmup.is_some() && entry.coords_warmup_remaining() > 0;
+    if include_coords {
+        let cur = entry.coords_warmup_remaining();
+        entry.set_coords_warmup_remaining(cur.saturating_sub(1));
+    }
+    let coords_payload = if include_coords { coords_payload_if_warmup } else { None };
+
     // Build inner plaintext: 6-byte FSP inner header + caller's payload.
-    // Caller passes the application-layer payload; we wrap it.
     let inner_flags = FspInnerFlags { spin_bit }.to_byte();
     let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &plaintext);
 
@@ -637,9 +665,6 @@ fn actor_encrypt(
     if let Some(mut mmp) = entry.mmp_mut() {
         mmp.sender.record_sent(counter, timestamp, ciphertext_len);
     }
-    // record_sent() takes the application payload length (per session.rs's
-    // existing convention) — that's `plaintext.len()` here, which is the
-    // post-port-header / post-inner-flags caller payload.
     entry.record_sent(plaintext.len());
     if touch {
         entry.touch(now_ms);
@@ -651,6 +676,7 @@ fn actor_encrypt(
         counter,
         timestamp,
         ciphertext_len,
+        included_coords: include_coords,
     })
 }
 

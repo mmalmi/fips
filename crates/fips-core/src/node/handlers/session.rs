@@ -1699,6 +1699,16 @@ impl Node {
         dst_port: u16,
         payload: &[u8],
     ) -> Result<(), NodeError> {
+        // Direct-peer + actor path: encrypt via the peer actor that
+        // owns the SessionEntry, then route the returned fsp_payload.
+        if self.config.node.actor_owns_sessions
+            && let Some(actor) = self.peer_actor_for(dest_addr)
+        {
+            return self
+                .send_session_data_via_actor(dest_addr, src_port, dst_port, payload, &actor)
+                .await;
+        }
+
         let now_ms = Self::now_ms();
 
         // First borrow: read session metadata
@@ -1835,6 +1845,80 @@ impl Node {
             entry.touch(now_ms);
         }
 
+        Ok(())
+    }
+
+    /// Actor-owned send: encrypt through the peer actor's owned
+    /// `SessionEntry`, then wrap in SessionDatagram and route.
+    /// Mirrors `send_session_data`'s pre-encrypt prep (port-prefixed
+    /// inner plaintext + coords pre-encoding) but delegates the FSP
+    /// header build + AEAD encrypt + MMP/last-activity bookkeeping
+    /// to the actor's `Encrypt` handler.
+    async fn send_session_data_via_actor(
+        &mut self,
+        dest_addr: &NodeAddr,
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+        actor: &crate::peer::actor::PeerActorHandle,
+    ) -> Result<(), NodeError> {
+        // Build port-prefixed plaintext (inner header is added by the
+        // actor's `actor_encrypt`).
+        let mut port_payload = Vec::with_capacity(FSP_PORT_HEADER_SIZE + payload.len());
+        port_payload.extend_from_slice(&src_port.to_le_bytes());
+        port_payload.extend_from_slice(&dst_port.to_le_bytes());
+        port_payload.extend_from_slice(payload);
+
+        // Pre-encode coords iff they fit in transport MTU. Actor checks
+        // its own `coords_warmup_remaining` and decides whether to
+        // splice them in.
+        let our_coords = self.tree_state.my_coords().clone();
+        let dest_coords = self.get_dest_coords(dest_addr);
+        let coords_size = coords_wire_size(&our_coords) + coords_wire_size(&dest_coords);
+        let total_wire =
+            FIPS_OVERHEAD as usize + FSP_PORT_HEADER_SIZE + coords_size + payload.len();
+        let coords_payload_if_warmup = if total_wire <= self.transport_mtu() as usize {
+            let mut buf = Vec::with_capacity(coords_size);
+            encode_coords(&our_coords, &mut buf);
+            encode_coords(&dest_coords, &mut buf);
+            Some(buf)
+        } else {
+            None
+        };
+
+        // Send Encrypt request.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let msg_type = SessionMessageType::DataPacket.to_byte();
+        if !actor
+            .dispatch(crate::peer::actor::PeerInboundJob::Encrypt {
+                msg_type,
+                plaintext: port_payload,
+                coords_payload_if_warmup,
+                touch: true,
+                respond: tx,
+            })
+            .await
+        {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "peer actor inbound channel closed".into(),
+            });
+        }
+        let result = rx.await.map_err(|_| NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: "peer actor dropped Encrypt oneshot".into(),
+        })?;
+        let output = result.map_err(|e| NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: format!("actor encrypt failed: {}", e),
+        })?;
+
+        // Wrap in SessionDatagram and route. Routing logic is Node-side
+        // (find_next_hop, transports, peer state) and unchanged.
+        let my_addr = *self.node_addr();
+        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, output.fsp_payload)
+            .with_ttl(self.config.node.session.default_ttl);
+        self.send_session_datagram(&mut datagram).await?;
         Ok(())
     }
 
