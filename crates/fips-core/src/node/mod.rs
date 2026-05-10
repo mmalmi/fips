@@ -1936,6 +1936,14 @@ impl Node {
         self.peers.get(node_addr)
     }
 
+    /// True if `node_addr` is an authenticated peer — either stored
+    /// locally in `Node.peers` or owned by a per-peer actor task
+    /// (`peer_actors`). Useful for tests / status queries that don't
+    /// need a borrow on the underlying `ActivePeer`.
+    pub fn has_peer(&self, node_addr: &NodeAddr) -> bool {
+        self.peers.contains_key(node_addr) || self.peer_actors.contains_key(node_addr)
+    }
+
     /// Get a mutable reference to a peer by NodeAddr.
     pub fn get_peer_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
         self.peers.get_mut(node_addr)

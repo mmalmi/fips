@@ -371,6 +371,94 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
     cleanup_nodes(&mut nodes).await;
 }
 
+/// End-to-end ping/pong with `actor_owns_peer = true`.
+///
+/// Mirrors `test_endpoint_data_flushes_after_session_establishment`
+/// but with both nodes opting into the per-peer actor pattern. This
+/// is the cargo-test equivalent of the docker `perf-docker.sh`
+/// 2-node mesh — establishes session, sends endpoint data, asserts
+/// it round-trips, all while the `ActivePeer` is owned by its actor
+/// task. Catches the cold-path migration bugs that otherwise only
+/// surface in docker rebuild + grep cycles.
+#[tokio::test]
+async fn test_actor_owns_peer_endpoint_ping_pong() {
+    let edges = vec![(0, 1)];
+    let mut nodes =
+        crate::node::tests::spanning_tree::run_tree_test_actor_owned(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let mut node0_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 0 endpoint data I/O should attach");
+    let mut node1_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("node 1 endpoint data I/O should attach");
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node0_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let node1_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .send_endpoint_data(node1_identity, b"ping".to_vec())
+        .await
+        .expect("send_endpoint_data must succeed against actor-owned peer (catches the find_next_hop / send_encrypted_link_message regressions)");
+
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(1), node1_endpoint.event_rx.recv())
+        .await
+        .expect("ping endpoint event should not time out (mesh data plane must reach actor-owned peer)")
+        .expect("ping endpoint event should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } => {
+            assert_eq!(source_node_addr, node0_addr);
+            assert_eq!(source_npub, Some(nodes[0].node.npub()));
+            assert_eq!(payload, b"ping");
+        }
+    }
+
+    nodes[1]
+        .node
+        .send_endpoint_data(node0_identity, b"pong".to_vec())
+        .await
+        .expect("reply send must succeed");
+
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(1), node0_endpoint.event_rx.recv())
+        .await
+        .expect("pong endpoint event should not time out")
+        .expect("pong endpoint event should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } => {
+            assert_eq!(source_node_addr, node1_addr);
+            assert_eq!(source_npub, Some(nodes[1].node.npub()));
+            assert_eq!(payload, b"pong");
+        }
+    }
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 #[tokio::test]
 async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
     // A-B-C: Alice and Bob are app endpoints. The middle node is only FIPS

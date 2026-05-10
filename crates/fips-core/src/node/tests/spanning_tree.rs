@@ -30,10 +30,27 @@ pub(super) async fn make_test_node() -> TestNode {
 
 /// Create a test node with a specific transport MTU.
 pub(super) async fn make_test_node_with_mtu(mtu: u16) -> TestNode {
-    use crate::config::UdpConfig;
+    make_test_node_with(mtu, false).await
+}
+
+/// Create a test node with the per-peer actor pattern enabled
+/// (`peer_actor_enabled` + `actor_owns_peer`). Used by integration
+/// tests that exercise the `actor_owns_peer = true` cold-path
+/// migration end-to-end.
+pub(super) async fn make_test_node_actor_owned() -> TestNode {
+    make_test_node_with(1280, true).await
+}
+
+async fn make_test_node_with(mtu: u16, actor_owns_peer: bool) -> TestNode {
+    use crate::config::{Config, UdpConfig};
     use crate::transport::udp::UdpTransport;
 
-    let mut node = make_node();
+    let mut config = Config::new();
+    if actor_owns_peer {
+        config.node.peer_actor_enabled = true;
+        config.node.actor_owns_peer = true;
+    }
+    let mut node = Node::new(config).unwrap();
     let transport_id = TransportId::new(1);
 
     let udp_config = UdpConfig {
@@ -224,6 +241,13 @@ pub(super) fn print_tree_snapshot(label: &str, nodes: &[TestNode]) {
 /// Process all currently available packets across all nodes.
 ///
 /// Returns the number of packets processed.
+///
+/// When `peer_actor_enabled` + `actor_owns_peer` are on,
+/// `handle_encrypted_frame` ships the packet to the per-peer actor
+/// task instead of decrypting inline. The actor decrypts and posts
+/// the link message to `peer_link_dispatch_rx`. We yield so the
+/// actor runs, then drain that channel into `dispatch_link_message`
+/// — the same wire-up that `run_rx_loop` does in production.
 pub(super) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
     use crate::node::wire::{
         COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
@@ -249,6 +273,26 @@ pub(super) async fn process_available_packets(nodes: &mut [TestNode]) -> usize {
             }
         }
     }
+
+    // Drain the per-peer actor link-dispatch channel. With
+    // `actor_owns_peer` on, decrypted link messages flow back here
+    // for `dispatch_link_message` to process. Yield once so the
+    // actors run and post their messages before we drain. No-op
+    // when no actor has posted (or when the flag is off).
+    tokio::task::yield_now().await;
+    for node in nodes.iter_mut() {
+        // Temporarily take the rx so we can borrow `node.node` for
+        // dispatch_link_message; restore at the end.
+        if let Some(mut rx) = node.node.peer_link_dispatch_rx.take() {
+            while let Ok(d) = rx.0.try_recv() {
+                node.node
+                    .dispatch_link_message(&d.from, &d.link_message, d.ce_flag)
+                    .await;
+            }
+            node.node.peer_link_dispatch_rx = Some(rx);
+        }
+    }
+
     count
 }
 
@@ -446,7 +490,7 @@ pub(super) fn verify_tree_convergence(nodes: &[TestNode]) {
 
         let parent_id = ts.my_declaration().parent_id();
         assert!(
-            tn.node.get_peer(parent_id).is_some(),
+            tn.node.has_peer(parent_id),
             "Node {}'s parent {} should be in its peer list",
             i,
             parent_id
@@ -527,10 +571,35 @@ pub(super) async fn run_tree_test(
     edges: &[(usize, usize)],
     verbose: bool,
 ) -> Vec<TestNode> {
+    run_tree_test_with(num_nodes, edges, verbose, false).await
+}
+
+/// Like `run_tree_test`, but every node has the per-peer actor
+/// pattern enabled (`peer_actor_enabled` + `actor_owns_peer`).
+/// Used by integration tests that exercise the cold-path migration.
+pub(super) async fn run_tree_test_actor_owned(
+    num_nodes: usize,
+    edges: &[(usize, usize)],
+    verbose: bool,
+) -> Vec<TestNode> {
+    run_tree_test_with(num_nodes, edges, verbose, true).await
+}
+
+async fn run_tree_test_with(
+    num_nodes: usize,
+    edges: &[(usize, usize)],
+    verbose: bool,
+    actor_owns_peer: bool,
+) -> Vec<TestNode> {
     // Create nodes
     let mut nodes = Vec::new();
     for _ in 0..num_nodes {
-        nodes.push(make_test_node().await);
+        let tn = if actor_owns_peer {
+            make_test_node_actor_owned().await
+        } else {
+            make_test_node().await
+        };
+        nodes.push(tn);
     }
 
     if verbose {
@@ -593,20 +662,23 @@ pub(super) async fn run_tree_test(
         eprintln!("\n  Total packets processed: {}", total);
     }
 
-    // Verify all edges established bidirectional peers
+    // Verify all edges established bidirectional peers. Use
+    // `has_peer` rather than `get_peer` so the assertion is correct
+    // when `actor_owns_peer = true` and the peer lives inside its
+    // actor task instead of `Node.peers`.
     for &(i, j) in edges {
         let j_addr = *nodes[j].node.node_addr();
         let i_addr = *nodes[i].node.node_addr();
 
         assert!(
-            nodes[i].node.get_peer(&j_addr).is_some(),
+            nodes[i].node.has_peer(&j_addr),
             "Node {} should have peer {} (node {})",
             i,
             j_addr,
             j
         );
         assert!(
-            nodes[j].node.get_peer(&i_addr).is_some(),
+            nodes[j].node.has_peer(&i_addr),
             "Node {} should have peer {} (node {})",
             j,
             i_addr,
