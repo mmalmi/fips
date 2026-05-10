@@ -472,7 +472,15 @@ async fn peer_actor_loop(
     while let Some(job) = inbound_rx.recv().await {
         match job {
             PeerInboundJob::Decrypted(decrypted) => {
-                handle_decrypted(&peer_slot, *decrypted, &link_dispatch_tx, &peer_addr).await;
+                handle_decrypted(
+                    &peer_slot,
+                    *decrypted,
+                    &link_dispatch_tx,
+                    &peer_addr,
+                    owned_session.as_deref_mut(),
+                    &io_ctx,
+                )
+                .await;
             }
             PeerInboundJob::TakeSession(entry) => {
                 trace!(
@@ -851,6 +859,8 @@ async fn handle_decrypted(
     job: DecryptedJob,
     link_dispatch_tx: &mpsc::Sender<PeerLinkDispatch>,
     peer_addr: &crate::NodeAddr,
+    owned_session: Option<&mut SessionEntry>,
+    io_ctx: &PeerActorIoCtx,
 ) {
     let DecryptedJob {
         packet,
@@ -892,10 +902,6 @@ async fn handle_decrypted(
         peer.touch(packet_timestamp_ms);
     }
 
-    // The link message is plaintext minus the 4-byte inner timestamp
-    // (mirrors the strip_inner_header slice). Forward to the rx_loop
-    // for dispatch — handle_session_datagram and friends still need
-    // `&mut Node`, so the central dispatch task runs those.
     const INNER_TIMESTAMP_LEN: usize = 4;
     if plaintext.len() <= INNER_TIMESTAMP_LEN {
         debug!(
@@ -905,15 +911,199 @@ async fn handle_decrypted(
         );
         return;
     }
-    let link_message = plaintext[INNER_TIMESTAMP_LEN..].to_vec();
+    let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
 
+    // Fast path: if we own a SessionEntry for this peer, AND the link
+    // message is a SessionDatagram destined for us, AND the FSP phase
+    // is ESTABLISHED + encrypted + msg_type is DataPacket, do the
+    // FSP-receive pipeline (decrypt + replay + MMP record + IPv6-shim
+    // decompress + tun_tx.send) inline. Bypasses the rx_loop's
+    // central dispatch entirely. Falls through to NeedsCentralDispatch
+    // if any precondition fails.
+    if let Some(session) = owned_session
+        && try_actor_fast_path_receive(session, link_message, ce_flag, peer_addr, io_ctx).await
+    {
+        return;
+    }
+
+    // Fallback: forward link message to rx_loop for dispatch.
     let _ = link_dispatch_tx
         .send(PeerLinkDispatch {
             from: *peer_addr,
-            link_message,
+            link_message: link_message.to_vec(),
             ce_flag,
         })
         .await;
+}
+
+/// Try the actor-owned FSP receive fast path. Returns `true` iff the
+/// message was fully handled by the actor (DataPacket → TUN delivery);
+/// `false` means the caller should NeedsCentralDispatch instead.
+///
+/// Preconditions for fast-path success:
+/// 1. `link_message[0] == 0x00` (LinkMessageType::SessionDatagram)
+/// 2. The wrapped SessionDatagram's `dest_addr == io_ctx.node_addr`
+/// 3. FSP phase is ESTABLISHED with the U flag clear
+/// 4. The session is in the actor's owned state and Established
+/// 5. The msg_type after FSP decrypt is `DataPacket` (0x10)
+/// 6. The DataPacket destination port is `FSP_PORT_IPV6_SHIM`
+///
+/// CP-flagged datagrams (coords-piggybacked) fall through because
+/// updating `coord_cache` requires Node-side state. Other msg_types
+/// (EndpointData / SR / RR / PMtuNotification / CoordsWarmup) fall
+/// through too — Node still owns those handlers in step v.
+async fn try_actor_fast_path_receive(
+    session: &mut SessionEntry,
+    link_message: &[u8],
+    ce_flag: bool,
+    peer_addr: &crate::NodeAddr,
+    io_ctx: &PeerActorIoCtx,
+) -> bool {
+    use crate::node::session::EndToEndState;
+    use crate::node::session_wire::{
+        FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
+        FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader,
+        fsp_strip_inner_header,
+    };
+    use crate::protocol::{LinkMessageType, SessionDatagram, SessionMessageType};
+
+    if link_message.first().copied() != Some(LinkMessageType::SessionDatagram.to_byte()) {
+        return false;
+    }
+    let datagram = match SessionDatagram::decode(&link_message[1..]) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    if datagram.dest_addr != io_ctx.node_addr {
+        return false;
+    }
+    let payload = &datagram.payload;
+
+    // Parse common prefix to gate on phase + encryption.
+    let prefix = match FspCommonPrefix::parse(payload) {
+        Some(p) => p,
+        None => return false,
+    };
+    if prefix.phase != crate::node::session_wire::FSP_PHASE_ESTABLISHED || prefix.is_unencrypted() {
+        return false;
+    }
+
+    // Parse the 12-byte FSP header.
+    let header = match FspEncryptedHeader::parse(payload) {
+        Some(h) => h,
+        None => return false,
+    };
+    // CP-flagged data needs coord_cache writes — fall through to Node.
+    if header.flags & FSP_FLAG_CP != 0 {
+        return false;
+    }
+    let received_k_bit = header.flags & crate::node::session_wire::FSP_FLAG_K != 0;
+
+    // K-bit flip — rare cold path. If detected, advance under the same
+    // owned-session ref (we have `&mut SessionEntry` already).
+    if received_k_bit != session.current_k_bit() && session.pending_new_session().is_some() {
+        let now_ms = crate::time::now_ms();
+        session.handle_peer_kbit_flip(now_ms);
+    }
+
+    if !session.is_established() {
+        return false;
+    }
+
+    let ciphertext = &payload[FSP_HEADER_SIZE..];
+    let path_mtu = datagram.path_mtu;
+    let src_addr = datagram.src_addr;
+
+    // Try current then drain-window decrypt. Both via `&self` after step
+    // 7b-1 (replay window in Mutex, decrypt counter atomic).
+    let plaintext = {
+        let noise = match session.state() {
+            EndToEndState::Established(s) => s,
+            _ => return false,
+        };
+        match noise.decrypt_with_replay_check_and_aad(ciphertext, header.counter, &header.header_bytes) {
+            Ok(pt) => pt,
+            Err(_) => match session.previous_noise_session().and_then(|prev| {
+                prev.decrypt_with_replay_check_and_aad(ciphertext, header.counter, &header.header_bytes)
+                    .ok()
+            }) {
+                Some(pt) => pt,
+                None => {
+                    // Both failed — bump counter, fall through to Node
+                    // for re-handshake threshold logic.
+                    session.record_decrypt_failure();
+                    return false;
+                }
+            },
+        }
+    };
+
+    session.reset_decrypt_failures();
+
+    let (timestamp, msg_type, inner_flags_byte) = match fsp_strip_inner_header(&plaintext) {
+        Some((ts, mt, inf, _rest)) => (ts, mt, inf),
+        None => return false,
+    };
+
+    // MMP receive bookkeeping.
+    if let Some(mut mmp) = session.mmp_mut() {
+        let now = std::time::Instant::now();
+        mmp.receiver
+            .record_recv(header.counter, timestamp, plaintext.len(), ce_flag, now);
+        let inner_flags = crate::protocol::FspInnerFlags::from_byte(inner_flags_byte);
+        let _ = mmp.spin_bit.rx_observe(inner_flags.spin_bit, header.counter, now);
+        mmp.path_mtu.observe_incoming_mtu(path_mtu);
+    }
+
+    // Only DataPacket (msg_type 0x10) gets the IPv6-shim → TUN fast path.
+    // Everything else falls through to Node.
+    if SessionMessageType::from_byte(msg_type) != Some(SessionMessageType::DataPacket) {
+        return false;
+    }
+
+    let rest = &plaintext[FSP_INNER_HEADER_SIZE..];
+    if rest.len() < FSP_PORT_HEADER_SIZE {
+        return false;
+    }
+    let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
+    if dst_port != FSP_PORT_IPV6_SHIM {
+        return false;
+    }
+    let service_payload = &rest[FSP_PORT_HEADER_SIZE..];
+
+    use crate::FipsAddress;
+    let src_ipv6 = FipsAddress::from_node_addr(&src_addr).to_ipv6().octets();
+    let dst_ipv6 = FipsAddress::from_node_addr(&io_ctx.node_addr).to_ipv6().octets();
+    let mut packet = match crate::upper::ipv6_shim::decompress_ipv6(service_payload, src_ipv6, dst_ipv6) {
+        Some(p) => p,
+        None => return false,
+    };
+    if ce_flag {
+        crate::node::handlers::session::mark_ipv6_ecn_ce(&mut packet);
+    }
+
+    // Application-layer record + last_activity touch.
+    session.record_recv(plaintext.len());
+    let now_ms = crate::time::now_ms();
+    session.touch(now_ms);
+
+    if let Some(tx) = &io_ctx.tun_tx {
+        if let Err(e) = tx.send(packet) {
+            debug!(
+                peer = %peer_addr,
+                error = %e,
+                "actor fast path: TUN send failed"
+            );
+        }
+    } else {
+        // No TUN attached — drop. Mirrors Node's behaviour of
+        // tracing the drop and not erroring.
+        trace!(
+            peer = %peer_addr,
+            "actor fast path: IPv6 packet decompressed but no TUN attached"
+        );
+    }
+    true
 }
 
 /// Receiver side of the per-peer link-dispatch channel. Held by `Node`

@@ -8,5 +8,5 @@ mod handshake;
 mod mmp;
 mod rekey;
 mod rx_loop;
-pub(in crate::node) mod session;
+pub(crate) mod session;
 mod timeout;

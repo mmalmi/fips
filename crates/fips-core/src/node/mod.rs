@@ -7,7 +7,7 @@
 mod acl;
 mod bloom;
 mod discovery_rate_limit;
-mod handlers;
+pub(crate) mod handlers;
 mod lifecycle;
 mod rate_limit;
 mod retry;

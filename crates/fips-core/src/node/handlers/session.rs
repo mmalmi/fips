@@ -2625,7 +2625,7 @@ impl Node {
 ///
 /// No checksum update needed: IPv6 has no header checksum, and the Traffic
 /// Class field is not part of the TCP/UDP pseudo-header.
-pub(in crate::node) fn mark_ipv6_ecn_ce(packet: &mut [u8]) {
+pub(crate) fn mark_ipv6_ecn_ce(packet: &mut [u8]) {
     if packet.len() < 2 {
         return;
     }
