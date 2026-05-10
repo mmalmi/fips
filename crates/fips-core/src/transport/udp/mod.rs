@@ -559,7 +559,13 @@ async fn udp_receive_loop(
                 std::array::from_fn(|_| iter.next().unwrap().as_mut_slice())
             };
 
-            match socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await {
+            let recv_result = {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::UdpRecv,
+                );
+                socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await
+            };
+            match recv_result {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
                     for i in 0..count {

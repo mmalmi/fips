@@ -443,6 +443,9 @@ impl Node {
                                 if self.external_packet_tx.is_some() {
                                     self.deliver_external_ipv6_packet(src_addr, packet);
                                 } else if let Some(tun_tx) = &self.tun_tx {
+                                    let _t = crate::perf_profile::Timer::start(
+                                        crate::perf_profile::Stage::TunWrite,
+                                    );
                                     if let Err(e) = tun_tx.send(packet) {
                                         debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
                                     }
@@ -1795,12 +1798,17 @@ impl Node {
         let counter = session.current_send_counter();
         let payload_len = inner_plaintext.len() as u16;
         let header = build_fsp_header(counter, flags, payload_len);
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FspEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("session encrypt failed: {}", e),
+                })?
+        };
 
         let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
         fsp_payload.extend_from_slice(&header);
