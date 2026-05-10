@@ -84,6 +84,25 @@ the only task doing the receive work.
   earlier "Pitfalls" section was hit several times and worked around
   with scoped guard blocks.
 
+* **Step 6 (f11b6a8)** — Per-peer actor task. New `crate::peer::actor`
+  module defines `PeerActorHandle` and a per-peer task body that
+  consumes `PeerInboundJob::Decrypted` items from an mpsc inbox.
+  `promote_connection` spawns the task (via
+  `PeerActorHandle::spawn(...)`) and stores the handle on
+  `ActivePeer`. After FMP decrypt, the rx_loop hands the per-peer
+  state mutations off via the actor inbox; the actor pushes the
+  link-message body back through a shared
+  `peer_link_dispatch` channel so the rx_loop's central dispatch
+  arm can run `dispatch_link_message` (which still needs
+  `&mut Node`). Gated by `node.peer_actor_enabled` (default
+  `false`) — tests stay on the legacy inline path because the
+  actor's two extra channel hops trip timing-sensitive fixtures
+  (spanning-tree convergence, etc.). Bench A/B is flat at this
+  step (~1500 Mbps both modes) — the actor only relieves a few
+  hundred ns/pkt of per-peer mutations; the dispatch chain
+  (FSP decrypt + handle_session_datagram + TUN write) is still
+  on the rx_loop. Step 7+ moves that.
+
 ### Remaining
 
 #### Step 5 — Move peers behind `Arc<RwLock<ActivePeer>>` (DONE — bca3230)
