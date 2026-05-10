@@ -2331,7 +2331,7 @@ impl Node {
         if let Some(peer) = self.peers.get_mut(node_addr) {
             peer.link_stats_mut().record_sent(bytes_sent);
             // MMP: record sent frame for sender report generation
-            if let Some(mmp) = peer.mmp_mut() {
+            if let Some(mut mmp) = peer.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
             }
         }

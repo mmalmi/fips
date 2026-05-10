@@ -166,7 +166,12 @@ pub struct ActivePeer {
 
     // === MMP ===
     /// Per-peer MMP state (None for legacy peers without Noise sessions).
-    mmp: Option<MmpPeerState>,
+    /// Wrapped in a `Mutex` so the receive hot path can mutate (record
+    /// frames, advance spin bit) and the timer/control paths can read
+    /// (build reports, snapshot metrics) without ever holding `&mut self`
+    /// on the peer. The lock is per-peer; in steady state only the peer's
+    /// receive path mutates it, so the lock is uncontended.
+    mmp: Option<std::sync::Mutex<MmpPeerState>>,
 
     // === Heartbeat ===
     /// When we last sent a heartbeat to this peer.
@@ -328,7 +333,10 @@ impl ActivePeer {
             authenticated_at,
             last_seen: std::sync::atomic::AtomicU64::new(authenticated_at),
             remote_epoch,
-            mmp: Some(MmpPeerState::new(mmp_config, is_initiator)),
+            mmp: Some(std::sync::Mutex::new(MmpPeerState::new(
+                mmp_config,
+                is_initiator,
+            ))),
             last_heartbeat_sent: None,
             handshake_msg2: None,
             replay_suppressed_count: std::sync::atomic::AtomicU32::new(0),
@@ -629,14 +637,28 @@ impl ActivePeer {
 
     // === MMP Accessors ===
 
-    /// Get MMP state (None for legacy peers without sessions).
-    pub fn mmp(&self) -> Option<&MmpPeerState> {
-        self.mmp.as_ref()
+    /// Get MMP state, locked for read+write access.
+    ///
+    /// Returns `None` for legacy peers without sessions. The returned
+    /// guard derefs to `&MmpPeerState` (and `&mut` via `DerefMut`),
+    /// matching the pre-Mutex API at use sites — `if let Some(mmp) =
+    /// peer.mmp() { ... mmp.field ... }` continues to work.
+    ///
+    /// Both `mmp()` and `mmp_mut()` return the same guard type since
+    /// `std::sync::Mutex` doesn't differentiate read vs write — they're
+    /// kept as separate methods for call-site readability and to make
+    /// future migration to an `RwLock` (with read-only `mmp()`) a
+    /// signature-compatible change.
+    pub fn mmp(&self) -> Option<std::sync::MutexGuard<'_, MmpPeerState>> {
+        self.mmp
+            .as_ref()
+            .map(|m| m.lock().expect("mmp poisoned"))
     }
 
-    /// Get mutable MMP state.
-    pub fn mmp_mut(&mut self) -> Option<&mut MmpPeerState> {
-        self.mmp.as_mut()
+    /// Get MMP state, locked for write access. Same backing storage as
+    /// [`mmp`]; see that method for details.
+    pub fn mmp_mut(&self) -> Option<std::sync::MutexGuard<'_, MmpPeerState>> {
+        self.mmp()
     }
 
     /// Link cost for routing decisions.
@@ -969,7 +991,7 @@ impl ActivePeer {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
+        if let Some(mut mmp) = self.mmp() {
             mmp.reset_for_rekey(now);
         }
 
@@ -1004,7 +1026,7 @@ impl ActivePeer {
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
+        if let Some(mut mmp) = self.mmp() {
             mmp.reset_for_rekey(now);
         }
 

@@ -171,7 +171,7 @@ impl Node {
             // Stats inline — same borrow.
             peer.reset_decrypt_failures();
             let now = Instant::now();
-            if let Some(mmp) = peer.mmp_mut() {
+            if let Some(mut mmp) = peer.mmp_mut() {
                 mmp.receiver
                     .record_recv(counter, timestamp, packet_len, ce_flag, now);
                 let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);

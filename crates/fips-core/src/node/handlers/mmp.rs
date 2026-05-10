@@ -87,49 +87,57 @@ impl Node {
 
         let peer_name = self.peer_display_name(from);
 
-        let peer = match self.peers.get_mut(from) {
-            Some(p) => p,
-            None => {
-                debug!(from = %peer_name, "ReceiverReport from unknown peer");
+        // Process the report inside a scoped block so the MMP MutexGuard
+        // (and the &self.peers borrow it depends on) is released before we
+        // re-borrow `self.peers.iter()` for the first-RTT parent eval.
+        let first_rtt = {
+            let peer = match self.peers.get(from) {
+                Some(p) => p,
+                None => {
+                    debug!(from = %peer_name, "ReceiverReport from unknown peer");
+                    return;
+                }
+            };
+
+            // Get session timestamp before taking the MMP lock.
+            let our_timestamp_ms = peer.session_elapsed_ms();
+
+            let Some(mut mmp) = peer.mmp_mut() else {
                 return;
+            };
+
+            // Process the report: computes RTT from timestamp echo, updates
+            // loss rate, goodput rate, jitter trend, and ETX.
+            let now = Instant::now();
+            let first_rtt = mmp
+                .metrics
+                .process_receiver_report(&rr, our_timestamp_ms, now);
+
+            // Feed SRTT back to sender/receiver report interval tuning
+            if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
+                let srtt_us = (srtt_ms * 1000.0) as i64;
+                mmp.sender.update_report_interval_from_srtt(srtt_us);
+                mmp.receiver.update_report_interval_from_srtt(srtt_us);
             }
+
+            // Update reverse delivery ratio from our own receiver state
+            // (what fraction of peer's frames we received), using per-interval deltas.
+            let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+            let peer_highest = mmp.receiver.highest_counter();
+            mmp.metrics
+                .update_reverse_delivery(our_recv_packets, peer_highest);
+
+            trace!(
+                from = %peer_name,
+                rtt_ms = ?mmp.metrics.srtt_ms(),
+                loss = format_args!("{:.1}%", mmp.metrics.loss_rate() * 100.0),
+                etx = format_args!("{:.2}", mmp.metrics.etx),
+                "Processed ReceiverReport"
+            );
+
+            first_rtt
+            // mmp MutexGuard + peer borrow drop here.
         };
-
-        // Get session timestamp before taking mutable borrow on MMP
-        let our_timestamp_ms = peer.session_elapsed_ms();
-
-        let Some(mmp) = peer.mmp_mut() else {
-            return;
-        };
-
-        // Process the report: computes RTT from timestamp echo, updates
-        // loss rate, goodput rate, jitter trend, and ETX.
-        let now = Instant::now();
-        let first_rtt = mmp
-            .metrics
-            .process_receiver_report(&rr, our_timestamp_ms, now);
-
-        // Feed SRTT back to sender/receiver report interval tuning
-        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
-            let srtt_us = (srtt_ms * 1000.0) as i64;
-            mmp.sender.update_report_interval_from_srtt(srtt_us);
-            mmp.receiver.update_report_interval_from_srtt(srtt_us);
-        }
-
-        // Update reverse delivery ratio from our own receiver state
-        // (what fraction of peer's frames we received), using per-interval deltas.
-        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
-        let peer_highest = mmp.receiver.highest_counter();
-        mmp.metrics
-            .update_reverse_delivery(our_recv_packets, peer_highest);
-
-        trace!(
-            from = %peer_name,
-            rtt_ms = ?mmp.metrics.srtt_ms(),
-            loss = format_args!("{:.1}%", mmp.metrics.loss_rate() * 100.0),
-            etx = format_args!("{:.2}", mmp.metrics.etx),
-            "Processed ReceiverReport"
-        );
 
         // First RTT sample — peer is now eligible for parent selection.
         // Trigger re-evaluation so the node doesn't wait for the next
@@ -209,7 +217,7 @@ impl Node {
                 .cloned()
                 .unwrap_or_else(|| peer.identity().short_npub());
 
-            let Some(mmp) = peer.mmp_mut() else {
+            let Some(mut mmp) = peer.mmp_mut() else {
                 continue;
             };
 
@@ -233,7 +241,7 @@ impl Node {
 
             // Periodic operator logging
             if mmp.should_log(now) {
-                Self::log_mmp_metrics(&peer_name, mmp);
+                Self::log_mmp_metrics(&peer_name, &mmp);
                 mmp.mark_logged(now);
             }
         }

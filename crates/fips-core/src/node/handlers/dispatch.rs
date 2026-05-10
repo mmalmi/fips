@@ -127,7 +127,7 @@ impl Node {
             .cloned()
             .unwrap_or_else(|| peer.identity().short_npub());
         if let Some(mmp) = peer.mmp() {
-            Self::log_mmp_teardown(&peer_name, mmp);
+            Self::log_mmp_teardown(&peer_name, &mmp);
         }
 
         // Remove any end-to-end session associated with this peer.
