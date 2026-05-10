@@ -241,17 +241,16 @@ impl Node {
             self.pending_lookups.remove(&target);
 
             // If an established session exists, reset the warmup counter.
-            if let Some(slot) = self.sessions.get(&target).cloned() {
-                let mut entry = crate::node::session::session_write(&slot);
-                if entry.is_established() {
-                    let n = self.config.node.session.coords_warmup_packets;
-                    entry.set_coords_warmup_remaining(n);
-                    debug!(
-                        dest = %self.peer_display_name(&target),
-                        warmup_packets = n,
-                        "Reset coords warmup after discovery for existing session"
-                    );
-                }
+            let n = self.config.node.session.coords_warmup_packets;
+            if let Some(entry) = self.sessions.get_mut(&target)
+                && entry.is_established()
+            {
+                entry.set_coords_warmup_remaining(n);
+                debug!(
+                    dest = %self.peer_display_name(&target),
+                    warmup_packets = n,
+                    "Reset coords warmup after discovery for existing session"
+                );
             }
 
             // If we have queued application traffic for this target, retry

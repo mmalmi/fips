@@ -176,7 +176,7 @@ impl Node {
             .sessions
             .iter()
             .filter(|(_, slot)| {
-                let entry = crate::node::session::session_read(slot);
+                let entry = slot;
                 !entry.is_established()
                     && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
             })
@@ -196,7 +196,7 @@ impl Node {
             .sessions
             .iter()
             .filter_map(|(addr, slot)| {
-                let entry = crate::node::session::session_read(slot);
+                let entry = slot;
                 if !entry.is_established()
                     && entry.handshake_payload().is_some()
                     && entry.resend_count() < max_resends
@@ -226,8 +226,8 @@ impl Node {
                 }
             };
 
-            if sent && let Some(slot) = self.sessions.get(&dest_addr).cloned() {
-                let mut entry = crate::node::session::session_write(&slot);
+            if sent && let Some(slot) = self.sessions.get_mut(&dest_addr) {
+                let entry = slot;
                 let count = entry.resend_count() + 1;
                 let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
                 entry.record_resend(next);
@@ -254,7 +254,7 @@ impl Node {
             .sessions
             .iter()
             .filter(|(_, slot)| {
-                let entry = crate::node::session::session_read(slot);
+                let entry = slot;
                 entry.is_established()
                     && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
             })
@@ -267,7 +267,7 @@ impl Node {
 
             // Log MMP teardown metrics before removing the session
             if let Some(slot) = self.sessions.get(&addr) {
-                let entry = crate::node::session::session_read(slot);
+                let entry = slot;
                 if let Some(mmp) = entry.mmp() {
                     Self::log_session_mmp_teardown(&name, &mmp);
                 }

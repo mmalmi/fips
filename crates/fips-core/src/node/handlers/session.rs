@@ -224,20 +224,14 @@ impl Node {
         // Arc clone + one read-lock acquisition. K-bit flips fire once
         // per rekey and only at that point do we drop the read lock and
         // re-acquire as a write lock.
-        let slot = match self.sessions.get(src_addr).cloned() {
-            Some(s) => s,
-            None => {
-                debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
-                return;
-            }
-        };
+        if !self.sessions.contains_key(src_addr) {
+            debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
+            return;
+        }
 
-        // Cold-path: peer K-bit flip detection. Done first so the hot
-        // path can use the read guard exclusively. The needs_flip check
-        // is a single AtomicBool/bool field comparison; the rare write
-        // lock only fires when the peer has actually rotated keys.
+        // Cold-path: peer K-bit flip detection — once per rekey only.
         let needs_flip = {
-            let entry = crate::node::session::session_read(&slot);
+            let entry = self.sessions.get(src_addr).expect("just checked");
             entry.is_established()
                 && received_k_bit != entry.current_k_bit()
                 && entry.pending_new_session().is_some()
@@ -248,16 +242,19 @@ impl Node {
                 "Peer FSP K-bit flip detected, promoting new session"
             );
             let now_ms = Self::now_ms();
-            let mut entry = crate::node::session::session_write(&slot);
-            entry.handle_peer_kbit_flip(now_ms);
+            if let Some(entry) = self.sessions.get_mut(src_addr) {
+                entry.handle_peer_kbit_flip(now_ms);
+            }
         }
 
-        // Hot path: read lock on the SessionEntrySlot. Decrypt + replay
-        // accept (both `&self` after step 2), reset_decrypt_failures
-        // (atomic after step 7b-1), MMP record / spin-bit / path-MTU
-        // (Mutex inside `Option<Mutex<MmpSessionState>>` after 7b-1).
+        // Hot path: single &mut borrow for the whole pipeline (decrypt
+        // + replay accept + MMP record). All work in this block stays
+        // off `&mut self` so the borrow is fine.
         let outcome: FspFrameOutcome = 'outcome: {
-            let entry = crate::node::session::session_read(&slot);
+            let entry = self
+                .sessions
+                .get_mut(src_addr)
+                .expect("just checked");
             if !entry.is_established() {
                 break 'outcome FspFrameOutcome::NotEstablished;
             }
@@ -326,7 +323,7 @@ impl Node {
 
             // MMP receive bookkeeping + path-MTU observation. The Mutex
             // around `MmpSessionState` (step 7b-1) lets this fire from
-            // a read lock on the SessionEntrySlot.
+            // a read lock on the SessionEntry.
             if let Some(mut mmp) = entry.mmp_mut() {
                 let now = std::time::Instant::now();
                 mmp.receiver
@@ -501,9 +498,8 @@ impl Node {
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
         if (msg_type == SessionMessageType::DataPacket.to_byte()
             || msg_type == SessionMessageType::EndpointData.to_byte())
-            && let Some(slot) = self.sessions.get(src_addr)
+            && let Some(entry) = self.sessions.get_mut(src_addr)
         {
-            let mut entry = crate::node::session::session_write(slot);
             entry.record_recv(rest.len());
             entry.touch(Self::now_ms());
         }
@@ -536,19 +532,20 @@ impl Node {
             return;
         }
 
-        // Check for existing session with this remote
-        let existing_slot = self.sessions.get(src_addr).cloned();
-        if let Some(existing_slot) = existing_slot {
-            // Snapshot all the state we need from the read guard, then drop it.
-            #[derive(Clone)]
-            enum ExistingKind {
-                Initiating,
-                AwaitingMsg3 { payload: Option<Vec<u8>> },
-                Established { rekey_in_progress: bool, has_pending: bool },
-                Other,
-            }
-            let kind = {
-                let existing = crate::node::session::session_read(&existing_slot);
+        // Check for existing session with this remote. Snapshot relevant
+        // state into a local enum and release the borrow before any
+        // `&mut self` work below.
+        #[derive(Clone)]
+        enum ExistingKind {
+            None,
+            Initiating,
+            AwaitingMsg3 { payload: Option<Vec<u8>> },
+            Established { rekey_in_progress: bool, has_pending: bool },
+            Other,
+        }
+        let kind = match self.sessions.get(src_addr) {
+            None => ExistingKind::None,
+            Some(existing) => {
                 if existing.is_initiating() {
                     ExistingKind::Initiating
                 } else if existing.is_awaiting_msg3() {
@@ -563,9 +560,11 @@ impl Node {
                 } else {
                     ExistingKind::Other
                 }
-            };
-
+            }
+        };
+        if !matches!(kind, ExistingKind::None) {
             match kind {
+                ExistingKind::None => unreachable!(),
                 ExistingKind::Initiating => {
                     // Simultaneous initiation: smaller NodeAddr wins as initiator
                     if self.identity.node_addr() < src_addr {
@@ -618,7 +617,9 @@ impl Node {
                             src = %self.peer_display_name(src_addr),
                             "Dual FSP rekey initiation: we lose (larger addr), abandoning ours"
                         );
-                        crate::node::session::session_write(&existing_slot).abandon_rekey();
+                        if let Some(entry) = self.sessions.get_mut(src_addr) {
+                            entry.abandon_rekey();
+                        }
                     } else if has_pending {
                         // Guard: already have a pending session waiting for K-bit cutover
                         debug!(
@@ -660,9 +661,10 @@ impl Node {
 
                     // Store rekey state on the existing entry
                     let now_ms = Self::now_ms();
-                    let mut entry = crate::node::session::session_write(&existing_slot);
-                    entry.set_rekey_state(handshake, false);
-                    entry.record_peer_rekey(now_ms);
+                    if let Some(entry) = self.sessions.get_mut(src_addr) {
+                        entry.set_rekey_state(handshake, false);
+                        entry.record_peer_rekey(now_ms);
+                    }
 
                     debug!(
                         src = %self.peer_display_name(src_addr),
@@ -746,7 +748,7 @@ impl Node {
             }
         } else {
             self.sessions
-                .insert(*src_addr, crate::node::session::session_entry_slot(entry));
+                .insert(*src_addr, entry);
         }
 
         debug!(src = %self.peer_display_name(src_addr), "SessionSetup processed (XK), SessionAck sent, awaiting msg3");
@@ -835,39 +837,56 @@ impl Node {
             return;
         }
 
-        // Legacy path — Node.sessions is the single owner.
-        // Take a write lock on the entry to mutate its handshake state
-        // in place. The slot stays in `self.sessions` for the duration —
-        // no remove/insert dance — and the lock is released when the
-        // outer scope ends or on early return.
-        let entry_slot = match self.sessions.get(src_addr) {
-            Some(s) => s.clone(),
-            None => {
+        // Legacy path — `Node.sessions` is the single owner. We can't
+        // hold a `&mut SessionEntry` across `await self.send_session_datagram`
+        // (second mutable borrow of self), so the pattern is: take the
+        // handshake state out under a transient borrow, do the awaits,
+        // then re-borrow to install the result.
+
+        // Classify the entry so we know which flow to run.
+        enum AckFlow {
+            Missing,
+            Rekey,
+            FreshInitiating,
+            Other,
+        }
+        let flow = match self.sessions.get(src_addr) {
+            None => AckFlow::Missing,
+            Some(e) if e.is_established() && e.has_rekey_in_progress() && e.is_rekey_initiator() => {
+                AckFlow::Rekey
+            }
+            Some(e) if e.is_initiating() => AckFlow::FreshInitiating,
+            _ => AckFlow::Other,
+        };
+        match flow {
+            AckFlow::Missing => {
                 debug!(src = %self.peer_display_name(src_addr), "SessionAck for unknown session");
                 return;
             }
-        };
+            AckFlow::Other => {
+                debug!(src = %self.peer_display_name(src_addr), "SessionAck but session not in Initiating state");
+                return;
+            }
+            AckFlow::Rekey => {}
+            AckFlow::FreshInitiating => {}
+        }
 
-        // Rekey path: entry is Established with rekey_state. Run the
-        // entire rekey-handler block under one write lock; all the
-        // early returns naturally drop the guard.
-        let do_rekey = {
-            let entry = crate::node::session::session_read(&entry_slot);
-            entry.is_established() && entry.has_rekey_in_progress() && entry.is_rekey_initiator()
-        };
-        if do_rekey {
-            let mut handshake = {
-                let mut entry = crate::node::session::session_write(&entry_slot);
-                match entry.take_rekey_state() {
-                    Some(hs) => hs,
-                    None => return,
-                }
+        if matches!(flow, AckFlow::Rekey) {
+            let mut handshake = match self
+                .sessions
+                .get_mut(src_addr)
+                .and_then(|e| e.take_rekey_state())
+            {
+                Some(hs) => hs,
+                None => return,
             };
 
             // Process XK msg2
             if let Err(e) = handshake.read_xk_message_2(&ack.handshake_payload) {
                 debug!(error = %e, "Failed to process rekey XK msg2");
-                crate::node::session::session_write(&entry_slot).abandon_rekey();
+                if let Some(entry) = self.sessions.get_mut(src_addr) {
+                    entry.abandon_rekey();
+                }
                 return;
             }
 
@@ -876,7 +895,9 @@ impl Node {
                 Ok(m) => m,
                 Err(e) => {
                     debug!(error = %e, "Failed to generate rekey XK msg3");
-                    crate::node::session::session_write(&entry_slot).abandon_rekey();
+                    if let Some(entry) = self.sessions.get_mut(src_addr) {
+                        entry.abandon_rekey();
+                    }
                     return;
                 }
             };
@@ -890,7 +911,9 @@ impl Node {
 
             if let Err(e) = self.send_session_datagram(&mut datagram).await {
                 debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionMsg3");
-                crate::node::session::session_write(&entry_slot).abandon_rekey();
+                if let Some(entry) = self.sessions.get_mut(src_addr) {
+                    entry.abandon_rekey();
+                }
                 return;
             }
 
@@ -899,13 +922,14 @@ impl Node {
                 Ok(s) => s,
                 Err(e) => {
                     debug!(error = %e, "Failed to create session from rekey XK");
-                    crate::node::session::session_write(&entry_slot).abandon_rekey();
+                    if let Some(entry) = self.sessions.get_mut(src_addr) {
+                        entry.abandon_rekey();
+                    }
                     return;
                 }
             };
 
-            {
-                let mut entry = crate::node::session::session_write(&entry_slot);
+            if let Some(entry) = self.sessions.get_mut(src_addr) {
                 entry.set_pending_session(session);
                 entry.set_rekey_completed_ms(Self::now_ms());
             }
@@ -916,17 +940,16 @@ impl Node {
             );
             return;
         }
-        // Must be in Initiating state — check before take to avoid poisoning
-        let mut handshake = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
-            if !entry.is_initiating() {
-                debug!(src = %self.peer_display_name(src_addr), "SessionAck but session not in Initiating state");
-                return;
-            }
-            match entry.take_state() {
-                Some(EndToEndState::Initiating(hs)) => hs,
-                _ => unreachable!("checked is_initiating above"),
-            }
+        // Fresh-initiating path — take the handshake out so we can
+        // advance it; on error the entry's state field is left as None
+        // (mirrors prior behaviour).
+        let mut handshake = match self
+            .sessions
+            .get_mut(src_addr)
+            .and_then(|e| e.take_state())
+        {
+            Some(EndToEndState::Initiating(hs)) => hs,
+            _ => unreachable!("flow check guaranteed Initiating"),
         };
 
         // Process XK msg2: read_xk_message_2 (extracts responder's epoch)
@@ -966,12 +989,13 @@ impl Node {
         };
 
         let now_ms = Self::now_ms();
-        {
-            let mut entry = crate::node::session::session_write(&entry_slot);
+        let coords_warmup_packets = self.config.node.session.coords_warmup_packets;
+        let session_mmp = self.config.node.session_mmp.clone();
+        if let Some(entry) = self.sessions.get_mut(src_addr) {
             entry.set_state(EndToEndState::Established(session));
-            entry.set_coords_warmup_remaining(self.config.node.session.coords_warmup_packets);
+            entry.set_coords_warmup_remaining(coords_warmup_packets);
             entry.mark_established(now_ms);
-            entry.init_mmp(&self.config.node.session_mmp);
+            entry.init_mmp(&session_mmp);
             entry.clear_handshake_payload();
             entry.touch(now_ms);
         }
@@ -1055,34 +1079,52 @@ impl Node {
             return;
         }
 
-        let entry_slot = match self.sessions.get(src_addr) {
-            Some(s) => s.clone(),
-            None => {
+        // Classify entry state.
+        enum Msg3Flow {
+            Missing,
+            Rekey,
+            FreshAwaitingMsg3,
+            Other,
+        }
+        let flow = match self.sessions.get(src_addr) {
+            None => Msg3Flow::Missing,
+            Some(e)
+                if e.is_established() && e.has_rekey_in_progress() && !e.is_rekey_initiator() =>
+            {
+                Msg3Flow::Rekey
+            }
+            Some(e) if e.is_awaiting_msg3() => Msg3Flow::FreshAwaitingMsg3,
+            _ => Msg3Flow::Other,
+        };
+        match flow {
+            Msg3Flow::Missing => {
                 debug!(src = %self.peer_display_name(src_addr), "SessionMsg3 for unknown session");
                 return;
             }
-        };
+            Msg3Flow::Other => {
+                debug!(src = %self.peer_display_name(src_addr), "SessionMsg3 but session not in AwaitingMsg3 state");
+                return;
+            }
+            Msg3Flow::Rekey => {}
+            Msg3Flow::FreshAwaitingMsg3 => {}
+        }
 
-        // Rekey path: entry is Established with rekey_state (responder side)
-        let do_rekey = {
-            let entry = crate::node::session::session_read(&entry_slot);
-            entry.is_established()
-                && entry.has_rekey_in_progress()
-                && !entry.is_rekey_initiator()
-        };
-        if do_rekey {
-            let mut handshake = {
-                let mut entry = crate::node::session::session_write(&entry_slot);
-                match entry.take_rekey_state() {
-                    Some(hs) => hs,
-                    None => return,
-                }
+        if matches!(flow, Msg3Flow::Rekey) {
+            let mut handshake = match self
+                .sessions
+                .get_mut(src_addr)
+                .and_then(|e| e.take_rekey_state())
+            {
+                Some(hs) => hs,
+                None => return,
             };
 
             // Process XK msg3
             if let Err(e) = handshake.read_xk_message_3(&msg3.handshake_payload) {
                 debug!(error = %e, "Failed to process rekey XK msg3");
-                crate::node::session::session_write(&entry_slot).abandon_rekey();
+                if let Some(entry) = self.sessions.get_mut(src_addr) {
+                    entry.abandon_rekey();
+                }
                 return;
             }
 
@@ -1091,12 +1133,16 @@ impl Node {
                 Ok(s) => s,
                 Err(e) => {
                     debug!(error = %e, "Failed to create session from rekey XK msg3");
-                    crate::node::session::session_write(&entry_slot).abandon_rekey();
+                    if let Some(entry) = self.sessions.get_mut(src_addr) {
+                        entry.abandon_rekey();
+                    }
                     return;
                 }
             };
 
-            crate::node::session::session_write(&entry_slot).set_pending_session(session);
+            if let Some(entry) = self.sessions.get_mut(src_addr) {
+                entry.set_pending_session(session);
+            }
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -1105,17 +1151,14 @@ impl Node {
             return;
         }
 
-        // Must be in AwaitingMsg3 state
-        let mut handshake = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
-            if !entry.is_awaiting_msg3() {
-                debug!(src = %self.peer_display_name(src_addr), "SessionMsg3 but session not in AwaitingMsg3 state");
-                return;
-            }
-            match entry.take_state() {
-                Some(EndToEndState::AwaitingMsg3(hs)) => hs,
-                _ => unreachable!("checked is_awaiting_msg3 above"),
-            }
+        // Fresh AwaitingMsg3 — take the handshake out, advance, then put back.
+        let mut handshake = match self
+            .sessions
+            .get_mut(src_addr)
+            .and_then(|e| e.take_state())
+        {
+            Some(EndToEndState::AwaitingMsg3(hs)) => hs,
+            _ => unreachable!("flow check guaranteed AwaitingMsg3"),
         };
 
         // Process XK msg3: read_xk_message_3 (extracts initiator's static key and epoch)
@@ -1161,7 +1204,7 @@ impl Node {
         new_entry.init_mmp(&self.config.node.session_mmp);
         new_entry.touch(now_ms);
         self.sessions
-            .insert(*src_addr, crate::node::session::session_entry_slot(new_entry));
+            .insert(*src_addr, new_entry);
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;
@@ -1217,7 +1260,7 @@ impl Node {
                 return;
             }
         };
-        let mut entry = crate::node::session::session_write(&entry_slot);
+        let mut entry = &entry_slot;
 
         let our_timestamp_ms = entry.session_timestamp(now_ms);
 
@@ -1285,7 +1328,7 @@ impl Node {
                 return;
             }
         };
-        let mut entry = crate::node::session::session_write(&entry_slot);
+        let mut entry = &entry_slot;
 
         let Some(mut mmp) = entry.mmp_mut() else {
             return;
@@ -1380,7 +1423,7 @@ impl Node {
             let is_established = self
                 .sessions
                 .get(&msg.dest_addr)
-                .map(|s| crate::node::session::session_read(s).is_established())
+                .map(|s| s.is_established())
                 .unwrap_or(false);
             if is_established
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
@@ -1404,9 +1447,9 @@ impl Node {
 
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
-        if let Some(slot) = self.sessions.get(&msg.dest_addr) {
-            let n = self.config.node.session.coords_warmup_packets;
-            crate::node::session::session_write(slot).set_coords_warmup_remaining(n);
+        let n = self.config.node.session.coords_warmup_packets;
+        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr) {
+            entry.set_coords_warmup_remaining(n);
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -1445,7 +1488,7 @@ impl Node {
             let is_established = self
                 .sessions
                 .get(&msg.dest_addr)
-                .map(|s| crate::node::session::session_read(s).is_established())
+                .map(|s| s.is_established())
                 .unwrap_or(false);
             if is_established
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
@@ -1474,9 +1517,9 @@ impl Node {
 
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
-        if let Some(slot) = self.sessions.get(&msg.dest_addr) {
-            let n = self.config.node.session.coords_warmup_packets;
-            crate::node::session::session_write(slot).set_coords_warmup_remaining(n);
+        let n = self.config.node.session.coords_warmup_packets;
+        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr) {
+            entry.set_coords_warmup_remaining(n);
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -1511,7 +1554,7 @@ impl Node {
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
         if let Some(slot) = self.sessions.get(&msg.dest_addr) {
-            let mut entry = crate::node::session::session_write(slot);
+            let mut entry = slot;
             if let Some(mut mmp) = entry.mmp_mut() {
                 let old_mtu = mmp.path_mtu.current_mtu();
                 let now = std::time::Instant::now();
@@ -1614,7 +1657,7 @@ impl Node {
                 }
             }
         } else if let Some(slot) = self.sessions.get(&dest_addr) {
-            let existing = crate::node::session::session_read(slot);
+            let existing = slot;
             if existing.is_established() || existing.is_initiating() {
                 return Ok(());
             }
@@ -1676,7 +1719,7 @@ impl Node {
             }
         } else {
             self.sessions
-                .insert(dest_addr, crate::node::session::session_entry_slot(entry));
+                .insert(dest_addr, entry);
         }
 
         debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
@@ -1720,7 +1763,7 @@ impl Node {
                     node_addr: *dest_addr,
                     reason: "no session".into(),
                 })?;
-            let entry = crate::node::session::session_read(slot);
+            let entry = slot;
             if !entry.is_established() {
                 return Err(NodeError::SendFailed {
                     node_addr: *dest_addr,
@@ -1769,8 +1812,7 @@ impl Node {
         };
 
         // Decrement warmup counter if we sent coords (piggybacked or standalone)
-        if wants_coords && let Some(slot) = self.sessions.get(dest_addr) {
-            let mut entry = crate::node::session::session_write(slot);
+        if wants_coords && let Some(entry) = self.sessions.get_mut(dest_addr) {
             let cur = entry.coords_warmup_remaining();
             entry.set_coords_warmup_remaining(cur.saturating_sub(1));
         }
@@ -1778,23 +1820,22 @@ impl Node {
         // Build FSP flags (CP flag if coords, K-bit for key epoch)
         let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
         if let Some(slot) = self.sessions.get(dest_addr) {
-            let entry = crate::node::session::session_read(slot);
+            let entry = slot;
             if entry.current_k_bit() {
                 flags |= FSP_FLAG_K;
             }
         }
 
-        // Borrow session for counter + encryption (after potential standalone send)
-        let entry_slot = self
-            .sessions
-            .get(dest_addr)
-            .cloned()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
+        // Encrypt under a single &mut borrow on the entry. No await
+        // inside this block.
         let (counter, ciphertext, fsp_payload) = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
+            let entry = self
+                .sessions
+                .get_mut(dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "no session".into(),
+                })?;
             let session = match entry.state_mut() {
                 EndToEndState::Established(s) => s,
                 _ => {
@@ -1805,20 +1846,14 @@ impl Node {
                 }
             };
             let counter = session.current_send_counter();
-
-            // Build 12-byte FSP header (used as AAD for AEAD)
             let payload_len = inner_plaintext.len() as u16;
             let header = build_fsp_header(counter, flags, payload_len);
-
-            // Encrypt with AAD binding to the FSP header
             let ciphertext = session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
                     node_addr: *dest_addr,
                     reason: format!("session encrypt failed: {}", e),
                 })?;
-
-            // Assemble: header(12) + [coords] + ciphertext
             let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
             fsp_payload.extend_from_slice(&header);
             if let (Some(src), Some(dst)) = (&my_coords, &dest_coords) {
@@ -1835,9 +1870,8 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        // Re-borrow after send (which borrowed &mut self)
-        if let Some(slot) = self.sessions.get(dest_addr) {
-            let mut entry = crate::node::session::session_write(slot);
+        // Re-borrow after send to record stats + touch last_activity.
+        if let Some(entry) = self.sessions.get_mut(dest_addr) {
             entry.record_sent(payload.len());
             if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
@@ -2015,7 +2049,7 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<(), NodeError> {
         if let Some(slot) = self.sessions.get(&dest_addr) {
-            let is_established = crate::node::session::session_read(slot).is_established();
+            let is_established = slot.is_established();
             if is_established {
                 return self.send_session_endpoint_data(&dest_addr, &payload).await;
             }
@@ -2124,7 +2158,7 @@ impl Node {
                     node_addr: *dest_addr,
                     reason: "no session".into(),
                 })?;
-            let entry = crate::node::session::session_read(slot);
+            let entry = slot;
             if !entry.is_established() {
                 return Err(NodeError::SendFailed {
                     node_addr: *dest_addr,
@@ -2160,29 +2194,26 @@ impl Node {
             (false, None, None)
         };
 
-        if wants_coords && let Some(slot) = self.sessions.get(dest_addr) {
-            let mut entry = crate::node::session::session_write(slot);
+        if wants_coords && let Some(entry) = self.sessions.get_mut(dest_addr) {
             let cur = entry.coords_warmup_remaining();
             entry.set_coords_warmup_remaining(cur.saturating_sub(1));
         }
 
         let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
         if let Some(slot) = self.sessions.get(dest_addr) {
-            if crate::node::session::session_read(slot).current_k_bit() {
+            if slot.current_k_bit() {
                 flags |= FSP_FLAG_K;
             }
         }
 
-        let entry_slot = self
-            .sessions
-            .get(dest_addr)
-            .cloned()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
         let (counter, ciphertext, fsp_payload) = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
+            let entry = self
+                .sessions
+                .get_mut(dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "no session".into(),
+                })?;
             let session = match entry.state_mut() {
                 EndToEndState::Established(s) => s,
                 _ => {
@@ -2218,8 +2249,7 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        if let Some(slot) = self.sessions.get(dest_addr).cloned() {
-            let mut entry = crate::node::session::session_write(&slot);
+        if let Some(entry) = self.sessions.get_mut(dest_addr) {
             entry.record_sent(payload.len());
             if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp, ciphertext.len());
@@ -2306,31 +2336,18 @@ impl Node {
 
         let now_ms = Self::now_ms();
 
-        // Read spin bit and session timestamp from entry
-        let entry_slot = self
-            .sessions
-            .get(dest_addr)
-            .cloned()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
+        let (timestamp, counter, ciphertext, fsp_payload) = {
+            let entry = self
+                .sessions
+                .get_mut(dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "no session".into(),
+                })?;
 
-        let (timestamp, spin_bit) = {
-            let entry = crate::node::session::session_read(&entry_slot);
-            let ts = entry.session_timestamp(now_ms);
-            let sb = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
-            (ts, sb)
-        };
-
-        // Build inner flags with spin bit
-        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
-
-        // Encrypt with mutable access
-        let (counter, ciphertext, header, fsp_payload) = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
-
-            // Read K-bit before mutable borrow of session state
+            let timestamp = entry.session_timestamp(now_ms);
+            let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
+            let inner_flags = FspInnerFlags { spin_bit }.to_byte();
             let k_flags = if entry.current_k_bit() { FSP_FLAG_K } else { 0 };
 
             let session = match entry.state_mut() {
@@ -2344,16 +2361,11 @@ impl Node {
             };
 
             let counter = session.current_send_counter();
-
-            // FSP inner header + plaintext
             let inner_plaintext =
                 fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
-
-            // Build 12-byte FSP header (K-bit for key epoch, no CP for reports)
             let payload_len = inner_plaintext.len() as u16;
             let header = build_fsp_header(counter, k_flags, payload_len);
 
-            // Encrypt with AAD
             let ciphertext = session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
@@ -2361,13 +2373,11 @@ impl Node {
                     reason: format!("session encrypt failed: {}", e),
                 })?;
 
-            // Assemble: header(12) + ciphertext (no coords)
             let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len());
             fsp_payload.extend_from_slice(&header);
             fsp_payload.extend_from_slice(&ciphertext);
-            (counter, ciphertext, header, fsp_payload)
+            (timestamp, counter, ciphertext, fsp_payload)
         };
-        let _ = header; // silence unused
 
         let my_addr = *self.node_addr();
         let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
@@ -2376,11 +2386,10 @@ impl Node {
         self.send_session_datagram(&mut datagram).await?;
 
         // Record in MMP sender state (no touch — MMP reports don't reset idle timer)
-        if let Some(slot) = self.sessions.get(dest_addr).cloned() {
-            let mut entry = crate::node::session::session_write(&slot);
-            if let Some(mut mmp) = entry.mmp_mut() {
-                mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-            }
+        if let Some(entry) = self.sessions.get_mut(dest_addr)
+            && let Some(mut mmp) = entry.mmp_mut()
+        {
+            mmp.sender.record_sent(counter, timestamp, ciphertext.len());
         }
 
         Ok(())
@@ -2456,26 +2465,16 @@ impl Node {
         let my_coords = self.tree_state.my_coords().clone();
         let dest_coords = self.get_dest_coords(dest_addr);
 
-        // Read session metadata
-        let entry_slot = self
-            .sessions
-            .get(dest_addr)
-            .cloned()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let (timestamp, spin_bit) = {
-            let entry = crate::node::session::session_read(&entry_slot);
-            (
-                entry.session_timestamp(now_ms),
-                entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
-            )
-        };
-
-        // Encrypt with mutable access
-        let (counter, ciphertext, fsp_payload) = {
-            let mut entry = crate::node::session::session_write(&entry_slot);
+        let (timestamp, counter, ciphertext, fsp_payload) = {
+            let entry = self
+                .sessions
+                .get_mut(dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "no session".into(),
+                })?;
+            let timestamp = entry.session_timestamp(now_ms);
+            let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
             let session = match entry.state_mut() {
                 EndToEndState::Established(s) => s,
                 _ => {
@@ -2487,18 +2486,14 @@ impl Node {
             };
 
             let counter = session.current_send_counter();
-
-            // FSP inner header only, no body payload
             let msg_type = SessionMessageType::CoordsWarmup.to_byte();
             let inner_flags = FspInnerFlags { spin_bit }.to_byte();
             let inner_plaintext =
                 fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &[]);
 
-            // Build FSP header with CP flag
             let payload_len = inner_plaintext.len() as u16;
             let header = build_fsp_header(counter, FSP_FLAG_CP, payload_len);
 
-            // Encrypt with AAD
             let ciphertext = session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
@@ -2506,7 +2501,6 @@ impl Node {
                     reason: format!("session encrypt failed: {}", e),
                 })?;
 
-            // Assemble: header(12) + coords + ciphertext
             let coords_size = coords_wire_size(&my_coords) + coords_wire_size(&dest_coords);
             let mut fsp_payload =
                 Vec::with_capacity(FSP_HEADER_SIZE + coords_size + ciphertext.len());
@@ -2514,7 +2508,7 @@ impl Node {
             encode_coords(&my_coords, &mut fsp_payload);
             encode_coords(&dest_coords, &mut fsp_payload);
             fsp_payload.extend_from_slice(&ciphertext);
-            (counter, ciphertext, fsp_payload)
+            (timestamp, counter, ciphertext, fsp_payload)
         };
 
         let my_addr = *self.node_addr();
@@ -2524,11 +2518,10 @@ impl Node {
         self.send_session_datagram(&mut datagram).await?;
 
         // Record in MMP (infrastructure traffic — no idle timer touch)
-        if let Some(slot) = self.sessions.get(dest_addr).cloned() {
-            let mut entry = crate::node::session::session_write(&slot);
-            if let Some(mut mmp) = entry.mmp_mut() {
-                mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-            }
+        if let Some(entry) = self.sessions.get_mut(dest_addr)
+            && let Some(mut mmp) = entry.mmp_mut()
+        {
+            mmp.sender.record_sent(counter, timestamp, ciphertext.len());
         }
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
@@ -2570,8 +2563,8 @@ impl Node {
         // Source-side: seed our PathMtuState.current_mtu from the outbound
         // transport MTU so it doesn't stay at u16::MAX until the destination
         // sends a PathMtuNotification back.
-        if let Some(slot) = self.sessions.get(&datagram.dest_addr).cloned() {
-            let mut entry = crate::node::session::session_write(&slot);
+        if let Some(slot) = self.sessions.get_mut(&datagram.dest_addr) {
+            let entry = slot;
             if let Some(mut mmp) = entry.mmp_mut() {
                 mmp.path_mtu.seed_source_mtu(datagram.path_mtu);
             }
@@ -2652,7 +2645,7 @@ impl Node {
         // Check for established session
         let session_state: Option<(bool, Option<u16>)> =
             self.sessions.get(&dest_addr).map(|slot| {
-                let entry = crate::node::session::session_read(slot);
+                let entry = slot;
                 let path_mtu = entry.mmp().map(|m| m.path_mtu.current_mtu());
                 (entry.is_established(), path_mtu)
             });
@@ -2826,7 +2819,7 @@ impl Node {
 
         // Skip if a session already exists
         if let Some(existing_slot) = self.sessions.get(&dest_addr) {
-            let existing = crate::node::session::session_read(existing_slot);
+            let existing = existing_slot;
             if existing.is_established() || existing.is_initiating() {
                 return;
             }

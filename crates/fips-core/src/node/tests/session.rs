@@ -144,7 +144,7 @@ fn test_session_table_operations() {
         true,
     );
 
-    node.sessions.insert(dest_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(dest_addr, entry);
     assert_eq!(node.session_count(), 1);
     assert!(node.get_session(&dest_addr).is_some());
     assert!(node.get_session(&make_node_addr(0xFF)).is_none());
@@ -921,7 +921,7 @@ async fn test_session_100_nodes() {
     for tn in &nodes {
         let mut all_est = true;
         for (_, slot) in tn.node.sessions.iter() {
-            let entry = crate::node::session::session_read(slot);
+            let entry = slot;
             if entry.state().is_established() {
                 total_established += 1;
             } else if entry.state().is_awaiting_msg3() {
@@ -1508,7 +1508,7 @@ fn test_purge_idle_sessions_removes_expired() {
         true,
     );
 
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
     assert_eq!(node.session_count(), 1);
     assert!(node.get_session(&remote_addr).unwrap().is_established());
 
@@ -1537,7 +1537,7 @@ fn test_purge_idle_sessions_keeps_active() {
     // Touch at t=80s — recent activity
     entry.touch(81_000);
 
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 
     // Purge at t=92s — only 11s since last activity, well within 90s timeout
     let now_ms = 92_000;
@@ -1567,7 +1567,7 @@ fn test_purge_idle_sessions_ignores_initiating() {
         true,
     );
 
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 
     // Purge well past the idle timeout — Initiating sessions should not be touched
     let now_ms = 1000 + 200_000;
@@ -1595,7 +1595,7 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
         true,
     );
 
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 
     // Insert some pending packets for this destination
     let mut queue = std::collections::VecDeque::new();
@@ -1631,7 +1631,7 @@ fn test_purge_idle_sessions_disabled_when_zero() {
         true,
     );
 
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 
     // Even way past any timeout, sessions should survive when disabled
     let now_ms = 1000 + 1_000_000;
@@ -1662,7 +1662,7 @@ fn test_purge_idle_sessions_mmp_activity_does_not_prevent_purge() {
     // Do NOT call entry.touch() — simulates a session where only MMP
     // reports have flowed (MMP no longer calls touch). last_activity
     // remains at creation time (1000ms).
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 
     // Purge at t=92s — 91s since creation, exceeds 90s idle timeout.
     // Even though MMP reports would have been flowing, they no longer
@@ -1970,7 +1970,7 @@ async fn test_session_handshake_timeout() {
         1000,
         true,
     );
-    node.sessions.insert(dest_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(dest_addr, entry);
 
     assert!(node.sessions.contains_key(&dest_addr));
 
@@ -2014,7 +2014,7 @@ async fn test_session_awaiting_msg3_timeout() {
         1000,
         false,
     );
-    node.sessions.insert(src_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(src_addr, entry);
 
     assert!(node.sessions.contains_key(&src_addr));
 
@@ -2466,7 +2466,7 @@ fn install_established_session_with_mmp(node: &mut Node, remote: &Identity) {
         true,
     );
     entry.init_mmp(&node.config_mut().node.session_mmp);
-    node.sessions.insert(remote_addr, crate::node::session::session_entry_slot(entry));
+    node.sessions.insert(remote_addr, entry);
 }
 
 #[test]

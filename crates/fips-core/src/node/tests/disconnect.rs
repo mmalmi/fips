@@ -280,7 +280,7 @@ async fn test_disconnect_clears_session() {
             1_000,
             true,
         );
-        nodes[1].node.sessions.insert(node0_addr, crate::node::session::session_entry_slot(entry));
+        nodes[1].node.sessions.insert(node0_addr, entry);
     }
 
     assert_eq!(

@@ -141,7 +141,7 @@ impl Node {
         //      and silently returns Ok(()), preventing a new session from being
         //      established even after the link layer reconnects successfully.
         if let Some(session_slot) = self.sessions.remove(node_addr) {
-            let session_entry = crate::node::session::session_read(&session_slot);
+            let session_entry = &session_slot;
             if let Some(mmp) = session_entry.mmp() {
                 Self::log_session_mmp_teardown(&peer_name, &mmp);
             }

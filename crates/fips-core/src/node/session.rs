@@ -55,30 +55,12 @@ impl EndToEndState {
 /// The state is wrapped in `Option` to allow taking ownership of the
 /// handshake state during transitions without placeholder values.
 /// The state is `None` only transiently during handler processing.
-/// Shared, lockable handle to a `SessionEntry`. Used as `Node.sessions`'s
-/// value type (step 7 of the peer-actor refactor) so per-session state
-/// can be cheaply cloned to per-peer actor handles for FSP decrypt /
-/// dispatch without moving ownership.
-pub(crate) type SessionEntrySlot = std::sync::Arc<std::sync::RwLock<SessionEntry>>;
-
-/// Wrap an owned `SessionEntry` for placement in `Node.sessions`.
-pub(crate) fn session_entry_slot(entry: SessionEntry) -> SessionEntrySlot {
-    std::sync::Arc::new(std::sync::RwLock::new(entry))
-}
-
-/// Take a read lock on a session slot.
-pub(crate) fn session_read(
-    slot: &SessionEntrySlot,
-) -> std::sync::RwLockReadGuard<'_, SessionEntry> {
-    slot.read().expect("session poisoned")
-}
-
-/// Take a write lock on a session slot.
-pub(crate) fn session_write(
-    slot: &SessionEntrySlot,
-) -> std::sync::RwLockWriteGuard<'_, SessionEntry> {
-    slot.write().expect("session poisoned")
-}
+// 7c-2 cleanup: `Node.sessions` is now `HashMap<NodeAddr, SessionEntry>`
+// (plain ownership — Node holds the entry by value). For direct-peer
+// sessions in actor mode the entry lives in the peer actor's owned
+// state; for transit-endpoint sessions and the legacy `actor_owns_sessions
+// = false` mode it lives here in the HashMap. Either way: single owner,
+// no Arc, no RwLock.
 
 pub(crate) struct SessionEntry {
     /// Remote node's address (session table key).

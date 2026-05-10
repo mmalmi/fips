@@ -331,10 +331,10 @@ impl Node {
         // Snapshot the dest addresses to avoid holding a borrow on `self.sessions`
         let dest_addrs: Vec<NodeAddr> = self.sessions.keys().copied().collect();
         for dest_addr in dest_addrs {
-            let Some(slot) = self.sessions.get(&dest_addr).cloned() else {
+            let Some(slot) = self.sessions.get_mut(&dest_addr) else {
                 continue;
             };
-            let mut entry = crate::node::session::session_write(&slot);
+            let entry = slot;
             // Compute display name before taking mutable MMP borrow
             let session_name = self
                 .peer_aliases
@@ -410,7 +410,7 @@ impl Node {
                         .sessions
                         .get(&dest_addr)
                         .map(|slot| {
-                            let entry = crate::node::session::session_read(slot);
+                            let entry = slot;
                             entry
                                 .mmp()
                                 .map(|mmp| mmp.sender.consecutive_send_failures())
@@ -450,21 +450,30 @@ impl Node {
             }
         }
         for (dest_addr, success) in dest_success {
-            if let Some(slot) = self.sessions.get(&dest_addr).cloned() {
-                let mut entry = crate::node::session::session_write(&slot);
+            // Snapshot the previous-failures count under a transient
+            // borrow so we can release it before peer_display_name's
+            // &self call (which would alias the &mut on self.sessions).
+            let prev_failures = if let Some(entry) = self.sessions.get_mut(&dest_addr) {
                 if let Some(mut mmp) = entry.mmp_mut() {
                     if success {
-                        let prev = mmp.sender.record_send_success();
-                        if prev > 3 {
-                            debug!(
-                                dest = %self.peer_display_name(&dest_addr),
-                                consecutive_failures = prev,
-                                "Resumed session MMP reporting"
-                            );
-                        }
+                        Some(mmp.sender.record_send_success())
                     } else {
                         mmp.sender.record_send_failure();
+                        None
                     }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some(prev) = prev_failures {
+                if prev > 3 {
+                    debug!(
+                        dest = %self.peer_display_name(&dest_addr),
+                        consecutive_failures = prev,
+                        "Resumed session MMP reporting"
+                    );
                 }
             }
         }
