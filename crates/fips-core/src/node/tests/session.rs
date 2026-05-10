@@ -809,7 +809,10 @@ async fn test_session_100_nodes() {
         .map(|tn| {
             tn.node
                 .peers()
-                .map(|p| (*p.node_addr(), p.link_stats().packets_sent()))
+                .map(|slot| {
+                    let p = crate::peer::peer_read(slot);
+                    (*p.node_addr(), p.link_stats().packets_sent())
+                })
                 .collect()
         })
         .collect();
@@ -948,7 +951,8 @@ async fn test_session_100_nodes() {
     let mut total_link_bytes_recv: u64 = 0;
 
     for (i, tn) in nodes.iter().enumerate() {
-        for peer in tn.node.peers() {
+        for slot in tn.node.peers() {
+            let peer = crate::peer::peer_read(slot);
             let stats = peer.link_stats();
             // Delta for this peer since before data phase
             let before = link_pkts_sent_before[i]

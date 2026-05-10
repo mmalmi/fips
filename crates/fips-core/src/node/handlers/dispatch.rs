@@ -102,13 +102,14 @@ impl Node {
     /// selects an alternative or becomes root, and marks remaining peers
     /// for pending tree announce (delivered on next tick).
     pub(in crate::node) fn remove_active_peer(&mut self, node_addr: &NodeAddr) {
-        let peer = match self.peers.remove(node_addr) {
+        let slot = match self.peers.remove(node_addr) {
             Some(p) => p,
             None => {
                 debug!(peer = %self.peer_display_name(node_addr), "Peer already removed");
                 return;
             }
         };
+        let peer = crate::peer::peer_read(&slot);
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
@@ -169,6 +170,7 @@ impl Node {
                 let _ = self.index_allocator.free(idx);
             }
         }
+        drop(peer);
 
         // Remove link and address mapping
         self.remove_link(&link_id);
@@ -181,8 +183,8 @@ impl Node {
         if tree_changed {
             // Mark all remaining peers for pending tree announce.
             // These will be sent on the next tick via check_tree_state().
-            for peer in self.peers.values_mut() {
-                peer.mark_tree_announce_pending();
+            for slot in self.peers.values() {
+                crate::peer::peer_write(slot).mark_tree_announce_pending();
             }
         }
 

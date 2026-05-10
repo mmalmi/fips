@@ -13,6 +13,30 @@ mod connection;
 pub use active::{ActivePeer, ConnectivityState};
 pub use connection::{HandshakeState, PeerConnection};
 
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// Shared, lockable handle to an `ActivePeer`. Used as `Node.peers`'s
+/// value type so per-peer state can be cheaply cloned to per-peer
+/// task handles without moving ownership.
+pub type ActivePeerSlot = Arc<RwLock<ActivePeer>>;
+
+/// Wrap an owned `ActivePeer` for placement in `Node.peers`.
+pub fn active_peer_slot(peer: ActivePeer) -> ActivePeerSlot {
+    Arc::new(RwLock::new(peer))
+}
+
+/// Read-locked guard helpers — `.expect("peer poisoned")` callers
+/// match the pattern used elsewhere in fips for std::sync mutex
+/// guards (poisoned only on a thread panic, which is treated as
+/// fatal).
+pub fn peer_read(slot: &ActivePeerSlot) -> RwLockReadGuard<'_, ActivePeer> {
+    slot.read().expect("peer poisoned")
+}
+
+pub fn peer_write(slot: &ActivePeerSlot) -> RwLockWriteGuard<'_, ActivePeer> {
+    slot.write().expect("peer poisoned")
+}
+
 use crate::NodeAddr;
 use crate::transport::LinkId;
 use std::fmt;

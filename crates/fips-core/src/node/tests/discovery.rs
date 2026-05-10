@@ -951,7 +951,11 @@ async fn test_open_discovery_sweep_queues_eligible_skips_filtered() {
     let connected_peer_identity = crate::PeerIdentity::from_pubkey(connected_identity.pubkey());
     node.peers.insert(
         connected_node_addr,
-        ActivePeer::new(connected_peer_identity, LinkId::new(1), 1_000),
+        crate::peer::active_peer_slot(ActivePeer::new(
+            connected_peer_identity,
+            LinkId::new(1),
+            1_000,
+        )),
     );
 
     // Eligible peer: fresh identity not in node.peers / retry_pending.
@@ -1074,7 +1078,8 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     let mut bloom = BloomFilter::new();
     bloom.insert(&target_addr);
     peer.update_filter(bloom, 1, 0);
-    node.peers.insert(peer_addr, peer);
+    node.peers
+        .insert(peer_addr, crate::peer::active_peer_slot(peer));
 
     // Make the peer a tree-peer: install a peer declaration that names us
     // as its parent. `is_tree_peer` checks both directions — the child

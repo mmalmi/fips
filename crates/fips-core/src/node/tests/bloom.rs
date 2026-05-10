@@ -182,8 +182,10 @@ async fn test_bloom_filter_chain_propagation() {
 
     // Node 0's filter from node 1 should contain node 1 and its
     // immediate neighbor node 2 (node 1 directly merges node 2's filter).
-    let peer_1 = nodes[0].node.get_peer(&addrs[1]).unwrap();
-    let filter = peer_1.inbound_filter().unwrap();
+    let filter = {
+        let peer_1 = nodes[0].node.get_peer(&addrs[1]).unwrap();
+        peer_1.inbound_filter().unwrap().clone()
+    };
     assert!(filter.contains(&addrs[1]), "Should contain node 1 (self)");
     assert!(
         filter.contains(&addrs[2]),
@@ -205,9 +207,10 @@ async fn test_bloom_filter_chain_propagation() {
     // Verify symmetric: node 7's filter from node 6 should contain all
     for i in 0..6 {
         let peer_6 = nodes[7].node.get_peer(&addrs[6]).unwrap();
-        let filter_6 = peer_6.inbound_filter().unwrap();
+        let contained = peer_6.inbound_filter().unwrap().contains(&addrs[i]);
+        drop(peer_6);
         assert!(
-            filter_6.contains(&addrs[i]),
+            contained,
             "Node 7's filter from node 6 should contain node {} \
              (chain merge propagation)",
             i
@@ -242,7 +245,7 @@ async fn test_bloom_filter_ring() {
             let reachable = nodes[i]
                 .node
                 .peers()
-                .any(|peer| peer.may_reach(&target_addr));
+                .any(|slot| crate::peer::peer_read(slot).may_reach(&target_addr));
             assert!(
                 reachable,
                 "Node {} should see node {} as reachable via at least one peer's filter",
@@ -347,7 +350,8 @@ async fn test_bloom_filter_split_horizon() {
             .get_peer(&addrs[child_idx])
             .unwrap()
             .inbound_filter()
-            .unwrap();
+            .unwrap()
+            .clone();
 
         // Should contain all nodes in child's subtree
         for &idx in &child_subtree {
@@ -391,7 +395,8 @@ async fn test_bloom_filter_split_horizon() {
             .get_peer(&addrs[parent_idx])
             .unwrap()
             .inbound_filter()
-            .unwrap();
+            .unwrap()
+            .clone();
 
         // Should contain all nodes in the complement
         for &idx in &complement {

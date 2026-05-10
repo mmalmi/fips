@@ -107,14 +107,16 @@ async fn test_two_node_handshake_udp() {
         1,
         "Node B should have 1 peer after msg1"
     );
-    let peer_a_on_b = node_b
-        .get_peer(&peer_a_node_addr)
-        .expect("Node B should have peer A");
-    assert!(
-        peer_a_on_b.has_session(),
-        "Peer A on B should have NoiseSession"
-    );
-    let our_index_b = peer_a_on_b.our_index().expect("B should have our_index");
+    let our_index_b = {
+        let peer_a_on_b = node_b
+            .get_peer(&peer_a_node_addr)
+            .expect("Node B should have peer A");
+        assert!(
+            peer_a_on_b.has_session(),
+            "Peer A on B should have NoiseSession"
+        );
+        peer_a_on_b.our_index().expect("B should have our_index")
+    };
     assert!(
         node_b
             .peers_by_index
@@ -137,18 +139,20 @@ async fn test_two_node_handshake_udp() {
         1,
         "Node A should have 1 peer after msg2"
     );
-    let peer_b_on_a = node_a
-        .get_peer(&peer_b_node_addr)
-        .expect("Node A should have peer B");
-    assert!(
-        peer_b_on_a.has_session(),
-        "Peer B on A should have NoiseSession"
-    );
-    assert_eq!(
-        peer_b_on_a.our_index(),
-        Some(our_index_a),
-        "Peer B on A should have our_index matching what we allocated"
-    );
+    {
+        let peer_b_on_a = node_a
+            .get_peer(&peer_b_node_addr)
+            .expect("Node A should have peer B");
+        assert!(
+            peer_b_on_a.has_session(),
+            "Peer B on A should have NoiseSession"
+        );
+        assert_eq!(
+            peer_b_on_a.our_index(),
+            Some(our_index_a),
+            "Peer B on A should have our_index matching what we allocated"
+        );
+    }
     assert!(
         node_a
             .peers_by_index
@@ -162,19 +166,25 @@ async fn test_two_node_handshake_udp() {
     // Prepend inner header (timestamp + msg_type) as the real send path does
     let msg_a = b"\x10test from A"; // msg_type 0x10 (TreeAnnounce) + dummy payload
     let inner_a = prepend_inner_header(0, msg_a);
-    let peer_b = node_a.get_peer_mut(&peer_b_node_addr).unwrap();
-    let their_index_b = peer_b.their_index().expect("A should know B's index");
-    let session_a = peer_b.noise_session_mut().unwrap();
-    let counter_a = session_a.current_send_counter();
-    let header_a = build_established_header(their_index_b, counter_a, 0, inner_a.len() as u16);
-    let ciphertext_a = session_a.encrypt_with_aad(&inner_a, &header_a).unwrap();
+    let (header_a, ciphertext_a) = {
+        let mut peer_b = node_a.get_peer_mut(&peer_b_node_addr).unwrap();
+        let their_index_b = peer_b.their_index().expect("A should know B's index");
+        let session_a = peer_b.noise_session_mut().unwrap();
+        let counter_a = session_a.current_send_counter();
+        let header_a =
+            build_established_header(their_index_b, counter_a, 0, inner_a.len() as u16);
+        let ciphertext_a = session_a.encrypt_with_aad(&inner_a, &header_a).unwrap();
+        (header_a, ciphertext_a)
+    };
 
     let wire_encrypted = build_encrypted(&header_a, &ciphertext_a);
-    let transport = node_a.transports.get(&transport_id_a).unwrap();
-    transport
-        .send(&remote_addr_b, &wire_encrypted)
-        .await
-        .expect("Failed to send encrypted frame");
+    {
+        let transport = node_a.transports.get(&transport_id_a).unwrap();
+        transport
+            .send(&remote_addr_b, &wire_encrypted)
+            .await
+            .expect("Failed to send encrypted frame");
+    }
 
     // B receives and decrypts
     let encrypted_packet_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
@@ -185,30 +195,38 @@ async fn test_two_node_handshake_udp() {
     node_b.handle_encrypted_frame(encrypted_packet_b).await;
 
     // Verify B's peer was touched (last_seen updated)
-    let peer_a = node_b.get_peer(&peer_a_node_addr).unwrap();
-    assert!(
-        peer_a.is_healthy(),
-        "Peer A on B should still be healthy after receiving encrypted frame"
-    );
+    {
+        let peer_a = node_b.get_peer(&peer_a_node_addr).unwrap();
+        assert!(
+            peer_a.is_healthy(),
+            "Peer A on B should still be healthy after receiving encrypted frame"
+        );
+    }
 
     // === Phase 5: Encrypted frame B → A ===
 
     // Prepend inner header (timestamp + msg_type) as the real send path does
     let msg_b = b"\x10test from B"; // msg_type 0x10 (TreeAnnounce) + dummy payload
     let inner_b = prepend_inner_header(0, msg_b);
-    let peer_a = node_b.get_peer_mut(&peer_a_node_addr).unwrap();
-    let their_index_a = peer_a.their_index().expect("B should know A's index");
-    let session_b = peer_a.noise_session_mut().unwrap();
-    let counter_b = session_b.current_send_counter();
-    let header_b = build_established_header(their_index_a, counter_b, 0, inner_b.len() as u16);
-    let ciphertext_b = session_b.encrypt_with_aad(&inner_b, &header_b).unwrap();
+    let (header_b, ciphertext_b) = {
+        let mut peer_a = node_b.get_peer_mut(&peer_a_node_addr).unwrap();
+        let their_index_a = peer_a.their_index().expect("B should know A's index");
+        let session_b = peer_a.noise_session_mut().unwrap();
+        let counter_b = session_b.current_send_counter();
+        let header_b =
+            build_established_header(their_index_a, counter_b, 0, inner_b.len() as u16);
+        let ciphertext_b = session_b.encrypt_with_aad(&inner_b, &header_b).unwrap();
+        (header_b, ciphertext_b)
+    };
 
     let wire_encrypted_b = build_encrypted(&header_b, &ciphertext_b);
-    let transport = node_b.transports.get(&transport_id_b).unwrap();
-    transport
-        .send(&remote_addr_a, &wire_encrypted_b)
-        .await
-        .expect("Failed to send encrypted frame B→A");
+    {
+        let transport = node_b.transports.get(&transport_id_b).unwrap();
+        transport
+            .send(&remote_addr_a, &wire_encrypted_b)
+            .await
+            .expect("Failed to send encrypted frame B→A");
+    }
 
     // A receives and decrypts
     let encrypted_packet_a = timeout(Duration::from_secs(1), packet_rx_a.recv())
@@ -219,11 +237,13 @@ async fn test_two_node_handshake_udp() {
     node_a.handle_encrypted_frame(encrypted_packet_a).await;
 
     // Verify A's peer was touched
-    let peer_b = node_a.get_peer(&peer_b_node_addr).unwrap();
-    assert!(
-        peer_b.is_healthy(),
-        "Peer B on A should still be healthy after receiving encrypted frame"
-    );
+    {
+        let peer_b = node_a.get_peer(&peer_b_node_addr).unwrap();
+        assert!(
+            peer_b.is_healthy(),
+            "Peer B on A should still be healthy after receiving encrypted frame"
+        );
+    }
 
     // Clean up transports
     for (_, t) in node_a.transports.iter_mut() {
@@ -354,18 +374,21 @@ async fn test_run_rx_loop_handshake() {
         1,
         "Node B should have 1 peer after rx loop processed msg1"
     );
-    let peer_a_on_b = node_b
-        .get_peer(&peer_a_node_addr)
-        .expect("Node B should have peer A");
-    assert!(
-        peer_a_on_b.has_session(),
-        "Peer A on B should have NoiseSession"
-    );
-    let our_index_b = peer_a_on_b.our_index().expect("B should have our_index");
-    assert!(
-        peer_a_on_b.their_index().is_some(),
-        "B should have their_index"
-    );
+    let our_index_b = {
+        let peer_a_on_b = node_b
+            .get_peer(&peer_a_node_addr)
+            .expect("Node B should have peer A");
+        assert!(
+            peer_a_on_b.has_session(),
+            "Peer A on B should have NoiseSession"
+        );
+        let our_index_b = peer_a_on_b.our_index().expect("B should have our_index");
+        assert!(
+            peer_a_on_b.their_index().is_some(),
+            "B should have their_index"
+        );
+        our_index_b
+    };
     assert!(
         node_b
             .peers_by_index
@@ -393,22 +416,24 @@ async fn test_run_rx_loop_handshake() {
         1,
         "Node A should have 1 peer after rx loop processed msg2"
     );
-    let peer_b_on_a = node_a
-        .get_peer(&peer_b_node_addr)
-        .expect("Node A should have peer B");
-    assert!(
-        peer_b_on_a.has_session(),
-        "Peer B on A should have NoiseSession"
-    );
-    assert_eq!(
-        peer_b_on_a.our_index(),
-        Some(our_index_a),
-        "Peer B on A should have our_index matching what we allocated"
-    );
-    assert!(
-        peer_b_on_a.their_index().is_some(),
-        "A should know B's index"
-    );
+    {
+        let peer_b_on_a = node_a
+            .get_peer(&peer_b_node_addr)
+            .expect("Node A should have peer B");
+        assert!(
+            peer_b_on_a.has_session(),
+            "Peer B on A should have NoiseSession"
+        );
+        assert_eq!(
+            peer_b_on_a.our_index(),
+            Some(our_index_a),
+            "Peer B on A should have our_index matching what we allocated"
+        );
+        assert!(
+            peer_b_on_a.their_index().is_some(),
+            "A should know B's index"
+        );
+    }
     assert!(
         node_a
             .peers_by_index
@@ -625,17 +650,19 @@ async fn test_cross_connection_both_initiate() {
         "Node B should have exactly 1 peer after cross-connection"
     );
 
-    let peer_b_on_a = node_a
-        .get_peer(&peer_b_node_addr)
-        .expect("A should have peer B");
-    let peer_a_on_b = node_b
-        .get_peer(&peer_a_node_addr)
-        .expect("B should have peer A");
+    {
+        let peer_b_on_a = node_a
+            .get_peer(&peer_b_node_addr)
+            .expect("A should have peer B");
+        let peer_a_on_b = node_b
+            .get_peer(&peer_a_node_addr)
+            .expect("B should have peer A");
 
-    assert!(peer_b_on_a.has_session(), "Peer B on A should have session");
-    assert!(peer_a_on_b.has_session(), "Peer A on B should have session");
-    assert!(peer_b_on_a.can_send(), "Peer B on A should be sendable");
-    assert!(peer_a_on_b.can_send(), "Peer A on B should be sendable");
+        assert!(peer_b_on_a.has_session(), "Peer B on A should have session");
+        assert!(peer_a_on_b.has_session(), "Peer A on B should have session");
+        assert!(peer_b_on_a.can_send(), "Peer B on A should be sendable");
+        assert!(peer_a_on_b.can_send(), "Peer A on B should be sendable");
+    }
 
     // Clean up transports
     for (_, t) in node_a.transports.iter_mut() {
@@ -1107,10 +1134,11 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     let peer_full = crate::Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey(peer_full.pubkey());
     let peer_node_addr = *peer_identity.node_addr();
-    let mut peer = ActivePeer::new(peer_identity, link_id, 1000);
+    let peer = ActivePeer::new(peer_identity, link_id, 1000);
     let numeric_addr = TransportAddr::from_string("100.64.0.5:2121");
     peer.set_current_addr(transport_id, numeric_addr.clone());
-    node.peers.insert(peer_node_addr, peer);
+    node.peers
+        .insert(peer_node_addr, crate::peer::active_peer_slot(peer));
 
     // Sanity: legacy carve-out still works for the hostname-form lookup.
     assert!(node.should_admit_msg1(transport_id, &hostname_addr));

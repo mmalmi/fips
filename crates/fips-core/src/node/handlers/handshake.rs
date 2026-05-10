@@ -47,7 +47,8 @@ impl Node {
         {
             return true;
         }
-        if self.peers.values().any(|p| {
+        if self.peers.values().any(|slot| {
+            let p = crate::peer::peer_read(slot);
             p.transport_id() == Some(transport_id)
                 && p.current_addr().as_ref() == Some(remote_addr)
         }) {
@@ -111,7 +112,10 @@ impl Node {
         {
             if link.direction() == LinkDirection::Inbound {
                 // Check if this link belongs to an already-promoted active peer
-                let is_active_peer = self.peers.values().any(|p| p.link_id() == existing_link_id);
+                let is_active_peer = self
+                    .peers
+                    .values()
+                    .any(|slot| crate::peer::peer_read(slot).link_id() == existing_link_id);
 
                 if is_active_peer {
                     // Possible restart — fall through to decrypt and check epoch
@@ -147,7 +151,10 @@ impl Node {
                 // peer, this may be a rekey msg1 (same epoch) or a
                 // restart (different epoch). Set possible_restart to enable
                 // the epoch/rekey check below.
-                let is_active_peer = self.peers.values().any(|p| p.link_id() == existing_link_id);
+                let is_active_peer = self
+                    .peers
+                    .values()
+                    .any(|slot| crate::peer::peer_read(slot).link_id() == existing_link_id);
                 if is_active_peer {
                     possible_restart = true;
                 } else {
@@ -213,9 +220,30 @@ impl Node {
         // If we fell through from the addr_to_link check above with
         // possible_restart=true, we now have the decrypted epoch from msg1.
         // Compare it against the stored epoch for this peer.
-        if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
+        if possible_restart && self.peers.contains_key(&peer_node_addr) {
+            // Snapshot fields up front so the read guard is dropped
+            // before any `.await` (RwLockReadGuard isn't `Send`).
+            let snapshot = {
+                let slot = self.peers.get(&peer_node_addr).unwrap();
+                let existing_peer = crate::peer::peer_read(slot);
+                (
+                    existing_peer.remote_epoch(),
+                    existing_peer.session_established_at().elapsed().as_secs(),
+                    existing_peer.has_session(),
+                    existing_peer.is_healthy(),
+                    existing_peer.pending_new_session().is_some(),
+                    existing_peer.rekey_in_progress(),
+                )
+            };
+            let (
+                existing_epoch,
+                session_age_secs,
+                has_session,
+                is_healthy,
+                has_pending_session,
+                rekey_in_progress,
+            ) = snapshot;
             let new_epoch = conn.remote_epoch();
-            let existing_epoch = existing_peer.remote_epoch();
 
             match (existing_epoch, new_epoch) {
                 (Some(existing), Some(new)) if existing != new => {
@@ -231,24 +259,15 @@ impl Node {
                 }
                 _ => {
                     // Same epoch (or no epoch stored).
-                    // If the peer has an active session and rekey is enabled,
-                    // this is a rekey msg1 (not a duplicate initial msg1).
-                    // Guard: the session must be at least 30s old to avoid
-                    // misidentifying a cross-connection msg1 as a rekey.
-                    // During simultaneous connection, both sides promote
-                    // within the same tick and the peer's msg1 arrives
-                    // immediately — a genuine rekey can't fire that fast.
-                    let session_age_secs =
-                        existing_peer.session_established_at().elapsed().as_secs();
                     if self.config.node.rekey.enabled
-                        && existing_peer.has_session()
-                        && existing_peer.is_healthy()
+                        && has_session
+                        && is_healthy
                         && session_age_secs >= 30
                     {
                         // Guard: already have a pending session from a completed
                         // rekey (waiting for K-bit cutover). Don't overwrite it
                         // with a new handshake — drop this msg1.
-                        if existing_peer.pending_new_session().is_some() {
+                        if has_pending_session {
                             debug!(
                                 peer = %self.peer_display_name(&peer_node_addr),
                                 "Rekey msg1 received but already have pending session, dropping"
@@ -262,7 +281,7 @@ impl Node {
                         // Dual-initiation detection: both sides sent msg1
                         // simultaneously. Apply tie-breaker — smaller NodeAddr
                         // wins as initiator (same as cross-connection resolution).
-                        if existing_peer.rekey_in_progress() {
+                        if rekey_in_progress {
                             let our_addr = self.identity.node_addr();
                             if our_addr < &peer_node_addr {
                                 // We win as initiator — drop their msg1.
@@ -282,14 +301,17 @@ impl Node {
                                 peer = %self.peer_display_name(&peer_node_addr),
                                 "Dual rekey initiation: we lose (larger addr), abandoning ours"
                             );
-                            if let Some(peer) = self.peers.get_mut(&peer_node_addr)
-                                && let Some(idx) = peer.abandon_rekey()
-                            {
-                                if let Some(tid) = peer.transport_id() {
-                                    self.peers_by_index.remove(&(tid, idx.as_u32()));
-                                    self.pending_outbound.remove(&(tid, idx.as_u32()));
+                            if let Some(slot2) = self.peers.get(&peer_node_addr).cloned() {
+                                let mut peer = crate::peer::peer_write(&slot2);
+                                if let Some(idx) = peer.abandon_rekey() {
+                                    let tid = peer.transport_id();
+                                    drop(peer);
+                                    if let Some(tid) = tid {
+                                        self.peers_by_index.remove(&(tid, idx.as_u32()));
+                                        self.pending_outbound.remove(&(tid, idx.as_u32()));
+                                    }
+                                    let _ = self.index_allocator.free(idx);
                                 }
-                                let _ = self.index_allocator.free(idx);
                             }
                             // Fall through to respond as responder
                         }
@@ -341,7 +363,8 @@ impl Node {
                         }
 
                         // Store pending session on the existing peer
-                        if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                        if let Some(slot) = self.peers.get(&peer_node_addr) {
+                            let mut peer = crate::peer::peer_write(slot);
                             peer.set_pending_session(
                                 noise_session,
                                 our_new_index,
@@ -368,7 +391,15 @@ impl Node {
                     }
 
                     // Not a rekey — duplicate msg1. Resend stored msg2.
-                    if let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
+                    let msg2_bytes = self
+                        .peers
+                        .get(&peer_node_addr)
+                        .and_then(|slot| {
+                            crate::peer::peer_read(slot)
+                                .handshake_msg2()
+                                .map(|m| m.to_vec())
+                        });
+                    if let Some(msg2) = msg2_bytes
                         && let Some(transport) = self.transports.get(&packet.transport_id)
                     {
                         match transport.send(&packet.remote_addr, &msg2).await {
@@ -476,8 +507,8 @@ impl Node {
                 match result {
                     PromotionResult::Promoted(node_addr) => {
                         // Store msg2 on peer for resend on duplicate msg1
-                        if let Some(peer) = self.peers.get_mut(&node_addr) {
-                            peer.set_handshake_msg2(wire_msg2.clone());
+                        if let Some(slot) = self.peers.get(&node_addr) {
+                            crate::peer::peer_write(slot).set_handshake_msg2(wire_msg2.clone());
                         }
                         debug!(
                             peer = %self.peer_display_name(&node_addr),
@@ -498,8 +529,8 @@ impl Node {
                         node_addr,
                     } => {
                         // Store msg2 on peer for resend on duplicate msg1
-                        if let Some(peer) = self.peers.get_mut(&node_addr) {
-                            peer.set_handshake_msg2(wire_msg2.clone());
+                        if let Some(slot) = self.peers.get(&node_addr) {
+                            crate::peer::peer_write(slot).set_handshake_msg2(wire_msg2.clone());
                         }
                         // Close the losing TCP connection (no-op for connectionless)
                         if let Some(loser_link) = self.links.get(&loser_link_id) {
@@ -570,7 +601,8 @@ impl Node {
             return Some(msg2.to_vec());
         }
         // Check promoted peer
-        for peer in self.peers.values() {
+        for slot in self.peers.values() {
+            let peer = crate::peer::peer_read(slot);
             if peer.link_id() == link_id
                 && let Some(msg2) = peer.handshake_msg2()
             {
@@ -613,7 +645,8 @@ impl Node {
             let noise_msg2 = &packet.data[header.noise_msg2_offset..];
 
             // Find peer with rekey in progress for this index
-            let peer_addr = self.peers.iter().find_map(|(addr, peer)| {
+            let peer_addr = self.peers.iter().find_map(|(addr, slot)| {
+                let peer = crate::peer::peer_read(slot);
                 if peer.rekey_in_progress() && peer.rekey_our_index() == Some(header.receiver_idx) {
                     Some(*addr)
                 } else {
@@ -625,13 +658,16 @@ impl Node {
                 let display_name = self.peer_display_name(&peer_node_addr);
 
                 // Complete the rekey handshake on the ActivePeer
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                if let Some(slot) = self.peers.get(&peer_node_addr) {
+                    let mut peer = crate::peer::peer_write(slot);
                     match peer.complete_rekey_msg2(noise_msg2) {
                         Ok(session) => {
                             let our_index = peer.rekey_our_index().unwrap_or(header.receiver_idx);
                             peer.set_pending_session(session, our_index, header.sender_idx);
+                            let transport_id = peer.transport_id();
+                            drop(peer);
 
-                            if let Some(transport_id) = peer.transport_id() {
+                            if let Some(transport_id) = transport_id {
                                 self.peers_by_index
                                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
                             }
@@ -650,7 +686,9 @@ impl Node {
                                 "Rekey msg2 processing failed"
                             );
                             if let Some(idx) = peer.abandon_rekey() {
-                                if let Some(tid) = peer.transport_id() {
+                                let tid = peer.transport_id();
+                                drop(peer);
+                                if let Some(tid) = tid {
                                     self.peers_by_index.remove(&(tid, idx.as_u32()));
                                 }
                                 let _ = self.index_allocator.free(idx);
@@ -774,16 +812,18 @@ impl Node {
                     }
                 };
 
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                if let Some(slot) = self.peers.get(&peer_node_addr) {
+                    let mut peer = crate::peer::peer_write(slot);
                     let suppressed = peer.replay_suppressed_count();
                     let old_our_index = peer.replace_session(
                         outbound_session,
                         outbound_our_index,
                         header.sender_idx,
                     );
+                    let transport_id = peer.transport_id().unwrap();
+                    drop(peer);
 
                     // Update peers_by_index: remove old inbound index, add outbound
-                    let transport_id = peer.transport_id().unwrap();
                     if let Some(old_idx) = old_our_index {
                         self.peers_by_index
                             .remove(&(transport_id, old_idx.as_u32()));
@@ -819,7 +859,8 @@ impl Node {
                 // which becomes stale after the peer swaps.
                 let outbound_our_index = conn.our_index();
 
-                if let Some(peer) = self.peers.get(&peer_node_addr) {
+                if let Some(slot) = self.peers.get(&peer_node_addr) {
+                    let peer = crate::peer::peer_read(slot);
                     debug!(
                         peer = %self.peer_display_name(&peer_node_addr),
                         kept_their_index = ?peer.their_index(),
@@ -990,8 +1031,8 @@ impl Node {
         let is_outbound = connection.is_outbound();
 
         // Check for cross-connection
-        if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
-            let existing_link_id = existing_peer.link_id();
+        if let Some(existing_slot) = self.peers.get(&peer_node_addr) {
+            let existing_link_id = crate::peer::peer_read(existing_slot).link_id();
 
             // Determine which connection wins
             let this_wins =
@@ -999,13 +1040,14 @@ impl Node {
 
             if this_wins {
                 // This connection wins, replace the existing peer
-                let old_peer = self.peers.remove(&peer_node_addr).unwrap();
+                let old_slot = self.peers.remove(&peer_node_addr).unwrap();
+                let old_peer = crate::peer::peer_read(&old_slot);
                 let loser_link_id = old_peer.link_id();
+                let old_tid_idx = (old_peer.transport_id(), old_peer.our_index());
+                drop(old_peer);
 
                 // Clean up old peer's index from peers_by_index
-                if let (Some(old_tid), Some(old_idx)) =
-                    (old_peer.transport_id(), old_peer.our_index())
-                {
+                if let (Some(old_tid), Some(old_idx)) = old_tid_idx {
                     self.peers_by_index.remove(&(old_tid, old_idx.as_u32()));
                     let _ = self.index_allocator.free(old_idx);
                 }
@@ -1030,7 +1072,8 @@ impl Node {
                     self.config.node.tree.announce_min_interval_ms,
                 );
 
-                self.peers.insert(peer_node_addr, new_peer);
+                self.peers
+                    .insert(peer_node_addr, crate::peer::active_peer_slot(new_peer));
                 self.peers_by_index
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
                 self.retry_pending.remove(&peer_node_addr);
@@ -1100,12 +1143,10 @@ impl Node {
             }
 
             // Preserve tree announce rate-limit state from old peer (if reconnecting).
-            // Without this, reconnection resets the rate limit window to zero,
-            // allowing an immediate announce that can feed an announce loop.
             let old_announce_ts = self
                 .peers
                 .get(&peer_node_addr)
-                .map(|p| p.last_tree_announce_sent_ms());
+                .map(|slot| crate::peer::peer_read(slot).last_tree_announce_sent_ms());
 
             self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
 
@@ -1129,7 +1170,8 @@ impl Node {
                 new_peer.set_last_tree_announce_sent_ms(ts);
             }
 
-            self.peers.insert(peer_node_addr, new_peer);
+            self.peers
+                .insert(peer_node_addr, crate::peer::active_peer_slot(new_peer));
             self.peers_by_index
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
             self.retry_pending.remove(&peer_node_addr);

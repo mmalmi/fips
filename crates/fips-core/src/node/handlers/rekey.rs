@@ -43,13 +43,13 @@ impl Node {
         let mut peers_to_drain: Vec<NodeAddr> = Vec::new();
         let mut peers_to_rekey: Vec<NodeAddr> = Vec::new();
 
-        for (node_addr, peer) in &self.peers {
+        for (node_addr, slot) in &self.peers {
+            let peer = crate::peer::peer_read(slot);
             if !peer.has_session() || !peer.is_healthy() {
                 continue;
             }
 
-            // 1. Initiator-side cutover: we completed a rekey and have
-            //    a pending session ready. Cut over on the next tick.
+            // 1. Initiator-side cutover.
             if peer.pending_new_session().is_some() && !peer.rekey_in_progress() {
                 peers_to_cutover.push(*node_addr);
                 continue;
@@ -81,42 +81,45 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in peers_to_cutover {
-            if let Some(peer) = self.peers.get_mut(&node_addr)
-                && let Some(_old_our_index) = peer.cutover_to_new_session()
-            {
-                // New index was pre-registered in peers_by_index during
-                // msg2 handling (handshake.rs). Verify, don't duplicate.
-                debug_assert!(
-                    peer.transport_id().is_some()
-                        && peer.our_index().is_some()
-                        && self.peers_by_index.contains_key(&(
-                            peer.transport_id().unwrap(),
-                            peer.our_index().unwrap().as_u32()
-                        )),
-                    "peers_by_index should contain pre-registered new index after cutover"
-                );
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "Rekey cutover complete (initiator), K-bit flipped"
-                );
+            if let Some(slot) = self.peers.get(&node_addr) {
+                let mut peer = crate::peer::peer_write(slot);
+                if let Some(_old_our_index) = peer.cutover_to_new_session() {
+                    debug_assert!(
+                        peer.transport_id().is_some()
+                            && peer.our_index().is_some()
+                            && self.peers_by_index.contains_key(&(
+                                peer.transport_id().unwrap(),
+                                peer.our_index().unwrap().as_u32()
+                            )),
+                        "peers_by_index should contain pre-registered new index after cutover"
+                    );
+                    drop(peer);
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        "Rekey cutover complete (initiator), K-bit flipped"
+                    );
+                }
             }
         }
 
         // Execute drain completion
         for node_addr in peers_to_drain {
-            if let Some(peer) = self.peers.get_mut(&node_addr)
-                && let Some(old_our_index) = peer.complete_drain()
-            {
-                if let Some(transport_id) = peer.transport_id() {
-                    self.peers_by_index
-                        .remove(&(transport_id, old_our_index.as_u32()));
+            if let Some(slot) = self.peers.get(&node_addr) {
+                let mut peer = crate::peer::peer_write(slot);
+                if let Some(old_our_index) = peer.complete_drain() {
+                    let transport_id = peer.transport_id();
+                    drop(peer);
+                    if let Some(transport_id) = transport_id {
+                        self.peers_by_index
+                            .remove(&(transport_id, old_our_index.as_u32()));
+                    }
+                    let _ = self.index_allocator.free(old_our_index);
+                    trace!(
+                        peer = %self.peer_display_name(&node_addr),
+                        old_index = %old_our_index,
+                        "Drain complete, previous session erased"
+                    );
                 }
-                let _ = self.index_allocator.free(old_our_index);
-                trace!(
-                    peer = %self.peer_display_name(&node_addr),
-                    old_index = %old_our_index,
-                    "Drain complete, previous session erased"
-                );
             }
         }
 
@@ -132,21 +135,27 @@ impl Node {
     /// link (same transport, same remote address), and stores the handshake
     /// state on the ActivePeer. No new Link or PeerConnection is created.
     async fn initiate_rekey(&mut self, node_addr: &NodeAddr) {
-        let peer = match self.peers.get(node_addr) {
-            Some(p) => p,
+        let slot = match self.peers.get(node_addr) {
+            Some(p) => p.clone(),
             None => return,
         };
 
-        let transport_id = match peer.transport_id() {
-            Some(t) => t,
-            None => return,
+        // Snapshot peer state in a tight scope so the read guard is
+        // dropped before any `.await`. RwLockReadGuard isn't `Send`.
+        let (transport_id, remote_addr, link_id, peer_pubkey) = {
+            let peer = crate::peer::peer_read(&slot);
+            let transport_id = match peer.transport_id() {
+                Some(t) => t,
+                None => return,
+            };
+            let remote_addr = match peer.current_addr() {
+                Some(a) => a,
+                None => return,
+            };
+            let link_id = peer.link_id();
+            let peer_pubkey = peer.identity().pubkey_full();
+            (transport_id, remote_addr, link_id, peer_pubkey)
         };
-        let remote_addr = match peer.current_addr() {
-            Some(a) => a.clone(),
-            None => return,
-        };
-        let link_id = peer.link_id();
-        let peer_pubkey = peer.identity().pubkey_full();
 
         // Allocate a new session index for the rekey
         let our_index = match self.index_allocator.allocate() {
@@ -206,8 +215,13 @@ impl Node {
         // Store handshake state on the ActivePeer (not a separate PeerConnection)
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
         let now_ms = Self::now_ms();
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            peer.set_rekey_state(hs, our_index, wire_msg1, now_ms + resend_interval);
+        if let Some(slot) = self.peers.get(node_addr) {
+            crate::peer::peer_write(slot).set_rekey_state(
+                hs,
+                our_index,
+                wire_msg1,
+                now_ms + resend_interval,
+            );
         }
 
         // Register in pending_outbound for msg2 dispatch (maps to existing link)
@@ -229,7 +243,8 @@ impl Node {
         // Collect peers needing action
         let mut to_resend: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
 
-        for (node_addr, peer) in &self.peers {
+        for (node_addr, slot) in &self.peers {
+            let peer = crate::peer::peer_read(slot);
             if !peer.rekey_in_progress() || peer.rekey_msg1().is_none() {
                 continue;
             }
@@ -240,10 +255,13 @@ impl Node {
 
         for (node_addr, msg1_bytes) in to_resend {
             let (transport_id, remote_addr) = match self.peers.get(&node_addr) {
-                Some(p) => match (p.transport_id(), p.current_addr()) {
-                    (Some(tid), Some(addr)) => (tid, addr.clone()),
-                    _ => continue,
-                },
+                Some(slot) => {
+                    let p = crate::peer::peer_read(slot);
+                    match (p.transport_id(), p.current_addr()) {
+                        (Some(tid), Some(addr)) => (tid, addr),
+                        _ => continue,
+                    }
+                }
                 None => continue,
             };
 
@@ -254,8 +272,8 @@ impl Node {
             };
 
             if sent {
-                if let Some(peer) = self.peers.get_mut(&node_addr) {
-                    peer.set_msg1_next_resend(now_ms + interval_ms);
+                if let Some(slot) = self.peers.get(&node_addr) {
+                    crate::peer::peer_write(slot).set_msg1_next_resend(now_ms + interval_ms);
                 }
                 trace!(
                     peer = %self.peer_display_name(&node_addr),

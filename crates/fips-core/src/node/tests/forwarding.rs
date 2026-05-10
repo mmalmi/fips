@@ -688,8 +688,7 @@ async fn test_ce_relay_through_forwarding() {
     let ce_before = nodes[2]
         .node
         .get_peer(&node1_addr)
-        .and_then(|p| p.mmp())
-        .map(|m| m.receiver.ecn_ce_count())
+        .and_then(|p| p.mmp().map(|m| m.receiver.ecn_ce_count()))
         .unwrap_or(0);
 
     // Build a SessionDatagram from node 0 to node 2
@@ -717,8 +716,7 @@ async fn test_ce_relay_through_forwarding() {
     let ce_after = nodes[2]
         .node
         .get_peer(&node1_addr)
-        .and_then(|p| p.mmp())
-        .map(|m| m.receiver.ecn_ce_count())
+        .and_then(|p| p.mmp().map(|m| m.receiver.ecn_ce_count()))
         .unwrap_or(0);
 
     assert!(

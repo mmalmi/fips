@@ -293,7 +293,7 @@ impl Node {
         } else {
             // Fallback: try greedy tree routing toward origin
             match self.find_next_hop(&request.origin) {
-                Some(peer) => *peer.node_addr(),
+                Some(addr) => addr,
                 None => {
                     debug!(
                         origin = %self.peer_display_name(&request.origin),
@@ -350,8 +350,10 @@ impl Node {
         let forward_to: Vec<NodeAddr> = self
             .peers
             .iter()
-            .filter(|(addr, peer)| {
-                **addr != *from && self.is_tree_peer(addr) && peer.may_reach(&request.target)
+            .filter(|(addr, slot)| {
+                **addr != *from
+                    && self.is_tree_peer(addr)
+                    && crate::peer::peer_read(slot).may_reach(&request.target)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -363,18 +365,20 @@ impl Node {
                 if self.config.node.routing.mode == RoutingMode::ReplyLearned {
                     self.peers
                         .iter()
-                        .filter(|(addr, peer)| {
-                            **addr != *from && self.is_tree_peer(addr) && peer.can_send()
+                        .filter(|(addr, slot)| {
+                            **addr != *from
+                                && self.is_tree_peer(addr)
+                                && crate::peer::peer_read(slot).can_send()
                         })
                         .map(|(addr, _)| *addr)
                         .collect()
                 } else {
                     self.peers
                         .iter()
-                        .filter(|(addr, peer)| {
+                        .filter(|(addr, slot)| {
                             **addr != *from
                                 && !self.is_tree_peer(addr)
-                                && peer.may_reach(&request.target)
+                                && crate::peer::peer_read(slot).may_reach(&request.target)
                         })
                         .map(|(addr, _)| *addr)
                         .collect()
@@ -443,7 +447,9 @@ impl Node {
         let mut peer_addrs: Vec<NodeAddr> = self
             .peers
             .iter()
-            .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.may_reach(target))
+            .filter(|(addr, slot)| {
+                self.is_tree_peer(addr) && crate::peer::peer_read(slot).may_reach(target)
+            })
             .map(|(addr, _)| *addr)
             .collect();
         let used_fallback =
@@ -452,7 +458,9 @@ impl Node {
             peer_addrs = self
                 .peers
                 .iter()
-                .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.can_send())
+                .filter(|(addr, slot)| {
+                    self.is_tree_peer(addr) && crate::peer::peer_read(slot).can_send()
+                })
                 .map(|(addr, _)| *addr)
                 .collect();
         }
@@ -523,7 +531,10 @@ impl Node {
         // Bloom filter pre-check: original routing skips if no peer's filter
         // contains the target. Reply-learned mode intentionally allows a
         // first-contact tree flood when bloom reachability is missing.
-        let reachable = self.peers.values().any(|peer| peer.may_reach(dest));
+        let reachable = self
+            .peers
+            .values()
+            .any(|slot| crate::peer::peer_read(slot).may_reach(dest));
         if !reachable && self.config.node.routing.mode != RoutingMode::ReplyLearned {
             self.stats_mut().discovery.req_bloom_miss += 1;
             self.discovery_backoff.record_failure(dest);
@@ -659,16 +670,18 @@ impl Node {
         response: &mut LookupResponse,
         next_hop: &NodeAddr,
     ) {
-        if let Some(peer) = self.peers.get(next_hop)
-            && let Some(tid) = peer.transport_id()
-            && let Some(transport) = self.transports.get(&tid)
-        {
-            let link_mtu = if let Some(addr) = peer.current_addr() {
-                transport.link_mtu(&addr)
-            } else {
-                transport.mtu()
-            };
-            response.path_mtu = response.path_mtu.min(link_mtu);
+        if let Some(slot) = self.peers.get(next_hop) {
+            let peer = crate::peer::peer_read(slot);
+            if let Some(tid) = peer.transport_id()
+                && let Some(transport) = self.transports.get(&tid)
+            {
+                let link_mtu = if let Some(addr) = peer.current_addr() {
+                    transport.link_mtu(&addr)
+                } else {
+                    transport.mtu()
+                };
+                response.path_mtu = response.path_mtu.min(link_mtu);
+            }
         }
     }
 

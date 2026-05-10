@@ -34,7 +34,9 @@ use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::config::RoutingMode;
 use crate::node::session::SessionEntry;
-use crate::peer::{ActivePeer, PeerConnection};
+use crate::peer::{
+    ActivePeer, ActivePeerSlot, PeerConnection, active_peer_slot, peer_read, peer_write,
+};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
@@ -406,9 +408,13 @@ pub struct Node {
     connections: HashMap<LinkId, PeerConnection>,
 
     // === Peers (Active Phase) ===
-    /// Authenticated peers.
-    /// Indexed by NodeAddr (verified identity).
-    peers: HashMap<NodeAddr, ActivePeer>,
+    /// Authenticated peers, each behind `Arc<RwLock<...>>` (see
+    /// `ActivePeerSlot`). Hot-path methods on ActivePeer are `&self`
+    /// after step 4 of the peer-actor refactor — `peer_read(slot)`
+    /// suffices for them. The few residual `&mut self` methods
+    /// (handshake/rekey/tree/bloom updates, off the per-packet path)
+    /// take `peer_write(slot)`.
+    peers: HashMap<NodeAddr, ActivePeerSlot>,
 
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
@@ -1131,8 +1137,8 @@ impl Node {
         if let Some(name) = self.peer_aliases.get(addr) {
             return name.clone();
         }
-        if let Some(peer) = self.peers.get(addr) {
-            return peer.identity().short_npub();
+        if let Some(slot) = self.peers.get(addr) {
+            return crate::peer::peer_read(slot).identity().short_npub();
         }
         if let Some(entry) = self.sessions.get(addr) {
             let (xonly, _) = entry.remote_pubkey().x_only_public_key();
@@ -1264,23 +1270,26 @@ impl Node {
         // Node.estimated_mesh_size is already Option<u64> and consumers
         // (control socket, fipstop, periodic debug log) handle None.
         if !is_root
-            && let Some(parent) = self.peers.get(&parent_id)
-            && let Some(filter) = parent.inbound_filter()
+            && let Some(slot) = self.peers.get(&parent_id)
         {
-            match filter.estimated_count(max_fpr) {
-                Some(n) => {
-                    total += n;
-                    has_data = true;
-                }
-                None => {
-                    self.estimated_mesh_size = None;
-                    return;
+            let parent = crate::peer::peer_read(slot);
+            if let Some(filter) = parent.inbound_filter() {
+                match filter.estimated_count(max_fpr) {
+                    Some(n) => {
+                        total += n;
+                        has_data = true;
+                    }
+                    None => {
+                        self.estimated_mesh_size = None;
+                        return;
+                    }
                 }
             }
         }
 
         // Children's filters: each child's subtree is disjoint
-        for (peer_addr, peer) in &self.peers {
+        for (peer_addr, slot) in &self.peers {
+            let peer = crate::peer::peer_read(slot);
             if let Some(decl) = self.tree_state.peer_declaration(peer_addr)
                 && *decl.parent_id() == my_addr
             {
@@ -1364,7 +1373,11 @@ impl Node {
         let peers_with_mmp: Vec<f64> = self
             .peers
             .values()
-            .filter_map(|p| p.mmp().map(|m| m.metrics.loss_rate()))
+            .filter_map(|slot| {
+                crate::peer::peer_read(slot)
+                    .mmp()
+                    .map(|m| m.metrics.loss_rate())
+            })
             .collect();
         let loss_rate = if peers_with_mmp.is_empty() {
             0.0
@@ -1389,7 +1402,8 @@ impl Node {
         let peer_snaps: Vec<stats_history::PeerSnapshot> = self
             .peers
             .values()
-            .map(|p| {
+            .map(|slot| {
+                let p = crate::peer::peer_read(slot);
                 let stats = p.link_stats();
                 let (srtt_ms, loss_rate, ecn_ce) = match p.mmp() {
                     Some(m) => (
@@ -1574,10 +1588,9 @@ impl Node {
                 .connections
                 .values()
                 .any(|conn| conn.transport_id() == Some(transport_id))
-            || self
-                .peers
-                .values()
-                .any(|peer| peer.transport_id() == Some(transport_id))
+            || self.peers.values().any(|slot| {
+                crate::peer::peer_read(slot).transport_id() == Some(transport_id)
+            })
             || self
                 .pending_connects
                 .iter()
@@ -1645,23 +1658,33 @@ impl Node {
 
     // === Peer Management (Active Phase) ===
 
-    /// Get a peer by NodeAddr.
-    pub fn get_peer(&self, node_addr: &NodeAddr) -> Option<&ActivePeer> {
-        self.peers.get(node_addr)
+    /// Get a read-locked peer by NodeAddr.
+    pub fn get_peer(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<std::sync::RwLockReadGuard<'_, ActivePeer>> {
+        self.peers.get(node_addr).map(crate::peer::peer_read)
     }
 
-    /// Get a mutable peer by NodeAddr.
-    pub fn get_peer_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
-        self.peers.get_mut(node_addr)
+    /// Get a write-locked peer by NodeAddr.
+    pub fn get_peer_mut(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<std::sync::RwLockWriteGuard<'_, ActivePeer>> {
+        self.peers.get(node_addr).map(crate::peer::peer_write)
     }
 
-    /// Remove a peer.
-    pub fn remove_peer(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
+    /// Remove a peer slot. Returns the `Arc<RwLock<ActivePeer>>` so
+    /// callers can extract the owned `ActivePeer` via `Arc::try_unwrap`
+    /// when no other clones are outstanding (e.g. when a per-peer task
+    /// has been joined).
+    pub fn remove_peer(&mut self, node_addr: &NodeAddr) -> Option<ActivePeerSlot> {
         self.peers.remove(node_addr)
     }
 
-    /// Iterate over all peers.
-    pub fn peers(&self) -> impl Iterator<Item = &ActivePeer> {
+    /// Iterate over all peer slots. Caller calls `peer_read(slot)` /
+    /// `peer_write(slot)` to take a lock per peer as needed.
+    pub fn peers(&self) -> impl Iterator<Item = &ActivePeerSlot> {
         self.peers.values()
     }
 
@@ -1677,14 +1700,20 @@ impl Node {
         self.peers.keys()
     }
 
-    /// Iterate over peers that can send traffic.
-    pub fn sendable_peers(&self) -> impl Iterator<Item = &ActivePeer> {
-        self.peers.values().filter(|p| p.can_send())
+    /// Iterate over peer slots that can send traffic. Caller acquires
+    /// a read lock per slot to access the peer.
+    pub fn sendable_peers(&self) -> impl Iterator<Item = &ActivePeerSlot> {
+        self.peers
+            .values()
+            .filter(|slot| crate::peer::peer_read(slot).can_send())
     }
 
     /// Number of peers that can send traffic.
     pub fn sendable_peer_count(&self) -> usize {
-        self.peers.values().filter(|p| p.can_send()).count()
+        self.peers
+            .values()
+            .filter(|slot| crate::peer::peer_read(slot).can_send())
+            .count()
     }
 
     // === End-to-End Sessions ===
@@ -1894,17 +1923,17 @@ impl Node {
     /// cannot make loop-free forwarding decisions. The caller should signal
     /// `CoordsRequired` back to the source when `None` is returned for a
     /// non-local destination.
-    pub fn find_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<&ActivePeer> {
+    pub fn find_next_hop(&mut self, dest_node_addr: &NodeAddr) -> Option<NodeAddr> {
         // 1. Local delivery
         if dest_node_addr == self.node_addr() {
             return None;
         }
 
         // 2. Direct peer
-        if let Some(peer) = self.peers.get(dest_node_addr)
-            && peer.can_send()
+        if let Some(slot) = self.peers.get(dest_node_addr)
+            && crate::peer::peer_read(slot).can_send()
         {
-            return Some(peer);
+            return Some(*dest_node_addr);
         }
 
         let now_ms = Self::now_ms();
@@ -1913,7 +1942,7 @@ impl Node {
             Some(
                 self.peers
                     .iter()
-                    .filter(|(_, peer)| peer.can_send())
+                    .filter(|(_, slot)| crate::peer::peer_read(slot).can_send())
                     .map(|(addr, _)| *addr)
                     .collect::<HashSet<_>>(),
             )
@@ -1921,12 +1950,7 @@ impl Node {
             None
         };
 
-        // 3. Optional reply-learned routing. These entries are not peer
-        // claims; they are local observations of which peer carried traffic
-        // or a verified lookup response back from the destination. Most
-        // packets use weighted multipath over learned routes, but periodic
-        // fallback exploration lets coord/bloom/tree routes discover better
-        // candidates.
+        // 3. Optional reply-learned routing.
         let explore_fallback = sendable_learned_peers.as_ref().is_some_and(|sendable| {
             self.learned_routes.should_explore_fallback(
                 dest_node_addr,
@@ -1940,8 +1964,9 @@ impl Node {
             && let Some(next_hop_addr) =
                 self.learned_routes
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+            && self.peers.contains_key(&next_hop_addr)
         {
-            return self.peers.get(&next_hop_addr);
+            return Some(next_hop_addr);
         }
 
         // Look up cached destination coordinates (required by both bloom and tree paths).
@@ -1954,25 +1979,26 @@ impl Node {
                 && let Some(next_hop_addr) =
                     self.learned_routes
                         .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+                && self.peers.contains_key(&next_hop_addr)
             {
-                return self.peers.get(&next_hop_addr);
+                return Some(next_hop_addr);
             }
             return None;
         };
 
         // 4. Bloom filter candidates — requires dest_coords for loop-free selection.
-        //    If no candidate is strictly closer, fall through to tree routing.
         let coordinate_route_addr = {
-            let candidates: Vec<&ActivePeer> = self.destination_in_filters(dest_node_addr);
+            let candidates: Vec<NodeAddr> = self.destination_in_filters(dest_node_addr);
             if !candidates.is_empty() {
-                self.select_best_candidate(&candidates, &dest_coords)
-                    .map(|peer| *peer.node_addr())
+                self.select_best_candidate_addr(&candidates, &dest_coords)
             } else {
                 None
             }
         };
-        if let Some(next_hop_addr) = coordinate_route_addr {
-            return self.peers.get(&next_hop_addr);
+        if let Some(next_hop_addr) = coordinate_route_addr
+            && self.peers.contains_key(&next_hop_addr)
+        {
+            return Some(next_hop_addr);
         }
 
         // 5. Greedy tree routing fallback
@@ -1982,16 +2008,16 @@ impl Node {
             .filter(|next_hop_id| {
                 self.peers
                     .get(next_hop_id)
-                    .is_some_and(|peer| peer.can_send())
+                    .is_some_and(|slot| crate::peer::peer_read(slot).can_send())
             });
         if let Some(next_hop_addr) = tree_route_addr {
-            return self.peers.get(&next_hop_addr);
+            return Some(next_hop_addr);
         }
         if explore_fallback {
             return sendable_learned_peers.as_ref().and_then(|sendable| {
                 self.learned_routes
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
-                    .and_then(|next_hop_addr| self.peers.get(&next_hop_addr))
+                    .filter(|next_hop_addr| self.peers.contains_key(next_hop_addr))
             });
         }
 
@@ -1999,8 +2025,9 @@ impl Node {
             && let Some(next_hop_addr) =
                 self.learned_routes
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
+            && self.peers.contains_key(&next_hop_addr)
         {
-            return self.peers.get(&next_hop_addr);
+            return Some(next_hop_addr);
         }
 
         None
@@ -2053,16 +2080,20 @@ impl Node {
     /// prevents routing loops).
     ///
     /// Ordering: `(link_cost, distance_to_dest, node_addr)`.
-    fn select_best_candidate<'a>(
-        &'a self,
-        candidates: &[&'a ActivePeer],
+    fn select_best_candidate_addr(
+        &self,
+        candidates: &[NodeAddr],
         dest_coords: &crate::tree::TreeCoordinate,
-    ) -> Option<&'a ActivePeer> {
+    ) -> Option<NodeAddr> {
         let my_distance = self.tree_state.my_coords().distance_to(dest_coords);
 
-        let mut best: Option<(&ActivePeer, f64, usize)> = None;
+        let mut best: Option<(NodeAddr, f64, usize)> = None;
 
-        for &candidate in candidates {
+        for candidate_addr in candidates {
+            let Some(slot) = self.peers.get(candidate_addr) else {
+                continue;
+            };
+            let candidate = crate::peer::peer_read(slot);
             if !candidate.can_send() {
                 continue;
             }
@@ -2081,28 +2112,35 @@ impl Node {
                 continue;
             }
 
+            let candidate_addr_owned = *candidate.node_addr();
+            drop(candidate);
             let dominated = match &best {
                 None => true,
-                Some((_, best_cost, best_dist)) => {
+                Some((best_addr, best_cost, best_dist)) => {
                     cost < *best_cost
                         || (cost == *best_cost && dist < *best_dist)
                         || (cost == *best_cost
                             && dist == *best_dist
-                            && candidate.node_addr() < best.as_ref().unwrap().0.node_addr())
+                            && candidate_addr_owned < *best_addr)
                 }
             };
 
             if dominated {
-                best = Some((candidate, cost, dist));
+                best = Some((candidate_addr_owned, cost, dist));
             }
         }
 
-        best.map(|(peer, _, _)| peer)
+        best.map(|(addr, _, _)| addr)
     }
 
-    /// Check if a destination is in any peer's bloom filter.
-    pub fn destination_in_filters(&self, dest: &NodeAddr) -> Vec<&ActivePeer> {
-        self.peers.values().filter(|p| p.may_reach(dest)).collect()
+    /// Check if a destination is in any peer's bloom filter; returns the
+    /// matching peer node addresses.
+    pub fn destination_in_filters(&self, dest: &NodeAddr) -> Vec<NodeAddr> {
+        self.peers
+            .iter()
+            .filter(|(_, slot)| crate::peer::peer_read(slot).may_reach(dest))
+            .map(|(addr, _)| *addr)
+            .collect()
     }
 
     /// Get the TUN packet sender channel.
@@ -2248,63 +2286,71 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        let peer = self
+        let slot = self
             .peers
-            .get_mut(node_addr)
-            .ok_or(NodeError::PeerNotFound(*node_addr))?;
+            .get(node_addr)
+            .ok_or(NodeError::PeerNotFound(*node_addr))?
+            .clone();
 
-        let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
-            node_addr: *node_addr,
-            reason: "no their_index".into(),
-        })?;
-        let transport_id = peer.transport_id().ok_or_else(|| NodeError::SendFailed {
-            node_addr: *node_addr,
-            reason: "no transport_id".into(),
-        })?;
-        let remote_addr = peer
-            .current_addr()
-            .ok_or_else(|| NodeError::SendFailed {
+        // Hold a write lock across the encrypt step (mutates send_cipher
+        // counter via NoiseSession). After step 4 the other per-packet
+        // mutations are interior-mutable, but the AEAD send counter
+        // still goes through `&mut NoiseSession`. Drop before stats.
+        let (wire_packet, counter, timestamp_ms, transport_id, remote_addr) = {
+            let mut peer = crate::peer::peer_write(&slot);
+
+            let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
                 node_addr: *node_addr,
-                reason: "no current_addr".into(),
+                reason: "no their_index".into(),
             })?;
-
-        // Prepend 4-byte session-relative timestamp (inner header)
-        let timestamp_ms = peer.session_elapsed_ms();
-
-        // MMP: read spin bit value before entering session borrow
-        let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
-        let mut flags = if sp_flag { FLAG_SP } else { 0 };
-        if ce_flag {
-            flags |= FLAG_CE;
-        }
-        if peer.current_k_bit() {
-            flags |= FLAG_KEY_EPOCH;
-        }
-
-        let session = peer
-            .noise_session_mut()
-            .ok_or_else(|| NodeError::SendFailed {
+            let transport_id = peer.transport_id().ok_or_else(|| NodeError::SendFailed {
                 node_addr: *node_addr,
-                reason: "no noise session".into(),
+                reason: "no transport_id".into(),
             })?;
+            let remote_addr = peer
+                .current_addr()
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: "no current_addr".into(),
+                })?;
 
-        // Inner plaintext: [timestamp:4 LE][msg_type][payload...]
-        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
+            let timestamp_ms = peer.session_elapsed_ms();
+            let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
+            let mut flags = if sp_flag { FLAG_SP } else { 0 };
+            if ce_flag {
+                flags |= FLAG_CE;
+            }
+            if peer.current_k_bit() {
+                flags |= FLAG_KEY_EPOCH;
+            }
 
-        // Build 16-byte outer header (used as AAD for AEAD)
-        let counter = session.current_send_counter();
-        let payload_len = inner_plaintext.len() as u16;
-        let header = build_established_header(their_index, counter, flags, payload_len);
+            let session = peer
+                .noise_session_mut()
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: "no noise session".into(),
+                })?;
 
-        // Encrypt with AAD binding to the outer header
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!("encryption failed: {}", e),
-            })?;
+            let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
+            let counter = session.current_send_counter();
+            let payload_len = inner_plaintext.len() as u16;
+            let header = build_established_header(their_index, counter, flags, payload_len);
 
-        let wire_packet = build_encrypted(&header, &ciphertext);
+            let ciphertext = session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("encryption failed: {}", e),
+                })?;
+
+            (
+                build_encrypted(&header, &ciphertext),
+                counter,
+                timestamp_ms,
+                transport_id,
+                remote_addr,
+            )
+        };
 
         // Re-borrow peer for stats update after sending
         let transport = self
@@ -2327,10 +2373,11 @@ impl Node {
                 },
             })?;
 
-        // Update send statistics
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            peer.link_stats_mut().record_sent(bytes_sent);
-            // MMP: record sent frame for sender report generation
+        // Update send statistics. After steps 1+4c, link_stats and mmp
+        // mutate through `&self` interior mutability — read lock fine.
+        if let Some(slot) = self.peers.get(node_addr) {
+            let peer = crate::peer::peer_read(slot);
+            peer.link_stats().record_sent(bytes_sent);
             if let Some(mut mmp) = peer.mmp_mut() {
                 mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
             }

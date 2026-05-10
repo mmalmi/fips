@@ -137,7 +137,7 @@ pub(super) fn print_tree_snapshot(label: &str, nodes: &[TestNode]) {
             tn.node
                 .peers
                 .values()
-                .filter(|p| p.has_pending_tree_announce())
+                .filter(|slot| crate::peer::peer_read(slot).has_pending_tree_announce())
                 .count()
         })
         .sum();
@@ -191,7 +191,7 @@ pub(super) fn print_tree_snapshot(label: &str, nodes: &[TestNode]) {
                 .node
                 .peers
                 .values()
-                .filter(|p| p.has_pending_tree_announce())
+                .filter(|slot| crate::peer::peer_read(slot).has_pending_tree_announce())
                 .count();
             eprintln!(
                 "  node[{}] root=node[{}] depth={} parent=node[{}] peers={} pending={}",

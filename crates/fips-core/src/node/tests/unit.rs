@@ -387,7 +387,11 @@ fn test_node_sendable_peers() {
 
     let sendable: Vec<_> = node.sendable_peers().collect();
     assert_eq!(sendable.len(), 2);
-    assert!(sendable.iter().any(|p| p.node_addr() == &node_addr1));
+    assert!(
+        sendable
+            .iter()
+            .any(|slot| crate::peer::peer_read(slot).node_addr() == &node_addr1)
+    );
 }
 
 // === RX Loop Tests ===

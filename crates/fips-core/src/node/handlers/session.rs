@@ -1618,16 +1618,20 @@ impl Node {
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
-                let peers = self
+                // Pre-collect link/transport info while we still have
+                // immutable access to self.peers; otherwise the closure
+                // would re-borrow self for every peer iteration.
+                let peer_infos: Vec<(NodeEndpointPeer,)> = self
                     .peers()
-                    .map(|peer| {
+                    .map(|slot| {
+                        let peer = crate::peer::peer_read(slot);
                         let link_id = peer.link_id();
                         let transport_type = self.get_link(&link_id).and_then(|link| {
                             self.get_transport(&link.transport_id())
                                 .map(|handle| handle.transport_type().name.to_string())
                         });
                         let stats = peer.link_stats();
-                        NodeEndpointPeer {
+                        (NodeEndpointPeer {
                             npub: peer.npub(),
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
@@ -1640,9 +1644,10 @@ impl Node {
                             packets_recv: stats.packets_recv(),
                             bytes_sent: stats.bytes_sent(),
                             bytes_recv: stats.bytes_recv(),
-                        }
+                        },)
                     })
                     .collect();
+                let peers = peer_infos.into_iter().map(|(p,)| p).collect();
                 let _ = response_tx.send(peers);
             }
         }
@@ -2025,7 +2030,7 @@ impl Node {
         datagram: &mut SessionDatagram,
     ) -> Result<(), NodeError> {
         let next_hop_addr = match self.find_next_hop(&datagram.dest_addr) {
-            Some(peer) => *peer.node_addr(),
+            Some(addr) => addr,
             None => {
                 return Err(NodeError::SendFailed {
                     node_addr: datagram.dest_addr,
@@ -2035,14 +2040,16 @@ impl Node {
         };
 
         // Seed path_mtu from the first-hop transport MTU (same as forwarding path)
-        if let Some(peer) = self.peers.get(&next_hop_addr)
-            && let Some(tid) = peer.transport_id()
-            && let Some(transport) = self.transports.get(&tid)
-        {
-            if let Some(addr) = peer.current_addr() {
-                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(&addr));
-            } else {
-                datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
+        if let Some(slot) = self.peers.get(&next_hop_addr) {
+            let peer = crate::peer::peer_read(slot);
+            if let Some(tid) = peer.transport_id()
+                && let Some(transport) = self.transports.get(&tid)
+            {
+                if let Some(addr) = peer.current_addr() {
+                    datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(&addr));
+                } else {
+                    datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
+                }
             }
         }
 

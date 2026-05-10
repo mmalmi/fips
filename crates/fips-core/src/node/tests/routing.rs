@@ -37,7 +37,7 @@ fn test_routing_direct_peer() {
 
     let result = node.find_next_hop(&peer_addr);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().node_addr(), &peer_addr);
+    assert_eq!(result.unwrap(), peer_addr);
 }
 
 // === No route ===
@@ -92,18 +92,20 @@ fn test_routing_bloom_filter_hit() {
     node.coord_cache_mut().insert(dest, dest_coords, now_ms);
 
     // Add dest to peer1's bloom filter only
-    let peer1 = node.get_peer_mut(&peer1_addr).unwrap();
     let mut filter = BloomFilter::new();
     filter.insert(&dest);
-    peer1.update_filter(filter, 1, 3000);
+    {
+        let mut peer1 = node.get_peer_mut(&peer1_addr).unwrap();
+        peer1.update_filter(filter, 1, 3000);
+    }
 
     // Should route through peer1 (bloom filter hit, closer to dest)
     let result = node.find_next_hop(&dest);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().node_addr(), &peer1_addr);
+    assert_eq!(result.unwrap(), peer1_addr);
 
     // Peer2 should NOT be selected (no filter hit)
-    assert_ne!(result.unwrap().node_addr(), &peer2_addr);
+    assert_ne!(result.unwrap(), peer2_addr);
 }
 
 #[test]
@@ -142,9 +144,9 @@ fn test_routing_bloom_filter_multiple_hits_tiebreak() {
 
     // Add dest to ALL peers' bloom filters
     for &addr in &peer_addrs {
-        let peer = node.get_peer_mut(&addr).unwrap();
         let mut filter = BloomFilter::new();
         filter.insert(&dest);
+        let mut peer = node.get_peer_mut(&addr).unwrap();
         peer.update_filter(filter, 1, 3000);
     }
 
@@ -154,7 +156,7 @@ fn test_routing_bloom_filter_multiple_hits_tiebreak() {
     // peer_addrs[0] has distance 1 (passes), others have distance 3 (filtered).
     let result = node.find_next_hop(&dest);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().node_addr(), &peer_addrs[0]);
+    assert_eq!(result.unwrap(), peer_addrs[0]);
 }
 
 // === Greedy tree routing ===
@@ -199,7 +201,7 @@ fn test_routing_tree_fallback() {
     // Peer is closer, so it's the next hop.
     let result = node.find_next_hop(&dest);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().node_addr(), &peer_addr);
+    assert_eq!(result.unwrap(), peer_addr);
 }
 
 /// Regression: bloom hit on a peer that is NOT strictly closer to dest
@@ -269,10 +271,12 @@ fn test_routing_bloom_hit_not_closer_falls_through_to_tree() {
     // but bloom_peer's tree distance (3) is NOT strictly less than our
     // distance (2), so select_best_candidate yields no winner.
     // tree_peer has NO bloom entry for dest.
-    let bloom_peer = node.get_peer_mut(&bloom_peer_addr).unwrap();
     let mut filter = BloomFilter::new();
     filter.insert(&dest);
-    bloom_peer.update_filter(filter, 1, 3000);
+    {
+        let mut bloom_peer = node.get_peer_mut(&bloom_peer_addr).unwrap();
+        bloom_peer.update_filter(filter, 1, 3000);
+    }
 
     // Pre-fix this returned None. Post-fix it falls through to greedy
     // tree routing and picks tree_peer (distance 1 < self distance 2).
@@ -282,14 +286,14 @@ fn test_routing_bloom_hit_not_closer_falls_through_to_tree() {
         "find_next_hop must fall through to tree routing when bloom \
          candidates exist but none are strictly closer than self"
     );
-    let next_hop = result.unwrap().node_addr();
+    let next_hop = result.unwrap();
     assert_eq!(
-        next_hop, &tree_peer_addr,
+        next_hop, tree_peer_addr,
         "tree-routing winner expected (tree_peer), got {:?}",
         next_hop,
     );
     assert_ne!(
-        next_hop, &bloom_peer_addr,
+        next_hop, bloom_peer_addr,
         "bloom_peer must be excluded by the self-distance check",
     );
 }
@@ -334,7 +338,7 @@ fn test_reply_learned_mode_uses_observed_route_without_coords() {
 
     let result = node.find_next_hop(&dest);
     assert!(result.is_some(), "learned route should not require coords");
-    assert_eq!(result.unwrap().node_addr(), &peer2_addr);
+    assert_eq!(result.unwrap(), peer2_addr);
     assert_ne!(peer1_addr, peer2_addr);
 }
 
@@ -365,12 +369,7 @@ fn test_reply_learned_mode_multipaths_observed_routes() {
 
     let mut selected = Vec::new();
     for _ in 0..20 {
-        selected.push(
-            *node
-                .find_next_hop(&dest)
-                .expect("learned route")
-                .node_addr(),
-        );
+        selected.push(node.find_next_hop(&dest).expect("learned route"));
     }
 
     let peer1_count = selected.iter().filter(|addr| **addr == peer1_addr).count();
@@ -429,18 +428,11 @@ fn test_reply_learned_mode_periodically_explores_coordinate_route() {
     node.coord_cache_mut().insert(dest, dest_coords, now_ms);
     node.learn_reverse_route(dest, learned_peer_addr);
 
-    let first = *node
+    let first = node.find_next_hop(&dest).expect("learned route");
+    let second = node.find_next_hop(&dest).expect("learned route");
+    let third = node
         .find_next_hop(&dest)
-        .expect("learned route")
-        .node_addr();
-    let second = *node
-        .find_next_hop(&dest)
-        .expect("learned route")
-        .node_addr();
-    let third = *node
-        .find_next_hop(&dest)
-        .expect("coordinate exploration route")
-        .node_addr();
+        .expect("coordinate exploration route");
 
     assert_eq!(first, learned_peer_addr);
     assert_eq!(second, learned_peer_addr);
@@ -540,9 +532,9 @@ fn test_routing_bloom_hit_without_coords_returns_none() {
 
     // Add dest to BOTH peers' bloom filters
     for &addr in &[peer1_addr, peer2_addr] {
-        let peer = node.get_peer_mut(&addr).unwrap();
         let mut filter = BloomFilter::new();
         filter.insert(&dest);
+        let mut peer = node.get_peer_mut(&addr).unwrap();
         peer.update_filter(filter, 1, 3000);
     }
 
@@ -582,10 +574,12 @@ fn test_routing_discovery_coord_cache() {
     let dest_coords = TreeCoordinate::from_addrs(vec![dest, peer_addr, my_addr]).unwrap();
 
     // Put dest in peer's bloom filter so there's a candidate
-    let peer = node.get_peer_mut(&peer_addr).unwrap();
     let mut filter = BloomFilter::new();
     filter.insert(&dest);
-    peer.update_filter(filter, 1, 3000);
+    {
+        let mut peer = node.get_peer_mut(&peer_addr).unwrap();
+        peer.update_filter(filter, 1, 3000);
+    }
 
     // Verify: coord_cache has nothing for dest
     let now_ms = std::time::SystemTime::now()
@@ -604,8 +598,8 @@ fn test_routing_discovery_coord_cache() {
     let result = node.find_next_hop(&dest);
     assert!(result.is_some(), "Should route via coord_cache");
     assert_eq!(
-        result.unwrap().node_addr(),
-        &peer_addr,
+        result.unwrap(),
+        peer_addr,
         "Should pick peer with bloom filter hit"
     );
 }
@@ -663,8 +657,8 @@ async fn test_routing_chain_topology() {
     let hop = nodes[0].node.find_next_hop(&node3_addr);
     assert!(hop.is_some(), "Node 0 should find route to node 3");
     assert_eq!(
-        hop.unwrap().node_addr(),
-        &node1_addr,
+        hop.unwrap(),
+        node1_addr,
         "Node 0's next hop to node 3 should be node 1"
     );
 
@@ -672,8 +666,8 @@ async fn test_routing_chain_topology() {
     let hop = nodes[3].node.find_next_hop(&node0_addr);
     assert!(hop.is_some(), "Node 3 should find route to node 0");
     assert_eq!(
-        hop.unwrap().node_addr(),
-        &node2_addr,
+        hop.unwrap(),
+        node2_addr,
         "Node 3's next hop to node 0 should be node 2"
     );
 }
@@ -717,17 +711,19 @@ async fn test_routing_bloom_preferred_over_tree() {
         .insert(dest, dest_coords, now_ms);
 
     // Add dest to peer 2's bloom filter (from node 0's perspective)
-    let peer2 = nodes[0].node.get_peer_mut(&peer2_addr).unwrap();
     let mut filter = BloomFilter::new();
     filter.insert(&dest);
-    peer2.update_filter(filter, 100, 50000);
+    {
+        let mut peer2 = nodes[0].node.get_peer_mut(&peer2_addr).unwrap();
+        peer2.update_filter(filter, 100, 50000);
+    }
 
     // Bloom filter hit with cached coords should route via peer 2.
     let hop = nodes[0].node.find_next_hop(&dest);
     assert!(hop.is_some(), "Should route via bloom filter");
     assert_eq!(
-        hop.unwrap().node_addr(),
-        &peer2_addr,
+        hop.unwrap(),
+        peer2_addr,
         "Should pick peer with bloom filter hit"
     );
 }
@@ -786,8 +782,7 @@ fn simulate_forwarding(
                     hops: hop,
                 };
             }
-            Some(peer) => {
-                let next_addr = *peer.node_addr();
+            Some(next_addr) => {
 
                 // Is next hop the destination?
                 if next_addr == dest_addr {
@@ -1037,7 +1032,7 @@ async fn test_routing_stops_after_peer_removal() {
     let node0_reaches_node3 = nodes[0]
         .node
         .peers()
-        .any(|peer| peer.may_reach(&node3_addr));
+        .any(|slot| crate::peer::peer_read(slot).may_reach(&node3_addr));
     assert!(
         !node0_reaches_node3,
         "Node 0 should not see node 3 as reachable after partition"
@@ -1134,8 +1129,8 @@ async fn test_routing_bloom_only_transit() {
         "Node 2 should route to node 3 (direct peer)"
     );
     assert_eq!(
-        hop_at_2.unwrap().node_addr(),
-        &node3_addr,
+        hop_at_2.unwrap(),
+        node3_addr,
         "Node 2's next hop to node 3 should be node 3 itself"
     );
 

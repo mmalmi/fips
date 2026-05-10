@@ -190,7 +190,7 @@ async fn test_disconnect_chain_partition() {
     let node0_reaches_node4 = nodes[0]
         .node
         .peers()
-        .any(|peer| peer.may_reach(&node4_addr));
+        .any(|slot| crate::peer::peer_read(slot).may_reach(&node4_addr));
     assert!(
         !node0_reaches_node4,
         "Node 0 should not see node 4 as reachable after partition"
@@ -200,7 +200,7 @@ async fn test_disconnect_chain_partition() {
     let node4_reaches_node0 = nodes[4]
         .node
         .peers()
-        .any(|peer| peer.may_reach(&node0_addr));
+        .any(|slot| crate::peer::peer_read(slot).may_reach(&node0_addr));
     assert!(
         !node4_reaches_node0,
         "Node 4 should not see node 0 as reachable after partition"
@@ -210,7 +210,7 @@ async fn test_disconnect_chain_partition() {
     let node0_reaches_node1 = nodes[0]
         .node
         .peers()
-        .any(|peer| peer.may_reach(&node1_addr));
+        .any(|slot| crate::peer::peer_read(slot).may_reach(&node1_addr));
     assert!(
         node0_reaches_node1,
         "Node 0 should still see node 1 as reachable"
@@ -219,7 +219,7 @@ async fn test_disconnect_chain_partition() {
     let node4_reaches_node3 = nodes[4]
         .node
         .peers()
-        .any(|peer| peer.may_reach(&node3_addr));
+        .any(|slot| crate::peer::peer_read(slot).may_reach(&node3_addr));
     assert!(
         node4_reaches_node3,
         "Node 4 should still see node 3 as reachable"

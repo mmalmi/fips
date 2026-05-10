@@ -73,7 +73,7 @@ impl Node {
 
         // Find next hop toward destination
         let next_hop_addr = match self.find_next_hop(&datagram.dest_addr) {
-            Some(peer) => *peer.node_addr(),
+            Some(addr) => addr,
             None => {
                 self.stats_mut()
                     .forwarding
@@ -84,14 +84,16 @@ impl Node {
         };
 
         // Apply path_mtu min() from the outgoing link's transport MTU
-        if let Some(peer) = self.peers.get(&next_hop_addr)
-            && let Some(tid) = peer.transport_id()
-            && let Some(transport) = self.transports.get(&tid)
-        {
-            if let Some(addr) = peer.current_addr() {
-                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(&addr));
-            } else {
-                datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
+        if let Some(slot) = self.peers.get(&next_hop_addr) {
+            let peer = crate::peer::peer_read(slot);
+            if let Some(tid) = peer.transport_id()
+                && let Some(transport) = self.transports.get(&tid)
+            {
+                if let Some(addr) = peer.current_addr() {
+                    datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(&addr));
+                } else {
+                    datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
+                }
             }
         }
 
@@ -266,7 +268,7 @@ impl Node {
             .with_ttl(self.config.node.session.default_ttl);
 
         let next_hop_addr = match self.find_next_hop(&original.src_addr) {
-            Some(peer) => *peer.node_addr(),
+            Some(addr) => addr,
             None => {
                 debug!(
                     src = %original.src_addr,
@@ -318,7 +320,7 @@ impl Node {
             .with_ttl(self.config.node.session.default_ttl);
 
         let next_hop_addr = match self.find_next_hop(&original.src_addr) {
-            Some(peer) => *peer.node_addr(),
+            Some(addr) => addr,
             None => {
                 debug!(
                     src = %original.src_addr,
@@ -361,14 +363,15 @@ impl Node {
             return false;
         }
         // Outgoing link MMP metrics
-        if let Some(peer) = self.peers.get(next_hop)
-            && let Some(mmp) = peer.mmp()
-        {
-            let metrics = &mmp.metrics;
-            if metrics.loss_rate() >= self.config.node.ecn.loss_threshold
-                || metrics.etx >= self.config.node.ecn.etx_threshold
-            {
-                return true;
+        if let Some(slot) = self.peers.get(next_hop) {
+            let peer = crate::peer::peer_read(slot);
+            if let Some(mmp) = peer.mmp() {
+                let metrics = &mmp.metrics;
+                if metrics.loss_rate() >= self.config.node.ecn.loss_threshold
+                    || metrics.etx >= self.config.node.ecn.etx_threshold
+                {
+                    return true;
+                }
             }
         }
         // Local transport congestion (kernel drops)

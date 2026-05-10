@@ -79,7 +79,8 @@ impl Node {
         // path's `peers.get_mut` straight-line.
         let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
         let need_kbit_flip = match self.peers.get(&node_addr) {
-            Some(peer) => {
+            Some(slot) => {
+                let peer = crate::peer::peer_read(slot);
                 received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some()
             }
             None => {
@@ -94,7 +95,8 @@ impl Node {
                 peer = %display_name,
                 "Peer K-bit flip detected, promoting new session"
             );
-            let peer = self.peers.get_mut(&node_addr).unwrap();
+            let slot = self.peers.get(&node_addr).unwrap().clone();
+            let mut peer = crate::peer::peer_write(&slot);
             if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
                 // New index was pre-registered in peers_by_index during
                 // msg1 handling (handshake.rs). Verify, don't duplicate.
@@ -127,23 +129,24 @@ impl Node {
         let ciphertext = &packet.data[ciphertext_offset..];
 
         let outcome: FmpFrameOutcome = 'outcome: {
-            let Some(peer) = self.peers.get_mut(&node_addr) else {
+            let Some(slot) = self.peers.get(&node_addr) else {
                 // Race vs. K-bit block: peer was removed between checks.
                 break 'outcome FmpFrameOutcome::PeerGone;
             };
+            let peer = crate::peer::peer_read(slot);
 
-            // Try current session first. We extract `Result<Vec<u8>, _>` so
-            // the `&mut NoiseSession` borrow ends before we touch peer
-            // again (for the previous-session fallback or for stats).
+            // Try current session first. After step 2, NoiseSession's
+            // decrypt_with_replay_check_and_aad takes `&self`, so the
+            // shared `peer_read` guard suffices.
             let current_attempt = peer
-                .noise_session_mut()
+                .noise_session()
                 .map(|s| s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes));
 
             let plaintext = match current_attempt {
                 Some(Ok(p)) => p,
                 Some(Err(e)) => {
                     // Drain-window fallback: previous session.
-                    let prev_attempt = peer.previous_session_mut().map(|s| {
+                    let prev_attempt = peer.previous_session().map(|s| {
                         s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
                     });
                     match prev_attempt {
@@ -168,7 +171,8 @@ impl Node {
                 }
             };
 
-            // Stats inline — same borrow.
+            // Stats inline. After step 4 these all run via `&self` /
+            // interior mutability, so the `peer_read` guard is enough.
             peer.reset_decrypt_failures();
             let now = Instant::now();
             if let Some(mut mmp) = peer.mmp_mut() {
@@ -177,7 +181,7 @@ impl Node {
                 let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
             }
             peer.set_current_addr(packet_transport_id, packet_remote_addr);
-            peer.link_stats_mut()
+            peer.link_stats()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);
 
@@ -225,8 +229,8 @@ impl Node {
         error: &NoiseError,
     ) {
         if matches!(error, NoiseError::ReplayDetected(_)) {
-            if let Some(peer) = self.peers.get_mut(node_addr) {
-                let count = peer.increment_replay_suppressed();
+            if let Some(slot) = self.peers.get(node_addr) {
+                let count = crate::peer::peer_read(slot).increment_replay_suppressed();
                 if count <= 3 {
                     debug!(
                         peer = %self.peer_display_name(node_addr),
@@ -260,8 +264,8 @@ impl Node {
 
     /// Increment decrypt failure counter and force-remove peer if threshold exceeded.
     pub(in crate::node) fn handle_decrypt_failure(&mut self, node_addr: &crate::NodeAddr) {
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            let count = peer.increment_decrypt_failures();
+        if let Some(slot) = self.peers.get(node_addr) {
+            let count = crate::peer::peer_read(slot).increment_decrypt_failures();
             if count >= DECRYPT_FAILURE_THRESHOLD {
                 warn!(
                     peer = %self.peer_display_name(node_addr),

@@ -38,19 +38,23 @@ impl Node {
         let now_ms = Self::now_ms();
 
         // Check rate limit
-        let peer = match self.peers.get_mut(peer_addr) {
-            Some(p) => p,
+        let slot = match self.peers.get(peer_addr) {
+            Some(p) => p.clone(),
             None => return Err(NodeError::PeerNotFound(*peer_addr)),
         };
 
-        if !peer.can_send_tree_announce(now_ms) {
-            peer.mark_tree_announce_pending();
-            self.stats_mut().tree.rate_limited += 1;
-            debug!(
-                peer = %self.peer_display_name(peer_addr),
-                "TreeAnnounce rate-limited, marking pending"
-            );
-            return Ok(());
+        {
+            let mut peer = crate::peer::peer_write(&slot);
+            if !peer.can_send_tree_announce(now_ms) {
+                peer.mark_tree_announce_pending();
+                drop(peer);
+                self.stats_mut().tree.rate_limited += 1;
+                debug!(
+                    peer = %self.peer_display_name(peer_addr),
+                    "TreeAnnounce rate-limited, marking pending"
+                );
+                return Ok(());
+            }
         }
 
         // Build and encode
@@ -69,8 +73,8 @@ impl Node {
         self.stats_mut().tree.sent += 1;
 
         // Record send time
-        if let Some(peer) = self.peers.get_mut(peer_addr) {
-            peer.record_tree_announce_sent(now_ms);
+        if let Some(slot) = self.peers.get(peer_addr) {
+            crate::peer::peer_write(slot).record_tree_announce_sent(now_ms);
         }
 
         trace!(peer = %self.peer_display_name(peer_addr), "Sent TreeAnnounce");
@@ -99,7 +103,8 @@ impl Node {
         let ready: Vec<NodeAddr> = self
             .peers
             .iter()
-            .filter(|(_, peer)| {
+            .filter(|(_, slot)| {
+                let peer = crate::peer::peer_read(slot);
                 peer.has_pending_tree_announce() && peer.can_send_tree_announce(now_ms)
             })
             .map(|(addr, _)| *addr)
@@ -137,7 +142,7 @@ impl Node {
 
         // Verify sender's declaration signature using their known pubkey
         let pubkey = match self.peers.get(from) {
-            Some(peer) => peer.pubkey(),
+            Some(slot) => crate::peer::peer_read(slot).pubkey(),
             None => {
                 self.stats_mut().tree.unknown_peer += 1;
                 debug!(from = %self.peer_display_name(from), "TreeAnnounce from unknown peer");
@@ -178,8 +183,8 @@ impl Node {
         let now_ms = Self::now_ms();
 
         // Update peer's tree state in ActivePeer
-        if let Some(peer) = self.peers.get_mut(from) {
-            peer.update_tree_position(
+        if let Some(slot) = self.peers.get(from) {
+            crate::peer::peer_write(slot).update_tree_position(
                 announce.declaration.clone(),
                 announce.ancestry.clone(),
                 now_ms,
@@ -222,8 +227,8 @@ impl Node {
         let peer_costs: HashMap<NodeAddr, f64> = self
             .peers
             .iter()
-            .filter(|(_, peer)| peer.has_srtt())
-            .map(|(addr, peer)| (*addr, peer.link_cost()))
+            .filter(|(_, slot)| crate::peer::peer_read(slot).has_srtt())
+            .map(|(addr, slot)| (*addr, crate::peer::peer_read(slot).link_cost()))
             .collect();
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
             let new_seq = self.tree_state.my_declaration().sequence() + 1;
@@ -295,8 +300,8 @@ impl Node {
                 let peer_costs: HashMap<NodeAddr, f64> = self
                     .peers
                     .iter()
-                    .filter(|(_, peer)| peer.has_srtt())
-                    .map(|(addr, peer)| (*addr, peer.link_cost()))
+                    .filter(|(_, slot)| crate::peer::peer_read(slot).has_srtt())
+                    .map(|(addr, slot)| (*addr, crate::peer::peer_read(slot).link_cost()))
                     .collect();
                 if self.tree_state.handle_parent_lost(&peer_costs) {
                     if let Err(e) = self.tree_state.sign_declaration(&self.identity) {
@@ -407,8 +412,8 @@ impl Node {
         let peer_costs: HashMap<NodeAddr, f64> = self
             .peers
             .iter()
-            .filter(|(_, peer)| peer.has_srtt())
-            .map(|(addr, peer)| (*addr, peer.link_cost()))
+            .filter(|(_, slot)| crate::peer::peer_read(slot).has_srtt())
+            .map(|(addr, slot)| (*addr, crate::peer::peer_read(slot).link_cost()))
             .collect();
 
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
@@ -482,8 +487,8 @@ impl Node {
             let peer_costs: HashMap<NodeAddr, f64> = self
                 .peers
                 .iter()
-                .filter(|(_, peer)| peer.has_srtt())
-                .map(|(addr, peer)| (*addr, peer.link_cost()))
+                .filter(|(_, slot)| crate::peer::peer_read(slot).has_srtt())
+                .map(|(addr, slot)| (*addr, crate::peer::peer_read(slot).link_cost()))
                 .collect();
             let changed = self.tree_state.handle_parent_lost(&peer_costs);
             if changed {

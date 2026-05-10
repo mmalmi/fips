@@ -18,11 +18,12 @@ impl Node {
     /// have sent us a FilterAnnounce.
     pub(super) fn peer_inbound_filters(&self) -> HashMap<NodeAddr, BloomFilter> {
         let mut filters = HashMap::new();
-        for (addr, peer) in &self.peers {
-            if self.is_tree_peer(addr)
-                && let Some(filter) = peer.inbound_filter()
-            {
-                filters.insert(*addr, filter.clone());
+        for (addr, slot) in &self.peers {
+            if self.is_tree_peer(addr) {
+                let peer = crate::peer::peer_read(slot);
+                if let Some(filter) = peer.inbound_filter() {
+                    filters.insert(*addr, filter.clone());
+                }
             }
         }
         filters
@@ -117,8 +118,8 @@ impl Node {
         );
         self.bloom_state.record_update_sent(*peer_addr, now_ms);
         self.bloom_state.record_sent_filter(*peer_addr, sent_filter);
-        if let Some(peer) = self.peers.get_mut(peer_addr) {
-            peer.clear_filter_update_needed();
+        if let Some(slot) = self.peers.get(peer_addr) {
+            crate::peer::peer_write(slot).clear_filter_update_needed();
         }
 
         Ok(())
@@ -178,7 +179,7 @@ impl Node {
 
         // Check peer exists
         let current_seq = match self.peers.get(from) {
-            Some(peer) => peer.filter_sequence(),
+            Some(slot) => crate::peer::peer_read(slot).filter_sequence(),
             None => {
                 self.stats_mut().bloom.unknown_peer += 1;
                 debug!(from = %self.peer_display_name(from), "FilterAnnounce from unknown peer");
@@ -238,8 +239,12 @@ impl Node {
         );
 
         // Store on peer
-        if let Some(peer) = self.peers.get_mut(from) {
-            peer.update_filter(announce.filter, announce.sequence, now_ms);
+        if let Some(slot) = self.peers.get(from) {
+            crate::peer::peer_write(slot).update_filter(
+                announce.filter,
+                announce.sequence,
+                now_ms,
+            );
         }
 
         // Check which peers' outgoing filters actually changed.
