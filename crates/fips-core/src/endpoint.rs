@@ -223,7 +223,7 @@ pub struct FipsEndpoint {
     discovery_scope: Option<String>,
     outbound_packets: mpsc::Sender<Vec<u8>>,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
-    endpoint_commands: mpsc::UnboundedSender<NodeEndpointCommand>,
+    endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
     /// In-process loopback sender — `send()` to our own npub injects an
     /// event into the same queue without going through the wire/encrypt
     /// path. The node's rx_loop also sends into this channel directly
@@ -313,6 +313,7 @@ impl FipsEndpoint {
                 payload: data,
                 response_tx,
             })
+            .await
             .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
@@ -387,13 +388,8 @@ impl FipsEndpoint {
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
         let (response_tx, _response_rx) = oneshot::channel();
-        // UnboundedSender::send is itself non-blocking (wait-free push),
-        // so `blocking_send` is a no-op naming distinction here — this
-        // method's contract is still "callable from a non-tokio OS
-        // thread without panicking", which the unbounded sender
-        // satisfies trivially.
         self.endpoint_commands
-            .send(NodeEndpointCommand::Send {
+            .blocking_send(NodeEndpointCommand::Send {
                 remote,
                 payload: data,
                 response_tx,
@@ -471,6 +467,7 @@ impl FipsEndpoint {
         let (response_tx, response_rx) = oneshot::channel();
         self.endpoint_commands
             .send(NodeEndpointCommand::PeerSnapshot { response_tx })
+            .await
             .map_err(|_| FipsEndpointError::Closed)?;
 
         response_rx

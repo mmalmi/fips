@@ -61,7 +61,7 @@ impl Node {
             match self.endpoint_command_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
                     (rx, Some(tx))
                 }
             };
