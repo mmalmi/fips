@@ -546,6 +546,119 @@ fn send_batch_raw(
     }
 }
 
+/// Standalone tests for the GSO-eligibility predicate. The full
+/// `send_batch_gso` is exercised in `tests::gso_roundtrip` below
+/// (Linux only).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn pkt(bytes: usize, addr: SocketAddr) -> (Vec<u8>, SocketAddr) {
+        (vec![0u8; bytes], addr)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gso_eligible_rejects_single_packet() {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        assert!(!gso_eligible(&[pkt(1500, addr)]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gso_eligible_accepts_uniform_batch() {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
+        assert!(gso_eligible(&batch));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gso_eligible_accepts_short_trailer() {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
+        batch.push(pkt(900, addr)); // last shorter — kernel handles this
+        assert!(gso_eligible(&batch));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gso_eligible_rejects_mixed_sizes() {
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
+        batch[3] = pkt(800, addr); // mid-batch short packet
+        batch.push(pkt(1500, addr));
+        assert!(!gso_eligible(&batch));
+    }
+
+    /// End-to-end: bind a real UDP socket pair on loopback, fire
+    /// `send_batch_gso` from the sender, recv on the receiver, confirm
+    /// we get N segmented datagrams back (one per logical packet).
+    ///
+    /// This validates the entire UDP_GSO codepath: cmsg setup,
+    /// scatter-gather iov assembly, kernel segmentation. If the
+    /// running kernel doesn't support UDP_SEGMENT the syscall returns
+    /// EOPNOTSUPP and we skip the assertion (the prod path falls back
+    /// to sendmmsg via the GSO_DISABLED flag).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gso_roundtrip_loopback() {
+        use std::net::UdpSocket;
+        use std::os::unix::io::AsRawFd;
+
+        // Sender + receiver on loopback.
+        let recv_sock = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
+        let recv_addr = recv_sock.local_addr().expect("recv local_addr");
+        recv_sock
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("set_read_timeout");
+        let send_sock = UdpSocket::bind("127.0.0.1:0").expect("bind send");
+
+        // Build a uniform 18-packet batch addressed at recv_sock.
+        const SEG: usize = 200;
+        const N: usize = 18;
+        let mut batch: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(N);
+        for i in 0..N {
+            let mut buf = vec![0u8; SEG];
+            // Stamp the packet index in the first byte so we can verify
+            // ordering on the receive side.
+            buf[0] = i as u8;
+            batch.push((buf, recv_addr));
+        }
+
+        let r = send_batch_gso(send_sock.as_raw_fd(), &batch);
+        match r {
+            Ok(()) => {} // proceed to recv
+            Err(err)
+                if err.raw_os_error() == Some(libc::EOPNOTSUPP)
+                    || err.raw_os_error() == Some(libc::ENOPROTOOPT)
+                    || err.kind() == std::io::ErrorKind::InvalidInput =>
+            {
+                eprintln!(
+                    "gso_roundtrip_loopback: kernel doesn't support UDP_GSO ({err}); skipping"
+                );
+                return;
+            }
+            Err(err) => panic!("send_batch_gso failed: {err}"),
+        }
+
+        // Drain receive side — expect exactly N datagrams of SEG bytes
+        // each, in order.
+        let mut recv_buf = [0u8; SEG + 32];
+        for i in 0..N {
+            let (len, _from) = recv_sock
+                .recv_from(&mut recv_buf)
+                .unwrap_or_else(|e| panic!("recv {i}: {e}"));
+            assert_eq!(len, SEG, "datagram {i} has wrong length");
+            assert_eq!(
+                recv_buf[0], i as u8,
+                "datagram {i} arrived out of order or with wrong stamp"
+            );
+        }
+    }
+}
+
 /// Direct `sendto(2)` for non-Linux fallback.
 #[cfg(not(target_os = "linux"))]
 fn send_one_raw(
