@@ -6,7 +6,7 @@ use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
 };
-mod socket;
+pub(crate) mod socket;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
@@ -114,6 +114,35 @@ impl UdpTransport {
     /// Get the transport statistics.
     pub fn stats(&self) -> &Arc<UdpStats> {
         &self.stats
+    }
+
+    /// Resolve a transport address (which may be a string like
+    /// `"1.2.3.4:5678"` or a hostname) to a kernel `SocketAddr`,
+    /// using the per-transport DNS cache. Public companion to
+    /// `async_socket()` for off-task workers that want to skip the
+    /// per-packet address parse / DNS lookup that `send_async` does
+    /// inline. Returns `Err` if neither numeric parse nor DNS resolves
+    /// the address.
+    pub async fn resolve_for_off_task(
+        &self,
+        addr: &TransportAddr,
+    ) -> Result<SocketAddr, TransportError> {
+        self.resolve_cached(addr).await
+    }
+
+    /// Clone the underlying async UDP socket (internally an
+    /// `Arc<AsyncFd<UdpRawSocket>>`, so the "clone" is just a refcount
+    /// bump). Returns `None` if the transport hasn't been started yet.
+    ///
+    /// Intended for off-task workers that need to issue
+    /// `send_to`/`send_batch` calls without going through the
+    /// per-transport pending-send mutex — useful when the AEAD encrypt
+    /// + udp_send pipeline is parallelised across N worker tasks that
+    /// each own a shared handle to the same kernel socket. The kernel
+    /// serialises concurrent `sendto` calls itself, so concurrent
+    /// userland sends are safe.
+    pub fn async_socket(&self) -> Option<AsyncUdpSocket> {
+        self.socket.clone()
     }
 
     /// Resolve a transport address, using cached results for hostnames.

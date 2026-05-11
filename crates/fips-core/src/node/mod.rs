@@ -7,6 +7,7 @@
 mod acl;
 mod bloom;
 mod discovery_rate_limit;
+mod encrypt_worker;
 mod handlers;
 mod lifecycle;
 mod rate_limit;
@@ -27,8 +28,8 @@ use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
 use self::wire::{
-    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
-    prepend_inner_header,
+    ESTABLISHED_HEADER_SIZE, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted,
+    build_established_header, prepend_inner_header,
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
@@ -495,6 +496,12 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
     endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
+    /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
+    /// spawned (set up in `start()` once transports are running).
+    /// `Some(pool)` once available; the pool internally holds
+    /// per-worker mpsc senders and round-robins jobs across them.
+    /// See `node::encrypt_worker` for the rationale and layout.
+    encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -709,6 +716,7 @@ impl Node {
             external_packet_tx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            encrypt_workers: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -837,6 +845,7 @@ impl Node {
             external_packet_tx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            encrypt_workers: None,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -2385,6 +2394,86 @@ impl Node {
         let payload_len = inner_plaintext.len() as u16;
         let header = build_established_header(their_index, counter, flags, payload_len);
 
+        // Off-task fast path: when a worker pool is configured AND
+        // we can resolve the destination to a kernel `SocketAddr` AND
+        // we can clone the FMP send cipher, dispatch the AEAD + udp
+        // send to the worker and return immediately. Drops the heavy
+        // AEAD work off the rx_loop critical section. Worker handles
+        // its own error/stats reporting (best-effort UDP semantics).
+        if let Some(workers) = self.encrypt_workers.as_ref().cloned() {
+            if let Some(cipher_clone) = session.send_cipher_clone() {
+                // Reserve the counter on the session so subsequent
+                // sends don't reuse it. `current_send_counter` only
+                // peeks; we advance via `take_send_counter`.
+                let reserved_counter = session.take_send_counter().map_err(|e| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("counter reservation failed: {}", e),
+                })?;
+                debug_assert_eq!(reserved_counter, counter);
+                // Re-derive the header with the now-locked-in counter
+                // value (same value, but the call sequence is more
+                // explicit).
+                let header = build_established_header(their_index, reserved_counter, flags, payload_len);
+                // Resolve destination once on this task so the worker
+                // can skip the per-packet address parse / DNS cache
+                // lookup.
+                let transport = self
+                    .transports
+                    .get(&transport_id)
+                    .ok_or(NodeError::TransportNotFound(transport_id))?;
+                let socket_addr_opt: Option<std::net::SocketAddr> = {
+                    if let TransportHandle::Udp(udp) = transport {
+                        let resolved = udp
+                            .resolve_for_off_task(&remote_addr)
+                            .await
+                            .ok();
+                        let sock_clone = udp.async_socket();
+                        match (resolved, sock_clone) {
+                            (Some(sa), Some(_)) => Some(sa),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some(socket_addr) = socket_addr_opt {
+                    if let TransportHandle::Udp(udp) = transport {
+                        if let Some(socket) = udp.async_socket() {
+                            // Reserve room for the AEAD tag so the worker
+                            // can `seal_in_place_append_tag` without
+                            // re-growing the Vec.
+                            let mut buf = inner_plaintext;
+                            buf.reserve(16);
+                            let predicted_bytes = ESTABLISHED_HEADER_SIZE + buf.len() + 16;
+                            // Stats / MMP update inline — predicted size
+                            // is exact for ChaCha20-Poly1305 (tag is
+                            // constant 16 bytes).
+                            if let Some(peer) = self.peers.get_mut(node_addr) {
+                                peer.link_stats_mut().record_sent(predicted_bytes);
+                                if let Some(mmp) = peer.mmp_mut() {
+                                    mmp.sender.record_sent(
+                                        reserved_counter,
+                                        timestamp_ms,
+                                        predicted_bytes,
+                                    );
+                                }
+                            }
+                            workers.dispatch(self::encrypt_worker::FmpSendJob {
+                                cipher: cipher_clone,
+                                counter: reserved_counter,
+                                header,
+                                inner_plaintext: buf,
+                                socket,
+                                dest_addr: socket_addr,
+                            });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Inline (legacy) path: encrypt + send on the rx_loop.
         // Encrypt with AAD binding to the outer header
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(

@@ -649,6 +649,23 @@ impl Node {
             info!(count = self.transports.len(), "Transports initialized");
         }
 
+        // Spawn the off-task FMP-encrypt + UDP-send worker pool. Off
+        // by default; the env knob `FIPS_ENCRYPT_WORKERS` selects N
+        // > 0 to enable. See `node::encrypt_worker` for the rationale.
+        let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if encrypt_worker_count > 0 {
+            self.encrypt_workers = Some(super::encrypt_worker::EncryptWorkerPool::spawn(
+                encrypt_worker_count,
+            ));
+            info!(
+                workers = encrypt_worker_count,
+                "Spawned off-task FMP-encrypt worker pool"
+            );
+        }
+
         if self.config.node.discovery.nostr.enabled {
             match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())
                 .await
