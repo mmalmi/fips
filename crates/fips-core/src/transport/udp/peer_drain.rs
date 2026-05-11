@@ -251,16 +251,19 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
         msgs[i].msg_hdr.msg_namelen =
             std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
         msgs[i].msg_hdr.msg_iov = &mut iovs[i];
-        msgs[i].msg_hdr.msg_iovlen = 1;
+        // `msg_iovlen` is `usize` on glibc / `i32` on musl.
+        msgs[i].msg_hdr.msg_iovlen = 1 as _;
         msgs[i].msg_len = 0;
     }
 
+    // `MSG_DONTWAIT` is `c_int` (i32) on glibc but `u32` on musl;
+    // `as _` resolves to whichever the recvmmsg signature wants.
     let r = unsafe {
         libc::recvmmsg(
             fd,
             msgs.as_mut_ptr(),
             n as libc::c_uint,
-            libc::MSG_DONTWAIT,
+            libc::MSG_DONTWAIT as _,
             std::ptr::null_mut(),
         )
     };

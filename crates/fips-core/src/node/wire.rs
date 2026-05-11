@@ -52,6 +52,7 @@ pub const MSG2_WIRE_SIZE: usize = COMMON_PREFIX_SIZE + 4 + 4 + HANDSHAKE_MSG2_SI
 pub const ENCRYPTED_MIN_SIZE: usize = ESTABLISHED_HEADER_SIZE + TAG_SIZE; // 32 bytes
 
 /// Size of the encrypted inner header (timestamp + message type).
+#[allow(dead_code)]
 pub const INNER_HEADER_SIZE: usize = 5;
 
 // Flag bit constants (byte 1 of common prefix, meaningful only for phase 0x0).

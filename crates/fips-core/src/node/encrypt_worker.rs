@@ -904,20 +904,28 @@ mod tests {
                 .expect("build unbound key");
             let cipher = LessSafeKey::new(unbound);
 
+            // Per-target plaintext sizes are distinct so we can
+            // identify which receiver got which job by wire-packet
+            // length alone — `seal_in_place_separate_tag` scrambles
+            // the post-header bytes, so byte-level stamps don't
+            // survive the AEAD. Final wire size is 16-byte header
+            // + plaintext_size + 16-byte tag.
+            const A_PLAINTEXT: usize = 32;
+            const B_PLAINTEXT: usize = 64;
+            const A_WIRE: usize = 16 + A_PLAINTEXT + 16; // 64
+            const B_WIRE: usize = 16 + B_PLAINTEXT + 16; // 96
+
             fn make_job(
                 socket: crate::transport::udp::socket::AsyncUdpSocket,
                 cipher: &LessSafeKey,
                 counter: u64,
                 dest: SocketAddr,
-                stamp: u8,
+                plaintext_size: usize,
             ) -> FmpSendJob {
-                // wire_buf: 16-byte header + 32-byte plaintext + tag-room.
-                // Stamp a marker after the header so we can identify
-                // which packet landed where.
-                let mut wire_buf = Vec::with_capacity(16 + 32 + 16);
+                // wire_buf: 16-byte header + plaintext + tag-room.
+                let mut wire_buf = Vec::with_capacity(16 + plaintext_size + 16);
                 wire_buf.extend_from_slice(&[0u8; 16]);
-                wire_buf.extend_from_slice(&[0u8; 32]);
-                wire_buf[16] = stamp;
+                wire_buf.extend_from_slice(&vec![0u8; plaintext_size]);
                 FmpSendJob {
                     cipher: cipher.clone(),
                     counter,
@@ -929,41 +937,48 @@ mod tests {
             }
 
             let mut batch = vec![
-                make_job(send_sock.clone(), &cipher, 1, addr_a, 0xAA),
-                make_job(send_sock.clone(), &cipher, 2, addr_b, 0xBB),
-                make_job(send_sock.clone(), &cipher, 3, addr_a, 0xCC),
+                make_job(send_sock.clone(), &cipher, 1, addr_a, A_PLAINTEXT),
+                make_job(send_sock.clone(), &cipher, 2, addr_b, B_PLAINTEXT),
+                make_job(send_sock.clone(), &cipher, 3, addr_a, A_PLAINTEXT),
             ];
             flush_batch_sync(&mut batch).expect("flush ok");
             assert!(batch.is_empty(), "flush must drain the batch");
 
-            // recv_a expects two distinct stamps (AA, CC).
-            let mut buf = [0u8; 128];
-            let mut stamps_a: Vec<u8> = Vec::new();
-            for _ in 0..2 {
+            // recv_a expects exactly two packets, each A_WIRE bytes.
+            let mut buf = [0u8; 256];
+            for i in 0..2 {
                 let (len, _) = recv_a.recv_from(&mut buf).expect("recv_a");
-                assert!(len > 16, "packet too short");
-                stamps_a.push(buf[16]);
+                assert_eq!(
+                    len, A_WIRE,
+                    "recv_a packet {i} has wrong length: got {len}, expected {A_WIRE}"
+                );
             }
-            stamps_a.sort();
-            assert_eq!(stamps_a, vec![0xAA, 0xCC]);
 
-            // recv_b expects exactly one stamp (BB).
+            // recv_b expects exactly one packet, B_WIRE bytes.
             let (len, _) = recv_b.recv_from(&mut buf).expect("recv_b");
-            assert!(len > 16, "packet too short");
-            assert_eq!(buf[16], 0xBB);
-
-            // recv_b must NOT receive any extra packets — the pre-fix
-            // bug would have sent everything to addr_a (the first
-            // job's destination).
-            recv_b
-                .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-                .unwrap();
-            let drained = recv_b.recv_from(&mut buf);
-            assert!(
-                drained.is_err(),
-                "recv_b got unexpected extra packet: {:?}",
-                drained
+            assert_eq!(
+                len, B_WIRE,
+                "recv_b packet has wrong length: got {len}, expected {B_WIRE}"
             );
+
+            // Neither receiver may have leftovers. The pre-fix bug
+            // would have either:
+            //   (a) sent all 3 packets to addr_a (first-job dest
+            //       used for the whole batch), causing recv_a to
+            //       see a B_WIRE-sized packet and recv_b to see
+            //       nothing, or
+            //   (b) silently sent A's wire packets to addr_b's
+            //       connected fd if any was installed.
+            for (name, sock) in [("recv_a", &recv_a), ("recv_b", &recv_b)] {
+                sock.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                    .unwrap();
+                let leftover = sock.recv_from(&mut buf);
+                assert!(
+                    leftover.is_err(),
+                    "{name} got unexpected extra packet: {:?}",
+                    leftover
+                );
+            }
         });
     }
 }

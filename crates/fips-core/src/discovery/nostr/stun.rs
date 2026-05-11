@@ -336,7 +336,7 @@ fn is_private_overlay_candidate_ip(ip: IpAddr) -> bool {
     }
 }
 
-#[cfg(any(unix, test))]
+#[cfg(unix)]
 fn interface_flags_allow_private_candidate(flags: i32) -> bool {
     let is_up = (flags & libc::IFF_UP) != 0;
     let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
@@ -547,6 +547,7 @@ mod tests {
         )));
     }
 
+    #[cfg(unix)]
     #[test]
     fn interface_candidate_filter_excludes_point_to_point_tunnels() {
         assert!(interface_flags_allow_private_candidate(
