@@ -138,10 +138,10 @@ mod platform {
                         std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                     )
                 };
-                if ret == 0 {
-                    if let Ok(after) = sock.recv_buffer_size() {
-                        actual_recv = after;
-                    }
+                if ret == 0
+                    && let Ok(after) = sock.recv_buffer_size()
+                {
+                    actual_recv = after;
                 }
             }
             #[cfg(target_os = "linux")]
@@ -156,10 +156,10 @@ mod platform {
                         std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                     )
                 };
-                if ret == 0 {
-                    if let Ok(after) = sock.send_buffer_size() {
-                        actual_send = after;
-                    }
+                if ret == 0
+                    && let Ok(after) = sock.send_buffer_size()
+                {
+                    actual_send = after;
                 }
             }
 
@@ -261,10 +261,10 @@ mod platform {
                         std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                     )
                 };
-                if ret == 0 {
-                    if let Ok(after) = sock.recv_buffer_size() {
-                        actual_recv = after;
-                    }
+                if ret == 0
+                    && let Ok(after) = sock.recv_buffer_size()
+                {
+                    actual_recv = after;
                 }
             }
             #[cfg(target_os = "linux")]
@@ -279,10 +279,10 @@ mod platform {
                         std::mem::size_of::<libc::c_int>() as libc::socklen_t,
                     )
                 };
-                if ret == 0 {
-                    if let Ok(after) = sock.send_buffer_size() {
-                        actual_send = after;
-                    }
+                if ret == 0
+                    && let Ok(after) = sock.send_buffer_size()
+                {
+                    actual_send = after;
                 }
             }
 

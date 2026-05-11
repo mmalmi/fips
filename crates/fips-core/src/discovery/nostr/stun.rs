@@ -390,10 +390,9 @@ fn random_txn_id() -> [u8; 12] {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        interface_flags_allow_private_candidate, is_private_overlay_candidate_ip,
-        parse_stun_binding_success,
-    };
+    #[cfg(unix)]
+    use super::interface_flags_allow_private_candidate;
+    use super::{is_private_overlay_candidate_ip, parse_stun_binding_success};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const STUN_MAGIC_COOKIE: u32 = 0x2112_a442;

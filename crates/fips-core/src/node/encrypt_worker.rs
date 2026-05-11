@@ -101,11 +101,11 @@ pub(crate) struct FmpSendJob {
     pub dest_addr: SocketAddr,
     /// **Linux fast path:** when set, the worker `sendmsg(2)`s on
     /// this socket's fd with `msg_name = NULL` instead of the listen
-    /// socket. The kernel skips per-packet sockaddr handling + route
-    /// + neighbor resolution because they're cached from the
-    /// `connect()` call. The `Arc` keeps the kernel fd alive for the
-    /// lifetime of this job; once the job completes and the worker
-    /// drops it, only the peer's strong ref remains.
+    /// socket. The kernel skips per-packet sockaddr handling, route
+    /// lookup, and neighbor resolution because they're cached from
+    /// the `connect()` call. The `Arc` keeps the kernel fd alive
+    /// for the lifetime of this job; once the job completes and the
+    /// worker drops it, only the peer's strong ref remains.
     #[cfg(target_os = "linux")]
     pub connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
