@@ -23,12 +23,21 @@
 //! 100 kpps that's ~70 ms/s of one core, which is exactly what we
 //! need to unstick the single-task bottleneck.
 //!
-//! The worker takes a pre-cooked [`FmpSendJob`] (cloned cipher,
-//! pre-reserved counter, header bytes for AAD, the inner plaintext
-//! Vec, an `AsyncUdpSocket` handle, and the destination `SocketAddr`)
-//! and does the AEAD `seal_in_place_append_tag` + a `sendto`. It
-//! never touches `Node` state, so any number of these can run in
-//! parallel against the same peer.
+//! The worker takes a pre-cooked [`FmpSendJob`] (pre-reserved counter,
+//! a fully-built wire buffer `[16-byte FMP header][inner plaintext]`
+//! with TAG_SIZE trailing capacity, a cloned cipher, an `AsyncUdpSocket`
+//! handle, and the destination `SocketAddr`) and does the AEAD
+//! `seal_in_place_separate_tag` + a single `sendmsg(2) + UDP_SEGMENT`
+//! (Linux GSO) or `sendmmsg(2)` fallback. It never touches `Node`
+//! state, so any number of these can run in parallel against the same
+//! peer.
+//!
+//! **UDP_GSO note** — the GSO path is verified end-to-end via a
+//! loopback round-trip unit test (see `tests::gso_roundtrip_loopback`).
+//! On a docker veth/bridge the perf gain from GSO is muted because the
+//! kernel does software segmentation on egress and the veth peer-skb
+//! cost dominates; on a real NIC (or `--network=host` benches) the
+//! single skb walk through the TX stack lands the expected win.
 
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::transport::udp::socket::AsyncUdpSocket;
