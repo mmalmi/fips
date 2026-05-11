@@ -303,15 +303,14 @@ impl FipsEndpoint {
 
         let remote = self.resolve_peer_identity(&remote_npub)?;
 
-        // Create a oneshot we never await; the node task's send/Err path will
-        // fire into a dropped receiver, which is fine — the result is already
-        // discarded inside handle_endpoint_data_command via `let _ = ...`.
-        let (response_tx, _response_rx) = oneshot::channel();
+        // Fire-and-forget: caller already drops the result, so skip
+        // the per-packet `oneshot::channel()` allocation entirely.
+        // The node task's `SendOneway` arm runs the same code path as
+        // `Send` but without writing the result into a oneshot.
         self.endpoint_commands
-            .send(NodeEndpointCommand::Send {
+            .send(NodeEndpointCommand::SendOneway {
                 remote,
                 payload: data,
-                response_tx,
             })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;

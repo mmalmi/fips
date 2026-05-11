@@ -212,10 +212,22 @@ pub(crate) struct EndpointDataIo {
 /// Commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointCommand {
+    /// Send with an explicit response channel — used by callers that
+    /// care whether the local-stack handoff succeeded (e.g.
+    /// `blocking_send` waits for the runtime to accept the send).
     Send {
         remote: PeerIdentity,
         payload: Vec<u8>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
+    /// **Fire-and-forget** variant of `Send` — no oneshot allocation,
+    /// no per-packet result channel. Used by the data-plane fast path
+    /// (`FipsEndpoint::send`) where the caller already discards the
+    /// result. Saves one oneshot::channel() allocation per outbound
+    /// packet on the application's send hot path.
+    SendOneway {
+        remote: PeerIdentity,
+        payload: Vec<u8>,
     },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,

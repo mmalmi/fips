@@ -1651,6 +1651,15 @@ impl Node {
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
             }
+            NodeEndpointCommand::SendOneway { remote, payload } => {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::EndpointSend,
+                );
+                // Result deliberately discarded — caller wanted
+                // fire-and-forget. Errors still get logged inside
+                // `send_endpoint_data` so they're not silent.
+                let _ = self.send_endpoint_data(remote, payload).await;
+            }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
                 let peers = self
                     .peers()
