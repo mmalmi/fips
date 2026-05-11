@@ -71,11 +71,11 @@ pub(crate) struct DecryptJob {
     /// `peers_by_index` key on the Node side: `(transport_id,
     /// receiver_idx)`.
     pub cache_key: (TransportId, u32),
-    /// Source kernel transport. Used only for stats — `set_current_addr`
-    /// short-circuits on unchanged source, and the address change
-    /// path is rare. Skip on the worker fast path; the rx_loop's
-    /// later non-fast-path activity (heartbeats, etc.) keeps
-    /// `current_addr` correctly updated.
+    /// Source kernel transport. Forwarded into the bounced
+    /// `DecryptFallback` so rx_loop can update per-peer last-seen +
+    /// link stats (otherwise the MMP link-dead timer fires at 30s
+    /// because the worker handles packets without ever calling
+    /// `peer.touch()` / `record_recv()`).
     pub _transport_id: TransportId,
     pub _remote_addr: TransportAddr,
     pub timestamp_ms: u64,
@@ -107,10 +107,24 @@ pub(crate) struct DecryptJob {
 /// Result of a successful FMP decrypt + replay accept, when the
 /// worker has decided this packet isn't on the EndpointData fast
 /// path and is bouncing it back to rx_loop for the legacy slow path.
-#[allow(dead_code)] // timestamp_ms / fmp_counter / fmp_flags retained for future debug paths
+#[allow(dead_code)] // fmp_counter / fmp_flags retained for future debug paths
 pub(crate) struct DecryptFallback {
     pub source_node_addr: NodeAddr,
+    /// Transport this packet arrived on — used by rx_loop's bounce
+    /// arm to call `peer.set_current_addr()` so address rotation +
+    /// MMP link-dead tracking continue to see updates for packets
+    /// handled by the worker.
+    pub transport_id: TransportId,
+    /// Remote transport address — companion to `transport_id`.
+    pub remote_addr: TransportAddr,
     pub timestamp_ms: u64,
+    /// Length of the wire packet that produced this bounce. Used
+    /// by rx_loop to call `peer.link_stats_mut().record_recv()` so
+    /// per-peer stats + MMP last-seen + link-dead detection see
+    /// progress for worker-handled packets. Without this update,
+    /// MMP's 30-second link-dead timer fires even though packets
+    /// are arriving fine.
+    pub packet_len: usize,
     pub fmp_counter: u64,
     pub fmp_flags: u8,
     /// FMP plaintext (the inner message; FSP if `prefix.phase ==
@@ -300,15 +314,20 @@ fn handle_job(
     let DecryptJob {
         mut packet_data,
         cache_key,
-        timestamp_ms: _ts,
+        _transport_id: transport_id,
+        _remote_addr: remote_addr,
+        timestamp_ms,
         source_node_addr,
         fmp_counter,
         fmp_header,
         fmp_ciphertext_offset,
         endpoint_event_tx,
         fallback_tx,
-        ..
     } = job;
+    // Capture the wire packet length BEFORE decrypt mutates the
+    // buffer — it'll be the same number either way (in-place AEAD
+    // open doesn't change Vec::len), but documenting the intent.
+    let packet_len = packet_data.len();
 
     // Look up the shard-owned session state. If absent (session not
     // yet registered, or unregistered mid-flight), bounce the raw
@@ -416,7 +435,10 @@ fn handle_job(
     let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
     let _ = fallback_tx.send(DecryptFallback {
         source_node_addr,
-        timestamp_ms: _ts,
+        transport_id,
+        remote_addr,
+        timestamp_ms,
+        packet_len,
         fmp_counter,
         fmp_flags: 0,
         fmp_plaintext,

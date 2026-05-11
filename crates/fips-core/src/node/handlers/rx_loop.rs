@@ -192,13 +192,36 @@ impl Node {
                     let _ = response_tx.send(response);
                 }
                 Some(fallback) = decrypt_fallback_rx.recv() => {
-                    // Decrypt worker bounced a non-fast-path packet
-                    // back for legacy dispatch (handshakes, MMP
-                    // reports, routing errors, IPv6-shim → TUN, etc.).
-                    // The FMP plaintext has already been decrypted +
-                    // replay-accepted by the worker; we just feed it
-                    // into `dispatch_link_message` as if it had come
-                    // off the inline path.
+                    // Decrypt worker bounced a packet back for legacy
+                    // FSP-layer dispatch. The FMP plaintext has already
+                    // been decrypted + replay-accepted by the worker;
+                    // we feed it into `dispatch_link_message` as if it
+                    // had come off the inline path.
+                    //
+                    // **Crucial:** also do the per-peer bookkeeping
+                    // that the inline path's
+                    // `handle_encrypted_frame` did — `peer.touch()`
+                    // (last_seen for MMP link-dead detection),
+                    // `record_recv` (stats), `set_current_addr`
+                    // (address rotation). The worker offloads the
+                    // FMP AEAD but cannot touch `Node` state, so
+                    // we have to mirror those updates here for every
+                    // worker-handled packet or MMP's 30s link-dead
+                    // timer fires and tears down the link even
+                    // though packets are arriving fine.
+                    if let Some(peer) =
+                        self.peers.get_mut(&fallback.source_node_addr)
+                    {
+                        peer.set_current_addr(
+                            fallback.transport_id,
+                            &fallback.remote_addr,
+                        );
+                        peer.link_stats_mut().record_recv(
+                            fallback.packet_len,
+                            fallback.timestamp_ms,
+                        );
+                        peer.touch(fallback.timestamp_ms);
+                    }
                     // Mirror of `INNER_TIMESTAMP_LEN` in
                     // `handlers/encrypted.rs` — the 4-byte session
                     // timestamp prefix inside the FMP plaintext.
