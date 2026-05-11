@@ -370,126 +370,61 @@ fn handle_job(
     let link_msg_end = fmp_plaintext_end;
     let link_msg = &packet_data[link_msg_start..link_msg_end];
 
-    // === Phase 2: dispatch by link msg_type ===
-    let msg_type = link_msg[0];
-    if msg_type != 0x00 {
-        // Bounce: re-allocate the FMP plaintext for rx_loop's slow
-        // path. Control traffic is rare, alloc cost doesn't matter.
-        let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
-        let _ = fallback_tx.send(DecryptFallback {
-            source_node_addr,
-            timestamp_ms: _ts,
-            fmp_counter,
-            fmp_flags: 0,
-            fmp_plaintext,
-        });
-        return Ok(());
-    }
-
-    // === Phase 3: zero-copy SessionDatagram parse + FSP decrypt in place ===
-    use crate::protocol::SessionDatagramRef;
-    let sd_body_abs_start = link_msg_start + 1; // skip msg_type=0x00
-    let sd_body = &link_msg[1..];
-    let datagram = match SessionDatagramRef::decode(sd_body) {
-        Ok(dg) => dg,
-        Err(_) => {
-            let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
-            let _ = fallback_tx.send(DecryptFallback {
-                source_node_addr,
-                timestamp_ms: _ts,
-                fmp_counter,
-                fmp_flags: 0,
-                fmp_plaintext,
-            });
-            return Ok(());
-        }
-    };
-
-    use crate::node::session_wire::{
-        FspCommonPrefix, FspEncryptedHeader, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
-        FSP_PHASE_ESTABLISHED,
-    };
-
-    let fsp_payload = datagram.payload;
-    let fsp_prefix = match FspCommonPrefix::parse(fsp_payload) {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-    if fsp_prefix.phase != FSP_PHASE_ESTABLISHED || fsp_prefix.is_unencrypted() {
-        // Plaintext error signal or non-bulk; bounce.
-        let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
-        let _ = fallback_tx.send(DecryptFallback {
-            source_node_addr,
-            timestamp_ms: _ts,
-            fmp_counter,
-            fmp_flags: 0,
-            fmp_plaintext,
-        });
-        return Ok(());
-    }
-    let fsp_header = match FspEncryptedHeader::parse(fsp_payload) {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-    let fsp_counter = fsp_header.counter;
-    let fsp_aad = fsp_header.header_bytes;
-
-    // Replay-check FSP counter — direct &mut on owned ReplayWindow.
-    if !state.fsp_replay.check(fsp_counter) {
-        return Ok(());
-    }
-
-    // Capture absolute offsets, then drop the `datagram` borrow.
-    let fsp_payload_abs_start = sd_body_abs_start + SessionDatagramRef::HEADER_LEN;
-    let fsp_ct_abs_start = fsp_payload_abs_start + FSP_HEADER_SIZE;
-    let fsp_ct_abs_end = fmp_plaintext_end;
-    let _ = datagram;
-
-    // FSP decrypt **in place** on packet_data.
-    let _t_fsp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[4..12].copy_from_slice(&fsp_counter.to_le_bytes());
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let fsp_plaintext_len = match state.fsp_cipher.open_in_place(
-        nonce,
-        Aad::from(&fsp_aad),
-        &mut packet_data[fsp_ct_abs_start..fsp_ct_abs_end],
-    ) {
-        Ok(p) => p.len(),
-        Err(_) => return Ok(()),
-    };
-    state.fsp_replay.accept(fsp_counter);
-    drop(_t_fsp);
-
-    if fsp_plaintext_len < FSP_INNER_HEADER_SIZE + 1 {
-        return Ok(());
-    }
-    let fsp_pt_start = fsp_ct_abs_start;
-    let fsp_pt_end = fsp_ct_abs_start + fsp_plaintext_len;
-    let fsp_msg_type = packet_data[fsp_pt_start + 4];
-    if fsp_msg_type != 0x11 {
-        let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
-        let _ = fallback_tx.send(DecryptFallback {
-            source_node_addr,
-            timestamp_ms: _ts,
-            fmp_counter,
-            fmp_flags: 0,
-            fmp_plaintext,
-        });
-        return Ok(());
-    }
-
-    // EndpointData fast path: copy out the app payload (post FSP
-    // inner header).
-    let inner_payload_start = fsp_pt_start + FSP_INNER_HEADER_SIZE;
-    let payload = packet_data[inner_payload_start..fsp_pt_end].to_vec();
-    let event = crate::node::NodeEndpointEvent::Data {
+    // === Phase 2: bounce ALL link messages back to rx_loop ===
+    //
+    // **Why no FSP fast path here:** previous design did FSP decrypt
+    // + replay-accept for SessionDatagram (link msg_type 0x00), then
+    // checked the inner FSP msg_type. If it was EndpointData (0x11),
+    // delivered directly to the endpoint event channel. Otherwise
+    // (heartbeats, MMP reports, IPv6-shim, etc.) bounced the
+    // **decrypted-in-place** FMP plaintext back to rx_loop.
+    //
+    // Two problems with that path:
+    //   1. After the shard-owned-sessions refactor (01f6c62), the FSP
+    //      replay window is owned by **this worker thread**. Once we
+    //      `state.fsp_replay.accept(fsp_counter)`, the rx_loop's
+    //      `noise::Session::replay_window` is stale — it still has
+    //      old counters. When rx_loop tries to FSP-decrypt the
+    //      bounced control frame, its legacy path's replay check
+    //      passes (the counter wasn't in its window) but the AEAD
+    //      tag check fails because the FSP bytes in `packet_data`
+    //      were already decrypted in place (now plaintext + 16
+    //      garbage tag bytes).
+    //   2. Even if we didn't accept the worker's replay window for
+    //      non-EndpointData, the in-place mutation of `packet_data`
+    //      means the legacy path can't re-decrypt — the ciphertext
+    //      is gone.
+    //
+    // The bug manifests in benches as link death: heartbeats never
+    // make it through the worker, the link-dead timer fires at 30s,
+    // peer is removed and re-handshakes, repeating forever.
+    //
+    // **Fix:** worker handles only the FMP layer. ALL link messages
+    // (SessionDatagram, heartbeats, control) bounce back to rx_loop
+    // with the FMP plaintext intact. The legacy rx_loop path does
+    // FSP-decrypt as usual. Net cost vs the broken fast path: we
+    // give up the rx_loop bypass for EndpointData, but the worker
+    // still offloads the FMP AEAD (~half the per-packet decrypt
+    // CPU). Correctness over micro-optimisation.
+    //
+    // The DataShard end-state (per the architectural plan) re-
+    // introduces the EndpointData fast path correctly by having the
+    // shard worker also own the rx_loop side for its sessions — at
+    // that point there's no "rx_loop legacy path" for the worker to
+    // conflict with.
+    let _ = link_msg; // sanity-check borrow before re-slicing for bounce
+    let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
+    let _ = fallback_tx.send(DecryptFallback {
         source_node_addr,
-        source_npub: state.source_npub.clone(),
-        payload,
-    };
-    let _t_deliver =
-        crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-    let _ = endpoint_event_tx.send(event);
+        timestamp_ms: _ts,
+        fmp_counter,
+        fmp_flags: 0,
+        fmp_plaintext,
+    });
+    // Silence unused-import warnings for the (now-removed) FSP fast
+    // path; keep them as documentation of what'd be needed if we
+    // bring it back as part of DataShard.
+    let _ = endpoint_event_tx;
+    let _ = (link_msg_start, link_msg_end, &state.source_npub, &state.fsp_replay, &state.fsp_cipher);
     Ok(())
 }
