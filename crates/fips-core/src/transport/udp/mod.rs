@@ -583,7 +583,18 @@ async fn udp_receive_loop(
     {
         const BATCH: usize = 32;
         let buf_size = mtu as usize + 100;
-        // One contiguous backing alloc; slice it for recvmmsg.
+        // Backing pool: one Vec<u8> per recvmmsg slot. We **own** each
+        // slot here — when a packet lands, we `mem::replace` the filled
+        // Vec out (handing the buffer directly to rx_loop via mpsc) and
+        // drop in a fresh Vec to refill that slot on the next call.
+        //
+        // Previous code did `let data = buf.to_vec();` per packet,
+        // which was 1 alloc + 1 memcpy of the entire packet (~1.5 KB)
+        // for every received UDP datagram. At 100 kpps that's
+        // ~150 MB/sec of avoidable memory bandwidth on the RX hot path.
+        // The new code does the same alloc count (one fresh Vec to
+        // refill the slot) but zero per-packet memcpy — the receive
+        // buffer becomes the packet buffer in one move.
         let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; buf_size]).collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
         let mut lens: [usize; BATCH] = [0; BATCH];
@@ -613,8 +624,9 @@ async fn udp_receive_loop(
                         };
                         stats.record_recv(len);
 
-                        let buf = &backing[i][..len];
-                        if is_punch_packet(buf) {
+                        // Peek before swap: punch probes / acks are
+                        // discarded without consuming a buffer move.
+                        if is_punch_packet(&backing[i][..len]) {
                             trace!(
                                 transport_id = %transport_id,
                                 remote_addr = %remote_addr,
@@ -624,7 +636,15 @@ async fn udp_receive_loop(
                             continue;
                         }
 
-                        let data = buf.to_vec();
+                        // Move the filled buffer out of the slot and
+                        // refill with a fresh one. `mem::replace`
+                        // returns the OLD value and writes the new one
+                        // — single pointer swap, no copy.
+                        let mut data = std::mem::replace(
+                            &mut backing[i],
+                            vec![0u8; buf_size],
+                        );
+                        data.truncate(len);
                         let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::new(transport_id, addr, data);
 
