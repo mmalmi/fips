@@ -236,6 +236,7 @@ impl Node {
                     self.check_pending_lookups(now_ms).await;
                     self.poll_transport_discovery().await;
                     self.sample_transport_congestion();
+                    self.activate_connected_udp_sessions().await;
                 }
             }
         }

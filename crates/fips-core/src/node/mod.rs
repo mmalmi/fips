@@ -1252,11 +1252,18 @@ impl Node {
         &mut self,
         cache_key: (TransportId, u32),
     ) {
+        // Find the peer that owns this index BEFORE removing it from
+        // the index map, so we can also tear down its per-peer
+        // connected UDP socket (drain thread → kernel fd) if any.
+        let owning_peer = self.peers_by_index.get(&cache_key).copied();
         self.peers_by_index.remove(&cache_key);
         if self.decrypt_registered_sessions.remove(&cache_key)
             && let Some(workers) = self.decrypt_workers.as_ref()
         {
             workers.unregister_session(cache_key);
+        }
+        if let Some(peer_addr) = owning_peer {
+            self.clear_connected_udp_for_peer(&peer_addr);
         }
     }
 

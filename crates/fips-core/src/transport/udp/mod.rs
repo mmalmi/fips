@@ -115,6 +115,25 @@ impl UdpTransport {
         self.local_addr
     }
 
+    /// Configured recv buffer size — used when opening per-peer
+    /// `ConnectedPeerSocket`s so they get the same buffer ceiling as
+    /// the wildcard listen socket.
+    pub fn recv_buf_size(&self) -> usize {
+        self.config.recv_buf_size()
+    }
+
+    /// Configured send buffer size — companion to `recv_buf_size`.
+    pub fn send_buf_size(&self) -> usize {
+        self.config.send_buf_size()
+    }
+
+    /// Clone the `PacketTx` end of the packet channel for off-task
+    /// receive paths (per-peer connected-socket drains, future shard
+    /// recv loops). The clone is just a refcount bump.
+    pub fn clone_packet_tx(&self) -> PacketTx {
+        self.packet_tx.clone()
+    }
+
     /// Get the transport statistics.
     pub fn stats(&self) -> &Arc<UdpStats> {
         &self.stats

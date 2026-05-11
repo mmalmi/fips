@@ -202,6 +202,15 @@ pub struct ActivePeer {
     #[cfg(target_os = "linux")]
     connected_udp:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+
+    /// Per-peer receive-drain thread. Always paired with
+    /// `connected_udp`: while the connected socket is installed, the
+    /// kernel UDP demux preferentially routes inbound packets from
+    /// this peer to it (via SO_REUSEPORT + 5-tuple match), so the
+    /// socket *must* be drained or packets pile up in its kernel
+    /// recv buffer. Drop signals the thread to exit via self-pipe.
+    #[cfg(target_os = "linux")]
+    peer_recv_drain: Option<crate::transport::udp::peer_drain::PeerRecvDrain>,
 }
 
 impl ActivePeer {
@@ -255,6 +264,8 @@ impl ActivePeer {
             rekey_msg1_next_resend: 0,
             #[cfg(target_os = "linux")]
             connected_udp: None,
+            #[cfg(target_os = "linux")]
+            peer_recv_drain: None,
         }
     }
 
@@ -337,6 +348,8 @@ impl ActivePeer {
             rekey_msg1_next_resend: 0,
             #[cfg(target_os = "linux")]
             connected_udp: None,
+            #[cfg(target_os = "linux")]
+            peer_recv_drain: None,
         }
     }
 
@@ -352,25 +365,41 @@ impl ActivePeer {
         self.connected_udp.clone()
     }
 
-    /// Install a per-peer `connect()`-ed UDP socket for this peer.
-    /// Called once the peer's `current_addr` is stable (session
-    /// established / address rotation completed). Replacing an
-    /// existing socket drops the old one — any in-flight encrypt-
-    /// worker jobs holding a refcount on it stay valid until they
-    /// complete, then it closes via `Arc` Drop.
+    /// Install a per-peer `connect()`-ed UDP socket **with** its
+    /// paired recv drain thread. The two are owned together: the
+    /// drain thread is the only consumer of packets arriving on this
+    /// socket (Linux UDP demux preferentially routes them away from
+    /// the wildcard listen socket via SO_REUSEPORT 5-tuple match),
+    /// so installing one without the other would silently drop
+    /// inbound packets from this peer.
+    ///
+    /// Replacing an existing pair drops the old drain (its self-pipe
+    /// shutdown signal fires; thread exits within one poll
+    /// iteration) and drops the old socket Arc. Any encrypt-worker
+    /// jobs already in-flight holding the old socket Arc stay valid
+    /// until they complete, at which point the kernel fd closes.
     #[cfg(target_os = "linux")]
     pub fn set_connected_udp(
         &mut self,
         socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+        drain: crate::transport::udp::peer_drain::PeerRecvDrain,
     ) {
+        // Drop order matters: drop the old drain BEFORE the old
+        // socket so the drain thread's last reference to the kernel
+        // fd is released cleanly.
+        self.peer_recv_drain = None;
+        self.connected_udp = None;
         self.connected_udp = Some(socket);
+        self.peer_recv_drain = Some(drain);
     }
 
-    /// Clear the per-peer connected UDP socket (e.g. on rekey or
-    /// disconnect). The kernel fd closes automatically when the last
-    /// `Arc` is dropped.
+    /// Clear the per-peer connected UDP socket + drain thread (e.g.
+    /// on rekey or disconnect). The drain thread exits via self-pipe
+    /// signal; the kernel fd closes when the last `Arc` to the
+    /// socket drops.
     #[cfg(target_os = "linux")]
     pub fn clear_connected_udp(&mut self) {
+        self.peer_recv_drain = None;
         self.connected_udp = None;
     }
 
