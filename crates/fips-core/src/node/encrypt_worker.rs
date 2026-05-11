@@ -318,6 +318,21 @@ fn flush_batch_sync(
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
+        // Debug: log the first 3 batches to see what's going on.
+        {
+            static DBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = DBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 3 {
+                let sizes: Vec<usize> = wire_packets.iter().take(5).map(|p| p.0.len()).collect();
+                eprintln!(
+                    "[fips-encrypt-worker DBG] flush batch_len={} sizes_head={:?} gso_disabled={} gso_eligible={}",
+                    wire_packets.len(),
+                    sizes,
+                    GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed),
+                    gso_eligible(&wire_packets),
+                );
+            }
+        }
         // Fast path: try UDP_GSO if the batch is uniform-size and the
         // kernel hasn't refused GSO before.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
