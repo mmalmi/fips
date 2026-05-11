@@ -274,10 +274,10 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
         return Ok(());
     }
 
-    // === Phase 3: parse SessionDatagram and find local-delivery FSP payload ===
+    // === Phase 3: parse SessionDatagram (zero-copy) and find local-delivery FSP payload ===
     //
     // SessionDatagram wire format (minimal subset we care about):
-    //   [msg_type:1=0x00][src:6][dst:6][ttl:1][path_mtu:2][payload...]
+    //   [msg_type:1=0x00][ttl:1][path_mtu:2][src:16][dst:16][payload...]
     // We need to check `dst == self.node_addr()` to confirm local
     // delivery — but the worker doesn't have access to `self`. The
     // hash-by-source dispatch already implies this is for us (the
@@ -285,11 +285,16 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
     // skip the dest check here. Routing-only datagrams shouldn't
     // hit the dispatch path because they're addressed elsewhere.
     //
-    // For SIMPLICITY: bounce non-local-delivery cases to rx_loop. The
-    // bench's flow is all local-delivery so this is the fast path.
-    use crate::protocol::SessionDatagram;
-    let sd_body = &link_msg[1..]; // after 0x00 msg_type byte
-    let datagram = match SessionDatagram::decode(sd_body) {
+    // Old code used `SessionDatagram::decode` which internally did a
+    // `payload[35..].to_vec()` — a per-packet alloc + ~1.5 KB memcpy
+    // of the inner FSP payload. The borrow-only `decode_ref` lets us
+    // capture the FSP payload's absolute offset inside `packet_data`
+    // and then decrypt FSP IN PLACE on `packet_data` after dropping
+    // the borrow. No alloc, no copy.
+    use crate::protocol::SessionDatagramRef;
+    let sd_body_abs_start = link_msg_start + 1; // skip msg_type=0x00
+    let sd_body = &link_msg[1..];
+    let datagram = match SessionDatagramRef::decode(sd_body) {
         Ok(dg) => dg,
         Err(_) => {
             // Malformed; bounce so rx_loop can log + record stats
@@ -310,9 +315,10 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
     // to get the FSP counter and decrypt in place.
     use crate::node::session_wire::{
         FspCommonPrefix, FspEncryptedHeader, FSP_PHASE_ESTABLISHED, FSP_INNER_HEADER_SIZE,
+        FSP_HEADER_SIZE,
     };
 
-    let fsp_payload = &datagram.payload;
+    let fsp_payload = datagram.payload;
     let fsp_prefix = match FspCommonPrefix::parse(fsp_payload) {
         Some(p) => p,
         None => return Ok(()),
@@ -334,6 +340,7 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
         None => return Ok(()),
     };
     let fsp_counter = fsp_header.counter;
+    let fsp_aad = fsp_header.header_bytes;
 
     // Replay-check FSP counter.
     {
@@ -343,27 +350,39 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
         }
     }
 
-    // FSP open_in_place needs &mut access to the ciphertext bytes
-    // inside the SessionDatagram payload, but `datagram` is moved out
-    // of `link_msg` (a borrow of `packet_data`) so we'd have an
-    // aliasing problem. Take ownership of the FSP payload bytes
-    // explicitly — one alloc per packet on the fast path, which is
-    // the price of decoupling from `packet_data` ownership. The
-    // legacy rx_loop path pays the same alloc inside
-    // `decrypt_with_replay_check_and_aad` anyway, so this is a wash.
-    let fsp_ciphertext_offset = crate::node::session_wire::FSP_HEADER_SIZE;
-    let mut fsp_buf = datagram.payload[fsp_ciphertext_offset..].to_vec();
-    let fsp_aad = fsp_header.header_bytes;
+    // Compute the FSP ciphertext absolute range inside `packet_data`,
+    // then drop the `datagram` borrow so we can re-borrow mutably.
+    //
+    // Layout (offsets in packet_data):
+    //   ...
+    //   link_msg_start                    -- msg_type=0x00
+    //   link_msg_start + 1                -- start of sd_body
+    //   link_msg_start + 1 + 35           -- start of FSP payload
+    //   ↑ (== sd_body_abs_start + SessionDatagramRef::HEADER_LEN)
+    //   + FSP_HEADER_SIZE                 -- start of FSP ciphertext
+    //   ...                               -- ciphertext + tag, up to fmp_plaintext_end
+    let fsp_payload_abs_start = sd_body_abs_start + SessionDatagramRef::HEADER_LEN;
+    let fsp_ct_abs_start = fsp_payload_abs_start + FSP_HEADER_SIZE;
+    let fsp_ct_abs_end = fmp_plaintext_end;
+    let _ = datagram; // release the borrow on packet_data (Copy type, just goes out of scope)
 
+    // FSP decrypt **in place** — ring's open_in_place mutates the
+    // ciphertext slice into plaintext + drops the tag (returns the
+    // plaintext-slice length). Previously this path did a
+    // `datagram.payload[fsp_ciphertext_offset..].to_vec()` — one alloc
+    // + ~1.5 KB memcpy per packet. Now: zero copies.
     let _t_fsp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
     let mut nonce_bytes = [0u8; 12];
     nonce_bytes[4..12].copy_from_slice(&fsp_counter.to_le_bytes());
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let fsp_plaintext_len = match fsp_cipher.open_in_place(nonce, Aad::from(&fsp_aad), &mut fsp_buf) {
+    let fsp_plaintext_len = match fsp_cipher.open_in_place(
+        nonce,
+        Aad::from(&fsp_aad),
+        &mut packet_data[fsp_ct_abs_start..fsp_ct_abs_end],
+    ) {
         Ok(p) => p.len(),
         Err(_) => return Ok(()),
     };
-    fsp_buf.truncate(fsp_plaintext_len);
     {
         let mut win = fsp_replay
             .lock()
@@ -373,10 +392,13 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
     drop(_t_fsp);
 
     // FSP plaintext is [timestamp:4][msg_type:1][inner_flags:1][app data]
+    // and now lives at `packet_data[fsp_ct_abs_start..fsp_ct_abs_start+fsp_plaintext_len]`.
     if fsp_plaintext_len < FSP_INNER_HEADER_SIZE + 1 {
         return Ok(());
     }
-    let fsp_msg_type = fsp_buf[4]; // byte 4 = msg_type
+    let fsp_pt_start = fsp_ct_abs_start;
+    let fsp_pt_end = fsp_ct_abs_start + fsp_plaintext_len;
+    let fsp_msg_type = packet_data[fsp_pt_start + 4]; // byte 4 = msg_type
     // EndpointData = 0x11 (see SessionMessageType::EndpointData
     // wire byte). For anything else, bounce: MMP reports, DataPacket
     // (IPv6 shim), CoordsWarmup, etc.
@@ -396,10 +418,13 @@ fn handle_job(job: DecryptJob) -> Result<(), Box<dyn std::error::Error + Send + 
         return Ok(());
     }
 
-    // EndpointData fast path: strip FSP inner header, deliver the app
-    // payload to the endpoint event channel.
-    let mut payload = fsp_buf;
-    payload.drain(..FSP_INNER_HEADER_SIZE);
+    // EndpointData fast path: copy out just the app payload (post
+    // FSP inner header). One alloc + copy, replacing the old
+    // `fsp_buf.to_vec()` (1 alloc + copy) **and** the
+    // `payload.drain(..FSP_INNER_HEADER_SIZE)` (1.5 KB memmove). Net:
+    // half the per-packet memory bandwidth of the old path.
+    let inner_payload_start = fsp_pt_start + FSP_INNER_HEADER_SIZE;
+    let payload = packet_data[inner_payload_start..fsp_pt_end].to_vec();
     let event = crate::node::NodeEndpointEvent::Data {
         source_node_addr,
         source_npub,

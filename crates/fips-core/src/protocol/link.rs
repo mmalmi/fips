@@ -352,30 +352,65 @@ impl SessionDatagram {
     }
 
     /// Decode from link-layer payload (after msg_type byte has been consumed).
+    ///
+    /// **Owning** variant — allocates a `Vec<u8>` for the inner
+    /// payload. The data-plane hot path should prefer
+    /// [`SessionDatagramRef::decode`] which is zero-copy.
     pub fn decode(payload: &[u8]) -> Result<Self, ProtocolError> {
+        let r = SessionDatagramRef::decode(payload)?;
+        Ok(Self {
+            src_addr: r.src_addr,
+            dest_addr: r.dest_addr,
+            ttl: r.ttl,
+            path_mtu: r.path_mtu,
+            payload: r.payload.to_vec(),
+        })
+    }
+}
+
+/// Zero-copy view over a `SessionDatagram`. The inner `payload` is a
+/// borrowed slice into the caller's buffer — no allocation, no memcpy.
+///
+/// Use this on the bulk data-plane RX path where every saved alloc /
+/// copy is ~150 MB/sec of memory bandwidth at line rate.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionDatagramRef<'a> {
+    pub src_addr: NodeAddr,
+    pub dest_addr: NodeAddr,
+    pub ttl: u8,
+    pub path_mtu: u16,
+    pub payload: &'a [u8],
+}
+
+impl<'a> SessionDatagramRef<'a> {
+    /// Decode from a link-layer payload (after msg_type byte has been
+    /// consumed). The returned `payload` borrows `buf[35..]`.
+    pub fn decode(buf: &'a [u8]) -> Result<Self, ProtocolError> {
         // ttl(1) + path_mtu(2) + src_addr(16) + dest_addr(16) = 35
-        if payload.len() < 35 {
+        if buf.len() < 35 {
             return Err(ProtocolError::MessageTooShort {
                 expected: 35,
-                got: payload.len(),
+                got: buf.len(),
             });
         }
-        let ttl = payload[0];
-        let path_mtu = u16::from_le_bytes([payload[1], payload[2]]);
+        let ttl = buf[0];
+        let path_mtu = u16::from_le_bytes([buf[1], buf[2]]);
         let mut src_bytes = [0u8; 16];
-        src_bytes.copy_from_slice(&payload[3..19]);
+        src_bytes.copy_from_slice(&buf[3..19]);
         let mut dest_bytes = [0u8; 16];
-        dest_bytes.copy_from_slice(&payload[19..35]);
-        let inner_payload = payload[35..].to_vec();
-
+        dest_bytes.copy_from_slice(&buf[19..35]);
         Ok(Self {
             src_addr: NodeAddr::from_bytes(src_bytes),
             dest_addr: NodeAddr::from_bytes(dest_bytes),
             ttl,
             path_mtu,
-            payload: inner_payload,
+            payload: &buf[35..],
         })
     }
+
+    /// Fixed-header size — the byte offset at which `payload` starts
+    /// inside the decode buffer.
+    pub const HEADER_LEN: usize = 35;
 }
 
 // Legacy type alias for compatibility during transition
