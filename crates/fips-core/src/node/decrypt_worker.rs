@@ -149,6 +149,12 @@ pub(crate) struct DecryptFallback {
 /// `Job` is the per-packet hot path; `RegisterSession` /
 /// `UnregisterSession` are control plane events sent at session
 /// establishment / teardown.
+///
+/// The `Job` variant is intentionally much larger than the control
+/// variants (it carries the whole packet buffer + cipher clone). The
+/// alternative — boxing `Job` — adds a per-packet alloc on the hot
+/// path, which is the exact thing this module is designed to avoid.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum WorkerMsg {
     Job(DecryptJob),
     RegisterSession {
@@ -291,11 +297,7 @@ fn run_worker(idx: usize, rx: Receiver<WorkerMsg>) {
     // thread — never observed by any other thread.
     let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
 
-    loop {
-        let msg = match rx.recv() {
-            Ok(m) => m,
-            Err(_) => break, // channel closed → graceful exit
-        };
+    while let Ok(msg) = rx.recv() {
         handle_msg(idx, &mut sessions, msg);
         // Drain follow-ons before parking again. Keeps the thread
         // on-core for a burst (typical recvmmsg batch is 5–30 packets

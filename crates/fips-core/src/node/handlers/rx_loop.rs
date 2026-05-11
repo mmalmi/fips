@@ -248,17 +248,16 @@ impl Node {
         Ok(())
     }
 
-    /// Flush any pending batched sends across all transports. Each
-    /// transport may buffer outbound packets (the UDP transport uses
-    /// `sendmmsg(2)` to amortise per-syscall overhead); this drains
-    /// whatever's still buffered so trailing packets in a burst don't
-    /// sit in the buffer past a drain cycle. Cheap when there's
-    /// nothing to flush — each transport just checks an empty queue.
+    /// Flush any pending batched sends across all transports. Today
+    /// every transport's `flush_pending_send` is a no-op — the UDP
+    /// transport's per-transport `pending_send` buffer was removed
+    /// when the bulk data path moved into `encrypt_worker` (which
+    /// does its own target-grouped `sendmmsg(2)` directly). The
+    /// call sites are retained so any future batched transport can
+    /// opt in by overriding `flush_pending_send` without touching
+    /// the rx_loop.
     async fn flush_pending_sends(&self) {
         for transport in self.transports.values() {
-            // Avoid hard-coding the UDP-only check here so future
-            // transports can opt into batching by overriding
-            // `flush_pending_send`.
             if matches!(transport, TransportHandle::Udp(_)) {
                 transport.flush_pending_send().await;
             }

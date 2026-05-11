@@ -173,6 +173,9 @@ impl SessionEntry {
     }
 
     /// Get the current session state.
+    #[allow(dead_code)] // kept for future shard-side FSP access; the legacy lazy-register
+    // path that used it is gone, but the API is the right shape for the
+    // upcoming FSP fast path in the decrypt worker.
     pub(crate) fn state(&self) -> &EndToEndState {
         self.state
             .as_ref()

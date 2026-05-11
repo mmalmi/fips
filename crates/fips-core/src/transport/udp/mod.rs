@@ -34,22 +34,28 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// per-batch sendmmsg cost dominate at multi-Gbps single-stream: the
 /// FIPS_PERF profile showed ~2.1 µs amortised per packet on the send
 /// path (~37% of one core at 164 kpps) with threshold=32, almost all
-/// of it being kernel time for `sendmmsg` itself.
-///
-/// Going to 256 keeps the sendmmsg fixed cost amortised over a much
-/// larger batch (kernel hard-cap is 1024; the underlying socket
-/// `send_batch` matches with SEND_BATCH_SIZE=256). Trailing-packet
-/// latency stays bounded: the rx_loop drain calls
-/// `flush_pending_send` at the end of every batch of inbound, TUN, or
-/// endpoint work, so partial buffers never sit waiting for a fill.
-#[cfg(target_os = "linux")]
-const SEND_FLUSH_THRESHOLD: usize = 256;
-
 /// UDP transport for FIPS.
 ///
 /// Provides connectionless, unreliable packet delivery over UDP/IP.
 /// A single socket serves all peers; links are virtual tuples of
 /// (transport_id, remote_addr).
+///
+/// **No per-transport send buffering.** An earlier iteration of this
+/// transport (commit 5929019) maintained a `pending_send` queue and
+/// flushed it via `sendmmsg(2)` once a threshold was hit, in order
+/// to amortise the per-syscall cost on the bulk-data hot path. That
+/// path now flows through the encrypt worker pool — which does its
+/// own `sendmmsg(2)` (target-grouped) directly on the raw fd — so
+/// `send_async` is left handling only low-rate handshakes, MMP
+/// reports, control messages, and rekeys (typical aggregate < 100
+/// pps). The buffered version silently dropped packets in those
+/// paths: nothing called `flush_pending_send` from the tick /
+/// decrypt-fallback / control branches of rx_loop, so a heartbeat
+/// could sit in the buffer until the next inbound batch arrived.
+/// Result was MMP link-dead timeouts on idle peers + 60+ failing
+/// integration tests (which construct `UdpTransport` outside the
+/// rx_loop entirely). One sendmmsg-with-1 ≈ one sendto in kernel
+/// time; the bulk path already gets real batching elsewhere.
 pub struct UdpTransport {
     /// Unique transport identifier.
     transport_id: TransportId,
@@ -71,14 +77,6 @@ pub struct UdpTransport {
     stats: Arc<UdpStats>,
     /// DNS resolution cache for hostname addresses.
     dns_cache: StdMutex<HashMap<TransportAddr, (SocketAddr, Instant)>>,
-    /// Pending outbound batch buffer (Linux only). Packets accumulate
-    /// here on `send_async` and flush via `sendmmsg(2)` either when the
-    /// buffer hits `SEND_FLUSH_THRESHOLD` or when the rx_loop drain
-    /// explicitly calls `flush_pending_send` at the end of a batch of
-    /// outbound work. Amortises the ~2 µs per-`sendto` syscall cost
-    /// across multiple packets per syscall.
-    #[cfg(target_os = "linux")]
-    pending_send: StdMutex<Vec<(SocketAddr, Vec<u8>)>>,
 }
 
 impl UdpTransport {
@@ -100,8 +98,6 @@ impl UdpTransport {
             local_addr: None,
             stats: Arc::new(UdpStats::new()),
             dns_cache: StdMutex::new(HashMap::new()),
-            #[cfg(target_os = "linux")]
-            pending_send: StdMutex::new(Vec::with_capacity(SEND_FLUSH_THRESHOLD * 2)),
         }
     }
 
@@ -373,23 +369,10 @@ impl UdpTransport {
 
     /// Send a packet asynchronously.
     ///
-    /// On Linux, this buffers into a small per-transport pending-send
-    /// queue and only triggers an actual syscall when the queue hits
-    /// `SEND_FLUSH_THRESHOLD` packets — at which point the entire queue
-    /// is drained via a single `sendmmsg(2)`. The rx_loop also calls
-    /// [`Self::flush_pending_send`] explicitly at the end of each drain
-    /// batch so trailing packets are flushed without waiting for the
-    /// queue to fill. The kernel `sendto` syscall is the dominant cost
-    /// of UDP send (~2 µs/packet on Docker bridge / aarch64 Linux);
-    /// `sendmmsg` amortises that cost across the batch.
-    ///
-    /// On non-Linux targets this still does one syscall per packet.
-    ///
-    /// The returned `bytes_sent` is best-effort: on the buffered Linux
-    /// path it reflects the buffered length, not a confirmed kernel
-    /// acceptance. Send errors during the deferred flush are recorded
-    /// in `self.stats.record_send_error()` and logged, not surfaced to
-    /// the original caller.
+    /// One syscall per call (`sendto(2)` on macOS / BSD, `sendmsg(2)`
+    /// on Linux via the AsyncUdpSocket wrapper). No batching at this
+    /// layer — see the module docs for why the previous buffered
+    /// implementation was removed.
     pub async fn send_async(
         &self,
         addr: &TransportAddr,
@@ -408,103 +391,31 @@ impl UdpTransport {
         }
 
         let socket_addr = self.resolve_cached(addr).await?;
-
-        #[cfg(target_os = "linux")]
-        {
-            let data_len = data.len();
-            // Push into the pending buffer; flush via sendmmsg if the
-            // threshold is hit.
-            let to_flush = {
-                let mut buf = self.pending_send.lock().unwrap();
-                buf.push((socket_addr, data.to_vec()));
-                if buf.len() >= SEND_FLUSH_THRESHOLD {
-                    Some(std::mem::take(&mut *buf))
-                } else {
-                    None
-                }
-            };
-            if let Some(batch) = to_flush {
-                self.send_batch_inner(batch).await;
+        let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
+        match socket.send_to(data, &socket_addr).await {
+            Ok(bytes_sent) => {
+                self.stats.record_send(bytes_sent);
+                trace!(
+                    transport_id = %self.transport_id,
+                    remote_addr = %socket_addr,
+                    bytes = bytes_sent,
+                    "UDP packet sent"
+                );
+                Ok(bytes_sent)
             }
-            Ok(data_len)
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
-            match socket.send_to(data, &socket_addr).await {
-                Ok(bytes_sent) => {
-                    self.stats.record_send(bytes_sent);
-                    trace!(
-                        transport_id = %self.transport_id,
-                        remote_addr = %socket_addr,
-                        bytes = bytes_sent,
-                        "UDP packet sent"
-                    );
-                    Ok(bytes_sent)
-                }
-                Err(e) => {
-                    self.stats.record_send_error();
-                    Err(e)
-                }
+            Err(e) => {
+                self.stats.record_send_error();
+                Err(e)
             }
         }
     }
 
-    /// Drain the pending-send buffer via `sendmmsg(2)`. Called both
-    /// internally when the buffer hits `SEND_FLUSH_THRESHOLD` and
-    /// externally by the rx_loop at end-of-drain to ensure trailing
-    /// packets don't sit in the buffer indefinitely.
-    #[cfg(target_os = "linux")]
-    pub async fn flush_pending_send(&self) {
-        let batch = {
-            let mut buf = self.pending_send.lock().unwrap();
-            if buf.is_empty() {
-                return;
-            }
-            std::mem::take(&mut *buf)
-        };
-        self.send_batch_inner(batch).await;
-    }
-
-    /// On non-Linux targets there's no batching, so flushing is a no-op.
-    #[cfg(not(target_os = "linux"))]
+    /// Backwards-compatible no-op. The per-transport send buffer was
+    /// removed; the rx_loop's `flush_pending_sends()` calls are
+    /// retained to keep the call sites stable for any future
+    /// batched-transport reintroduction, but for `UdpTransport`
+    /// today there is nothing to flush.
     pub async fn flush_pending_send(&self) {}
-
-    /// Internal: drain a captured batch via `sendmmsg(2)`.
-    #[cfg(target_os = "linux")]
-    async fn send_batch_inner(&self, batch: Vec<(SocketAddr, Vec<u8>)>) {
-        let Some(socket) = self.socket.as_ref() else {
-            self.stats.record_send_error();
-            return;
-        };
-        // sendmmsg takes &[(&[u8], SocketAddr)]; build the slice view.
-        let pkt_refs: Vec<(&[u8], SocketAddr)> = batch
-            .iter()
-            .map(|(addr, data)| (data.as_slice(), *addr))
-            .collect();
-        let mut sent = 0usize;
-        while sent < pkt_refs.len() {
-            match socket.send_batch(&pkt_refs[sent..]).await {
-                Ok(0) => {
-                    // Spurious wakeup or kernel rejected all of them;
-                    // count as send error and stop to avoid busy-loop.
-                    self.stats.record_send_error();
-                    break;
-                }
-                Ok(n) => {
-                    let total: usize = pkt_refs[sent..sent + n].iter().map(|(d, _)| d.len()).sum();
-                    self.stats.record_send(total);
-                    sent += n;
-                }
-                Err(e) => {
-                    debug!(error = %e, "sendmmsg flush failed");
-                    self.stats.record_send_error();
-                    break;
-                }
-            }
-        }
-    }
 }
 
 impl Transport for UdpTransport {

@@ -37,7 +37,7 @@ impl Node {
     pub(in crate::node) async fn activate_connected_udp_sessions(&mut self) {
         #[cfg(not(target_os = "linux"))]
         {
-            return;
+            // No-op on non-Linux.
         }
         #[cfg(target_os = "linux")]
         {

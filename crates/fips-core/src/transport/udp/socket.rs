@@ -607,10 +607,11 @@ mod platform {
     impl AsyncUdpSocket {
         /// Send a payload to a destination address.
         ///
-        /// On Linux the production send path uses `send_batch`; this
-        /// single-packet variant remains for non-Linux unix targets and
-        /// for the local `tests` module.
-        #[cfg_attr(target_os = "linux", allow(dead_code))]
+        /// Used by `UdpTransport::send_async` for the low-rate control
+        /// plane (handshakes, MMP reports, rekeys). The high-throughput
+        /// data path goes through `encrypt_worker::flush_batch_sync`,
+        /// which calls `sendmmsg(2)` / `sendmsg(2)+UDP_GSO` directly
+        /// on the raw fd.
         pub async fn send_to(
             &self,
             data: &[u8],

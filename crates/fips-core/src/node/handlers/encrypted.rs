@@ -226,6 +226,9 @@ impl Node {
     /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
     /// 4-byte inner timestamp still at the front (i.e. the same
     /// layout the legacy `strip_inner_header` consumed).
+    #[allow(clippy::too_many_arguments)] // single canonical post-decrypt hook;
+    // grouping these into a struct just shifts the
+    // boilerplate around without simplifying anything.
     pub(in crate::node) async fn process_authentic_fmp_plaintext(
         &mut self,
         node_addr: &crate::NodeAddr,
