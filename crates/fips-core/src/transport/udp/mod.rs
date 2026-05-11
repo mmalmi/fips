@@ -9,6 +9,8 @@ use super::{
 pub(crate) mod socket;
 #[cfg(target_os = "linux")]
 pub(crate) mod connected_peer;
+#[cfg(target_os = "linux")]
+pub(crate) mod peer_drain;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
