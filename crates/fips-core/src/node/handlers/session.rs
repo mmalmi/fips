@@ -171,6 +171,9 @@ impl Node {
         ce_flag: bool,
         previous_hop: Option<NodeAddr>,
     ) {
+        let _t_fsp_handle = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FspHandle,
+        );
         // Parse the 12-byte encrypted header (includes the 4-byte prefix)
         let header = match FspEncryptedHeader::parse(payload) {
             Some(h) => h,
@@ -1865,6 +1868,9 @@ impl Node {
             payload,
         };
 
+        let _t_deliver = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointDeliver,
+        );
         if let Err(error) = endpoint_event_tx.send(event) {
             debug!(
                 src = %self.peer_display_name(src_addr),

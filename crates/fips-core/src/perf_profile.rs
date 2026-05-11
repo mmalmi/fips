@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 8;
+const N_STAGES: usize = 11;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
 #[derive(Copy, Clone, Debug)]
@@ -40,6 +40,16 @@ pub enum Stage {
     FspEncrypt = 5,
     FmpEncrypt = 6,
     UdpSend = 7,
+    /// Whole `Node::process_packet` body. Anchor for "what fraction of
+    /// the receive hot path is in the non-AEAD parts of the pipeline".
+    ProcessPacket = 8,
+    /// Just the `endpoint_event_tx.send()` for inbound application
+    /// payloads — wakes the embedded-endpoint consumer task.
+    EndpointDeliver = 9,
+    /// Whole `handle_encrypted_session_msg` (FSP receive path) minus
+    /// the `FspDecrypt` sub-span. Surfaces dispatch + ipv6_shim +
+    /// `Vec::drain` cost on the inner session layer.
+    FspHandle = 10,
 }
 
 impl Stage {
@@ -53,31 +63,15 @@ impl Stage {
             Stage::FspEncrypt => "fsp_encrypt",
             Stage::FmpEncrypt => "fmp_encrypt",
             Stage::UdpSend => "udp_send",
+            Stage::ProcessPacket => "process_packet",
+            Stage::EndpointDeliver => "endpoint_deliver",
+            Stage::FspHandle => "fsp_handle",
         }
     }
 }
 
-static TOTAL_NS: [AtomicU64; N_STAGES] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-
-static COUNT: [AtomicU64; N_STAGES] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+static TOTAL_NS: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
+static COUNT: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
 
 /// True iff `FIPS_PERF=1` is set. Read once at startup so the
 /// per-packet check is a single relaxed atomic load.
@@ -170,6 +164,9 @@ pub fn maybe_spawn_reporter() {
                     5 => Stage::FspEncrypt,
                     6 => Stage::FmpEncrypt,
                     7 => Stage::UdpSend,
+                    8 => Stage::ProcessPacket,
+                    9 => Stage::EndpointDeliver,
+                    10 => Stage::FspHandle,
                     _ => unreachable!(),
                 };
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };

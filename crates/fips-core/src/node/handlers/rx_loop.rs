@@ -232,6 +232,9 @@ impl Node {
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
     async fn process_packet(&mut self, packet: ReceivedPacket) {
+        let _t_total = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::ProcessPacket,
+        );
         if packet.data.len() < COMMON_PREFIX_SIZE {
             return; // Drop packets too short for common prefix
         }

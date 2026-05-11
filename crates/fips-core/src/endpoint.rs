@@ -360,6 +360,40 @@ impl FipsEndpoint {
         })
     }
 
+    /// Non-blocking receive — returns the next ready endpoint message
+    /// if one is queued, otherwise `None`. Pair with `recv()` to drain
+    /// follow-on packets without paying a scheduler wake per packet:
+    ///
+    /// ```ignore
+    /// // wake on the first packet, then drain everything ready
+    /// while let Some(msg) = endpoint.recv().await { process(msg); }
+    /// while let Some(msg) = endpoint.try_recv() { process(msg); }
+    /// ```
+    ///
+    /// On the bench's FIPS-tunnel receive path the kernel UDP socket
+    /// delivers packets in `recvmmsg`-sized bursts, so after a `.recv()`
+    /// await there are typically 5–30 packets queued waiting. Draining
+    /// them inline with `try_recv` saves N-1 scheduler hops per burst
+    /// at line rate, freeing the consumer task to spend its time on
+    /// the TUN write syscall instead of cross-task plumbing.
+    ///
+    /// Returns `None` if the channel is empty, closed, or briefly
+    /// contested by another consumer.
+    pub fn try_recv(&self) -> Option<FipsEndpointMessage> {
+        let mut rx = self.inbound_endpoint_rx.try_lock().ok()?;
+        let event = rx.try_recv().ok()?;
+        let NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } = event;
+        Some(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
+    }
+
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
