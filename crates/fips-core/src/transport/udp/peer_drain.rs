@@ -33,6 +33,7 @@ use tracing::{debug, trace, warn};
 /// Handle to a running per-peer drain thread. Drops the thread (and
 /// closes its self-pipe) on drop; the thread exits next time it
 /// returns from `poll(2)`.
+#[derive(Debug)]
 pub(crate) struct PeerRecvDrain {
     /// Write end of the shutdown self-pipe. Write a single byte to
     /// wake the drain thread out of `poll(2)` so it sees the stop
