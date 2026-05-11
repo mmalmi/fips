@@ -546,6 +546,92 @@ impl Node {
         self.queue_open_discovery_retries(&bootstrap).await;
     }
 
+    /// Extract the bare discovery scope from the Nostr discovery app tag,
+    /// which is encoded as `fips-overlay-v1:<scope>` by
+    /// `apply_default_scoped_discovery`. Returns `None` when no scope is
+    /// set, so the LAN browser surfaces every advert it sees.
+    pub(super) fn lan_discovery_scope(&self) -> Option<String> {
+        let app = self.config.node.discovery.nostr.app.trim();
+        if app.is_empty() {
+            return None;
+        }
+        if let Some(rest) = app.strip_prefix("fips-overlay-v1:") {
+            let scope = rest.trim();
+            if scope.is_empty() {
+                None
+            } else {
+                Some(scope.to_string())
+            }
+        } else {
+            Some(app.to_string())
+        }
+    }
+
+    /// Drain mDNS-discovered peers and initiate Noise XX handshakes for
+    /// any whose npub we don't already have a connection or active peer
+    /// for. The handshake itself is the authentication — a spoofed
+    /// mDNS advert with someone else's npub fails the XX exchange and
+    /// is dropped.
+    pub(super) async fn poll_lan_discovery(&mut self) {
+        let Some(runtime) = self.lan_discovery.clone() else {
+            return;
+        };
+        let events = runtime.drain_events().await;
+        if events.is_empty() {
+            return;
+        }
+        // Snapshot the operational UDP transport set up front; mDNS
+        // discovery only yields UDP endpoints today.
+        let udp_transport_id = self
+            .transports
+            .iter()
+            .filter(|(_, h)| h.is_operational())
+            .find(|(_, h)| h.transport_type().name == "udp")
+            .map(|(id, _)| *id);
+        let Some(transport_id) = udp_transport_id else {
+            debug!("lan: no operational UDP transport, skipping discovered peers");
+            return;
+        };
+        for event in events {
+            let crate::discovery::lan::LanEvent::Discovered(peer) = event;
+            let identity = match crate::PeerIdentity::from_npub(&peer.npub) {
+                Ok(id) => id,
+                Err(err) => {
+                    debug!(npub = %peer.npub, error = %err, "lan: skip bad npub");
+                    continue;
+                }
+            };
+            let peer_node_addr = *identity.node_addr();
+            if self.peers.contains_key(&peer_node_addr) {
+                continue;
+            }
+            let already_connecting = self.connections.values().any(|conn| {
+                conn.expected_identity()
+                    .map(|id| id.node_addr() == &peer_node_addr)
+                    .unwrap_or(false)
+            });
+            if already_connecting {
+                continue;
+            }
+            let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
+            info!(
+                npub = %identity.short_npub(),
+                addr = %peer.addr,
+                "lan: initiating handshake to discovered peer"
+            );
+            if let Err(err) = self
+                .initiate_connection(transport_id, remote_addr, identity)
+                .await
+            {
+                debug!(
+                    npub = %peer.npub,
+                    error = %err,
+                    "lan: failed to initiate connection to discovered peer"
+                );
+            }
+        }
+    }
+
     /// Poll pending transport connects and initiate handshakes for ready ones.
     ///
     /// Called from the tick handler. For each pending connect, queries the
@@ -696,6 +782,36 @@ impl Node {
                 }
                 Err(err) => {
                     warn!(error = %err, "Failed to start Nostr overlay discovery");
+                }
+            }
+        }
+
+        // mDNS / DNS-SD LAN discovery. Independent of Nostr — runs even
+        // when Nostr is disabled, since it gives us sub-second pairing
+        // on the same link without any relay or NAT-traversal roundtrip.
+        if self.config.node.discovery.lan.enabled {
+            let advertised_udp_port = self
+                .transports
+                .values()
+                .filter(|h| h.is_operational())
+                .filter(|h| h.transport_type().name == "udp")
+                .find_map(|h| h.local_addr().map(|addr| addr.port()))
+                .unwrap_or(0);
+            let scope = self.lan_discovery_scope();
+            match crate::discovery::lan::LanDiscovery::start(
+                &self.identity,
+                scope,
+                advertised_udp_port,
+                self.config.node.discovery.lan.clone(),
+            )
+            .await
+            {
+                Ok(runtime) => {
+                    self.lan_discovery = Some(runtime);
+                    info!("LAN mDNS discovery enabled");
+                }
+                Err(err) => {
+                    debug!(error = %err, "LAN mDNS discovery not started");
                 }
             }
         }
@@ -987,6 +1103,13 @@ impl Node {
             && let Err(e) = bootstrap.shutdown().await
         {
             warn!(error = %e, "Failed to shutdown Nostr overlay discovery");
+        }
+
+        // Tear down LAN mDNS responder + browser. Best-effort: the
+        // OS will eventually time the advert out via its TTL even if
+        // we don't get a clean unregister out before the daemon exits.
+        if let Some(lan) = self.lan_discovery.take() {
+            lan.shutdown().await;
         }
 
         // Shutdown transports (they're packet producers)

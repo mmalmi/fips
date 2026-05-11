@@ -460,10 +460,7 @@ fn planned_remote_endpoints_skip_cross_lan_private_remote() {
         Some(&addr("203.0.113.10", 62000)),
         // Their reported local candidates: a *different* private LAN.
         // From our public reflexive these are unrouteable.
-        &[
-            addr("192.168.178.91", 35576),
-            addr("10.0.0.5", 35576),
-        ],
+        &[addr("192.168.178.91", 35576), addr("10.0.0.5", 35576)],
         Some(&addr("198.51.100.20", 63000)),
         false,
     )
