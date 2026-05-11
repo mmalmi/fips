@@ -292,18 +292,65 @@ fn flush_batch_sync(
         wire_packets.push((wire_buf, dest_addr));
     }
 
-    // 2) Bulk send via direct `sendmmsg(2)` on the raw FD. We can't
-    //    call `AsyncUdpSocket::send_batch` from a non-tokio thread
-    //    (it `await`s the AsyncFd reactor for writability), so go to
-    //    the inner socket directly. The kernel UDP socket is in
-    //    nonblocking mode (set by `UdpRawSocket::open`); on EAGAIN we
-    //    yield with a tiny spin sleep and retry. At line rate the
-    //    kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is
-    //    rarely full so this is the cold path.
+    // 2) Bulk send via the raw FD.
+    //
+    // **Preferred (Linux only): UDP_GSO** — when every wire packet in
+    // the batch is the same size (last one may be shorter, which the
+    // kernel handles), a single `sendmsg(2)` with the `UDP_SEGMENT`
+    // cmsg lets the kernel split one "super-skb" into N on-the-wire
+    // UDP datagrams in a single skb-walk. Profiling on AMD VM showed
+    // `sendmmsg(2)` taking ~4.5 µs per packet (30× the amortised cost
+    // we expected) at single-flow TCP rates — the kernel TX path was
+    // the actual bottleneck, not the AEAD. UDP_GSO collapses that to
+    // ~one walk per batch. Same primitive WireGuard kernel + boringtun
+    // use to hit 2.5-3.2 Gbps.
+    //
+    // **Fallback: sendmmsg(2)** — used when sizes differ in the batch
+    // (FIPS control frames + EndpointData mixed), and after a one-shot
+    // EINVAL/EOPNOTSUPP from UDP_GSO sticks the GSO_DISABLED flag.
+    // Same retry-on-EAGAIN loop as before.
+    //
+    // On EAGAIN we `yield_now()` — the kernel UDP socket is in
+    // nonblocking mode (`UdpRawSocket::open`), and at line rate the
+    // kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is rarely
+    // full so this is the cold path.
     let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
+        // Fast path: try UDP_GSO if the batch is uniform-size and the
+        // kernel hasn't refused GSO before.
+        if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+            && gso_eligible(&wire_packets)
+        {
+            match send_batch_gso(fd, &wire_packets) {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::InvalidInput
+                        || err.raw_os_error() == Some(libc::EOPNOTSUPP)
+                        || err.raw_os_error() == Some(libc::ENOPROTOOPT) =>
+                {
+                    // Kernel doesn't support UDP_GSO on this socket /
+                    // device — fall back permanently to sendmmsg.
+                    GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    warn!(
+                        error = %err,
+                        "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
+                    );
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    // Send buffer full mid-GSO — fall through to the
+                    // sendmmsg retry loop below to drain remaining
+                    // packets the normal way. No GSO_DISABLED toggle.
+                }
+                Err(err) => {
+                    return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
+                }
+            }
+        }
+
+        // Fallback: sendmmsg(2) for mixed-size batches and post-EAGAIN
+        // / post-GSO-refused.
         let mut sent = 0usize;
         while sent < wire_packets.len() {
             let n = match send_batch_raw(fd, &wire_packets[sent..]) {
@@ -339,6 +386,115 @@ fn flush_batch_sync(
         }
     }
     Ok(())
+}
+
+/// Process-wide flag: once the kernel returns EINVAL / EOPNOTSUPP from
+/// a UDP_GSO send, we stop trying. Set lazily, never reset.
+#[cfg(target_os = "linux")]
+static GSO_DISABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A batch is GSO-eligible iff every packet is the same size, except
+/// the last one may be shorter (UDP_GSO's documented behaviour). Real-
+/// world TCP-over-FIPS traffic at line rate is almost entirely MTU-
+/// sized packets, so this hits on >99% of batches.
+#[cfg(target_os = "linux")]
+fn gso_eligible(packets: &[(Vec<u8>, SocketAddr)]) -> bool {
+    if packets.len() < 2 {
+        // Single-packet batches don't benefit from GSO (no segmentation
+        // saving) and just add cmsg overhead.
+        return false;
+    }
+    let seg = packets[0].0.len();
+    if seg == 0 {
+        return false;
+    }
+    for p in &packets[..packets.len() - 1] {
+        if p.0.len() != seg {
+            return false;
+        }
+    }
+    // Last packet must be <= seg.
+    packets[packets.len() - 1].0.len() <= seg
+}
+
+/// Issue a single `sendmsg(2)` with the `UDP_SEGMENT` cmsg, handing
+/// the kernel a scatter-gather list of N same-size packets which it
+/// emits as N on-the-wire UDP datagrams from one skb walk.
+///
+/// Scatter-gather: we pass each wire packet as its own iovec. With
+/// UDP_GSO, the kernel concatenates iovecs into one logical payload
+/// before segmenting, so we avoid a separate "memcpy all packets into
+/// one big buffer" step.
+#[cfg(target_os = "linux")]
+fn send_batch_gso(
+    fd: std::os::unix::io::RawFd,
+    packets: &[(Vec<u8>, SocketAddr)],
+) -> std::io::Result<()> {
+    debug_assert!(!packets.is_empty());
+    const MAX_BATCH: usize = 64;
+    let n = packets.len().min(MAX_BATCH);
+    if n == 0 {
+        return Ok(());
+    }
+
+    let seg_size = packets[0].0.len() as u16;
+    let dest = packets[0].1;
+    let sa: socket2::SockAddr = dest.into();
+
+    // Stack-allocated arrays sized for the worst case in this batch.
+    let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    for (i, (data, _)) in packets[..n].iter().enumerate() {
+        iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+        iovs[i].iov_len = data.len();
+    }
+
+    // Storage for the destination address.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let sa_len = sa.len();
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            sa.as_ptr() as *const u8,
+            &mut storage as *mut _ as *mut u8,
+            sa_len as usize,
+        );
+    }
+
+    // Control message buffer: one cmsghdr + 2 bytes payload (u16
+    // segment_size), padded to the cmsg alignment.
+    let cmsg_space = unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize };
+    let mut cmsg_buf = [0u8; 64];
+    debug_assert!(cmsg_space <= cmsg_buf.len());
+
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+    msg.msg_namelen = sa_len;
+    msg.msg_iov = iovs.as_mut_ptr();
+    msg.msg_iovlen = n;
+    msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = cmsg_space;
+
+    // Fill the UDP_SEGMENT cmsg.
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if cmsg.is_null() {
+            return Err(std::io::Error::other("CMSG_FIRSTHDR returned null"));
+        }
+        (*cmsg).cmsg_level = libc::IPPROTO_UDP;
+        (*cmsg).cmsg_type = libc::UDP_SEGMENT;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
+        let data = libc::CMSG_DATA(cmsg) as *mut u16;
+        *data = seg_size;
+    }
+
+    let r = unsafe { libc::sendmsg(fd, &msg, 0) };
+    if r < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        // sendmsg+UDP_GSO either submits the whole super-skb or returns
+        // -1; partial submission isn't a thing here.
+        Ok(())
+    }
 }
 
 /// Direct `sendmmsg(2)` wrapper for the sync worker. The
