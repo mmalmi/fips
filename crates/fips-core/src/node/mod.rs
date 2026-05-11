@@ -2431,12 +2431,17 @@ impl Node {
                 reason: "no noise session".into(),
             })?;
 
-        // Inner plaintext: [timestamp:4 LE][msg_type][payload...]
-        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
-
-        // Build 16-byte outer header (used as AAD for AEAD)
+        // Build 16-byte outer header upfront. The inner-plaintext
+        // layout is `[ts:4 LE][plaintext...]`, so its length is exactly
+        // `INNER_TS_LEN + plaintext.len()` — no need to build the Vec
+        // just to measure it. The worker path uses this length to size
+        // the wire buffer directly; the legacy path below still
+        // materialises a separate `inner_plaintext` Vec for the inline
+        // encrypt-and-send call.
+        const INNER_TS_LEN: usize = 4;
         let counter = session.current_send_counter();
-        let payload_len = inner_plaintext.len() as u16;
+        let inner_len = INNER_TS_LEN + plaintext.len();
+        let payload_len = inner_len as u16;
         let header = build_established_header(their_index, counter, flags, payload_len);
 
         // Off-task fast path: when a worker pool is configured AND
@@ -2484,12 +2489,28 @@ impl Node {
                 if let Some(socket_addr) = socket_addr_opt {
                     if let TransportHandle::Udp(udp) = transport {
                         if let Some(socket) = udp.async_socket() {
-                            // Reserve room for the AEAD tag so the worker
-                            // can `seal_in_place_append_tag` without
-                            // re-growing the Vec.
-                            let mut buf = inner_plaintext;
-                            buf.reserve(16);
-                            let predicted_bytes = ESTABLISHED_HEADER_SIZE + buf.len() + 16;
+                            // Build the wire buffer **directly** from
+                            // `plaintext` with a single allocation:
+                            //   `[16 header][4 ts][plaintext...]` with
+                            // +16 trailing capacity for the AEAD tag.
+                            // The worker seals `wire_buf[16..]` in
+                            // place and appends the tag — no second
+                            // alloc, no second memcpy.
+                            //
+                            // Previous design built `inner_plaintext`
+                            // via `prepend_inner_header` (1 alloc + 1
+                            // copy) and then let the worker memcpy
+                            // header + plaintext into a fresh Vec
+                            // (another alloc + copy). At ~100 kpps the
+                            // saved alloc/copy is ~150 MB/sec of memory
+                            // bandwidth on the hot rx_loop + worker.
+                            let wire_capacity =
+                                ESTABLISHED_HEADER_SIZE + inner_len + 16;
+                            let mut wire_buf = Vec::with_capacity(wire_capacity);
+                            wire_buf.extend_from_slice(&header);
+                            wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                            wire_buf.extend_from_slice(plaintext);
+                            let predicted_bytes = wire_capacity;
                             // Stats / MMP update inline — predicted size
                             // is exact for ChaCha20-Poly1305 (tag is
                             // constant 16 bytes).
@@ -2506,8 +2527,7 @@ impl Node {
                             workers.dispatch(self::encrypt_worker::FmpSendJob {
                                 cipher: cipher_clone,
                                 counter: reserved_counter,
-                                header,
-                                inner_plaintext: buf,
+                                wire_buf,
                                 socket,
                                 dest_addr: socket_addr,
                             });
@@ -2519,6 +2539,10 @@ impl Node {
         }
 
         // Inline (legacy) path: encrypt + send on the rx_loop.
+        // Build the inner plaintext lazily here — the worker path
+        // above never reaches this point, so the prepend_inner_header
+        // alloc is avoided in the fast path.
+        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
         // Encrypt with AAD binding to the outer header
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(

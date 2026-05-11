@@ -43,20 +43,40 @@ use tracing::{debug, trace, warn};
 /// (counter reservation, MMP/stats update) was already done on the
 /// rx_loop before this was built; the worker only does the AEAD +
 /// syscall.
+///
+/// **Wire-buf layout** — `wire_buf` is built on the rx_loop side as
+/// the **final wire packet, minus the trailing AEAD tag**:
+///
+/// ```text
+///   ┌──────────────────────────────┬────────────────────────────┐
+///   │ FMP outer header (16 bytes)  │   inner plaintext (var)    │
+///   └──────────────────────────────┴────────────────────────────┘
+///   ^ wire_buf[0..16]                ^ wire_buf[16..]
+///   used as AAD                      sealed in place
+/// ```
+///
+/// Capacity is reserved for an additional 16-byte tag at the end so
+/// the worker can `seal_in_place_separate_tag` on `wire_buf[16..]` and
+/// then `wire_buf.extend_from_slice(&tag)` without re-growing. After
+/// seal, `wire_buf` IS the wire packet — no second alloc / memcpy.
+///
+/// (Previous design used a separate `header: [u8; 16]` + `inner_plaintext:
+/// Vec<u8>` and then memcpy'd header + ciphertext into a fresh `Vec`
+/// inside the worker. That second alloc + ~1.5 KB memcpy per packet at
+/// line rate cost ~150 MB/sec of memory bandwidth on the hot worker.)
 pub(crate) struct FmpSendJob {
     /// Cloned FMP send cipher. `LessSafeKey` is `Clone` (`ring::aead`)
     /// — the clone is just a refcount bump on the inner key material.
     pub cipher: LessSafeKey,
     /// Pre-reserved monotonic counter (via `take_send_counter`).
     pub counter: u64,
-    /// 16-byte FMP outer header. Used as AAD during AEAD and prepended
-    /// to the ciphertext to form the wire packet.
-    pub header: [u8; ESTABLISHED_HEADER_SIZE],
-    /// Inner plaintext (4-byte session timestamp + link-layer
-    /// message body). Mutated in place during seal: on entry it's
-    /// `plaintext`, on exit it's `plaintext + 16-byte AEAD tag` so we
-    /// must reserve TAG_SIZE bytes of capacity *before* dispatch.
-    pub inner_plaintext: Vec<u8>,
+    /// Pre-built wire buffer: `[16-byte FMP header][inner plaintext]`
+    /// with TAG_SIZE bytes of trailing capacity reserved for the AEAD
+    /// tag. The header bytes (`[0..16]`) double as both the AAD input
+    /// and the prefix of the final wire packet — there is exactly one
+    /// allocation per outbound packet (already incurred on the rx_loop
+    /// path to build the inner header), reused end-to-end.
+    pub wire_buf: Vec<u8>,
     /// AsyncUdpSocket clone (internally `Arc<AsyncFd<UdpRawSocket>>`,
     /// so the clone is just a refcount bump). Kernel serialises
     /// concurrent `sendto` calls so multiple workers sharing the same
@@ -231,9 +251,11 @@ fn flush_batch_sync(
     // per-packet falls out of the COUNT increment once per flush.
     let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
 
-    // 1) Encrypt every job into its existing inner_plaintext buffer.
-    //    The rx_loop already reserved TAG_SIZE bytes of capacity so
-    //    `seal_in_place_append_tag` doesn't need to re-grow the Vec.
+    // 1) Encrypt every job's wire_buf in place. wire_buf is laid out
+    //    as `[16 header][plaintext]` on entry, with TAG_SIZE bytes of
+    //    trailing capacity reserved. After this loop each wire_buf is
+    //    the complete wire packet `[16 header][ciphertext][16 tag]` —
+    //    no extra alloc or memcpy.
     let mut wire_packets: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(batch.len());
     // All jobs in this batch share the same destination + socket
     // (hash-by-dest in `EncryptWorkerPool::dispatch`), so cloning the
@@ -244,24 +266,30 @@ fn flush_batch_sync(
         let FmpSendJob {
             cipher,
             counter,
-            header,
-            mut inner_plaintext,
+            mut wire_buf,
             socket: _,
             dest_addr,
         } = job;
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        if cipher
-            .seal_in_place_append_tag(nonce, Aad::from(&header), &mut inner_plaintext)
-            .is_err()
-        {
-            continue;
-        }
-        let mut wire = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + inner_plaintext.len());
-        wire.extend_from_slice(&header);
-        wire.extend_from_slice(&inner_plaintext);
-        wire_packets.push((wire, dest_addr));
+        // Split-borrow: AAD reads from header bytes [0..16], seal writes
+        // into the plaintext slice [16..]. ring::aead's `seal_in_place_
+        // separate_tag` takes `&mut [u8]` so we can hand it the
+        // post-header slice while AAD references the header slice.
+        // `split_at_mut` is the standard way to do this safely.
+        let (header_slice, plaintext_slice) = wire_buf.split_at_mut(ESTABLISHED_HEADER_SIZE);
+        let tag = match cipher.seal_in_place_separate_tag(
+            nonce,
+            Aad::from(&*header_slice),
+            plaintext_slice,
+        ) {
+            Ok(tag) => tag,
+            Err(_) => continue,
+        };
+        // wire_buf already has `+16` capacity reserved → no realloc.
+        wire_buf.extend_from_slice(tag.as_ref());
+        wire_packets.push((wire_buf, dest_addr));
     }
 
     // 2) Bulk send via direct `sendmmsg(2)` on the raw FD. We can't
