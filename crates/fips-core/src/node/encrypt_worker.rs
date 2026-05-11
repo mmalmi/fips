@@ -133,66 +133,115 @@ impl EncryptWorkerPool {
 
 async fn run_worker(idx: usize, mut rx: mpsc::UnboundedReceiver<FmpSendJob>) {
     trace!(worker = idx, "FMP encrypt worker starting");
+
+    // Per-worker batch buffer. Collect up to BATCH_SIZE jobs from
+    // the channel before flushing via `sendmmsg`, amortising the
+    // per-syscall kernel cost across the batch (same idea as the
+    // per-transport pending_send buffer, but per-worker so workers
+    // don't contend for a shared mutex). Workers using hash-by-dest
+    // see all packets for one flow → one worker → one batched
+    // sendmmsg(2) per drain cycle.
+    const BATCH_SIZE: usize = 32;
+    let mut batch: Vec<FmpSendJob> = Vec::with_capacity(BATCH_SIZE);
+
     while let Some(job) = rx.recv().await {
-        if let Err(err) = handle_job(job).await {
-            debug!(worker = idx, error = %err, "FMP encrypt worker job failed");
-        }
-        // Drain any follow-on jobs that arrived while we were doing
-        // the AEAD + sendto above — keeps us on this task instead of
-        // yielding back to the scheduler between every packet.
-        let mut drained = 0usize;
-        while drained < 256 {
+        batch.push(job);
+        // Drain follow-on jobs that arrived while we were waking up,
+        // up to BATCH_SIZE - 1 more, then flush. Keeps us on this
+        // task and gives sendmmsg something to amortise over.
+        while batch.len() < BATCH_SIZE {
             match rx.try_recv() {
-                Ok(job) => {
-                    if let Err(err) = handle_job(job).await {
-                        debug!(worker = idx, error = %err, "FMP encrypt worker job failed (drain)");
-                    }
-                    drained += 1;
-                }
+                Ok(j) => batch.push(j),
                 Err(_) => break,
             }
         }
+        if let Err(err) = flush_batch(&mut batch).await {
+            debug!(worker = idx, error = %err, "FMP encrypt worker batch flush failed");
+        }
+        // Some sub-batches followed by drain-empty; loop back to
+        // recv().await for the next wake. The above try_recv loop
+        // is bounded by BATCH_SIZE so we won't monopolise the task.
     }
     trace!(worker = idx, "FMP encrypt worker exiting");
 }
 
-async fn handle_job(job: FmpSendJob) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let FmpSendJob {
-        cipher,
-        counter,
-        header,
-        mut inner_plaintext,
-        socket,
-        dest_addr,
-    } = job;
+/// Encrypt every job in `batch` in place, then issue a single
+/// `sendmmsg(2)` for the resulting wire packets. Clears `batch` on
+/// return regardless of success — failed sends are observability,
+/// not retried (UDP semantics).
+async fn flush_batch(
+    batch: &mut Vec<FmpSendJob>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if batch.is_empty() {
+        return Ok(());
+    }
 
-    // FIPS_PERF timer for the AEAD step on the worker side. Counts
-    // separately from the rx_loop's `FmpEncrypt` so we can see how
-    // off-task encrypt compares.
+    // FIPS_PERF for the AEAD step. One timer span over the whole
+    // batch — average per-packet falls out of the COUNT increment
+    // happening once per call here.
     let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
 
-    // Nonce derivation mirrors `CipherState::counter_to_nonce` (8-byte
-    // LE counter with 4-byte zero prefix). Kept inline here to avoid
-    // making the noise crate's counter_to_nonce pub.
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    // 1) Encrypt every job into its existing inner_plaintext buffer.
+    //    Build the wire packet (header || ciphertext+tag) as a fresh
+    //    Vec per packet; ring's seal_in_place_append_tag has already
+    //    reserved TAG_SIZE since the caller did `.reserve(16)`.
+    let mut wire_packets: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(batch.len());
+    let socket = batch[0].socket.clone();
+    for job in batch.drain(..) {
+        let FmpSendJob {
+            cipher,
+            counter,
+            header,
+            mut inner_plaintext,
+            socket: _,
+            dest_addr,
+        } = job;
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        if cipher
+            .seal_in_place_append_tag(nonce, Aad::from(&header), &mut inner_plaintext)
+            .is_err()
+        {
+            // Drop this packet; AEAD seal can only fail on capacity
+            // bugs which are not retryable at this layer.
+            continue;
+        }
+        let mut wire = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + inner_plaintext.len());
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&inner_plaintext);
+        wire_packets.push((wire, dest_addr));
+    }
 
-    cipher
-        .seal_in_place_append_tag(nonce, Aad::from(&header), &mut inner_plaintext)
-        .map_err(|_| "FMP AEAD seal failed")?;
-
-    // Build the wire packet: [header:16][ciphertext+tag]. One alloc.
-    let mut wire = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + inner_plaintext.len());
-    wire.extend_from_slice(&header);
-    wire.extend_from_slice(&inner_plaintext);
-    drop(inner_plaintext);
-
-    // Timer for the syscall itself.
+    // 2) Bulk send. On Linux we wrap `sendmmsg(2)` via
+    //    `AsyncUdpSocket::send_batch` to amortise the syscall cost
+    //    across the batch; on other unix targets we fall back to
+    //    per-packet `send_to` because there's no portable batch send.
     let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-    socket
-        .send_to(&wire, &dest_addr)
-        .await
-        .map_err(|e| format!("send_to failed: {e}"))?;
+    #[cfg(target_os = "linux")]
+    {
+        let pkt_refs: Vec<(&[u8], SocketAddr)> = wire_packets
+            .iter()
+            .map(|(data, addr)| (data.as_slice(), *addr))
+            .collect();
+        let mut sent = 0usize;
+        while sent < pkt_refs.len() {
+            match socket.send_batch(&pkt_refs[sent..]).await {
+                Ok(0) => break,
+                Ok(n) => sent += n,
+                Err(e) => {
+                    return Err(format!("send_batch failed: {e}").into());
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        for (data, addr) in &wire_packets {
+            if let Err(e) = socket.send_to(data, addr).await {
+                return Err(format!("send_to failed: {e}").into());
+            }
+        }
+    }
     Ok(())
 }
