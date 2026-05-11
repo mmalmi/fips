@@ -596,7 +596,7 @@ async fn udp_receive_loop(
                         }
 
                         let data = buf.to_vec();
-                        let addr = TransportAddr::from_string(&remote_addr.to_string());
+                        let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::new(transport_id, addr, data);
 
                         trace!(
@@ -648,7 +648,7 @@ async fn udp_receive_loop(
                     }
 
                     let data = buf[..len].to_vec();
-                    let addr = TransportAddr::from_string(&remote_addr.to_string());
+                    let addr = TransportAddr::from_socket_addr(remote_addr);
                     let packet = ReceivedPacket::new(transport_id, addr, data);
 
                     trace!(

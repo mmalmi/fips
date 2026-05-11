@@ -433,6 +433,30 @@ impl TransportAddr {
         Self(s.as_bytes().to_vec())
     }
 
+    /// Create a transport address from a `SocketAddr` without going
+    /// through `to_string()`.
+    ///
+    /// The standard path is `from_string(&addr.to_string())`, which
+    /// allocates a `String` for the formatted address and then copies
+    /// its bytes into a fresh `Vec<u8>` — two heap allocations per
+    /// inbound packet on the UDP receive hot path. At line rate that's
+    /// a few percent of one core in malloc/free. This variant writes
+    /// the `SocketAddr::Display` representation directly into a
+    /// `Vec<u8>` via `std::io::Write`, halving the alloc count and
+    /// skipping the intermediate `String` materialisation entirely.
+    pub fn from_socket_addr(addr: std::net::SocketAddr) -> Self {
+        use std::io::Write;
+        // Pre-size to fit `[ipv6_lit]:65535` (47 + brackets + colon +
+        // port digits ≈ 56 bytes worst case) so we don't re-grow the
+        // buffer mid-format on common addresses.
+        let mut buf = Vec::with_capacity(56);
+        // The `write!` macro on `&mut Vec<u8>` cannot fail (Vec's
+        // `Write` impl is infallible for in-memory buffers), so the
+        // expect is for shape only.
+        write!(&mut buf, "{addr}").expect("Vec<u8>::write_fmt is infallible");
+        Self(buf)
+    }
+
     /// Get the raw bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
