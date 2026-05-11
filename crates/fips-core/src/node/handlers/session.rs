@@ -1850,7 +1850,7 @@ impl Node {
             payload,
         };
 
-        if let Err(error) = endpoint_event_tx.try_send(event) {
+        if let Err(error) = endpoint_event_tx.send(event) {
             debug!(
                 src = %self.peer_display_name(src_addr),
                 error = %error,
