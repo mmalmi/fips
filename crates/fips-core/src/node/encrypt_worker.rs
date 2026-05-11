@@ -207,8 +207,6 @@ impl EncryptWorkerPool {
 /// `sendmmsg(2)` per drain cycle.
 fn run_worker(idx: usize, rx: Receiver<FmpSendJob>) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
-    // TEMP debug — verify the worker thread actually runs.
-    eprintln!("[fips-encrypt-worker {idx}] thread started (GSO build)");
 
     const BATCH_SIZE: usize = 32;
     let mut batch: Vec<FmpSendJob> = Vec::with_capacity(BATCH_SIZE);
@@ -320,44 +318,13 @@ fn flush_batch_sync(
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
-        // Debug: log the first 3 batches to see what's going on.
-        {
-            static DBG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = DBG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 3 {
-                let sizes: Vec<usize> = wire_packets.iter().take(5).map(|p| p.0.len()).collect();
-                eprintln!(
-                    "[fips-encrypt-worker DBG] flush batch_len={} sizes_head={:?} gso_disabled={} gso_eligible={}",
-                    wire_packets.len(),
-                    sizes,
-                    GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed),
-                    gso_eligible(&wire_packets),
-                );
-            }
-        }
         // Fast path: try UDP_GSO if the batch is uniform-size and the
         // kernel hasn't refused GSO before.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
             && gso_eligible(&wire_packets)
         {
             match send_batch_gso(fd, &wire_packets) {
-                Ok(()) => {
-                    static GSO_FIRST: std::sync::atomic::AtomicBool =
-                        std::sync::atomic::AtomicBool::new(false);
-                    if !GSO_FIRST.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        // Use eprintln so the message lands regardless
-                        // of whether the OS-thread worker has access to
-                        // the global tracing subscriber (which is set
-                        // up on the tokio runtime side).
-                        eprintln!(
-                            "[fips-encrypt-worker] UDP_GSO send active — \
-                             sendmsg+UDP_SEGMENT path engaged (batch_len={}, seg_size={})",
-                            wire_packets.len(),
-                            wire_packets[0].0.len()
-                        );
-                    }
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(err)
                     if err.kind() == std::io::ErrorKind::InvalidInput
                         || err.raw_os_error() == Some(libc::EOPNOTSUPP)
@@ -366,11 +333,10 @@ fn flush_batch_sync(
                     // Kernel doesn't support UDP_GSO on this socket /
                     // device — fall back permanently to sendmmsg.
                     GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!(
-                        "[fips-encrypt-worker] UDP_GSO refused by kernel ({err}); \
-                         falling back to sendmmsg for life of process"
+                    warn!(
+                        error = %err,
+                        "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
                     );
-                    let _ = &err; // keep variable used
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     // Send buffer full mid-GSO — fall through to the
