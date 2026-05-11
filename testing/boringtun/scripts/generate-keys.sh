@@ -16,13 +16,16 @@ fi
 mkdir -p "$OUT_DIR"
 
 # Use the built boringtun-test image to generate keys — host may
-# not have wireguard-tools installed.
-WG_CMD="docker run --rm --entrypoint wg boringtun-test:latest"
+# not have wireguard-tools installed. The `pubkey` step needs `-i`
+# so stdin is piped through; `genkey` doesn't need it but matching
+# flags keeps the two calls symmetric.
+GEN_CMD="docker run --rm --entrypoint wg boringtun-test:latest"
+PUB_CMD="docker run --rm -i --entrypoint wg boringtun-test:latest"
 
-ALICE_PRIV=$($WG_CMD genkey)
-ALICE_PUB=$(printf '%s' "$ALICE_PRIV" | $WG_CMD pubkey)
-BOB_PRIV=$($WG_CMD genkey)
-BOB_PUB=$(printf '%s' "$BOB_PRIV" | $WG_CMD pubkey)
+ALICE_PRIV=$($GEN_CMD genkey)
+ALICE_PUB=$(printf '%s' "$ALICE_PRIV" | $PUB_CMD pubkey)
+BOB_PRIV=$($GEN_CMD genkey)
+BOB_PUB=$(printf '%s' "$BOB_PRIV" | $PUB_CMD pubkey)
 
 cat >"$ENV_FILE" <<EOF
 ALICE_PRIV=$ALICE_PRIV
