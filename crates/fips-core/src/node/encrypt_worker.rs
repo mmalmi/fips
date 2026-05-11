@@ -207,6 +207,8 @@ impl EncryptWorkerPool {
 /// `sendmmsg(2)` per drain cycle.
 fn run_worker(idx: usize, rx: Receiver<FmpSendJob>) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
+    // TEMP debug — verify the worker thread actually runs.
+    eprintln!("[fips-encrypt-worker {idx}] thread started (GSO build)");
 
     const BATCH_SIZE: usize = 32;
     let mut batch: Vec<FmpSendJob> = Vec::with_capacity(BATCH_SIZE);
