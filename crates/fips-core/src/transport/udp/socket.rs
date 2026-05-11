@@ -90,31 +90,82 @@ mod platform {
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
 
-            // Set socket buffer sizes
+            // Set socket buffer sizes via the standard SO_RCVBUF /
+            // SO_SNDBUF path first. These are clamped to
+            // `net.core.{rmem,wmem}_max`, which on a default Linux
+            // container is ~213 KiB — way too small to absorb a multi-
+            // Gbps inbound burst, leading to UDP RcvbufErrors at line
+            // rate. If clamped and we hold CAP_NET_ADMIN, the
+            // SO_RCVBUFFORCE / SO_SNDBUFFORCE variants bypass the
+            // sysctl ceiling entirely.
             sock.set_recv_buffer_size(recv_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
             sock.set_send_buffer_size(send_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
 
-            let actual_recv = sock
+            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
+            // Linux-only and may reassign these; non-Linux builds
+            // leave them at the initial reading.
+            #[allow(unused_mut)]
+            let mut actual_recv = sock
                 .recv_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            let actual_send = sock
+            #[allow(unused_mut)]
+            let mut actual_send = sock
                 .send_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
+
+            #[cfg(target_os = "linux")]
+            if actual_recv < recv_buf_size {
+                let val: libc::c_int = recv_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.recv_buffer_size() {
+                        actual_recv = after;
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if actual_send < send_buf_size {
+                let val: libc::c_int = send_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.send_buffer_size() {
+                        actual_send = after;
+                    }
+                }
+            }
 
             if actual_recv < recv_buf_size {
                 warn!(
                     requested = recv_buf_size,
                     actual = actual_recv,
-                    "UDP recv buffer clamped by kernel (increase net.core.rmem_max)"
+                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
+                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
                 );
             }
             if actual_send < send_buf_size {
                 warn!(
                     requested = send_buf_size,
                     actual = actual_send,
-                    "UDP send buffer clamped by kernel (increase net.core.wmem_max)"
+                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
+                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
                 );
             }
 
@@ -173,25 +224,71 @@ mod platform {
             sock.set_send_buffer_size(send_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
 
-            let actual_recv = sock
+            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
+            // Linux-only and may reassign these; non-Linux builds
+            // leave them at the initial reading.
+            #[allow(unused_mut)]
+            let mut actual_recv = sock
                 .recv_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            let actual_send = sock
+            #[allow(unused_mut)]
+            let mut actual_send = sock
                 .send_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
+
+            // CAP_NET_ADMIN holders can bypass rmem_max via
+            // SO_RCVBUFFORCE; see `open()` for the rationale.
+            #[cfg(target_os = "linux")]
+            if actual_recv < recv_buf_size {
+                let val: libc::c_int = recv_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.recv_buffer_size() {
+                        actual_recv = after;
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if actual_send < send_buf_size {
+                let val: libc::c_int = send_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.send_buffer_size() {
+                        actual_send = after;
+                    }
+                }
+            }
 
             if actual_recv < recv_buf_size {
                 warn!(
                     requested = recv_buf_size,
                     actual = actual_recv,
-                    "UDP recv buffer clamped by kernel (increase net.core.rmem_max)"
+                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
+                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
                 );
             }
             if actual_send < send_buf_size {
                 warn!(
                     requested = send_buf_size,
                     actual = actual_send,
-                    "UDP send buffer clamped by kernel (increase net.core.wmem_max)"
+                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
+                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
                 );
             }
 
