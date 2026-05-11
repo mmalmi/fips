@@ -12,7 +12,8 @@ use crate::node::session_wire::{
 };
 use crate::node::{Node, NodeError};
 use crate::protocol::{
-    CoordsRequired, MtuExceeded, PathBroken, SessionAck, SessionDatagram, SessionSetup,
+    CoordsRequired, MtuExceeded, PathBroken, SessionAck, SessionDatagram, SessionDatagramRef,
+    SessionSetup,
 };
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -22,6 +23,11 @@ impl Node {
     ///
     /// Called by `dispatch_link_message` for msg_type 0x00. The payload
     /// has already had its msg_type byte stripped by dispatch.
+    ///
+    /// Hot path: borrows `payload` via `SessionDatagramRef` (zero copy)
+    /// for the common local-delivery case. The owning `SessionDatagram`
+    /// is built only when forwarding (rare in steady-state benches with
+    /// direct peers).
     pub(in crate::node) async fn handle_session_datagram(
         &mut self,
         from: &NodeAddr,
@@ -30,7 +36,7 @@ impl Node {
     ) {
         self.stats_mut().forwarding.record_received(payload.len());
 
-        let mut datagram = match SessionDatagram::decode(payload) {
+        let datagram_ref = match SessionDatagramRef::decode(payload) {
             Ok(dg) => dg,
             Err(e) => {
                 self.stats_mut()
@@ -41,35 +47,52 @@ impl Node {
             }
         };
 
-        // TTL enforcement: decrement and drop if exhausted
-        if !datagram.decrement_ttl() {
+        // TTL enforcement: decrement and drop if exhausted. The TTL
+        // value here is post-decrement (saturating sub).
+        if datagram_ref.ttl == 0 {
             self.stats_mut()
                 .forwarding
                 .record_ttl_exhausted(payload.len());
             debug!(
-                src = %datagram.src_addr,
-                dest = %datagram.dest_addr,
+                src = %datagram_ref.src_addr,
+                dest = %datagram_ref.dest_addr,
                 "SessionDatagram TTL exhausted, dropping"
             );
             return;
         }
+        let new_ttl = datagram_ref.ttl - 1;
 
         // Coordinate cache warming from plaintext session-layer headers
-        self.try_warm_coord_cache(&datagram);
+        // — works directly on the ref, no allocation.
+        self.try_warm_coord_cache_ref(&datagram_ref);
 
-        // Local delivery: dispatch to session layer handlers
-        if datagram.dest_addr == *self.node_addr() {
+        // Local delivery: dispatch to session layer handlers. No alloc,
+        // no copy — `handle_session_payload` takes `payload` by borrow.
+        if datagram_ref.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
             self.handle_session_payload(
-                &datagram.src_addr,
-                &datagram.payload,
-                datagram.path_mtu,
+                &datagram_ref.src_addr,
+                datagram_ref.payload,
+                datagram_ref.path_mtu,
                 incoming_ce,
                 Some(*from),
             )
             .await;
             return;
         }
+
+        // Forwarding path: materialise an owned `SessionDatagram` so
+        // existing forwarding code paths (re-encode, error signal
+        // generation, MTU enforcement) work unchanged. Cost: one alloc
+        // + one ~MTU memcpy — but only on forwarding traffic, which is
+        // off the local-delivery hot path.
+        let mut datagram = SessionDatagram {
+            src_addr: datagram_ref.src_addr,
+            dest_addr: datagram_ref.dest_addr,
+            ttl: new_ttl,
+            path_mtu: datagram_ref.path_mtu,
+            payload: datagram_ref.payload.to_vec(),
+        };
 
         // Find next hop toward destination
         let next_hop_addr = match self.find_next_hop(&datagram.dest_addr) {
@@ -155,8 +178,12 @@ impl Node {
     ///
     /// Decode failures are logged and silently ignored — they don't block
     /// forwarding.
-    fn try_warm_coord_cache(&mut self, datagram: &SessionDatagram) {
-        let prefix = match FspCommonPrefix::parse(&datagram.payload) {
+    /// Zero-copy coord-cache warming — works directly on a borrowed
+    /// [`SessionDatagramRef`] without materialising an owned
+    /// `SessionDatagram`. Called on every incoming session datagram on
+    /// the hot path.
+    fn try_warm_coord_cache_ref(&mut self, datagram: &SessionDatagramRef<'_>) {
+        let prefix = match FspCommonPrefix::parse(datagram.payload) {
             Some(p) => p,
             None => return,
         };
