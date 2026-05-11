@@ -2547,6 +2547,17 @@ impl Node {
                             // Stats / MMP update inline — predicted size
                             // is exact for ChaCha20-Poly1305 (tag is
                             // constant 16 bytes).
+                            // Snapshot the per-peer connected UDP
+                            // socket (Linux only). When `Some`, the
+                            // worker `sendmsg`s on it with
+                            // msg_name=NULL — the kernel skips the
+                            // per-packet sockaddr + route + neighbor
+                            // resolve.
+                            #[cfg(target_os = "linux")]
+                            let connected_socket = self
+                                .peers
+                                .get(node_addr)
+                                .and_then(|p| p.connected_udp());
                             if let Some(peer) = self.peers.get_mut(node_addr) {
                                 peer.link_stats_mut().record_sent(predicted_bytes);
                                 if let Some(mmp) = peer.mmp_mut() {
@@ -2563,6 +2574,8 @@ impl Node {
                                 wire_buf,
                                 socket,
                                 dest_addr: socket_addr,
+                                #[cfg(target_os = "linux")]
+                                connected_socket,
                             });
                             return Ok(());
                         }

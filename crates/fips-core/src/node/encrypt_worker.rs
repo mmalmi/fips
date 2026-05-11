@@ -87,13 +87,28 @@ pub(crate) struct FmpSendJob {
     /// path to build the inner header), reused end-to-end.
     pub wire_buf: Vec<u8>,
     /// AsyncUdpSocket clone (internally `Arc<AsyncFd<UdpRawSocket>>`,
-    /// so the clone is just a refcount bump). Kernel serialises
-    /// concurrent `sendto` calls so multiple workers sharing the same
-    /// handle is safe.
+    /// so the clone is just a refcount bump). Used as the **fallback**
+    /// send fd when no per-peer connected socket is available — i.e.
+    /// the wildcard listen socket. Kernel serialises concurrent
+    /// `sendto` calls so multiple workers sharing this handle is safe.
     pub socket: AsyncUdpSocket,
     /// Destination kernel `SocketAddr` — resolved on rx_loop side so
-    /// the worker can skip the per-packet DNS / address parse.
+    /// the worker can skip the per-packet DNS / address parse. Used
+    /// when sending via the listen socket (msg_name field of mmsghdr).
+    /// Ignored when `connected_socket` is `Some` (the kernel knows
+    /// the destination already).
     pub dest_addr: SocketAddr,
+    /// **Linux fast path:** when set, the worker `sendmsg(2)`s on
+    /// this socket's fd with `msg_name = NULL` instead of the listen
+    /// socket. The kernel skips per-packet sockaddr handling + route
+    /// + neighbor resolution because they're cached from the
+    /// `connect()` call. The `Arc` keeps the kernel fd alive for the
+    /// lifetime of this job; once the job completes and the worker
+    /// drops it, only the peer's strong ref remains.
+    #[cfg(target_os = "linux")]
+    pub connected_socket: Option<
+        std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+    >,
 }
 
 /// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
@@ -271,6 +286,16 @@ fn flush_batch_sync(
     // first one's socket Arc is the cheapest way to get a handle for
     // the bulk send below.
     let socket = batch[0].socket.clone();
+    // Linux fast path: if the first job has a per-peer connected
+    // socket installed, all jobs in this batch share that peer (same
+    // hash-by-dest invariant) — use the connected fd + msg_name=NULL
+    // for the whole batch. The Arc keeps the kernel fd alive while
+    // the syscall runs even if the peer is concurrently dropped on
+    // rx_loop.
+    #[cfg(target_os = "linux")]
+    let connected_socket: Option<
+        std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+    > = batch[0].connected_socket.clone();
     for job in batch.drain(..) {
         let FmpSendJob {
             cipher,
@@ -278,6 +303,8 @@ fn flush_batch_sync(
             mut wire_buf,
             socket: _,
             dest_addr,
+            #[cfg(target_os = "linux")]
+                connected_socket: _,
         } = job;
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
@@ -324,6 +351,12 @@ fn flush_batch_sync(
     // kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is rarely
     // full so this is the cold path.
     let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+    #[cfg(target_os = "linux")]
+    let (fd, connected) = match connected_socket.as_ref() {
+        Some(s) => (s.as_raw_fd(), true),
+        None => (socket.as_raw_fd(), false),
+    };
+    #[cfg(not(target_os = "linux"))]
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
@@ -332,7 +365,7 @@ fn flush_batch_sync(
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
             && gso_eligible(&wire_packets)
         {
-            match send_batch_gso(fd, &wire_packets) {
+            match send_batch_gso(fd, &wire_packets, connected) {
                 Ok(()) => return Ok(()),
                 Err(err)
                     if err.kind() == std::io::ErrorKind::InvalidInput
@@ -362,7 +395,7 @@ fn flush_batch_sync(
         // / post-GSO-refused.
         let mut sent = 0usize;
         while sent < wire_packets.len() {
-            let n = match send_batch_raw(fd, &wire_packets[sent..]) {
+            let n = match send_batch_raw(fd, &wire_packets[sent..], connected) {
                 Ok(n) => n,
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::yield_now();
@@ -439,6 +472,7 @@ fn gso_eligible(packets: &[(Vec<u8>, SocketAddr)]) -> bool {
 fn send_batch_gso(
     fd: std::os::unix::io::RawFd,
     packets: &[(Vec<u8>, SocketAddr)],
+    connected: bool,
 ) -> std::io::Result<()> {
     debug_assert!(!packets.is_empty());
     const MAX_BATCH: usize = 64;
@@ -458,15 +492,20 @@ fn send_batch_gso(
         iovs[i].iov_len = data.len();
     }
 
-    // Storage for the destination address.
+    // Storage for the destination address. Only populated + linked
+    // into `msghdr.msg_name` when sending via the wildcard listen
+    // socket — the connected socket has the destination cached
+    // kernel-side via `connect()`.
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let sa_len = sa.len();
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            sa.as_ptr() as *const u8,
-            &mut storage as *mut _ as *mut u8,
-            sa_len as usize,
-        );
+    if !connected {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                sa.as_ptr() as *const u8,
+                &mut storage as *mut _ as *mut u8,
+                sa_len as usize,
+            );
+        }
     }
 
     // Control message buffer: one cmsghdr + 2 bytes payload (u16
@@ -476,8 +515,16 @@ fn send_batch_gso(
     debug_assert!(cmsg_space <= cmsg_buf.len());
 
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
-    msg.msg_namelen = sa_len;
+    if connected {
+        // Connected socket: kernel rejects non-null msg_name with
+        // EISCONN unless it matches the connect()'ed address. Safest
+        // and fastest is to leave it null.
+        msg.msg_name = std::ptr::null_mut();
+        msg.msg_namelen = 0;
+    } else {
+        msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+        msg.msg_namelen = sa_len;
+    }
     msg.msg_iov = iovs.as_mut_ptr();
     msg.msg_iovlen = n;
     msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
@@ -516,6 +563,7 @@ fn send_batch_gso(
 fn send_batch_raw(
     fd: std::os::unix::io::RawFd,
     packets: &[(Vec<u8>, SocketAddr)],
+    connected: bool,
 ) -> std::io::Result<usize> {
     const MAX_BATCH: usize = 32;
     let n = packets.len().min(MAX_BATCH);
@@ -529,22 +577,31 @@ fn send_batch_raw(
 
     for i in 0..n {
         let (data, dest) = &packets[i];
-        let sa: socket2::SockAddr = (*dest).into();
-        let sa_len = sa.len();
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                sa.as_ptr() as *const u8,
-                &mut storages[i] as *mut _ as *mut u8,
-                sa_len as usize,
-            );
-        }
-        storage_lens[i] = sa_len;
         iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
         iovs[i].iov_len = data.len();
-        msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
-        msgs[i].msg_hdr.msg_namelen = storage_lens[i];
         msgs[i].msg_hdr.msg_iov = &mut iovs[i];
         msgs[i].msg_hdr.msg_iovlen = 1;
+        if connected {
+            // Connected socket: kernel has destination cached. Leaving
+            // msg_name null skips the per-message sockaddr fixup +
+            // route lookup; that's the whole point of the connected
+            // fast path.
+            msgs[i].msg_hdr.msg_name = std::ptr::null_mut();
+            msgs[i].msg_hdr.msg_namelen = 0;
+        } else {
+            let sa: socket2::SockAddr = (*dest).into();
+            let sa_len = sa.len();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    sa.as_ptr() as *const u8,
+                    &mut storages[i] as *mut _ as *mut u8,
+                    sa_len as usize,
+                );
+            }
+            storage_lens[i] = sa_len;
+            msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+            msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+        }
     }
 
     let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
@@ -636,7 +693,7 @@ mod tests {
             batch.push((buf, recv_addr));
         }
 
-        let r = send_batch_gso(send_sock.as_raw_fd(), &batch);
+        let r = send_batch_gso(send_sock.as_raw_fd(), &batch, /* connected */ false);
         match r {
             Ok(()) => {} // proceed to recv
             Err(err)
