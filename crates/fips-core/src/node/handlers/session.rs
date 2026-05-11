@@ -409,6 +409,11 @@ impl Node {
             self.learn_reverse_route(*src_addr, next_hop);
         }
 
+        // Capture the post-inner-header length now, before any branch
+        // takes ownership of `plaintext` (the EndpointData arm drains
+        // the inner header off the front and forwards the Vec to
+        // `deliver_endpoint_data` rather than allocating a fresh Vec).
+        let rest_len = plaintext.len() - FSP_INNER_HEADER_SIZE;
         let rest = &plaintext[FSP_INNER_HEADER_SIZE..];
 
         // Dispatch by msg_type
@@ -475,7 +480,17 @@ impl Node {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                self.deliver_endpoint_data(src_addr, rest.to_vec());
+                // Hand the plaintext Vec straight through to the endpoint
+                // event queue instead of `rest.to_vec()`-ing a fresh
+                // allocation. `Vec::drain` does a single memmove of the
+                // payload to the front of the existing buffer (no realloc,
+                // no second 1500-byte memcpy), trimming the inner-header
+                // prefix in place. At 174 kpps single-stream that's one
+                // allocation + one big memcpy saved per packet on the
+                // dominant FIPS-endpoint receive path.
+                let mut payload = plaintext;
+                payload.drain(..FSP_INNER_HEADER_SIZE);
+                self.deliver_endpoint_data(src_addr, payload);
             }
             Some(SessionMessageType::SenderReport) => {
                 self.handle_session_sender_report(src_addr, rest);
@@ -502,7 +517,7 @@ impl Node {
             || msg_type == SessionMessageType::EndpointData.to_byte())
             && let Some(entry) = self.sessions.get_mut(src_addr)
         {
-            entry.record_recv(rest.len());
+            entry.record_recv(rest_len);
             entry.touch(Self::now_ms());
         }
 
