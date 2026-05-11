@@ -173,7 +173,6 @@ impl SessionEntry {
     }
 
     /// Get the current session state.
-    #[cfg(test)]
     pub(crate) fn state(&self) -> &EndToEndState {
         self.state
             .as_ref()

@@ -666,6 +666,22 @@ impl Node {
             );
         }
 
+        // Decrypt worker pool — mirrors the encrypt side. Off by
+        // default; `FIPS_DECRYPT_WORKERS=N` to enable.
+        let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if decrypt_worker_count > 0 {
+            self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
+                decrypt_worker_count,
+            ));
+            info!(
+                workers = decrypt_worker_count,
+                "Spawned off-task FMP+FSP-decrypt worker pool"
+            );
+        }
+
         if self.config.node.discovery.nostr.enabled {
             match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())
                 .await

@@ -6,6 +6,7 @@
 
 mod acl;
 mod bloom;
+mod decrypt_worker;
 mod discovery_rate_limit;
 mod encrypt_worker;
 mod handlers;
@@ -502,6 +503,30 @@ pub struct Node {
     /// per-worker mpsc senders and round-robins jobs across them.
     /// See `node::encrypt_worker` for the rationale and layout.
     encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
+    /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
+    /// `encrypt_workers` for the receive side.
+    decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
+    /// Per-session recv state cache for the decrypt worker pool.
+    /// Populated at session-establishment time with cloned ciphers
+    /// and shared `Arc<Mutex<ReplayWindow>>`. Worker pulls this from
+    /// the cache by `(transport_id, receiver_idx)` when building a
+    /// `DecryptJob`, so the replay-window state is stable across
+    /// packets in the same session.
+    decrypt_session_cache: std::sync::Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<
+                (TransportId, u32),
+                std::sync::Arc<decrypt_worker::WorkerSessionState>,
+            >,
+        >,
+    >,
+    /// Fallback channel: decrypt worker bounces non-fast-path packets
+    /// (anything that's not bulk EndpointData) back here for rx_loop
+    /// to handle via the legacy path. Drained by a new rx_loop arm.
+    decrypt_fallback_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptFallback>>,
+    decrypt_fallback_tx:
+        tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptFallback>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -628,6 +653,10 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
+
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
 
@@ -717,6 +746,12 @@ impl Node {
             endpoint_command_rx: None,
             endpoint_event_tx: None,
             encrypt_workers: None,
+            decrypt_workers: None,
+            decrypt_session_cache: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            decrypt_fallback_tx,
+            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -763,6 +798,10 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
+
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -846,6 +885,12 @@ impl Node {
             endpoint_command_rx: None,
             endpoint_event_tx: None,
             encrypt_workers: None,
+            decrypt_workers: None,
+            decrypt_session_cache: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            decrypt_fallback_tx,
+            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]

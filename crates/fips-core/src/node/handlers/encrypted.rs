@@ -143,7 +143,46 @@ impl Node {
         // rate), and otherwise it clones internally — so eagerly
         // cloning here was a wasted Vec alloc + memcpy per packet on
         // the steady-state hot path.
-        let packet_remote_addr = packet.remote_addr;
+        let packet_remote_addr = packet.remote_addr.clone();
+
+        // Off-task decrypt fast path: when a decrypt worker pool is
+        // configured AND we've cached recv state for this session
+        // AND an embedded endpoint is attached (so the worker has
+        // somewhere to deliver), dispatch the whole AEAD + delivery
+        // pipeline to a worker thread and return. First-packet path
+        // falls through to the legacy in-place decrypt below, which
+        // also populates the cache so subsequent packets take the
+        // worker path.
+        let cache_key = (packet.transport_id, header.receiver_idx.as_u32());
+        if let (Some(workers), Some(endpoint_event_tx_ref)) =
+            (self.decrypt_workers.as_ref().cloned(), self.endpoint_event_tx.as_ref())
+        {
+            let cache_hit = {
+                let cache = self.decrypt_session_cache.read().unwrap();
+                cache.get(&cache_key).cloned()
+            };
+            if let Some(state) = cache_hit {
+                let job = super::super::decrypt_worker::DecryptJob {
+                    packet_data: packet.data,
+                    _transport_id: packet.transport_id,
+                    _remote_addr: packet.remote_addr,
+                    timestamp_ms: packet.timestamp_ms,
+                    source_node_addr: node_addr,
+                    source_npub: state.source_npub.clone(),
+                    fmp_cipher: state.fmp_cipher.clone(),
+                    fmp_counter: header.counter,
+                    fmp_header: header.header_bytes,
+                    fmp_ciphertext_offset: header.ciphertext_offset(),
+                    fmp_replay: state.fmp_replay.clone(),
+                    fsp_cipher: state.fsp_cipher.clone(),
+                    fsp_replay: state.fsp_replay.clone(),
+                    endpoint_event_tx: endpoint_event_tx_ref.clone(),
+                    fallback_tx: self.decrypt_fallback_tx.clone(),
+                };
+                workers.dispatch(job);
+                return;
+            }
+        }
 
         // `packet` is owned by this function; take ownership of its data
         // so we can take a `&mut [u8]` to the ciphertext tail for the
@@ -271,6 +310,28 @@ impl Node {
             FmpFrameOutcome::Authentic { plaintext }
         };
 
+        // After the legacy path runs once successfully, populate the
+        // off-task decrypt cache so subsequent packets on this session
+        // can take the worker path. One-way transition: the worker
+        // becomes the sole replay-window writer after this point.
+        let authentic_first_time =
+            matches!(outcome, FmpFrameOutcome::AuthenticInPlace { .. } | FmpFrameOutcome::Authentic { .. });
+        if authentic_first_time && self.decrypt_workers.is_some() {
+            let already_cached = self
+                .decrypt_session_cache
+                .read()
+                .unwrap()
+                .contains_key(&cache_key);
+            if !already_cached {
+                if let Some(state) = self.build_worker_session_state(&node_addr) {
+                    self.decrypt_session_cache
+                        .write()
+                        .unwrap()
+                        .insert(cache_key, std::sync::Arc::new(state));
+                }
+            }
+        }
+
         match outcome {
             FmpFrameOutcome::AuthenticInPlace { plaintext_len } => {
                 // Fast path: plaintext lives inside `packet_data`. Slice
@@ -311,6 +372,36 @@ impl Node {
                 self.peers_by_index.remove(&key);
             }
         }
+    }
+
+    /// Build the cached recv state used by the off-task decrypt
+    /// worker. Returns `None` if the peer is gone, the session isn't
+    /// established yet, or the FSP session for this peer hasn't been
+    /// brought up (FSP runs over FMP after a separate handshake).
+    /// Called lazily on the first authenticated packet for a session.
+    fn build_worker_session_state(
+        &self,
+        node_addr: &crate::NodeAddr,
+    ) -> Option<crate::node::decrypt_worker::WorkerSessionState> {
+        let peer = self.peers.get(node_addr)?;
+        let fmp_session = peer.noise_session()?;
+        let fmp_cipher = fmp_session.recv_cipher_clone()?;
+        let fmp_replay = fmp_session.recv_replay_snapshot_shared();
+        let session_entry = self.sessions.get(node_addr)?;
+        let fsp_session = match session_entry.state() {
+            crate::node::session::EndToEndState::Established(s) => s,
+            _ => return None,
+        };
+        let fsp_cipher = fsp_session.recv_cipher_clone()?;
+        let fsp_replay = fsp_session.recv_replay_snapshot_shared();
+        let source_npub = self.npub_for_node_addr(node_addr);
+        Some(crate::node::decrypt_worker::WorkerSessionState {
+            fmp_cipher,
+            fmp_replay,
+            fsp_cipher,
+            fsp_replay,
+            source_npub,
+        })
     }
 
     /// Log a decryption failure with replay suppression.

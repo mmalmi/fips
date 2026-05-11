@@ -185,6 +185,24 @@ impl NoiseSession {
         self.recv_cipher.cipher_clone()
     }
 
+    /// Snapshot the current replay-window state into a fresh
+    /// `Arc<Mutex<ReplayWindow>>` that a worker can take ownership of.
+    ///
+    /// **This does NOT share state with the caller.** Once a worker
+    /// owns the returned `Arc<Mutex<...>>`, it must be the sole
+    /// authority for replay-checking inbound packets on this session
+    /// — the local `self.replay_window` is no longer the source of
+    /// truth. Used by the off-task decrypt worker pool: at session
+    /// hand-off, the worker is given a clone of the recv cipher plus
+    /// this snapshot and becomes responsible for replay protection.
+    /// The session's local window stays around for rekey / drain-
+    /// window paths, both of which take rare slow paths.
+    pub fn recv_replay_snapshot_shared(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::noise::ReplayWindow>> {
+        std::sync::Arc::new(std::sync::Mutex::new(self.replay_window.clone()))
+    }
+
     /// Clone the send-side AEAD instance, for off-task encrypt.
     ///
     /// Returns `None` if the send cipher has no key. Pairs with

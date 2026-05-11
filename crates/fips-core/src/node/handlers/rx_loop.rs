@@ -66,6 +66,18 @@ impl Node {
                 }
             };
 
+        // Take the decrypt worker fallback receiver if a worker pool
+        // is in use. The worker pushes non-fast-path packets (anything
+        // that's not bulk EndpointData) here for the legacy dispatch.
+        let (mut decrypt_fallback_rx, _decrypt_fallback_guard) =
+            match self.decrypt_fallback_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    (rx, Some(tx))
+                }
+            };
+
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
 
@@ -178,6 +190,27 @@ impl Node {
                         ).await
                     };
                     let _ = response_tx.send(response);
+                }
+                Some(fallback) = decrypt_fallback_rx.recv() => {
+                    // Decrypt worker bounced a non-fast-path packet
+                    // back for legacy dispatch (handshakes, MMP
+                    // reports, routing errors, IPv6-shim → TUN, etc.).
+                    // The FMP plaintext has already been decrypted +
+                    // replay-accepted by the worker; we just feed it
+                    // into `dispatch_link_message` as if it had come
+                    // off the inline path.
+                    // Mirror of `INNER_TIMESTAMP_LEN` in
+                    // `handlers/encrypted.rs` — the 4-byte session
+                    // timestamp prefix inside the FMP plaintext.
+                    const INNER_TIMESTAMP_LEN: usize = 4;
+                    let link_message =
+                        &fallback.fmp_plaintext[INNER_TIMESTAMP_LEN..];
+                    self.dispatch_link_message(
+                        &fallback.source_node_addr,
+                        link_message,
+                        false,
+                    )
+                    .await;
                 }
                 _ = tick.tick() => {
                     self.check_timeouts();
