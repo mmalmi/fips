@@ -87,6 +87,17 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
+            // SO_REUSEPORT lets the Linux UDP demux load-balance
+            // across sockets bound to the same address — and lets
+            // per-peer `ConnectedPeerSocket`s bind to the same
+            // wildcard port the listen socket holds (most-specific
+            // 5-tuple match preferentially routes a connected peer's
+            // traffic to its dedicated socket; the listen socket then
+            // only handles new / unknown peers). On non-Linux this
+            // setsockopt has no effect for UDP, so we ignore failures.
+            let _ = sock.set_reuse_port(true);
+            let _ = sock.set_reuse_address(true);
+
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
 
@@ -766,6 +777,12 @@ mod platform {
             sock.set_nonblocking(true).map_err(|e| {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
+
+            // SO_REUSEPORT / SO_REUSEADDR — see the sync `UdpRawSocket::open`
+            // path above for rationale (per-peer ConnectedPeerSocket
+            // must bind to the same port the listen socket holds).
+            let _ = sock.set_reuse_port(true);
+            let _ = sock.set_reuse_address(true);
 
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
