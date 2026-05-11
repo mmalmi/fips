@@ -2538,64 +2538,60 @@ impl Node {
                         None
                     }
                 };
-                if let Some(socket_addr) = socket_addr_opt {
-                    if let TransportHandle::Udp(udp) = transport {
-                        if let Some(socket) = udp.async_socket() {
-                            // Build the wire buffer **directly** from
-                            // `plaintext` with a single allocation:
-                            //   `[16 header][4 ts][plaintext...]` with
-                            // +16 trailing capacity for the AEAD tag.
-                            // The worker seals `wire_buf[16..]` in
-                            // place and appends the tag — no second
-                            // alloc, no second memcpy.
-                            //
-                            // Previous design built `inner_plaintext`
-                            // via `prepend_inner_header` (1 alloc + 1
-                            // copy) and then let the worker memcpy
-                            // header + plaintext into a fresh Vec
-                            // (another alloc + copy). At ~100 kpps the
-                            // saved alloc/copy is ~150 MB/sec of memory
-                            // bandwidth on the hot rx_loop + worker.
-                            let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
-                            let mut wire_buf = Vec::with_capacity(wire_capacity);
-                            wire_buf.extend_from_slice(&header);
-                            wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
-                            wire_buf.extend_from_slice(plaintext);
-                            let predicted_bytes = wire_capacity;
-                            // Stats / MMP update inline — predicted size
-                            // is exact for ChaCha20-Poly1305 (tag is
-                            // constant 16 bytes).
-                            // Snapshot the per-peer connected UDP
-                            // socket (Linux only). When `Some`, the
-                            // worker `sendmsg`s on it with
-                            // msg_name=NULL — the kernel skips the
-                            // per-packet sockaddr + route + neighbor
-                            // resolve.
-                            #[cfg(target_os = "linux")]
-                            let connected_socket =
-                                self.peers.get(node_addr).and_then(|p| p.connected_udp());
-                            if let Some(peer) = self.peers.get_mut(node_addr) {
-                                peer.link_stats_mut().record_sent(predicted_bytes);
-                                if let Some(mmp) = peer.mmp_mut() {
-                                    mmp.sender.record_sent(
-                                        reserved_counter,
-                                        timestamp_ms,
-                                        predicted_bytes,
-                                    );
-                                }
-                            }
-                            workers.dispatch(self::encrypt_worker::FmpSendJob {
-                                cipher: cipher_clone,
-                                counter: reserved_counter,
-                                wire_buf,
-                                socket,
-                                dest_addr: socket_addr,
-                                #[cfg(target_os = "linux")]
-                                connected_socket,
-                            });
-                            return Ok(());
+                if let Some(socket_addr) = socket_addr_opt
+                    && let TransportHandle::Udp(udp) = transport
+                    && let Some(socket) = udp.async_socket()
+                {
+                    // Build the wire buffer **directly** from
+                    // `plaintext` with a single allocation:
+                    //   `[16 header][4 ts][plaintext...]` with
+                    // +16 trailing capacity for the AEAD tag.
+                    // The worker seals `wire_buf[16..]` in
+                    // place and appends the tag — no second
+                    // alloc, no second memcpy.
+                    //
+                    // Previous design built `inner_plaintext`
+                    // via `prepend_inner_header` (1 alloc + 1
+                    // copy) and then let the worker memcpy
+                    // header + plaintext into a fresh Vec
+                    // (another alloc + copy). At ~100 kpps the
+                    // saved alloc/copy is ~150 MB/sec of memory
+                    // bandwidth on the hot rx_loop + worker.
+                    let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
+                    let mut wire_buf = Vec::with_capacity(wire_capacity);
+                    wire_buf.extend_from_slice(&header);
+                    wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                    wire_buf.extend_from_slice(plaintext);
+                    let predicted_bytes = wire_capacity;
+                    // Stats / MMP update inline — predicted size
+                    // is exact for ChaCha20-Poly1305 (tag is
+                    // constant 16 bytes).
+                    // Snapshot the per-peer connected UDP
+                    // socket (Linux only). When `Some`, the
+                    // worker `sendmsg`s on it with
+                    // msg_name=NULL — the kernel skips the
+                    // per-packet sockaddr + route + neighbor
+                    // resolve.
+                    #[cfg(target_os = "linux")]
+                    let connected_socket =
+                        self.peers.get(node_addr).and_then(|p| p.connected_udp());
+                    if let Some(peer) = self.peers.get_mut(node_addr) {
+                        peer.link_stats_mut().record_sent(predicted_bytes);
+                        if let Some(mmp) = peer.mmp_mut() {
+                            mmp.sender
+                                .record_sent(reserved_counter, timestamp_ms, predicted_bytes);
                         }
                     }
+                    workers.dispatch(self::encrypt_worker::FmpSendJob {
+                        cipher: cipher_clone,
+                        counter: reserved_counter,
+                        wire_buf,
+                        socket,
+                        dest_addr: socket_addr,
+                        #[cfg(target_os = "linux")]
+                        connected_socket,
+                    });
+                    return Ok(());
                 }
             }
         }

@@ -302,11 +302,8 @@ fn run_worker(idx: usize, rx: Receiver<WorkerMsg>) {
         // Drain follow-ons before parking again. Keeps the thread
         // on-core for a burst (typical recvmmsg batch is 5–30 packets
         // delivered very close together).
-        loop {
-            match rx.try_recv() {
-                Ok(m) => handle_msg(idx, &mut sessions, m),
-                Err(_) => break,
-            }
+        while let Ok(m) = rx.try_recv() {
+            handle_msg(idx, &mut sessions, m);
         }
     }
     trace!(worker = idx, "FMP+FSP decrypt worker thread exiting");

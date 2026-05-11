@@ -153,13 +153,12 @@ impl UdpTransport {
     /// `Arc<AsyncFd<UdpRawSocket>>`, so the "clone" is just a refcount
     /// bump). Returns `None` if the transport hasn't been started yet.
     ///
-    /// Intended for off-task workers that need to issue
-    /// `send_to`/`send_batch` calls without going through the
-    /// per-transport pending-send mutex — useful when the AEAD encrypt
-    /// + udp_send pipeline is parallelised across N worker tasks that
-    /// each own a shared handle to the same kernel socket. The kernel
-    /// serialises concurrent `sendto` calls itself, so concurrent
-    /// userland sends are safe.
+    /// Intended for off-task workers that need to issue raw
+    /// `send_to` / `send_batch` calls — useful when the AEAD
+    /// encrypt + UDP-send pipeline is parallelised across N worker
+    /// threads that each own a shared handle to the same kernel
+    /// socket. The kernel serialises concurrent `sendto` calls
+    /// itself, so concurrent userland sends are safe.
     pub fn async_socket(&self) -> Option<AsyncUdpSocket> {
         self.socket.clone()
     }

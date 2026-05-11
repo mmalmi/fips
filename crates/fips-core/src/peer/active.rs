@@ -358,7 +358,7 @@ impl ActivePeer {
     /// worker send path uses this to bypass the wildcard listen
     /// socket's per-packet sockaddr handling.
     #[cfg(target_os = "linux")]
-    pub fn connected_udp(
+    pub(crate) fn connected_udp(
         &self,
     ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>> {
         self.connected_udp.clone()
@@ -378,7 +378,7 @@ impl ActivePeer {
     /// jobs already in-flight holding the old socket Arc stay valid
     /// until they complete, at which point the kernel fd closes.
     #[cfg(target_os = "linux")]
-    pub fn set_connected_udp(
+    pub(crate) fn set_connected_udp(
         &mut self,
         socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
         drain: crate::transport::udp::peer_drain::PeerRecvDrain,
@@ -397,7 +397,7 @@ impl ActivePeer {
     /// signal; the kernel fd closes when the last `Arc` to the
     /// socket drops.
     #[cfg(target_os = "linux")]
-    pub fn clear_connected_udp(&mut self) {
+    pub(crate) fn clear_connected_udp(&mut self) {
         self.peer_recv_drain = None;
         self.connected_udp = None;
     }

@@ -52,11 +52,11 @@ pub enum Stage {
     FspHandle = 10,
     /// Whole `handle_endpoint_data_command` body — the SENDER's
     /// per-packet "do everything to push one outbound packet"
-    /// dispatch. Compare against the sum of `FspEncrypt + FmpEncrypt
-    /// + UdpSend` to see how much of the sender hot path is in
-    /// state-touching dispatch (sessions/peers lookups, MMP/stats
-    /// updates, Vec allocs) vs the AEAD/syscall work that's a
-    /// natural fit for an off-task worker.
+    /// dispatch. Compare against the sum of `FspEncrypt`,
+    /// `FmpEncrypt`, and `UdpSend` to see how much of the sender
+    /// hot path is in state-touching dispatch (sessions/peers
+    /// lookups, MMP/stats updates, Vec allocs) vs the AEAD/syscall
+    /// work that's a natural fit for an off-task worker.
     EndpointSend = 11,
 }
 
