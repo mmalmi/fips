@@ -25,6 +25,11 @@ x-fips-common: &fips-common
     - ./generated-configs/npubs.env
   environment:
     - RUST_LOG=info
+    # Passthrough so `FIPS_PERF=1 docker compose up` enables the
+    # built-in per-stage profiler. Default 0 -> profiler reporter
+    # task short-circuits at startup; zero overhead in normal runs.
+    - FIPS_PERF=${FIPS_PERF:-0}
+    - FIPS_PERF_INTERVAL_SECS=${FIPS_PERF_INTERVAL_SECS:-5}
 
 services:
   # ── Mesh topology ──────────────────────────────────────────────

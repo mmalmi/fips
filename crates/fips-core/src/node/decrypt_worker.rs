@@ -146,9 +146,26 @@ pub(crate) struct DecryptFallback {
     pub packet_len: usize,
     pub fmp_counter: u64,
     pub fmp_flags: u8,
-    /// FMP plaintext (the inner message; FSP if `prefix.phase ==
-    /// FSP_PHASE_ESTABLISHED`).
-    pub fmp_plaintext: Vec<u8>,
+    /// Original received wire buffer, mutated in place by the FMP
+    /// AEAD open. Bytes `[fmp_plaintext_offset ..
+    /// fmp_plaintext_offset+fmp_plaintext_len]` are the decrypted
+    /// FMP plaintext: a 4-byte session timestamp followed by the
+    /// link-layer message (FSP frame when
+    /// `phase == FSP_PHASE_ESTABLISHED`). rx_loop slices into this
+    /// Vec for FSP decrypt + dispatch and only allocates on the
+    /// actual delivery hop.
+    ///
+    /// **Why packet_data + offset, not `Vec<u8>` of the plaintext:**
+    /// the pre-fix bounce did `packet_data[a..b].to_vec()` per
+    /// packet, which is one fresh ~1500-byte allocation on every
+    /// inbound bulk frame. At 150k pps that's ~225 MB/sec of
+    /// memory bandwidth on the worker + rx_loop hot path, and a
+    /// per-packet allocator round-trip. Passing the original Vec
+    /// through unmodified lets the consumer borrow a slice; zero
+    /// alloc, zero memcpy.
+    pub packet_data: Vec<u8>,
+    pub fmp_plaintext_offset: usize,
+    pub fmp_plaintext_len: usize,
 }
 
 /// Messages travelling through the per-worker crossbeam channel.
@@ -466,8 +483,9 @@ fn handle_job(
     // shard worker also own the rx_loop side for its sessions — at
     // that point there's no "rx_loop legacy path" for the worker to
     // conflict with.
-    let _ = link_msg; // sanity-check borrow before re-slicing for bounce
-    let fmp_plaintext = packet_data[fmp_plaintext_start..fmp_plaintext_end].to_vec();
+    // Pass the buffer through by ownership + offset/length. No
+    // per-packet allocation; rx_loop slices into `packet_data`.
+    let _ = link_msg; // sanity-check borrow before sending buffer onward
     let _ = fallback_tx.send(DecryptFallback {
         source_node_addr,
         transport_id,
@@ -476,7 +494,9 @@ fn handle_job(
         packet_len,
         fmp_counter,
         fmp_flags,
-        fmp_plaintext,
+        packet_data,
+        fmp_plaintext_offset: fmp_plaintext_start,
+        fmp_plaintext_len: plaintext_len,
     });
     // Suppress unused-variable warnings for the (now-removed) FSP
     // fast path. The `state` lookup is still needed for the FMP

@@ -215,6 +215,13 @@ impl Node {
                         fallback.fmp_flags & crate::node::wire::FLAG_CE != 0;
                     let sp_flag =
                         fallback.fmp_flags & crate::node::wire::FLAG_SP != 0;
+                    // Slice into the original wire buffer — zero
+                    // alloc, zero copy. The worker bounce used to
+                    // `to_vec()` ~1500 bytes per packet (~225 MB/sec
+                    // memory bandwidth at 150k pps); now we just
+                    // index.
+                    let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
+                        ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
                     self.process_authentic_fmp_plaintext(
                         &fallback.source_node_addr,
                         fallback.transport_id,
@@ -224,7 +231,7 @@ impl Node {
                         fallback.fmp_counter,
                         ce_flag,
                         sp_flag,
-                        &fallback.fmp_plaintext,
+                        plaintext,
                     )
                     .await;
                 }
