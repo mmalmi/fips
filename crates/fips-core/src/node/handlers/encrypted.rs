@@ -138,7 +138,12 @@ impl Node {
         let packet_len = packet.data.len();
         let packet_timestamp_ms = packet.timestamp_ms;
         let packet_transport_id = packet.transport_id;
-        let packet_remote_addr = packet.remote_addr.clone();
+        // Borrow rather than clone. `set_current_addr` short-circuits
+        // when the address hasn't changed (the common case at line
+        // rate), and otherwise it clones internally — so eagerly
+        // cloning here was a wasted Vec alloc + memcpy per packet on
+        // the steady-state hot path.
+        let packet_remote_addr = packet.remote_addr;
 
         // `packet` is owned by this function; take ownership of its data
         // so we can take a `&mut [u8]` to the ciphertext tail for the
@@ -209,7 +214,7 @@ impl Node {
                         .record_recv(counter, timestamp, packet_len, ce_flag, now);
                     let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
                 }
-                peer.set_current_addr(packet_transport_id, packet_remote_addr);
+                peer.set_current_addr(packet_transport_id, &packet_remote_addr);
                 peer.link_stats_mut()
                     .record_recv(packet_len, packet_timestamp_ms);
                 peer.touch(packet_timestamp_ms);
@@ -258,7 +263,7 @@ impl Node {
                     .record_recv(counter, timestamp, packet_len, ce_flag, now);
                 let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
             }
-            peer.set_current_addr(packet_transport_id, packet_remote_addr);
+            peer.set_current_addr(packet_transport_id, &packet_remote_addr);
             peer.link_stats_mut()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);

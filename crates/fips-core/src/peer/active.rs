@@ -440,9 +440,21 @@ impl ActivePeer {
     /// Update the current address (for roaming support).
     ///
     /// Called when we receive a valid authenticated packet from a new address.
-    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) {
+    /// Short-circuits when neither the transport_id nor the TransportAddr
+    /// bytes changed — at multi-Gbps the same peer's source 4-tuple is
+    /// stable per session and the overwhelming majority of inbound
+    /// packets hit this fast path. Saves both the redundant
+    /// `Option::take` + Vec drop on the cached side and the caller's
+    /// `.clone()` allocation on the input side: the caller can pass
+    /// `&TransportAddr` and we only `.to_owned()` when storing.
+    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) {
+        if self.transport_id == Some(transport_id)
+            && self.current_addr.as_ref() == Some(addr)
+        {
+            return;
+        }
         self.transport_id = Some(transport_id);
-        self.current_addr = Some(addr);
+        self.current_addr = Some(addr.clone());
     }
 
     // === Handshake Resend ===
