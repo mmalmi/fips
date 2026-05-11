@@ -135,7 +135,13 @@ impl Node {
         }
 
         // === Test-mode synchronous decrypt ===
-        // Production never reaches here. See module-level docs.
+        // Production never reaches here. See module-level docs. Does
+        // the FMP AEAD in place against the noise session's own
+        // cipher + replay window (which is the authoritative state
+        // when no worker is registered), then hands the FMP plaintext
+        // to the canonical `process_authentic_fmp_plaintext` — same
+        // path the worker-bounce arm in rx_loop takes, so post-
+        // decrypt bookkeeping + link-layer dispatch don't fork.
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
@@ -176,37 +182,79 @@ impl Node {
                 return;
             }
         };
-        let plaintext_slice =
-            &packet_data[ciphertext_offset..ciphertext_offset + plaintext_len];
-        let timestamp = match crate::node::wire::strip_inner_header(plaintext_slice) {
-            Some((ts, _link)) => ts,
-            None => {
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    len = plaintext_len,
-                    "Decrypted payload too short for inner header"
-                );
-                return;
-            }
-        };
-        let peer = self.peers.get_mut(&node_addr).unwrap();
-        peer.reset_decrypt_failures();
-        let now = Instant::now();
-        if let Some(mmp) = peer.mmp_mut() {
-            mmp.receiver
-                .record_recv(counter, timestamp, packet_len, ce_flag, now);
-            let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
-        }
-        peer.set_current_addr(packet_transport_id, &packet_remote_addr);
-        peer.link_stats_mut()
-            .record_recv(packet_len, packet_timestamp_ms);
-        peer.touch(packet_timestamp_ms);
+        // The FMP plaintext (4-byte ts + link msg) lives at
+        // packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].
+        // Slice + own a copy to hand to the shared helper. The copy
+        // is cheap (test-mode path; not the hot bench path).
+        let fmp_plaintext: Vec<u8> =
+            packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].to_vec();
+        self.process_authentic_fmp_plaintext(
+            &node_addr,
+            packet_transport_id,
+            &packet_remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            counter,
+            ce_flag,
+            sp_flag,
+            &fmp_plaintext,
+        )
+        .await;
+    }
 
+    /// Single canonical site for "the FMP layer authenticated and
+    /// accepted this packet" side-effects. Called both from the
+    /// worker-bounce arm in rx_loop (production fast path) and from
+    /// the in-line synchronous decrypt below (test-mode path).
+    ///
+    /// Performs the per-peer bookkeeping (last-seen, MMP receiver,
+    /// link stats, address-rotation) and then dispatches the
+    /// link-layer message body to `dispatch_link_message`. The
+    /// caller is responsible for ensuring the FMP AEAD already
+    /// verified the bytes — this function trusts `fmp_plaintext` as
+    /// authentic.
+    ///
+    /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
+    /// 4-byte inner timestamp still at the front (i.e. the same
+    /// layout the legacy `strip_inner_header` consumed).
+    pub(in crate::node) async fn process_authentic_fmp_plaintext(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        ce_flag: bool,
+        sp_flag: bool,
+        fmp_plaintext: &[u8],
+    ) {
         const INNER_TIMESTAMP_LEN: usize = 4;
-        let link_message = &packet_data
-            [ciphertext_offset + INNER_TIMESTAMP_LEN..ciphertext_offset + plaintext_len];
-        let link_message_owned: Vec<u8> = link_message.to_vec();
-        self.dispatch_link_message(&node_addr, &link_message_owned, ce_flag)
+        let inner_ts = if fmp_plaintext.len() >= INNER_TIMESTAMP_LEN {
+            u32::from_le_bytes([
+                fmp_plaintext[0],
+                fmp_plaintext[1],
+                fmp_plaintext[2],
+                fmp_plaintext[3],
+            ])
+        } else {
+            return;
+        };
+        let now = Instant::now();
+        if let Some(peer) = self.peers.get_mut(node_addr) {
+            peer.reset_decrypt_failures();
+            peer.set_current_addr(transport_id, remote_addr);
+            peer.link_stats_mut()
+                .record_recv(packet_len, packet_timestamp_ms);
+            peer.touch(packet_timestamp_ms);
+            if let Some(mmp) = peer.mmp_mut() {
+                mmp.receiver
+                    .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
+                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
+            }
+        }
+        let link_message = &fmp_plaintext[INNER_TIMESTAMP_LEN..];
+        self.dispatch_link_message(node_addr, link_message, ce_flag)
             .await;
     }
 

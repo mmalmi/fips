@@ -192,65 +192,25 @@ impl Node {
                     let _ = response_tx.send(response);
                 }
                 Some(fallback) = decrypt_fallback_rx.recv() => {
-                    // Decrypt worker bounced a packet back for legacy
-                    // FSP-layer dispatch. The FMP plaintext has already
-                    // been decrypted + replay-accepted by the worker;
-                    // we feed it into `dispatch_link_message` as if it
-                    // had come off the inline path.
-                    //
-                    // **Crucial:** also do the per-peer bookkeeping
-                    // that the inline path's `handle_encrypted_frame`
-                    // does — `peer.touch()`, `link_stats.record_recv`,
-                    // `set_current_addr`, **and `mmp.receiver.record_recv`**.
-                    // MMP's link-dead detector reads
-                    // `mmp.receiver.last_recv_time()` (see
-                    // `handlers/mmp.rs::check_link_heartbeats`), so the
-                    // MMP update is the one that actually keeps the
-                    // link alive — without it, the 30s timer fires
-                    // even though packets are arriving fine through
-                    // the worker.
-                    const INNER_TIMESTAMP_LEN: usize = 4;
-                    // Inner session-relative timestamp is the first
-                    // 4 bytes of the FMP plaintext (little-endian).
-                    let inner_ts = if fallback.fmp_plaintext.len() >= INNER_TIMESTAMP_LEN {
-                        u32::from_le_bytes([
-                            fallback.fmp_plaintext[0],
-                            fallback.fmp_plaintext[1],
-                            fallback.fmp_plaintext[2],
-                            fallback.fmp_plaintext[3],
-                        ])
-                    } else {
-                        0
-                    };
-                    let now = std::time::Instant::now();
-                    if let Some(peer) =
-                        self.peers.get_mut(&fallback.source_node_addr)
-                    {
-                        peer.set_current_addr(
-                            fallback.transport_id,
-                            &fallback.remote_addr,
-                        );
-                        peer.link_stats_mut().record_recv(
-                            fallback.packet_len,
-                            fallback.timestamp_ms,
-                        );
-                        peer.touch(fallback.timestamp_ms);
-                        if let Some(mmp) = peer.mmp_mut() {
-                            mmp.receiver.record_recv(
-                                fallback.fmp_counter,
-                                inner_ts,
-                                fallback.packet_len,
-                                /* ce_flag */ false,
-                                now,
-                            );
-                        }
-                    }
-                    let link_message =
-                        &fallback.fmp_plaintext[INNER_TIMESTAMP_LEN..];
-                    self.dispatch_link_message(
+                    // Decrypt worker bounced a packet back for
+                    // FSP-layer dispatch after handling the FMP layer.
+                    // Hand the FMP plaintext to the canonical
+                    // post-decrypt processor — same code path the
+                    // test-mode in-line decrypt below takes, so
+                    // per-peer bookkeeping (peer.touch,
+                    // link_stats.record_recv, mmp.receiver.record_recv,
+                    // set_current_addr) and link-layer dispatch run
+                    // identically in both modes.
+                    self.process_authentic_fmp_plaintext(
                         &fallback.source_node_addr,
-                        link_message,
-                        false,
+                        fallback.transport_id,
+                        &fallback.remote_addr,
+                        fallback.timestamp_ms,
+                        fallback.packet_len,
+                        fallback.fmp_counter,
+                        /* ce_flag */ false,
+                        /* sp_flag */ false,
+                        &fallback.fmp_plaintext,
                     )
                     .await;
                 }
