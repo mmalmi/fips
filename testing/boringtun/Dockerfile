@@ -4,7 +4,12 @@
 # between them, then iperf3 client→server across the tunnel.
 
 FROM rust:1-bookworm AS build
-RUN cargo install --version 0.6.0 boringtun-cli
+# 0.6.0 (crates.io HEAD) is from 2022 and turns in ~1.7 Mbps in
+# this harness — clearly broken. Pull the boringtun-cli binary from
+# the cloudflare HEAD instead; it gets the post-0.6 perf fixes and
+# the multi-threaded recv loop.
+RUN git clone --depth 1 https://github.com/cloudflare/boringtun /usr/src/boringtun \
+    && cargo install --path /usr/src/boringtun/boringtun-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update \
