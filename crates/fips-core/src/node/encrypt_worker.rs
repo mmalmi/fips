@@ -324,7 +324,18 @@ fn flush_batch_sync(
             && gso_eligible(&wire_packets)
         {
             match send_batch_gso(fd, &wire_packets) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    static GSO_FIRST: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !GSO_FIRST.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        tracing::info!(
+                            batch_len = wire_packets.len(),
+                            seg_size = wire_packets[0].0.len(),
+                            "UDP_GSO send active — sendmsg+UDP_SEGMENT path engaged"
+                        );
+                    }
+                    return Ok(());
+                }
                 Err(err)
                     if err.kind() == std::io::ErrorKind::InvalidInput
                         || err.raw_os_error() == Some(libc::EOPNOTSUPP)
