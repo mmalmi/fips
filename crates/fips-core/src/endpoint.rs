@@ -360,6 +360,74 @@ impl FipsEndpoint {
         })
     }
 
+    /// Synchronous blocking send — parks the calling **OS thread** on
+    /// the FIPS endpoint command channel until the runtime accepts
+    /// the send. MUST be called only from a thread spawned via
+    /// `std::thread::spawn`, not from inside a tokio runtime.
+    ///
+    /// Companion to [`Self::blocking_recv`] for control-frame replies
+    /// (e.g. responding to a Ping with a Pong) issued from the
+    /// dedicated TUN-write thread. Failures are returned via
+    /// `FipsEndpointError::Closed` if the runtime has stopped.
+    pub fn blocking_send(
+        &self,
+        remote_npub: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let remote_npub = remote_npub.into();
+        let data = data.into();
+        if remote_npub == self.npub {
+            self.inbound_endpoint_tx
+                .send(NodeEndpointEvent::Data {
+                    source_node_addr: self.node_addr,
+                    source_npub: Some(self.npub.clone()),
+                    payload: data,
+                })
+                .map_err(|_| FipsEndpointError::Closed)?;
+            return Ok(());
+        }
+        let remote = self.resolve_peer_identity(&remote_npub)?;
+        let (response_tx, _response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .blocking_send(NodeEndpointCommand::Send {
+                remote,
+                payload: data,
+                response_tx,
+            })
+            .map_err(|_| FipsEndpointError::Closed)?;
+        Ok(())
+    }
+
+    /// Synchronous blocking receive — parks the calling **OS thread**
+    /// on the channel until an event arrives or the channel closes.
+    ///
+    /// MUST NOT be called from inside a tokio runtime; use this only
+    /// from a thread spawned via `std::thread::spawn` so the tokio
+    /// scheduler doesn't deadlock.
+    ///
+    /// The motivation is the bench's CLI receive task: when run as a
+    /// regular tokio task each `recv().await` is a full task-wake on
+    /// the runtime (~1–3 µs scheduler bookkeeping), and at 113 kpps
+    /// that's ~10–30% of one core spent in plumbing the wake-up
+    /// rather than writing the packet to TUN. A dedicated OS thread
+    /// blocked on the channel via `blocking_recv` parks on a futex
+    /// directly — the wake is a single futex_wake() with no scheduler
+    /// involvement, an order of magnitude cheaper.
+    pub fn blocking_recv(&self) -> Option<FipsEndpointMessage> {
+        let mut rx = self.inbound_endpoint_rx.blocking_lock();
+        let event = rx.blocking_recv()?;
+        let NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } = event;
+        Some(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
+    }
+
     /// Non-blocking receive — returns the next ready endpoint message
     /// if one is queued, otherwise `None`. Pair with `recv()` to drain
     /// follow-on packets without paying a scheduler wake per packet:
