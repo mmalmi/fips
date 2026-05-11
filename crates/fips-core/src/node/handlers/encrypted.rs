@@ -113,8 +113,20 @@ impl Node {
         // at lifecycle start with `num_cpus` workers), so this branch
         // is taken and the legacy block below never runs.
         let cache_key = (packet.transport_id, header.receiver_idx.as_u32());
+        // **Worker is the production decrypt path.** The previous
+        // version of this gate also required `endpoint_event_tx` to
+        // be `Some`, but that field is only populated when a caller
+        // attaches the endpoint-data API (`endpoint_data_io()`) — in
+        // pure TUN mode (the common iperf-bench shape) the field is
+        // `None`, so the gate silently bounced every packet to the
+        // legacy in-line decrypt path. The worker doesn't actually
+        // use the endpoint sender after the FMP-only refactor (all
+        // link messages bounce back through `fallback_tx` for FSP
+        // decrypt on rx_loop), so it was a redundant predicate
+        // hiding the bug. The only remaining requirements are: a
+        // worker pool exists, and this session has been handed off
+        // to it.
         if let Some(workers) = self.decrypt_workers.as_ref().cloned()
-            && let Some(endpoint_event_tx_ref) = self.endpoint_event_tx.as_ref()
             && self.decrypt_registered_sessions.contains(&cache_key)
         {
             let job = super::super::decrypt_worker::DecryptJob {
@@ -127,7 +139,6 @@ impl Node {
                 fmp_counter: header.counter,
                 fmp_header: header.header_bytes,
                 fmp_ciphertext_offset: header.ciphertext_offset(),
-                endpoint_event_tx: endpoint_event_tx_ref.clone(),
                 fallback_tx: self.decrypt_fallback_tx.clone(),
             };
             workers.dispatch_job(job);
@@ -239,9 +250,10 @@ impl Node {
             return;
         };
         let now = Instant::now();
+        let mut address_changed = false;
         if let Some(peer) = self.peers.get_mut(node_addr) {
             peer.reset_decrypt_failures();
-            peer.set_current_addr(transport_id, remote_addr);
+            address_changed = peer.set_current_addr(transport_id, remote_addr);
             peer.link_stats_mut()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);
@@ -250,6 +262,24 @@ impl Node {
                     .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
                 let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
             }
+        }
+        // Address rotation invalidates the per-peer connected UDP
+        // socket: it's `connect(2)`-ed to the old kernel 5-tuple
+        // (cached route + neighbour entry), and continuing to
+        // `sendmsg(.., msg_name=NULL)` on it would push outbound
+        // packets at the now-stale address. Drop the connected socket
+        // + paired drain thread; the wildcard listen socket takes
+        // over until the peer's new 5-tuple is observed long enough
+        // to re-`connect()`. Done after the `peer.get_mut` block so
+        // the borrow on `self.peers` is released — `clear_connected_
+        // udp_for_peer` may need to traverse other peer state.
+        #[cfg(target_os = "linux")]
+        if address_changed {
+            self.clear_connected_udp_for_peer(node_addr);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = address_changed;
         }
         let link_message = &fmp_plaintext[INNER_TIMESTAMP_LEN..];
         self.dispatch_link_message(node_addr, link_message, ce_flag)
@@ -289,8 +319,22 @@ impl Node {
             };
             (cache_key, state)
         };
-        workers.register_session(cache_key, state);
-        self.decrypt_registered_sessions.insert(cache_key);
+        // **Only mark as registered if the worker actually accepted
+        // the registration message.** When the per-worker channel is
+        // full (sustained ingress + registration burst on the same
+        // shard), `try_send` returns `Full` and the cipher + replay
+        // state are dropped on the floor. If we still inserted into
+        // `decrypt_registered_sessions`, every subsequent packet for
+        // this session would be `dispatch_job`'d to the worker,
+        // miss the unregistered HashMap entry, and silently drop —
+        // permanent black hole until the session rotates. Gating
+        // the local "is registered" set on the dispatch result
+        // means we keep using the legacy in-line decrypt path
+        // until a later `register_decrypt_worker_session` succeeds
+        // (the FSP-established / rekey callers retry naturally).
+        if workers.register_session(cache_key, state) {
+            self.decrypt_registered_sessions.insert(cache_key);
+        }
     }
 
     /// Build the **owned FMP recv state** handed off to the decrypt

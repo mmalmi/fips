@@ -40,6 +40,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, trace, warn};
 
+// `endpoint_event_tx` used to ride on every `DecryptJob` so the worker
+// could deliver inbound EndpointData straight to the API layer,
+// bypassing rx_loop. After the FMP-only refactor (correctness fix —
+// see the long comment in `handle_job`'s phase-2 block) the worker
+// bounces ALL link messages back to rx_loop, so the sender went
+// unused. It's been removed: it bloated `DecryptJob` (an extra Arc
+// clone per packet on the rx_loop hot path) and — worse — its
+// presence was used as the production-path predicate in
+// `handle_encrypted_frame`, which silently disabled the entire
+// worker for TUN-only configurations that never call
+// `endpoint_data_io()`.
+
 use crate::noise::ReplayWindow;
 
 const WORKER_CHANNEL_CAP: usize = 32768;
@@ -96,11 +108,6 @@ pub(crate) struct DecryptJob {
     pub fmp_header: [u8; 16],
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
     pub fmp_ciphertext_offset: usize,
-
-    /// Where to deliver successfully-decrypted `EndpointData` events.
-    /// Unbounded so the send from a non-tokio thread is a wait-free
-    /// linked-list push — no runtime involvement on the worker side.
-    pub endpoint_event_tx: UnboundedSender<crate::node::NodeEndpointEvent>,
 
     /// Anything that's NOT bulk EndpointData gets bounced back to the
     /// rx_loop via this channel along with its now-decrypted plaintext.
@@ -222,24 +229,45 @@ impl DecryptWorkerPool {
     /// first authentic legacy-path decrypt — the worker thereafter is
     /// the sole authority over the replay window and the cipher
     /// clones for this session.
-    pub fn register_session(&self, cache_key: (TransportId, u32), state: OwnedSessionState) {
+    ///
+    /// Returns `true` iff the registration message was actually
+    /// queued. Callers MUST gate any "this session is now worker-
+    /// owned" state on the returned bool — the previous version
+    /// fire-and-forget'd the `try_send` and the caller unconditionally
+    /// marked the session as registered on its side, so under
+    /// sustained queue pressure rx_loop believed the worker owned a
+    /// session that had never received the cipher + replay state.
+    /// Subsequent `dispatch_job` packets then arrived at a worker
+    /// shard without that session in its local `HashMap` and were
+    /// silently dropped (the "session unregistered mid-flight"
+    /// fallback path in `handle_job`). The caller's normal retry —
+    /// "re-register on a later event" — is documented at the only
+    /// call site (`register_decrypt_worker_session`).
+    #[must_use = "registration may have failed under queue pressure; caller must gate its own session-registered flag on the returned bool"]
+    pub fn register_session(
+        &self,
+        cache_key: (TransportId, u32),
+        state: OwnedSessionState,
+    ) -> bool {
         if self.senders.is_empty() {
-            return;
+            return false;
         }
         let idx = self.worker_idx_for(cache_key);
         match self.senders[idx].try_send(WorkerMsg::RegisterSession { cache_key, state }) {
-            Ok(()) => {}
+            Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 warn!(
                     worker = idx,
                     "DecryptWorker channel full at session registration; will retry on next packet"
                 );
+                false
             }
             Err(TrySendError::Disconnected(_)) => {
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring registration"
                 );
+                false
             }
         }
     }
@@ -322,7 +350,6 @@ fn handle_job(
         fmp_counter,
         fmp_header,
         fmp_ciphertext_offset,
-        endpoint_event_tx,
         fallback_tx,
     } = job;
     // Capture the wire packet length BEFORE decrypt mutates the
@@ -347,7 +374,6 @@ fn handle_job(
             // brand-new session; subsequent packets land after
             // registration.
             let _ = fallback_tx; // explicitly ignore — drop path
-            let _ = endpoint_event_tx;
             let _ = source_node_addr;
             let _ = packet_data;
             return Ok(());
@@ -449,7 +475,6 @@ fn handle_job(
     // Suppress unused-variable warnings for the (now-removed) FSP
     // fast path. The `state` lookup is still needed for the FMP
     // cipher + replay window above.
-    let _ = endpoint_event_tx;
     let _ = (link_msg_start, link_msg_end, &state.source_npub);
     Ok(())
 }

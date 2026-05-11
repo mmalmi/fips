@@ -260,10 +260,36 @@ fn run_worker(idx: usize, rx: Receiver<FmpSendJob>) {
     trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
-/// Encrypt every job in `batch` in place, then issue a single
-/// `sendmmsg(2)` (Linux) for the resulting wire packets. Clears
+/// Encrypt every job in `batch` in place, then issue one or more
+/// bulk-send syscalls grouped **by exact send target**. Clears
 /// `batch` on return. Sync version — operates directly on the raw
 /// nonblocking UDP fd with a retry-on-EAGAIN loop; no tokio reactor.
+///
+/// **Why grouping is required:** `EncryptWorkerPool::dispatch` hashes
+/// `job.dest_addr` modulo the worker count to pick a worker — this
+/// pins one peer's flow to one worker (FIFO order preserved for
+/// TCP), but it does NOT mean every job in a worker's drained batch
+/// shares a target. Two different peers can hash to the same
+/// worker. The previous implementation cloned `batch[0].socket` /
+/// `batch[0].connected_socket` and used them for the entire batch,
+/// silently misdirecting packets:
+///
+/// - **Connected-socket path:** `sendmsg(.., msg_name=NULL)` delivers
+///   to the peer cached at `connect(2)` time. Mixing jobs across
+///   peers sent all of them to the first peer's connected socket.
+/// - **UDP_GSO path:** the super-skb has one `msg_name` + one
+///   `UDP_SEGMENT` cmsg. Mixing destinations sent the segmented
+///   payload to `packets[0].dest_addr` regardless of each job's
+///   intended target.
+/// - **Plain `sendmmsg` path:** the kernel honours per-message
+///   `msg_name`, so the non-connected fallback was actually safe —
+///   but we group anyway for code symmetry and to keep GSO
+///   eligibility checks simple.
+///
+/// **Order preservation:** within one target group the iteration
+/// order is the channel-drain order, which is FIFO from the
+/// rx_loop. TCP's fast-retransmit logic only cares about per-flow
+/// ordering, and a single flow lives entirely inside one group.
 fn flush_batch_sync(
     batch: &mut Vec<FmpSendJob>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -275,36 +301,32 @@ fn flush_batch_sync(
     // per-packet falls out of the COUNT increment once per flush.
     let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
 
-    // 1) Encrypt every job's wire_buf in place. wire_buf is laid out
-    //    as `[16 header][plaintext]` on entry, with TAG_SIZE bytes of
-    //    trailing capacity reserved. After this loop each wire_buf is
-    //    the complete wire packet `[16 header][ciphertext][16 tag]` —
-    //    no extra alloc or memcpy.
-    let mut wire_packets: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(batch.len());
-    // All jobs in this batch share the same destination + socket
-    // (hash-by-dest in `EncryptWorkerPool::dispatch`), so cloning the
-    // first one's socket Arc is the cheapest way to get a handle for
-    // the bulk send below.
-    let socket = batch[0].socket.clone();
-    // Linux fast path: if the first job has a per-peer connected
-    // socket installed, all jobs in this batch share that peer (same
-    // hash-by-dest invariant) — use the connected fd + msg_name=NULL
-    // for the whole batch. The Arc keeps the kernel fd alive while
-    // the syscall runs even if the peer is concurrently dropped on
-    // rx_loop.
-    #[cfg(target_os = "linux")]
-    let connected_socket: Option<
-        std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-    > = batch[0].connected_socket.clone();
+    // Per-target encrypted-packet group. Vec layout (not HashMap)
+    // because the typical batch has 1 target (hash-by-dest dispatch),
+    // 2-3 worst-case under hash collisions — linear lookup beats
+    // hashing for that range and keeps insertion order stable, so
+    // the bursty peer's tail packets flush first.
+    #[cfg(unix)]
+    struct EncryptedGroup {
+        socket: AsyncUdpSocket,
+        #[cfg(target_os = "linux")]
+        connected_socket:
+            Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+        dest_addr: SocketAddr,
+        wire_packets: Vec<Vec<u8>>,
+    }
+    #[cfg(unix)]
+    let mut groups: Vec<EncryptedGroup> = Vec::with_capacity(1);
+
     for job in batch.drain(..) {
         let FmpSendJob {
             cipher,
             counter,
             mut wire_buf,
-            socket: _,
+            socket,
             dest_addr,
             #[cfg(target_os = "linux")]
-                connected_socket: _,
+            connected_socket,
         } = job;
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
@@ -325,63 +347,113 @@ fn flush_batch_sync(
         };
         // wire_buf already has `+16` capacity reserved → no realloc.
         wire_buf.extend_from_slice(tag.as_ref());
-        wire_packets.push((wire_buf, dest_addr));
+
+        #[cfg(unix)]
+        {
+            // Compare by RawFd, not the `AsyncUdpSocket` / Arc identity —
+            // identity comparison breaks if two jobs carry separately-
+            // cloned handles to the same kernel fd, which happens
+            // routinely on the rx_loop side. The kernel fd is the only
+            // thing that matters for what `sendmsg(2)` actually does.
+            let socket_fd = socket.as_raw_fd();
+            #[cfg(target_os = "linux")]
+            let connected_fd = connected_socket.as_ref().map(|s| s.as_raw_fd());
+            let matched = groups.iter_mut().position(|g| {
+                if g.dest_addr != dest_addr {
+                    return false;
+                }
+                if g.socket.as_raw_fd() != socket_fd {
+                    return false;
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if g.connected_socket.as_ref().map(|s| s.as_raw_fd()) != connected_fd {
+                        return false;
+                    }
+                }
+                true
+            });
+            if let Some(idx) = matched {
+                groups[idx].wire_packets.push(wire_buf);
+            } else {
+                groups.push(EncryptedGroup {
+                    socket,
+                    #[cfg(target_os = "linux")]
+                    connected_socket,
+                    dest_addr,
+                    wire_packets: vec![wire_buf],
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows: encrypt worker pool isn't spawned (see
+            // lifecycle.rs); this function is unreachable. Drop
+            // values explicitly so the compiler sees them as used.
+            let _ = (socket, dest_addr, wire_buf);
+        }
     }
 
-    // 2) Bulk send via the raw FD.
+    drop(_t); // close the encrypt timer before we open the send timer
+
+    // 2) Bulk send each group via its own raw FD.
     //
     // **Preferred (Linux only): UDP_GSO** — when every wire packet in
-    // the batch is the same size (last one may be shorter, which the
-    // kernel handles), a single `sendmsg(2)` with the `UDP_SEGMENT`
-    // cmsg lets the kernel split one "super-skb" into N on-the-wire
-    // UDP datagrams in a single skb-walk. Profiling on AMD VM showed
-    // `sendmmsg(2)` taking ~4.5 µs per packet (30× the amortised cost
-    // we expected) at single-flow TCP rates — the kernel TX path was
-    // the actual bottleneck, not the AEAD. UDP_GSO collapses that to
-    // ~one walk per batch. Same primitive WireGuard kernel + boringtun
-    // use to hit 2.5-3.2 Gbps.
+    // a group is the same size (last may be shorter, which the kernel
+    // handles), one `sendmsg(2)` with the `UDP_SEGMENT` cmsg lets the
+    // kernel split one "super-skb" into N on-the-wire UDP datagrams
+    // in a single skb-walk. Profiling on AMD VM showed `sendmmsg(2)`
+    // taking ~4.5 µs per packet at single-flow TCP rates — the kernel
+    // TX path was the actual bottleneck, not the AEAD. UDP_GSO
+    // collapses that to ~one walk per group. Same primitive WireGuard
+    // kernel + boringtun use to hit 2.5-3.2 Gbps.
     //
-    // **Fallback: sendmmsg(2)** — used when sizes differ in the batch
-    // (FIPS control frames + EndpointData mixed), and after a one-shot
-    // EINVAL/EOPNOTSUPP from UDP_GSO sticks the GSO_DISABLED flag.
-    // Same retry-on-EAGAIN loop as before.
+    // **Fallback: sendmmsg(2)** — used when sizes differ in the
+    // group (FIPS control frames + EndpointData mixed), and after a
+    // one-shot EINVAL/EOPNOTSUPP from UDP_GSO sticks the
+    // GSO_DISABLED flag. Same retry-on-EAGAIN loop as before.
     //
     // On EAGAIN we `yield_now()` — the kernel UDP socket is in
     // nonblocking mode (`UdpRawSocket::open`), and at line rate the
     // kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is rarely
     // full so this is the cold path.
     let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+
     #[cfg(target_os = "linux")]
-    let (fd, connected) = match connected_socket.as_ref() {
-        Some(s) => (s.as_raw_fd(), true),
-        None => (socket.as_raw_fd(), false),
-    };
-    #[cfg(all(unix, not(target_os = "linux")))]
-    let fd = socket.as_raw_fd();
-    #[cfg(target_os = "linux")]
-    {
-        // Fast path: try UDP_GSO if the batch is uniform-size and the
-        // kernel hasn't refused GSO before.
-        if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) && gso_eligible(&wire_packets) {
-            match send_batch_gso(fd, &wire_packets, connected) {
-                Ok(()) => return Ok(()),
+    for group in groups {
+        let EncryptedGroup {
+            socket,
+            connected_socket,
+            dest_addr,
+            wire_packets,
+        } = group;
+        let (fd, connected) = match connected_socket.as_ref() {
+            Some(s) => (s.as_raw_fd(), true),
+            None => (socket.as_raw_fd(), false),
+        };
+
+        // Within a group, destination is uniform by construction —
+        // GSO needs only the size check now.
+        if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
+            && gso_eligible_sizes(&wire_packets)
+        {
+            match send_batch_gso(fd, &wire_packets, dest_addr, connected) {
+                Ok(()) => continue,
                 Err(err)
                     if err.kind() == std::io::ErrorKind::InvalidInput
                         || err.raw_os_error() == Some(libc::EOPNOTSUPP)
                         || err.raw_os_error() == Some(libc::ENOPROTOOPT) =>
                 {
-                    // Kernel doesn't support UDP_GSO on this socket /
-                    // device — fall back permanently to sendmmsg.
                     GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                     warn!(
                         error = %err,
                         "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
                     );
+                    // fall through to sendmmsg path for this group
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    // Send buffer full mid-GSO — fall through to the
-                    // sendmmsg retry loop below to drain remaining
-                    // packets the normal way. No GSO_DISABLED toggle.
+                    // Send buffer full mid-GSO — fall through to
+                    // sendmmsg retry loop. No GSO_DISABLED toggle.
                 }
                 Err(err) => {
                     return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
@@ -389,11 +461,9 @@ fn flush_batch_sync(
             }
         }
 
-        // Fallback: sendmmsg(2) for mixed-size batches and post-EAGAIN
-        // / post-GSO-refused.
         let mut sent = 0usize;
         while sent < wire_packets.len() {
-            let n = match send_batch_raw(fd, &wire_packets[sent..], connected) {
+            let n = match send_batch_raw(fd, &wire_packets[sent..], dest_addr, connected) {
                 Ok(n) => n,
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::yield_now();
@@ -410,10 +480,11 @@ fn flush_batch_sync(
         }
     }
     #[cfg(all(unix, not(target_os = "linux")))]
-    {
-        for (data, addr) in &wire_packets {
+    for group in groups {
+        let fd = group.socket.as_raw_fd();
+        for data in &group.wire_packets {
             loop {
-                match send_one_raw(fd, data, addr) {
+                match send_one_raw(fd, data, &group.dest_addr) {
                     Ok(_) => break,
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::yield_now();
@@ -425,15 +496,10 @@ fn flush_batch_sync(
             }
         }
     }
-    // Windows: the encrypt worker pool isn't spawned at all (see
+    // Windows: encrypt worker pool isn't spawned at all (see
     // lifecycle.rs), so this function is never reached. The
     // tokio-backed `AsyncUdpSocket::send_to` path on the rx_loop
-    // remains the only outbound path on that platform. Suppress
-    // unused-variable warnings.
-    #[cfg(not(unix))]
-    {
-        let _ = (wire_packets, socket);
-    }
+    // remains the only outbound path on that platform.
     Ok(())
 }
 
@@ -442,28 +508,30 @@ fn flush_batch_sync(
 #[cfg(target_os = "linux")]
 static GSO_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// A batch is GSO-eligible iff every packet is the same size, except
-/// the last one may be shorter (UDP_GSO's documented behaviour). Real-
-/// world TCP-over-FIPS traffic at line rate is almost entirely MTU-
-/// sized packets, so this hits on >99% of batches.
+/// Size-only GSO eligibility check. Callers MUST ensure all packets
+/// share one destination + send target — `flush_batch_sync` does this
+/// by grouping. A batch is GSO-eligible iff every packet is the same
+/// size, except the last one may be shorter (UDP_GSO's documented
+/// behaviour). Real-world TCP-over-FIPS traffic at line rate is
+/// almost entirely MTU-sized packets, so this hits on >99% of groups.
 #[cfg(target_os = "linux")]
-fn gso_eligible(packets: &[(Vec<u8>, SocketAddr)]) -> bool {
+fn gso_eligible_sizes(packets: &[Vec<u8>]) -> bool {
     if packets.len() < 2 {
-        // Single-packet batches don't benefit from GSO (no segmentation
+        // Single-packet groups don't benefit from GSO (no segmentation
         // saving) and just add cmsg overhead.
         return false;
     }
-    let seg = packets[0].0.len();
+    let seg = packets[0].len();
     if seg == 0 {
         return false;
     }
     for p in &packets[..packets.len() - 1] {
-        if p.0.len() != seg {
+        if p.len() != seg {
             return false;
         }
     }
     // Last packet must be <= seg.
-    packets[packets.len() - 1].0.len() <= seg
+    packets[packets.len() - 1].len() <= seg
 }
 
 /// Issue a single `sendmsg(2)` with the `UDP_SEGMENT` cmsg, handing
@@ -477,7 +545,8 @@ fn gso_eligible(packets: &[(Vec<u8>, SocketAddr)]) -> bool {
 #[cfg(target_os = "linux")]
 fn send_batch_gso(
     fd: std::os::unix::io::RawFd,
-    packets: &[(Vec<u8>, SocketAddr)],
+    packets: &[Vec<u8>],
+    dest: SocketAddr,
     connected: bool,
 ) -> std::io::Result<()> {
     debug_assert!(!packets.is_empty());
@@ -487,13 +556,12 @@ fn send_batch_gso(
         return Ok(());
     }
 
-    let seg_size = packets[0].0.len() as u16;
-    let dest = packets[0].1;
+    let seg_size = packets[0].len() as u16;
     let sa: socket2::SockAddr = dest.into();
 
     // Stack-allocated arrays sized for the worst case in this batch.
     let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
-    for (i, (data, _)) in packets[..n].iter().enumerate() {
+    for (i, data) in packets[..n].iter().enumerate() {
         iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
         iovs[i].iov_len = data.len();
     }
@@ -532,9 +600,11 @@ fn send_batch_gso(
         msg.msg_namelen = sa_len;
     }
     msg.msg_iov = iovs.as_mut_ptr();
-    msg.msg_iovlen = n;
+    // `msg_iovlen` is `usize` on glibc and `i32` on musl — explicit `as _`
+    // cast picks the right one for the target libc.
+    msg.msg_iovlen = n as _;
     msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_space;
+    msg.msg_controllen = cmsg_space as _;
 
     // Fill the UDP_SEGMENT cmsg.
     unsafe {
@@ -542,8 +612,10 @@ fn send_batch_gso(
         if cmsg.is_null() {
             return Err(std::io::Error::other("CMSG_FIRSTHDR returned null"));
         }
-        (*cmsg).cmsg_level = libc::IPPROTO_UDP;
-        (*cmsg).cmsg_type = libc::UDP_SEGMENT;
+        // `cmsg_level` / `cmsg_type` types differ between glibc and
+        // musl; cast through `_` so the field's declared type wins.
+        (*cmsg).cmsg_level = libc::IPPROTO_UDP as _;
+        (*cmsg).cmsg_type = libc::UDP_SEGMENT as _;
         (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
         let data = libc::CMSG_DATA(cmsg) as *mut u16;
         *data = seg_size;
@@ -568,7 +640,8 @@ fn send_batch_gso(
 #[cfg(target_os = "linux")]
 fn send_batch_raw(
     fd: std::os::unix::io::RawFd,
-    packets: &[(Vec<u8>, SocketAddr)],
+    packets: &[Vec<u8>],
+    dest: SocketAddr,
     connected: bool,
 ) -> std::io::Result<usize> {
     const MAX_BATCH: usize = 32;
@@ -577,16 +650,34 @@ fn send_batch_raw(
         return Ok(0);
     }
     let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
-    let mut storages: [libc::sockaddr_storage; MAX_BATCH] = unsafe { std::mem::zeroed() };
-    let mut storage_lens: [libc::socklen_t; MAX_BATCH] = [0; MAX_BATCH];
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut storage_len: libc::socklen_t = 0;
     let mut msgs: [libc::mmsghdr; MAX_BATCH] = unsafe { std::mem::zeroed() };
 
+    // Within one group, every packet shares the destination — build
+    // the sockaddr once and point every mmsghdr at it. (kernel copies
+    // out of msg_name during the syscall, so a shared backing store
+    // is safe.)
+    if !connected {
+        let sa: socket2::SockAddr = dest.into();
+        let sa_len = sa.len();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                sa.as_ptr() as *const u8,
+                &mut storage as *mut _ as *mut u8,
+                sa_len as usize,
+            );
+        }
+        storage_len = sa_len;
+    }
+
     for i in 0..n {
-        let (data, dest) = &packets[i];
+        let data = &packets[i];
         iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
         iovs[i].iov_len = data.len();
         msgs[i].msg_hdr.msg_iov = &mut iovs[i];
-        msgs[i].msg_hdr.msg_iovlen = 1;
+        // `msg_iovlen` is `usize` on glibc / `i32` on musl.
+        msgs[i].msg_hdr.msg_iovlen = 1 as _;
         if connected {
             // Connected socket: kernel has destination cached. Leaving
             // msg_name null skips the per-message sockaddr fixup +
@@ -595,18 +686,8 @@ fn send_batch_raw(
             msgs[i].msg_hdr.msg_name = std::ptr::null_mut();
             msgs[i].msg_hdr.msg_namelen = 0;
         } else {
-            let sa: socket2::SockAddr = (*dest).into();
-            let sa_len = sa.len();
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    sa.as_ptr() as *const u8,
-                    &mut storages[i] as *mut _ as *mut u8,
-                    sa_len as usize,
-                );
-            }
-            storage_lens[i] = sa_len;
-            msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
-            msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+            msgs[i].msg_hdr.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+            msgs[i].msg_hdr.msg_namelen = storage_len;
         }
     }
 
@@ -620,48 +701,41 @@ fn send_batch_raw(
 
 /// Standalone tests for the GSO-eligibility predicate. The full
 /// `send_batch_gso` is exercised in `tests::gso_roundtrip` below
-/// (Linux only).
-#[cfg(test)]
+/// (Linux only — UDP_GSO + connected-peer fast paths are Linux-only,
+/// so the entire test module is gated to Linux to avoid dead-code
+/// warnings on macOS / BSD builds).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use std::net::SocketAddr;
 
-    fn pkt(bytes: usize, addr: SocketAddr) -> (Vec<u8>, SocketAddr) {
-        (vec![0u8; bytes], addr)
+    fn pkt(bytes: usize) -> Vec<u8> {
+        vec![0u8; bytes]
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn gso_eligible_rejects_single_packet() {
-        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        assert!(!gso_eligible(&[pkt(1500, addr)]));
+        assert!(!gso_eligible_sizes(&[pkt(1500)]));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn gso_eligible_accepts_uniform_batch() {
-        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        let batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
-        assert!(gso_eligible(&batch));
+        let batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
+        assert!(gso_eligible_sizes(&batch));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn gso_eligible_accepts_short_trailer() {
-        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
-        batch.push(pkt(900, addr)); // last shorter — kernel handles this
-        assert!(gso_eligible(&batch));
+        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
+        batch.push(pkt(900)); // last shorter — kernel handles this
+        assert!(gso_eligible_sizes(&batch));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn gso_eligible_rejects_mixed_sizes() {
-        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
-        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500, addr)).collect();
-        batch[3] = pkt(800, addr); // mid-batch short packet
-        batch.push(pkt(1500, addr));
-        assert!(!gso_eligible(&batch));
+        let mut batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
+        batch[3] = pkt(800); // mid-batch short packet
+        batch.push(pkt(1500));
+        assert!(!gso_eligible_sizes(&batch));
     }
 
     /// End-to-end: bind a real UDP socket pair on loopback, fire
@@ -673,7 +747,6 @@ mod tests {
     /// running kernel doesn't support UDP_SEGMENT the syscall returns
     /// EOPNOTSUPP and we skip the assertion (the prod path falls back
     /// to sendmmsg via the GSO_DISABLED flag).
-    #[cfg(target_os = "linux")]
     #[test]
     fn gso_roundtrip_loopback() {
         use std::net::UdpSocket;
@@ -690,16 +763,21 @@ mod tests {
         // Build a uniform 18-packet batch addressed at recv_sock.
         const SEG: usize = 200;
         const N: usize = 18;
-        let mut batch: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(N);
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(N);
         for i in 0..N {
             let mut buf = vec![0u8; SEG];
             // Stamp the packet index in the first byte so we can verify
             // ordering on the receive side.
             buf[0] = i as u8;
-            batch.push((buf, recv_addr));
+            batch.push(buf);
         }
 
-        let r = send_batch_gso(send_sock.as_raw_fd(), &batch, /* connected */ false);
+        let r = send_batch_gso(
+            send_sock.as_raw_fd(),
+            &batch,
+            recv_addr,
+            /* connected */ false,
+        );
         match r {
             Ok(()) => {} // proceed to recv
             Err(err)
@@ -728,6 +806,165 @@ mod tests {
                 "datagram {i} arrived out of order or with wrong stamp"
             );
         }
+    }
+
+    /// `send_batch_raw` (the sendmmsg fallback) must deliver every
+    /// packet to the shared dest passed alongside the slice. Two
+    /// receivers + one mixed batch would be the wrong shape (the
+    /// shared sockaddr means one receiver per call); this test
+    /// validates the per-call contract: N packets in, N packets out
+    /// at one address.
+    #[test]
+    fn sendmmsg_uniform_dest_roundtrip() {
+        use std::net::UdpSocket;
+        use std::os::unix::io::AsRawFd;
+
+        let recv_sock = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
+        let recv_addr = recv_sock.local_addr().unwrap();
+        recv_sock
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("set_read_timeout");
+        let send_sock = UdpSocket::bind("127.0.0.1:0").expect("bind send");
+        send_sock.set_nonblocking(true).unwrap();
+
+        let packets: Vec<Vec<u8>> = (0..4)
+            .map(|i| {
+                let mut v = vec![0u8; 16];
+                v[0] = i as u8;
+                v
+            })
+            .collect();
+        let n =
+            send_batch_raw(send_sock.as_raw_fd(), &packets, recv_addr, false).expect("sendmmsg ok");
+        assert_eq!(n, 4);
+
+        let mut buf = [0u8; 64];
+        let mut stamps: Vec<u8> = Vec::new();
+        for _ in 0..4 {
+            let (len, _) = recv_sock.recv_from(&mut buf).expect("recv");
+            assert_eq!(len, 16);
+            stamps.push(buf[0]);
+        }
+        stamps.sort();
+        assert_eq!(stamps, vec![0, 1, 2, 3]);
+    }
+
+    /// Mixed-destination batch dispatched to a single worker. The
+    /// pre-fix bug used `batch[0].socket` / `batch[0].connected_socket`
+    /// / `packets[0].dest_addr` for the whole drained batch, so a
+    /// hash-collision (two peers hashing to the same worker) silently
+    /// misdirected the second peer's packets to the first peer's
+    /// destination. The fix groups jobs by `(socket_fd, connected_fd,
+    /// dest_addr)` before flushing.
+    ///
+    /// This test goes through `flush_batch_sync` directly: it constructs
+    /// three `FmpSendJob`s split across two distinct receiver sockaddrs
+    /// (A, B, A) on a shared send socket with no connected socket, then
+    /// asserts that recv_a gets the two A-stamped packets and recv_b
+    /// gets exactly the one B-stamped packet.
+    ///
+    /// We have to spin a tokio runtime because `AsyncUdpSocket` wraps a
+    /// `tokio::io::unix::AsyncFd`, which requires a registered reactor
+    /// at construction time. The actual `flush_batch_sync` work is sync
+    /// (raw-fd `sendmmsg`); we just need the AsyncFd alive for the
+    /// AsRawFd impl.
+    #[test]
+    fn flush_batch_routes_each_target_separately() {
+        use crate::transport::udp::socket::UdpRawSocket;
+        use ring::aead::{LessSafeKey, UnboundKey};
+        use std::net::UdpSocket;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            // Two receivers — distinct kernel sockaddrs.
+            let recv_a = UdpSocket::bind("127.0.0.1:0").expect("bind recv_a");
+            let recv_b = UdpSocket::bind("127.0.0.1:0").expect("bind recv_b");
+            for s in [&recv_a, &recv_b] {
+                s.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+                    .expect("set_read_timeout");
+            }
+            let addr_a = recv_a.local_addr().unwrap();
+            let addr_b = recv_b.local_addr().unwrap();
+
+            // One send socket shared by all jobs (the wildcard listen
+            // socket in production). `UdpRawSocket::open` builds a
+            // socket2 socket; `into_async` wraps it in tokio's AsyncFd
+            // and hands back an AsyncUdpSocket.
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let send_sock = raw.into_async().expect("into_async");
+
+            // Throwaway AEAD cipher — content doesn't matter, we just
+            // need encrypt to succeed so a wire packet lands.
+            let key_bytes = [0u8; 32];
+            let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes)
+                .expect("build unbound key");
+            let cipher = LessSafeKey::new(unbound);
+
+            fn make_job(
+                socket: crate::transport::udp::socket::AsyncUdpSocket,
+                cipher: &LessSafeKey,
+                counter: u64,
+                dest: SocketAddr,
+                stamp: u8,
+            ) -> FmpSendJob {
+                // wire_buf: 16-byte header + 32-byte plaintext + tag-room.
+                // Stamp a marker after the header so we can identify
+                // which packet landed where.
+                let mut wire_buf = Vec::with_capacity(16 + 32 + 16);
+                wire_buf.extend_from_slice(&[0u8; 16]);
+                wire_buf.extend_from_slice(&[0u8; 32]);
+                wire_buf[16] = stamp;
+                FmpSendJob {
+                    cipher: cipher.clone(),
+                    counter,
+                    wire_buf,
+                    socket,
+                    dest_addr: dest,
+                    connected_socket: None,
+                }
+            }
+
+            let mut batch = vec![
+                make_job(send_sock.clone(), &cipher, 1, addr_a, 0xAA),
+                make_job(send_sock.clone(), &cipher, 2, addr_b, 0xBB),
+                make_job(send_sock.clone(), &cipher, 3, addr_a, 0xCC),
+            ];
+            flush_batch_sync(&mut batch).expect("flush ok");
+            assert!(batch.is_empty(), "flush must drain the batch");
+
+            // recv_a expects two distinct stamps (AA, CC).
+            let mut buf = [0u8; 128];
+            let mut stamps_a: Vec<u8> = Vec::new();
+            for _ in 0..2 {
+                let (len, _) = recv_a.recv_from(&mut buf).expect("recv_a");
+                assert!(len > 16, "packet too short");
+                stamps_a.push(buf[16]);
+            }
+            stamps_a.sort();
+            assert_eq!(stamps_a, vec![0xAA, 0xCC]);
+
+            // recv_b expects exactly one stamp (BB).
+            let (len, _) = recv_b.recv_from(&mut buf).expect("recv_b");
+            assert!(len > 16, "packet too short");
+            assert_eq!(buf[16], 0xBB);
+
+            // recv_b must NOT receive any extra packets — the pre-fix
+            // bug would have sent everything to addr_a (the first
+            // job's destination).
+            recv_b
+                .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            let drained = recv_b.recv_from(&mut buf);
+            assert!(
+                drained.is_err(),
+                "recv_b got unexpected extra packet: {:?}",
+                drained
+            );
+        });
     }
 }
 

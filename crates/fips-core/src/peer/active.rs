@@ -533,12 +533,23 @@ impl ActivePeer {
     /// `Option::take` + Vec drop on the cached side and the caller's
     /// `.clone()` allocation on the input side: the caller can pass
     /// `&TransportAddr` and we only `.to_owned()` when storing.
-    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) {
+    ///
+    /// Returns `true` iff the stored `(transport_id, current_addr)` pair
+    /// actually changed. The caller uses this signal to invalidate
+    /// derived caches whose validity is bound to the peer's 5-tuple —
+    /// in particular the Linux per-peer `connect()`-ed UDP socket,
+    /// which is pinned to one kernel route + neighbour entry and goes
+    /// stale the moment the peer roams. (Clearing it here would force
+    /// `&mut self` users into the wrong shape: the policy of when to
+    /// rebuild the connected socket lives on `Node`, not on the peer
+    /// state. Returning a bool keeps that policy where it belongs.)
+    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) -> bool {
         if self.transport_id == Some(transport_id) && self.current_addr.as_ref() == Some(addr) {
-            return;
+            return false;
         }
         self.transport_id = Some(transport_id);
         self.current_addr = Some(addr.clone());
+        true
     }
 
     // === Handshake Resend ===
