@@ -199,16 +199,30 @@ impl Node {
                     // had come off the inline path.
                     //
                     // **Crucial:** also do the per-peer bookkeeping
-                    // that the inline path's
-                    // `handle_encrypted_frame` did — `peer.touch()`
-                    // (last_seen for MMP link-dead detection),
-                    // `record_recv` (stats), `set_current_addr`
-                    // (address rotation). The worker offloads the
-                    // FMP AEAD but cannot touch `Node` state, so
-                    // we have to mirror those updates here for every
-                    // worker-handled packet or MMP's 30s link-dead
-                    // timer fires and tears down the link even
-                    // though packets are arriving fine.
+                    // that the inline path's `handle_encrypted_frame`
+                    // does — `peer.touch()`, `link_stats.record_recv`,
+                    // `set_current_addr`, **and `mmp.receiver.record_recv`**.
+                    // MMP's link-dead detector reads
+                    // `mmp.receiver.last_recv_time()` (see
+                    // `handlers/mmp.rs::check_link_heartbeats`), so the
+                    // MMP update is the one that actually keeps the
+                    // link alive — without it, the 30s timer fires
+                    // even though packets are arriving fine through
+                    // the worker.
+                    const INNER_TIMESTAMP_LEN: usize = 4;
+                    // Inner session-relative timestamp is the first
+                    // 4 bytes of the FMP plaintext (little-endian).
+                    let inner_ts = if fallback.fmp_plaintext.len() >= INNER_TIMESTAMP_LEN {
+                        u32::from_le_bytes([
+                            fallback.fmp_plaintext[0],
+                            fallback.fmp_plaintext[1],
+                            fallback.fmp_plaintext[2],
+                            fallback.fmp_plaintext[3],
+                        ])
+                    } else {
+                        0
+                    };
+                    let now = std::time::Instant::now();
                     if let Some(peer) =
                         self.peers.get_mut(&fallback.source_node_addr)
                     {
@@ -221,11 +235,16 @@ impl Node {
                             fallback.timestamp_ms,
                         );
                         peer.touch(fallback.timestamp_ms);
+                        if let Some(mmp) = peer.mmp_mut() {
+                            mmp.receiver.record_recv(
+                                fallback.fmp_counter,
+                                inner_ts,
+                                fallback.packet_len,
+                                /* ce_flag */ false,
+                                now,
+                            );
+                        }
                     }
-                    // Mirror of `INNER_TIMESTAMP_LEN` in
-                    // `handlers/encrypted.rs` — the 4-byte session
-                    // timestamp prefix inside the FMP plaintext.
-                    const INNER_TIMESTAMP_LEN: usize = 4;
                     let link_message =
                         &fallback.fmp_plaintext[INNER_TIMESTAMP_LEN..];
                     self.dispatch_link_message(
