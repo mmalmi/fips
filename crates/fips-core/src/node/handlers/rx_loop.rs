@@ -201,6 +201,20 @@ impl Node {
                     // link_stats.record_recv, mmp.receiver.record_recv,
                     // set_current_addr) and link-layer dispatch run
                     // identically in both modes.
+                    //
+                    // CE/SP flag extraction: the FMP outer header's
+                    // flags byte rides through the worker on
+                    // `DecryptJob.fmp_flags` and out via
+                    // `DecryptFallback.fmp_flags`. Without this the
+                    // worker path drops ECN CE propagation and
+                    // spin-bit RTT observation on every packet —
+                    // both of which only fire on these two flag
+                    // bits and both of which were previously
+                    // hardcoded to `false` here.
+                    let ce_flag =
+                        fallback.fmp_flags & crate::node::wire::FLAG_CE != 0;
+                    let sp_flag =
+                        fallback.fmp_flags & crate::node::wire::FLAG_SP != 0;
                     self.process_authentic_fmp_plaintext(
                         &fallback.source_node_addr,
                         fallback.transport_id,
@@ -208,8 +222,8 @@ impl Node {
                         fallback.timestamp_ms,
                         fallback.packet_len,
                         fallback.fmp_counter,
-                        /* ce_flag */ false,
-                        /* sp_flag */ false,
+                        ce_flag,
+                        sp_flag,
                         &fallback.fmp_plaintext,
                     )
                     .await;

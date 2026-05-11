@@ -77,19 +77,38 @@ impl Node {
                 peer = %display_name,
                 "Peer K-bit flip detected, promoting new session"
             );
-            let peer = self.peers.get_mut(&node_addr).unwrap();
-            if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
-                // New index was pre-registered in peers_by_index during
-                // msg1 handling (handshake.rs). Verify, don't duplicate.
-                debug_assert!(
-                    peer.transport_id().is_some()
-                        && peer.our_index().is_some()
-                        && self.peers_by_index.contains_key(&(
-                            peer.transport_id().unwrap(),
-                            peer.our_index().unwrap().as_u32()
-                        )),
-                    "peers_by_index should contain pre-registered new index after K-bit flip"
-                );
+            let did_flip = {
+                let peer = self.peers.get_mut(&node_addr).unwrap();
+                if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
+                    // New index was pre-registered in peers_by_index during
+                    // msg1 handling (handshake.rs). Verify, don't duplicate.
+                    debug_assert!(
+                        peer.transport_id().is_some()
+                            && peer.our_index().is_some()
+                            && self.peers_by_index.contains_key(&(
+                                peer.transport_id().unwrap(),
+                                peer.our_index().unwrap().as_u32()
+                            )),
+                        "peers_by_index should contain pre-registered new index after K-bit flip"
+                    );
+                    true
+                } else {
+                    false
+                }
+            };
+            // After cutover the *new* FMP session is the one the
+            // decrypt worker must own. Pre-fix: the worker still
+            // had the OLD session's cipher + replay state, so every
+            // post-flip packet missed the worker's HashMap lookup
+            // (cache_key now points at the new index) and either
+            // dropped silently in `handle_job` or, if the worker
+            // had never been registered for this peer at all, fell
+            // through to the in-line legacy path on rx_loop for
+            // the lifetime of the new session. Re-register here so
+            // the worker observes the rekey and the bulk receive
+            // path keeps using it.
+            if did_flip {
+                self.register_decrypt_worker_session(&node_addr);
             }
         }
 
@@ -137,6 +156,7 @@ impl Node {
                 timestamp_ms: packet.timestamp_ms,
                 source_node_addr: node_addr,
                 fmp_counter: header.counter,
+                fmp_flags: header.flags,
                 fmp_header: header.header_bytes,
                 fmp_ciphertext_offset: header.ciphertext_offset(),
                 fallback_tx: self.decrypt_fallback_tx.clone(),

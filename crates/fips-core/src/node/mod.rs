@@ -1254,8 +1254,8 @@ impl Node {
     /// install the fresh state on the same shard.
     pub(in crate::node) fn deregister_session_index(&mut self, cache_key: (TransportId, u32)) {
         // Find the peer that owns this index BEFORE removing it from
-        // the index map, so we can also tear down its per-peer
-        // connected UDP socket (drain thread → kernel fd) if any.
+        // the index map, so we can decide whether the deregistration
+        // also tears down the peer's connected UDP socket.
         let owning_peer = self.peers_by_index.get(&cache_key).copied();
         self.peers_by_index.remove(&cache_key);
         if self.decrypt_registered_sessions.remove(&cache_key)
@@ -1263,8 +1263,24 @@ impl Node {
         {
             workers.unregister_session(cache_key);
         }
+        // Tear down the per-peer connected UDP socket *only* if no
+        // other peers_by_index entry still resolves to this peer.
+        // Rekey drain calls into this helper with the OLD session
+        // index while the NEW index is already installed and points
+        // at the same peer — there the connect()-ed 5-tuple is
+        // still valid for the new session and we must not close it.
+        // Peer-teardown sites (CrossConnection swap, stale-index
+        // fall-through in encrypted.rs, disconnect handler) call
+        // here when this is the peer's last index, so the connected
+        // socket goes away with the peer.
         if let Some(peer_addr) = owning_peer {
-            self.clear_connected_udp_for_peer(&peer_addr);
+            let peer_has_other_index = self
+                .peers_by_index
+                .values()
+                .any(|other| *other == peer_addr);
+            if !peer_has_other_index {
+                self.clear_connected_udp_for_peer(&peer_addr);
+            }
         }
     }
 

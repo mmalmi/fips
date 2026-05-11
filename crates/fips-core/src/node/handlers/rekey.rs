@@ -81,42 +81,65 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in peers_to_cutover {
-            if let Some(peer) = self.peers.get_mut(&node_addr)
-                && let Some(_old_our_index) = peer.cutover_to_new_session()
-            {
-                // New index was pre-registered in peers_by_index during
-                // msg2 handling (handshake.rs). Verify, don't duplicate.
-                debug_assert!(
-                    peer.transport_id().is_some()
-                        && peer.our_index().is_some()
-                        && self.peers_by_index.contains_key(&(
-                            peer.transport_id().unwrap(),
-                            peer.our_index().unwrap().as_u32()
-                        )),
-                    "peers_by_index should contain pre-registered new index after cutover"
-                );
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "Rekey cutover complete (initiator), K-bit flipped"
-                );
+            let did_cutover = {
+                if let Some(peer) = self.peers.get_mut(&node_addr)
+                    && let Some(_old_our_index) = peer.cutover_to_new_session()
+                {
+                    // New index was pre-registered in peers_by_index during
+                    // msg2 handling (handshake.rs). Verify, don't duplicate.
+                    debug_assert!(
+                        peer.transport_id().is_some()
+                            && peer.our_index().is_some()
+                            && self.peers_by_index.contains_key(&(
+                                peer.transport_id().unwrap(),
+                                peer.our_index().unwrap().as_u32()
+                            )),
+                        "peers_by_index should contain pre-registered new index after cutover"
+                    );
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        "Rekey cutover complete (initiator), K-bit flipped"
+                    );
+                    true
+                } else {
+                    false
+                }
+            };
+            // Re-register the (now-current) FMP session with the
+            // decrypt worker shard. Without this, the worker's
+            // owned cipher + replay state stays pinned to the
+            // pre-rekey session and post-cutover packets miss the
+            // worker entirely. See the matching comment in
+            // `handle_encrypted_frame`'s K-bit-flip branch.
+            if did_cutover {
+                self.register_decrypt_worker_session(&node_addr);
             }
         }
 
         // Execute drain completion
         for node_addr in peers_to_drain {
-            if let Some(peer) = self.peers.get_mut(&node_addr)
+            let drained = if let Some(peer) = self.peers.get_mut(&node_addr)
                 && let Some(old_our_index) = peer.complete_drain()
             {
-                if let Some(transport_id) = peer.transport_id() {
-                    self.peers_by_index
-                        .remove(&(transport_id, old_our_index.as_u32()));
-                }
-                let _ = self.index_allocator.free(old_our_index);
+                let transport_id = peer.transport_id();
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
                     old_index = %old_our_index,
                     "Drain complete, previous session erased"
                 );
+                Some((transport_id, old_our_index))
+            } else {
+                None
+            };
+            // Drop the old session index through `deregister_session_
+            // index` rather than `peers_by_index.remove` directly so
+            // the decrypt worker also evicts the old session's owned
+            // cipher + replay state. Pre-fix the worker held onto
+            // the old entry forever, wasting a HashMap slot per
+            // rekey for the peer's lifetime.
+            if let Some((Some(transport_id), old_our_index)) = drained {
+                self.deregister_session_index((transport_id, old_our_index.as_u32()));
+                let _ = self.index_allocator.free(old_our_index);
             }
         }
 

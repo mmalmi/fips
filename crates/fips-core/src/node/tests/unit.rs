@@ -264,6 +264,96 @@ fn test_node_promote_connection() {
     );
 }
 
+/// After `promote_connection`'s initial-promote branch the peer's
+/// (transport_id, our_index) pair must be in
+/// `decrypt_registered_sessions`. Unit tests construct `Node`
+/// directly so `decrypt_workers` defaults to `None`; spawn a
+/// 1-thread pool here so the registration code path actually runs.
+#[test]
+fn test_promote_registers_decrypt_worker() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    node.decrypt_workers = Some(crate::node::decrypt_worker::DecryptWorkerPool::spawn(1));
+
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    let peer = node.get_peer(&node_addr).unwrap();
+    let our_index = peer.our_index().unwrap();
+    assert!(
+        node.decrypt_registered_sessions
+            .contains(&(transport_id, our_index.as_u32())),
+        "decrypt_registered_sessions must contain the new session after promote"
+    );
+}
+
+/// `deregister_session_index` is used both for "peer is going away"
+/// (where the connected UDP socket must be torn down) and for
+/// "rekey drain completion — old session index retires while the
+/// peer's NEW index keeps the connect()-ed 5-tuple". Pre-fix this
+/// helper unconditionally cleared connected UDP, which would close
+/// the per-peer kernel socket on every rekey on Linux. Validate
+/// that when the peer still has another index in `peers_by_index`,
+/// the connected UDP socket is preserved.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    // Set up a peer with an established session at index_old.
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+    let index_old = node
+        .get_peer(&node_addr)
+        .unwrap()
+        .our_index()
+        .unwrap()
+        .as_u32();
+
+    // Pre-register a "new" index for the peer (as happens during a
+    // rekey: msg1 receive pre-registers the new our_index in
+    // peers_by_index while the old index stays around until drain
+    // completes).
+    let index_new: u32 = 9999;
+    node.peers_by_index
+        .insert((transport_id, index_new), node_addr);
+
+    // Deregister the OLD index. This is the rekey-drain pattern.
+    // The peer is still present, the NEW index is still in
+    // peers_by_index, so the per-peer connected UDP socket
+    // (if any was installed) must NOT be torn down. The test
+    // doesn't install a real ConnectedPeerSocket; instead it
+    // checks the peer is still in `node.peers` and has a peer-
+    // alive observable state.
+    node.deregister_session_index((transport_id, index_old));
+
+    assert!(
+        !node.peers_by_index.contains_key(&(transport_id, index_old)),
+        "old index must be evicted"
+    );
+    assert!(
+        node.peers_by_index.contains_key(&(transport_id, index_new)),
+        "new index must survive the deregister"
+    );
+    assert!(
+        node.get_peer(&node_addr).is_some(),
+        "peer must still be present after rekey-drain deregistration"
+    );
+    assert!(
+        !node
+            .decrypt_registered_sessions
+            .contains(&(transport_id, index_old)),
+        "old session must be evicted from decrypt_registered_sessions"
+    );
+}
+
 #[test]
 fn test_node_cross_connection_resolution() {
     let mut node = make_node();

@@ -104,6 +104,12 @@ pub(crate) struct DecryptJob {
     /// Counter from the FMP outer header. Used both as nonce input
     /// and to update the replay window.
     pub fmp_counter: u64,
+    /// Flag byte from the FMP outer header. Carried through the
+    /// fallback so the rx_loop bounce arm can extract `CE` and `SP`
+    /// for ECN propagation, MMP stats, and spin-bit RTT
+    /// observation — these used to be dropped on the worker path
+    /// because the bounce hardcoded `fmp_flags: 0`.
+    pub fmp_flags: u8,
     /// 16-byte FMP outer header used as AAD during AEAD open.
     pub fmp_header: [u8; 16],
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
@@ -347,6 +353,7 @@ fn handle_job(
         timestamp_ms,
         source_node_addr,
         fmp_counter,
+        fmp_flags,
         fmp_header,
         fmp_ciphertext_offset,
         fallback_tx,
@@ -468,7 +475,7 @@ fn handle_job(
         timestamp_ms,
         packet_len,
         fmp_counter,
-        fmp_flags: 0,
+        fmp_flags,
         fmp_plaintext,
     });
     // Suppress unused-variable warnings for the (now-removed) FSP
@@ -476,4 +483,102 @@ fn handle_job(
     // cipher + replay window above.
     let _ = (link_msg_start, link_msg_end, &state.source_npub);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::noise::ReplayWindow;
+    use ring::aead::{LessSafeKey, UnboundKey};
+
+    /// `DecryptJob.fmp_flags` must survive the worker bounce as
+    /// `DecryptFallback.fmp_flags`. Pre-fix the worker hardcoded
+    /// `fmp_flags: 0`, dropping CE / SP on every packet handled by
+    /// the production worker path (i.e. every bulk-data packet).
+    /// Loss of CE wrecks ECN propagation; loss of SP wrecks
+    /// spin-bit RTT observation.
+    ///
+    /// Drives the worker's `handle_job` directly: build an FMP wire
+    /// packet sealed with a known cipher, ship a `DecryptJob` with
+    /// non-zero flags through, observe the resulting `DecryptFallback`.
+    #[test]
+    fn worker_preserves_fmp_flags_through_fallback() {
+        let key_bytes = [0u8; 32];
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        // Both the sealing cipher (for building the test packet) and
+        // the worker's owning cipher are clones of the same key.
+        let seal_cipher = LessSafeKey::new(unbound);
+        let unbound2 = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        let open_cipher = LessSafeKey::new(unbound2);
+
+        let counter: u64 = 7;
+        const HDR: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+        // Build a wire packet `[16-byte header][4-byte inner ts][1 byte link msg]`
+        // with capacity for the trailing AEAD tag. Header bytes
+        // double as AAD and as the on-wire prefix.
+        let mut wire = Vec::with_capacity(HDR + 4 + 1 + 16);
+        // Header: fill the flags byte (the second byte) with both
+        // FLAG_CE and FLAG_SP set; the rest is uninterpreted by the
+        // worker (it just AADs the whole 16 bytes).
+        let flags_byte = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
+        let mut header = [0u8; HDR];
+        header[1] = flags_byte;
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&[0u8; 4]); // inner ts placeholder
+        wire.push(0xAB); // a single byte of "link message" payload
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        let nonce = ring::aead::Nonce::assume_unique_for_key(nonce_bytes);
+        let (hdr_slice, payload_slice) = wire.split_at_mut(HDR);
+        let tag = seal_cipher
+            .seal_in_place_separate_tag(nonce, ring::aead::Aad::from(&*hdr_slice), payload_slice)
+            .unwrap();
+        wire.extend_from_slice(tag.as_ref());
+
+        // Owning state held by the worker for this session.
+        let cache_key = (TransportId::new(1), 99u32);
+        let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
+        sessions.insert(
+            cache_key,
+            OwnedSessionState {
+                fmp_cipher: open_cipher,
+                fmp_replay: ReplayWindow::new(),
+                source_npub: None,
+            },
+        );
+
+        let (fallback_tx, mut fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel::<DecryptFallback>();
+
+        let job = DecryptJob {
+            packet_data: wire,
+            cache_key,
+            _transport_id: TransportId::new(1),
+            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            timestamp_ms: 1_000,
+            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
+            fmp_counter: counter,
+            fmp_flags: flags_byte,
+            fmp_header: header,
+            fmp_ciphertext_offset: HDR,
+            fallback_tx,
+        };
+
+        handle_job(&mut sessions, job).expect("worker job handled");
+
+        let fallback = fallback_rx.try_recv().expect("fallback delivered");
+        assert_eq!(
+            fallback.fmp_flags, flags_byte,
+            "fmp_flags must round-trip from DecryptJob to DecryptFallback"
+        );
+        assert!(
+            fallback.fmp_flags & crate::node::wire::FLAG_CE != 0,
+            "FLAG_CE bit lost on worker path"
+        );
+        assert!(
+            fallback.fmp_flags & crate::node::wire::FLAG_SP != 0,
+            "FLAG_SP bit lost on worker path"
+        );
+    }
 }
