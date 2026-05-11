@@ -34,7 +34,6 @@ use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::transport::udp::socket::AsyncUdpSocket;
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
@@ -67,23 +66,33 @@ pub(crate) struct FmpSendJob {
     pub dest_addr: SocketAddr,
 }
 
-/// Handle to the encrypt worker pool. Dispatches jobs round-robin
-/// across N worker tasks via per-worker unbounded mpsc senders. The
-/// channels are unbounded because rx_loop's natural drain cap (256
-/// commands per scheduler tick) and the kernel UDP recv buffer
-/// further upstream already bound the inflight count; an unbounded
-/// push here is wait-free at the dispatcher side.
+/// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
+/// destination** across N worker tasks via per-worker unbounded
+/// mpsc senders. The channels are unbounded because rx_loop's
+/// natural drain cap (256 commands per scheduler tick) and the
+/// kernel UDP recv buffer further upstream already bound the
+/// inflight count; an unbounded push here is wait-free at the
+/// dispatcher side.
+///
+/// **Ordering: hash-by-destination, not round-robin.** Round-robin
+/// across N workers causes UDP packet reordering on the wire, which
+/// the receiving TCP layer reacts to with dup-ACK-triggered
+/// fast-retransmits — measured in bench: 2 workers on a single-flow
+/// TCP run dropped throughput 1308 → 1069 Mbps and pushed Retr count
+/// from 0 to 8058. Hashing on the destination kernel `SocketAddr`
+/// keeps all packets for one flow on one worker, preserving the FIFO
+/// order TCP expects. Multi-peer / multi-flow benches still get the
+/// parallelism since different destinations hash to different workers.
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[mpsc::UnboundedSender<FmpSendJob>]>,
-    next: Arc<AtomicUsize>,
 }
 
 impl EncryptWorkerPool {
     /// Spawn `n` worker tasks and return a handle that dispatches
-    /// jobs round-robin to them. The workers shut down when all
-    /// senders for their channel are dropped (i.e. when the returned
-    /// `EncryptWorkerPool` and all clones go away).
+    /// jobs hash-by-destination to them. The workers shut down when
+    /// all senders for their channel are dropped (i.e. when the
+    /// returned `EncryptWorkerPool` and all clones go away).
     pub fn spawn(n: usize) -> Self {
         let n = n.max(1);
         let mut senders = Vec::with_capacity(n);
@@ -94,20 +103,28 @@ impl EncryptWorkerPool {
         }
         Self {
             senders: senders.into(),
-            next: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    /// Dispatch a job to the next worker. Round-robin keeps work
-    /// balanced even when one worker briefly stalls behind a
-    /// scheduler hop. Fire-and-forget — the worker handles send
-    /// errors itself via stats counters.
+    /// Dispatch a job to the worker that owns its destination flow.
+    /// The hash is over `dest_addr` so every packet for one peer's
+    /// kernel `SocketAddr` lands on the same worker and stays in
+    /// order — required for TCP's fast-retransmit logic above to
+    /// behave on a single-flow run. Fire-and-forget — the worker
+    /// handles send errors itself via stats counters.
     pub fn dispatch(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
             return;
         }
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        // Cheap hash: fold the SocketAddr into a usize via its octets
+        // + port. ahash/SipHash would be more uniform but for the
+        // bench's small N (1–8 peers) any reasonable mixing function
+        // works and we want to keep the dispatch cost in the noise.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        job.dest_addr.hash(&mut h);
+        let idx = (h.finish() as usize) % self.senders.len();
         if let Err(err) = self.senders[idx].send(job) {
             debug!(worker = idx, error = %err, "EncryptWorker channel closed; dropping job");
         }
