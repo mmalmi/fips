@@ -535,9 +535,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly is impossible (1:1 NAT)
 - New `external_addr` field on `transports.udp.*` and
   `transports.tcp.*` for explicit advertise-as override. Accepts
-  either a bare IP (`"54.183.70.180"` — the configured `bind_addr`
+  either a bare IP (`"198.51.100.1"` — the configured `bind_addr`
   port is appended) or a full `host:port`
-  (`"54.183.70.180:8443"`). Takes precedence over both the bound
+  (`"198.51.100.1:8443"`). Takes precedence over both the bound
   address and any STUN-derived autodiscovery. Required for TCP
   on cloud-NAT setups (AWS EIP, GCP/Azure external IPs) where
   binding to the public IP directly fails with `EADDRNOTAVAIL`
