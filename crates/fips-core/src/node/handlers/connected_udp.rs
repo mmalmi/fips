@@ -1,9 +1,7 @@
 //! Lifecycle for per-peer connected UDP sockets.
 //!
-//! Tick-driven, idempotent, opt-in:
+//! Tick-driven, idempotent, **always on** for established UDP peers:
 //!
-//! - **Opt-in:** controlled by the `FIPS_CONNECTED_UDP=1` env var.
-//!   Default off so existing behaviour is unchanged.
 //! - **Tick-driven:** every node tick, scan established UDP peers
 //!   that don't yet have a connected socket installed and try to
 //!   open one. No need to thread an activation call through every
@@ -15,12 +13,12 @@
 //!
 //! Implementation note: only the **listen socket → wildcard** demux
 //! path delivers the very first packets of a session (handshakes).
-//! Once we've seen a few packets and the peer's session is
-//! established, we install the connected socket; from that moment on
-//! the kernel routes that peer's traffic to it (most-specific
-//! 5-tuple match wins under SO_REUSEPORT), and the drain thread feeds
-//! the existing `packet_tx` just like the wildcard listen socket
-//! does. The rx_loop dispatch sees no difference.
+//! Once the peer's session is established, we install the connected
+//! socket; from that moment on the kernel routes that peer's traffic
+//! to it (most-specific 5-tuple match wins under SO_REUSEPORT), and
+//! the drain thread feeds the existing `packet_tx` just like the
+//! wildcard listen socket does. The rx_loop dispatch sees no
+//! difference.
 
 #[cfg(target_os = "linux")]
 use crate::transport::TransportHandle;
@@ -30,27 +28,12 @@ use crate::NodeAddr;
 use tracing::{debug, info};
 
 impl Node {
-    /// Whether per-peer connected UDP sockets are enabled for this
-    /// process. Cached from env var on first call.
-    #[cfg(target_os = "linux")]
-    fn connected_udp_enabled() -> bool {
-        static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *FLAG.get_or_init(|| {
-            let on = std::env::var("FIPS_CONNECTED_UDP")
-                .ok()
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            if on {
-                info!("FIPS_CONNECTED_UDP=1 — per-peer connected sockets enabled");
-            }
-            on
-        })
-    }
-
     /// Tick-driven activation of per-peer connected UDP sockets.
     /// Scans established UDP peers that don't yet have a connected
-    /// socket and opens one. No-op when the feature is disabled or
-    /// when there are no eligible peers.
+    /// socket and opens one. No-op when there are no eligible peers
+    /// (e.g. only non-UDP transports). Linux-only — no-op on macOS
+    /// and Windows where the SO_REUSEPORT + connected-socket demux
+    /// behaviour we rely on isn't available equivalently.
     pub(in crate::node) async fn activate_connected_udp_sessions(&mut self) {
         #[cfg(not(target_os = "linux"))]
         {
@@ -58,9 +41,6 @@ impl Node {
         }
         #[cfg(target_os = "linux")]
         {
-            if !Self::connected_udp_enabled() {
-                return;
-            }
             // Collect candidate NodeAddrs first so we can iterate
             // without holding the &mut on self.peers across awaits.
             let candidates: Vec<NodeAddr> = self

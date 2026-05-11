@@ -2477,14 +2477,34 @@ impl Node {
         let payload_len = inner_len as u16;
         let header = build_established_header(their_index, counter, flags, payload_len);
 
-        // Off-task fast path: when a worker pool is configured AND
-        // we can resolve the destination to a kernel `SocketAddr` AND
-        // we can clone the FMP send cipher, dispatch the AEAD + udp
-        // send to the worker and return immediately. Drops the heavy
-        // AEAD work off the rx_loop critical section. Worker handles
-        // its own error/stats reporting (best-effort UDP semantics).
-        if let Some(workers) = self.encrypt_workers.as_ref().cloned() {
-            if let Some(cipher_clone) = session.send_cipher_clone() {
+        // **UDP send fast path.** The encrypt-worker pool is always
+        // spawned at lifecycle start (workers = num_cpus) in
+        // production, so this branch is taken for every authentic
+        // send on every UDP-transported established session. The
+        // AEAD work + sendmsg syscall run on a dedicated OS thread;
+        // the rx_loop only builds the wire buffer + reserves the
+        // counter inline.
+        //
+        // Other transport kinds (BLE, TCP, sim, ethernet) fall
+        // through to the inline encrypt + transport.send path
+        // below — those don't have raw-fd / sendmmsg / UDP_GSO
+        // benefits to expose through the worker pool, so the simpler
+        // synchronous send is the right shape for them.
+        //
+        // The `encrypt_workers.is_some()` check below is true in
+        // production (lifecycle::start spawns the pool); it stays
+        // checked rather than `expect()`-ed because unit tests
+        // construct `Node` without calling `start()`.
+        let transport_for_send = self
+            .transports
+            .get(&transport_id)
+            .ok_or(NodeError::TransportNotFound(transport_id))?;
+        let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
+        if let Some(workers) = self.encrypt_workers.as_ref().cloned()
+            && is_udp
+            && let Some(cipher_clone) = session.send_cipher_clone()
+        {
+            {
                 // Reserve the counter on the session so subsequent
                 // sends don't reuse it. `current_send_counter` only
                 // peeks; we advance via `take_send_counter`.
@@ -2500,10 +2520,7 @@ impl Node {
                 // Resolve destination once on this task so the worker
                 // can skip the per-packet address parse / DNS cache
                 // lookup.
-                let transport = self
-                    .transports
-                    .get(&transport_id)
-                    .ok_or(NodeError::TransportNotFound(transport_id))?;
+                let transport = transport_for_send;
                 let socket_addr_opt: Option<std::net::SocketAddr> = {
                     if let TransportHandle::Udp(udp) = transport {
                         let resolved = udp

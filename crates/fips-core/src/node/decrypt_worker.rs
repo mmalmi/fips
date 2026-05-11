@@ -44,17 +44,23 @@ use crate::noise::ReplayWindow;
 
 const WORKER_CHANNEL_CAP: usize = 32768;
 
-/// Owning recv-side state for one established session. Lives **inside
-/// the worker thread that owns this session** — never shared, never
-/// behind a mutex. Built on the rx_loop side (where the cipher /
-/// replay state is authoritatively known after the first successful
-/// legacy decrypt) and shipped over the crossbeam channel via a
-/// `WorkerMsg::RegisterSession` message.
+/// Owning recv-side state for one established FMP session. Lives
+/// **inside the worker thread that owns this session** — never
+/// shared, never behind a mutex.
+///
+/// **FMP only** — the worker exclusively handles the FMP layer
+/// (decrypt + replay accept), then bounces the FMP plaintext back to
+/// rx_loop for FSP-layer dispatch. This split is what makes
+/// register-at-FMP-establishment correct: the worker doesn't need
+/// the FSP cipher / replay window, and can therefore be the
+/// authoritative recv path for a peer the moment FMP is up — well
+/// before the FSP handshake completes.
+///
+/// Built at FMP-session establishment time (`promote_connection`)
+/// and shipped to the assigned worker via `WorkerMsg::RegisterSession`.
 pub(crate) struct OwnedSessionState {
     pub fmp_cipher: LessSafeKey,
     pub fmp_replay: ReplayWindow,
-    pub fsp_cipher: LessSafeKey,
-    pub fsp_replay: ReplayWindow,
     pub source_npub: Option<String>,
 }
 
@@ -443,10 +449,10 @@ fn handle_job(
         fmp_flags: 0,
         fmp_plaintext,
     });
-    // Silence unused-import warnings for the (now-removed) FSP fast
-    // path; keep them as documentation of what'd be needed if we
-    // bring it back as part of DataShard.
+    // Suppress unused-variable warnings for the (now-removed) FSP
+    // fast path. The `state` lookup is still needed for the FMP
+    // cipher + replay window above.
     let _ = endpoint_event_tx;
-    let _ = (link_msg_start, link_msg_end, &state.source_npub, &state.fsp_replay, &state.fsp_cipher);
+    let _ = (link_msg_start, link_msg_end, &state.source_npub);
     Ok(())
 }
