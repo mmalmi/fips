@@ -1,5 +1,11 @@
 //! Off-task FMP encrypt + UDP send worker.
 //!
+//! **Unix only** — the per-worker send loop issues direct
+//! `sendmmsg(2)` / `sendmsg(2)+UDP_GSO` calls on raw file descriptors
+//! via `AsRawFd`. On Windows the worker pool isn't spawned (see
+//! `lifecycle.rs`) and the rx_loop's tokio-based send path remains
+//! the canonical outbound route.
+//!
 //! The sender hot path of FIPS used to do every step of an outbound
 //! packet — session lookup, FSP encrypt, datagram serialise, link
 //! lookup, FMP encrypt, UDP `sendto` — sequentially on the single
@@ -38,6 +44,11 @@
 //! kernel does software segmentation on egress and the veth peer-skb
 //! cost dominates; on a real NIC (or `--network=host` benches) the
 //! single skb walk through the TX stack lands the expected win.
+
+// On Windows nothing inside this module is called (the pool isn't
+// spawned in lifecycle::start). Silence the cascade of dead-code
+// warnings rather than gate every function individually.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::transport::udp::socket::AsyncUdpSocket;

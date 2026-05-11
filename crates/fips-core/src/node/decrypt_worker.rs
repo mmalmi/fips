@@ -30,6 +30,12 @@
 //! the rx_loop via a fallback channel so the existing slow paths
 //! continue to work.
 
+// **Unix only at the call sites.** On Windows nothing constructs an
+// `OwnedSessionState` or spawns the pool (see `lifecycle.rs`), so
+// every field + function in here becomes dead. Silence the warnings
+// rather than gate them individually.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use crate::NodeAddr;
 use crate::transport::{TransportAddr, TransportId};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
