@@ -182,6 +182,26 @@ pub struct ActivePeer {
     rekey_msg1: Option<Vec<u8>>,
     /// In-progress rekey: next resend timestamp (Unix ms).
     rekey_msg1_next_resend: u64,
+
+    // === Connected Peer UDP Socket (Linux-only fast path) ===
+    /// Per-peer `connect()`-ed UDP socket, opened once we have a
+    /// stable kernel `SocketAddr` for the peer (i.e. session
+    /// established + transport address known). When `Some`, the
+    /// encrypt-worker send path can `sendmsg(2)` on this fd without
+    /// per-packet `msg_name` — the kernel-side route + neighbor cache
+    /// is pinned by the `connect()` call. On the receive side, Linux
+    /// UDP demux preferentially routes inbound packets from this peer
+    /// to this socket (most-specific 5-tuple match via `SO_REUSEPORT`),
+    /// so a future per-shard recv loop can drain it without colliding
+    /// with the wildcard listen socket.
+    ///
+    /// Closed automatically on Drop. Behind an `Arc` so the
+    /// encrypt-worker's send path can hold a refcount without owning
+    /// the only handle (rekey / address-change may rotate the socket
+    /// while older jobs are still in-flight on the worker channel).
+    #[cfg(target_os = "linux")]
+    connected_udp:
+        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
 }
 
 impl ActivePeer {
@@ -233,6 +253,8 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            #[cfg(target_os = "linux")]
+            connected_udp: None,
         }
     }
 
@@ -313,7 +335,43 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            #[cfg(target_os = "linux")]
+            connected_udp: None,
         }
+    }
+
+    /// Linux fast path: clone the refcount on the per-peer
+    /// `connect()`-ed UDP socket if one has been installed. Encrypt-
+    /// worker send path uses this to bypass the wildcard listen
+    /// socket's per-packet sockaddr handling.
+    #[cfg(target_os = "linux")]
+    pub fn connected_udp(
+        &self,
+    ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>
+    {
+        self.connected_udp.clone()
+    }
+
+    /// Install a per-peer `connect()`-ed UDP socket for this peer.
+    /// Called once the peer's `current_addr` is stable (session
+    /// established / address rotation completed). Replacing an
+    /// existing socket drops the old one — any in-flight encrypt-
+    /// worker jobs holding a refcount on it stay valid until they
+    /// complete, then it closes via `Arc` Drop.
+    #[cfg(target_os = "linux")]
+    pub fn set_connected_udp(
+        &mut self,
+        socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+    ) {
+        self.connected_udp = Some(socket);
+    }
+
+    /// Clear the per-peer connected UDP socket (e.g. on rekey or
+    /// disconnect). The kernel fd closes automatically when the last
+    /// `Arc` is dropped.
+    #[cfg(target_os = "linux")]
+    pub fn clear_connected_udp(&mut self) {
+        self.connected_udp = None;
     }
 
     // === Identity Accessors ===
