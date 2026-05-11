@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,6 +8,32 @@ use super::types::{
     BootstrapError, PUNCH_ACK_MAGIC, PUNCH_MAGIC, PunchHint, PunchPacket, PunchPacketKind,
     TraversalAddress,
 };
+
+/// True if the address string parses to an RFC1918 / unique-local / CGNAT /
+/// link-local / loopback IP that's only reachable from inside the
+/// publisher's own LAN. Used to gate cross-LAN "mixed" punch targets:
+/// pairing our public reflexive against the remote peer's private host
+/// candidate cannot succeed when we are not on the same LAN, and trying it
+/// stalls traversal and risks latching the slow overlay-relay path as
+/// `runtime_endpoint`.
+fn is_private_candidate_ip(ip: &str) -> bool {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                // 100.64.0.0/10 — RFC 6598 CGNAT.
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        Ok(IpAddr::V6(v6)) => {
+            v6.is_loopback()
+                || v6.is_unique_local()
+                // IPv6 link-local: fe80::/10
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AddressSource {
@@ -149,6 +175,24 @@ fn push_mixed_targets(
 
     if let Some(local) = local_reflexive_address {
         for remote in remote_addresses {
+            // Cross-LAN private targets are unrouteable from our public
+            // reflexive: e.g. our_reflexive=89.27.103.157 ↔
+            // remote_local=192.168.178.91. Either the residential router
+            // hairpins (rare) or the packet dead-letters and traversal
+            // either fails outright or "succeeds" via overlay-relay,
+            // latching `runtime_endpoint` to an unrouteable address at
+            // multi-hundred-millisecond RTT. Only keep this pairing when
+            // we share a /24 with the remote — same-LAN cases are already
+            // covered by `push_same_lan_targets`, but a wildcard-bound
+            // local socket may not appear in `local_addresses`, so this
+            // is the safety net.
+            if is_private_candidate_ip(&remote.ip)
+                && !local_addresses
+                    .iter()
+                    .any(|local_host| same_subnet_24(local_host, remote))
+            {
+                continue;
+            }
             push_unique(PlannedPunchTarget {
                 strategy: PunchStrategy::Mixed,
                 local_source: AddressSource::Reflexive,

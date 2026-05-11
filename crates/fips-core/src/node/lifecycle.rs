@@ -15,9 +15,42 @@ use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, 
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
 use crate::{NodeAddr, PeerIdentity};
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// True if `ip` is not a viable canonical advert endpoint for peers off
+/// the publisher's own LAN. Covers RFC1918, loopback, link-local, IPv4
+/// CGNAT (100.64/10), unspecified, multicast/benchmark, and IPv6
+/// unique-local/loopback/unspecified. We never publish these as the
+/// peer's primary `runtime_endpoint`; an off-LAN consumer can't route
+/// to them, and latching one in onto a slow overlay-relay fallback is
+/// the original bug this guard exists to prevent.
+fn is_unroutable_advert_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // 100.64.0.0/10 — CGNAT, RFC 6598. Not routable on the
+                // public internet; behaves like an extra NAT layer.
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_multicast()
+                // IPv6 link-local: fe80::/10
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 const OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER: u64 = 2;
 
@@ -1540,9 +1573,12 @@ impl Node {
                     if cfg.is_public() {
                         // Precedence:
                         // 1. operator-supplied `external_addr` (skips STUN)
-                        // 2. non-wildcard `local_addr` (operator bound to
-                        //    a specific public IP directly)
+                        // 2. non-wildcard *public* `local_addr` (operator
+                        //    bound to a specific public IP directly)
                         // 3. STUN auto-discovery against ephemeral socket
+                        //    (also taken when bind is wildcard *or* private —
+                        //    a private bind is not peer-reachable, so we
+                        //    must publish the public reflexive instead)
                         // 4. loud warn + omit endpoint
                         if let Some(explicit) = cfg.external_advert_addr() {
                             endpoints.push(OverlayEndpointAdvert {
@@ -1551,7 +1587,10 @@ impl Node {
                             });
                         } else {
                             match handle.local_addr() {
-                                Some(addr) if !addr.ip().is_unspecified() => {
+                                Some(addr)
+                                    if !addr.ip().is_unspecified()
+                                        && !is_unroutable_advert_ip(addr.ip()) =>
+                                {
                                     endpoints.push(OverlayEndpointAdvert {
                                         transport: OverlayTransportKind::Udp,
                                         addr: addr.to_string(),
@@ -1571,10 +1610,11 @@ impl Node {
                                         warn!(
                                             transport_id = key,
                                             bind_addr = %addr,
-                                            "advert: udp public=true bound to wildcard but \
-                                            STUN observation failed; advertising no UDP \
-                                            endpoint. Either set transports.udp.external_addr, \
-                                            bind to a specific public IP, or ensure \
+                                            "advert: udp public=true but bind is wildcard \
+                                            or private and STUN observation failed; \
+                                            advertising no UDP endpoint. Either set \
+                                            transports.udp.external_addr, bind to a \
+                                            specific *public* IP, or ensure \
                                             node.discovery.nostr.stun_servers is reachable"
                                         );
                                     }
@@ -1601,9 +1641,13 @@ impl Node {
                     // 1. operator-supplied `external_addr` (only path that
                     //    works on cloud-NAT setups where the public IP is
                     //    not on a host interface).
-                    // 2. non-wildcard `local_addr` (operator bound to a
-                    //    specific public IP directly).
+                    // 2. non-wildcard *public* `local_addr` (operator bound
+                    //    to a specific public IP directly).
                     // 3. loud warn + omit endpoint (no TCP STUN equivalent).
+                    //
+                    // A wildcard *or* private bind is never advertised as-is
+                    // — peers off-LAN can't reach a private bind, and there
+                    // is no TCP STUN to discover a public reflexive.
                     if let Some(explicit) = cfg.external_advert_addr() {
                         endpoints.push(OverlayEndpointAdvert {
                             transport: OverlayTransportKind::Tcp,
@@ -1611,7 +1655,10 @@ impl Node {
                         });
                     } else {
                         match handle.local_addr() {
-                            Some(addr) if !addr.ip().is_unspecified() => {
+                            Some(addr)
+                                if !addr.ip().is_unspecified()
+                                    && !is_unroutable_advert_ip(addr.ip()) =>
+                            {
                                 endpoints.push(OverlayEndpointAdvert {
                                     transport: OverlayTransportKind::Tcp,
                                     addr: addr.to_string(),
@@ -1621,10 +1668,10 @@ impl Node {
                                 warn!(
                                     bind_addr = %addr,
                                     "advert: tcp advertise_on_nostr=true bound to wildcard \
-                                    and no transports.tcp.external_addr set; advertising no \
-                                    TCP endpoint. Either set external_addr to the public \
-                                    IP (recommended for cloud 1:1-NAT setups) or bind \
-                                    explicitly to the public IP"
+                                    or private IP and no transports.tcp.external_addr set; \
+                                    advertising no TCP endpoint. Either set external_addr \
+                                    to the public IP (recommended for cloud 1:1-NAT setups) \
+                                    or bind explicitly to the public IP"
                                 );
                             }
                             None => {}

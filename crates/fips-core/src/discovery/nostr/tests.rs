@@ -447,6 +447,74 @@ fn planned_remote_endpoints_include_private_and_reflexive_paths() {
     assert_eq!(endpoints.preferred_count, 1);
 }
 
+/// Cross-LAN private remote candidate must NOT appear in the planned set:
+/// pairing our public reflexive against a remote private host that lives
+/// on a different /24 is unrouteable and risks latching a slow overlay-
+/// relay path as `runtime_endpoint`. The public reflexive target and any
+/// same-LAN private target are still included.
+#[test]
+fn planned_remote_endpoints_skip_cross_lan_private_remote() {
+    let endpoints = planned_remote_endpoints(
+        // Our LAN: 192.168.1.0/24
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        // Their reported local candidates: a *different* private LAN.
+        // From our public reflexive these are unrouteable.
+        &[
+            addr("192.168.178.91", 35576),
+            addr("10.0.0.5", 35576),
+        ],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("endpoint planning should succeed");
+
+    // Public reflexive ↔ public reflexive: always present.
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"198.51.100.20:63000".parse().unwrap()),
+        "public reflexive target must be included"
+    );
+    // The cross-LAN private host candidates must be filtered out of the
+    // (our_reflexive ↔ remote_local) mixed pairing.
+    assert!(
+        !endpoints
+            .remotes
+            .contains(&"192.168.178.91:35576".parse().unwrap()),
+        "cross-LAN 192.168.178.91 must be filtered"
+    );
+    assert!(
+        !endpoints
+            .remotes
+            .contains(&"10.0.0.5:35576".parse().unwrap()),
+        "cross-LAN 10.0.0.5 must be filtered"
+    );
+}
+
+/// Same-LAN private remote candidates SHOULD remain — we still might need
+/// the (our_reflexive ↔ remote_local) mixed pairing when our local socket
+/// is wildcard-bound and not enumerated in `local_addresses`, or as a
+/// belt-and-braces alongside the same-LAN strategy.
+#[test]
+fn planned_remote_endpoints_keep_same_lan_private_remote() {
+    let endpoints = planned_remote_endpoints(
+        &[addr("192.168.1.10", 62000)],
+        Some(&addr("203.0.113.10", 62000)),
+        &[addr("192.168.1.20", 35576)],
+        Some(&addr("198.51.100.20", 63000)),
+        false,
+    )
+    .expect("endpoint planning should succeed");
+
+    assert!(
+        endpoints
+            .remotes
+            .contains(&"192.168.1.20:35576".parse().unwrap()),
+        "same-LAN private remote must still be tried"
+    );
+}
+
 /// B4: strict-fresh path returns Fresh; the offer is well within TTL and
 /// not expired.
 #[test]
