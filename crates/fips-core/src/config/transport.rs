@@ -35,11 +35,26 @@ const DEFAULT_UDP_BIND_ADDR: &str = "0.0.0.0:2121";
 /// Default UDP MTU (IPv6 minimum).
 const DEFAULT_UDP_MTU: u16 = 1280;
 
-/// Default UDP receive buffer size (2 MB).
-const DEFAULT_UDP_RECV_BUF: usize = 2 * 1024 * 1024;
+/// Default UDP receive buffer size (16 MiB).
+///
+/// At sustained multi-Gbps single-stream the kernel UDP queue
+/// drained ~113 kpps × ~1.5 KiB ≈ 170 MiB/s, so a few-hundred-ms
+/// userspace stall would fill a 2 MiB buffer in <20 ms — small
+/// enough that ordinary jitter (GC, allocator-coalesce, scheduler
+/// context-switch on a busy host) trips RcvbufErrors and tanks TCP
+/// throughput via cwnd-halving. 16 MiB gives ~100 ms of headroom.
+///
+/// On platforms whose `net.core.rmem_max` is smaller than this, the
+/// UDP socket layer falls back to SO_RCVBUFFORCE (CAP_NET_ADMIN
+/// required) before honouring the kernel ceiling. See
+/// `transport/udp/socket.rs::UdpRawSocket::open`.
+const DEFAULT_UDP_RECV_BUF: usize = 16 * 1024 * 1024;
 
-/// Default UDP send buffer size (2 MB).
-const DEFAULT_UDP_SEND_BUF: usize = 2 * 1024 * 1024;
+/// Default UDP send buffer size (8 MiB). Mirrors the receive-side
+/// reasoning at half the size — outbound burst absorption matters
+/// less because we control the producer rate via the rx_loop's
+/// per-drain sendmmsg flush.
+const DEFAULT_UDP_SEND_BUF: usize = 8 * 1024 * 1024;
 
 /// UDP transport instance configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
