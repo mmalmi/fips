@@ -597,7 +597,7 @@ async fn udp_receive_loop(
                             "UDP packet received"
                         );
 
-                        if packet_tx.send(packet).await.is_err() {
+                        if packet_tx.send(packet).is_err() {
                             debug!(
                                 transport_id = %transport_id,
                                 "Packet channel closed, stopping receive loop"
@@ -649,7 +649,7 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
-                    if packet_tx.send(packet).await.is_err() {
+                    if packet_tx.send(packet).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"

@@ -848,7 +848,7 @@ async fn receive_loop<S: BleStream>(
             Ok(n) => {
                 stats.record_recv(n);
                 let packet = ReceivedPacket::new(transport_id, addr.clone(), buf[..n].to_vec());
-                if packet_tx.send(packet).await.is_err() {
+                if packet_tx.send(packet).is_err() {
                     trace!("BLE packet_tx closed, stopping receive loop");
                     break;
                 }
@@ -1075,11 +1075,8 @@ mod tests {
 
     fn make_transport(
         io: MockBleIo,
-    ) -> (
-        BleTransport<MockBleIo>,
-        tokio::sync::mpsc::Receiver<ReceivedPacket>,
-    ) {
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
+    ) -> (BleTransport<MockBleIo>, crate::transport::PacketRx) {
+        let (tx, rx) = crate::transport::packet_channel(64);
         let config = BleConfig::default();
         let transport = BleTransport::new(TransportId::new(1), None, config, io, tx);
         (transport, rx)

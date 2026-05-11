@@ -82,14 +82,35 @@ impl ReceivedPacket {
 }
 
 /// Channel sender for received packets.
-pub type PacketTx = tokio::sync::mpsc::Sender<ReceivedPacket>;
+///
+/// Uses tokio's unbounded mpsc so that per-packet send is a wait-free
+/// linked-list push instead of a semaphore acquisition + `.await`. At
+/// multi-Gbps the bounded variant's per-send cost (semaphore CAS +
+/// waker dance, even on the fast path) is one of the dominant items
+/// on the receive hot path; recvmmsg drains the kernel queue in
+/// 32-packet bursts and we want to dump those into the channel as
+/// fast as possible without each push incurring scheduler bookkeeping.
+///
+/// Backpressure is provided by the kernel UDP receive buffer (the
+/// transport's `recvmmsg` is the only producer for inbound packets);
+/// if the rx_loop falls behind, packets queue up here and the kernel
+/// drops new arrivals once its buffer fills. Memory growth is
+/// effectively bounded because the same rx_loop that consumes this
+/// channel is what runs `process_packet` — if it stalls, recvmmsg
+/// can't run either since they share the runtime.
+pub type PacketTx = tokio::sync::mpsc::UnboundedSender<ReceivedPacket>;
 
 /// Channel receiver for received packets.
-pub type PacketRx = tokio::sync::mpsc::Receiver<ReceivedPacket>;
+pub type PacketRx = tokio::sync::mpsc::UnboundedReceiver<ReceivedPacket>;
 
-/// Create a packet channel with the given buffer size.
-pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
-    tokio::sync::mpsc::channel(buffer)
+/// Create a packet channel.
+///
+/// The `buffer` argument is kept for API stability with previous
+/// versions of this module (and so call sites don't have to be
+/// touched) but is ignored — the channel is unbounded. See [`PacketTx`]
+/// for the rationale.
+pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
+    tokio::sync::mpsc::unbounded_channel()
 }
 
 // ============================================================================
@@ -1562,7 +1583,7 @@ mod tests {
             vec![1, 2, 3],
         );
 
-        tx.send(packet.clone()).await.unwrap();
+        tx.send(packet.clone()).unwrap();
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.data, vec![1, 2, 3]);

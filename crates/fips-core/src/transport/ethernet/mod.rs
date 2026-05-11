@@ -432,7 +432,7 @@ async fn ethernet_receive_loop(
                             "Ethernet data frame received"
                         );
 
-                        if packet_tx.send(packet).await.is_err() {
+                        if packet_tx.send(packet).is_err() {
                             debug!(
                                 transport_id = %transport_id,
                                 "Packet channel closed, stopping receive loop"

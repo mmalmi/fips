@@ -1155,7 +1155,7 @@ async fn tor_receive_loop(
 
                 let packet = ReceivedPacket::new(transport_id, remote_addr.clone(), data);
 
-                if packet_tx.send(packet).await.is_err() {
+                if packet_tx.send(packet).is_err() {
                     debug!(
                         transport_id = %transport_id,
                         "Packet channel closed, stopping Tor receive loop"
