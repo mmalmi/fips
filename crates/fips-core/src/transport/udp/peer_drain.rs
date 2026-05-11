@@ -308,8 +308,10 @@ mod tests {
         let transport_id = TransportId::new(42);
 
         // Find out what local_addr the kernel assigned to our socket
-        // so the peer can sendto() it.
-        let our_local_addr = {
+        // so the peer can sendto() it. Use getsockname; cast the
+        // returned sockaddr_storage to sockaddr_in (we only test on
+        // IPv4 loopback here, so this is safe).
+        let our_local_addr: SocketAddr = {
             let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
             let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
             let r = unsafe {
@@ -320,10 +322,16 @@ mod tests {
                 )
             };
             assert!(r >= 0, "getsockname failed");
-            let sa: socket2::SockAddr = unsafe {
-                socket2::SockAddr::new(storage, len)
-            };
-            sa.as_socket().expect("our_local_addr is socket")
+            assert_eq!(
+                storage.ss_family as i32,
+                libc::AF_INET,
+                "test assumes IPv4 loopback"
+            );
+            let sin: &libc::sockaddr_in =
+                unsafe { &*(&storage as *const _ as *const libc::sockaddr_in) };
+            let port = u16::from_be(sin.sin_port);
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            SocketAddr::from((ip, port))
         };
 
         // Spawn the drain.
