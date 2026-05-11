@@ -328,10 +328,15 @@ fn flush_batch_sync(
                     static GSO_FIRST: std::sync::atomic::AtomicBool =
                         std::sync::atomic::AtomicBool::new(false);
                     if !GSO_FIRST.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        tracing::info!(
-                            batch_len = wire_packets.len(),
-                            seg_size = wire_packets[0].0.len(),
-                            "UDP_GSO send active — sendmsg+UDP_SEGMENT path engaged"
+                        // Use eprintln so the message lands regardless
+                        // of whether the OS-thread worker has access to
+                        // the global tracing subscriber (which is set
+                        // up on the tokio runtime side).
+                        eprintln!(
+                            "[fips-encrypt-worker] UDP_GSO send active — \
+                             sendmsg+UDP_SEGMENT path engaged (batch_len={}, seg_size={})",
+                            wire_packets.len(),
+                            wire_packets[0].0.len()
                         );
                     }
                     return Ok(());
@@ -344,10 +349,11 @@ fn flush_batch_sync(
                     // Kernel doesn't support UDP_GSO on this socket /
                     // device — fall back permanently to sendmmsg.
                     GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    warn!(
-                        error = %err,
-                        "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
+                    eprintln!(
+                        "[fips-encrypt-worker] UDP_GSO refused by kernel ({err}); \
+                         falling back to sendmmsg for life of process"
                     );
+                    let _ = &err; // keep variable used
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     // Send buffer full mid-GSO — fall through to the
