@@ -768,43 +768,53 @@ impl Node {
             info!(count = self.transports.len(), "Transports initialized");
         }
 
-        // Spawn the off-task FMP-encrypt + UDP-send worker pool.
-        // Always on. Worker count defaults to the number of CPUs,
-        // overridable via `FIPS_ENCRYPT_WORKERS=N` for debug /
-        // benchmarking. Hash-by-destination means a single TCP flow
-        // pins to one worker (preserves wire ordering), and
-        // additional workers light up under multi-flow / multi-peer
-        // load. See `node::encrypt_worker` for full rationale.
-        let cpu_default = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .max(1);
-        let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(cpu_default)
-            .max(1);
-        self.encrypt_workers = Some(super::encrypt_worker::EncryptWorkerPool::spawn(
-            encrypt_worker_count,
-        ));
-        info!(
-            workers = encrypt_worker_count,
-            "Spawned FMP-encrypt worker pool"
-        );
+        // Spawn the off-task FMP-encrypt + UDP-send + FMP-decrypt
+        // worker pools. **Unix only** — both pools issue direct
+        // sendmmsg(2) / sendmsg(2)+UDP_GSO / recvmmsg(2) calls on
+        // raw file descriptors via `AsRawFd`, which is a unix-only
+        // trait. On Windows the rx_loop's tokio-based send/recv
+        // remain the canonical path; the perf overhaul lands its
+        // gains on unix.
+        //
+        // Worker count defaults to the number of CPUs, overridable
+        // via `FIPS_ENCRYPT_WORKERS=N` / `FIPS_DECRYPT_WORKERS=N`
+        // for debug / benchmarking. Hash-by-destination means a
+        // single TCP flow pins to one worker (preserves wire
+        // ordering); additional workers light up under multi-flow
+        // / multi-peer load. See `node::encrypt_worker` /
+        // `node::decrypt_worker` for full rationale.
+        #[cfg(unix)]
+        {
+            let cpu_default = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+                .max(1);
+            let encrypt_worker_count: usize = std::env::var("FIPS_ENCRYPT_WORKERS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(cpu_default)
+                .max(1);
+            self.encrypt_workers = Some(super::encrypt_worker::EncryptWorkerPool::spawn(
+                encrypt_worker_count,
+            ));
+            info!(
+                workers = encrypt_worker_count,
+                "Spawned FMP-encrypt worker pool"
+            );
 
-        // Decrypt worker pool — mirrors the encrypt side. Always on.
-        let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(cpu_default)
-            .max(1);
-        self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
-            decrypt_worker_count,
-        ));
-        info!(
-            workers = decrypt_worker_count,
-            "Spawned FMP+FSP-decrypt worker pool"
-        );
+            let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(cpu_default)
+                .max(1);
+            self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
+                decrypt_worker_count,
+            ));
+            info!(
+                workers = decrypt_worker_count,
+                "Spawned FMP+FSP-decrypt worker pool"
+            );
+        }
 
         if self.config.node.discovery.nostr.enabled {
             match NostrDiscovery::start(&self.identity, self.config.node.discovery.nostr.clone())

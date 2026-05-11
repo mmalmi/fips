@@ -532,8 +532,7 @@ pub struct Node {
     /// to handle via the legacy path. Drained by a new rx_loop arm.
     decrypt_fallback_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptFallback>>,
-    decrypt_fallback_tx:
-        tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptFallback>,
+    decrypt_fallback_tx: tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptFallback>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -665,8 +664,7 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel();
+        let (decrypt_fallback_tx, decrypt_fallback_rx) = tokio::sync::mpsc::unbounded_channel();
         let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
@@ -810,8 +808,7 @@ impl Node {
         config.validate()?;
         let node_addr = *identity.node_addr();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel();
+        let (decrypt_fallback_tx, decrypt_fallback_rx) = tokio::sync::mpsc::unbounded_channel();
         let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
@@ -1255,10 +1252,7 @@ impl Node {
     /// doesn't keep stale ciphers / replay windows around. The
     /// follow-up `RegisterSession` for the NEW key (if any) will then
     /// install the fresh state on the same shard.
-    pub(in crate::node) fn deregister_session_index(
-        &mut self,
-        cache_key: (TransportId, u32),
-    ) {
+    pub(in crate::node) fn deregister_session_index(&mut self, cache_key: (TransportId, u32)) {
         // Find the peer that owns this index BEFORE removing it from
         // the index map, so we can also tear down its per-peer
         // connected UDP socket (drain thread → kernel fd) if any.
@@ -2515,25 +2509,26 @@ impl Node {
                 // Reserve the counter on the session so subsequent
                 // sends don't reuse it. `current_send_counter` only
                 // peeks; we advance via `take_send_counter`.
-                let reserved_counter = session.take_send_counter().map_err(|e| NodeError::SendFailed {
-                    node_addr: *node_addr,
-                    reason: format!("counter reservation failed: {}", e),
-                })?;
+                let reserved_counter =
+                    session
+                        .take_send_counter()
+                        .map_err(|e| NodeError::SendFailed {
+                            node_addr: *node_addr,
+                            reason: format!("counter reservation failed: {}", e),
+                        })?;
                 debug_assert_eq!(reserved_counter, counter);
                 // Re-derive the header with the now-locked-in counter
                 // value (same value, but the call sequence is more
                 // explicit).
-                let header = build_established_header(their_index, reserved_counter, flags, payload_len);
+                let header =
+                    build_established_header(their_index, reserved_counter, flags, payload_len);
                 // Resolve destination once on this task so the worker
                 // can skip the per-packet address parse / DNS cache
                 // lookup.
                 let transport = transport_for_send;
                 let socket_addr_opt: Option<std::net::SocketAddr> = {
                     if let TransportHandle::Udp(udp) = transport {
-                        let resolved = udp
-                            .resolve_for_off_task(&remote_addr)
-                            .await
-                            .ok();
+                        let resolved = udp.resolve_for_off_task(&remote_addr).await.ok();
                         let sock_clone = udp.async_socket();
                         match (resolved, sock_clone) {
                             (Some(sa), Some(_)) => Some(sa),
@@ -2561,8 +2556,7 @@ impl Node {
                             // (another alloc + copy). At ~100 kpps the
                             // saved alloc/copy is ~150 MB/sec of memory
                             // bandwidth on the hot rx_loop + worker.
-                            let wire_capacity =
-                                ESTABLISHED_HEADER_SIZE + inner_len + 16;
+                            let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
                             let mut wire_buf = Vec::with_capacity(wire_capacity);
                             wire_buf.extend_from_slice(&header);
                             wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
@@ -2578,10 +2572,8 @@ impl Node {
                             // per-packet sockaddr + route + neighbor
                             // resolve.
                             #[cfg(target_os = "linux")]
-                            let connected_socket = self
-                                .peers
-                                .get(node_addr)
-                                .and_then(|p| p.connected_udp());
+                            let connected_socket =
+                                self.peers.get(node_addr).and_then(|p| p.connected_udp());
                             if let Some(peer) = self.peers.get_mut(node_addr) {
                                 peer.link_stats_mut().record_sent(predicted_bytes);
                                 if let Some(mmp) = peer.mmp_mut() {
@@ -2615,9 +2607,7 @@ impl Node {
         let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
         // Encrypt with AAD binding to the outer header
         let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::FmpEncrypt,
-            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
             session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
@@ -2630,9 +2620,7 @@ impl Node {
 
         // Re-borrow peer for stats update after sending
         let send_result = {
-            let _t = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::UdpSend,
-            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
             let transport = self
                 .transports
                 .get(&transport_id)

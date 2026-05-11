@@ -360,8 +360,7 @@ impl ActivePeer {
     #[cfg(target_os = "linux")]
     pub fn connected_udp(
         &self,
-    ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>
-    {
+    ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>> {
         self.connected_udp.clone()
     }
 
@@ -535,9 +534,7 @@ impl ActivePeer {
     /// `.clone()` allocation on the input side: the caller can pass
     /// `&TransportAddr` and we only `.to_owned()` when storing.
     pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) {
-        if self.transport_id == Some(transport_id)
-            && self.current_addr.as_ref() == Some(addr)
-        {
+        if self.transport_id == Some(transport_id) && self.current_addr.as_ref() == Some(addr) {
             return;
         }
         self.transport_id = Some(transport_id);

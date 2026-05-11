@@ -1073,9 +1073,7 @@ mod tests {
         }
     }
 
-    fn make_transport(
-        io: MockBleIo,
-    ) -> (BleTransport<MockBleIo>, crate::transport::PacketRx) {
+    fn make_transport(io: MockBleIo) -> (BleTransport<MockBleIo>, crate::transport::PacketRx) {
         let (tx, rx) = crate::transport::packet_channel(64);
         let config = BleConfig::default();
         let transport = BleTransport::new(TransportId::new(1), None, config, io, tx);

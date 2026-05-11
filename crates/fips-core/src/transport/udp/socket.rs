@@ -778,10 +778,11 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // SO_REUSEPORT / SO_REUSEADDR — see the sync `UdpRawSocket::open`
-            // path above for rationale (per-peer ConnectedPeerSocket
-            // must bind to the same port the listen socket holds).
-            let _ = sock.set_reuse_port(true);
+            // Windows: `socket2::Socket::set_reuse_port` doesn't exist
+            // (Windows UDP doesn't have a direct SO_REUSEPORT analogue;
+            // the per-peer ConnectedPeerSocket path is Linux-only
+            // anyway, so the listen socket here doesn't need it).
+            // SO_REUSEADDR is available and harmless to set.
             let _ = sock.set_reuse_address(true);
 
             sock.bind(&bind_addr.into())

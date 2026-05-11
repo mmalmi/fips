@@ -118,9 +118,7 @@ impl Drop for PeerRecvDrain {
         //    byte is enough; the thread's poll will return on
         //    POLLIN, observe the stop flag, and exit.
         let byte = 1u8;
-        let _ = unsafe {
-            libc::write(self.stop_pipe_tx, &byte as *const _ as *const _, 1)
-        };
+        let _ = unsafe { libc::write(self.stop_pipe_tx, &byte as *const _ as *const _, 1) };
         // 3. Join — bounded wait, the thread exits within one
         //    poll-iteration of seeing the stop flag.
         if let Some(j) = self.join.take() {
@@ -236,11 +234,7 @@ fn drain_loop(
 /// without the kernel-drop counter cmsg (the listen socket samples
 /// that for the congestion detector; per-peer sockets share the
 /// kernel-wide UDP socket-buffer accounting already).
-fn recvmmsg_drain(
-    fd: RawFd,
-    backing: &mut [Vec<u8>],
-    lens: &mut [usize],
-) -> io::Result<usize> {
+fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
     const BATCH: usize = 32;
     let n = backing.len().min(lens.len()).min(BATCH);
     if n == 0 {
@@ -342,8 +336,7 @@ mod tests {
         // Send a couple of packets from the peer to our socket.
         for i in 0u8..5 {
             let payload = [i, 0xAA, 0xBB, 0xCC];
-            peer.send_to(&payload, our_local_addr)
-                .expect("peer sendto");
+            peer.send_to(&payload, our_local_addr).expect("peer sendto");
         }
 
         // Verify the drain picked them up.

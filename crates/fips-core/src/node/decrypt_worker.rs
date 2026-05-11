@@ -30,13 +30,13 @@
 //! the rx_loop via a fallback channel so the existing slow paths
 //! continue to work.
 
-use crate::transport::{TransportAddr, TransportId};
 use crate::NodeAddr;
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crate::transport::{TransportAddr, TransportId};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, trace, warn};
 
@@ -222,11 +222,7 @@ impl DecryptWorkerPool {
     /// first authentic legacy-path decrypt — the worker thereafter is
     /// the sole authority over the replay window and the cipher
     /// clones for this session.
-    pub fn register_session(
-        &self,
-        cache_key: (TransportId, u32),
-        state: OwnedSessionState,
-    ) {
+    pub fn register_session(&self, cache_key: (TransportId, u32), state: OwnedSessionState) {
         if self.senders.is_empty() {
             return;
         }
@@ -240,7 +236,10 @@ impl DecryptWorkerPool {
                 );
             }
             Err(TrySendError::Disconnected(_)) => {
-                debug!(worker = idx, "DecryptWorker thread gone; ignoring registration");
+                debug!(
+                    worker = idx,
+                    "DecryptWorker thread gone; ignoring registration"
+                );
             }
         }
     }
@@ -295,11 +294,7 @@ fn handle_msg(
             }
         }
         WorkerMsg::RegisterSession { cache_key, state } => {
-            trace!(
-                worker = idx,
-                ?cache_key,
-                "DecryptWorker: register session"
-            );
+            trace!(worker = idx, ?cache_key, "DecryptWorker: register session");
             sessions.insert(cache_key, state);
         }
         WorkerMsg::UnregisterSession { cache_key } => {
@@ -372,11 +367,13 @@ fn handle_job(
     nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
     let buf = &mut packet_data[fmp_ciphertext_offset..];
-    let plaintext_len =
-        match state.fmp_cipher.open_in_place(nonce, Aad::from(&fmp_header), buf) {
-            Ok(p) => p.len(),
-            Err(_) => return Ok(()), // tag check failed; drop silently
-        };
+    let plaintext_len = match state
+        .fmp_cipher
+        .open_in_place(nonce, Aad::from(&fmp_header), buf)
+    {
+        Ok(p) => p.len(),
+        Err(_) => return Ok(()), // tag check failed; drop silently
+    };
 
     // FMP decrypt succeeded — accept the counter into the replay window.
     state.fmp_replay.accept(fmp_counter);

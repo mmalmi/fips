@@ -181,12 +181,7 @@ pub fn maybe_spawn_reporter() {
                 };
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };
                 let pps = if interval > 0 { dc / interval } else { 0 };
-                line.push_str(&format!(
-                    " {}={}ns×{}/s",
-                    stage.name(),
-                    avg_ns,
-                    pps,
-                ));
+                line.push_str(&format!(" {}={}ns×{}/s", stage.name(), avg_ns, pps,));
             }
             // eprintln so it always lands regardless of RUST_LOG.
             eprintln!("{}", line);

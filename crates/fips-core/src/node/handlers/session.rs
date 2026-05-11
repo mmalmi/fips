@@ -171,9 +171,8 @@ impl Node {
         ce_flag: bool,
         previous_hop: Option<NodeAddr>,
     ) {
-        let _t_fsp_handle = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::FspHandle,
-        );
+        let _t_fsp_handle =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspHandle);
         // Parse the 12-byte encrypted header (includes the 4-byte prefix)
         let header = match FspEncryptedHeader::parse(payload) {
             Some(h) => h,
@@ -252,9 +251,7 @@ impl Node {
             };
 
             let primary = {
-                let _t = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::FspDecrypt,
-                );
+                let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
                 session.decrypt_with_replay_check_and_aad(
                     ciphertext,
                     header.counter,
@@ -1572,9 +1569,7 @@ impl Node {
 
         // Encrypt with AAD binding to the FSP header
         let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::FspEncrypt,
-            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
             session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
@@ -1645,16 +1640,14 @@ impl Node {
                 payload,
                 response_tx,
             } => {
-                let _t = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::EndpointSend,
-                );
+                let _t =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::SendOneway { remote, payload } => {
-                let _t = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::EndpointSend,
-                );
+                let _t =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
                 // Result deliberately discarded — caller wanted
                 // fire-and-forget. Errors still get logged inside
                 // `send_endpoint_data` so they're not silent.
@@ -1829,9 +1822,7 @@ impl Node {
         let payload_len = inner_plaintext.len() as u16;
         let header = build_fsp_header(counter, flags, payload_len);
         let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::FspEncrypt,
-            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
             session
                 .encrypt_with_aad(&inner_plaintext, &header)
                 .map_err(|e| NodeError::SendFailed {
@@ -1880,9 +1871,8 @@ impl Node {
             payload,
         };
 
-        let _t_deliver = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::EndpointDeliver,
-        );
+        let _t_deliver =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
         if let Err(error) = endpoint_event_tx.send(event) {
             debug!(
                 src = %self.peer_display_name(src_addr),

@@ -6,11 +6,11 @@ use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
 };
-pub(crate) mod socket;
 #[cfg(target_os = "linux")]
 pub(crate) mod connected_peer;
 #[cfg(target_os = "linux")]
 pub(crate) mod peer_drain;
+pub(crate) mod socket;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
@@ -632,9 +632,7 @@ async fn udp_receive_loop(
             };
 
             let recv_result = {
-                let _t = crate::perf_profile::Timer::start(
-                    crate::perf_profile::Stage::UdpRecv,
-                );
+                let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpRecv);
                 socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await
             };
             match recv_result {
@@ -663,10 +661,7 @@ async fn udp_receive_loop(
                         // refill with a fresh one. `mem::replace`
                         // returns the OLD value and writes the new one
                         // — single pointer swap, no copy.
-                        let mut data = std::mem::replace(
-                            &mut backing[i],
-                            vec![0u8; buf_size],
-                        );
+                        let mut data = std::mem::replace(&mut backing[i], vec![0u8; buf_size]);
                         data.truncate(len);
                         let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::new(transport_id, addr, data);

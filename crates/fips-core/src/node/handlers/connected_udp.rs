@@ -20,10 +20,10 @@
 //! wildcard listen socket does. The rx_loop dispatch sees no
 //! difference.
 
+use crate::NodeAddr;
+use crate::node::Node;
 #[cfg(target_os = "linux")]
 use crate::transport::TransportHandle;
-use crate::node::Node;
-use crate::NodeAddr;
 #[cfg(target_os = "linux")]
 use tracing::{debug, info};
 

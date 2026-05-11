@@ -165,9 +165,7 @@ impl Node {
             return;
         };
         let decrypt_result = {
-            let _t = crate::perf_profile::Timer::start(
-                crate::perf_profile::Stage::FmpDecrypt,
-            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
             session.decrypt_with_replay_check_and_aad_in_place(
                 &mut packet_data[ciphertext_offset..],
                 counter,
@@ -271,10 +269,7 @@ impl Node {
     /// event. Idempotent: re-registering the same cache_key
     /// overwrites the worker's entry, which is the correct behaviour
     /// for rekey.
-    pub(in crate::node) fn register_decrypt_worker_session(
-        &mut self,
-        node_addr: &crate::NodeAddr,
-    ) {
+    pub(in crate::node) fn register_decrypt_worker_session(&mut self, node_addr: &crate::NodeAddr) {
         let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
             return;
         };

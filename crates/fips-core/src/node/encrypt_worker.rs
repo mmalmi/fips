@@ -44,6 +44,7 @@ use crate::transport::udp::socket::AsyncUdpSocket;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
@@ -106,9 +107,8 @@ pub(crate) struct FmpSendJob {
     /// lifetime of this job; once the job completes and the worker
     /// drops it, only the peer's strong ref remains.
     #[cfg(target_os = "linux")]
-    pub connected_socket: Option<
-        std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-    >,
+    pub connected_socket:
+        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
 }
 
 /// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
@@ -356,15 +356,13 @@ fn flush_batch_sync(
         Some(s) => (s.as_raw_fd(), true),
         None => (socket.as_raw_fd(), false),
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
         // Fast path: try UDP_GSO if the batch is uniform-size and the
         // kernel hasn't refused GSO before.
-        if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
-            && gso_eligible(&wire_packets)
-        {
+        if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed) && gso_eligible(&wire_packets) {
             match send_batch_gso(fd, &wire_packets, connected) {
                 Ok(()) => return Ok(()),
                 Err(err)
@@ -411,7 +409,7 @@ fn flush_batch_sync(
             sent += n;
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         for (data, addr) in &wire_packets {
             loop {
@@ -427,14 +425,22 @@ fn flush_batch_sync(
             }
         }
     }
+    // Windows: the encrypt worker pool isn't spawned at all (see
+    // lifecycle.rs), so this function is never reached. The
+    // tokio-backed `AsyncUdpSocket::send_to` path on the rx_loop
+    // remains the only outbound path on that platform. Suppress
+    // unused-variable warnings.
+    #[cfg(not(unix))]
+    {
+        let _ = (wire_packets, socket);
+    }
     Ok(())
 }
 
 /// Process-wide flag: once the kernel returns EINVAL / EOPNOTSUPP from
 /// a UDP_GSO send, we stop trying. Set lazily, never reset.
 #[cfg(target_os = "linux")]
-static GSO_DISABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static GSO_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// A batch is GSO-eligible iff every packet is the same size, except
 /// the last one may be shorter (UDP_GSO's documented behaviour). Real-
@@ -725,8 +731,12 @@ mod tests {
     }
 }
 
-/// Direct `sendto(2)` for non-Linux fallback.
-#[cfg(not(target_os = "linux"))]
+/// Direct `sendto(2)` for non-Linux unix (macOS / BSD). Windows
+/// doesn't reach this — encrypt_worker is gated to `unix` in
+/// `lifecycle.rs` (the per-worker raw-fd send loop only applies on
+/// unix; on Windows the rx_loop fallback path takes outbound packets
+/// through tokio's `AsyncUdpSocket::send_to`).
+#[cfg(all(unix, not(target_os = "linux")))]
 fn send_one_raw(
     fd: std::os::unix::io::RawFd,
     data: &[u8],
