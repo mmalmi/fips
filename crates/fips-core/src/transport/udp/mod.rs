@@ -7,6 +7,8 @@ use super::{
     TransportId, TransportState, TransportType,
 };
 pub(crate) mod socket;
+#[cfg(target_os = "linux")]
+pub(crate) mod connected_peer;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
