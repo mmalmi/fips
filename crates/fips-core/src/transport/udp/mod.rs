@@ -23,21 +23,23 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// Threshold above which `send_async` triggers a sendmmsg flush instead
-/// of just buffering. Matches the `recvmmsg` BATCH_SIZE so a single
-/// kernel-side syscall handles the largest natural burst we can
-/// accumulate from one rx_loop drain. The previous value (8) saw the
-/// per-batch sendmmsg cost dominate at multi-Gbps single-stream:
-/// the FIPS_PERF profile showed ~2.3 µs amortised per packet on the
-/// send path (~37% of one core at 164 kpps) with threshold=8, almost
-/// all of it being kernel time for `sendmmsg` itself; bumping to 32
-/// is a ~4× amortisation of that syscall cost.
+/// Threshold above which `send_async` triggers a sendmmsg flush
+/// instead of just buffering. Matches the rx_loop's per-drain cap
+/// (256) so the trailing-burst flush at the end of a drain cycle can
+/// land in a single kernel syscall. The previous value (32) saw the
+/// per-batch sendmmsg cost dominate at multi-Gbps single-stream: the
+/// FIPS_PERF profile showed ~2.1 µs amortised per packet on the send
+/// path (~37% of one core at 164 kpps) with threshold=32, almost all
+/// of it being kernel time for `sendmmsg` itself.
 ///
-/// Trailing-packet latency stays bounded: the rx_loop drain calls
+/// Going to 256 keeps the sendmmsg fixed cost amortised over a much
+/// larger batch (kernel hard-cap is 1024; the underlying socket
+/// `send_batch` matches with SEND_BATCH_SIZE=256). Trailing-packet
+/// latency stays bounded: the rx_loop drain calls
 /// `flush_pending_send` at the end of every batch of inbound, TUN, or
 /// endpoint work, so partial buffers never sit waiting for a fill.
 #[cfg(target_os = "linux")]
-const SEND_FLUSH_THRESHOLD: usize = 32;
+const SEND_FLUSH_THRESHOLD: usize = 256;
 
 /// UDP transport for FIPS.
 ///

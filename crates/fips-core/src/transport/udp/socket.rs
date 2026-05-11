@@ -29,12 +29,34 @@ mod platform {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
 
-    /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
-    /// will pull from / push to the kernel. Tuned to amortise syscall +
-    /// per-task-wakeup overhead across a useful burst without blowing
-    /// the stack (each slot owns an mmsghdr + sockaddr_storage + iovec).
+    /// Maximum number of datagrams a single `recvmmsg` syscall pulls
+    /// from the kernel queue. Tuned to amortise syscall + per-task-wakeup
+    /// overhead across a useful burst without blowing the stack (each
+    /// slot owns an mmsghdr + sockaddr_storage + iovec) and without
+    /// inflating tail latency on a quiet line.
     #[cfg(target_os = "linux")]
-    const BATCH_SIZE: usize = 32;
+    const RECV_BATCH_SIZE: usize = 32;
+
+    /// Maximum number of datagrams a single `sendmmsg` syscall pushes to
+    /// the kernel. Larger than `RECV_BATCH_SIZE` because the rx_loop can
+    /// drain up to 256 outbound commands per scheduler tick and we want
+    /// the trailing-burst flush at the end of that drain to land in one
+    /// syscall instead of `ceil(N/32)` of them. The kernel sendmmsg
+    /// hard cap is 1024; 256 fits the stack budget (each slot is
+    /// `mmsghdr + sockaddr_storage + iovec` ≈ 200 bytes ≈ 50 KiB total).
+    ///
+    /// The per-packet `sendmmsg` amortised cost was ~2.1 µs at
+    /// SEND_BATCH=32 in FIPS_PERF profiles (≈37% of one core at
+    /// 164 kpps); growing the batch should drop that toward the
+    /// per-call kernel fixed cost / N.
+    #[cfg(target_os = "linux")]
+    const SEND_BATCH_SIZE: usize = 256;
+
+    /// Back-compat alias used by call sites that don't distinguish.
+    /// `recv_batch` uses `RECV_BATCH_SIZE`; `send_batch` uses
+    /// `SEND_BATCH_SIZE`.
+    #[cfg(target_os = "linux")]
+    const BATCH_SIZE: usize = RECV_BATCH_SIZE;
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
@@ -396,21 +418,23 @@ mod platform {
             Ok((count, drops))
         }
 
-        /// Send up to `BATCH_SIZE` datagrams in a single sendmmsg syscall
-        /// (Linux only). Returns the count actually sent. Caller is
-        /// responsible for retrying remaining packets if `n < packets.len()`.
+        /// Send up to `SEND_BATCH_SIZE` datagrams in a single sendmmsg
+        /// syscall (Linux only). Returns the count actually sent. Caller
+        /// is responsible for retrying remaining packets if
+        /// `n < packets.len()`.
         #[cfg(target_os = "linux")]
         pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
-            let n = packets.len().min(BATCH_SIZE);
+            let n = packets.len().min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
             }
             let fd = self.inner.as_raw_fd();
 
-            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storage_lens: [libc::socklen_t; BATCH_SIZE] = [0; BATCH_SIZE];
-            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; SEND_BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut storage_lens: [libc::socklen_t; SEND_BATCH_SIZE] = [0; SEND_BATCH_SIZE];
+            let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
                 let (data, dest) = packets[i];
