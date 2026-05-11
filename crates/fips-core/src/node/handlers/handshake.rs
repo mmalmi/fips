@@ -285,7 +285,7 @@ impl Node {
                                 && let Some(idx) = peer.abandon_rekey()
                             {
                                 if let Some(tid) = peer.transport_id() {
-                                    self.peers_by_index.remove(&(tid, idx.as_u32()));
+                                    self.deregister_session_index((tid, idx.as_u32()));
                                     self.pending_outbound.remove(&(tid, idx.as_u32()));
                                 }
                                 let _ = self.index_allocator.free(idx);
@@ -650,7 +650,7 @@ impl Node {
                             );
                             if let Some(idx) = peer.abandon_rekey() {
                                 if let Some(tid) = peer.transport_id() {
-                                    self.peers_by_index.remove(&(tid, idx.as_u32()));
+                                    self.deregister_session_index((tid, idx.as_u32()));
                                 }
                                 let _ = self.index_allocator.free(idx);
                             }
@@ -784,8 +784,7 @@ impl Node {
                     // Update peers_by_index: remove old inbound index, add outbound
                     let transport_id = peer.transport_id().unwrap();
                     if let Some(old_idx) = old_our_index {
-                        self.peers_by_index
-                            .remove(&(transport_id, old_idx.as_u32()));
+                        self.deregister_session_index((transport_id, old_idx.as_u32()));
                         let _ = self.index_allocator.free(old_idx);
                     }
                     self.peers_by_index
@@ -805,6 +804,10 @@ impl Node {
                         new_their_index = %header.sender_idx,
                         "Cross-connection: swapped to outbound session (our outbound wins)"
                     );
+                    // Re-register with the decrypt worker under the new
+                    // cache_key (the old inbound index was deregistered
+                    // above via deregister_session_index).
+                    self.register_decrypt_worker_session(&peer_node_addr);
                 }
             } else {
                 // We're the larger node. Keep our inbound session (it pairs
@@ -1005,7 +1008,7 @@ impl Node {
                 if let (Some(old_tid), Some(old_idx)) =
                     (old_peer.transport_id(), old_peer.our_index())
                 {
-                    self.peers_by_index.remove(&(old_tid, old_idx.as_u32()));
+                    self.deregister_session_index((old_tid, old_idx.as_u32()));
                     let _ = self.index_allocator.free(old_idx);
                 }
 
@@ -1133,6 +1136,12 @@ impl Node {
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
             self.retry_pending.remove(&peer_node_addr);
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
+
+            // Eagerly hand the FMP recv state to the decrypt-worker
+            // shard. From this point on the shard is the
+            // authoritative FMP-replay-window writer for this peer;
+            // rx_loop's in-line decrypt path is no longer used.
+            self.register_decrypt_worker_session(&peer_node_addr);
 
             info!(
                 peer = %self.peer_display_name(&peer_node_addr),

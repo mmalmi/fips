@@ -144,6 +144,31 @@ impl NoiseSession {
         Ok(plaintext)
     }
 
+    /// In-place variant of [`Self::decrypt_with_replay_check_and_aad`].
+    ///
+    /// On entry, `buf` holds `ciphertext + 16-byte AEAD tag`. On
+    /// successful return, `buf[..returned_len]` holds the plaintext.
+    /// The caller can then slice into `buf` without paying for an
+    /// extra heap allocation + memcpy per packet — at multi-Gbps
+    /// single-stream the by-value variant's `ciphertext.to_vec()`
+    /// alone is a measurable fraction of the rx_loop's per-packet
+    /// cost.
+    pub fn decrypt_with_replay_check_and_aad_in_place(
+        &mut self,
+        buf: &mut [u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<usize, NoiseError> {
+        if !self.replay_window.check(counter) {
+            return Err(NoiseError::ReplayDetected(counter));
+        }
+        let plaintext_len = self
+            .recv_cipher
+            .decrypt_with_counter_and_aad_in_place(buf, counter, aad)?;
+        self.replay_window.accept(counter);
+        Ok(plaintext_len)
+    }
+
     /// Get the highest received counter.
     pub fn highest_received_counter(&self) -> u64 {
         self.replay_window.highest()
@@ -158,6 +183,25 @@ impl NoiseSession {
     /// call `accept_replay` here once the worker reports success.
     pub fn recv_cipher_clone(&self) -> Option<LessSafeKey> {
         self.recv_cipher.cipher_clone()
+    }
+
+    /// Snapshot the current replay-window state as an **owned**
+    /// `ReplayWindow` value, for hand-off to a shard-owning decrypt
+    /// worker.
+    ///
+    /// **The worker becomes the sole authority for replay protection
+    /// on this session after this snapshot.** The local
+    /// `self.replay_window` is no longer the source of truth — it
+    /// only matters for rare-slow-path uses (rekey, drain-window
+    /// fallback). The worker keeps its copy in its own
+    /// thread-local `HashMap`, so there's no Mutex / no Arc / no
+    /// sharing — direct `&mut` access on every packet.
+    ///
+    /// (Previously this returned an `Arc<Mutex<ReplayWindow>>` for
+    /// concurrent access; the data-plane shard restructure now hands
+    /// the worker exclusive ownership instead.)
+    pub fn recv_replay_snapshot_owned(&self) -> crate::noise::ReplayWindow {
+        self.replay_window.clone()
     }
 
     /// Clone the send-side AEAD instance, for off-task encrypt.

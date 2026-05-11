@@ -33,6 +33,7 @@ mdns-sd = "0.19"
 socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 portable-atomic = { version = "1", features = ["std"] }
+crossbeam-channel = "0.5"
 
 nostr = { version = "0.44", features = ["std", "nip59"] }
 nostr-sdk = "0.44"

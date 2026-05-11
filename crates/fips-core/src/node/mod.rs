@@ -6,7 +6,9 @@
 
 mod acl;
 mod bloom;
+mod decrypt_worker;
 mod discovery_rate_limit;
+mod encrypt_worker;
 mod handlers;
 mod lifecycle;
 mod rate_limit;
@@ -27,8 +29,8 @@ use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
 use self::wire::{
-    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
-    prepend_inner_header,
+    ESTABLISHED_HEADER_SIZE, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted,
+    build_established_header, prepend_inner_header,
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
@@ -174,18 +176,58 @@ pub struct ExternalPacketIo {
 #[derive(Debug)]
 pub(crate) struct EndpointDataIo {
     /// Send endpoint data commands into the node RX loop.
+    ///
+    /// Bounded with a generous capacity — see `attach_endpoint_data_io`
+    /// for the rationale. The bound provides backpressure to the
+    /// upstream producer (CLI's `mesh_send_task`) so a long-running
+    /// rate overrun (iperf3 -u -b 4G against a 2 Gbps FIPS pipeline)
+    /// doesn't grow this channel unboundedly and OOM the process. At
+    /// the previous bounded cap of 1024 the bench saw the producer
+    /// stall on permit acquire under steady multi-Gbps load; at the
+    /// new cap of 32768 (~50 MiB worst-case at 1500 B/packet) there
+    /// is roughly 100 ms of headroom at 1 Gbps for the rx_loop to
+    /// drain a stall, which is far more than the rx_loop's per-drain
+    /// scheduler tick. Once full, the producer's `.send().await`
+    /// yields and the chain back-propagates to the kernel TUN tx
+    /// queue, which is the right place to drop.
     pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
     /// Receive endpoint data delivered by FIPS sessions.
-    pub(crate) event_rx: tokio::sync::mpsc::Receiver<NodeEndpointEvent>,
+    ///
+    /// Unbounded so the rx_loop's send on inbound packet delivery is a
+    /// wait-free push (no semaphore acquire), and so we can drop the
+    /// per-packet cross-task relay that previously sat between the node
+    /// task and the `FipsEndpoint::recv()` consumer. Backpressure is
+    /// naturally bounded — the rx_loop both produces here and runs the
+    /// same runtime that schedules the consumer, so a stalled consumer
+    /// stalls production too.
+    pub(crate) event_rx: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    /// Clone of the event_tx exposed for in-process loopback (e.g.
+    /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
+    /// event into the same queue without going through the encrypt /
+    /// decrypt path, while keeping every consumer reading from a single
+    /// channel.
+    pub(crate) event_tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
 }
 
 /// Commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointCommand {
+    /// Send with an explicit response channel — used by callers that
+    /// care whether the local-stack handoff succeeded (e.g.
+    /// `blocking_send` waits for the runtime to accept the send).
     Send {
         remote: PeerIdentity,
         payload: Vec<u8>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
+    /// **Fire-and-forget** variant of `Send` — no oneshot allocation,
+    /// no per-packet result channel. Used by the data-plane fast path
+    /// (`FipsEndpoint::send`) where the caller already discards the
+    /// result. Saves one oneshot::channel() allocation per outbound
+    /// packet on the application's send hot path.
+    SendOneway {
+        remote: PeerIdentity,
+        payload: Vec<u8>,
     },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
@@ -466,7 +508,32 @@ pub struct Node {
     /// Endpoint data command receiver used by embedded/no-daemon integrations.
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
-    endpoint_event_tx: Option<tokio::sync::mpsc::Sender<NodeEndpointEvent>>,
+    endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
+    /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
+    /// spawned (set up in `start()` once transports are running).
+    /// `Some(pool)` once available; the pool internally holds
+    /// per-worker mpsc senders and round-robins jobs across them.
+    /// See `node::encrypt_worker` for the rationale and layout.
+    encrypt_workers: Option<encrypt_worker::EncryptWorkerPool>,
+    /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
+    /// `encrypt_workers` for the receive side.
+    decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
+    /// Set of sessions that have been registered with the decrypt
+    /// shard worker pool. Used by rx_loop to decide between fast-path
+    /// dispatch (worker owns the session) and legacy in-place decrypt
+    /// (worker doesn't have it yet). Per the data-plane restructure,
+    /// the worker owns its session state directly — there's no shared
+    /// `Arc<RwLock<HashMap>>` of cipher / replay state anymore, only
+    /// this set tracks **whether** the worker has been told about a
+    /// given session.
+    decrypt_registered_sessions: std::collections::HashSet<(TransportId, u32)>,
+    /// Fallback channel: decrypt worker bounces non-fast-path packets
+    /// (anything that's not bulk EndpointData) back here for rx_loop
+    /// to handle via the legacy path. Drained by a new rx_loop arm.
+    decrypt_fallback_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptFallback>>,
+    decrypt_fallback_tx:
+        tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptFallback>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -598,6 +665,10 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
+
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
 
@@ -686,6 +757,11 @@ impl Node {
             external_packet_tx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            encrypt_workers: None,
+            decrypt_workers: None,
+            decrypt_registered_sessions: std::collections::HashSet::new(),
+            decrypt_fallback_tx,
+            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -733,6 +809,10 @@ impl Node {
     pub fn with_identity(identity: Identity, config: Config) -> Result<Self, NodeError> {
         config.validate()?;
         let node_addr = *identity.node_addr();
+
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
         rand::rng().fill_bytes(&mut startup_epoch);
@@ -815,6 +895,11 @@ impl Node {
             external_packet_tx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            encrypt_workers: None,
+            decrypt_workers: None,
+            decrypt_registered_sessions: std::collections::HashSet::new(),
+            decrypt_fallback_tx,
+            decrypt_fallback_rx,
             tun_reader_handle: None,
             tun_writer_handle: None,
             #[cfg(target_os = "macos")]
@@ -1157,6 +1242,36 @@ impl Node {
             return PeerIdentity::from_pubkey(xonly).short_npub();
         }
         addr.short_hex()
+    }
+
+    /// Tear down a `peers_by_index` entry **and** keep the shard-owned
+    /// decrypt-worker state coherent: removes the same `cache_key`
+    /// from the registered-sessions tracking set and tells the
+    /// assigned shard worker to drop its `OwnedSessionState` entry.
+    ///
+    /// Use this instead of a bare `self.peers_by_index.remove(&key)`
+    /// at every session-lifecycle teardown site (rekey cross-connection
+    /// swap, peer disconnect, dispatch session-rotation) so the worker
+    /// doesn't keep stale ciphers / replay windows around. The
+    /// follow-up `RegisterSession` for the NEW key (if any) will then
+    /// install the fresh state on the same shard.
+    pub(in crate::node) fn deregister_session_index(
+        &mut self,
+        cache_key: (TransportId, u32),
+    ) {
+        // Find the peer that owns this index BEFORE removing it from
+        // the index map, so we can also tear down its per-peer
+        // connected UDP socket (drain thread → kernel fd) if any.
+        let owning_peer = self.peers_by_index.get(&cache_key).copied();
+        self.peers_by_index.remove(&cache_key);
+        if self.decrypt_registered_sessions.remove(&cache_key)
+            && let Some(workers) = self.decrypt_workers.as_ref()
+        {
+            workers.unregister_session(cache_key);
+        }
+        if let Some(peer_addr) = owning_peer {
+            self.clear_connected_udp_for_peer(&peer_addr);
+        }
     }
 
     // === Configuration ===
@@ -2177,15 +2292,29 @@ impl Node {
             )));
         }
 
-        let capacity = capacity.max(1);
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(capacity);
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(capacity);
+        // Use a high cap (32768) regardless of `capacity` — the
+        // caller's hint was sized for a different era of FIPS. At
+        // 1500 B/packet that's ~50 MiB of worst-case buffering,
+        // which is fine for any realistic load and big enough that
+        // the rx_loop drain (256 packets per scheduler tick at
+        // ~30 µs/drain) never has to wait on a permit during the
+        // multi-Gbps single-stream hot path. Replaces the prior
+        // `capacity.max(1)` (which was 1024 by default — too tight,
+        // see `EndpointDataIo::command_tx` docs).
+        let _ = capacity;
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(32768);
+        // Inbound endpoint-data events use an unbounded channel — see
+        // `EndpointDataIo::event_rx` docs for the rationale (kills the
+        // per-packet semaphore + the cross-task relay task that used to
+        // sit on top of this channel).
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         self.endpoint_command_rx = Some(command_rx);
-        self.endpoint_event_tx = Some(event_tx);
+        self.endpoint_event_tx = Some(event_tx.clone());
 
         Ok(EndpointDataIo {
             command_tx,
             event_rx,
+            event_tx,
         })
     }
 
@@ -2342,26 +2471,168 @@ impl Node {
                 reason: "no noise session".into(),
             })?;
 
-        // Inner plaintext: [timestamp:4 LE][msg_type][payload...]
-        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
-
-        // Build 16-byte outer header (used as AAD for AEAD)
+        // Build 16-byte outer header upfront. The inner-plaintext
+        // layout is `[ts:4 LE][plaintext...]`, so its length is exactly
+        // `INNER_TS_LEN + plaintext.len()` — no need to build the Vec
+        // just to measure it. The worker path uses this length to size
+        // the wire buffer directly; the legacy path below still
+        // materialises a separate `inner_plaintext` Vec for the inline
+        // encrypt-and-send call.
+        const INNER_TS_LEN: usize = 4;
         let counter = session.current_send_counter();
-        let payload_len = inner_plaintext.len() as u16;
+        let inner_len = INNER_TS_LEN + plaintext.len();
+        let payload_len = inner_len as u16;
         let header = build_established_header(their_index, counter, flags, payload_len);
 
+        // **UDP send fast path.** The encrypt-worker pool is always
+        // spawned at lifecycle start (workers = num_cpus) in
+        // production, so this branch is taken for every authentic
+        // send on every UDP-transported established session. The
+        // AEAD work + sendmsg syscall run on a dedicated OS thread;
+        // the rx_loop only builds the wire buffer + reserves the
+        // counter inline.
+        //
+        // Other transport kinds (BLE, TCP, sim, ethernet) fall
+        // through to the inline encrypt + transport.send path
+        // below — those don't have raw-fd / sendmmsg / UDP_GSO
+        // benefits to expose through the worker pool, so the simpler
+        // synchronous send is the right shape for them.
+        //
+        // The `encrypt_workers.is_some()` check below is true in
+        // production (lifecycle::start spawns the pool); it stays
+        // checked rather than `expect()`-ed because unit tests
+        // construct `Node` without calling `start()`.
+        let transport_for_send = self
+            .transports
+            .get(&transport_id)
+            .ok_or(NodeError::TransportNotFound(transport_id))?;
+        let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
+        if let Some(workers) = self.encrypt_workers.as_ref().cloned()
+            && is_udp
+            && let Some(cipher_clone) = session.send_cipher_clone()
+        {
+            {
+                // Reserve the counter on the session so subsequent
+                // sends don't reuse it. `current_send_counter` only
+                // peeks; we advance via `take_send_counter`.
+                let reserved_counter = session.take_send_counter().map_err(|e| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("counter reservation failed: {}", e),
+                })?;
+                debug_assert_eq!(reserved_counter, counter);
+                // Re-derive the header with the now-locked-in counter
+                // value (same value, but the call sequence is more
+                // explicit).
+                let header = build_established_header(their_index, reserved_counter, flags, payload_len);
+                // Resolve destination once on this task so the worker
+                // can skip the per-packet address parse / DNS cache
+                // lookup.
+                let transport = transport_for_send;
+                let socket_addr_opt: Option<std::net::SocketAddr> = {
+                    if let TransportHandle::Udp(udp) = transport {
+                        let resolved = udp
+                            .resolve_for_off_task(&remote_addr)
+                            .await
+                            .ok();
+                        let sock_clone = udp.async_socket();
+                        match (resolved, sock_clone) {
+                            (Some(sa), Some(_)) => Some(sa),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some(socket_addr) = socket_addr_opt {
+                    if let TransportHandle::Udp(udp) = transport {
+                        if let Some(socket) = udp.async_socket() {
+                            // Build the wire buffer **directly** from
+                            // `plaintext` with a single allocation:
+                            //   `[16 header][4 ts][plaintext...]` with
+                            // +16 trailing capacity for the AEAD tag.
+                            // The worker seals `wire_buf[16..]` in
+                            // place and appends the tag — no second
+                            // alloc, no second memcpy.
+                            //
+                            // Previous design built `inner_plaintext`
+                            // via `prepend_inner_header` (1 alloc + 1
+                            // copy) and then let the worker memcpy
+                            // header + plaintext into a fresh Vec
+                            // (another alloc + copy). At ~100 kpps the
+                            // saved alloc/copy is ~150 MB/sec of memory
+                            // bandwidth on the hot rx_loop + worker.
+                            let wire_capacity =
+                                ESTABLISHED_HEADER_SIZE + inner_len + 16;
+                            let mut wire_buf = Vec::with_capacity(wire_capacity);
+                            wire_buf.extend_from_slice(&header);
+                            wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                            wire_buf.extend_from_slice(plaintext);
+                            let predicted_bytes = wire_capacity;
+                            // Stats / MMP update inline — predicted size
+                            // is exact for ChaCha20-Poly1305 (tag is
+                            // constant 16 bytes).
+                            // Snapshot the per-peer connected UDP
+                            // socket (Linux only). When `Some`, the
+                            // worker `sendmsg`s on it with
+                            // msg_name=NULL — the kernel skips the
+                            // per-packet sockaddr + route + neighbor
+                            // resolve.
+                            #[cfg(target_os = "linux")]
+                            let connected_socket = self
+                                .peers
+                                .get(node_addr)
+                                .and_then(|p| p.connected_udp());
+                            if let Some(peer) = self.peers.get_mut(node_addr) {
+                                peer.link_stats_mut().record_sent(predicted_bytes);
+                                if let Some(mmp) = peer.mmp_mut() {
+                                    mmp.sender.record_sent(
+                                        reserved_counter,
+                                        timestamp_ms,
+                                        predicted_bytes,
+                                    );
+                                }
+                            }
+                            workers.dispatch(self::encrypt_worker::FmpSendJob {
+                                cipher: cipher_clone,
+                                counter: reserved_counter,
+                                wire_buf,
+                                socket,
+                                dest_addr: socket_addr,
+                                #[cfg(target_os = "linux")]
+                                connected_socket,
+                            });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Inline (legacy) path: encrypt + send on the rx_loop.
+        // Build the inner plaintext lazily here — the worker path
+        // above never reaches this point, so the prepend_inner_header
+        // alloc is avoided in the fast path.
+        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
         // Encrypt with AAD binding to the outer header
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: format!("encryption failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FmpEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("encryption failed: {}", e),
+                })?
+        };
 
         let wire_packet = build_encrypted(&header, &ciphertext);
 
         // Re-borrow peer for stats update after sending
         let send_result = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::UdpSend,
+            );
             let transport = self
                 .transports
                 .get(&transport_id)

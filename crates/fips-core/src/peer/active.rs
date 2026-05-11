@@ -182,6 +182,35 @@ pub struct ActivePeer {
     rekey_msg1: Option<Vec<u8>>,
     /// In-progress rekey: next resend timestamp (Unix ms).
     rekey_msg1_next_resend: u64,
+
+    // === Connected Peer UDP Socket (Linux-only fast path) ===
+    /// Per-peer `connect()`-ed UDP socket, opened once we have a
+    /// stable kernel `SocketAddr` for the peer (i.e. session
+    /// established + transport address known). When `Some`, the
+    /// encrypt-worker send path can `sendmsg(2)` on this fd without
+    /// per-packet `msg_name` — the kernel-side route + neighbor cache
+    /// is pinned by the `connect()` call. On the receive side, Linux
+    /// UDP demux preferentially routes inbound packets from this peer
+    /// to this socket (most-specific 5-tuple match via `SO_REUSEPORT`),
+    /// so a future per-shard recv loop can drain it without colliding
+    /// with the wildcard listen socket.
+    ///
+    /// Closed automatically on Drop. Behind an `Arc` so the
+    /// encrypt-worker's send path can hold a refcount without owning
+    /// the only handle (rekey / address-change may rotate the socket
+    /// while older jobs are still in-flight on the worker channel).
+    #[cfg(target_os = "linux")]
+    connected_udp:
+        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+
+    /// Per-peer receive-drain thread. Always paired with
+    /// `connected_udp`: while the connected socket is installed, the
+    /// kernel UDP demux preferentially routes inbound packets from
+    /// this peer to it (via SO_REUSEPORT + 5-tuple match), so the
+    /// socket *must* be drained or packets pile up in its kernel
+    /// recv buffer. Drop signals the thread to exit via self-pipe.
+    #[cfg(target_os = "linux")]
+    peer_recv_drain: Option<crate::transport::udp::peer_drain::PeerRecvDrain>,
 }
 
 impl ActivePeer {
@@ -233,6 +262,10 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            #[cfg(target_os = "linux")]
+            connected_udp: None,
+            #[cfg(target_os = "linux")]
+            peer_recv_drain: None,
         }
     }
 
@@ -313,7 +346,61 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            #[cfg(target_os = "linux")]
+            connected_udp: None,
+            #[cfg(target_os = "linux")]
+            peer_recv_drain: None,
         }
+    }
+
+    /// Linux fast path: clone the refcount on the per-peer
+    /// `connect()`-ed UDP socket if one has been installed. Encrypt-
+    /// worker send path uses this to bypass the wildcard listen
+    /// socket's per-packet sockaddr handling.
+    #[cfg(target_os = "linux")]
+    pub fn connected_udp(
+        &self,
+    ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>
+    {
+        self.connected_udp.clone()
+    }
+
+    /// Install a per-peer `connect()`-ed UDP socket **with** its
+    /// paired recv drain thread. The two are owned together: the
+    /// drain thread is the only consumer of packets arriving on this
+    /// socket (Linux UDP demux preferentially routes them away from
+    /// the wildcard listen socket via SO_REUSEPORT 5-tuple match),
+    /// so installing one without the other would silently drop
+    /// inbound packets from this peer.
+    ///
+    /// Replacing an existing pair drops the old drain (its self-pipe
+    /// shutdown signal fires; thread exits within one poll
+    /// iteration) and drops the old socket Arc. Any encrypt-worker
+    /// jobs already in-flight holding the old socket Arc stay valid
+    /// until they complete, at which point the kernel fd closes.
+    #[cfg(target_os = "linux")]
+    pub fn set_connected_udp(
+        &mut self,
+        socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+        drain: crate::transport::udp::peer_drain::PeerRecvDrain,
+    ) {
+        // Drop order matters: drop the old drain BEFORE the old
+        // socket so the drain thread's last reference to the kernel
+        // fd is released cleanly.
+        self.peer_recv_drain = None;
+        self.connected_udp = None;
+        self.connected_udp = Some(socket);
+        self.peer_recv_drain = Some(drain);
+    }
+
+    /// Clear the per-peer connected UDP socket + drain thread (e.g.
+    /// on rekey or disconnect). The drain thread exits via self-pipe
+    /// signal; the kernel fd closes when the last `Arc` to the
+    /// socket drops.
+    #[cfg(target_os = "linux")]
+    pub fn clear_connected_udp(&mut self) {
+        self.peer_recv_drain = None;
+        self.connected_udp = None;
     }
 
     // === Identity Accessors ===
@@ -440,9 +527,21 @@ impl ActivePeer {
     /// Update the current address (for roaming support).
     ///
     /// Called when we receive a valid authenticated packet from a new address.
-    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: TransportAddr) {
+    /// Short-circuits when neither the transport_id nor the TransportAddr
+    /// bytes changed — at multi-Gbps the same peer's source 4-tuple is
+    /// stable per session and the overwhelming majority of inbound
+    /// packets hit this fast path. Saves both the redundant
+    /// `Option::take` + Vec drop on the cached side and the caller's
+    /// `.clone()` allocation on the input side: the caller can pass
+    /// `&TransportAddr` and we only `.to_owned()` when storing.
+    pub fn set_current_addr(&mut self, transport_id: TransportId, addr: &TransportAddr) {
+        if self.transport_id == Some(transport_id)
+            && self.current_addr.as_ref() == Some(addr)
+        {
+            return;
+        }
         self.transport_id = Some(transport_id);
-        self.current_addr = Some(addr);
+        self.current_addr = Some(addr.clone());
     }
 
     // === Handshake Resend ===

@@ -579,6 +579,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -963,6 +972,7 @@ name = "fips-core"
 version = "0.3.0-dev"
 dependencies = [
  "bluer",
+ "crossbeam-channel",
  "dirs",
  "fips-identity",
  "futures",

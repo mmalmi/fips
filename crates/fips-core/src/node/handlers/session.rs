@@ -171,6 +171,9 @@ impl Node {
         ce_flag: bool,
         previous_hop: Option<NodeAddr>,
     ) {
+        let _t_fsp_handle = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FspHandle,
+        );
         // Parse the 12-byte encrypted header (includes the 4-byte prefix)
         let header = match FspEncryptedHeader::parse(payload) {
             Some(h) => h,
@@ -248,11 +251,16 @@ impl Node {
                 _ => break 'outcome FspFrameOutcome::NotEstablished,
             };
 
-            let primary = session.decrypt_with_replay_check_and_aad(
-                ciphertext,
-                header.counter,
-                &header.header_bytes,
-            );
+            let primary = {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::FspDecrypt,
+                );
+                session.decrypt_with_replay_check_and_aad(
+                    ciphertext,
+                    header.counter,
+                    &header.header_bytes,
+                )
+            };
             let plaintext = match primary {
                 Ok(pt) => pt,
                 Err(primary_err) => {
@@ -404,6 +412,11 @@ impl Node {
             self.learn_reverse_route(*src_addr, next_hop);
         }
 
+        // Capture the post-inner-header length now, before any branch
+        // takes ownership of `plaintext` (the EndpointData arm drains
+        // the inner header off the front and forwards the Vec to
+        // `deliver_endpoint_data` rather than allocating a fresh Vec).
+        let rest_len = plaintext.len() - FSP_INNER_HEADER_SIZE;
         let rest = &plaintext[FSP_INNER_HEADER_SIZE..];
 
         // Dispatch by msg_type
@@ -438,6 +451,9 @@ impl Node {
                                 if self.external_packet_tx.is_some() {
                                     self.deliver_external_ipv6_packet(src_addr, packet);
                                 } else if let Some(tun_tx) = &self.tun_tx {
+                                    let _t = crate::perf_profile::Timer::start(
+                                        crate::perf_profile::Stage::TunWrite,
+                                    );
                                     if let Err(e) = tun_tx.send(packet) {
                                         debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
                                     }
@@ -467,7 +483,17 @@ impl Node {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                self.deliver_endpoint_data(src_addr, rest.to_vec());
+                // Hand the plaintext Vec straight through to the endpoint
+                // event queue instead of `rest.to_vec()`-ing a fresh
+                // allocation. `Vec::drain` does a single memmove of the
+                // payload to the front of the existing buffer (no realloc,
+                // no second 1500-byte memcpy), trimming the inner-header
+                // prefix in place. At 174 kpps single-stream that's one
+                // allocation + one big memcpy saved per packet on the
+                // dominant FIPS-endpoint receive path.
+                let mut payload = plaintext;
+                payload.drain(..FSP_INNER_HEADER_SIZE);
+                self.deliver_endpoint_data(src_addr, payload);
             }
             Some(SessionMessageType::SenderReport) => {
                 self.handle_session_sender_report(src_addr, rest);
@@ -494,7 +520,7 @@ impl Node {
             || msg_type == SessionMessageType::EndpointData.to_byte())
             && let Some(entry) = self.sessions.get_mut(src_addr)
         {
-            entry.record_recv(rest.len());
+            entry.record_recv(rest_len);
             entry.touch(Self::now_ms());
         }
 
@@ -1545,12 +1571,17 @@ impl Node {
         let header = build_fsp_header(counter, flags, payload_len);
 
         // Encrypt with AAD binding to the FSP header
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FspEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("session encrypt failed: {}", e),
+                })?
+        };
 
         // Assemble: header(12) + [coords] + ciphertext
         let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
@@ -1614,8 +1645,20 @@ impl Node {
                 payload,
                 response_tx,
             } => {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::EndpointSend,
+                );
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
+            }
+            NodeEndpointCommand::SendOneway { remote, payload } => {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::EndpointSend,
+                );
+                // Result deliberately discarded — caller wanted
+                // fire-and-forget. Errors still get logged inside
+                // `send_endpoint_data` so they're not silent.
+                let _ = self.send_endpoint_data(remote, payload).await;
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
                 let peers = self
@@ -1785,12 +1828,17 @@ impl Node {
         let counter = session.current_send_counter();
         let payload_len = inner_plaintext.len() as u16;
         let header = build_fsp_header(counter, flags, payload_len);
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FspEncrypt,
+            );
+            session
+                .encrypt_with_aad(&inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("session encrypt failed: {}", e),
+                })?
+        };
 
         let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
         fsp_payload.extend_from_slice(&header);
@@ -1832,7 +1880,10 @@ impl Node {
             payload,
         };
 
-        if let Err(error) = endpoint_event_tx.try_send(event) {
+        let _t_deliver = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointDeliver,
+        );
+        if let Err(error) = endpoint_event_tx.send(event) {
             debug!(
                 src = %self.peer_display_name(src_addr),
                 error = %error,

@@ -290,7 +290,7 @@ impl SimNetwork {
                 decision.source,
                 decision.data,
             );
-            if decision.endpoint.packet_tx.send(packet).await.is_ok() {
+            if decision.endpoint.packet_tx.send(packet).is_ok() {
                 let mut inner = network.inner.lock().expect("sim network lock");
                 inner.stats.packets_delivered += 1;
                 inner.stats.bytes_delivered += delivered_bytes;

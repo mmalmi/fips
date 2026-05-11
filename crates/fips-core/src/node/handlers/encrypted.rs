@@ -1,12 +1,22 @@
 //! Encrypted frame handling (hot path).
+//!
+//! Every authentic packet on an established session is dispatched to
+//! the decrypt-worker shard pool — there is **no in-line decrypt
+//! path** in this handler anymore. Sessions are registered with the
+//! worker at FMP-establishment (see `register_decrypt_worker_session`,
+//! invoked from `handlers/handshake.rs::promote_connection`), so the
+//! shard owns the recv-side state from the moment a peer becomes
+//! reachable.
+//!
+//! Per-peer bookkeeping (`peer.touch`, `link_stats.record_recv`,
+//! `mmp.receiver.record_recv`, `set_current_addr`) happens in the
+//! rx_loop's `decrypt_fallback_rx` arm after the worker bounces the
+//! FMP plaintext back; that arm is the single canonical site for
+//! "this packet was successfully received and authenticated" side-
+//! effects under the shard architecture.
 
 use crate::node::Node;
-use crate::node::wire::{EncryptedHeader, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, strip_inner_header};
-
-/// Width of the inner-header timestamp prefix (mirrors `strip_inner_header`'s
-/// `&plaintext[4..]` slice). Local to this module to keep the FMP fast path
-/// self-contained.
-const INNER_TIMESTAMP_LEN: usize = 4;
+use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
@@ -14,33 +24,6 @@ use tracing::{debug, info, trace, warn};
 
 /// Force-remove a peer after this many consecutive decryption failures.
 const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
-
-/// Outcome of the inner peer-mut block in `handle_encrypted_frame`.
-///
-/// All fast-path work that needs `&mut peer` (decrypt, MMP record, link
-/// stats, touch) is performed inside one `peers.get_mut` borrow. The caller
-/// then drops the borrow, looks at this enum, and runs whatever needs
-/// `&mut self` (decrypt-failure logging, dispatch).
-enum FmpFrameOutcome {
-    /// Packet decrypted successfully. `plaintext` still includes the
-    /// 4-byte inner timestamp prefix — the link-layer message body starts
-    /// at `plaintext[INNER_TIMESTAMP_LEN..]`. The timestamp itself is
-    /// consumed for MMP stats inside the same borrow that decrypted the
-    /// frame, so it doesn't need to escape.
-    Authentic { plaintext: Vec<u8> },
-    /// Plaintext was too short for the inner header. Drop quietly.
-    InnerHeaderTooShort { plaintext_len: usize },
-    /// Both current and previous (drain-window) sessions failed to
-    /// authenticate the frame. `error` is the failure on the *current*
-    /// session — that's what gets logged and counted.
-    DecryptFailed { error: NoiseError },
-    /// `peers_by_index` mapped to a peer that has no live session. Treat
-    /// the same as the legacy warning path.
-    NoSession,
-    /// `peers_by_index` mapped to a peer that has been removed. Stale
-    /// entry; drop and let the next handshake repopulate.
-    PeerGone,
-}
 
 impl Node {
     /// Handle an encrypted frame (phase 0x0).
@@ -84,7 +67,7 @@ impl Node {
             }
             None => {
                 // Stale index entry; drop the index and let next handshake repopulate.
-                self.peers_by_index.remove(&key);
+                self.deregister_session_index(key);
                 return;
             }
         };
@@ -110,111 +93,237 @@ impl Node {
             }
         }
 
-        // Single-borrow fast path: decrypt, parse inner header, and update
-        // all per-peer counters (MMP, link stats, last-seen) inside one
-        // `peers.get_mut` lookup. Hands the plaintext back to the caller
-        // via `FmpFrameOutcome::Authentic` so dispatch (which needs
-        // `&mut self`) can run after the peer borrow is dropped.
+        // **Worker dispatch is the production path.** Sessions are
+        // registered with the decrypt worker at FMP-establishment
+        // (see `register_decrypt_worker_session` invoked from
+        // `promote_connection`), so in production every
+        // `handle_encrypted_frame` for an established session
+        // dispatches the packet to the worker and returns. All
+        // per-peer bookkeeping (`peer.touch`, `link_stats.record_recv`,
+        // `mmp.receiver.record_recv`, `set_current_addr`) runs in the
+        // rx_loop's `decrypt_fallback_rx` arm after the worker bounces
+        // the FMP plaintext back.
+        //
+        // The in-line decrypt below this is the **synchronous test-
+        // mode path**: unit tests construct `Node` instances directly
+        // (bypassing `lifecycle::start_async`) and step the event
+        // loop by hand, so they need a synchronous decrypt that
+        // updates `Node` state before the test code returns. In
+        // production `self.decrypt_workers` is always `Some` (spawned
+        // at lifecycle start with `num_cpus` workers), so this branch
+        // is taken and the legacy block below never runs.
+        let cache_key = (packet.transport_id, header.receiver_idx.as_u32());
+        if let Some(workers) = self.decrypt_workers.as_ref().cloned()
+            && let Some(endpoint_event_tx_ref) = self.endpoint_event_tx.as_ref()
+            && self.decrypt_registered_sessions.contains(&cache_key)
+        {
+            let job = super::super::decrypt_worker::DecryptJob {
+                packet_data: packet.data,
+                cache_key,
+                _transport_id: packet.transport_id,
+                _remote_addr: packet.remote_addr,
+                timestamp_ms: packet.timestamp_ms,
+                source_node_addr: node_addr,
+                fmp_counter: header.counter,
+                fmp_header: header.header_bytes,
+                fmp_ciphertext_offset: header.ciphertext_offset(),
+                endpoint_event_tx: endpoint_event_tx_ref.clone(),
+                fallback_tx: self.decrypt_fallback_tx.clone(),
+            };
+            workers.dispatch_job(job);
+            return;
+        }
+
+        // === Test-mode synchronous decrypt ===
+        // Production never reaches here. See module-level docs. Does
+        // the FMP AEAD in place against the noise session's own
+        // cipher + replay window (which is the authoritative state
+        // when no worker is registered), then hands the FMP plaintext
+        // to the canonical `process_authentic_fmp_plaintext` — same
+        // path the worker-bounce arm in rx_loop takes, so post-
+        // decrypt bookkeeping + link-layer dispatch don't fork.
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
-        let ce_flag = header.flags & FLAG_CE != 0;
-        let sp_flag = header.flags & FLAG_SP != 0;
+        let ce_flag = header.flags & crate::node::wire::FLAG_CE != 0;
+        let sp_flag = header.flags & crate::node::wire::FLAG_SP != 0;
         let packet_len = packet.data.len();
         let packet_timestamp_ms = packet.timestamp_ms;
         let packet_transport_id = packet.transport_id;
         let packet_remote_addr = packet.remote_addr.clone();
-        let ciphertext = &packet.data[ciphertext_offset..];
+        let mut packet_data = packet.data;
 
-        let outcome: FmpFrameOutcome = 'outcome: {
-            let Some(peer) = self.peers.get_mut(&node_addr) else {
-                // Race vs. K-bit block: peer was removed between checks.
-                break 'outcome FmpFrameOutcome::PeerGone;
-            };
-
-            // Try current session first. We extract `Result<Vec<u8>, _>` so
-            // the `&mut NoiseSession` borrow ends before we touch peer
-            // again (for the previous-session fallback or for stats).
-            let current_attempt = peer
-                .noise_session_mut()
-                .map(|s| s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes));
-
-            let plaintext = match current_attempt {
-                Some(Ok(p)) => p,
-                Some(Err(e)) => {
-                    // Drain-window fallback: previous session.
-                    let prev_attempt = peer.previous_session_mut().map(|s| {
-                        s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
-                    });
-                    match prev_attempt {
-                        Some(Ok(p)) => p,
-                        _ => break 'outcome FmpFrameOutcome::DecryptFailed { error: e },
-                    }
-                }
-                None => break 'outcome FmpFrameOutcome::NoSession,
-            };
-
-            // Inner header is 4-byte timestamp + at least one msg_type byte
-            // (total min INNER_HEADER_SIZE = 5). `strip_inner_header`
-            // borrows from `plaintext`; we only need the timestamp here,
-            // because the link-message slice is computed after the borrow
-            // releases.
-            let timestamp = match strip_inner_header(&plaintext) {
-                Some((ts, _link)) => ts,
-                None => {
-                    break 'outcome FmpFrameOutcome::InnerHeaderTooShort {
-                        plaintext_len: plaintext.len(),
-                    };
-                }
-            };
-
-            // Stats inline — same borrow.
-            peer.reset_decrypt_failures();
-            let now = Instant::now();
-            if let Some(mmp) = peer.mmp_mut() {
-                mmp.receiver
-                    .record_recv(counter, timestamp, packet_len, ce_flag, now);
-                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+        let Some(peer) = self.peers.get_mut(&node_addr) else {
+            self.deregister_session_index(key);
+            return;
+        };
+        let Some(session) = peer.noise_session_mut() else {
+            warn!(
+                peer = %self.peer_display_name(&node_addr),
+                "Peer in index map has no session"
+            );
+            return;
+        };
+        let decrypt_result = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::FmpDecrypt,
+            );
+            session.decrypt_with_replay_check_and_aad_in_place(
+                &mut packet_data[ciphertext_offset..],
+                counter,
+                &header_bytes,
+            )
+        };
+        let plaintext_len = match decrypt_result {
+            Ok(len) => len,
+            Err(e) => {
+                self.log_decrypt_failure(&node_addr, &header, &e);
+                self.handle_decrypt_failure(&node_addr);
+                return;
             }
-            peer.set_current_addr(packet_transport_id, packet_remote_addr);
+        };
+        // The FMP plaintext (4-byte ts + link msg) lives at
+        // packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].
+        // Slice + own a copy to hand to the shared helper. The copy
+        // is cheap (test-mode path; not the hot bench path).
+        let fmp_plaintext: Vec<u8> =
+            packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].to_vec();
+        self.process_authentic_fmp_plaintext(
+            &node_addr,
+            packet_transport_id,
+            &packet_remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            counter,
+            ce_flag,
+            sp_flag,
+            &fmp_plaintext,
+        )
+        .await;
+    }
+
+    /// Single canonical site for "the FMP layer authenticated and
+    /// accepted this packet" side-effects. Called both from the
+    /// worker-bounce arm in rx_loop (production fast path) and from
+    /// the in-line synchronous decrypt below (test-mode path).
+    ///
+    /// Performs the per-peer bookkeeping (last-seen, MMP receiver,
+    /// link stats, address-rotation) and then dispatches the
+    /// link-layer message body to `dispatch_link_message`. The
+    /// caller is responsible for ensuring the FMP AEAD already
+    /// verified the bytes — this function trusts `fmp_plaintext` as
+    /// authentic.
+    ///
+    /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
+    /// 4-byte inner timestamp still at the front (i.e. the same
+    /// layout the legacy `strip_inner_header` consumed).
+    pub(in crate::node) async fn process_authentic_fmp_plaintext(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+        transport_id: crate::transport::TransportId,
+        remote_addr: &crate::transport::TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        ce_flag: bool,
+        sp_flag: bool,
+        fmp_plaintext: &[u8],
+    ) {
+        const INNER_TIMESTAMP_LEN: usize = 4;
+        let inner_ts = if fmp_plaintext.len() >= INNER_TIMESTAMP_LEN {
+            u32::from_le_bytes([
+                fmp_plaintext[0],
+                fmp_plaintext[1],
+                fmp_plaintext[2],
+                fmp_plaintext[3],
+            ])
+        } else {
+            return;
+        };
+        let now = Instant::now();
+        if let Some(peer) = self.peers.get_mut(node_addr) {
+            peer.reset_decrypt_failures();
+            peer.set_current_addr(transport_id, remote_addr);
             peer.link_stats_mut()
                 .record_recv(packet_len, packet_timestamp_ms);
             peer.touch(packet_timestamp_ms);
-
-            FmpFrameOutcome::Authentic { plaintext }
-        };
-
-        match outcome {
-            FmpFrameOutcome::Authentic { plaintext } => {
-                // === PACKET IS AUTHENTIC ===
-                // The link message is plaintext minus the 4-byte timestamp
-                // (mirrors what `strip_inner_header` returned). We re-slice
-                // here because plaintext is owned by us at this point.
-                let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
-                self.dispatch_link_message(&node_addr, link_message, ce_flag)
-                    .await;
-            }
-            FmpFrameOutcome::InnerHeaderTooShort { plaintext_len } => {
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    len = plaintext_len,
-                    "Decrypted payload too short for inner header"
-                );
-            }
-            FmpFrameOutcome::DecryptFailed { error } => {
-                self.log_decrypt_failure(&node_addr, &header, &error);
-                self.handle_decrypt_failure(&node_addr);
-            }
-            FmpFrameOutcome::NoSession => {
-                warn!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "Peer in index map has no session"
-                );
-            }
-            FmpFrameOutcome::PeerGone => {
-                self.peers_by_index.remove(&key);
+            if let Some(mmp) = peer.mmp_mut() {
+                mmp.receiver
+                    .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
+                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
             }
         }
+        let link_message = &fmp_plaintext[INNER_TIMESTAMP_LEN..];
+        self.dispatch_link_message(node_addr, link_message, ce_flag)
+            .await;
+    }
+
+    /// Register a peer's recv state with the decrypt-worker shard
+    /// **eagerly at FSP-session establishment**. After this call the
+    /// worker becomes the sole replay-window writer for the session
+    /// and rx_loop's legacy in-line decrypt is no longer used for
+    /// this peer.
+    ///
+    /// Called from the FSP-session-established sites in
+    /// `handlers/session.rs` (both initiator and responder). No-op if
+    /// the session state can't be built yet (peer gone, FSP not yet
+    /// promoted to Established) — the caller can retry on a later
+    /// event. Idempotent: re-registering the same cache_key
+    /// overwrites the worker's entry, which is the correct behaviour
+    /// for rekey.
+    pub(in crate::node) fn register_decrypt_worker_session(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
+        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
+            return;
+        };
+        let (cache_key, state) = {
+            let Some(peer) = self.peers.get(node_addr) else {
+                return;
+            };
+            let Some(transport_id) = peer.transport_id() else {
+                return;
+            };
+            let Some(our_index) = peer.our_index() else {
+                return;
+            };
+            let cache_key = (transport_id, our_index.as_u32());
+            let Some(state) = self.build_owned_session_state(node_addr) else {
+                return;
+            };
+            (cache_key, state)
+        };
+        workers.register_session(cache_key, state);
+        self.decrypt_registered_sessions.insert(cache_key);
+    }
+
+    /// Build the **owned FMP recv state** handed off to the decrypt
+    /// shard worker. Returns `None` if the peer is gone or the FMP
+    /// session isn't ready. After registration the worker is the
+    /// sole FMP replay-window writer for this session.
+    ///
+    /// Note: only FMP state is captured. The worker bounces all
+    /// link-layer messages back to rx_loop for FSP dispatch, so the
+    /// FSP cipher / replay window don't need to live worker-side.
+    /// This lets us register at FMP establishment (i.e. as soon as
+    /// the Noise handshake completes), eliminating the legacy
+    /// in-line decrypt path that used to handle the FMP-established-
+    /// but-FSP-not-yet window.
+    fn build_owned_session_state(
+        &self,
+        node_addr: &crate::NodeAddr,
+    ) -> Option<crate::node::decrypt_worker::OwnedSessionState> {
+        let peer = self.peers.get(node_addr)?;
+        let fmp_session = peer.noise_session()?;
+        let fmp_cipher = fmp_session.recv_cipher_clone()?;
+        let fmp_replay = fmp_session.recv_replay_snapshot_owned();
+        let source_npub = self.npub_for_node_addr(node_addr);
+        Some(crate::node::decrypt_worker::OwnedSessionState {
+            fmp_cipher,
+            fmp_replay,
+            source_npub,
+        })
     }
 
     /// Log a decryption failure with replay suppression.

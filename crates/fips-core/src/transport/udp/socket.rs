@@ -29,12 +29,34 @@ mod platform {
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
 
-    /// Maximum number of datagrams a single recvmmsg / sendmmsg syscall
-    /// will pull from / push to the kernel. Tuned to amortise syscall +
-    /// per-task-wakeup overhead across a useful burst without blowing
-    /// the stack (each slot owns an mmsghdr + sockaddr_storage + iovec).
+    /// Maximum number of datagrams a single `recvmmsg` syscall pulls
+    /// from the kernel queue. Tuned to amortise syscall + per-task-wakeup
+    /// overhead across a useful burst without blowing the stack (each
+    /// slot owns an mmsghdr + sockaddr_storage + iovec) and without
+    /// inflating tail latency on a quiet line.
     #[cfg(target_os = "linux")]
-    const BATCH_SIZE: usize = 32;
+    const RECV_BATCH_SIZE: usize = 32;
+
+    /// Maximum number of datagrams a single `sendmmsg` syscall pushes to
+    /// the kernel. Larger than `RECV_BATCH_SIZE` because the rx_loop can
+    /// drain up to 256 outbound commands per scheduler tick and we want
+    /// the trailing-burst flush at the end of that drain to land in one
+    /// syscall instead of `ceil(N/32)` of them. The kernel sendmmsg
+    /// hard cap is 1024; 256 fits the stack budget (each slot is
+    /// `mmsghdr + sockaddr_storage + iovec` ≈ 200 bytes ≈ 50 KiB total).
+    ///
+    /// The per-packet `sendmmsg` amortised cost was ~2.1 µs at
+    /// SEND_BATCH=32 in FIPS_PERF profiles (≈37% of one core at
+    /// 164 kpps); growing the batch should drop that toward the
+    /// per-call kernel fixed cost / N.
+    #[cfg(target_os = "linux")]
+    const SEND_BATCH_SIZE: usize = 256;
+
+    /// Back-compat alias used by call sites that don't distinguish.
+    /// `recv_batch` uses `RECV_BATCH_SIZE`; `send_batch` uses
+    /// `SEND_BATCH_SIZE`.
+    #[cfg(target_os = "linux")]
+    const BATCH_SIZE: usize = RECV_BATCH_SIZE;
 
     /// Wrapper around a `socket2::Socket` providing sync send/recv with
     /// `SO_RXQ_OVFL` ancillary data parsing.
@@ -65,34 +87,96 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
+            // SO_REUSEPORT lets the Linux UDP demux load-balance
+            // across sockets bound to the same address — and lets
+            // per-peer `ConnectedPeerSocket`s bind to the same
+            // wildcard port the listen socket holds (most-specific
+            // 5-tuple match preferentially routes a connected peer's
+            // traffic to its dedicated socket; the listen socket then
+            // only handles new / unknown peers). On non-Linux this
+            // setsockopt has no effect for UDP, so we ignore failures.
+            let _ = sock.set_reuse_port(true);
+            let _ = sock.set_reuse_address(true);
+
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
 
-            // Set socket buffer sizes
+            // Set socket buffer sizes via the standard SO_RCVBUF /
+            // SO_SNDBUF path first. These are clamped to
+            // `net.core.{rmem,wmem}_max`, which on a default Linux
+            // container is ~213 KiB — way too small to absorb a multi-
+            // Gbps inbound burst, leading to UDP RcvbufErrors at line
+            // rate. If clamped and we hold CAP_NET_ADMIN, the
+            // SO_RCVBUFFORCE / SO_SNDBUFFORCE variants bypass the
+            // sysctl ceiling entirely.
             sock.set_recv_buffer_size(recv_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
             sock.set_send_buffer_size(send_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
 
-            let actual_recv = sock
+            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
+            // Linux-only and may reassign these; non-Linux builds
+            // leave them at the initial reading.
+            #[allow(unused_mut)]
+            let mut actual_recv = sock
                 .recv_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            let actual_send = sock
+            #[allow(unused_mut)]
+            let mut actual_send = sock
                 .send_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
+
+            #[cfg(target_os = "linux")]
+            if actual_recv < recv_buf_size {
+                let val: libc::c_int = recv_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.recv_buffer_size() {
+                        actual_recv = after;
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if actual_send < send_buf_size {
+                let val: libc::c_int = send_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.send_buffer_size() {
+                        actual_send = after;
+                    }
+                }
+            }
 
             if actual_recv < recv_buf_size {
                 warn!(
                     requested = recv_buf_size,
                     actual = actual_recv,
-                    "UDP recv buffer clamped by kernel (increase net.core.rmem_max)"
+                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
+                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
                 );
             }
             if actual_send < send_buf_size {
                 warn!(
                     requested = send_buf_size,
                     actual = actual_send,
-                    "UDP send buffer clamped by kernel (increase net.core.wmem_max)"
+                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
+                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
                 );
             }
 
@@ -151,25 +235,71 @@ mod platform {
             sock.set_send_buffer_size(send_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set send buffer: {}", e)))?;
 
-            let actual_recv = sock
+            // The SO_RCVBUFFORCE / SO_SNDBUFFORCE fallback below is
+            // Linux-only and may reassign these; non-Linux builds
+            // leave them at the initial reading.
+            #[allow(unused_mut)]
+            let mut actual_recv = sock
                 .recv_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get recv buffer: {}", e)))?;
-            let actual_send = sock
+            #[allow(unused_mut)]
+            let mut actual_send = sock
                 .send_buffer_size()
                 .map_err(|e| TransportError::StartFailed(format!("get send buffer: {}", e)))?;
+
+            // CAP_NET_ADMIN holders can bypass rmem_max via
+            // SO_RCVBUFFORCE; see `open()` for the rationale.
+            #[cfg(target_os = "linux")]
+            if actual_recv < recv_buf_size {
+                let val: libc::c_int = recv_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_RCVBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.recv_buffer_size() {
+                        actual_recv = after;
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if actual_send < send_buf_size {
+                let val: libc::c_int = send_buf_size as libc::c_int;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUFFORCE,
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    )
+                };
+                if ret == 0 {
+                    if let Ok(after) = sock.send_buffer_size() {
+                        actual_send = after;
+                    }
+                }
+            }
 
             if actual_recv < recv_buf_size {
                 warn!(
                     requested = recv_buf_size,
                     actual = actual_recv,
-                    "UDP recv buffer clamped by kernel (increase net.core.rmem_max)"
+                    "UDP recv buffer clamped by kernel even with SO_RCVBUFFORCE \
+                     (increase net.core.rmem_max or grant CAP_NET_ADMIN)"
                 );
             }
             if actual_send < send_buf_size {
                 warn!(
                     requested = send_buf_size,
                     actual = actual_send,
-                    "UDP send buffer clamped by kernel (increase net.core.wmem_max)"
+                    "UDP send buffer clamped by kernel even with SO_SNDBUFFORCE \
+                     (increase net.core.wmem_max or grant CAP_NET_ADMIN)"
                 );
             }
 
@@ -396,21 +526,23 @@ mod platform {
             Ok((count, drops))
         }
 
-        /// Send up to `BATCH_SIZE` datagrams in a single sendmmsg syscall
-        /// (Linux only). Returns the count actually sent. Caller is
-        /// responsible for retrying remaining packets if `n < packets.len()`.
+        /// Send up to `SEND_BATCH_SIZE` datagrams in a single sendmmsg
+        /// syscall (Linux only). Returns the count actually sent. Caller
+        /// is responsible for retrying remaining packets if
+        /// `n < packets.len()`.
         #[cfg(target_os = "linux")]
         pub fn send_batch(&self, packets: &[(&[u8], SocketAddr)]) -> std::io::Result<usize> {
-            let n = packets.len().min(BATCH_SIZE);
+            let n = packets.len().min(SEND_BATCH_SIZE);
             if n == 0 {
                 return Ok(0);
             }
             let fd = self.inner.as_raw_fd();
 
-            let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storages: [libc::sockaddr_storage; BATCH_SIZE] = unsafe { std::mem::zeroed() };
-            let mut storage_lens: [libc::socklen_t; BATCH_SIZE] = [0; BATCH_SIZE];
-            let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut iovs: [libc::iovec; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
+            let mut storages: [libc::sockaddr_storage; SEND_BATCH_SIZE] =
+                unsafe { std::mem::zeroed() };
+            let mut storage_lens: [libc::socklen_t; SEND_BATCH_SIZE] = [0; SEND_BATCH_SIZE];
+            let mut msgs: [libc::mmsghdr; SEND_BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
                 let (data, dest) = packets[i];
@@ -464,6 +596,12 @@ mod platform {
     #[derive(Clone)]
     pub struct AsyncUdpSocket {
         inner: Arc<AsyncFd<UdpRawSocket>>,
+    }
+
+    impl AsRawFd for AsyncUdpSocket {
+        fn as_raw_fd(&self) -> RawFd {
+            self.inner.get_ref().as_raw_fd()
+        }
     }
 
     impl AsyncUdpSocket {
@@ -639,6 +777,12 @@ mod platform {
             sock.set_nonblocking(true).map_err(|e| {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
+
+            // SO_REUSEPORT / SO_REUSEADDR — see the sync `UdpRawSocket::open`
+            // path above for rationale (per-peer ConnectedPeerSocket
+            // must bind to the same port the listen socket holds).
+            let _ = sock.set_reuse_port(true);
+            let _ = sock.set_reuse_address(true);
 
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;

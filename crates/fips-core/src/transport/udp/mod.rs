@@ -6,7 +6,11 @@ use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
 };
-mod socket;
+pub(crate) mod socket;
+#[cfg(target_os = "linux")]
+pub(crate) mod connected_peer;
+#[cfg(target_os = "linux")]
+pub(crate) mod peer_drain;
 mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
@@ -23,14 +27,23 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
-/// Threshold above which `send_async` triggers a sendmmsg flush instead of
-/// just buffering. Tuned to amortise the per-syscall + tokio-AsyncFd
-/// overhead (~2 µs per `sendto` on Docker bridge / aarch64 Linux) across
-/// a small batch without adding meaningful latency. The batch buffer is
-/// also flushed explicitly by the rx_loop at the end of each drain so
-/// the last-packet-of-burst case isn't penalised.
+/// Threshold above which `send_async` triggers a sendmmsg flush
+/// instead of just buffering. Matches the rx_loop's per-drain cap
+/// (256) so the trailing-burst flush at the end of a drain cycle can
+/// land in a single kernel syscall. The previous value (32) saw the
+/// per-batch sendmmsg cost dominate at multi-Gbps single-stream: the
+/// FIPS_PERF profile showed ~2.1 µs amortised per packet on the send
+/// path (~37% of one core at 164 kpps) with threshold=32, almost all
+/// of it being kernel time for `sendmmsg` itself.
+///
+/// Going to 256 keeps the sendmmsg fixed cost amortised over a much
+/// larger batch (kernel hard-cap is 1024; the underlying socket
+/// `send_batch` matches with SEND_BATCH_SIZE=256). Trailing-packet
+/// latency stays bounded: the rx_loop drain calls
+/// `flush_pending_send` at the end of every batch of inbound, TUN, or
+/// endpoint work, so partial buffers never sit waiting for a fill.
 #[cfg(target_os = "linux")]
-const SEND_FLUSH_THRESHOLD: usize = 8;
+const SEND_FLUSH_THRESHOLD: usize = 256;
 
 /// UDP transport for FIPS.
 ///
@@ -102,9 +115,57 @@ impl UdpTransport {
         self.local_addr
     }
 
+    /// Configured recv buffer size — used when opening per-peer
+    /// `ConnectedPeerSocket`s so they get the same buffer ceiling as
+    /// the wildcard listen socket.
+    pub fn recv_buf_size(&self) -> usize {
+        self.config.recv_buf_size()
+    }
+
+    /// Configured send buffer size — companion to `recv_buf_size`.
+    pub fn send_buf_size(&self) -> usize {
+        self.config.send_buf_size()
+    }
+
+    /// Clone the `PacketTx` end of the packet channel for off-task
+    /// receive paths (per-peer connected-socket drains, future shard
+    /// recv loops). The clone is just a refcount bump.
+    pub fn clone_packet_tx(&self) -> PacketTx {
+        self.packet_tx.clone()
+    }
+
     /// Get the transport statistics.
     pub fn stats(&self) -> &Arc<UdpStats> {
         &self.stats
+    }
+
+    /// Resolve a transport address (which may be a string like
+    /// `"1.2.3.4:5678"` or a hostname) to a kernel `SocketAddr`,
+    /// using the per-transport DNS cache. Public companion to
+    /// `async_socket()` for off-task workers that want to skip the
+    /// per-packet address parse / DNS lookup that `send_async` does
+    /// inline. Returns `Err` if neither numeric parse nor DNS resolves
+    /// the address.
+    pub async fn resolve_for_off_task(
+        &self,
+        addr: &TransportAddr,
+    ) -> Result<SocketAddr, TransportError> {
+        self.resolve_cached(addr).await
+    }
+
+    /// Clone the underlying async UDP socket (internally an
+    /// `Arc<AsyncFd<UdpRawSocket>>`, so the "clone" is just a refcount
+    /// bump). Returns `None` if the transport hasn't been started yet.
+    ///
+    /// Intended for off-task workers that need to issue
+    /// `send_to`/`send_batch` calls without going through the
+    /// per-transport pending-send mutex — useful when the AEAD encrypt
+    /// + udp_send pipeline is parallelised across N worker tasks that
+    /// each own a shared handle to the same kernel socket. The kernel
+    /// serialises concurrent `sendto` calls itself, so concurrent
+    /// userland sends are safe.
+    pub fn async_socket(&self) -> Option<AsyncUdpSocket> {
+        self.socket.clone()
     }
 
     /// Resolve a transport address, using cached results for hostnames.
@@ -545,7 +606,18 @@ async fn udp_receive_loop(
     {
         const BATCH: usize = 32;
         let buf_size = mtu as usize + 100;
-        // One contiguous backing alloc; slice it for recvmmsg.
+        // Backing pool: one Vec<u8> per recvmmsg slot. We **own** each
+        // slot here — when a packet lands, we `mem::replace` the filled
+        // Vec out (handing the buffer directly to rx_loop via mpsc) and
+        // drop in a fresh Vec to refill that slot on the next call.
+        //
+        // Previous code did `let data = buf.to_vec();` per packet,
+        // which was 1 alloc + 1 memcpy of the entire packet (~1.5 KB)
+        // for every received UDP datagram. At 100 kpps that's
+        // ~150 MB/sec of avoidable memory bandwidth on the RX hot path.
+        // The new code does the same alloc count (one fresh Vec to
+        // refill the slot) but zero per-packet memcpy — the receive
+        // buffer becomes the packet buffer in one move.
         let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; buf_size]).collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
         let mut lens: [usize; BATCH] = [0; BATCH];
@@ -559,7 +631,13 @@ async fn udp_receive_loop(
                 std::array::from_fn(|_| iter.next().unwrap().as_mut_slice())
             };
 
-            match socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await {
+            let recv_result = {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::UdpRecv,
+                );
+                socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await
+            };
+            match recv_result {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
                     for i in 0..count {
@@ -569,8 +647,9 @@ async fn udp_receive_loop(
                         };
                         stats.record_recv(len);
 
-                        let buf = &backing[i][..len];
-                        if is_punch_packet(buf) {
+                        // Peek before swap: punch probes / acks are
+                        // discarded without consuming a buffer move.
+                        if is_punch_packet(&backing[i][..len]) {
                             trace!(
                                 transport_id = %transport_id,
                                 remote_addr = %remote_addr,
@@ -580,8 +659,16 @@ async fn udp_receive_loop(
                             continue;
                         }
 
-                        let data = buf.to_vec();
-                        let addr = TransportAddr::from_string(&remote_addr.to_string());
+                        // Move the filled buffer out of the slot and
+                        // refill with a fresh one. `mem::replace`
+                        // returns the OLD value and writes the new one
+                        // — single pointer swap, no copy.
+                        let mut data = std::mem::replace(
+                            &mut backing[i],
+                            vec![0u8; buf_size],
+                        );
+                        data.truncate(len);
+                        let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::new(transport_id, addr, data);
 
                         trace!(
@@ -591,7 +678,7 @@ async fn udp_receive_loop(
                             "UDP packet received"
                         );
 
-                        if packet_tx.send(packet).await.is_err() {
+                        if packet_tx.send(packet).is_err() {
                             debug!(
                                 transport_id = %transport_id,
                                 "Packet channel closed, stopping receive loop"
@@ -633,7 +720,7 @@ async fn udp_receive_loop(
                     }
 
                     let data = buf[..len].to_vec();
-                    let addr = TransportAddr::from_string(&remote_addr.to_string());
+                    let addr = TransportAddr::from_socket_addr(remote_addr);
                     let packet = ReceivedPacket::new(transport_id, addr, data);
 
                     trace!(
@@ -643,7 +730,7 @@ async fn udp_receive_loop(
                         "UDP packet received"
                     );
 
-                    if packet_tx.send(packet).await.is_err() {
+                    if packet_tx.send(packet).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"

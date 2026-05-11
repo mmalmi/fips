@@ -66,6 +66,18 @@ impl Node {
                 }
             };
 
+        // Take the decrypt worker fallback receiver if a worker pool
+        // is in use. The worker pushes non-fast-path packets (anything
+        // that's not bulk EndpointData) here for the legacy dispatch.
+        let (mut decrypt_fallback_rx, _decrypt_fallback_guard) =
+            match self.decrypt_fallback_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    (rx, Some(tx))
+                }
+            };
+
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
 
@@ -91,6 +103,8 @@ impl Node {
         drop(control_tx);
 
         info!("RX event loop started");
+        // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
+        crate::perf_profile::maybe_spawn_reporter();
 
         loop {
             tokio::select! {
@@ -177,6 +191,29 @@ impl Node {
                     };
                     let _ = response_tx.send(response);
                 }
+                Some(fallback) = decrypt_fallback_rx.recv() => {
+                    // Decrypt worker bounced a packet back for
+                    // FSP-layer dispatch after handling the FMP layer.
+                    // Hand the FMP plaintext to the canonical
+                    // post-decrypt processor — same code path the
+                    // test-mode in-line decrypt below takes, so
+                    // per-peer bookkeeping (peer.touch,
+                    // link_stats.record_recv, mmp.receiver.record_recv,
+                    // set_current_addr) and link-layer dispatch run
+                    // identically in both modes.
+                    self.process_authentic_fmp_plaintext(
+                        &fallback.source_node_addr,
+                        fallback.transport_id,
+                        &fallback.remote_addr,
+                        fallback.timestamp_ms,
+                        fallback.packet_len,
+                        fallback.fmp_counter,
+                        /* ce_flag */ false,
+                        /* sp_flag */ false,
+                        &fallback.fmp_plaintext,
+                    )
+                    .await;
+                }
                 _ = tick.tick() => {
                     self.check_timeouts();
                     let now_ms = Self::now_ms();
@@ -202,6 +239,7 @@ impl Node {
                     self.check_pending_lookups(now_ms).await;
                     self.poll_transport_discovery().await;
                     self.sample_transport_congestion();
+                    self.activate_connected_udp_sessions().await;
                 }
             }
         }
@@ -231,6 +269,9 @@ impl Node {
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
     async fn process_packet(&mut self, packet: ReceivedPacket) {
+        let _t_total = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::ProcessPacket,
+        );
         if packet.data.len() < COMMON_PREFIX_SIZE {
             return; // Drop packets too short for common prefix
         }

@@ -156,11 +156,7 @@ impl FipsEndpointBuilder {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
-        let (inbound_endpoint_tx, inbound_endpoint_rx) =
-            mpsc::channel(self.packet_channel_capacity);
         let endpoint_commands = endpoint_data_io.command_tx;
-        let event_task =
-            spawn_endpoint_event_task(endpoint_data_io.event_rx, inbound_endpoint_tx.clone());
 
         Ok(FipsEndpoint {
             npub,
@@ -170,12 +166,11 @@ impl FipsEndpointBuilder {
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
             endpoint_commands,
-            inbound_endpoint_tx,
-            inbound_endpoint_rx: Arc::new(Mutex::new(inbound_endpoint_rx)),
+            inbound_endpoint_tx: endpoint_data_io.event_tx,
+            inbound_endpoint_rx: Arc::new(Mutex::new(endpoint_data_io.event_rx)),
             peer_identity_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
             shutdown_tx: Some(shutdown_tx),
             task,
-            event_task,
         })
     }
 }
@@ -220,58 +215,6 @@ fn spawn_node_task(
     })
 }
 
-fn spawn_endpoint_event_task(
-    mut endpoint_events: mpsc::Receiver<NodeEndpointEvent>,
-    inbound_endpoint_tx: mpsc::Sender<FipsEndpointMessage>,
-) -> JoinHandle<()> {
-    // Relay events from the node task's outbound endpoint queue to the
-    // application's inbound queue. This is a hot-path relay for every
-    // received tunnel packet; drain in bursts after the recv() await so
-    // we pay one scheduler hop per ready-batch instead of per packet.
-    tokio::spawn(async move {
-        loop {
-            let Some(event) = endpoint_events.recv().await else {
-                break;
-            };
-            if forward_event(&inbound_endpoint_tx, event).await.is_err() {
-                break;
-            }
-            // Drain ready follow-on events without yielding, capped to
-            // keep one busy peer from starving the runtime.
-            let mut drained = 0;
-            while drained < 64 {
-                match endpoint_events.try_recv() {
-                    Ok(event) => {
-                        if forward_event(&inbound_endpoint_tx, event).await.is_err() {
-                            return;
-                        }
-                        drained += 1;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-    })
-}
-
-async fn forward_event(
-    inbound_endpoint_tx: &mpsc::Sender<FipsEndpointMessage>,
-    event: NodeEndpointEvent,
-) -> Result<(), mpsc::error::SendError<FipsEndpointMessage>> {
-    let NodeEndpointEvent::Data {
-        source_node_addr,
-        source_npub,
-        payload,
-    } = event;
-    inbound_endpoint_tx
-        .send(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
-            data: payload,
-        })
-        .await
-}
-
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
     npub: String,
@@ -281,8 +224,18 @@ pub struct FipsEndpoint {
     outbound_packets: mpsc::Sender<Vec<u8>>,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
-    inbound_endpoint_tx: mpsc::Sender<FipsEndpointMessage>,
-    inbound_endpoint_rx: Arc<Mutex<mpsc::Receiver<FipsEndpointMessage>>>,
+    /// In-process loopback sender — `send()` to our own npub injects an
+    /// event into the same queue without going through the wire/encrypt
+    /// path. The node's rx_loop also sends into this channel directly
+    /// (it holds a clone of this sender) so there is no per-packet relay
+    /// task between the node task and `recv()`.
+    inbound_endpoint_tx: mpsc::UnboundedSender<NodeEndpointEvent>,
+    /// Unbounded receiver. Was previously fed by a per-packet relay task
+    /// that translated `NodeEndpointEvent::Data` into `FipsEndpointMessage`
+    /// across an additional bounded mpsc; collapsed into a single channel
+    /// — the translation happens inline in `recv()` and the second hop
+    /// (with its scheduler wake per packet) is gone.
+    inbound_endpoint_rx: Arc<Mutex<mpsc::UnboundedReceiver<NodeEndpointEvent>>>,
     /// Cache of resolved PeerIdentity by npub string. Avoids the per-packet
     /// secp256k1 EC point parse that `PeerIdentity::from_npub` performs;
     /// without this cache the bulk-data send hot path spends ~10–30% of CPU
@@ -290,7 +243,6 @@ pub struct FipsEndpoint {
     peer_identity_cache: std::sync::Mutex<std::collections::HashMap<String, PeerIdentity>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<Result<(), NodeError>>,
-    event_task: JoinHandle<()>,
 }
 
 impl FipsEndpoint {
@@ -340,27 +292,25 @@ impl FipsEndpoint {
         let data = data.into();
         if remote_npub == self.npub {
             self.inbound_endpoint_tx
-                .send(FipsEndpointMessage {
+                .send(NodeEndpointEvent::Data {
                     source_node_addr: self.node_addr,
                     source_npub: Some(self.npub.clone()),
-                    data,
+                    payload: data,
                 })
-                .await
                 .map_err(|_| FipsEndpointError::Closed)?;
             return Ok(());
         }
 
         let remote = self.resolve_peer_identity(&remote_npub)?;
 
-        // Create a oneshot we never await; the node task's send/Err path will
-        // fire into a dropped receiver, which is fine — the result is already
-        // discarded inside handle_endpoint_data_command via `let _ = ...`.
-        let (response_tx, _response_rx) = oneshot::channel();
+        // Fire-and-forget: caller already drops the result, so skip
+        // the per-packet `oneshot::channel()` allocation entirely.
+        // The node task's `SendOneway` arm runs the same code path as
+        // `Send` but without writing the result into a oneshot.
         self.endpoint_commands
-            .send(NodeEndpointCommand::Send {
+            .send(NodeEndpointCommand::SendOneway {
                 remote,
                 payload: data,
-                response_tx,
             })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -390,8 +340,125 @@ impl FipsEndpoint {
     }
 
     /// Receive the next source-attributed endpoint data message.
+    ///
+    /// Translation from the internal `NodeEndpointEvent::Data` shape to
+    /// the public `FipsEndpointMessage` shape happens inline here — the
+    /// rx_loop pushes directly onto this channel, no relay task in
+    /// between, no extra cross-task hop per packet.
     pub async fn recv(&self) -> Option<FipsEndpointMessage> {
-        self.inbound_endpoint_rx.lock().await.recv().await
+        let event = self.inbound_endpoint_rx.lock().await.recv().await?;
+        let NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } = event;
+        Some(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
+    }
+
+    /// Synchronous blocking send — parks the calling **OS thread** on
+    /// the FIPS endpoint command channel until the runtime accepts
+    /// the send. MUST be called only from a thread spawned via
+    /// `std::thread::spawn`, not from inside a tokio runtime.
+    ///
+    /// Companion to [`Self::blocking_recv`] for control-frame replies
+    /// (e.g. responding to a Ping with a Pong) issued from the
+    /// dedicated TUN-write thread. Failures are returned via
+    /// `FipsEndpointError::Closed` if the runtime has stopped.
+    pub fn blocking_send(
+        &self,
+        remote_npub: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let remote_npub = remote_npub.into();
+        let data = data.into();
+        if remote_npub == self.npub {
+            self.inbound_endpoint_tx
+                .send(NodeEndpointEvent::Data {
+                    source_node_addr: self.node_addr,
+                    source_npub: Some(self.npub.clone()),
+                    payload: data,
+                })
+                .map_err(|_| FipsEndpointError::Closed)?;
+            return Ok(());
+        }
+        let remote = self.resolve_peer_identity(&remote_npub)?;
+        let (response_tx, _response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .blocking_send(NodeEndpointCommand::Send {
+                remote,
+                payload: data,
+                response_tx,
+            })
+            .map_err(|_| FipsEndpointError::Closed)?;
+        Ok(())
+    }
+
+    /// Synchronous blocking receive — parks the calling **OS thread**
+    /// on the channel until an event arrives or the channel closes.
+    ///
+    /// MUST NOT be called from inside a tokio runtime; use this only
+    /// from a thread spawned via `std::thread::spawn` so the tokio
+    /// scheduler doesn't deadlock.
+    ///
+    /// The motivation is the bench's CLI receive task: when run as a
+    /// regular tokio task each `recv().await` is a full task-wake on
+    /// the runtime (~1–3 µs scheduler bookkeeping), and at 113 kpps
+    /// that's ~10–30% of one core spent in plumbing the wake-up
+    /// rather than writing the packet to TUN. A dedicated OS thread
+    /// blocked on the channel via `blocking_recv` parks on a futex
+    /// directly — the wake is a single futex_wake() with no scheduler
+    /// involvement, an order of magnitude cheaper.
+    pub fn blocking_recv(&self) -> Option<FipsEndpointMessage> {
+        let mut rx = self.inbound_endpoint_rx.blocking_lock();
+        let event = rx.blocking_recv()?;
+        let NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } = event;
+        Some(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
+    }
+
+    /// Non-blocking receive — returns the next ready endpoint message
+    /// if one is queued, otherwise `None`. Pair with `recv()` to drain
+    /// follow-on packets without paying a scheduler wake per packet:
+    ///
+    /// ```ignore
+    /// // wake on the first packet, then drain everything ready
+    /// while let Some(msg) = endpoint.recv().await { process(msg); }
+    /// while let Some(msg) = endpoint.try_recv() { process(msg); }
+    /// ```
+    ///
+    /// On the bench's FIPS-tunnel receive path the kernel UDP socket
+    /// delivers packets in `recvmmsg`-sized bursts, so after a `.recv()`
+    /// await there are typically 5–30 packets queued waiting. Draining
+    /// them inline with `try_recv` saves N-1 scheduler hops per burst
+    /// at line rate, freeing the consumer task to spend its time on
+    /// the TUN write syscall instead of cross-task plumbing.
+    ///
+    /// Returns `None` if the channel is empty, closed, or briefly
+    /// contested by another consumer.
+    pub fn try_recv(&self) -> Option<FipsEndpointMessage> {
+        let mut rx = self.inbound_endpoint_rx.try_lock().ok()?;
+        let event = rx.try_recv().ok()?;
+        let NodeEndpointEvent::Data {
+            source_node_addr,
+            source_npub,
+            payload,
+        } = event;
+        Some(FipsEndpointMessage {
+            source_node_addr,
+            source_npub,
+            data: payload,
+        })
     }
 
     /// Snapshot authenticated peers known by the endpoint.
@@ -429,9 +496,7 @@ impl FipsEndpoint {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
-        let task_result = self.task.await;
-        let _ = self.event_task.await;
-        task_result??;
+        self.task.await??;
         Ok(())
     }
 }

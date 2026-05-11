@@ -1,5 +1,6 @@
 //! RX event loop and message handlers.
 
+mod connected_udp;
 pub(crate) mod discovery;
 mod dispatch;
 mod encrypted;

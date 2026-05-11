@@ -82,14 +82,35 @@ impl ReceivedPacket {
 }
 
 /// Channel sender for received packets.
-pub type PacketTx = tokio::sync::mpsc::Sender<ReceivedPacket>;
+///
+/// Uses tokio's unbounded mpsc so that per-packet send is a wait-free
+/// linked-list push instead of a semaphore acquisition + `.await`. At
+/// multi-Gbps the bounded variant's per-send cost (semaphore CAS +
+/// waker dance, even on the fast path) is one of the dominant items
+/// on the receive hot path; recvmmsg drains the kernel queue in
+/// 32-packet bursts and we want to dump those into the channel as
+/// fast as possible without each push incurring scheduler bookkeeping.
+///
+/// Backpressure is provided by the kernel UDP receive buffer (the
+/// transport's `recvmmsg` is the only producer for inbound packets);
+/// if the rx_loop falls behind, packets queue up here and the kernel
+/// drops new arrivals once its buffer fills. Memory growth is
+/// effectively bounded because the same rx_loop that consumes this
+/// channel is what runs `process_packet` — if it stalls, recvmmsg
+/// can't run either since they share the runtime.
+pub type PacketTx = tokio::sync::mpsc::UnboundedSender<ReceivedPacket>;
 
 /// Channel receiver for received packets.
-pub type PacketRx = tokio::sync::mpsc::Receiver<ReceivedPacket>;
+pub type PacketRx = tokio::sync::mpsc::UnboundedReceiver<ReceivedPacket>;
 
-/// Create a packet channel with the given buffer size.
-pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
-    tokio::sync::mpsc::channel(buffer)
+/// Create a packet channel.
+///
+/// The `buffer` argument is kept for API stability with previous
+/// versions of this module (and so call sites don't have to be
+/// touched) but is ignored — the channel is unbounded. See [`PacketTx`]
+/// for the rationale.
+pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
+    tokio::sync::mpsc::unbounded_channel()
 }
 
 // ============================================================================
@@ -410,6 +431,30 @@ impl TransportAddr {
     /// Create a transport address from a string.
     pub fn from_string(s: &str) -> Self {
         Self(s.as_bytes().to_vec())
+    }
+
+    /// Create a transport address from a `SocketAddr` without going
+    /// through `to_string()`.
+    ///
+    /// The standard path is `from_string(&addr.to_string())`, which
+    /// allocates a `String` for the formatted address and then copies
+    /// its bytes into a fresh `Vec<u8>` — two heap allocations per
+    /// inbound packet on the UDP receive hot path. At line rate that's
+    /// a few percent of one core in malloc/free. This variant writes
+    /// the `SocketAddr::Display` representation directly into a
+    /// `Vec<u8>` via `std::io::Write`, halving the alloc count and
+    /// skipping the intermediate `String` materialisation entirely.
+    pub fn from_socket_addr(addr: std::net::SocketAddr) -> Self {
+        use std::io::Write;
+        // Pre-size to fit `[ipv6_lit]:65535` (47 + brackets + colon +
+        // port digits ≈ 56 bytes worst case) so we don't re-grow the
+        // buffer mid-format on common addresses.
+        let mut buf = Vec::with_capacity(56);
+        // The `write!` macro on `&mut Vec<u8>` cannot fail (Vec's
+        // `Write` impl is infallible for in-memory buffers), so the
+        // expect is for shape only.
+        write!(&mut buf, "{addr}").expect("Vec<u8>::write_fmt is infallible");
+        Self(buf)
     }
 
     /// Get the raw bytes.
@@ -1562,7 +1607,7 @@ mod tests {
             vec![1, 2, 3],
         );
 
-        tx.send(packet.clone()).await.unwrap();
+        tx.send(packet.clone()).unwrap();
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.data, vec![1, 2, 3]);
