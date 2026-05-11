@@ -587,6 +587,12 @@ mod platform {
         inner: Arc<AsyncFd<UdpRawSocket>>,
     }
 
+    impl AsRawFd for AsyncUdpSocket {
+        fn as_raw_fd(&self) -> RawFd {
+            self.inner.get_ref().as_raw_fd()
+        }
+    }
+
     impl AsyncUdpSocket {
         /// Send a payload to a destination address.
         ///

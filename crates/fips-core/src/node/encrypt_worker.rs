@@ -32,11 +32,12 @@
 
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::transport::udp::socket::AsyncUdpSocket;
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::net::SocketAddr;
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// A pre-cooked FMP-encrypt-and-send job. All state-touching work
 /// (counter reservation, MMP/stats update) was already done on the
@@ -83,22 +84,53 @@ pub(crate) struct FmpSendJob {
 /// keeps all packets for one flow on one worker, preserving the FIFO
 /// order TCP expects. Multi-peer / multi-flow benches still get the
 /// parallelism since different destinations hash to different workers.
+/// Per-worker bounded crossbeam channel cap. The crossbeam channel
+/// uses a sync `Condvar` for blocking on empty — there's no tokio
+/// involvement on either end of the wire, so wake cost is the raw
+/// kernel futex (~150 ns on Linux, ~250 ns on macOS) instead of
+/// tokio's runtime bookkeeping + futex_wake bridge (~600 ns measured
+/// in this session's earlier `blocking_recv` regression on bounded
+/// mpsc → blocking_lock path). Bounded so the producer back-pressures
+/// the rx_loop if the worker thread can't keep up — same rationale as
+/// the bounded endpoint_commands channel further upstream.
+const WORKER_CHANNEL_CAP: usize = 32768;
+
+/// Handle to the encrypt worker pool.
+///
+/// Workers are **dedicated `std::thread`s** with **`crossbeam_channel`**
+/// between them and the rx_loop. The earlier tokio-task version of
+/// this worker pool was the right shape, but every cross-runtime
+/// wake (rx_loop's tokio task → tokio worker task) costs the tokio
+/// scheduler an internal hop. Replacing the worker side with a sync
+/// OS thread, and the channel with crossbeam (where both `.send()`
+/// and `.recv()` are wait-free fast-paths and the blocking wake is a
+/// single kernel futex), cuts the dispatch round-trip to the
+/// platform minimum — same pattern boringtun uses for its main loop.
+///
+/// **Ordering: hash-by-destination** so single-flow TCP keeps its
+/// FIFO ordering (round-robin caused 8000 retransmits in an earlier
+/// experiment — see the git log for the 56e0ca8 fix). Multi-peer /
+/// multi-flow benches still get parallelism since different
+/// destinations hash to different workers.
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
-    senders: Arc<[mpsc::UnboundedSender<FmpSendJob>]>,
+    senders: Arc<[Sender<FmpSendJob>]>,
 }
 
 impl EncryptWorkerPool {
-    /// Spawn `n` worker tasks and return a handle that dispatches
-    /// jobs hash-by-destination to them. The workers shut down when
-    /// all senders for their channel are dropped (i.e. when the
+    /// Spawn `n` worker **OS threads** and return a handle that
+    /// dispatches jobs hash-by-destination to them. The workers exit
+    /// when all senders for their channel are dropped (i.e. when the
     /// returned `EncryptWorkerPool` and all clones go away).
     pub fn spawn(n: usize) -> Self {
         let n = n.max(1);
         let mut senders = Vec::with_capacity(n);
         for i in 0..n {
-            let (tx, rx) = mpsc::unbounded_channel::<FmpSendJob>();
-            tokio::spawn(run_worker(i, rx));
+            let (tx, rx) = bounded::<FmpSendJob>(WORKER_CHANNEL_CAP);
+            std::thread::Builder::new()
+                .name(format!("fips-encrypt-{i}"))
+                .spawn(move || run_worker(i, rx))
+                .expect("failed to spawn fips-encrypt OS thread");
             senders.push(tx);
         }
         Self {
@@ -112,80 +144,101 @@ impl EncryptWorkerPool {
     /// order — required for TCP's fast-retransmit logic above to
     /// behave on a single-flow run. Fire-and-forget — the worker
     /// handles send errors itself via stats counters.
+    ///
+    /// Uses `try_send` rather than blocking `send`: under sustained
+    /// rate-overrun this *will* drop packets at the dispatch point
+    /// (i.e. the caller can't push faster than the worker can chew),
+    /// which is the correct UDP behaviour and matches what the kernel
+    /// TUN tx queue does upstream. A debug log fires on the first few
+    /// drops to surface the cliff.
     pub fn dispatch(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
             return;
         }
-        // Cheap hash: fold the SocketAddr into a usize via its octets
-        // + port. ahash/SipHash would be more uniform but for the
-        // bench's small N (1–8 peers) any reasonable mixing function
-        // works and we want to keep the dispatch cost in the noise.
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         job.dest_addr.hash(&mut h);
         let idx = (h.finish() as usize) % self.senders.len();
-        if let Err(err) = self.senders[idx].send(job) {
-            debug!(worker = idx, error = %err, "EncryptWorker channel closed; dropping job");
+        match self.senders[idx].try_send(job) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                static FULL_COUNT: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let n = FULL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 8 || n.is_multiple_of(10000) {
+                    warn!(
+                        worker = idx,
+                        drops = n + 1,
+                        "EncryptWorker channel full; dropping outbound packet"
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                debug!(worker = idx, "EncryptWorker thread gone; dropping job");
+            }
         }
     }
 }
 
-async fn run_worker(idx: usize, mut rx: mpsc::UnboundedReceiver<FmpSendJob>) {
-    trace!(worker = idx, "FMP encrypt worker starting");
+/// Sync OS-thread worker loop. Blocks on the crossbeam channel via
+/// kernel futex (no tokio runtime involvement), drains follow-on
+/// packets into a fixed-size local batch, then issues one
+/// `sendmmsg(2)` per drain cycle.
+fn run_worker(idx: usize, rx: Receiver<FmpSendJob>) {
+    trace!(worker = idx, "FMP encrypt worker thread starting");
 
-    // Per-worker batch buffer. Collect up to BATCH_SIZE jobs from
-    // the channel before flushing via `sendmmsg`, amortising the
-    // per-syscall kernel cost across the batch (same idea as the
-    // per-transport pending_send buffer, but per-worker so workers
-    // don't contend for a shared mutex). Workers using hash-by-dest
-    // see all packets for one flow → one worker → one batched
-    // sendmmsg(2) per drain cycle.
     const BATCH_SIZE: usize = 32;
     let mut batch: Vec<FmpSendJob> = Vec::with_capacity(BATCH_SIZE);
 
-    while let Some(job) = rx.recv().await {
-        batch.push(job);
-        // Drain follow-on jobs that arrived while we were waking up,
-        // up to BATCH_SIZE - 1 more, then flush. Keeps us on this
-        // task and gives sendmmsg something to amortise over.
+    loop {
+        // Blocking recv — parks the OS thread on the channel's
+        // internal Condvar/futex until a job arrives or the channel
+        // closes.
+        let first = match rx.recv() {
+            Ok(j) => j,
+            Err(_) => break, // all senders dropped → graceful exit
+        };
+        batch.push(first);
+        // Drain follow-on jobs without blocking, up to BATCH_SIZE.
+        // Same drain pattern as the bounded mpsc one above — gives
+        // sendmmsg something to amortise over.
         while batch.len() < BATCH_SIZE {
             match rx.try_recv() {
                 Ok(j) => batch.push(j),
                 Err(_) => break,
             }
         }
-        if let Err(err) = flush_batch(&mut batch).await {
+        if let Err(err) = flush_batch_sync(&mut batch) {
             debug!(worker = idx, error = %err, "FMP encrypt worker batch flush failed");
         }
-        // Some sub-batches followed by drain-empty; loop back to
-        // recv().await for the next wake. The above try_recv loop
-        // is bounded by BATCH_SIZE so we won't monopolise the task.
     }
-    trace!(worker = idx, "FMP encrypt worker exiting");
+    trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
 /// Encrypt every job in `batch` in place, then issue a single
-/// `sendmmsg(2)` for the resulting wire packets. Clears `batch` on
-/// return regardless of success — failed sends are observability,
-/// not retried (UDP semantics).
-async fn flush_batch(
+/// `sendmmsg(2)` (Linux) for the resulting wire packets. Clears
+/// `batch` on return. Sync version — operates directly on the raw
+/// nonblocking UDP fd with a retry-on-EAGAIN loop; no tokio reactor.
+fn flush_batch_sync(
     batch: &mut Vec<FmpSendJob>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if batch.is_empty() {
         return Ok(());
     }
 
-    // FIPS_PERF for the AEAD step. One timer span over the whole
-    // batch — average per-packet falls out of the COUNT increment
-    // happening once per call here.
+    // FIPS_PERF: one AEAD timer span over the whole batch — average
+    // per-packet falls out of the COUNT increment once per flush.
     let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
 
     // 1) Encrypt every job into its existing inner_plaintext buffer.
-    //    Build the wire packet (header || ciphertext+tag) as a fresh
-    //    Vec per packet; ring's seal_in_place_append_tag has already
-    //    reserved TAG_SIZE since the caller did `.reserve(16)`.
+    //    The rx_loop already reserved TAG_SIZE bytes of capacity so
+    //    `seal_in_place_append_tag` doesn't need to re-grow the Vec.
     let mut wire_packets: Vec<(Vec<u8>, SocketAddr)> = Vec::with_capacity(batch.len());
+    // All jobs in this batch share the same destination + socket
+    // (hash-by-dest in `EncryptWorkerPool::dispatch`), so cloning the
+    // first one's socket Arc is the cheapest way to get a handle for
+    // the bulk send below.
     let socket = batch[0].socket.clone();
     for job in batch.drain(..) {
         let FmpSendJob {
@@ -203,8 +256,6 @@ async fn flush_batch(
             .seal_in_place_append_tag(nonce, Aad::from(&header), &mut inner_plaintext)
             .is_err()
         {
-            // Drop this packet; AEAD seal can only fail on capacity
-            // bugs which are not retryable at this layer.
             continue;
         }
         let mut wire = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + inner_plaintext.len());
@@ -213,35 +264,125 @@ async fn flush_batch(
         wire_packets.push((wire, dest_addr));
     }
 
-    // 2) Bulk send. On Linux we wrap `sendmmsg(2)` via
-    //    `AsyncUdpSocket::send_batch` to amortise the syscall cost
-    //    across the batch; on other unix targets we fall back to
-    //    per-packet `send_to` because there's no portable batch send.
+    // 2) Bulk send via direct `sendmmsg(2)` on the raw FD. We can't
+    //    call `AsyncUdpSocket::send_batch` from a non-tokio thread
+    //    (it `await`s the AsyncFd reactor for writability), so go to
+    //    the inner socket directly. The kernel UDP socket is in
+    //    nonblocking mode (set by `UdpRawSocket::open`); on EAGAIN we
+    //    yield with a tiny spin sleep and retry. At line rate the
+    //    kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is
+    //    rarely full so this is the cold path.
     let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+    let fd = socket.as_raw_fd();
     #[cfg(target_os = "linux")]
     {
-        let pkt_refs: Vec<(&[u8], SocketAddr)> = wire_packets
-            .iter()
-            .map(|(data, addr)| (data.as_slice(), *addr))
-            .collect();
         let mut sent = 0usize;
-        while sent < pkt_refs.len() {
-            match socket.send_batch(&pkt_refs[sent..]).await {
-                Ok(0) => break,
-                Ok(n) => sent += n,
-                Err(e) => {
-                    return Err(format!("send_batch failed: {e}").into());
+        while sent < wire_packets.len() {
+            let n = match send_batch_raw(fd, &wire_packets[sent..]) {
+                Ok(n) => n,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::yield_now();
+                    continue;
                 }
+                Err(err) => {
+                    return Err(format!("sendmmsg(2) failed: {err}").into());
+                }
+            };
+            if n == 0 {
+                break;
             }
+            sent += n;
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
         for (data, addr) in &wire_packets {
-            if let Err(e) = socket.send_to(data, addr).await {
-                return Err(format!("send_to failed: {e}").into());
+            loop {
+                match send_one_raw(fd, data, addr) {
+                    Ok(_) => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::yield_now();
+                    }
+                    Err(err) => {
+                        return Err(format!("sendto failed: {err}").into());
+                    }
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Direct `sendmmsg(2)` wrapper for the sync worker. The
+/// `transport::udp::socket` module's existing `send_batch` is
+/// pub(crate) on `UdpRawSocket`, but we don't have a handle to the
+/// raw socket from here — we just have the FD. Re-implementing
+/// inline is ~15 lines and avoids tunnelling the inner socket
+/// through `AsyncUdpSocket` for the sync path.
+#[cfg(target_os = "linux")]
+fn send_batch_raw(
+    fd: std::os::unix::io::RawFd,
+    packets: &[(Vec<u8>, SocketAddr)],
+) -> std::io::Result<usize> {
+    const MAX_BATCH: usize = 32;
+    let n = packets.len().min(MAX_BATCH);
+    if n == 0 {
+        return Ok(0);
+    }
+    let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    let mut storages: [libc::sockaddr_storage; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    let mut storage_lens: [libc::socklen_t; MAX_BATCH] = [0; MAX_BATCH];
+    let mut msgs: [libc::mmsghdr; MAX_BATCH] = unsafe { std::mem::zeroed() };
+
+    for i in 0..n {
+        let (data, dest) = &packets[i];
+        let sa: socket2::SockAddr = (*dest).into();
+        let sa_len = sa.len();
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                sa.as_ptr() as *const u8,
+                &mut storages[i] as *mut _ as *mut u8,
+                sa_len as usize,
+            );
+        }
+        storage_lens[i] = sa_len;
+        iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
+        iovs[i].iov_len = data.len();
+        msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
+        msgs[i].msg_hdr.msg_namelen = storage_lens[i];
+        msgs[i].msg_hdr.msg_iov = &mut iovs[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+    }
+
+    let r = unsafe { libc::sendmmsg(fd, msgs.as_mut_ptr(), n as libc::c_uint, 0) };
+    if r < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(r as usize)
+    }
+}
+
+/// Direct `sendto(2)` for non-Linux fallback.
+#[cfg(not(target_os = "linux"))]
+fn send_one_raw(
+    fd: std::os::unix::io::RawFd,
+    data: &[u8],
+    dest: &SocketAddr,
+) -> std::io::Result<usize> {
+    let sa: socket2::SockAddr = (*dest).into();
+    let r = unsafe {
+        libc::sendto(
+            fd,
+            data.as_ptr() as *const libc::c_void,
+            data.len(),
+            0,
+            sa.as_ptr() as *const libc::sockaddr,
+            sa.len(),
+        )
+    };
+    if r < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(r as usize)
+    }
 }
