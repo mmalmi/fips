@@ -174,7 +174,21 @@ pub struct ExternalPacketIo {
 #[derive(Debug)]
 pub(crate) struct EndpointDataIo {
     /// Send endpoint data commands into the node RX loop.
-    pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
+    ///
+    /// Unbounded so the bench's per-packet `mesh_send_task` →
+    /// `FipsEndpoint::send` → `endpoint_commands.send(...).await` push
+    /// is a wait-free linked-list append rather than a bounded mpsc
+    /// semaphore round-trip. At sustained >1.5 Gbps single-stream the
+    /// bounded variant was the next bottleneck after kernel TUN qlen
+    /// was raised — the rx_loop drains ~256 commands per scheduler
+    /// tick and the producer used to stall on the 1024-permit cap when
+    /// the drain ran slightly behind, which then back-propagated to
+    /// the CLI's TUN reader and overflowed the kernel TUN tx queue
+    /// (visible as `utun100: ... Transmit drop=...` in /proc/net/dev).
+    /// Backpressure is naturally bounded — the kernel TUN tx queue is
+    /// the only producer for inbound to this channel; if the rx_loop
+    /// stalls, the kernel TUN drops upstream and the chain self-paces.
+    pub(crate) command_tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointCommand>,
     /// Receive endpoint data delivered by FIPS sessions.
     ///
     /// Unbounded so the rx_loop's send on inbound packet delivery is a
@@ -478,7 +492,7 @@ pub struct Node {
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
     /// Endpoint data command receiver used by embedded/no-daemon integrations.
-    endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
+    endpoint_command_rx: Option<tokio::sync::mpsc::UnboundedReceiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
     endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
     /// TUN reader thread handle.
@@ -2184,8 +2198,8 @@ impl Node {
             )));
         }
 
-        let capacity = capacity.max(1);
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(capacity);
+        let _ = capacity.max(1);
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
         // Inbound endpoint-data events use an unbounded channel — see
         // `EndpointDataIo::event_rx` docs for the rationale (kills the
         // per-packet semaphore + the cross-task relay task that used to
