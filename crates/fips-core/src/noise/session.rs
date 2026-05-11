@@ -185,22 +185,23 @@ impl NoiseSession {
         self.recv_cipher.cipher_clone()
     }
 
-    /// Snapshot the current replay-window state into a fresh
-    /// `Arc<Mutex<ReplayWindow>>` that a worker can take ownership of.
+    /// Snapshot the current replay-window state as an **owned**
+    /// `ReplayWindow` value, for hand-off to a shard-owning decrypt
+    /// worker.
     ///
-    /// **This does NOT share state with the caller.** Once a worker
-    /// owns the returned `Arc<Mutex<...>>`, it must be the sole
-    /// authority for replay-checking inbound packets on this session
-    /// — the local `self.replay_window` is no longer the source of
-    /// truth. Used by the off-task decrypt worker pool: at session
-    /// hand-off, the worker is given a clone of the recv cipher plus
-    /// this snapshot and becomes responsible for replay protection.
-    /// The session's local window stays around for rekey / drain-
-    /// window paths, both of which take rare slow paths.
-    pub fn recv_replay_snapshot_shared(
-        &self,
-    ) -> std::sync::Arc<std::sync::Mutex<crate::noise::ReplayWindow>> {
-        std::sync::Arc::new(std::sync::Mutex::new(self.replay_window.clone()))
+    /// **The worker becomes the sole authority for replay protection
+    /// on this session after this snapshot.** The local
+    /// `self.replay_window` is no longer the source of truth — it
+    /// only matters for rare-slow-path uses (rekey, drain-window
+    /// fallback). The worker keeps its copy in its own
+    /// thread-local `HashMap`, so there's no Mutex / no Arc / no
+    /// sharing — direct `&mut` access on every packet.
+    ///
+    /// (Previously this returned an `Arc<Mutex<ReplayWindow>>` for
+    /// concurrent access; the data-plane shard restructure now hands
+    /// the worker exclusive ownership instead.)
+    pub fn recv_replay_snapshot_owned(&self) -> crate::noise::ReplayWindow {
+        self.replay_window.clone()
     }
 
     /// Clone the send-side AEAD instance, for off-task encrypt.

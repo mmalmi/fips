@@ -154,34 +154,32 @@ impl Node {
         // also populates the cache so subsequent packets take the
         // worker path.
         let cache_key = (packet.transport_id, header.receiver_idx.as_u32());
+        // Off-task fast path: build a slim `DecryptJob` (no replay /
+        // cipher fields — those are owned by the worker itself in its
+        // shard-local `HashMap`, keyed by `cache_key`) and dispatch.
+        // If the worker hasn't received `RegisterSession` for this
+        // session yet (very first packet), it will drop the job and
+        // we'll register on the legacy path below — subsequent packets
+        // take the fast path.
         if let (Some(workers), Some(endpoint_event_tx_ref)) =
             (self.decrypt_workers.as_ref().cloned(), self.endpoint_event_tx.as_ref())
+            && self.decrypt_registered_sessions.contains(&cache_key)
         {
-            let cache_hit = {
-                let cache = self.decrypt_session_cache.read().unwrap();
-                cache.get(&cache_key).cloned()
+            let job = super::super::decrypt_worker::DecryptJob {
+                packet_data: packet.data,
+                cache_key,
+                _transport_id: packet.transport_id,
+                _remote_addr: packet.remote_addr,
+                timestamp_ms: packet.timestamp_ms,
+                source_node_addr: node_addr,
+                fmp_counter: header.counter,
+                fmp_header: header.header_bytes,
+                fmp_ciphertext_offset: header.ciphertext_offset(),
+                endpoint_event_tx: endpoint_event_tx_ref.clone(),
+                fallback_tx: self.decrypt_fallback_tx.clone(),
             };
-            if let Some(state) = cache_hit {
-                let job = super::super::decrypt_worker::DecryptJob {
-                    packet_data: packet.data,
-                    _transport_id: packet.transport_id,
-                    _remote_addr: packet.remote_addr,
-                    timestamp_ms: packet.timestamp_ms,
-                    source_node_addr: node_addr,
-                    source_npub: state.source_npub.clone(),
-                    fmp_cipher: state.fmp_cipher.clone(),
-                    fmp_counter: header.counter,
-                    fmp_header: header.header_bytes,
-                    fmp_ciphertext_offset: header.ciphertext_offset(),
-                    fmp_replay: state.fmp_replay.clone(),
-                    fsp_cipher: state.fsp_cipher.clone(),
-                    fsp_replay: state.fsp_replay.clone(),
-                    endpoint_event_tx: endpoint_event_tx_ref.clone(),
-                    fallback_tx: self.decrypt_fallback_tx.clone(),
-                };
-                workers.dispatch(job);
-                return;
-            }
+            workers.dispatch_job(job);
+            return;
         }
 
         // `packet` is owned by this function; take ownership of its data
@@ -310,26 +308,19 @@ impl Node {
             FmpFrameOutcome::Authentic { plaintext }
         };
 
-        // After the legacy path runs once successfully, populate the
-        // off-task decrypt cache so subsequent packets on this session
-        // can take the worker path. One-way transition: the worker
-        // becomes the sole replay-window writer after this point.
+        // After the legacy path runs once successfully, hand
+        // ownership of the session's recv state to the assigned
+        // shard worker. One-way transition: the worker becomes the
+        // sole replay-window writer after this point.
         let authentic_first_time =
             matches!(outcome, FmpFrameOutcome::AuthenticInPlace { .. } | FmpFrameOutcome::Authentic { .. });
-        if authentic_first_time && self.decrypt_workers.is_some() {
-            let already_cached = self
-                .decrypt_session_cache
-                .read()
-                .unwrap()
-                .contains_key(&cache_key);
-            if !already_cached {
-                if let Some(state) = self.build_worker_session_state(&node_addr) {
-                    self.decrypt_session_cache
-                        .write()
-                        .unwrap()
-                        .insert(cache_key, std::sync::Arc::new(state));
-                }
-            }
+        if authentic_first_time
+            && let Some(workers) = self.decrypt_workers.as_ref().cloned()
+            && !self.decrypt_registered_sessions.contains(&cache_key)
+            && let Some(state) = self.build_owned_session_state(&node_addr)
+        {
+            workers.register_session(cache_key, state);
+            self.decrypt_registered_sessions.insert(cache_key);
         }
 
         match outcome {
@@ -374,28 +365,29 @@ impl Node {
         }
     }
 
-    /// Build the cached recv state used by the off-task decrypt
-    /// worker. Returns `None` if the peer is gone, the session isn't
-    /// established yet, or the FSP session for this peer hasn't been
-    /// brought up (FSP runs over FMP after a separate handshake).
-    /// Called lazily on the first authenticated packet for a session.
-    fn build_worker_session_state(
+    /// Build the **owned** recv state handed off to the decrypt
+    /// shard worker on first authentic packet. Returns `None` if the
+    /// peer is gone, the session isn't established yet, or the FSP
+    /// session for this peer hasn't been brought up (FSP runs over
+    /// FMP after a separate handshake). After this call the worker
+    /// is the sole replay-window writer for the session.
+    fn build_owned_session_state(
         &self,
         node_addr: &crate::NodeAddr,
-    ) -> Option<crate::node::decrypt_worker::WorkerSessionState> {
+    ) -> Option<crate::node::decrypt_worker::OwnedSessionState> {
         let peer = self.peers.get(node_addr)?;
         let fmp_session = peer.noise_session()?;
         let fmp_cipher = fmp_session.recv_cipher_clone()?;
-        let fmp_replay = fmp_session.recv_replay_snapshot_shared();
+        let fmp_replay = fmp_session.recv_replay_snapshot_owned();
         let session_entry = self.sessions.get(node_addr)?;
         let fsp_session = match session_entry.state() {
             crate::node::session::EndToEndState::Established(s) => s,
             _ => return None,
         };
         let fsp_cipher = fsp_session.recv_cipher_clone()?;
-        let fsp_replay = fsp_session.recv_replay_snapshot_shared();
+        let fsp_replay = fsp_session.recv_replay_snapshot_owned();
         let source_npub = self.npub_for_node_addr(node_addr);
-        Some(crate::node::decrypt_worker::WorkerSessionState {
+        Some(crate::node::decrypt_worker::OwnedSessionState {
             fmp_cipher,
             fmp_replay,
             fsp_cipher,

@@ -506,20 +506,15 @@ pub struct Node {
     /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
     /// `encrypt_workers` for the receive side.
     decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Per-session recv state cache for the decrypt worker pool.
-    /// Populated at session-establishment time with cloned ciphers
-    /// and shared `Arc<Mutex<ReplayWindow>>`. Worker pulls this from
-    /// the cache by `(transport_id, receiver_idx)` when building a
-    /// `DecryptJob`, so the replay-window state is stable across
-    /// packets in the same session.
-    decrypt_session_cache: std::sync::Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<
-                (TransportId, u32),
-                std::sync::Arc<decrypt_worker::WorkerSessionState>,
-            >,
-        >,
-    >,
+    /// Set of sessions that have been registered with the decrypt
+    /// shard worker pool. Used by rx_loop to decide between fast-path
+    /// dispatch (worker owns the session) and legacy in-place decrypt
+    /// (worker doesn't have it yet). Per the data-plane restructure,
+    /// the worker owns its session state directly — there's no shared
+    /// `Arc<RwLock<HashMap>>` of cipher / replay state anymore, only
+    /// this set tracks **whether** the worker has been told about a
+    /// given session.
+    decrypt_registered_sessions: std::collections::HashSet<(TransportId, u32)>,
     /// Fallback channel: decrypt worker bounces non-fast-path packets
     /// (anything that's not bulk EndpointData) back here for rx_loop
     /// to handle via the legacy path. Drained by a new rx_loop arm.
@@ -747,9 +742,7 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_session_cache: std::sync::Arc::new(std::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            decrypt_registered_sessions: std::collections::HashSet::new(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
@@ -886,9 +879,7 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_session_cache: std::sync::Arc::new(std::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            decrypt_registered_sessions: std::collections::HashSet::new(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
