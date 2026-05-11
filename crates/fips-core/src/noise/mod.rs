@@ -436,6 +436,29 @@ impl CipherState {
         open(self.cipher.as_ref(), counter, aad, ciphertext)
     }
 
+    /// In-place variant of [`Self::decrypt_with_counter_and_aad`].
+    ///
+    /// On entry, `buf` holds `ciphertext + 16-byte AEAD tag`. On
+    /// successful return, `buf[..returned_len]` holds the plaintext.
+    /// Saves one heap alloc + memcpy per packet versus the by-value
+    /// variant — at multi-Gbps that's a real chunk of the rx_loop's
+    /// per-packet cost.
+    ///
+    /// If the cipher has no key (handshake-not-yet-complete fallback),
+    /// `buf` is treated as already-plaintext and the full length is
+    /// returned unchanged.
+    pub fn decrypt_with_counter_and_aad_in_place(
+        &self,
+        buf: &mut [u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<usize, NoiseError> {
+        if !self.has_key {
+            return Ok(buf.len());
+        }
+        open_in_place(self.cipher.as_ref(), counter, aad, buf)
+    }
+
     /// Build a ring `Nonce` from a counter value (8-byte LE counter, with
     /// 4-byte zero prefix to match the Noise/WireGuard wire format).
     /// Public-in-crate helper so the off-task encrypt/decrypt path on
@@ -519,6 +542,40 @@ pub(crate) fn open(
         .len();
     buf.truncate(plaintext_len);
     Ok(buf)
+}
+
+/// In-place variant of [`open`] — decrypts `buf` (which on entry holds
+/// `ciphertext + 16-byte AEAD tag`) into the same buffer, returning the
+/// plaintext length. The caller can then slice `&buf[..plaintext_len]`
+/// without any heap allocation.
+///
+/// Saves one ~1.4 KB heap alloc + memcpy per packet on the FMP / FSP
+/// receive hot path versus the by-value [`open`] variant (which
+/// internally does `ciphertext.to_vec()` before calling
+/// `open_in_place`). At 113 kpps that's ~150 MB/s of memory traffic
+/// dropped per AEAD step, and a meaningful chunk of the rx_loop's
+/// per-packet cost.
+///
+/// Returns `NoiseError::DecryptionFailed` if the AEAD tag check fails,
+/// the cipher has no key, or the buffer is shorter than the tag.
+pub(crate) fn open_in_place(
+    cipher: Option<&LessSafeKey>,
+    counter: u64,
+    aad: &[u8],
+    buf: &mut [u8],
+) -> Result<usize, NoiseError> {
+    let cipher = cipher.ok_or(NoiseError::DecryptionFailed)?;
+    if buf.len() < TAG_SIZE {
+        return Err(NoiseError::MessageTooShort {
+            expected: TAG_SIZE,
+            got: buf.len(),
+        });
+    }
+    let nonce = CipherState::counter_to_nonce(counter);
+    let plaintext = cipher
+        .open_in_place(nonce, Aad::from(aad), buf)
+        .map_err(|_| NoiseError::DecryptionFailed)?;
+    Ok(plaintext.len())
 }
 
 #[cfg(test)]

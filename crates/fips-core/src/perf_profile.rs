@@ -75,7 +75,7 @@ static COUNT: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
 
 /// True iff `FIPS_PERF=1` is set. Read once at startup so the
 /// per-packet check is a single relaxed atomic load.
-fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
         std::env::var("FIPS_PERF")

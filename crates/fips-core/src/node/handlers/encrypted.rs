@@ -22,11 +22,26 @@ const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
 /// then drops the borrow, looks at this enum, and runs whatever needs
 /// `&mut self` (decrypt-failure logging, dispatch).
 enum FmpFrameOutcome {
-    /// Packet decrypted successfully. `plaintext` still includes the
-    /// 4-byte inner timestamp prefix — the link-layer message body starts
-    /// at `plaintext[INNER_TIMESTAMP_LEN..]`. The timestamp itself is
-    /// consumed for MMP stats inside the same borrow that decrypted the
-    /// frame, so it doesn't need to escape.
+    /// Fast path: in-place AEAD decrypt landed the plaintext directly
+    /// inside `packet.data`. `plaintext_len` is the number of bytes of
+    /// plaintext (excluding the 16-byte AEAD tag) starting at
+    /// `packet.data[ciphertext_offset..]`. The link-message body
+    /// (after stripping the 4-byte inner timestamp) is at
+    /// `packet.data[ciphertext_offset + INNER_TIMESTAMP_LEN ..
+    /// ciphertext_offset + plaintext_len]`.
+    ///
+    /// Used when there is no previous (drain-window) session, which is
+    /// the steady state — rekey transitions are rare. Avoids the
+    /// ~1.4 KB heap alloc + memcpy per packet that the legacy
+    /// `Authentic { plaintext: Vec<u8> }` path required.
+    AuthenticInPlace { plaintext_len: usize },
+    /// Slow path: packet decrypted via the by-value AEAD path because
+    /// a previous session was present (drain-window after rekey). In
+    /// that case `open_in_place` would corrupt the ciphertext on a
+    /// failed current-session attempt, so we keep the legacy
+    /// allocate-and-copy decrypt to preserve the original bytes for a
+    /// previous-session retry. Same plaintext layout as the in-place
+    /// variant.
     Authentic { plaintext: Vec<u8> },
     /// Plaintext was too short for the inner header. Drop quietly.
     InnerHeaderTooShort { plaintext_len: usize },
@@ -113,8 +128,8 @@ impl Node {
         // Single-borrow fast path: decrypt, parse inner header, and update
         // all per-peer counters (MMP, link stats, last-seen) inside one
         // `peers.get_mut` lookup. Hands the plaintext back to the caller
-        // via `FmpFrameOutcome::Authentic` so dispatch (which needs
-        // `&mut self`) can run after the peer borrow is dropped.
+        // via `FmpFrameOutcome::Authentic{,InPlace}` so dispatch (which
+        // needs `&mut self`) can run after the peer borrow is dropped.
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
@@ -124,7 +139,12 @@ impl Node {
         let packet_timestamp_ms = packet.timestamp_ms;
         let packet_transport_id = packet.transport_id;
         let packet_remote_addr = packet.remote_addr.clone();
-        let ciphertext = &packet.data[ciphertext_offset..];
+
+        // `packet` is owned by this function; take ownership of its data
+        // so we can take a `&mut [u8]` to the ciphertext tail for the
+        // in-place decrypt path. Wrap in `Some` so it can be optionally
+        // consumed by branches that drop it.
+        let mut packet_data = packet.data;
 
         let outcome: FmpFrameOutcome = 'outcome: {
             let Some(peer) = self.peers.get_mut(&node_addr) else {
@@ -132,9 +152,73 @@ impl Node {
                 break 'outcome FmpFrameOutcome::PeerGone;
             };
 
-            // Try current session first. We extract `Result<Vec<u8>, _>` so
-            // the `&mut NoiseSession` borrow ends before we touch peer
-            // again (for the previous-session fallback or for stats).
+            // Fast path: in-place AEAD decrypt on `packet_data` when no
+            // previous (drain-window) session is present. The vast
+            // majority of inbound packets land here in steady state —
+            // rekey transitions are infrequent. Saves the ~1.4 KB Vec
+            // alloc + memcpy that `decrypt_with_replay_check_and_aad`'s
+            // internal `ciphertext.to_vec()` would do.
+            //
+            // Slow path: when a previous session exists, we keep the
+            // legacy by-value decrypt because in-place open() would
+            // corrupt the ciphertext on a failed current-session attempt
+            // and leave nothing for the previous-session retry. The
+            // drain window is short and rare so the slow path
+            // is not on the steady-state hot path.
+            let has_previous = peer.previous_session_mut().is_some();
+
+            if !has_previous {
+                let Some(session) = peer.noise_session_mut() else {
+                    break 'outcome FmpFrameOutcome::NoSession;
+                };
+                let decrypt_result = {
+                    let _t = crate::perf_profile::Timer::start(
+                        crate::perf_profile::Stage::FmpDecrypt,
+                    );
+                    session.decrypt_with_replay_check_and_aad_in_place(
+                        &mut packet_data[ciphertext_offset..],
+                        counter,
+                        &header_bytes,
+                    )
+                };
+                let plaintext_len = match decrypt_result {
+                    Ok(len) => len,
+                    Err(e) => {
+                        break 'outcome FmpFrameOutcome::DecryptFailed { error: e };
+                    }
+                };
+
+                // strip_inner_header reads the 4-byte timestamp prefix
+                // and validates length. plaintext lives inside
+                // packet_data[ciphertext_offset..ciphertext_offset+plaintext_len].
+                let plaintext_slice =
+                    &packet_data[ciphertext_offset..ciphertext_offset + plaintext_len];
+                let timestamp = match strip_inner_header(plaintext_slice) {
+                    Some((ts, _link)) => ts,
+                    None => {
+                        break 'outcome FmpFrameOutcome::InnerHeaderTooShort {
+                            plaintext_len,
+                        };
+                    }
+                };
+
+                peer.reset_decrypt_failures();
+                let now = Instant::now();
+                if let Some(mmp) = peer.mmp_mut() {
+                    mmp.receiver
+                        .record_recv(counter, timestamp, packet_len, ce_flag, now);
+                    let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, counter, now);
+                }
+                peer.set_current_addr(packet_transport_id, packet_remote_addr);
+                peer.link_stats_mut()
+                    .record_recv(packet_len, packet_timestamp_ms);
+                peer.touch(packet_timestamp_ms);
+
+                break 'outcome FmpFrameOutcome::AuthenticInPlace { plaintext_len };
+            }
+
+            // Slow path with by-value decrypt + drain-window fallback.
+            let ciphertext = &packet_data[ciphertext_offset..];
             let current_attempt = {
                 let _t = crate::perf_profile::Timer::start(
                     crate::perf_profile::Stage::FmpDecrypt,
@@ -147,7 +231,6 @@ impl Node {
             let plaintext = match current_attempt {
                 Some(Ok(p)) => p,
                 Some(Err(e)) => {
-                    // Drain-window fallback: previous session.
                     let prev_attempt = peer.previous_session_mut().map(|s| {
                         s.decrypt_with_replay_check_and_aad(ciphertext, counter, &header_bytes)
                     });
@@ -159,11 +242,6 @@ impl Node {
                 None => break 'outcome FmpFrameOutcome::NoSession,
             };
 
-            // Inner header is 4-byte timestamp + at least one msg_type byte
-            // (total min INNER_HEADER_SIZE = 5). `strip_inner_header`
-            // borrows from `plaintext`; we only need the timestamp here,
-            // because the link-message slice is computed after the borrow
-            // releases.
             let timestamp = match strip_inner_header(&plaintext) {
                 Some((ts, _link)) => ts,
                 None => {
@@ -173,7 +251,6 @@ impl Node {
                 }
             };
 
-            // Stats inline — same borrow.
             peer.reset_decrypt_failures();
             let now = Instant::now();
             if let Some(mmp) = peer.mmp_mut() {
@@ -190,11 +267,20 @@ impl Node {
         };
 
         match outcome {
+            FmpFrameOutcome::AuthenticInPlace { plaintext_len } => {
+                // Fast path: plaintext lives inside `packet_data`. Slice
+                // the link-message body out and dispatch — no Vec
+                // allocation involved.
+                let link_message = &packet_data
+                    [ciphertext_offset + INNER_TIMESTAMP_LEN..ciphertext_offset + plaintext_len];
+                self.dispatch_link_message(&node_addr, link_message, ce_flag)
+                    .await;
+            }
             FmpFrameOutcome::Authentic { plaintext } => {
                 // === PACKET IS AUTHENTIC ===
-                // The link message is plaintext minus the 4-byte timestamp
-                // (mirrors what `strip_inner_header` returned). We re-slice
-                // here because plaintext is owned by us at this point.
+                // Slow path: plaintext is its own Vec (legacy decrypt
+                // path used for drain-window fallback). Same dispatch
+                // shape — re-slice past the inner-timestamp prefix.
                 let link_message = &plaintext[INNER_TIMESTAMP_LEN..];
                 self.dispatch_link_message(&node_addr, link_message, ce_flag)
                     .await;
