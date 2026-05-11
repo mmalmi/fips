@@ -1645,6 +1645,9 @@ impl Node {
                 payload,
                 response_tx,
             } => {
+                let _t = crate::perf_profile::Timer::start(
+                    crate::perf_profile::Stage::EndpointSend,
+                );
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
             }

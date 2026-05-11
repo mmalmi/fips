@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 11;
+const N_STAGES: usize = 12;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
 #[derive(Copy, Clone, Debug)]
@@ -50,6 +50,14 @@ pub enum Stage {
     /// the `FspDecrypt` sub-span. Surfaces dispatch + ipv6_shim +
     /// `Vec::drain` cost on the inner session layer.
     FspHandle = 10,
+    /// Whole `handle_endpoint_data_command` body — the SENDER's
+    /// per-packet "do everything to push one outbound packet"
+    /// dispatch. Compare against the sum of `FspEncrypt + FmpEncrypt
+    /// + UdpSend` to see how much of the sender hot path is in
+    /// state-touching dispatch (sessions/peers lookups, MMP/stats
+    /// updates, Vec allocs) vs the AEAD/syscall work that's a
+    /// natural fit for an off-task worker.
+    EndpointSend = 11,
 }
 
 impl Stage {
@@ -66,6 +74,7 @@ impl Stage {
             Stage::ProcessPacket => "process_packet",
             Stage::EndpointDeliver => "endpoint_deliver",
             Stage::FspHandle => "fsp_handle",
+            Stage::EndpointSend => "endpoint_send",
         }
     }
 }
@@ -167,6 +176,7 @@ pub fn maybe_spawn_reporter() {
                     8 => Stage::ProcessPacket,
                     9 => Stage::EndpointDeliver,
                     10 => Stage::FspHandle,
+                    11 => Stage::EndpointSend,
                     _ => unreachable!(),
                 };
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };
