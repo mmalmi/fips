@@ -2,14 +2,25 @@
 
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
+use crate::node::decrypt_worker::DecryptFallback;
 use crate::node::wire::{
-    COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
+    COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
+    PHASE_MSG2,
 };
 use crate::node::{Node, NodeError};
 use crate::transport::ReceivedPacket;
 use crate::transport::TransportHandle;
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::{debug, info, warn};
+
+/// How often the raw-packet drain loop yields a slice of work to the
+/// decrypt-fallback drain. Keeps TCP ACK / heartbeat / handshake
+/// progress steady under sustained inbound bursts.
+const FALLBACK_INTERLEAVE_EVERY: usize = 32;
+/// Cap on the per-interleave fallback drain so a hot inbound spike
+/// can't starve the outer raw-packet drain in the opposite direction.
+const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
 
 impl Node {
     /// Run the receive event loop.
@@ -109,6 +120,23 @@ impl Node {
         loop {
             tokio::select! {
                 biased;
+                // Decrypt-worker fallback drains FIRST. The previous
+                // ordering put `packet_rx` first, which under sustained
+                // inbound bursts let the raw-packet drain (up to 256
+                // packets + flush) starve fallback work for tens of
+                // milliseconds. UDP throughput tolerates that; TCP
+                // doesn't — late FMP plaintexts mean late ACKs,
+                // dup-ACK fast retransmits, and cwnd collapse.
+                // Reproduced on native macOS / Wi-Fi where TCP fell to
+                // ~10 Mb/s while UDP cleared ~100 Mb/s on the same
+                // tunnel. Promoting fallback gives the kernel-side
+                // TCP machinery a fair chance to see its ACKs and
+                // keep cwnd growing.
+                Some(fallback) = decrypt_fallback_rx.recv() => {
+                    self.process_decrypt_fallback(fallback).await;
+                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
+                    self.flush_pending_sends().await;
+                }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => self.process_packet(p).await,
@@ -121,8 +149,22 @@ impl Node {
                     // datagrams available per wake. Caps at a batch
                     // boundary so other branches (tick, control) eventually
                     // get a turn even under sustained load.
-                    let mut drained = 0;
+                    let mut drained: usize = 1; // counts the packet processed above
                     while drained < 256 {
+                        if drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
+                            // Interleave fallback drain so bounced FMP
+                            // plaintexts (heartbeats, post-FSP-decrypt
+                            // TCP ACKs, control frames) don't sit in
+                            // the fallback queue for a full 256-packet
+                            // burst. Without this, even the
+                            // priority-first ordering above can't help
+                            // once we're inside this inner loop.
+                            self.drain_decrypt_fallback(
+                                &mut decrypt_fallback_rx,
+                                FALLBACK_INTERLEAVE_BUDGET,
+                            )
+                            .await;
+                        }
                         match packet_rx.try_recv() {
                             Ok(p) => {
                                 self.process_packet(p).await;
@@ -131,6 +173,11 @@ impl Node {
                             Err(_) => break,
                         }
                     }
+                    // One trailing fallback drain so the last bounced
+                    // packets of the burst aren't held up by the
+                    // post-burst send flush.
+                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 256)
+                        .await;
                     // Flush any batched sends triggered by inbound
                     // packets (e.g. forwarded SessionDatagrams, MMP
                     // reports, tree announces).
@@ -191,50 +238,6 @@ impl Node {
                     };
                     let _ = response_tx.send(response);
                 }
-                Some(fallback) = decrypt_fallback_rx.recv() => {
-                    // Decrypt worker bounced a packet back for
-                    // FSP-layer dispatch after handling the FMP layer.
-                    // Hand the FMP plaintext to the canonical
-                    // post-decrypt processor — same code path the
-                    // test-mode in-line decrypt below takes, so
-                    // per-peer bookkeeping (peer.touch,
-                    // link_stats.record_recv, mmp.receiver.record_recv,
-                    // set_current_addr) and link-layer dispatch run
-                    // identically in both modes.
-                    //
-                    // CE/SP flag extraction: the FMP outer header's
-                    // flags byte rides through the worker on
-                    // `DecryptJob.fmp_flags` and out via
-                    // `DecryptFallback.fmp_flags`. Without this the
-                    // worker path drops ECN CE propagation and
-                    // spin-bit RTT observation on every packet —
-                    // both of which only fire on these two flag
-                    // bits and both of which were previously
-                    // hardcoded to `false` here.
-                    let ce_flag =
-                        fallback.fmp_flags & crate::node::wire::FLAG_CE != 0;
-                    let sp_flag =
-                        fallback.fmp_flags & crate::node::wire::FLAG_SP != 0;
-                    // Slice into the original wire buffer — zero
-                    // alloc, zero copy. The worker bounce used to
-                    // `to_vec()` ~1500 bytes per packet (~225 MB/sec
-                    // memory bandwidth at 150k pps); now we just
-                    // index.
-                    let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
-                        ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
-                    self.process_authentic_fmp_plaintext(
-                        &fallback.source_node_addr,
-                        fallback.transport_id,
-                        &fallback.remote_addr,
-                        fallback.timestamp_ms,
-                        fallback.packet_len,
-                        fallback.fmp_counter,
-                        ce_flag,
-                        sp_flag,
-                        plaintext,
-                    )
-                    .await;
-                }
                 _ = tick.tick() => {
                     self.check_timeouts();
                     let now_ms = Self::now_ms();
@@ -267,6 +270,54 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt
+    /// processor. Reconstructs `ce_flag` / `sp_flag` from the FMP header
+    /// flag byte the worker captured into `DecryptFallback::fmp_flags`
+    /// (without this both ECN CE propagation and spin-bit RTT
+    /// observation are dropped on the worker path) and slices the
+    /// plaintext out of the original wire buffer with zero allocation.
+    async fn process_decrypt_fallback(&mut self, fallback: DecryptFallback) {
+        let ce_flag = fallback.fmp_flags & FLAG_CE != 0;
+        let sp_flag = fallback.fmp_flags & FLAG_SP != 0;
+        let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
+            ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
+        self.process_authentic_fmp_plaintext(
+            &fallback.source_node_addr,
+            fallback.transport_id,
+            &fallback.remote_addr,
+            fallback.timestamp_ms,
+            fallback.packet_len,
+            fallback.fmp_counter,
+            ce_flag,
+            sp_flag,
+            plaintext,
+        )
+        .await;
+    }
+
+    /// Drain up to `budget` queued fallbacks without yielding back to
+    /// `select!`. Returns the number processed. Called both from the
+    /// promoted-fallback select arm (after the head item) and
+    /// interleaved inside the packet_rx drain loop so bounced FMP
+    /// plaintexts can't accumulate behind a 256-packet inbound burst.
+    async fn drain_decrypt_fallback(
+        &mut self,
+        rx: &mut UnboundedReceiver<DecryptFallback>,
+        budget: usize,
+    ) -> usize {
+        let mut drained = 0;
+        while drained < budget {
+            match rx.try_recv() {
+                Ok(fallback) => {
+                    self.process_decrypt_fallback(fallback).await;
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        drained
     }
 
     /// Flush any pending batched sends across all transports. Today

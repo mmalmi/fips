@@ -802,18 +802,29 @@ impl Node {
                 "Spawned FMP-encrypt worker pool"
             );
 
+            // `FIPS_DECRYPT_WORKERS=0` disables the pool entirely and
+            // falls through to the in-line rx_loop decrypt path (the
+            // "test-mode" branch in `handle_encrypted_frame`, which is
+            // in fact a fully functional synchronous decrypt). Useful
+            // as an A/B against the worker pipeline when chasing
+            // scheduling/queueing regressions on the native macOS
+            // path. Any non-zero value (env or default) spawns the
+            // pool as before.
             let decrypt_worker_count: usize = std::env::var("FIPS_DECRYPT_WORKERS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(cpu_default)
-                .max(1);
-            self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
-                decrypt_worker_count,
-            ));
-            info!(
-                workers = decrypt_worker_count,
-                "Spawned FMP+FSP-decrypt worker pool"
-            );
+                .unwrap_or(cpu_default);
+            if decrypt_worker_count == 0 {
+                info!("FIPS_DECRYPT_WORKERS=0 → in-line decrypt in rx_loop (no worker pool)");
+            } else {
+                self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
+                    decrypt_worker_count,
+                ));
+                info!(
+                    workers = decrypt_worker_count,
+                    "Spawned FMP+FSP-decrypt worker pool"
+                );
+            }
         }
 
         if self.config.node.discovery.nostr.enabled {
