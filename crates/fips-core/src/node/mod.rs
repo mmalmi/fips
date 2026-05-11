@@ -1225,6 +1225,29 @@ impl Node {
         addr.short_hex()
     }
 
+    /// Tear down a `peers_by_index` entry **and** keep the shard-owned
+    /// decrypt-worker state coherent: removes the same `cache_key`
+    /// from the registered-sessions tracking set and tells the
+    /// assigned shard worker to drop its `OwnedSessionState` entry.
+    ///
+    /// Use this instead of a bare `self.peers_by_index.remove(&key)`
+    /// at every session-lifecycle teardown site (rekey cross-connection
+    /// swap, peer disconnect, dispatch session-rotation) so the worker
+    /// doesn't keep stale ciphers / replay windows around. The
+    /// follow-up `RegisterSession` for the NEW key (if any) will then
+    /// install the fresh state on the same shard.
+    pub(in crate::node) fn deregister_session_index(
+        &mut self,
+        cache_key: (TransportId, u32),
+    ) {
+        self.peers_by_index.remove(&cache_key);
+        if self.decrypt_registered_sessions.remove(&cache_key)
+            && let Some(workers) = self.decrypt_workers.as_ref()
+        {
+            workers.unregister_session(cache_key);
+        }
+    }
+
     // === Configuration ===
 
     /// Get the configuration.

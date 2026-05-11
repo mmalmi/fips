@@ -285,7 +285,7 @@ impl Node {
                                 && let Some(idx) = peer.abandon_rekey()
                             {
                                 if let Some(tid) = peer.transport_id() {
-                                    self.peers_by_index.remove(&(tid, idx.as_u32()));
+                                    self.deregister_session_index((tid, idx.as_u32()));
                                     self.pending_outbound.remove(&(tid, idx.as_u32()));
                                 }
                                 let _ = self.index_allocator.free(idx);
@@ -650,7 +650,7 @@ impl Node {
                             );
                             if let Some(idx) = peer.abandon_rekey() {
                                 if let Some(tid) = peer.transport_id() {
-                                    self.peers_by_index.remove(&(tid, idx.as_u32()));
+                                    self.deregister_session_index((tid, idx.as_u32()));
                                 }
                                 let _ = self.index_allocator.free(idx);
                             }
@@ -784,8 +784,7 @@ impl Node {
                     // Update peers_by_index: remove old inbound index, add outbound
                     let transport_id = peer.transport_id().unwrap();
                     if let Some(old_idx) = old_our_index {
-                        self.peers_by_index
-                            .remove(&(transport_id, old_idx.as_u32()));
+                        self.deregister_session_index((transport_id, old_idx.as_u32()));
                         let _ = self.index_allocator.free(old_idx);
                     }
                     self.peers_by_index
@@ -1005,7 +1004,7 @@ impl Node {
                 if let (Some(old_tid), Some(old_idx)) =
                     (old_peer.transport_id(), old_peer.our_index())
                 {
-                    self.peers_by_index.remove(&(old_tid, old_idx.as_u32()));
+                    self.deregister_session_index((old_tid, old_idx.as_u32()));
                     let _ = self.index_allocator.free(old_idx);
                 }
 

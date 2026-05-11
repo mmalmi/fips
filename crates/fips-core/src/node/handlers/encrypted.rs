@@ -99,7 +99,7 @@ impl Node {
             }
             None => {
                 // Stale index entry; drop the index and let next handshake repopulate.
-                self.peers_by_index.remove(&key);
+                self.deregister_session_index(key);
                 return;
             }
         };
@@ -360,7 +360,7 @@ impl Node {
                 );
             }
             FmpFrameOutcome::PeerGone => {
-                self.peers_by_index.remove(&key);
+                self.deregister_session_index(key);
             }
         }
     }
