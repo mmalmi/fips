@@ -73,6 +73,16 @@ enum FspFrameOutcome {
 /// requiring a manual daemon restart.
 const DECRYPT_FAILURE_REINIT_THRESHOLD: u32 = 32;
 
+fn pending_rekey_wins_tiebreak(
+    our_addr: &NodeAddr,
+    peer_addr: &NodeAddr,
+    existing: &SessionEntry,
+) -> bool {
+    existing.pending_new_session().is_some()
+        && existing.is_rekey_initiator()
+        && our_addr < peer_addr
+}
+
 impl Node {
     /// Handle a locally-delivered session datagram payload.
     ///
@@ -607,12 +617,25 @@ impl Node {
                         let entry = self.sessions.get_mut(src_addr).unwrap();
                         entry.abandon_rekey();
                     } else if has_pending {
-                        // Guard: already have a pending session waiting for K-bit cutover
+                        if pending_rekey_wins_tiebreak(
+                            self.identity.node_addr(),
+                            src_addr,
+                            existing,
+                        ) {
+                            debug!(
+                                src = %self.peer_display_name(src_addr),
+                                "FSP rekey msg1 received while local pending rekey wins tiebreak, dropping"
+                            );
+                            return;
+                        }
+
                         debug!(
                             src = %self.peer_display_name(src_addr),
-                            "FSP rekey msg1 received but already have pending session, dropping"
+                            local_pending_initiator = existing.is_rekey_initiator(),
+                            "FSP rekey msg1 received with stale pending rekey, abandoning pending and responding"
                         );
-                        return;
+                        let entry = self.sessions.get_mut(src_addr).unwrap();
+                        entry.abandon_rekey();
                     }
                     let our_keypair = self.identity.keypair();
                     let mut handshake = HandshakeState::new_xk_responder(our_keypair);
@@ -2382,4 +2405,82 @@ pub(in crate::node) fn mark_ipv6_ecn_ce(packet: &mut [u8]) {
     let new_tc = tc | 0x03;
     packet[0] = (packet[0] & 0xF0) | (new_tc >> 4);
     packet[1] = (new_tc << 4) | (packet[1] & 0x0F);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Identity;
+    use crate::noise::NoiseSession;
+
+    fn node_addr(byte: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = byte;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn make_xk_session(initiator: &Identity, responder: &Identity) -> NoiseSession {
+        let mut initiator_hs =
+            HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
+        let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
+        initiator_hs.set_local_epoch([1u8; 8]);
+        responder_hs.set_local_epoch([2u8; 8]);
+
+        let msg1 = initiator_hs.write_xk_message_1().unwrap();
+        responder_hs.read_xk_message_1(&msg1).unwrap();
+        let msg2 = responder_hs.write_xk_message_2().unwrap();
+        initiator_hs.read_xk_message_2(&msg2).unwrap();
+        let msg3 = initiator_hs.write_xk_message_3().unwrap();
+        responder_hs.read_xk_message_3(&msg3).unwrap();
+
+        initiator_hs.into_session().unwrap()
+    }
+
+    fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
+        let session = make_xk_session(local, peer);
+        SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(session),
+            1000,
+            true,
+        )
+    }
+
+    #[test]
+    fn pending_rekey_tiebreak_keeps_local_initiator_only_when_smaller() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        entry.set_pending_session(make_xk_session(&local, &peer));
+
+        assert!(pending_rekey_wins_tiebreak(
+            &node_addr(0x01),
+            &node_addr(0x02),
+            &entry
+        ));
+        assert!(!pending_rekey_wins_tiebreak(
+            &node_addr(0x02),
+            &node_addr(0x01),
+            &entry
+        ));
+    }
+
+    #[test]
+    fn pending_rekey_tiebreak_does_not_keep_responder_pending() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let rekey = HandshakeState::new_xk_responder(local.keypair());
+        entry.set_rekey_state(rekey, false);
+        entry.set_pending_session(make_xk_session(&peer, &local));
+
+        assert!(!pending_rekey_wins_tiebreak(
+            &node_addr(0x01),
+            &node_addr(0x02),
+            &entry
+        ));
+    }
 }
