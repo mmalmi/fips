@@ -2408,7 +2408,7 @@ pub(in crate::node) fn mark_ipv6_ecn_ce(packet: &mut [u8]) {
 mod tests {
     use super::*;
     use crate::Identity;
-    use crate::noise::NoiseSession;
+    use crate::noise::{NoiseError, NoiseSession};
 
     fn node_addr(byte: u8) -> NodeAddr {
         let mut bytes = [0u8; 16];
@@ -2416,7 +2416,10 @@ mod tests {
         NodeAddr::from_bytes(bytes)
     }
 
-    fn make_xk_session(initiator: &Identity, responder: &Identity) -> NoiseSession {
+    fn make_xk_session_pair(
+        initiator: &Identity,
+        responder: &Identity,
+    ) -> (NoiseSession, NoiseSession) {
         let mut initiator_hs =
             HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
         let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
@@ -2430,7 +2433,34 @@ mod tests {
         let msg3 = initiator_hs.write_xk_message_3().unwrap();
         responder_hs.read_xk_message_3(&msg3).unwrap();
 
-        initiator_hs.into_session().unwrap()
+        (
+            initiator_hs.into_session().unwrap(),
+            responder_hs.into_session().unwrap(),
+        )
+    }
+
+    fn make_xk_session(initiator: &Identity, responder: &Identity) -> NoiseSession {
+        make_xk_session_pair(initiator, responder).0
+    }
+
+    fn encrypt_frame(session: &mut NoiseSession, plaintext: &[u8], aad: &[u8]) -> (u64, Vec<u8>) {
+        let counter = session.current_send_counter();
+        let ciphertext = session.encrypt_with_aad(plaintext, aad).unwrap();
+        (counter, ciphertext)
+    }
+
+    fn decrypt_current(
+        entry: &mut SessionEntry,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        match entry.state_mut() {
+            EndToEndState::Established(session) => {
+                session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+            }
+            _ => unreachable!("test entry is established"),
+        }
     }
 
     fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
@@ -2509,5 +2539,66 @@ mod tests {
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD
         ));
+    }
+
+    #[test]
+    fn recovery_rekey_keeps_old_session_usable_until_and_after_cutover() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let aad = b"fsp-test-aad";
+
+        let (mut old_sender, old_receiver) = make_xk_session_pair(&peer, &local);
+        let (mut new_sender, new_receiver) = make_xk_session_pair(&peer, &local);
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(old_receiver),
+            1000,
+            false,
+        );
+
+        // Recovery starts as an in-place rekey. The old session must remain
+        // current and usable while the replacement XK handshake is in flight.
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        let (counter, ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet while rekey pending", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &ciphertext, counter, aad).unwrap(),
+            b"old packet while rekey pending"
+        );
+
+        // Once the new session is ready but before K-bit cutover, traffic
+        // still uses the old session.
+        entry.set_pending_session(new_receiver);
+        let (counter, ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet before cutover", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &ciphertext, counter, aad).unwrap(),
+            b"old packet before cutover"
+        );
+
+        // After cutover, stale old-session packets are accepted through the
+        // previous-session drain slot, while new-session packets decrypt on
+        // the promoted current session.
+        assert!(entry.cutover_to_new_session(2000));
+        let (old_counter, old_ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet after cutover", aad);
+        assert!(decrypt_current(&mut entry, &old_ciphertext, old_counter, aad).is_err());
+        assert_eq!(
+            entry
+                .previous_noise_session_mut()
+                .expect("old session should be retained for drain")
+                .decrypt_with_replay_check_and_aad(&old_ciphertext, old_counter, aad)
+                .unwrap(),
+            b"old packet after cutover"
+        );
+
+        let (new_counter, new_ciphertext) =
+            encrypt_frame(&mut new_sender, b"new packet after cutover", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &new_ciphertext, new_counter, aad).unwrap(),
+            b"new packet after cutover"
+        );
     }
 }
