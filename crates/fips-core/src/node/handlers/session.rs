@@ -55,28 +55,23 @@ enum FspFrameOutcome {
     BadInnerHeader,
     /// Both current and previous (drain-window) AEAD attempts failed.
     /// `consecutive` tracks the post-failure counter; if it crossed the
-    /// threshold, `reinit_pubkey` is `Some(remote_pubkey)` so the
-    /// post-borrow path can drop the stale session and start a fresh
-    /// XK handshake against the same peer.
+    /// threshold, `recover_session` is true so the post-borrow path can
+    /// start an in-place recovery rekey against the same peer. The old
+    /// session stays usable while the new XK handshake completes.
     DecryptFailed {
         error: crate::noise::NoiseError,
         counter: u64,
         consecutive: u32,
-        reinit_pubkey: Option<PublicKey>,
+        recover_session: bool,
     },
 }
 
-/// Drop the end-to-end session and start a fresh XK handshake after this
-/// many consecutive AEAD decryption failures from a peer. Recovers from
-/// stale session state on either side (e.g. peer restarted with new keys
-/// but our entry still holds the old keys, or vice versa) without
-/// requiring a manual daemon restart.
-const DECRYPT_FAILURE_REINIT_THRESHOLD: u32 = 32;
-/// After a new FSP session is established, stale packets encrypted under the
-/// previous session can still be in flight through the mesh. Do not let those
-/// packets immediately trip the reinit threshold for the fresh session.
-const DECRYPT_FAILURE_REINIT_GRACE_MS: u64 = 5_000;
-
+/// Start an in-place FSP recovery rekey after this many consecutive AEAD
+/// decryption failures from a peer. Recovers from stale session state on
+/// either side (e.g. peer restarted with new keys but our entry still holds
+/// the old keys, or vice versa) without dropping the old session while the
+/// new XK handshake completes.
+const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 32;
 fn pending_rekey_wins_tiebreak(
     our_addr: &NodeAddr,
     peer_addr: &NodeAddr,
@@ -87,10 +82,11 @@ fn pending_rekey_wins_tiebreak(
         && our_addr < peer_addr
 }
 
-fn session_decrypt_failure_in_grace(entry: &SessionEntry, now_ms: u64) -> bool {
-    let session_start_ms = entry.session_start_ms();
-    session_start_ms != 0
-        && now_ms.saturating_sub(session_start_ms) < DECRYPT_FAILURE_REINIT_GRACE_MS
+fn should_start_decrypt_failure_rekey(entry: &SessionEntry, consecutive: u32) -> bool {
+    consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        && entry.is_established()
+        && !entry.has_rekey_in_progress()
+        && entry.pending_new_session().is_none()
 }
 
 impl Node {
@@ -293,30 +289,19 @@ impl Node {
                     match drain {
                         Some(pt) => pt,
                         None => {
-                            // Both current and previous failed. During
-                            // post-establish grace we treat this as stale
-                            // old-session traffic; after that, bump the
-                            // consecutive-failure counter and surface a
-                            // re-handshake hint if the threshold is crossed.
-                            let now_ms = Self::now_ms();
-                            let (consecutive, reinit_pubkey) =
-                                if session_decrypt_failure_in_grace(entry, now_ms) {
-                                    (0, None)
-                                } else {
-                                    let consecutive = entry.record_decrypt_failure();
-                                    let reinit_pubkey =
-                                        if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
-                                            Some(*entry.remote_pubkey())
-                                        } else {
-                                            None
-                                        };
-                                    (consecutive, reinit_pubkey)
-                                };
+                            // Both current and previous failed. Once the
+                            // consecutive-failure threshold trips, recover
+                            // by rekeying in place instead of deleting this
+                            // session. That keeps old-session packets
+                            // decryptable until the new session cuts over.
+                            let consecutive = entry.record_decrypt_failure();
+                            let recover_session =
+                                should_start_decrypt_failure_rekey(entry, consecutive);
                             break 'outcome FspFrameOutcome::DecryptFailed {
                                 error: primary_err,
                                 counter: header.counter,
                                 consecutive,
-                                reinit_pubkey,
+                                recover_session,
                             };
                         }
                     }
@@ -401,27 +386,23 @@ impl Node {
                 error,
                 counter,
                 consecutive,
-                reinit_pubkey,
+                recover_session,
             } => {
                 debug!(
                     error = %error, src = %self.peer_display_name(src_addr),
                     counter, consecutive_failures = consecutive,
                     "Session AEAD decryption failed"
                 );
-                if let Some(dest_pubkey) = reinit_pubkey {
+                if recover_session {
                     warn!(
                         peer = %self.peer_display_name(src_addr),
                         consecutive_failures = consecutive,
-                        "Session AEAD failures exceeded threshold; dropping session and re-initiating"
+                        "Session AEAD failures exceeded threshold; starting recovery rekey"
                     );
-                    // Remove the stale session so initiate_session
-                    // sees no existing entry and starts fresh.
-                    self.sessions.remove(src_addr);
-                    if let Err(re_err) = self.initiate_session(*src_addr, dest_pubkey).await {
+                    if !self.initiate_session_rekey(src_addr).await {
                         debug!(
-                            error = %re_err,
                             peer = %self.peer_display_name(src_addr),
-                            "Failed to re-initiate session after decrypt-failure threshold"
+                            "Failed to start recovery rekey after decrypt-failure threshold"
                         );
                     }
                 }
@@ -2501,13 +2482,32 @@ mod tests {
     }
 
     #[test]
-    fn session_decrypt_failure_grace_covers_fresh_sessions_only() {
+    fn decrypt_failure_recovery_rekey_requires_threshold_and_no_pending_rekey() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let mut entry = established_entry(&local, &peer);
-        entry.mark_established(10_000);
 
-        assert!(session_decrypt_failure_in_grace(&entry, 14_999));
-        assert!(!session_decrypt_failure_in_grace(&entry, 15_000));
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1
+        ));
+        assert!(should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
+
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
+        entry.abandon_rekey();
+
+        entry.set_pending_session(make_xk_session(&local, &peer));
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
     }
 }

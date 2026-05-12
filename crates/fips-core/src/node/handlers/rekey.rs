@@ -376,7 +376,7 @@ impl Node {
 
         // Initiate new rekeys
         for node_addr in sessions_to_rekey {
-            self.initiate_session_rekey(&node_addr).await;
+            let _ = self.initiate_session_rekey(&node_addr).await;
         }
     }
 
@@ -384,20 +384,34 @@ impl Node {
     ///
     /// Creates a new XK handshake as initiator, sends SessionSetup msg1
     /// through the mesh, and stores the handshake state on the existing entry.
-    async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) {
+    pub(in crate::node) async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) -> bool {
         // Check route availability before paying crypto cost
         if self.find_next_hop(dest_addr).is_none() {
             trace!(
                 peer = %self.peer_display_name(dest_addr),
                 "FSP rekey skipped: no route to destination"
             );
-            return;
+            return false;
         }
 
         let entry = match self.sessions.get(dest_addr) {
             Some(e) => e,
-            None => return,
+            None => return false,
         };
+        if !entry.is_established() {
+            trace!(
+                peer = %self.peer_display_name(dest_addr),
+                "FSP rekey skipped: session is not established"
+            );
+            return false;
+        }
+        if entry.has_rekey_in_progress() || entry.pending_new_session().is_some() {
+            trace!(
+                peer = %self.peer_display_name(dest_addr),
+                "FSP rekey skipped: rekey already in progress"
+            );
+            return false;
+        }
         let dest_pubkey = *entry.remote_pubkey();
 
         // Create Noise XK initiator handshake
@@ -413,7 +427,7 @@ impl Node {
                     error = %e,
                     "Failed to generate FSP rekey XK msg1"
                 );
-                return;
+                return false;
             }
         };
 
@@ -434,17 +448,21 @@ impl Node {
                 error = %e,
                 "Failed to send FSP rekey SessionSetup"
             );
-            return;
+            return false;
         }
 
         // Store rekey state on the existing session entry
         if let Some(entry) = self.sessions.get_mut(dest_addr) {
             entry.set_rekey_state(handshake, true);
+            entry.reset_decrypt_failures();
+        } else {
+            return false;
         }
 
         debug!(
             peer = %self.peer_display_name(dest_addr),
             "FSP rekey initiated, sent SessionSetup"
         );
+        true
     }
 }
