@@ -72,6 +72,10 @@ enum FspFrameOutcome {
 /// but our entry still holds the old keys, or vice versa) without
 /// requiring a manual daemon restart.
 const DECRYPT_FAILURE_REINIT_THRESHOLD: u32 = 32;
+/// After a new FSP session is established, stale packets encrypted under the
+/// previous session can still be in flight through the mesh. Do not let those
+/// packets immediately trip the reinit threshold for the fresh session.
+const DECRYPT_FAILURE_REINIT_GRACE_MS: u64 = 5_000;
 
 fn pending_rekey_wins_tiebreak(
     our_addr: &NodeAddr,
@@ -81,6 +85,12 @@ fn pending_rekey_wins_tiebreak(
     existing.pending_new_session().is_some()
         && existing.is_rekey_initiator()
         && our_addr < peer_addr
+}
+
+fn session_decrypt_failure_in_grace(entry: &SessionEntry, now_ms: u64) -> bool {
+    let session_start_ms = entry.session_start_ms();
+    session_start_ms != 0
+        && now_ms.saturating_sub(session_start_ms) < DECRYPT_FAILURE_REINIT_GRACE_MS
 }
 
 impl Node {
@@ -283,19 +293,25 @@ impl Node {
                     match drain {
                         Some(pt) => pt,
                         None => {
-                            // Both current and previous failed. Bump
-                            // the per-session consecutive-failure
-                            // counter and surface a re-handshake hint
-                            // if the threshold is crossed; the post-
-                            // borrow path drops the session and calls
-                            // `self.initiate_session` since that needs
-                            // `&mut self`.
-                            let consecutive = entry.record_decrypt_failure();
-                            let reinit_pubkey = if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
-                                Some(*entry.remote_pubkey())
-                            } else {
-                                None
-                            };
+                            // Both current and previous failed. During
+                            // post-establish grace we treat this as stale
+                            // old-session traffic; after that, bump the
+                            // consecutive-failure counter and surface a
+                            // re-handshake hint if the threshold is crossed.
+                            let now_ms = Self::now_ms();
+                            let (consecutive, reinit_pubkey) =
+                                if session_decrypt_failure_in_grace(entry, now_ms) {
+                                    (0, None)
+                                } else {
+                                    let consecutive = entry.record_decrypt_failure();
+                                    let reinit_pubkey =
+                                        if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
+                                            Some(*entry.remote_pubkey())
+                                        } else {
+                                            None
+                                        };
+                                    (consecutive, reinit_pubkey)
+                                };
                             break 'outcome FspFrameOutcome::DecryptFailed {
                                 error: primary_err,
                                 counter: header.counter,
@@ -2482,5 +2498,16 @@ mod tests {
             &node_addr(0x02),
             &entry
         ));
+    }
+
+    #[test]
+    fn session_decrypt_failure_grace_covers_fresh_sessions_only() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(10_000);
+
+        assert!(session_decrypt_failure_in_grace(&entry, 14_999));
+        assert!(!session_decrypt_failure_in_grace(&entry, 15_000));
     }
 }
