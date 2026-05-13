@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "fips-core"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "bluer",
  "crossbeam-channel",
@@ -1005,14 +1005,14 @@ dependencies = [
 
 [[package]]
 name = "fips-endpoint"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "fips-core",
 ]
 
 [[package]]
 name = "fips-identity"
-version = "0.3.0-dev"
+version = "0.3.0"
 dependencies = [
  "bech32",
  "hex",
