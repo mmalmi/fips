@@ -5,6 +5,7 @@
 //! response routing.
 
 use super::*;
+use crate::config::RoutingMode;
 use crate::node::RecentRequest;
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::tree::TreeCoordinate;
@@ -465,6 +466,58 @@ async fn test_request_three_node_chain() {
     assert!(
         nodes[0].node.coord_cache().contains(&node2_addr, now_ms),
         "Node 0 should have cached node 2's route through 3-node chain"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_reply_learned_forwards_lookup_to_direct_non_tree_target() {
+    // Topology: node0 -- node1 -- node2. Then make node2 a direct, sendable
+    // peer of node1 that is no longer in node1's tree view. This models a
+    // transit node that can reach the target directly even though the target
+    // is not a tree neighbor for reply-learned flood forwarding.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .get(&node2_addr)
+            .is_some_and(|peer| peer.can_send()),
+        "node2 should remain a direct sendable peer"
+    );
+    assert!(
+        !nodes[1].node.is_tree_peer(&node2_addr),
+        "node2 should not be a tree peer in this regression fixture"
+    );
+
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4242, node2_addr, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[2].node.recent_requests.contains_key(&4242),
+        "direct non-tree target should receive the forwarded lookup"
     );
 
     cleanup_nodes(&mut nodes).await;

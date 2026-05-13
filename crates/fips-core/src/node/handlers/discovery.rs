@@ -346,6 +346,41 @@ impl Node {
             return;
         }
 
+        // If the target is a direct active peer, hand the lookup to it even
+        // when it is not part of our current tree neighborhood. This preserves
+        // reply-learned fallback across NAT/topology asymmetry: a transit peer
+        // may have a working direct edge to the target even though the origin
+        // does not.
+        if request.target != *from
+            && self
+                .peers
+                .get(&request.target)
+                .is_some_and(|peer| peer.can_send())
+        {
+            let encoded = request.encode();
+            match self
+                .send_encrypted_link_message(&request.target, &encoded)
+                .await
+            {
+                Ok(()) => {
+                    debug!(
+                        request_id = request.request_id,
+                        target = %self.peer_display_name(&request.target),
+                        "Forwarded LookupRequest to direct target peer"
+                    );
+                    return;
+                }
+                Err(error) => {
+                    debug!(
+                        request_id = request.request_id,
+                        target = %self.peer_display_name(&request.target),
+                        error = %error,
+                        "Failed to forward LookupRequest to direct target peer"
+                    );
+                }
+            }
+        }
+
         // Collect tree peers whose bloom filter contains the target
         let forward_to: Vec<NodeAddr> = self
             .peers
