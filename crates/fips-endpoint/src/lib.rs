@@ -2,7 +2,7 @@
 
 pub use fips_core::config::{
     Config, ConnectPolicy, NostrDiscoveryConfig, NostrDiscoveryPolicy, PeerAddress, PeerConfig,
-    TransportInstances, TransportsConfig, UdpConfig,
+    RoutingMode, TransportInstances, TransportsConfig, UdpConfig,
 };
 pub use fips_core::endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage, FipsEndpointPeer,
