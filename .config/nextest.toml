@@ -4,15 +4,15 @@ junit = { path = "junit.xml" }
 [test-groups]
 node-synthetic = { max-threads = 1 }
 
-# nextest runs each test in a separate process, so in-process Tokio mutexes
-# cannot serialize the synthetic localhost UDP node tests on CI. Those tests
-# intentionally send one-shot handshakes without production reconnect timers;
-# keep them mutually exclusive so routed-data assertions fail only for protocol
-# regressions, not runner-local UDP pressure from another topology test.
+# nextest runs each test in a separate process, so the in-process Tokio mutex in
+# `lock_large_network_test()` cannot serialize these large synthetic topology
+# tests on CI. They intentionally send one-shot handshakes without production
+# reconnect timers; keep only this large-test set mutually exclusive so normal
+# node tests still run in parallel.
 [[profile.default.overrides]]
-filter = 'test(node::tests::)'
+filter = 'test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
 test-group = 'node-synthetic'
 
 [[profile.ci.overrides]]
-filter = 'test(node::tests::)'
+filter = 'test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
 test-group = 'node-synthetic'
