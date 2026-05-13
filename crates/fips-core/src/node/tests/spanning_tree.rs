@@ -331,6 +331,59 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     total
 }
 
+/// Repair synthetic test edges whose one-shot UDP handshake packet was dropped.
+///
+/// The large topology tests create 250 links by sending exactly one msg1 per
+/// edge, bypassing the normal node reconnect timers. On slower CI runners that
+/// burst can still drop a localhost UDP datagram, so retry only edges that did
+/// not produce bidirectional peers before asserting tree/session behavior.
+async fn repair_missing_edge_handshakes(
+    nodes: &mut [TestNode],
+    edges: &[(usize, usize)],
+    verbose: bool,
+) -> usize {
+    let mut retries = 0;
+
+    for attempt in 0..3 {
+        let mut missing = Vec::new();
+        for &(i, j) in edges {
+            let j_addr = *nodes[j].node.node_addr();
+            let i_addr = *nodes[i].node.node_addr();
+            let i_has_j = nodes[i].node.get_peer(&j_addr).is_some();
+            let j_has_i = nodes[j].node.get_peer(&i_addr).is_some();
+            if !i_has_j || !j_has_i {
+                missing.push((i, j, i_has_j, j_has_i));
+            }
+        }
+
+        if missing.is_empty() {
+            break;
+        }
+
+        if verbose {
+            eprintln!(
+                "  Repairing {} missing synthetic edge handshake(s), attempt {}",
+                missing.len(),
+                attempt + 1
+            );
+        }
+
+        for (i, j, i_has_j, j_has_i) in missing {
+            if !i_has_j {
+                initiate_handshake(nodes, i, j).await;
+                retries += 1;
+            } else if !j_has_i {
+                initiate_handshake(nodes, j, i).await;
+                retries += 1;
+            }
+        }
+
+        let _ = drain_all_packets(nodes, false).await;
+    }
+
+    retries
+}
+
 /// Generate a connected random graph with deterministic topology.
 ///
 /// First builds a random spanning tree to ensure connectivity,
@@ -588,9 +641,14 @@ pub(super) async fn run_tree_test(
     // Drain packets until convergence (handles rate-limited announces)
     let total = drain_all_packets(&mut nodes, verbose).await;
     assert!(total > 0, "Should have processed at least some packets");
+    let repaired = repair_missing_edge_handshakes(&mut nodes, edges, verbose).await;
 
     if verbose {
         eprintln!("\n  Total packets processed: {}", total);
+        if repaired > 0 {
+            eprintln!("  Synthetic handshake retries: {}", repaired);
+            print_tree_snapshot("After synthetic handshake repair", &nodes);
+        }
     }
 
     // Verify all edges established bidirectional peers
@@ -636,6 +694,7 @@ pub(super) async fn run_tree_test_with_mtus(
 
     let total = drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "Should have processed at least some packets");
+    let _ = repair_missing_edge_handshakes(&mut nodes, edges, false).await;
 
     for &(i, j) in edges {
         let j_addr = *nodes[j].node.node_addr();
