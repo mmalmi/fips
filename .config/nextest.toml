@@ -1,2 +1,33 @@
 [profile.ci]
 junit = { path = "junit.xml" }
+
+[test-groups]
+large-network = { max-threads = 1 }
+
+# nextest runs each test in a separate process, so the in-process
+# lock_large_network_test() mutex cannot serialize these synthetic UDP stress
+# tests on CI. Keep the 100-node localhost topologies mutually exclusive to
+# avoid false one-shot handshake drops from runner load.
+[[profile.default.overrides]]
+filter = 'test(test_bloom_filter_convergence_100_nodes)'
+test-group = 'large-network'
+
+[[profile.default.overrides]]
+filter = 'test(test_routing_reachability_100_nodes)'
+test-group = 'large-network'
+
+[[profile.default.overrides]]
+filter = 'test(test_routing_source_only_coords_100_nodes)'
+test-group = 'large-network'
+
+[[profile.default.overrides]]
+filter = 'test(test_session_100_nodes)'
+test-group = 'large-network'
+
+[[profile.default.overrides]]
+filter = 'test(test_spanning_tree_convergence_100_nodes)'
+test-group = 'large-network'
+
+[[profile.default.overrides]]
+filter = 'test(test_discovery_100_nodes)'
+test-group = 'large-network'

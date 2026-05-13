@@ -336,7 +336,9 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
 /// The large topology tests create 250 links by sending exactly one msg1 per
 /// edge, bypassing the normal node reconnect timers. On slower CI runners that
 /// burst can still drop a localhost UDP datagram, so retry only edges that did
-/// not produce bidirectional peers before asserting tree/session behavior.
+/// not produce bidirectional peers before asserting tree/session behavior. The
+/// retry path drains after each edge instead of sending a second burst, since
+/// the repair is meant to remove harness pressure rather than recreate it.
 async fn repair_missing_edge_handshakes(
     nodes: &mut [TestNode],
     edges: &[(usize, usize)],
@@ -344,7 +346,7 @@ async fn repair_missing_edge_handshakes(
 ) -> usize {
     let mut retries = 0;
 
-    for attempt in 0..3 {
+    for attempt in 0..5 {
         let mut missing = Vec::new();
         for &(i, j) in edges {
             let j_addr = *nodes[j].node.node_addr();
@@ -372,13 +374,24 @@ async fn repair_missing_edge_handshakes(
             if !i_has_j {
                 initiate_handshake(nodes, i, j).await;
                 retries += 1;
-            } else if !j_has_i {
+                let _ = drain_all_packets(nodes, false).await;
+            }
+
+            let j_addr = *nodes[j].node.node_addr();
+            let i_addr = *nodes[i].node.node_addr();
+            let j_still_missing_i = nodes[j].node.get_peer(&i_addr).is_none();
+            let i_still_missing_j = nodes[i].node.get_peer(&j_addr).is_none();
+
+            if !j_has_i && j_still_missing_i {
                 initiate_handshake(nodes, j, i).await;
                 retries += 1;
+                let _ = drain_all_packets(nodes, false).await;
+            } else if i_still_missing_j {
+                initiate_handshake(nodes, i, j).await;
+                retries += 1;
+                let _ = drain_all_packets(nodes, false).await;
             }
         }
-
-        let _ = drain_all_packets(nodes, false).await;
     }
 
     retries
