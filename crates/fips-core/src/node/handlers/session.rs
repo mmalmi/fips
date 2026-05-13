@@ -70,6 +70,17 @@ enum FspFrameOutcome {
     },
 }
 
+struct PipelinedEndpointSend<'a> {
+    dest_addr: &'a NodeAddr,
+    payload: &'a [u8],
+    now_ms: u64,
+    timestamp: u32,
+    fsp_flags: u8,
+    inner_plaintext: &'a [u8],
+    my_coords: Option<&'a crate::tree::TreeCoordinate>,
+    dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+}
+
 /// Start an in-place FSP recovery rekey after this many consecutive AEAD
 /// decryption failures from a peer. Recovers from stale session state on
 /// either side (e.g. peer restarted with new keys but our entry still holds
@@ -1949,16 +1960,16 @@ impl Node {
         }
 
         if self
-            .try_send_session_endpoint_data_pipelined(
+            .try_send_session_endpoint_data_pipelined(PipelinedEndpointSend {
                 dest_addr,
                 payload,
                 now_ms,
                 timestamp,
-                flags,
-                &inner_plaintext,
-                my_coords.as_ref(),
-                dest_coords.as_ref(),
-            )
+                fsp_flags: flags,
+                inner_plaintext: &inner_plaintext,
+                my_coords: my_coords.as_ref(),
+                dest_coords: dest_coords.as_ref(),
+            })
             .await?
         {
             return Ok(());
@@ -2021,15 +2032,9 @@ impl Node {
     #[cfg(unix)]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,
-        dest_addr: &NodeAddr,
-        payload: &[u8],
-        now_ms: u64,
-        timestamp: u32,
-        fsp_flags: u8,
-        inner_plaintext: &[u8],
-        my_coords: Option<&crate::tree::TreeCoordinate>,
-        dest_coords: Option<&crate::tree::TreeCoordinate>,
+        send: PipelinedEndpointSend<'_>,
     ) -> Result<bool, NodeError> {
+        let dest_addr = send.dest_addr;
         let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
             return Ok(false);
         };
@@ -2163,13 +2168,19 @@ impl Node {
             (counter, fsp_cipher)
         };
 
-        let fsp_header = build_fsp_header(fsp_counter, fsp_flags, inner_plaintext.len() as u16);
-        let coords_size = match (my_coords, dest_coords) {
+        let fsp_header = build_fsp_header(
+            fsp_counter,
+            send.fsp_flags,
+            send.inner_plaintext.len() as u16,
+        );
+        let coords_size = match (send.my_coords, send.dest_coords) {
             (Some(src), Some(dst)) => coords_wire_size(src) + coords_wire_size(dst),
             _ => 0,
         };
-        let link_plaintext_len =
-            SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + inner_plaintext.len();
+        let link_plaintext_len = SESSION_DATAGRAM_HEADER_SIZE
+            + FSP_HEADER_SIZE
+            + coords_size
+            + send.inner_plaintext.len();
         let fmp_inner_len = 4 + link_plaintext_len + crate::noise::TAG_SIZE;
         let fmp_counter = {
             let peer = self
@@ -2203,12 +2214,12 @@ impl Node {
         wire_buf.extend_from_slice(dest_addr.as_bytes());
         let fsp_aad_offset = wire_buf.len();
         wire_buf.extend_from_slice(&fsp_header);
-        if let (Some(src), Some(dst)) = (my_coords, dest_coords) {
+        if let (Some(src), Some(dst)) = (send.my_coords, send.dest_coords) {
             encode_coords(src, &mut wire_buf);
             encode_coords(dst, &mut wire_buf);
         }
         let fsp_plaintext_offset = wire_buf.len();
-        wire_buf.extend_from_slice(inner_plaintext);
+        wire_buf.extend_from_slice(send.inner_plaintext);
 
         let predicted_bytes = wire_capacity;
         if let Some(peer) = self.peers.get_mut(&next_hop_addr) {
@@ -2223,15 +2234,15 @@ impl Node {
             .record_originated(link_plaintext_len + crate::noise::TAG_SIZE);
 
         if let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.record_sent(payload.len());
+            entry.record_sent(send.payload.len());
             if let Some(mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(
                     fsp_counter,
-                    timestamp,
-                    inner_plaintext.len() + crate::noise::TAG_SIZE,
+                    send.timestamp,
+                    send.inner_plaintext.len() + crate::noise::TAG_SIZE,
                 );
             }
-            entry.touch(now_ms);
+            entry.touch(send.now_ms);
         }
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
@@ -2258,14 +2269,7 @@ impl Node {
     #[cfg(not(unix))]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,
-        _dest_addr: &NodeAddr,
-        _payload: &[u8],
-        _now_ms: u64,
-        _timestamp: u32,
-        _fsp_flags: u8,
-        _inner_plaintext: &[u8],
-        _my_coords: Option<&crate::tree::TreeCoordinate>,
-        _dest_coords: Option<&crate::tree::TreeCoordinate>,
+        _send: PipelinedEndpointSend<'_>,
     ) -> Result<bool, NodeError> {
         Ok(false)
     }

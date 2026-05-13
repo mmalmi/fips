@@ -245,7 +245,7 @@ struct MacWorkerQueueState {
 
 #[cfg(target_os = "macos")]
 enum MacWorkerTryPushError {
-    Full(QueuedFmpSendJob),
+    Full(Box<QueuedFmpSendJob>),
     Closed,
 }
 
@@ -285,7 +285,7 @@ impl MacWorkerSender {
             return Err(MacWorkerTryPushError::Closed);
         }
         if state.queue.len() >= self.inner.cap {
-            return Err(MacWorkerTryPushError::Full(job));
+            return Err(MacWorkerTryPushError::Full(Box::new(job)));
         }
         let was_empty = state.queue.is_empty();
         let should_notify = was_empty && state.waiting;
@@ -522,7 +522,7 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(job) {
+                if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(*job) {
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
@@ -1080,25 +1080,25 @@ fn flush_batch_sync(
             let nonce = Nonce::assume_unique_for_key(nonce_bytes);
             let (prefix, plaintext_slice) = wire_buf.split_at_mut(fsp.plaintext_offset);
             let aad = &prefix[fsp.aad_offset..fsp.aad_offset + FSP_HEADER_SIZE];
-            let tag = match fsp.cipher.seal_in_place_separate_tag(
-                nonce,
-                Aad::from(&*aad),
-                plaintext_slice,
-            ) {
-                Ok(tag) => tag,
-                Err(_) => {
-                    #[cfg(target_os = "macos")]
-                    if let Some(flow) = macos_flow.as_ref() {
-                        push_mac_completion(
-                            &mut macos_completions,
-                            Arc::clone(flow),
-                            macos_seq,
-                            MacSendItem::Skip,
-                        );
+            let tag =
+                match fsp
+                    .cipher
+                    .seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext_slice)
+                {
+                    Ok(tag) => tag,
+                    Err(_) => {
+                        #[cfg(target_os = "macos")]
+                        if let Some(flow) = macos_flow.as_ref() {
+                            push_mac_completion(
+                                &mut macos_completions,
+                                Arc::clone(flow),
+                                macos_seq,
+                                MacSendItem::Skip,
+                            );
+                        }
+                        continue;
                     }
-                    continue;
-                }
-            };
+                };
             wire_buf.extend_from_slice(tag.as_ref());
         }
 

@@ -79,11 +79,7 @@ impl Node {
             );
             let did_flip = {
                 let peer = self.peers.get_mut(&node_addr).unwrap();
-                if let Some(_old_our_index) = peer.handle_peer_kbit_flip() {
-                    true
-                } else {
-                    false
-                }
+                peer.handle_peer_kbit_flip().is_some()
             };
             // After cutover the *new* FMP session is the one the
             // decrypt worker must own. Pre-fix: the worker still

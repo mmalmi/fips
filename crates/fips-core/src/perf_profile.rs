@@ -299,10 +299,10 @@ pub fn maybe_spawn_reporter() {
 
                 let base = i * HIST_BUCKETS;
                 let mut hist_delta = [0u64; HIST_BUCKETS];
-                for bucket in 0..HIST_BUCKETS {
+                for (bucket, delta) in hist_delta.iter_mut().enumerate().take(HIST_BUCKETS) {
                     let idx = base + bucket;
                     let current = HIST[idx].load(Relaxed);
-                    hist_delta[bucket] = current.saturating_sub(prev_hist[idx]);
+                    *delta = current.saturating_sub(prev_hist[idx]);
                     prev_hist[idx] = current;
                 }
                 if dc == 0 {
