@@ -336,6 +336,7 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
             source_node_addr,
             source_npub,
             payload,
+            ..
         } => {
             assert_eq!(source_node_addr, node0_addr);
             assert_eq!(source_npub, Some(nodes[0].node.npub()));
@@ -361,6 +362,7 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
             source_node_addr,
             source_npub,
             payload,
+            ..
         } => {
             assert_eq!(source_node_addr, node1_addr);
             assert_eq!(source_npub, Some(nodes[1].node.npub()));
@@ -414,6 +416,7 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             source_node_addr,
             source_npub,
             payload,
+            ..
         } => {
             assert_eq!(source_node_addr, alice_addr);
             assert_eq!(source_npub, Some(nodes[0].node.npub()));
@@ -450,6 +453,7 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             source_node_addr,
             source_npub,
             payload,
+            ..
         } => {
             assert_eq!(source_node_addr, bob_addr);
             assert_eq!(source_npub, Some(nodes[2].node.npub()));
@@ -1780,13 +1784,29 @@ fn test_identity_cache_lru_eviction() {
     // Insert first two with explicit timestamps to ensure deterministic ordering
     let mut prefix1 = [0u8; 15];
     prefix1.copy_from_slice(&id1.node_addr().as_bytes()[0..15]);
-    node.identity_cache
-        .insert(prefix1, (*id1.node_addr(), id1.pubkey_full(), 1000));
+    let (xonly1, _) = id1.pubkey_full().x_only_public_key();
+    node.identity_cache.insert(
+        prefix1,
+        IdentityCacheEntry::new(
+            *id1.node_addr(),
+            id1.pubkey_full(),
+            encode_npub(&xonly1),
+            1000,
+        ),
+    );
 
     let mut prefix2 = [0u8; 15];
     prefix2.copy_from_slice(&id2.node_addr().as_bytes()[0..15]);
-    node.identity_cache
-        .insert(prefix2, (*id2.node_addr(), id2.pubkey_full(), 2000));
+    let (xonly2, _) = id2.pubkey_full().x_only_public_key();
+    node.identity_cache.insert(
+        prefix2,
+        IdentityCacheEntry::new(
+            *id2.node_addr(),
+            id2.pubkey_full(),
+            encode_npub(&xonly2),
+            2000,
+        ),
+    );
 
     assert_eq!(node.identity_cache_len(), 2);
 

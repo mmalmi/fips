@@ -94,6 +94,45 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
 }
 
 #[tokio::test]
+async fn test_udp_transport_picker_ignores_bootstrap_transports() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let bootstrap_id = TransportId::new(1);
+    let primary_id = TransportId::new(2);
+    let other_primary_id = TransportId::new(3);
+
+    for (transport_id, name) in [
+        (bootstrap_id, "bootstrap"),
+        (other_primary_id, "other-primary"),
+        (primary_id, "primary"),
+    ] {
+        let mut udp = UdpTransport::new(
+            transport_id,
+            Some(name.to_string()),
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx.clone(),
+        );
+        udp.start_async().await.unwrap();
+        node.transports
+            .insert(transport_id, TransportHandle::Udp(udp));
+    }
+
+    node.bootstrap_transports.insert(bootstrap_id);
+
+    assert_eq!(node.find_transport_for_type("udp"), Some(primary_id));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn test_node_state_transitions() {
     let mut node = make_node();
 

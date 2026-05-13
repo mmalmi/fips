@@ -137,6 +137,15 @@ impl Node {
                     self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
                     self.flush_pending_sends().await;
                 }
+                // Keep maintenance above the hot packet drains in this
+                // biased select. Sustained UDP/TUN traffic can otherwise
+                // keep packet branches ready long enough to delay MMP
+                // reports, rekey retries, congestion samples, and connected
+                // UDP activation until after the dataplane already looks
+                // unhealthy.
+                _ = tick.tick() => {
+                    self.run_rx_loop_maintenance_tick().await;
+                }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => self.process_packet(p).await,
@@ -238,38 +247,39 @@ impl Node {
                     };
                     let _ = response_tx.send(response);
                 }
-                _ = tick.tick() => {
-                    self.check_timeouts();
-                    let now_ms = Self::now_ms();
-                    self.reload_peer_acl();
-                    self.poll_pending_connects().await;
-                    self.poll_nostr_discovery().await;
-                    self.poll_lan_discovery().await;
-                    self.resend_pending_handshakes(now_ms).await;
-                    self.resend_pending_rekeys(now_ms).await;
-                    self.resend_pending_session_handshakes(now_ms).await;
-                    self.purge_idle_sessions(now_ms);
-                    self.purge_learned_routes(now_ms);
-                    self.process_pending_retries(now_ms).await;
-                    self.check_tree_state().await;
-                    self.check_bloom_state().await;
-                    self.compute_mesh_size();
-                    self.record_stats_history();
-                    self.check_mmp_reports().await;
-                    self.check_session_mmp_reports().await;
-                    self.check_link_heartbeats().await;
-                    self.check_rekey().await;
-                    self.check_session_rekey().await;
-                    self.check_pending_lookups(now_ms).await;
-                    self.poll_transport_discovery().await;
-                    self.sample_transport_congestion();
-                    self.activate_connected_udp_sessions().await;
-                }
             }
         }
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    async fn run_rx_loop_maintenance_tick(&mut self) {
+        self.check_timeouts();
+        let now_ms = Self::now_ms();
+        self.reload_peer_acl();
+        self.poll_pending_connects().await;
+        self.poll_nostr_discovery().await;
+        self.poll_lan_discovery().await;
+        self.resend_pending_handshakes(now_ms).await;
+        self.resend_pending_rekeys(now_ms).await;
+        self.resend_pending_session_handshakes(now_ms).await;
+        self.purge_idle_sessions(now_ms);
+        self.purge_learned_routes(now_ms);
+        self.process_pending_retries(now_ms).await;
+        self.check_tree_state().await;
+        self.check_bloom_state().await;
+        self.compute_mesh_size();
+        self.record_stats_history();
+        self.check_mmp_reports().await;
+        self.check_session_mmp_reports().await;
+        self.check_link_heartbeats().await;
+        self.check_rekey().await;
+        self.check_session_rekey().await;
+        self.check_pending_lookups(now_ms).await;
+        self.poll_transport_discovery().await;
+        self.sample_transport_congestion();
+        self.activate_connected_udp_sessions().await;
     }
 
     /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt
@@ -341,6 +351,10 @@ impl Node {
     /// Dispatches based on the phase field in the 4-byte common prefix.
     async fn process_packet(&mut self, packet: ReceivedPacket) {
         let _t_total = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::TransportQueueWait,
+            packet.trace_enqueued_at,
+        );
         if packet.data.len() < COMMON_PREFIX_SIZE {
             return; // Drop packets too short for common prefix
         }

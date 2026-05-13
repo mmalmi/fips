@@ -9,15 +9,15 @@ For peers behind UDP NAT, the same relay channel carries an encrypted
 offer/answer exchange, and STUN supplies the reflexive address used for
 a coordinated hole-punch.
 
-The feature is compiled into FIPS by default on all supported platforms
-(Linux, macOS, Windows) and ships in every stock packaging artifact
+Nostr discovery is unconditionally compiled into the `fips` binary on
+every supported platform and ships in every stock packaging artifact
 (`.deb`, AUR, systemd tarball, OpenWrt `.ipk`, macOS `.pkg`, Windows
 `.zip`). It is runtime-opt-in: the YAML configuration defaults to
-disabled, so shipping the feature is a no-op until an operator enables
-it. When disabled, nodes behave exactly as before: only the static
-`peers[]` addresses are used. See
-[Build configuration](#build-configuration) for details on opting out
-at build time.
+disabled (`node.discovery.nostr.enabled: false`), so the discovery
+runtime stays dormant -- and opens no relay connections -- until an
+operator flips the flag. Default relay and STUN-server lists ship in
+the config; both are optional overrides. When disabled, nodes behave
+exactly as before: only the static `peers[]` addresses are used.
 
 ## Role
 
@@ -61,29 +61,15 @@ know where peers are.
 
 ## Build configuration
 
-`nostr-discovery` is a default Cargo feature. Plain `cargo build
---release` produces a binary with the feature compiled in, and every
-stock packaging artifact under `packaging/` ships with it enabled.
-There is no extra `--features` flag to remember, on any platform.
+Nostr discovery is part of the normal build. Plain `cargo build
+--release` produces a binary with the discovery runtime available, and
+every stock packaging artifact under `packaging/` ships it.
 
 Shipping the feature is runtime-safe: Nostr discovery is **off by
 default in the YAML configuration**
 (`node.discovery.nostr.enabled: false` in every stock config). An
-operator opts in per-node by flipping the flag and providing a relay
-list; until then the feature is dormant and does not open connections
-to any relay.
-
-To build a binary **without** the feature — for example, to reduce
-the dependency footprint on a minimal build — use
-`--no-default-features`:
-
-```bash
-cargo build --release --no-default-features
-```
-
-The `nostr` and `nostr-sdk` crates are then omitted from the
-dependency tree entirely, and `node.discovery.nostr` config blocks
-fail at startup validation.
+operator opts in per-node by flipping the flag; until then the feature
+is dormant and does not open connections to any relay.
 
 ## Scenarios and configuration
 

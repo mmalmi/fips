@@ -281,7 +281,14 @@ cutover.
 |-----------|------|---------|-------------|
 | `node.rekey.enabled` | bool | `true` | Enable periodic Noise rekey on all links and sessions |
 | `node.rekey.after_secs` | u64 | `120` | Initiate rekey after this many seconds on a session |
-| `node.rekey.after_messages` | u64 | `65536` | Initiate rekey after this many messages sent on a session |
+| `node.rekey.after_messages` | u64 | `281474976710656` (`2^48`) | Initiate rekey after this many messages sent on a session |
+
+The packet-count threshold is intentionally high for packet-tunnel workloads:
+at LAN or Wi-Fi VPN rates, a low threshold such as `65536` packets can trigger a
+full FMP/FSP rekey every few seconds and make cutover churn dominate data-plane
+throughput. Use a lower `after_messages` only for rekey stress tests or unusually
+conservative deployments; the `after_secs` timer remains the normal production
+rekey cadence.
 
 ### Session / Data Plane (`node.session.*`)
 
@@ -810,7 +817,7 @@ node:
   rekey:
     enabled: true                    # periodic Noise rekey for forward secrecy
     after_secs: 120                  # rekey interval (seconds)
-    after_messages: 65536            # rekey after N messages sent
+    after_messages: 281474976710656  # rekey after N messages sent (2^48)
   control:
     enabled: true
     socket_path: null                # null = auto ($XDG_RUNTIME_DIR → /run/fips → /tmp fallback)

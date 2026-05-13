@@ -296,6 +296,7 @@ impl FipsEndpoint {
                     source_node_addr: self.node_addr,
                     source_npub: Some(self.npub.clone()),
                     payload: data,
+                    queued_at: crate::perf_profile::stamp(),
                 })
                 .map_err(|_| FipsEndpointError::Closed)?;
             return Ok(());
@@ -311,6 +312,7 @@ impl FipsEndpoint {
             .send(NodeEndpointCommand::SendOneway {
                 remote,
                 payload: data,
+                queued_at: crate::perf_profile::stamp(),
             })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -351,7 +353,9 @@ impl FipsEndpoint {
             source_node_addr,
             source_npub,
             payload,
+            queued_at,
         } = event;
+        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
             source_node_addr,
             source_npub,
@@ -381,6 +385,7 @@ impl FipsEndpoint {
                     source_node_addr: self.node_addr,
                     source_npub: Some(self.npub.clone()),
                     payload: data,
+                    queued_at: crate::perf_profile::stamp(),
                 })
                 .map_err(|_| FipsEndpointError::Closed)?;
             return Ok(());
@@ -391,6 +396,7 @@ impl FipsEndpoint {
             .blocking_send(NodeEndpointCommand::Send {
                 remote,
                 payload: data,
+                queued_at: crate::perf_profile::stamp(),
                 response_tx,
             })
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -419,7 +425,9 @@ impl FipsEndpoint {
             source_node_addr,
             source_npub,
             payload,
+            queued_at,
         } = event;
+        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
             source_node_addr,
             source_npub,
@@ -453,7 +461,9 @@ impl FipsEndpoint {
             source_node_addr,
             source_npub,
             payload,
+            queued_at,
         } = event;
+        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
             source_node_addr,
             source_npub,

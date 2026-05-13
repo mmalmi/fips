@@ -16,22 +16,19 @@
 //!   super-skb to one cached destination, and the kernel skips
 //!   per-segment route lookups.
 //!
-//! Multiple connected sockets coexist with the wildcard listen
-//! socket via `SO_REUSEPORT`. The Linux UDP demux picks the most
-//! specific match (5-tuple of connected sockets beats the wildcard),
-//! so traffic from new / unknown peers continues to land on the
-//! listen socket (handshakes / discovery), while established peers'
+//! Multiple connected sockets coexist with the wildcard listen socket
+//! via `SO_REUSEPORT` plus `SO_REUSEADDR`. The UDP demux picks the
+//! most specific match (5-tuple of connected sockets beats the
+//! wildcard), so traffic from new / unknown peers continues to land on
+//! the listen socket (handshakes / discovery), while established peers'
 //! steady-state traffic goes directly to their dedicated socket.
 //!
 //! **Scope of this module:** infrastructure only — the FD lifecycle
 //! (open / close), buffer sizing (matches the listen socket's
 //! `SO_RCVBUF` / `SO_SNDBUF` via `FORCE` variants where possible),
-//! and a unit test exercising the open + bind + connect path. Wiring
-//! into the encrypt worker send path and adding a per-peer recv loop
-//! happens in follow-ups so the integration can be staged and
-//! benchmarked independently.
+//! and unit tests exercising the open + bind + connect path.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::io;
 use std::net::SocketAddr;
@@ -40,9 +37,8 @@ use std::os::unix::io::{AsRawFd, RawFd};
 /// A `connect()`-ed UDP socket for one established peer.
 ///
 /// Owns the raw fd and closes it on drop. Configured with:
-/// - `SO_REUSEPORT` so it can share the listen port with the wildcard
-///   socket and any other peers' connected sockets.
-/// - `SO_REUSEADDR` to allow rebinding to the same local address.
+/// - `SO_REUSEADDR` and `SO_REUSEPORT` so it can share the listen port
+///   with the wildcard socket and any other peers' connected sockets.
 /// - The receive / send buffer sizes inherited from the configured
 ///   UDP transport (best-effort via `*BUFFORCE` variants — the kernel
 ///   silently falls back to the normal `*BUF` ceiling if our process
@@ -89,10 +85,12 @@ impl ConnectedPeerSocket {
         } else {
             libc::AF_INET6
         };
-        // SOCK_NONBLOCK so callers don't have to plumb a separate
-        // fcntl(F_SETFL, O_NONBLOCK) round-trip; SOCK_CLOEXEC so the
-        // FD doesn't leak across fork/exec.
+        // Linux accepts SOCK_NONBLOCK | SOCK_CLOEXEC directly. Darwin
+        // does not, so we set the equivalent fd flags with fcntl below.
+        #[cfg(target_os = "linux")]
         let typ = libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+        #[cfg(not(target_os = "linux"))]
+        let typ = libc::SOCK_DGRAM;
         let fd = unsafe { libc::socket(domain, typ, libc::IPPROTO_UDP) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -103,21 +101,36 @@ impl ConnectedPeerSocket {
             peer_addr,
             local_addr,
         };
+        #[cfg(not(target_os = "linux"))]
+        sock.set_nonblocking_cloexec()?;
 
-        // SO_REUSEADDR: lets us bind to the same local port the listen
-        // socket already holds. SO_REUSEPORT: lets the kernel UDP
-        // demux distribute traffic across multiple sockets bound to
-        // the same address. We want both: REUSEADDR for binding,
-        // REUSEPORT so the demux respects 5-tuple specificity.
+        // SO_REUSEADDR lets us bind to the same local port the listen
+        // socket already holds. SO_REUSEPORT lets the UDP demux permit
+        // several sockets bound to the same address and route the peer
+        // 5-tuple to the connected sibling.
         sock.set_sockopt_int(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
         sock.set_sockopt_int(libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
+
+        #[cfg(target_os = "macos")]
+        crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(
+            sock.fd,
+            "connected-udp-peer",
+        );
 
         // Buffer sizes — try the FORCE variants first (succeed if we
         // have CAP_NET_ADMIN), then fall back to the ceiling-clamped
         // normal variants. The ceiling-clamped path always succeeds
         // even if it gives us less than we asked for.
-        sock.set_buf_size(libc::SO_RCVBUFFORCE, libc::SO_RCVBUF, recv_buf);
-        sock.set_buf_size(libc::SO_SNDBUFFORCE, libc::SO_SNDBUF, send_buf);
+        #[cfg(target_os = "linux")]
+        {
+            sock.set_buf_size(libc::SO_RCVBUFFORCE, libc::SO_RCVBUF, recv_buf);
+            sock.set_buf_size(libc::SO_SNDBUFFORCE, libc::SO_SNDBUF, send_buf);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            sock.set_buf_size(libc::SO_RCVBUF, recv_buf);
+            sock.set_buf_size(libc::SO_SNDBUF, send_buf);
+        }
 
         // Bind to the wildcard local address (same port as listen socket).
         let local_sa: socket2::SockAddr = local_addr.into();
@@ -148,6 +161,26 @@ impl ConnectedPeerSocket {
         Ok(sock)
     }
 
+    #[cfg(not(target_os = "linux"))]
+    fn set_nonblocking_cloexec(&self) -> io::Result<()> {
+        let flags = unsafe { libc::fcntl(self.fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(self.fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let fd_flags = unsafe { libc::fcntl(self.fd, libc::F_GETFD) };
+        if fd_flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { libc::fcntl(self.fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Set an integer-valued socket option. Returns the kernel error
     /// on failure but doesn't `?`-propagate caller-side because most
     /// callers want to log + continue rather than fail the whole open.
@@ -176,6 +209,7 @@ impl ConnectedPeerSocket {
     /// Try `SO_*BUFFORCE` first (bypasses the rmem/wmem ceiling) and
     /// fall back to `SO_*BUF` if that fails. Returns silently — buffer
     /// sizing is best-effort.
+    #[cfg(target_os = "linux")]
     fn set_buf_size(&self, force_name: libc::c_int, normal_name: libc::c_int, size: usize) {
         let value: libc::c_int = size as libc::c_int;
         let r = unsafe {
@@ -199,6 +233,20 @@ impl ConnectedPeerSocket {
                 )
             };
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_buf_size(&self, normal_name: libc::c_int, size: usize) {
+        let value: libc::c_int = size as libc::c_int;
+        let _ = unsafe {
+            libc::setsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                normal_name,
+                &value as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
     }
 
     pub fn peer_addr(&self) -> SocketAddr {
@@ -237,7 +285,7 @@ mod tests {
     /// listener and exercise the round-trip: connected socket sends
     /// without msg_name → listener receives → listener replies →
     /// connected socket receives without parsing msg_name. Validates
-    /// `SO_REUSEPORT` + `bind` + `connect` + `O_NONBLOCK`.
+    /// reuse flags + `bind` + `connect` + `O_NONBLOCK`.
     #[test]
     fn open_send_recv_loopback() {
         // Peer (the "remote") side: a regular blocking UDP socket on
@@ -328,12 +376,12 @@ mod tests {
 
         // Anchor a shared local port via a wildcard socket on a
         // non-zero ephemeral port, then open two connected sockets
-        // bound to the same port (via SO_REUSEPORT).
+        // bound to the same port.
         let anchor = UdpSocket::bind("127.0.0.1:0").expect("bind anchor");
         let shared_port = anchor.local_addr().expect("anchor local_addr").port();
         let shared_local: SocketAddr = format!("127.0.0.1:{shared_port}").parse().unwrap();
-        // Drop the anchor so the only thing holding the port is
-        // SO_REUSEPORT semantics of the connected sockets we open next.
+        // Drop the anchor so the only thing holding the port is the
+        // connected sockets' reuse semantics.
         drop(anchor);
 
         let sock_a = ConnectedPeerSocket::open(shared_local, peer_a_addr, 1 << 20, 1 << 20)
@@ -343,5 +391,41 @@ mod tests {
 
         assert_eq!(sock_a.peer_addr(), peer_a_addr);
         assert_eq!(sock_b.peer_addr(), peer_b_addr);
+    }
+
+    /// The production fast path keeps the wildcard UDP listener bound
+    /// while opening a sibling socket connected to a peer. This catches
+    /// the Darwin regression where the adopted traversal socket used a
+    /// different reuse mode than the connected-peer socket and every
+    /// activation failed with EADDRINUSE.
+    #[test]
+    fn connected_socket_shares_live_listener_port() {
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        let peer_addr = peer.local_addr().expect("peer local_addr");
+
+        let listener = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .expect("create listener");
+        listener
+            .set_reuse_address(true)
+            .expect("listener reuseaddr");
+        listener.set_reuse_port(true).expect("listener reuseport");
+        listener
+            .bind(&"0.0.0.0:0".parse::<SocketAddr>().unwrap().into())
+            .expect("bind listener");
+        let local = listener
+            .local_addr()
+            .expect("listener local addr")
+            .as_socket()
+            .expect("ip socket");
+
+        let sock = ConnectedPeerSocket::open(local, peer_addr, 1 << 20, 1 << 20)
+            .expect("open connected sibling");
+
+        assert_eq!(sock.local_addr(), local);
+        assert_eq!(sock.peer_addr(), peer_addr);
     }
 }

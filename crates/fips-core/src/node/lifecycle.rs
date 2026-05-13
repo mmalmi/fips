@@ -352,6 +352,9 @@ impl Node {
                 Err(e) => {
                     warn!(
                         link_id = %link_id,
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        our_index = %our_index,
                         error = %e,
                         "Failed to send handshake message"
                     );
@@ -582,12 +585,7 @@ impl Node {
         }
         // Snapshot the operational UDP transport set up front; mDNS
         // discovery only yields UDP endpoints today.
-        let udp_transport_id = self
-            .transports
-            .iter()
-            .filter(|(_, h)| h.is_operational())
-            .find(|(_, h)| h.transport_type().name == "udp")
-            .map(|(id, _)| *id);
+        let udp_transport_id = self.find_transport_for_type("udp");
         let Some(transport_id) = udp_transport_id else {
             debug!("lan: no operational UDP transport, skipping discovered peers");
             return;

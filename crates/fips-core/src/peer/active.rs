@@ -183,23 +183,22 @@ pub struct ActivePeer {
     /// In-progress rekey: next resend timestamp (Unix ms).
     rekey_msg1_next_resend: u64,
 
-    // === Connected Peer UDP Socket (Linux-only fast path) ===
+    // === Connected Peer UDP Socket (Unix fast path) ===
     /// Per-peer `connect()`-ed UDP socket, opened once we have a
     /// stable kernel `SocketAddr` for the peer (i.e. session
     /// established + transport address known). When `Some`, the
     /// encrypt-worker send path can `sendmsg(2)` on this fd without
     /// per-packet `msg_name` — the kernel-side route + neighbor cache
     /// is pinned by the `connect()` call. On the receive side, Linux
-    /// UDP demux preferentially routes inbound packets from this peer
-    /// to this socket (most-specific 5-tuple match via `SO_REUSEPORT`),
-    /// so a future per-shard recv loop can drain it without colliding
-    /// with the wildcard listen socket.
+    /// and Darwin UDP demux preferentially route inbound packets from
+    /// this peer to this socket (most-specific 5-tuple match via
+    /// `SO_REUSEPORT`), so the paired drain thread must keep it empty.
     ///
     /// Closed automatically on Drop. Behind an `Arc` so the
     /// encrypt-worker's send path can hold a refcount without owning
     /// the only handle (rekey / address-change may rotate the socket
     /// while older jobs are still in-flight on the worker channel).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     connected_udp:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
 
@@ -209,7 +208,7 @@ pub struct ActivePeer {
     /// this peer to it (via SO_REUSEPORT + 5-tuple match), so the
     /// socket *must* be drained or packets pile up in its kernel
     /// recv buffer. Drop signals the thread to exit via self-pipe.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     peer_recv_drain: Option<crate::transport::udp::peer_drain::PeerRecvDrain>,
 }
 
@@ -262,9 +261,9 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_udp: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             peer_recv_drain: None,
         }
     }
@@ -346,18 +345,18 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_udp: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             peer_recv_drain: None,
         }
     }
 
-    /// Linux fast path: clone the refcount on the per-peer
+    /// Unix UDP fast path: clone the refcount on the per-peer
     /// `connect()`-ed UDP socket if one has been installed. Encrypt-
     /// worker send path uses this to bypass the wildcard listen
     /// socket's per-packet sockaddr handling.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn connected_udp(
         &self,
     ) -> Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>> {
@@ -377,7 +376,7 @@ impl ActivePeer {
     /// iteration) and drops the old socket Arc. Any encrypt-worker
     /// jobs already in-flight holding the old socket Arc stay valid
     /// until they complete, at which point the kernel fd closes.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn set_connected_udp(
         &mut self,
         socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
@@ -396,7 +395,7 @@ impl ActivePeer {
     /// on rekey or disconnect). The drain thread exits via self-pipe
     /// signal; the kernel fd closes when the last `Arc` to the
     /// socket drops.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn clear_connected_udp(&mut self) {
         self.peer_recv_drain = None;
         self.connected_udp = None;

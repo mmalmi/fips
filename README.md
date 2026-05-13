@@ -2,7 +2,7 @@
 
 ![banner](docs/logos/fips_banner.png)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.94.1%2B-orange.svg)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/status-v0.2.0-green.svg)](#status--roadmap)
 
 A distributed, decentralized network routing protocol for mesh nodes
@@ -36,28 +36,51 @@ endpoints.
 
 ## Features
 
-- **Self-organizing mesh routing** — spanning tree coordinates with bloom
-  filter guided discovery, no global routing tables
-- **Multi-transport** — UDP, TCP, Ethernet, Tor, and Bluetooth (BLE L2CAP)
-  today; designed for serial and radio
-- **Noise encryption** — hop-by-hop link encryption (IK) plus independent
-  end-to-end session encryption (XK), with periodic rekey for forward secrecy
-- **Nostr-native identity** — secp256k1 keypairs as node addresses, no
-  registration or central authority
-- **IPv6 adaptation** — TUN interface maps npubs to fd00::/8 addresses
-  for unmodified IP applications; built-in `.fips` DNS resolver with
-  optional static hostname mapping (`/etc/fips/hosts`)
-- **Outbound LAN gateway** — optional `fips-gateway` daemon lets
-  unmodified LAN hosts reach `.fips` destinations via a
-  DNS-allocated virtual IP pool and kernel nftables NAT
-- **Metrics Measurement Protocol** — per-link RTT, loss, jitter, and goodput
-  measurement with mesh size estimation
-- **ECN congestion signaling** — hop-by-hop CE flag relay with RFC 3168 IPv6
-  marking, transport kernel drop detection
-- **Operator visibility** — `fipsctl` CLI and `fipstop` TUI dashboard for
-  runtime inspection and runtime peer management
-- **Zero configuration** — sensible defaults; a node can start with no config
-  file, though peer addresses are needed to join a network
+- **Self-organizing mesh routing.** Spanning-tree coordinates with
+  bloom-filter-guided discovery; no global routing tables, no
+  flooding.
+- **Multi-transport.** UDP, TCP, Ethernet, Tor, and Bluetooth (BLE
+  L2CAP) ship today; transports compose on a single mesh and a
+  node may run several at once.
+- **Two-layer encryption.** Noise IK between peers (hop-by-hop) and
+  Noise XK between mesh endpoints (independent end-to-end), with
+  periodic rekey for forward secrecy.
+- **Nostr-native identity.** secp256k1 / schnorr keypairs as node
+  addresses; self-generated, no registration, no central authority.
+- **IPv6 adapter.** A TUN interface maps each remote npub to an
+  `fd00::/8` address, so unmodified IPv6 software reaches mesh
+  peers as `<npub>.fips`. Built-in `.fips` DNS resolver, with
+  optional static name mapping via `/etc/fips/hosts`.
+- **Nostr-mediated discovery and NAT traversal.** Peers publish
+  endpoint adverts on public Nostr relays, exchange candidates via
+  NIP-59 gift-wrapped offers and answers, and establish direct
+  paths through NATs using STUN-assisted hole punching.
+- **LAN gateway.** Optional `fips-gateway` service folds an entire
+  unmodified LAN into the mesh: outbound (LAN clients reach mesh
+  destinations through a DNS-allocated virtual IPv6 pool and
+  nftables NAT) and inbound (LAN-side services exposed to the mesh
+  through 1:1 port forwards).
+- **Per-link metrics.** RTT, loss, jitter, and goodput on every
+  hop, plus mesh-size estimation, via the Metrics Measurement
+  Protocol.
+- **ECN congestion signaling.** Hop-by-hop CE-flag relay with RFC
+  3168 IPv6 marking and transport kernel-drop detection.
+- **Mesh-interface security baseline.** Optional default-deny
+  nftables policy for `fips0` shipped as a packaged conffile
+  (`/etc/fips/fips.nft`) with an operator drop-in directory
+  (`/etc/fips/fips.d/`) and a disabled-by-default
+  `fips-firewall.service`. The baseline polices only the mesh
+  interface, leaving Docker, Tor, and the host firewall untouched.
+- **Operator visibility.** `fipsctl` CLI for control and inspection
+  with time-series stats history queryable for any metric,
+  `fipstop` TUI for live status with inline sparkline dashboards,
+  and a JSON-line control socket on each binary for direct
+  programmatic access.
+- **Reproducible builds** with toolchain pinning and
+  `SOURCE_DATE_EPOCH`.
+- **Zero configuration.** Sensible defaults let a node start with no
+  config file, though peer addresses are needed to join an existing
+  network.
 
 ## Building
 
@@ -67,8 +90,8 @@ cd fips
 cargo build --release
 ```
 
-Requires Rust 1.85+ (edition 2024). Linux, macOS, and Windows are
-supported (see transport matrix below).
+Requires Rust 1.94.1+ (edition 2024). Linux, macOS, and Windows are
+supported; transport availability varies by platform.
 
 ### Transport support by platform
 
@@ -81,8 +104,8 @@ supported (see transport matrix below).
 | BLE       |  ✅   |  ❌   |   ❌    |   ❌    |
 
 On **Linux**, the BLE transport requires BlueZ and libdbus. On
-Debian/Ubuntu: `sudo apt install bluez libdbus-1-dev`. Then build with
-BLE enabled: `cargo build --release --features ble`.
+Debian/Ubuntu: `sudo apt install bluez libdbus-1-dev`. BLE support is
+enabled automatically when the build script detects those dependencies.
 
 On **OpenWrt**, BLE is disabled because libdbus is not available on
 the target. All other transports work and ship in the default ipk.
@@ -171,7 +194,7 @@ sudo tail -f /usr/local/var/log/fips/fips.log
 Build without BLE (requires Linux-only libdbus):
 
 ```powershell
-cargo build --release --no-default-features --features tui
+cargo build --release
 ```
 
 The [wintun](https://www.wintun.net/) driver is required for TUN support.
@@ -254,7 +277,7 @@ peers:
     alias: "fips-test-node"
     addresses:
       - transport: udp
-        addr: "217.77.8.91:2121"
+        addr: "test-us01.fips.network:2121"
     connect_policy: auto_connect
 ```
 
@@ -403,7 +426,7 @@ Ethernet, Tor, and Bluetooth (BLE) with a small live mesh of deployed nodes.
   NAT traversal — peers publish endpoint adverts on public Nostr
   relays, exchange candidates via NIP-59 gift-wrapped offers/answers,
   and establish direct paths through NATs using STUN-assisted
-  punching (behind the `nostr-discovery` cargo feature)
+  punching when enabled in config
 
 ### Near-term priorities
 

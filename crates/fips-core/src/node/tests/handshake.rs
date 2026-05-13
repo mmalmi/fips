@@ -943,6 +943,7 @@ async fn test_duplicate_msg2_dropped() {
         remote_addr: TransportAddr::from_string("10.0.0.2:2121"),
         data: wire_msg2,
         timestamp_ms: 1000,
+        trace_enqueued_at: None,
     };
 
     // Should silently drop — no pending_outbound for this index

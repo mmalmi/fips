@@ -34,6 +34,27 @@ use crate::discovery::EstablishedTraversal;
 
 const ADVERT_CACHE_STALE_GRACE_MULTIPLIER: u64 = 2;
 
+fn bind_traversal_udp_socket() -> std::io::Result<std::net::UdpSocket> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        let _ = socket.set_reuse_address(true);
+        let _ = socket.set_reuse_port(true);
+        socket.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into())?;
+        let socket: std::net::UdpSocket = socket.into();
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let socket = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
+        socket.set_nonblocking(true)?;
+        Ok(socket)
+    }
+}
+
 fn short_npub(npub: &str) -> String {
     npub.strip_prefix("npub1")
         .filter(|s| s.len() >= 8)
@@ -324,17 +345,13 @@ impl NostrDiscovery {
         if self.config.stun_servers.is_empty() {
             return None;
         }
-        let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        let socket = match bind_traversal_udp_socket() {
             Ok(s) => s,
             Err(err) => {
                 debug!(error = %err, "public-udp-addr: ephemeral bind failed");
                 return None;
             }
         };
-        if let Err(err) = socket.set_nonblocking(true) {
-            debug!(error = %err, "public-udp-addr: set_nonblocking failed");
-            return None;
-        }
         let observed = match super::stun::observe_traversal_addresses(
             &socket,
             &self.config.stun_servers,
@@ -850,8 +867,7 @@ impl NostrDiscovery {
             return Err(BootstrapError::MissingRelays(peer_config.npub));
         }
 
-        let base_socket = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
-        base_socket.set_nonblocking(true)?;
+        let base_socket = bind_traversal_udp_socket()?;
 
         let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
             &base_socket,
@@ -1043,8 +1059,7 @@ impl NostrDiscovery {
         }
         self.mark_session_seen(&offer.session_id).await?;
 
-        let base_socket = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
-        base_socket.set_nonblocking(true)?;
+        let base_socket = bind_traversal_udp_socket()?;
         let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
             &base_socket,
             &self.config.stun_servers,

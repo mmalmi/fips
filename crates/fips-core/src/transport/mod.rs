@@ -26,7 +26,7 @@ use secp256k1::XOnlyPublicKey;
 use sim::SimTransport;
 use std::fmt;
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tcp::TcpTransport;
 use thiserror::Error;
 use tor::TorTransport;
@@ -48,6 +48,9 @@ pub struct ReceivedPacket {
     pub data: Vec<u8>,
     /// Receipt timestamp (Unix milliseconds).
     pub timestamp_ms: u64,
+    /// Monotonic timestamp for optional pipeline queue-wait profiling.
+    #[doc(hidden)]
+    pub trace_enqueued_at: Option<Instant>,
 }
 
 impl ReceivedPacket {
@@ -62,6 +65,7 @@ impl ReceivedPacket {
             remote_addr,
             data,
             timestamp_ms,
+            trace_enqueued_at: crate::perf_profile::stamp(),
         }
     }
 
@@ -77,6 +81,7 @@ impl ReceivedPacket {
             remote_addr,
             data,
             timestamp_ms,
+            trace_enqueued_at: crate::perf_profile::stamp(),
         }
     }
 }

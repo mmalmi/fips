@@ -924,6 +924,15 @@ impl BuffersConfig {
 /// Controls periodic full rekey for both FMP (link layer) and FSP
 /// (session layer) Noise sessions. Rekeying provides true forward secrecy
 /// with fresh DH randomness, nonce reset, and session index rotation.
+///
+/// Keep the packet-count default high for packet-tunnel workloads. A low value
+/// such as 65k packets can force multi-hundred-Mbit tunnels to rekey every few
+/// seconds, which creates avoidable cutover churn and can dominate throughput.
+/// Operators can still lower `node.rekey.after_messages` for CI stress tests or
+/// very conservative deployments; the time-based `after_secs` default remains
+/// the normal production rekey cadence.
+const DEFAULT_REKEY_AFTER_MESSAGES: u64 = 1 << 48;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RekeyConfig {
     /// Enable periodic rekey (`node.rekey.enabled`).
@@ -944,7 +953,7 @@ impl Default for RekeyConfig {
         Self {
             enabled: true,
             after_secs: 120,
-            after_messages: 1 << 16, // 65536
+            after_messages: DEFAULT_REKEY_AFTER_MESSAGES,
         }
     }
 }
@@ -957,7 +966,7 @@ impl RekeyConfig {
         120
     }
     fn default_after_messages() -> u64 {
-        1 << 16
+        DEFAULT_REKEY_AFTER_MESSAGES
     }
 }
 
@@ -1200,6 +1209,23 @@ mod tests {
         assert!(c.enabled);
         assert!((c.loss_threshold - 0.05).abs() < 1e-9);
         assert!((c.etx_threshold - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_rekey_config_defaults() {
+        let c = RekeyConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.after_secs, 120);
+        assert_eq!(c.after_messages, 1 << 48);
+    }
+
+    #[test]
+    fn test_rekey_config_partial_yaml_uses_defaults() {
+        let yaml = "after_secs: 30\n";
+        let c: RekeyConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(c.enabled);
+        assert_eq!(c.after_secs, 30);
+        assert_eq!(c.after_messages, 1 << 48);
     }
 
     #[test]

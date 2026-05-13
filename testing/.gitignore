@@ -6,6 +6,7 @@ fips-gateway
 
 # Generated test configs
 generated-configs/
+boringtun/generated/
 
 # Simulation results
 sim-results/

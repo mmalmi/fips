@@ -212,6 +212,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `node.rekey.after_messages` default raised from `65536` to
+  `281474976710656` (`2^48`). The old packet-count default forced
+  high-throughput packet tunnels to run full FMP/FSP rekeys every few
+  seconds, so rekey cutover churn could dominate throughput even though
+  the time-based `node.rekey.after_secs` cadence already provides
+  periodic forward-secrecy rotation. Operators can still lower
+  `node.rekey.after_messages` explicitly for CI stress tests or more
+  aggressive packet-count rekey policy.
+- Per-peer connected UDP sockets and recv drains are now enabled on
+  macOS as well as Linux. Darwin routes matching peer 5-tuples to the
+  connected socket under `SO_REUSEPORT`, so the encrypt worker can use
+  `send(2)` on a connected fd instead of repeating `sendto(2)` sockaddr
+  work for every tunneled packet while the paired drain preserves
+  inbound delivery.
+- The connected-UDP worker path now reuses the connected socket's
+  kernel peer address for dispatch instead of re-resolving the
+  configured transport address per packet. This removes an avoidable
+  cached-DNS/string-parse await from the macOS sender hot path.
+- Noise session ChaCha20-Poly1305 backend switched from RustCrypto's
+  `chacha20poly1305` to `ring 0.17`. ring wraps BoringSSL's
+  hand-tuned ChaCha20-Poly1305 implementation, dispatching to NEON
+  on aarch64 and AVX2 / AVX-512 on x86_64 — typically 3-5 GB/s/core
+  vs the ~600-800 MB/s/core RustCrypto soft path on the same
+  hardware. Wire format unchanged: ChaCha20-Poly1305 is
+  byte-deterministic for a given `(key, nonce, plaintext, aad)`,
+  so any correct AEAD produces identical ciphertext and a mixed
+  pre-swap / post-swap mesh interoperates without protocol
+  awareness. The keyed AEAD is now cached on `CipherState` instead
+  of being re-derived per packet (the cached Poly1305 key state is
+  the actual perf win); `EndToEndState` grew from ~600 B to
+  ~1.5 KB as a consequence and is annotated
+  `#[allow(clippy::large_enum_variant)]` since boxing would re-add
+  a per-packet indirection on every encrypt/decrypt. aarch64
+  measurements (Apple Silicon docker, two nodes): TCP 1-stream
+  437 → 1097 Mbps (~2.5×); UDP at 1000 Mbit goes from
+  599 Mbps / 40 % loss to lossless line-rate; 3-node ping under
+  load 7.68 ms avg / 215 ms max → 0.72 ms / 3.6 ms max as the
+  relay path stops being crypto-bound
+  ([#80](https://github.com/jmcorgan/fips/pull/80),
+  [@mmalmi](https://github.com/mmalmi))
 - Nostr-mediated overlay discovery is now always-on. The
   `nostr-discovery` cargo feature flag has been dropped along with the
   `optional = true` markers on `nostr` / `nostr-sdk` dependencies and
@@ -271,9 +311,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_fpr` and returns `Option<f64>`, returning `None` for
   saturated filters; this propagates through `compute_mesh_size`
   into `estimated_mesh_size` (already `Option<u64>`)
+- Generic systemd install tarball brought to feature parity with
+  the `.deb` and AUR packages. The tarball now ships the
+  `fips-gateway` binary with its (operator-opt-in)
+  `fips-gateway.service`, a `fips-firewall.service` unit with the
+  `/etc/fips/fips.nft` mesh-interface nftables baseline (also
+  opt-in), an `/etc/fips/fips.d/` operator drop-in directory for
+  per-service nft rules, and the multi-backend `fips-dns-setup` /
+  `fips-dns-teardown` helpers. `install.sh` and `uninstall.sh`
+  handle the new units and conffile (preserve-on-upgrade for
+  `fips.nft`, like `fips.yaml`). `README.install.md` documents
+  the gateway, firewall, and DNS-routing services. Closes the
+  longest-standing parity gap for non-Debian / non-Arch systemd
+  Linux distros (Fedora, RHEL/CentOS, openSUSE, etc.) installing
+  from the release-distribution tarball.
 
 ### Fixed
 
+- Rekey cutover now repairs a missing or stale FMP receive-index cache
+  entry before registering the promoted session with the decrypt-worker
+  pool. Previously this path relied on a debug assert that the pending
+  index had already been pre-registered; if that assumption failed
+  under high-throughput rekey churn, debug builds could panic and
+  release builds could miss the fast decrypt-worker path or produce
+  post-cutover decrypt failures until the link recovered.
+- Simultaneous rekeys now use the same deterministic NodeAddr
+  tie-breaker after msg2 as initial session setup. If both peers have a
+  pending rekey and one side starts over, the losing side abandons the
+  stale pending state and responds instead of leaving the pair stuck
+  with incompatible pending sessions until a later recovery path fires.
+- Encrypt-worker dispatch now applies backpressure instead of dropping
+  tunneled IP packets when a bounded worker queue fills. The old
+  behavior was appropriate for application UDP but harmful for
+  TCP-over-TUN, where internal queue loss caused avoidable
+  retransmits and large directional throughput drops under load.
+- UDP send workers now also treat `ENOBUFS`/`ENOMEM` from the kernel
+  transmit path as backpressure instead of a fatal batch error. This is
+  especially important on macOS Wi-Fi, where the NIC/socket queue can
+  fill before `send(2)` reports `WouldBlock`; dropping that batch made
+  MacBook outbound tunnels lose packets at rates Tailscale handled. The
+  retry path yields instead of sleeping, avoiding the old whole-batch
+  loss mode without imposing the artificial per-packet sleep cap that
+  limited MacBook Wi-Fi throughput. The remaining MacBook-to-Ethernet
+  ceiling is the single per-peer encrypt/send lane, which needs the
+  wireguard-go-style split between parallel encryption and sequential
+  transmission.
+- Generic systemd install tarball: `install.sh` now correctly
+  resolves the `fips-dns-setup` and `fips-dns-teardown` helpers
+  from the tarball staging directory. Previously the script
+  referenced them at `${SCRIPT_DIR}/../common/`, a path that
+  exists only in the source-repo layout, not in the extracted
+  tarball. Bug latent since the multi-backend DNS helpers
+  landed in `7260ad2`; only manifested when operators ran
+  `install.sh` from an extracted tarball rather than from a
+  source checkout.
 - UDP transport with `advertise_on_nostr: true` + `public: true` +
   a wildcard `bind_addr` (e.g. `0.0.0.0:2121`) is now advertised
   with its STUN-discovered public IPv4 instead of being silently
@@ -302,9 +393,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly is impossible (1:1 NAT)
 - New `external_addr` field on `transports.udp.*` and
   `transports.tcp.*` for explicit advertise-as override. Accepts
-  either a bare IP (`"54.183.70.180"` — the configured `bind_addr`
+  either a bare IP (`"198.51.100.1"` — the configured `bind_addr`
   port is appended) or a full `host:port`
-  (`"54.183.70.180:8443"`). Takes precedence over both the bound
+  (`"198.51.100.1:8443"`). Takes precedence over both the bound
   address and any STUN-derived autodiscovery. Required for TCP
   on cloud-NAT setups (AWS EIP, GCP/Azure external IPs) where
   binding to the public IP directly fails with `EADDRNOTAVAIL`

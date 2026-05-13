@@ -6,9 +6,11 @@ use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod connected_peer;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+pub(crate) mod darwin_sockopts;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod peer_drain;
 pub(crate) mod socket;
 mod stats;

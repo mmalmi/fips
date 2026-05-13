@@ -15,16 +15,20 @@ use crate::node::session_wire::{
     FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
     fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
+use crate::node::wire::{
+    ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
+};
 use crate::node::{Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeError};
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
 use crate::protocol::{
-    CoordsRequired, FspInnerFlags, MtuExceeded, PathBroken, PathMtuNotification, SessionAck,
-    SessionDatagram, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
-    SessionSetup,
+    CoordsRequired, FspInnerFlags, LinkMessageType, MtuExceeded, PathBroken, PathMtuNotification,
+    SESSION_DATAGRAM_HEADER_SIZE, SessionAck, SessionDatagram, SessionMessageType, SessionMsg3,
+    SessionReceiverReport, SessionSenderReport, SessionSetup,
 };
 use crate::protocol::{coords_wire_size, encode_coords};
+use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use secp256k1::PublicKey;
 use tracing::{debug, info, trace, warn};
@@ -55,23 +59,39 @@ enum FspFrameOutcome {
     BadInnerHeader,
     /// Both current and previous (drain-window) AEAD attempts failed.
     /// `consecutive` tracks the post-failure counter; if it crossed the
-    /// threshold, `reinit_pubkey` is `Some(remote_pubkey)` so the
-    /// post-borrow path can drop the stale session and start a fresh
-    /// XK handshake against the same peer.
+    /// threshold, `recover_session` is true so the post-borrow path can
+    /// start an in-place recovery rekey against the same peer. The old
+    /// session stays usable while the new XK handshake completes.
     DecryptFailed {
         error: crate::noise::NoiseError,
         counter: u64,
         consecutive: u32,
-        reinit_pubkey: Option<PublicKey>,
+        recover_session: bool,
     },
 }
 
-/// Drop the end-to-end session and start a fresh XK handshake after this
-/// many consecutive AEAD decryption failures from a peer. Recovers from
-/// stale session state on either side (e.g. peer restarted with new keys
-/// but our entry still holds the old keys, or vice versa) without
-/// requiring a manual daemon restart.
-const DECRYPT_FAILURE_REINIT_THRESHOLD: u32 = 32;
+/// Start an in-place FSP recovery rekey after this many consecutive AEAD
+/// decryption failures from a peer. Recovers from stale session state on
+/// either side (e.g. peer restarted with new keys but our entry still holds
+/// the old keys, or vice versa) without dropping the old session while the
+/// new XK handshake completes.
+const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 32;
+fn pending_rekey_wins_tiebreak(
+    our_addr: &NodeAddr,
+    peer_addr: &NodeAddr,
+    existing: &SessionEntry,
+) -> bool {
+    existing.pending_new_session().is_some()
+        && existing.is_rekey_initiator()
+        && our_addr < peer_addr
+}
+
+fn should_start_decrypt_failure_rekey(entry: &SessionEntry, consecutive: u32) -> bool {
+    consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        && entry.is_established()
+        && !entry.has_rekey_in_progress()
+        && entry.pending_new_session().is_none()
+}
 
 impl Node {
     /// Handle a locally-delivered session datagram payload.
@@ -273,24 +293,19 @@ impl Node {
                     match drain {
                         Some(pt) => pt,
                         None => {
-                            // Both current and previous failed. Bump
-                            // the per-session consecutive-failure
-                            // counter and surface a re-handshake hint
-                            // if the threshold is crossed; the post-
-                            // borrow path drops the session and calls
-                            // `self.initiate_session` since that needs
-                            // `&mut self`.
+                            // Both current and previous failed. Once the
+                            // consecutive-failure threshold trips, recover
+                            // by rekeying in place instead of deleting this
+                            // session. That keeps old-session packets
+                            // decryptable until the new session cuts over.
                             let consecutive = entry.record_decrypt_failure();
-                            let reinit_pubkey = if consecutive >= DECRYPT_FAILURE_REINIT_THRESHOLD {
-                                Some(*entry.remote_pubkey())
-                            } else {
-                                None
-                            };
+                            let recover_session =
+                                should_start_decrypt_failure_rekey(entry, consecutive);
                             break 'outcome FspFrameOutcome::DecryptFailed {
                                 error: primary_err,
                                 counter: header.counter,
                                 consecutive,
-                                reinit_pubkey,
+                                recover_session,
                             };
                         }
                     }
@@ -375,27 +390,23 @@ impl Node {
                 error,
                 counter,
                 consecutive,
-                reinit_pubkey,
+                recover_session,
             } => {
                 debug!(
                     error = %error, src = %self.peer_display_name(src_addr),
                     counter, consecutive_failures = consecutive,
                     "Session AEAD decryption failed"
                 );
-                if let Some(dest_pubkey) = reinit_pubkey {
+                if recover_session {
                     warn!(
                         peer = %self.peer_display_name(src_addr),
                         consecutive_failures = consecutive,
-                        "Session AEAD failures exceeded threshold; dropping session and re-initiating"
+                        "Session AEAD failures exceeded threshold; starting recovery rekey"
                     );
-                    // Remove the stale session so initiate_session
-                    // sees no existing entry and starts fresh.
-                    self.sessions.remove(src_addr);
-                    if let Err(re_err) = self.initiate_session(*src_addr, dest_pubkey).await {
+                    if !self.initiate_session_rekey(src_addr).await {
                         debug!(
-                            error = %re_err,
                             peer = %self.peer_display_name(src_addr),
-                            "Failed to re-initiate session after decrypt-failure threshold"
+                            "Failed to start recovery rekey after decrypt-failure threshold"
                         );
                     }
                 }
@@ -607,12 +618,25 @@ impl Node {
                         let entry = self.sessions.get_mut(src_addr).unwrap();
                         entry.abandon_rekey();
                     } else if has_pending {
-                        // Guard: already have a pending session waiting for K-bit cutover
+                        if pending_rekey_wins_tiebreak(
+                            self.identity.node_addr(),
+                            src_addr,
+                            existing,
+                        ) {
+                            debug!(
+                                src = %self.peer_display_name(src_addr),
+                                "FSP rekey msg1 received while local pending rekey wins tiebreak, dropping"
+                            );
+                            return;
+                        }
+
                         debug!(
                             src = %self.peer_display_name(src_addr),
-                            "FSP rekey msg1 received but already have pending session, dropping"
+                            local_pending_initiator = existing.is_rekey_initiator(),
+                            "FSP rekey msg1 received with stale pending rekey, abandoning pending and responding"
                         );
-                        return;
+                        let entry = self.sessions.get_mut(src_addr).unwrap();
+                        entry.abandon_rekey();
                     }
                     let our_keypair = self.identity.keypair();
                     let mut handshake = HandshakeState::new_xk_responder(our_keypair);
@@ -1638,14 +1662,27 @@ impl Node {
             NodeEndpointCommand::Send {
                 remote,
                 payload,
+                queued_at,
                 response_tx,
             } => {
+                crate::perf_profile::record_since(
+                    crate::perf_profile::Stage::EndpointCommandWait,
+                    queued_at,
+                );
                 let _t =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
                 let result = self.send_endpoint_data(remote, payload).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::SendOneway { remote, payload } => {
+            NodeEndpointCommand::SendOneway {
+                remote,
+                payload,
+                queued_at,
+            } => {
+                crate::perf_profile::record_since(
+                    crate::perf_profile::Stage::EndpointCommandWait,
+                    queued_at,
+                );
                 let _t =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
                 // Result deliberately discarded — caller wanted
@@ -1690,6 +1727,14 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<(), NodeError> {
         let dest_addr = *remote.node_addr();
+        if self
+            .sessions
+            .get(&dest_addr)
+            .is_some_and(|entry| entry.is_established())
+        {
+            return self.send_session_endpoint_data(&dest_addr, &payload).await;
+        }
+
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
         self.send_or_queue_endpoint_data(dest_addr, Some(dest_pubkey), payload)
@@ -1802,6 +1847,22 @@ impl Node {
             flags |= FSP_FLAG_K;
         }
 
+        if self
+            .try_send_session_endpoint_data_pipelined(
+                dest_addr,
+                payload,
+                now_ms,
+                timestamp,
+                flags,
+                &inner_plaintext,
+                my_coords.as_ref(),
+                dest_coords.as_ref(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
         let entry = self
             .sessions
             .get_mut(dest_addr)
@@ -1856,6 +1917,258 @@ impl Node {
         Ok(())
     }
 
+    #[cfg(unix)]
+    async fn try_send_session_endpoint_data_pipelined(
+        &mut self,
+        dest_addr: &NodeAddr,
+        payload: &[u8],
+        now_ms: u64,
+        timestamp: u32,
+        fsp_flags: u8,
+        inner_plaintext: &[u8],
+        my_coords: Option<&crate::tree::TreeCoordinate>,
+        dest_coords: Option<&crate::tree::TreeCoordinate>,
+    ) -> Result<bool, NodeError> {
+        let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
+            return Ok(false);
+        };
+
+        let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
+        else {
+            return Err(NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "no route to destination".into(),
+            });
+        };
+
+        let mut path_mtu = u16::MAX;
+        if let Some(peer) = self.peers.get(&next_hop_addr)
+            && let Some(tid) = peer.transport_id()
+            && let Some(transport) = self.transports.get(&tid)
+        {
+            if let Some(addr) = peer.current_addr() {
+                path_mtu = path_mtu.min(transport.link_mtu(addr));
+            } else {
+                path_mtu = path_mtu.min(transport.mtu());
+            }
+        }
+
+        let (their_index, transport_id, remote_addr, timestamp_ms, fmp_flags, fmp_cipher) = {
+            let peer = self
+                .peers
+                .get_mut(&next_hop_addr)
+                .ok_or(NodeError::PeerNotFound(next_hop_addr))?;
+            let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
+                node_addr: next_hop_addr,
+                reason: "no their_index".into(),
+            })?;
+            let transport_id = peer.transport_id().ok_or_else(|| NodeError::SendFailed {
+                node_addr: next_hop_addr,
+                reason: "no transport_id".into(),
+            })?;
+            let remote_addr =
+                peer.current_addr()
+                    .cloned()
+                    .ok_or_else(|| NodeError::SendFailed {
+                        node_addr: next_hop_addr,
+                        reason: "no current_addr".into(),
+                    })?;
+            let timestamp_ms = peer.session_elapsed_ms();
+            let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
+            let mut fmp_flags = if sp_flag { FLAG_SP } else { 0 };
+            if peer.current_k_bit() {
+                fmp_flags |= FLAG_KEY_EPOCH;
+            }
+            let session = peer
+                .noise_session_mut()
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: next_hop_addr,
+                    reason: "no noise session".into(),
+                })?;
+            let Some(fmp_cipher) = session.send_cipher_clone() else {
+                return Ok(false);
+            };
+            (
+                their_index,
+                transport_id,
+                remote_addr,
+                timestamp_ms,
+                fmp_flags,
+                fmp_cipher,
+            )
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let connected_socket = self
+            .peers
+            .get(&next_hop_addr)
+            .and_then(|peer| peer.connected_udp());
+
+        let transport = self
+            .transports
+            .get(&transport_id)
+            .ok_or(NodeError::TransportNotFound(transport_id))?;
+        let TransportHandle::Udp(udp) = transport else {
+            return Ok(false);
+        };
+        let socket_addr = {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                match connected_socket.as_ref() {
+                    Some(socket) => Some(socket.peer_addr()),
+                    None => udp.resolve_for_off_task(&remote_addr).await.ok(),
+                }
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                udp.resolve_for_off_task(&remote_addr).await.ok()
+            }
+        };
+        let Some(socket_addr) = socket_addr else {
+            return Ok(false);
+        };
+        let Some(socket) = udp.async_socket() else {
+            return Ok(false);
+        };
+
+        let (fsp_counter, fsp_cipher) = {
+            let entry = self
+                .sessions
+                .get_mut(dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "no session".into(),
+                })?;
+            if let Some(mmp) = entry.mmp_mut() {
+                mmp.path_mtu.seed_source_mtu(path_mtu);
+            }
+            let session = match entry.state_mut() {
+                EndToEndState::Established(s) => s,
+                _ => {
+                    return Err(NodeError::SendFailed {
+                        node_addr: *dest_addr,
+                        reason: "session not established".into(),
+                    });
+                }
+            };
+            let Some(fsp_cipher) = session.send_cipher_clone() else {
+                return Ok(false);
+            };
+            let counter = session
+                .take_send_counter()
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: format!("session counter reservation failed: {}", e),
+                })?;
+            (counter, fsp_cipher)
+        };
+
+        let fsp_header = build_fsp_header(fsp_counter, fsp_flags, inner_plaintext.len() as u16);
+        let coords_size = match (my_coords, dest_coords) {
+            (Some(src), Some(dst)) => coords_wire_size(src) + coords_wire_size(dst),
+            _ => 0,
+        };
+        let link_plaintext_len =
+            SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + inner_plaintext.len();
+        let fmp_inner_len = 4 + link_plaintext_len + crate::noise::TAG_SIZE;
+        let fmp_counter = {
+            let peer = self
+                .peers
+                .get_mut(&next_hop_addr)
+                .ok_or(NodeError::PeerNotFound(next_hop_addr))?;
+            let session = peer
+                .noise_session_mut()
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: next_hop_addr,
+                    reason: "no noise session".into(),
+                })?;
+            session
+                .take_send_counter()
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: next_hop_addr,
+                    reason: format!("counter reservation failed: {}", e),
+                })?
+        };
+        let fmp_header =
+            build_established_header(their_index, fmp_counter, fmp_flags, fmp_inner_len as u16);
+
+        let wire_capacity = ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
+        let mut wire_buf = Vec::with_capacity(wire_capacity);
+        wire_buf.extend_from_slice(&fmp_header);
+        wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+        wire_buf.push(LinkMessageType::SessionDatagram.to_byte());
+        wire_buf.push(self.config.node.session.default_ttl);
+        wire_buf.extend_from_slice(&path_mtu.to_le_bytes());
+        wire_buf.extend_from_slice(self.node_addr().as_bytes());
+        wire_buf.extend_from_slice(dest_addr.as_bytes());
+        let fsp_aad_offset = wire_buf.len();
+        wire_buf.extend_from_slice(&fsp_header);
+        if let (Some(src), Some(dst)) = (my_coords, dest_coords) {
+            encode_coords(src, &mut wire_buf);
+            encode_coords(dst, &mut wire_buf);
+        }
+        let fsp_plaintext_offset = wire_buf.len();
+        wire_buf.extend_from_slice(inner_plaintext);
+
+        let predicted_bytes = wire_capacity;
+        if let Some(peer) = self.peers.get_mut(&next_hop_addr) {
+            peer.link_stats_mut().record_sent(predicted_bytes);
+            if let Some(mmp) = peer.mmp_mut() {
+                mmp.sender
+                    .record_sent(fmp_counter, timestamp_ms, predicted_bytes);
+            }
+        }
+        self.stats_mut()
+            .forwarding
+            .record_originated(link_plaintext_len + crate::noise::TAG_SIZE);
+
+        if let Some(entry) = self.sessions.get_mut(dest_addr) {
+            entry.record_sent(payload.len());
+            if let Some(mmp) = entry.mmp_mut() {
+                mmp.sender.record_sent(
+                    fsp_counter,
+                    timestamp,
+                    inner_plaintext.len() + crate::noise::TAG_SIZE,
+                );
+            }
+            entry.touch(now_ms);
+        }
+
+        workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
+            cipher: fmp_cipher,
+            counter: fmp_counter,
+            wire_buf,
+            fsp_seal: Some(crate::node::encrypt_worker::FspSealJob {
+                cipher: fsp_cipher,
+                counter: fsp_counter,
+                aad_offset: fsp_aad_offset,
+                plaintext_offset: fsp_plaintext_offset,
+            }),
+            socket,
+            dest_addr: socket_addr,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket,
+            drop_on_backpressure: true,
+            queued_at: crate::perf_profile::stamp(),
+        });
+
+        Ok(true)
+    }
+
+    #[cfg(not(unix))]
+    async fn try_send_session_endpoint_data_pipelined(
+        &mut self,
+        _dest_addr: &NodeAddr,
+        _payload: &[u8],
+        _now_ms: u64,
+        _timestamp: u32,
+        _fsp_flags: u8,
+        _inner_plaintext: &[u8],
+        _my_coords: Option<&crate::tree::TreeCoordinate>,
+        _dest_coords: Option<&crate::tree::TreeCoordinate>,
+    ) -> Result<bool, NodeError> {
+        Ok(false)
+    }
+
     fn deliver_endpoint_data(&self, src_addr: &NodeAddr, payload: Vec<u8>) {
         let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
             trace!(
@@ -1869,6 +2182,7 @@ impl Node {
             source_node_addr: *src_addr,
             source_npub: self.npub_for_node_addr(src_addr),
             payload,
+            queued_at: crate::perf_profile::stamp(),
         };
 
         let _t_deliver =
@@ -2382,4 +2696,203 @@ pub(in crate::node) fn mark_ipv6_ecn_ce(packet: &mut [u8]) {
     let new_tc = tc | 0x03;
     packet[0] = (packet[0] & 0xF0) | (new_tc >> 4);
     packet[1] = (new_tc << 4) | (packet[1] & 0x0F);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Identity;
+    use crate::noise::{NoiseError, NoiseSession};
+
+    fn node_addr(byte: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = byte;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn make_xk_session_pair(
+        initiator: &Identity,
+        responder: &Identity,
+    ) -> (NoiseSession, NoiseSession) {
+        let mut initiator_hs =
+            HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
+        let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
+        initiator_hs.set_local_epoch([1u8; 8]);
+        responder_hs.set_local_epoch([2u8; 8]);
+
+        let msg1 = initiator_hs.write_xk_message_1().unwrap();
+        responder_hs.read_xk_message_1(&msg1).unwrap();
+        let msg2 = responder_hs.write_xk_message_2().unwrap();
+        initiator_hs.read_xk_message_2(&msg2).unwrap();
+        let msg3 = initiator_hs.write_xk_message_3().unwrap();
+        responder_hs.read_xk_message_3(&msg3).unwrap();
+
+        (
+            initiator_hs.into_session().unwrap(),
+            responder_hs.into_session().unwrap(),
+        )
+    }
+
+    fn make_xk_session(initiator: &Identity, responder: &Identity) -> NoiseSession {
+        make_xk_session_pair(initiator, responder).0
+    }
+
+    fn encrypt_frame(session: &mut NoiseSession, plaintext: &[u8], aad: &[u8]) -> (u64, Vec<u8>) {
+        let counter = session.current_send_counter();
+        let ciphertext = session.encrypt_with_aad(plaintext, aad).unwrap();
+        (counter, ciphertext)
+    }
+
+    fn decrypt_current(
+        entry: &mut SessionEntry,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<Vec<u8>, NoiseError> {
+        match entry.state_mut() {
+            EndToEndState::Established(session) => {
+                session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+            }
+            _ => unreachable!("test entry is established"),
+        }
+    }
+
+    fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
+        let session = make_xk_session(local, peer);
+        SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(session),
+            1000,
+            true,
+        )
+    }
+
+    #[test]
+    fn pending_rekey_tiebreak_keeps_local_initiator_only_when_smaller() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        entry.set_pending_session(make_xk_session(&local, &peer));
+
+        assert!(pending_rekey_wins_tiebreak(
+            &node_addr(0x01),
+            &node_addr(0x02),
+            &entry
+        ));
+        assert!(!pending_rekey_wins_tiebreak(
+            &node_addr(0x02),
+            &node_addr(0x01),
+            &entry
+        ));
+    }
+
+    #[test]
+    fn pending_rekey_tiebreak_does_not_keep_responder_pending() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let rekey = HandshakeState::new_xk_responder(local.keypair());
+        entry.set_rekey_state(rekey, false);
+        entry.set_pending_session(make_xk_session(&peer, &local));
+
+        assert!(!pending_rekey_wins_tiebreak(
+            &node_addr(0x01),
+            &node_addr(0x02),
+            &entry
+        ));
+    }
+
+    #[test]
+    fn decrypt_failure_recovery_rekey_requires_threshold_and_no_pending_rekey() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1
+        ));
+        assert!(should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
+
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
+        entry.abandon_rekey();
+
+        entry.set_pending_session(make_xk_session(&local, &peer));
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+        ));
+    }
+
+    #[test]
+    fn recovery_rekey_keeps_old_session_usable_until_and_after_cutover() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let aad = b"fsp-test-aad";
+
+        let (mut old_sender, old_receiver) = make_xk_session_pair(&peer, &local);
+        let (mut new_sender, new_receiver) = make_xk_session_pair(&peer, &local);
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(old_receiver),
+            1000,
+            false,
+        );
+
+        // Recovery starts as an in-place rekey. The old session must remain
+        // current and usable while the replacement XK handshake is in flight.
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        let (counter, ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet while rekey pending", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &ciphertext, counter, aad).unwrap(),
+            b"old packet while rekey pending"
+        );
+
+        // Once the new session is ready but before K-bit cutover, traffic
+        // still uses the old session.
+        entry.set_pending_session(new_receiver);
+        let (counter, ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet before cutover", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &ciphertext, counter, aad).unwrap(),
+            b"old packet before cutover"
+        );
+
+        // After cutover, stale old-session packets are accepted through the
+        // previous-session drain slot, while new-session packets decrypt on
+        // the promoted current session.
+        assert!(entry.cutover_to_new_session(2000));
+        let (old_counter, old_ciphertext) =
+            encrypt_frame(&mut old_sender, b"old packet after cutover", aad);
+        assert!(decrypt_current(&mut entry, &old_ciphertext, old_counter, aad).is_err());
+        assert_eq!(
+            entry
+                .previous_noise_session_mut()
+                .expect("old session should be retained for drain")
+                .decrypt_with_replay_check_and_aad(&old_ciphertext, old_counter, aad)
+                .unwrap(),
+            b"old packet after cutover"
+        );
+
+        let (new_counter, new_ciphertext) =
+            encrypt_frame(&mut new_sender, b"new packet after cutover", aad);
+        assert_eq!(
+            decrypt_current(&mut entry, &new_ciphertext, new_counter, aad).unwrap(),
+            b"new packet after cutover"
+        );
+    }
 }

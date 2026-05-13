@@ -85,17 +85,6 @@ impl Node {
                 if let Some(peer) = self.peers.get_mut(&node_addr)
                     && let Some(_old_our_index) = peer.cutover_to_new_session()
                 {
-                    // New index was pre-registered in peers_by_index during
-                    // msg2 handling (handshake.rs). Verify, don't duplicate.
-                    debug_assert!(
-                        peer.transport_id().is_some()
-                            && peer.our_index().is_some()
-                            && self.peers_by_index.contains_key(&(
-                                peer.transport_id().unwrap(),
-                                peer.our_index().unwrap().as_u32()
-                            )),
-                        "peers_by_index should contain pre-registered new index after cutover"
-                    );
                     debug!(
                         peer = %self.peer_display_name(&node_addr),
                         "Rekey cutover complete (initiator), K-bit flipped"
@@ -112,6 +101,7 @@ impl Node {
             // worker entirely. See the matching comment in
             // `handle_encrypted_frame`'s K-bit-flip branch.
             if did_cutover {
+                self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.register_decrypt_worker_session(&node_addr);
             }
         }
@@ -376,7 +366,7 @@ impl Node {
 
         // Initiate new rekeys
         for node_addr in sessions_to_rekey {
-            self.initiate_session_rekey(&node_addr).await;
+            let _ = self.initiate_session_rekey(&node_addr).await;
         }
     }
 
@@ -384,20 +374,34 @@ impl Node {
     ///
     /// Creates a new XK handshake as initiator, sends SessionSetup msg1
     /// through the mesh, and stores the handshake state on the existing entry.
-    async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) {
+    pub(in crate::node) async fn initiate_session_rekey(&mut self, dest_addr: &NodeAddr) -> bool {
         // Check route availability before paying crypto cost
         if self.find_next_hop(dest_addr).is_none() {
             trace!(
                 peer = %self.peer_display_name(dest_addr),
                 "FSP rekey skipped: no route to destination"
             );
-            return;
+            return false;
         }
 
         let entry = match self.sessions.get(dest_addr) {
             Some(e) => e,
-            None => return,
+            None => return false,
         };
+        if !entry.is_established() {
+            trace!(
+                peer = %self.peer_display_name(dest_addr),
+                "FSP rekey skipped: session is not established"
+            );
+            return false;
+        }
+        if entry.has_rekey_in_progress() || entry.pending_new_session().is_some() {
+            trace!(
+                peer = %self.peer_display_name(dest_addr),
+                "FSP rekey skipped: rekey already in progress"
+            );
+            return false;
+        }
         let dest_pubkey = *entry.remote_pubkey();
 
         // Create Noise XK initiator handshake
@@ -413,7 +417,7 @@ impl Node {
                     error = %e,
                     "Failed to generate FSP rekey XK msg1"
                 );
-                return;
+                return false;
             }
         };
 
@@ -434,17 +438,21 @@ impl Node {
                 error = %e,
                 "Failed to send FSP rekey SessionSetup"
             );
-            return;
+            return false;
         }
 
         // Store rekey state on the existing session entry
         if let Some(entry) = self.sessions.get_mut(dest_addr) {
             entry.set_rekey_state(handshake, true);
+            entry.reset_decrypt_failures();
+        } else {
+            return false;
         }
 
         debug!(
             peer = %self.peer_display_name(dest_addr),
             "FSP rekey initiated, sent SessionSetup"
         );
+        true
     }
 }

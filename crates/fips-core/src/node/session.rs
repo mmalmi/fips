@@ -510,6 +510,7 @@ impl SessionEntry {
         self.rekey_state = None;
         self.pending_new_session = None;
         self.rekey_initiator = false;
+        self.rekey_completed_ms = 0;
     }
 
     // === Decrypt Failure Tracking ===

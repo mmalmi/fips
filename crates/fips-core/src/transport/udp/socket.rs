@@ -87,16 +87,31 @@ mod platform {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
 
-            // SO_REUSEPORT lets the Linux UDP demux load-balance
-            // across sockets bound to the same address — and lets
-            // per-peer `ConnectedPeerSocket`s bind to the same
-            // wildcard port the listen socket holds (most-specific
-            // 5-tuple match preferentially routes a connected peer's
-            // traffic to its dedicated socket; the listen socket then
-            // only handles new / unknown peers). On non-Linux this
-            // setsockopt has no effect for UDP, so we ignore failures.
-            let _ = sock.set_reuse_port(true);
-            let _ = sock.set_reuse_address(true);
+            // SO_REUSEPORT lets per-peer `ConnectedPeerSocket`s bind to
+            // the same wildcard port the listen socket holds. Linux keeps
+            // connected UDP enabled by default, so the listener always opts
+            // into shared-port demux there. Darwin also uses shared-port
+            // demux when connected UDP is enabled, but keeps the plain
+            // wildcard socket out of a reuse group when that path is disabled
+            // for A/B testing. Measured Wi-Fi sender runs showed the reuse
+            // group costs a little throughput unless it buys us the connected
+            // `send(2)` path.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = sock.set_reuse_port(true);
+                let _ = sock.set_reuse_address(true);
+            }
+            #[cfg(target_os = "macos")]
+            if macos_connected_udp_listener_enabled() {
+                let _ = sock.set_reuse_port(true);
+                let _ = sock.set_reuse_address(true);
+            }
+
+            #[cfg(target_os = "macos")]
+            crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(
+                sock.as_raw_fd(),
+                "udp-listen",
+            );
 
             sock.bind(&bind_addr.into())
                 .map_err(|e| TransportError::StartFailed(format!("bind failed: {}", e)))?;
@@ -229,6 +244,27 @@ mod platform {
             sock.set_nonblocking(true).map_err(|e| {
                 TransportError::StartFailed(format!("set nonblocking failed: {}", e))
             })?;
+
+            // Adopted NAT-traversal sockets become normal FIPS UDP transports.
+            // Keep their reuse flags aligned with `open()`: Linux needs shared
+            // port by default for connected UDP; Darwin only needs it while
+            // connected UDP is enabled.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = sock.set_reuse_port(true);
+                let _ = sock.set_reuse_address(true);
+            }
+            #[cfg(target_os = "macos")]
+            if macos_connected_udp_listener_enabled() {
+                let _ = sock.set_reuse_port(true);
+                let _ = sock.set_reuse_address(true);
+            }
+
+            #[cfg(target_os = "macos")]
+            crate::transport::udp::darwin_sockopts::apply_udp_socket_tuning(
+                sock.as_raw_fd(),
+                "udp-adopted",
+            );
 
             sock.set_recv_buffer_size(recv_buf_size)
                 .map_err(|e| TransportError::StartFailed(format!("set recv buffer: {}", e)))?;
@@ -710,6 +746,26 @@ mod platform {
                     Err(_would_block) => continue,
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_connected_udp_listener_enabled() -> bool {
+        static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *VALUE.get_or_init(|| {
+            macos_env_flag("FIPS_MACOS_CONNECTED_UDP")
+                .or_else(|| macos_env_flag("FIPS_CONNECTED_UDP"))
+                .unwrap_or(true)
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_env_flag(name: &str) -> Option<bool> {
+        let value = std::env::var(name).ok()?;
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
         }
     }
 

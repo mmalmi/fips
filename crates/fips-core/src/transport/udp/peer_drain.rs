@@ -1,24 +1,25 @@
 //! Recv-side drain thread for a per-peer connected UDP socket.
 //!
-//! Once a UDP socket is `connect()`-ed to a peer, Linux UDP demux
-//! preferentially routes inbound packets matching the peer's 5-tuple
-//! to that socket (most-specific match wins over the wildcard listen
-//! socket under `SO_REUSEPORT`). So a connected socket **must** be
-//! drained, or packets pile up in its recv buffer until it overflows
+//! Once a UDP socket is `connect()`-ed to a peer, Linux and Darwin
+//! UDP demux preferentially route inbound packets matching the peer's
+//! 5-tuple to that socket (most-specific match wins over the wildcard
+//! listen socket under `SO_REUSEPORT`). So a connected socket **must**
+//! be drained, or packets pile up in its recv buffer until it overflows
 //! and the kernel drops them silently.
 //!
 //! This module owns the drain side: spawn one OS thread per connected
-//! socket, `recvmmsg(2)` into a fixed-size batch, push each packet
-//! into the existing `packet_tx` (the same channel that the wildcard
-//! listen socket feeds), and exit cleanly when the parent signals
-//! shutdown via a self-pipe.
+//! socket, drain into a fixed-size batch (`recvmmsg(2)` on Linux,
+//! repeated nonblocking `recv(2)` on Darwin), push each packet into
+//! the existing `packet_tx` (the same channel that the wildcard listen
+//! socket feeds), and exit cleanly when the parent signals shutdown
+//! via a self-pipe.
 //!
 //! Future: when the full data-plane shard lands, this per-peer thread
 //! becomes a `epoll_wait` arm inside the shard's event loop instead
 //! of a dedicated OS thread. The drain *function* `drain_loop` stays
 //! useful in either shape; only the wakeup mechanism differs.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use super::super::{ReceivedPacket, TransportAddr, TransportId};
 use super::PacketTx;
@@ -64,13 +65,7 @@ impl PeerRecvDrain {
     ) -> io::Result<Self> {
         // Self-pipe for shutdown signaling. The drain thread polls
         // (socket_fd | pipe_rx) so a write to pipe_tx wakes it.
-        let mut pipe_fds = [0i32; 2];
-        let r = unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
-        if r < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let pipe_rx = pipe_fds[0];
-        let pipe_tx = pipe_fds[1];
+        let (pipe_rx, pipe_tx) = make_pipe()?;
 
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -150,6 +145,7 @@ fn drain_loop(
     const BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
     let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; BUF_SIZE]).collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
+    let packet_addr = TransportAddr::from_socket_addr(peer_addr);
 
     loop {
         if stop.load(Ordering::Acquire) {
@@ -191,13 +187,13 @@ fn drain_loop(
             continue;
         }
 
-        // Drain whatever's in the kernel queue with one recvmmsg.
-        let n = recvmmsg_drain(socket_fd, &mut backing, &mut lens);
+        // Drain whatever is currently queued in the kernel.
+        let n = drain_packets(socket_fd, &mut backing, &mut lens);
         let count = match n {
             Ok(c) => c,
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
             Err(err) => {
-                debug!(error = %err, "fips-peer-drain: recvmmsg failed; exiting");
+                debug!(error = %err, "fips-peer-drain: recv failed; exiting");
                 break;
             }
         };
@@ -212,8 +208,7 @@ fn drain_loop(
             // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
             let mut data = std::mem::replace(&mut backing[i], vec![0u8; BUF_SIZE]);
             data.truncate(len);
-            let addr = TransportAddr::from_socket_addr(peer_addr);
-            let packet = ReceivedPacket::new(transport_id, addr, data);
+            let packet = ReceivedPacket::new(transport_id, packet_addr.clone(), data);
             if packet_tx.send(packet).is_err() {
                 trace!("fips-peer-drain: packet channel closed; exiting");
                 return;
@@ -228,12 +223,76 @@ fn drain_loop(
     );
 }
 
+fn make_pipe() -> io::Result<(RawFd, RawFd)> {
+    let mut pipe_fds = [0i32; 2];
+    #[cfg(target_os = "linux")]
+    {
+        let r = unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if let Err(err) = set_nonblocking_cloexec(pipe_fds[0]) {
+            unsafe {
+                libc::close(pipe_fds[0]);
+                libc::close(pipe_fds[1]);
+            }
+            return Err(err);
+        }
+        if let Err(err) = set_nonblocking_cloexec(pipe_fds[1]) {
+            unsafe {
+                libc::close(pipe_fds[0]);
+                libc::close(pipe_fds[1]);
+            }
+            return Err(err);
+        }
+    }
+    Ok((pipe_fds[0], pipe_fds[1]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_nonblocking_cloexec(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if fd_flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, fd_flags | libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn drain_packets(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
+    recvmmsg_drain(fd, backing, lens)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drain_packets(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
+    recv_drain(fd, backing, lens)
+}
+
 /// One-shot `recvmmsg(2)` on a non-blocking fd. Returns the number of
 /// datagrams received (0 on no data ready). Same minimal-overhead
 /// shape as the wildcard listen socket's `recv_batch` helper but
 /// without the kernel-drop counter cmsg (the listen socket samples
 /// that for the congestion detector; per-peer sockets share the
 /// kernel-wide UDP socket-buffer accounting already).
+#[cfg(target_os = "linux")]
 fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
     const BATCH: usize = 32;
     let n = backing.len().min(lens.len()).min(BATCH);
@@ -273,6 +332,39 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
     let count = r as usize;
     for i in 0..count {
         lens[i] = msgs[i].msg_len as usize;
+    }
+    Ok(count)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn recv_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
+    let n = backing.len().min(lens.len());
+    if n == 0 {
+        return Ok(0);
+    }
+
+    let mut count = 0usize;
+    while count < n {
+        let r = unsafe {
+            libc::recv(
+                fd,
+                backing[count].as_mut_ptr() as *mut libc::c_void,
+                backing[count].len(),
+                0,
+            )
+        };
+        if r < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if err.kind() == io::ErrorKind::WouldBlock && count > 0 {
+                return Ok(count);
+            }
+            return Err(err);
+        }
+        lens[count] = r as usize;
+        count += 1;
     }
     Ok(count)
 }

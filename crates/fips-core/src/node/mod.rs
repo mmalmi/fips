@@ -51,7 +51,8 @@ use crate::upper::icmp_rate_limit::IcmpRateLimiter;
 use crate::upper::tun::{TunError, TunOutboundRx, TunState, TunTx};
 use crate::utils::index::IndexAllocator;
 use crate::{
-    Config, ConfigError, FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity, encode_npub,
+    Config, ConfigError, FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity,
+    SessionMessageType, encode_npub,
 };
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -59,7 +60,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Errors related to node operations.
 #[derive(Debug, Error)]
@@ -163,6 +164,30 @@ pub struct NodeDeliveredPacket {
     pub packet: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct IdentityCacheEntry {
+    node_addr: NodeAddr,
+    pubkey: secp256k1::PublicKey,
+    npub: String,
+    last_seen_ms: u64,
+}
+
+impl IdentityCacheEntry {
+    fn new(
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+        npub: String,
+        last_seen_ms: u64,
+    ) -> Self {
+        Self {
+            node_addr,
+            pubkey,
+            npub,
+            last_seen_ms,
+        }
+    }
+}
+
 /// App-owned packet channels for embedding FIPS without a system TUN.
 #[derive(Debug)]
 pub struct ExternalPacketIo {
@@ -177,19 +202,12 @@ pub struct ExternalPacketIo {
 pub(crate) struct EndpointDataIo {
     /// Send endpoint data commands into the node RX loop.
     ///
-    /// Bounded with a generous capacity — see `attach_endpoint_data_io`
-    /// for the rationale. The bound provides backpressure to the
-    /// upstream producer (CLI's `mesh_send_task`) so a long-running
-    /// rate overrun (iperf3 -u -b 4G against a 2 Gbps FIPS pipeline)
-    /// doesn't grow this channel unboundedly and OOM the process. At
-    /// the previous bounded cap of 1024 the bench saw the producer
-    /// stall on permit acquire under steady multi-Gbps load; at the
-    /// new cap of 32768 (~50 MiB worst-case at 1500 B/packet) there
-    /// is roughly 100 ms of headroom at 1 Gbps for the rx_loop to
-    /// drain a stall, which is far more than the rx_loop's per-drain
-    /// scheduler tick. Once full, the producer's `.send().await`
-    /// yields and the chain back-propagates to the kernel TUN tx
-    /// queue, which is the right place to drop.
+    /// Bounded with a generous default so normal sender bursts do not
+    /// stall on semaphore acquisition. macOS pacing happens at the UDP
+    /// egress thread where the real Wi-Fi/interface bottleneck is visible;
+    /// constraining this app queue instead caused the inner TCP flow to
+    /// collapse under iperf. `FIPS_ENDPOINT_DATA_QUEUE_CAP` overrides the
+    /// default for benches.
     pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
     /// Receive endpoint data delivered by FIPS sessions.
     ///
@@ -209,6 +227,17 @@ pub(crate) struct EndpointDataIo {
     pub(crate) event_tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
 }
 
+fn endpoint_data_command_capacity(requested: usize) -> usize {
+    if let Ok(raw) = std::env::var("FIPS_ENDPOINT_DATA_QUEUE_CAP")
+        && let Ok(value) = raw.trim().parse::<usize>()
+        && value > 0
+    {
+        return value;
+    }
+
+    requested.max(1).max(32_768)
+}
+
 /// Commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointCommand {
@@ -218,6 +247,7 @@ pub(crate) enum NodeEndpointCommand {
     Send {
         remote: PeerIdentity,
         payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
     /// **Fire-and-forget** variant of `Send` — no oneshot allocation,
@@ -228,6 +258,7 @@ pub(crate) enum NodeEndpointCommand {
     SendOneway {
         remote: PeerIdentity,
         payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
     },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
@@ -241,6 +272,7 @@ pub(crate) enum NodeEndpointEvent {
         source_node_addr: NodeAddr,
         source_npub: Option<String>,
         payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
     },
 }
 
@@ -458,9 +490,9 @@ pub struct Node {
     sessions: HashMap<NodeAddr, SessionEntry>,
 
     // === Identity Cache ===
-    /// Maps FipsAddress prefix bytes (bytes 1-15) to (NodeAddr, PublicKey).
+    /// Maps FipsAddress prefix bytes (bytes 1-15) to cached peer identity data.
     /// Enables reverse lookup from IPv6 destination to session/routing identity.
-    identity_cache: HashMap<[u8; 15], (NodeAddr, secp256k1::PublicKey, u64)>,
+    identity_cache: HashMap<[u8; 15], IdentityCacheEntry>,
 
     // === Pending TUN Packets ===
     /// Packets queued while waiting for session establishment.
@@ -1106,12 +1138,23 @@ impl Node {
     }
 
     /// Find an operational transport that matches the given transport type name.
+    ///
+    /// Adopted UDP bootstrap transports are point-to-point sockets handed off
+    /// from Nostr/STUN traversal. They must not be reused for ordinary
+    /// `udp host:port` dials discovered through static config, mDNS, or overlay
+    /// adverts: on macOS a `send_to` through the wrong adopted socket can fail
+    /// with `EINVAL`, and even on platforms that allow it the packet would use
+    /// the wrong 5-tuple/NAT mapping. Prefer configured transports and make the
+    /// choice deterministic by lowest transport id instead of HashMap order.
     fn find_transport_for_type(&self, transport_type: &str) -> Option<TransportId> {
         self.transports
             .iter()
-            .find(|(_, handle)| {
-                handle.transport_type().name == transport_type && handle.is_operational()
+            .filter(|(id, handle)| {
+                handle.transport_type().name == transport_type
+                    && handle.is_operational()
+                    && !self.bootstrap_transports.contains(id)
             })
+            .min_by_key(|(id, _)| id.as_u32())
             .map(|(id, _)| *id)
     }
 
@@ -1280,6 +1323,68 @@ impl Node {
                 .any(|other| *other == peer_addr);
             if !peer_has_other_index {
                 self.clear_connected_udp_for_peer(&peer_addr);
+            }
+        }
+    }
+
+    /// Ensure the current FMP receive index resolves to this peer.
+    ///
+    /// Rekey msg1/msg2 handlers pre-register the pending index before
+    /// cutover, but losing that registration in a debug build used to
+    /// panic in the cutover path. Repairing the map here is safe: the
+    /// peer has already promoted the pending session, and the decrypt
+    /// worker registration immediately after cutover depends on the
+    /// same `(transport_id, our_index)` key.
+    pub(in crate::node) fn ensure_current_session_index_registered(
+        &mut self,
+        node_addr: &NodeAddr,
+        context: &'static str,
+    ) -> bool {
+        let Some(peer) = self.peers.get(node_addr) else {
+            return false;
+        };
+        let Some(transport_id) = peer.transport_id() else {
+            warn!(
+                peer = %self.peer_display_name(node_addr),
+                context,
+                "Cannot register current session index without transport id"
+            );
+            return false;
+        };
+        let Some(our_index) = peer.our_index() else {
+            warn!(
+                peer = %self.peer_display_name(node_addr),
+                context,
+                "Cannot register current session index without local index"
+            );
+            return false;
+        };
+
+        let cache_key = (transport_id, our_index.as_u32());
+        match self.peers_by_index.get(&cache_key).copied() {
+            Some(existing) if existing == *node_addr => true,
+            Some(existing) => {
+                warn!(
+                    peer = %self.peer_display_name(node_addr),
+                    previous_owner = %self.peer_display_name(&existing),
+                    transport_id = %transport_id,
+                    our_index = %our_index,
+                    context,
+                    "Repairing current session index with stale owner"
+                );
+                self.peers_by_index.insert(cache_key, *node_addr);
+                true
+            }
+            None => {
+                warn!(
+                    peer = %self.peer_display_name(node_addr),
+                    transport_id = %transport_id,
+                    our_index = %our_index,
+                    context,
+                    "Repairing missing current session index"
+                );
+                self.peers_by_index.insert(cache_key, *node_addr);
+                true
             }
         }
     }
@@ -1892,6 +1997,18 @@ impl Node {
         node_addr: NodeAddr,
         pubkey: secp256k1::PublicKey,
     ) -> bool {
+        let mut prefix = [0u8; 15];
+        prefix.copy_from_slice(&node_addr.as_bytes()[0..15]);
+        if let Some(entry) = self.identity_cache.get(&prefix)
+            && entry.node_addr == node_addr
+            && entry.pubkey == pubkey
+        {
+            // Endpoint sends pass the same PeerIdentity on every packet. Once
+            // validated, avoid re-deriving NodeAddr from the public key in the
+            // data path; that hash showed up in macOS sender profiles.
+            return true;
+        }
+
         let (xonly, _) = pubkey.x_only_public_key();
         let derived_node_addr = NodeAddr::from_pubkey(&xonly);
         if derived_node_addr != node_addr {
@@ -1903,17 +2020,27 @@ impl Node {
             return false;
         }
 
-        let mut prefix = [0u8; 15];
-        prefix.copy_from_slice(&node_addr.as_bytes()[0..15]);
-        self.identity_cache
-            .insert(prefix, (node_addr, pubkey, Self::now_ms()));
+        let now_ms = Self::now_ms();
+        if let Some(entry) = self.identity_cache.get_mut(&prefix)
+            && entry.node_addr == node_addr
+        {
+            entry.pubkey = pubkey;
+            entry.last_seen_ms = now_ms;
+            return true;
+        }
+
+        let npub = encode_npub(&xonly);
+        self.identity_cache.insert(
+            prefix,
+            IdentityCacheEntry::new(node_addr, pubkey, npub, now_ms),
+        );
         // LRU eviction
         let max = self.config.node.cache.identity_size;
         if self.identity_cache.len() > max
             && let Some(oldest_key) = self
                 .identity_cache
                 .iter()
-                .min_by_key(|(_, (_, _, ts))| *ts)
+                .min_by_key(|(_, entry)| entry.last_seen_ms)
                 .map(|(k, _)| *k)
         {
             self.identity_cache.remove(&oldest_key);
@@ -1927,8 +2054,8 @@ impl Node {
         prefix: &[u8; 15],
     ) -> Option<(NodeAddr, secp256k1::PublicKey)> {
         if let Some(entry) = self.identity_cache.get_mut(prefix) {
-            entry.2 = Self::now_ms(); // LRU touch
-            Some((entry.0, entry.1))
+            entry.last_seen_ms = Self::now_ms(); // LRU touch
+            Some((entry.node_addr, entry.pubkey))
         } else {
             None
         }
@@ -1955,7 +2082,7 @@ impl Node {
     ) -> impl Iterator<Item = (&NodeAddr, &secp256k1::PublicKey, u64)> {
         self.identity_cache
             .values()
-            .map(|(addr, pk, ts)| (addr, pk, *ts))
+            .map(|entry| (&entry.node_addr, &entry.pubkey, entry.last_seen_ms))
     }
 
     /// Configured maximum identity cache size.
@@ -2302,17 +2429,8 @@ impl Node {
             )));
         }
 
-        // Use a high cap (32768) regardless of `capacity` — the
-        // caller's hint was sized for a different era of FIPS. At
-        // 1500 B/packet that's ~50 MiB of worst-case buffering,
-        // which is fine for any realistic load and big enough that
-        // the rx_loop drain (256 packets per scheduler tick at
-        // ~30 µs/drain) never has to wait on a permit during the
-        // multi-Gbps single-stream hot path. Replaces the prior
-        // `capacity.max(1)` (which was 1024 by default — too tight,
-        // see `EndpointDataIo::command_tx` docs).
-        let _ = capacity;
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(32768);
+        let command_capacity = endpoint_data_command_capacity(capacity);
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
         // Inbound endpoint-data events use an unbounded channel — see
         // `EndpointDataIo::event_rx` docs for the rationale (kills the
         // per-packet semaphore + the cross-task relay task that used to
@@ -2333,8 +2451,8 @@ impl Node {
         prefix.copy_from_slice(&addr.as_bytes()[0..15]);
         self.identity_cache
             .get(&prefix)
-            .filter(|(node_addr, _, _)| node_addr == addr)
-            .map(|(_, pubkey, _)| *pubkey)
+            .filter(|entry| &entry.node_addr == addr)
+            .map(|entry| entry.pubkey)
     }
 
     pub(crate) fn npub_for_node_addr(&self, addr: &NodeAddr) -> Option<String> {
@@ -2342,11 +2460,8 @@ impl Node {
         prefix.copy_from_slice(&addr.as_bytes()[0..15]);
         self.identity_cache
             .get(&prefix)
-            .filter(|(node_addr, _, _)| node_addr == addr)
-            .map(|(_, pubkey, _)| {
-                let (xonly, _) = pubkey.x_only_public_key();
-                encode_npub(&xonly)
-            })
+            .filter(|entry| &entry.node_addr == addr)
+            .map(|entry| entry.npub.clone())
     }
 
     pub(in crate::node) fn deliver_external_ipv6_packet(
@@ -2460,6 +2575,8 @@ impl Node {
                 node_addr: *node_addr,
                 reason: "no current_addr".into(),
             })?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let connected_socket = peer.connected_udp();
 
         // Prepend 4-byte session-relative timestamp (inner header)
         let timestamp_ms = peer.session_elapsed_ms();
@@ -2538,26 +2655,37 @@ impl Node {
                 // explicit).
                 let header =
                     build_established_header(their_index, reserved_counter, flags, payload_len);
-                // Resolve destination once on this task so the worker
-                // can skip the per-packet address parse / DNS cache
-                // lookup.
                 let transport = transport_for_send;
-                let socket_addr_opt: Option<std::net::SocketAddr> = {
+                // Snapshot the per-peer connected UDP socket before
+                // resolving the fallback address. On the established
+                // steady-state path this socket already carries the
+                // kernel peer address, so re-parsing the configured
+                // transport address and touching the DNS cache on every
+                // packet is pure overhead on the sender hot path.
+                let send_target = {
                     if let TransportHandle::Udp(udp) = transport {
-                        let resolved = udp.resolve_for_off_task(&remote_addr).await.ok();
-                        let sock_clone = udp.async_socket();
-                        match (resolved, sock_clone) {
-                            (Some(sa), Some(_)) => Some(sa),
+                        let socket_addr = {
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            {
+                                match connected_socket.as_ref() {
+                                    Some(socket) => Some(socket.peer_addr()),
+                                    None => udp.resolve_for_off_task(&remote_addr).await.ok(),
+                                }
+                            }
+                            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                            {
+                                udp.resolve_for_off_task(&remote_addr).await.ok()
+                            }
+                        };
+                        match (udp.async_socket(), socket_addr) {
+                            (Some(socket), Some(socket_addr)) => Some((socket, socket_addr)),
                             _ => None,
                         }
                     } else {
                         None
                     }
                 };
-                if let Some(socket_addr) = socket_addr_opt
-                    && let TransportHandle::Udp(udp) = transport
-                    && let Some(socket) = udp.async_socket()
-                {
+                if let Some((socket, socket_addr)) = send_target {
                     // Build the wire buffer **directly** from
                     // `plaintext` with a single allocation:
                     //   `[16 header][4 ts][plaintext...]` with
@@ -2581,16 +2709,10 @@ impl Node {
                     let predicted_bytes = wire_capacity;
                     // Stats / MMP update inline — predicted size
                     // is exact for ChaCha20-Poly1305 (tag is
-                    // constant 16 bytes).
-                    // Snapshot the per-peer connected UDP
-                    // socket (Linux only). When `Some`, the
-                    // worker `sendmsg`s on it with
-                    // msg_name=NULL — the kernel skips the
-                    // per-packet sockaddr + route + neighbor
-                    // resolve.
-                    #[cfg(target_os = "linux")]
-                    let connected_socket =
-                        self.peers.get(node_addr).and_then(|p| p.connected_udp());
+                    // constant 16 bytes). When `connected_socket` is
+                    // `Some`, the worker sends on it without a
+                    // destination sockaddr — the kernel skips the
+                    // per-packet sockaddr + route + neighbor resolve.
                     if let Some(peer) = self.peers.get_mut(node_addr) {
                         peer.link_stats_mut().record_sent(predicted_bytes);
                         if let Some(mmp) = peer.mmp_mut() {
@@ -2602,10 +2724,15 @@ impl Node {
                         cipher: cipher_clone,
                         counter: reserved_counter,
                         wire_buf,
+                        fsp_seal: None,
                         socket,
                         dest_addr: socket_addr,
-                        #[cfg(target_os = "linux")]
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
                         connected_socket,
+                        drop_on_backpressure: plaintext
+                            .first()
+                            .is_some_and(|ty| *ty == SessionMessageType::EndpointData.to_byte()),
+                        queued_at: crate::perf_profile::stamp(),
                     });
                     return Ok(());
                 }
