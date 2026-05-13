@@ -719,6 +719,151 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     }
 }
 
+async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
+    use crate::node::wire::{
+        COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
+    };
+
+    let mut count = 0;
+    while let Ok(packet) = node.packet_rx.try_recv() {
+        if packet.data.len() < COMMON_PREFIX_SIZE {
+            continue;
+        }
+        if let Some(prefix) = CommonPrefix::parse(&packet.data) {
+            if prefix.version != FMP_VERSION {
+                continue;
+            }
+            match prefix.phase {
+                PHASE_MSG1 => node.node.handle_msg1(packet).await,
+                PHASE_MSG2 => node.node.handle_msg2(packet).await,
+                PHASE_ESTABLISHED => node.node.handle_encrypted_frame(packet).await,
+                _ => {}
+            }
+            count += 1;
+        }
+    }
+    count
+}
+
+async fn wait_process_packets_for_node(nodes: &mut [TestNode], index: usize) -> usize {
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let count = process_available_packets_for_node(&mut nodes[index]).await;
+        if count > 0 {
+            return count;
+        }
+    }
+    0
+}
+
+fn drop_queued_packets_for_node(node: &mut TestNode) -> usize {
+    let mut dropped = 0;
+    while node.packet_rx.try_recv().is_ok() {
+        dropped += 1;
+    }
+    dropped
+}
+
+#[tokio::test]
+async fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("session initiation should start");
+
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(count > 0, "SessionSetup should reach responder");
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .state()
+            .is_awaiting_msg3()
+    );
+
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(count > 0, "SessionAck should reach initiator");
+    let initiator_entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert!(initiator_entry.state().is_established());
+    assert!(
+        initiator_entry.handshake_payload().is_some(),
+        "initiator should retain final msg3 for loss recovery"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let dropped = drop_queued_packets_for_node(&mut nodes[1]);
+    assert!(dropped > 0, "fixture should drop the first SessionMsg3");
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .state()
+            .is_awaiting_msg3(),
+        "responder should still be waiting after the dropped msg3"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let now_ms = Node::now_ms();
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(now_ms)
+        .await;
+
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(
+        count > 0,
+        "resender should deliver a replacement SessionMsg3"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .state()
+            .is_established(),
+        "responder should establish from the resent SessionMsg3"
+    );
+
+    nodes[1]
+        .node
+        .send_session_data(&node0_addr, 0, 0, b"responder-proof")
+        .await
+        .expect("responder should send data after establishment");
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(count > 0, "initiator should receive responder proof data");
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_none(),
+        "authentic responder traffic should clear the retained final msg3"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 #[tokio::test]
 async fn test_session_100_nodes() {
     let _guard = lock_large_network_test().await;

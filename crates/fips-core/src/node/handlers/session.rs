@@ -316,6 +316,9 @@ impl Node {
             // counter so a single bad packet doesn't carry forward
             // toward the threshold.
             entry.reset_decrypt_failures();
+            if entry.handshake_payload().is_some() {
+                entry.clear_handshake_payload();
+            }
 
             // Strip FSP inner header (6 bytes) for the timestamp +
             // msg_type + inner_flags fields. The rest of the buffer
@@ -380,6 +383,8 @@ impl Node {
                     src = %self.peer_display_name(src_addr),
                     "Encrypted message but session not established (awaiting handshake completion)"
                 );
+                self.resend_handshake_after_early_encrypted_data(src_addr)
+                    .await;
                 return;
             }
             FspFrameOutcome::BadInnerHeader => {
@@ -838,6 +843,42 @@ impl Node {
             return;
         }
 
+        if entry.is_established() {
+            if let Some(payload) = entry.handshake_payload().map(<[u8]>::to_vec) {
+                if entry.resend_count() < self.config.node.rate_limit.handshake_max_resends {
+                    let my_addr = *self.node_addr();
+                    let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
+                        .with_ttl(self.config.node.session.default_ttl);
+                    let sent = match self.send_session_datagram(&mut datagram).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            debug!(
+                                src = %self.peer_display_name(src_addr),
+                                error = %e,
+                                "Failed to resend final SessionMsg3 after duplicate SessionAck"
+                            );
+                            false
+                        }
+                    };
+                    if sent {
+                        let now_ms = Self::now_ms();
+                        let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+                        entry.record_resend(now_ms + interval);
+                        debug!(
+                            src = %self.peer_display_name(src_addr),
+                            "Duplicate SessionAck after establishment, resent final SessionMsg3"
+                        );
+                    }
+                } else {
+                    entry.clear_handshake_payload();
+                }
+            } else {
+                debug!(src = %self.peer_display_name(src_addr), "SessionAck for already-established session");
+            }
+            self.sessions.insert(*src_addr, entry);
+            return;
+        }
+
         // Must be in Initiating state — check before take to avoid poisoning
         if !entry.is_initiating() {
             debug!(src = %self.peer_display_name(src_addr), "SessionAck but session not in Initiating state");
@@ -867,6 +908,7 @@ impl Node {
         // Send SessionMsg3 (phase 0x3)
         let msg3_wire = SessionMsg3::new(msg3);
         let msg3_payload = msg3_wire.encode();
+        let msg3_resend_payload = msg3_payload.clone();
         let my_addr = *self.node_addr();
         let mut datagram = SessionDatagram::new(my_addr, *src_addr, msg3_payload)
             .with_ttl(self.config.node.session.default_ttl);
@@ -890,7 +932,8 @@ impl Node {
         entry.set_coords_warmup_remaining(self.config.node.session.coords_warmup_packets);
         entry.mark_established(now_ms);
         entry.init_mmp(&self.config.node.session_mmp);
-        entry.clear_handshake_payload();
+        let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
         entry.touch(now_ms);
         self.sessions.insert(*src_addr, entry);
         self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
@@ -899,6 +942,58 @@ impl Node {
         self.flush_pending_packets(src_addr).await;
 
         info!(src = %self.peer_display_name(src_addr), "Session established (initiator, XK)");
+    }
+
+    async fn resend_handshake_after_early_encrypted_data(&mut self, src_addr: &NodeAddr) {
+        let max_resends = self.config.node.rate_limit.handshake_max_resends;
+        let payload = match self.sessions.get(src_addr) {
+            Some(entry)
+                if entry.handshake_payload().is_some() && entry.resend_count() < max_resends =>
+            {
+                entry.handshake_payload().map(<[u8]>::to_vec)
+            }
+            Some(entry) if entry.handshake_payload().is_some() => {
+                let name = self.peer_display_name(src_addr);
+                if let Some(entry) = self.sessions.get_mut(src_addr) {
+                    entry.clear_handshake_payload();
+                }
+                debug!(
+                    src = %name,
+                    "Early encrypted data arrived after handshake resend budget was exhausted"
+                );
+                None
+            }
+            _ => None,
+        };
+        let Some(payload) = payload else {
+            return;
+        };
+
+        let my_addr = *self.node_addr();
+        let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
+            .with_ttl(self.config.node.session.default_ttl);
+        let sent = match self.send_session_datagram(&mut datagram).await {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    error = %e,
+                    "Failed to resend session handshake after early encrypted data"
+                );
+                false
+            }
+        };
+        if sent {
+            let now_ms = Self::now_ms();
+            let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            if let Some(entry) = self.sessions.get_mut(src_addr) {
+                entry.record_resend(now_ms + interval);
+            }
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Resent session handshake after early encrypted data"
+            );
+        }
     }
 
     /// Handle an incoming SessionMsg3 (Noise XK msg3).

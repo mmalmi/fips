@@ -186,6 +186,33 @@ impl Node {
             info!(dest = %name, "Session handshake timed out, removing");
             self.sessions.remove(addr);
             self.pending_tun_packets.remove(addr);
+            self.pending_endpoint_data.remove(addr);
+        }
+
+        // Established initiators keep the final XK msg3 for a short resend
+        // window. Once the retry budget is exhausted, clear it; the session
+        // remains usable and ordinary decrypt-failure recovery handles later
+        // divergence.
+        let exhausted_final_msg3: Vec<crate::NodeAddr> = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| {
+                entry.is_established()
+                    && entry.handshake_payload().is_some()
+                    && entry.resend_count() >= max_resends
+            })
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        for addr in exhausted_final_msg3 {
+            let name = self.peer_display_name(&addr);
+            if let Some(entry) = self.sessions.get_mut(&addr) {
+                entry.clear_handshake_payload();
+            }
+            debug!(
+                dest = %name,
+                "Final session handshake resend budget exhausted"
+            );
         }
 
         // Second pass: collect resend candidates
@@ -194,8 +221,7 @@ impl Node {
             .sessions
             .iter()
             .filter(|(_, entry)| {
-                !entry.is_established()
-                    && entry.handshake_payload().is_some()
+                entry.handshake_payload().is_some()
                     && entry.resend_count() < max_resends
                     && entry.next_resend_at_ms() > 0
                     && now_ms >= entry.next_resend_at_ms()

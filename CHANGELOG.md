@@ -328,6 +328,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- End-to-end XK session setup now keeps and resends the final
+  `SessionMsg3` for a short retry window after the initiator enters
+  `Established`. This prevents one-way half-established sessions when
+  the final handshake packet is lost: the initiator no longer sends
+  encrypted data forever to a responder still waiting in `AwaitingMsg3`,
+  and the responder can also resend its `SessionAck` when early encrypted
+  data arrives.
 - Rekey cutover now repairs a missing or stale FMP receive-index cache
   entry before registering the promoted session with the decrypt-worker
   pool. Previously this path relied on a debug assert that the pending

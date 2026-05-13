@@ -312,8 +312,9 @@ impl SessionEntry {
 
     /// Store the encoded session-layer payload for potential resend.
     ///
-    /// For initiators, this is the SessionSetup payload bytes.
-    /// For responders, this is the SessionAck payload bytes.
+    /// For initiators, this is the SessionSetup payload bytes while waiting
+    /// for msg2, and the final SessionMsg3 payload briefly after entering
+    /// Established. For responders, this is the SessionAck payload bytes.
     /// The payload is re-wrapped in a fresh SessionDatagram on each resend
     /// so routing can adapt to topology changes.
     pub(crate) fn set_handshake_payload(&mut self, payload: Vec<u8>, next_resend_at_ms: u64) {
@@ -327,7 +328,7 @@ impl SessionEntry {
         self.handshake_payload.as_deref()
     }
 
-    /// Clear the stored handshake payload (called on Established transition).
+    /// Clear the stored handshake payload.
     pub(crate) fn clear_handshake_payload(&mut self) {
         self.handshake_payload = None;
         self.next_resend_at_ms = 0;
