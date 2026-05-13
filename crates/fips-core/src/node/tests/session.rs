@@ -1,12 +1,14 @@
 //! End-to-end session establishment tests.
 
 use super::*;
+use crate::config::RoutingMode;
 use crate::node::session::EndToEndState;
 use crate::node::tests::spanning_tree::{
     TestNode, cleanup_nodes, generate_random_edges, lock_large_network_test,
     process_available_packets, run_tree_test, run_tree_test_with_mtus, verify_tree_convergence,
 };
 use crate::protocol::{SessionAck, SessionDatagram};
+use crate::tree::{ParentDeclaration, TreeCoordinate};
 
 /// Populate all nodes' coordinate caches with each other's coords.
 ///
@@ -1146,6 +1148,53 @@ fn build_ipv6_packet(
     packet
 }
 
+fn make_reply_learned_node_with_tree_peer() -> Node {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, peer_identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let peer_addr = *peer_identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, peer_identity, 2000)
+        .unwrap();
+
+    let our_addr = *node.node_addr();
+    let peer_coords = TreeCoordinate::from_addrs(vec![peer_addr, our_addr]).unwrap();
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(peer_addr, our_addr, 1, 2000),
+        peer_coords,
+    );
+    assert!(
+        node.is_tree_peer(&peer_addr),
+        "fixture peer must be a tree peer"
+    );
+    node
+}
+
+fn insert_initiating_session(node: &mut Node, dest: &Identity) {
+    let dest_addr = *dest.node_addr();
+    let handshake =
+        crate::noise::HandshakeState::new_initiator(node.identity().keypair(), dest.pubkey_full());
+    let entry = crate::node::session::SessionEntry::new(
+        dest_addr,
+        dest.pubkey_full(),
+        EndToEndState::Initiating(handshake),
+        1000,
+        true,
+    );
+    node.sessions.insert(dest_addr, entry);
+}
+
+fn add_direct_peer_for_identity(node: &mut Node, identity: &Identity) {
+    let peer_identity = crate::PeerIdentity::from_pubkey_full(identity.pubkey_full());
+    node.peers.insert(
+        *identity.node_addr(),
+        crate::peer::ActivePeer::new(peer_identity, LinkId::new(99), 2000),
+    );
+}
+
 #[test]
 fn test_identity_cache_populated_on_promote() {
     use crate::peer::PromotionResult;
@@ -1305,6 +1354,81 @@ async fn test_tun_outbound_triggers_session_initiation() {
     assert_eq!(delivered[0], ipv6_packet);
 
     cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    add_direct_peer_for_identity(&mut node, &dest);
+    insert_initiating_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_some(),
+        "fixture should model a stale direct route that still looks sendable"
+    );
+
+    let baseline = node.stats().discovery.req_initiated;
+    let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
+
+    node.send_endpoint_data(remote, b"status-probe".to_vec())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        node.pending_endpoint_data
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "endpoint payload should stay queued until the pending session recovers"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "a stale pending session must start mesh discovery in reply-learned mode"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    add_direct_peer_for_identity(&mut node, &dest);
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_initiating_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_some(),
+        "fixture should model a stale direct route that still looks sendable"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_tun_outbound(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_tun_packets
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "TUN packet should stay queued until the pending session recovers"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "a stale pending session must start mesh discovery in reply-learned mode"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
 }
 
 #[tokio::test]

@@ -1752,6 +1752,12 @@ impl Node {
                 return self.send_session_endpoint_data(&dest_addr, &payload).await;
             }
             self.queue_pending_endpoint_data(dest_addr, payload);
+            let should_discover = self.config.node.routing.mode
+                == crate::config::RoutingMode::ReplyLearned
+                || self.find_next_hop(&dest_addr).is_none();
+            if should_discover {
+                self.maybe_initiate_lookup(&dest_addr).await;
+            }
             return Ok(());
         }
 
@@ -2504,6 +2510,12 @@ impl Node {
             }
             // Session exists but not yet established — queue the packet
             self.queue_pending_packet(dest_addr, ipv6_packet);
+            let should_discover = self.config.node.routing.mode
+                == crate::config::RoutingMode::ReplyLearned
+                || self.find_next_hop(&dest_addr).is_none();
+            if should_discover {
+                self.maybe_initiate_lookup(&dest_addr).await;
+            }
             return;
         }
 
