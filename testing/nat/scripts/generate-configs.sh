@@ -31,6 +31,7 @@ npub_b="$(echo "$keys_b" | awk -F= '/^npub=/{print $2}')"
 relay_addr="ws://172.31.254.30:7777"
 stun_addr="stun:172.31.254.40:3478"
 share_local_candidates=false
+lan_discovery_enabled=true
 if [ "$SCENARIO" = "lan" ] || [ "$SCENARIO" = "nostr-publish-consume" ] \
         || [ "$SCENARIO" = "stun-faults" ]; then
     relay_addr="ws://172.31.10.30:7777"
@@ -42,6 +43,11 @@ if [ "$SCENARIO" = "lan" ]; then
     # when STUN observation times out and only same-LAN host candidates remain.
     stun_addr="stun:127.0.0.1:9"
     share_local_candidates=true
+fi
+if [ "$SCENARIO" = "stun-faults" ]; then
+    # The fault test needs STUN failure to be observable. mDNS would otherwise
+    # reconnect the same-link test peers immediately and mask the injected fault.
+    lan_discovery_enabled=false
 fi
 
 peer_block_a=$(cat <<EOF
@@ -106,6 +112,8 @@ node:
       punch_duration_ms: 2500
       advert_ttl_secs: 60
       advert_refresh_secs: 20
+    lan:
+      enabled: $lan_discovery_enabled
 
 tun:
   enabled: true
