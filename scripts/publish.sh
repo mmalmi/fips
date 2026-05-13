@@ -64,16 +64,16 @@ publish_crate() {
 
     if output=$(cargo publish -p "$crate" $DRY_RUN $ALLOW_DIRTY 2>&1); then
         echo "$output"
-        echo "✓ ${crate} published successfully"
+        echo "[ok] ${crate} published successfully"
         if [[ -z "$DRY_RUN" ]]; then
             echo "Waiting ${WAIT_TIME}s for crates.io to index..."
             sleep "$WAIT_TIME"
         fi
     elif echo "$output" | grep -q "already exists"; then
-        echo "✓ ${crate} already published at this version (skipping)"
+        echo "[ok] ${crate} already published at this version (skipping)"
     else
         echo "$output"
-        echo "✗ Failed to publish ${crate} (continuing...)"
+        echo "[fail] Failed to publish ${crate} (continuing...)"
         FAILED_CRATES+=("$crate")
     fi
 }
@@ -97,9 +97,9 @@ done
 echo ""
 echo "=========================================="
 if [[ ${#FAILED_CRATES[@]} -eq 0 ]]; then
-    echo "✓ All crates published successfully!"
+    echo "[ok] All crates published successfully!"
 else
-    echo "✗ Failed to publish: ${FAILED_CRATES[*]}"
+    echo "[fail] Failed to publish: ${FAILED_CRATES[*]}"
     exit 1
 fi
 echo "=========================================="
