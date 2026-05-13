@@ -524,6 +524,112 @@ async fn test_reply_learned_forwards_lookup_to_direct_non_tree_target() {
 }
 
 #[tokio::test]
+async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
+    // A reply-learned origin may have a valid direct peer that is not in its
+    // current tree view. Discovery must still ask that peer when no bloom/tree
+    // route is available, or stale sessions can remain pending forever.
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[0].node.tree_state_mut().remove_peer(&node1_addr);
+    nodes[0].node.tree_state_mut().become_root();
+    assert!(
+        nodes[0]
+            .node
+            .peers
+            .get(&node1_addr)
+            .is_some_and(|peer| peer.can_send()),
+        "node1 should remain a direct sendable peer"
+    );
+    assert!(
+        !nodes[0].node.is_tree_peer(&node1_addr),
+        "node1 should not be a tree peer in this regression fixture"
+    );
+
+    let target = make_node_addr(0x55);
+    let sent = nodes[0].node.initiate_lookup(&target, 5).await;
+    assert_eq!(
+        sent, 1,
+        "non-tree sendable peer should receive fallback lookup"
+    );
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert_eq!(
+        nodes[1].node.recent_requests.len(),
+        1,
+        "fallback lookup should arrive at the non-tree peer"
+    );
+    let recent = nodes[1].node.recent_requests.values().next().unwrap();
+    assert_eq!(recent.from_peer, node0_addr);
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_reply_learned_forward_fallback_uses_non_tree_peer_without_origin_echo() {
+    // Topology: node0 -- node1 -- node2. Node1 has node2 as a live direct peer
+    // but no tree edge to it. A lookup from node0 for an unknown target should
+    // fan out to node2 in reply-learned fallback, without echoing back to the
+    // originator and confusing request_id ownership.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .get(&node2_addr)
+            .is_some_and(|peer| peer.can_send()),
+        "node2 should remain a direct sendable peer"
+    );
+    assert!(
+        !nodes[1].node.is_tree_peer(&node2_addr),
+        "node2 should not be a tree peer in this regression fixture"
+    );
+
+    let target = make_node_addr(0x66);
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4343, target, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[2].node.recent_requests.contains_key(&4343),
+        "reply-learned fallback should fan out through the non-tree peer"
+    );
+    assert!(
+        !nodes[0].node.recent_requests.contains_key(&4343),
+        "transit fallback must not echo lookup requests to the originator"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_request_dedup_convergent_paths() {
     // Topology: triangle (node0 — node1, node0 — node2, node1 — node2)
     // A request from node0 targeting node2 may reach it via two paths

@@ -339,8 +339,10 @@ impl Node {
     ///
     /// Fallback: if no tree peer's bloom matches, original routing tries
     /// non-tree bloom-matching peers. Reply-learned routing floods sendable
-    /// tree peers instead, which avoids trusting reachability claims for
-    /// first-contact discovery at the cost of more traffic.
+    /// peers instead, which avoids trusting reachability claims for first-contact
+    /// discovery at the cost of more traffic. Transit forwarding excludes the
+    /// previous hop and the originator so request IDs keep their originator vs.
+    /// relay meaning.
     async fn forward_lookup_request(&mut self, from: &NodeAddr, mut request: LookupRequest) {
         if !request.forward() {
             return;
@@ -399,7 +401,7 @@ impl Node {
                     self.peers
                         .iter()
                         .filter(|(addr, peer)| {
-                            **addr != *from && self.is_tree_peer(addr) && peer.can_send()
+                            **addr != *from && **addr != request.origin && peer.can_send()
                         })
                         .map(|(addr, _)| *addr)
                         .collect()
@@ -472,9 +474,9 @@ impl Node {
         let origin_coords = self.tree_state().my_coords().clone();
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
-        // Send only to tree peers whose bloom filter contains the target.
-        // Reply-learned mode can fall back to all sendable tree peers so the
-        // first contact does not depend on peer reachability claims.
+        // Send first to tree peers whose bloom filter contains the target.
+        // Reply-learned mode can fall back to all sendable peers so first
+        // contact does not depend on stale tree state or reachability claims.
         let mut peer_addrs: Vec<NodeAddr> = self
             .peers
             .iter()
@@ -487,7 +489,7 @@ impl Node {
             peer_addrs = self
                 .peers
                 .iter()
-                .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.can_send())
+                .filter(|(_, peer)| peer.can_send())
                 .map(|(addr, _)| *addr)
                 .collect();
         }
