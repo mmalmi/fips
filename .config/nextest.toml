@@ -12,3 +12,7 @@ node-synthetic = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'test(node::tests::)'
 test-group = 'node-synthetic'
+
+[[profile.ci.overrides]]
+filter = 'test(node::tests::)'
+test-group = 'node-synthetic'
