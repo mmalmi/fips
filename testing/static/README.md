@@ -270,6 +270,17 @@ Runs iperf3 with:
 - Parallel streams: 8 (`-P 8`)
 - Protocol: TCP over IPv6
 
+For before/after measurements across commits or branches:
+
+```bash
+./testing/static/scripts/iperf-compare-refs.sh origin/master HEAD mesh
+```
+
+The comparison script builds each ref into a separate Docker image, runs the
+same topology and `iperf3` settings for both images, and prints a bandwidth
+summary. Override `DURATION`, `PARALLEL`, `SETTLE_SECONDS`, or `IPERF_TIMEOUT`
+in the environment when needed.
+
 ## Network Impairment
 
 The `netem.sh` script simulates adverse network conditions using `tc`/`netem`

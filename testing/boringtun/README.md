@@ -14,3 +14,15 @@ docker compose -f testing/boringtun/docker-compose.yml down
 
 The generated WireGuard key material is written under
 `testing/boringtun/generated/` and is ignored by git.
+
+For FIPS-to-FIPS revision comparisons, use the static topology comparison
+script:
+
+```bash
+testing/static/scripts/iperf-compare-refs.sh origin/master HEAD mesh
+```
+
+That script builds each ref into a separate `fips-test:*` image, runs the
+same static `iperf3` topology against both images, and prints a bandwidth
+summary for each path. Override `DURATION`, `PARALLEL`, `SETTLE_SECONDS`, or
+`IPERF_TIMEOUT` in the environment when needed.
