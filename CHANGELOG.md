@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Worker-reported FMP AEAD failures are now suppressed during the bounded
+  fresh-session drain window until the new worker replay window authenticates
+  traffic. This prevents stale ciphertext left over from peer restart, roaming,
+  or rekey from immediately triggering another recovery rekey on a healthy new
+  link session.
 - Stale Nostr UDP traversal completions/failures are now ignored once the peer
   is already connected or already handshaking. This prevents speculative direct
   path retries from creating duplicate link attempts and recovery-rekey noise

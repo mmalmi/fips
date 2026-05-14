@@ -7,6 +7,8 @@
 //! eviction is reserved for cases where recovery cannot be started.
 
 use super::*;
+use crate::node::decrypt_worker::DecryptFailureReport;
+use std::time::{Duration, Instant};
 
 async fn make_started_udp_transport(id: u32) -> TransportHandle {
     let (packet_tx, _packet_rx) = packet_channel(64);
@@ -164,4 +166,107 @@ async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_ava
 
     let mut transport = node.transports.remove(&transport_id).unwrap();
     transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
+    const THRESHOLD: u32 = 20;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    node.transports
+        .insert(transport_id, make_started_udp_transport(1).await);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+
+    for counter in 1..=THRESHOLD + 5 {
+        node.handle_decrypt_failure_report(&DecryptFailureReport {
+            source_node_addr: node_addr,
+            fmp_counter: counter as u64,
+            fmp_replay_highest: 0,
+        })
+        .await;
+    }
+
+    let peer = node
+        .get_peer(&node_addr)
+        .expect("fresh-session stale packet drain must not remove peer");
+    assert_eq!(
+        peer.consecutive_decrypt_failures(),
+        0,
+        "fresh worker failures before any authenticated counter should be ignored"
+    );
+    assert!(
+        !peer.rekey_in_progress(),
+        "fresh stale packet drain must not start another recovery rekey"
+    );
+
+    let mut transport = node.transports.remove(&transport_id).unwrap();
+    transport.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_worker_decrypt_failures_count_after_authenticated_counter() {
+    const THRESHOLD: u32 = 20;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+
+    for counter in 1..=THRESHOLD {
+        node.handle_decrypt_failure_report(&DecryptFailureReport {
+            source_node_addr: node_addr,
+            fmp_counter: counter as u64,
+            fmp_replay_highest: 1,
+        })
+        .await;
+    }
+
+    assert!(
+        node.get_peer(&node_addr).is_none(),
+        "worker failures must still trigger recovery/removal once the session has authenticated traffic"
+    );
+}
+
+#[tokio::test]
+async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
+    const THRESHOLD: u32 = 20;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.get_peer_mut(&node_addr)
+        .expect("promoted peer")
+        .set_session_established_at_for_test(Instant::now() - Duration::from_secs(31));
+
+    for counter in 1..=THRESHOLD {
+        node.handle_decrypt_failure_report(&DecryptFailureReport {
+            source_node_addr: node_addr,
+            fmp_counter: counter as u64,
+            fmp_replay_highest: 0,
+        })
+        .await;
+    }
+
+    assert!(
+        node.get_peer(&node_addr).is_none(),
+        "fresh-session grace must be bounded so true key mismatch still recovers"
+    );
 }

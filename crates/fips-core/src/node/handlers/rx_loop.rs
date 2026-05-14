@@ -322,9 +322,10 @@ impl Node {
         debug!(
             peer = %self.peer_display_name(&report.source_node_addr),
             counter = report.fmp_counter,
+            replay_highest = report.fmp_replay_highest,
             "Worker FMP AEAD decryption failed"
         );
-        self.handle_decrypt_failure(&report.source_node_addr).await;
+        self.handle_decrypt_failure_report(&report).await;
     }
 
     /// Drain up to `budget` queued fallbacks without yielding back to

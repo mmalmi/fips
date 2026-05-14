@@ -181,6 +181,7 @@ pub(crate) struct DecryptFallback {
 pub(crate) struct DecryptFailureReport {
     pub source_node_addr: NodeAddr,
     pub fmp_counter: u64,
+    pub fmp_replay_highest: u64,
 }
 
 /// Event emitted by the decrypt worker to the rx_loop.
@@ -429,6 +430,7 @@ fn handle_job(
 
     // Replay-window check before AEAD work to avoid wasting CPU on
     // replays. **Direct &mut access** — no Arc<Mutex> lock acquire.
+    let fmp_replay_highest = state.fmp_replay.highest();
     if !state.fmp_replay.check(fmp_counter) {
         return Ok(()); // replay; drop silently
     }
@@ -446,6 +448,7 @@ fn handle_job(
             let _ = fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                 source_node_addr,
                 fmp_counter,
+                fmp_replay_highest,
             }));
             return Ok(());
         }

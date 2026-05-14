@@ -16,6 +16,7 @@
 //! effects under the shard architecture.
 
 use crate::node::Node;
+use crate::node::decrypt_worker::DecryptFailureReport;
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
@@ -24,6 +25,12 @@ use tracing::{debug, info, trace, warn};
 
 /// Start link-session recovery after this many consecutive FMP AEAD failures.
 const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
+/// Newly established worker-owned FMP sessions can briefly receive encrypted
+/// packets from the peer's previous link session after restart, rekey, roaming,
+/// or NAT traversal handoff. Until one packet authenticates on the new replay
+/// window, treat those first failures as stale drain noise instead of starting
+/// another recovery rekey.
+const DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS: u64 = 30;
 
 enum DecryptFailureAction {
     None,
@@ -509,5 +516,34 @@ impl Node {
                 self.schedule_reconnect(addr, now_ms);
             }
         }
+    }
+
+    /// Handle an AEAD failure reported by the worker-owned FMP decrypt path.
+    ///
+    /// The worker owns the replay window for production traffic, so it can tell
+    /// us whether the current session has authenticated anything yet. That lets
+    /// us ignore a bounded startup drain of stale ciphertext after peer restart
+    /// or rekey while keeping the normal recovery path for established sessions.
+    pub(in crate::node) async fn handle_decrypt_failure_report(
+        &mut self,
+        report: &DecryptFailureReport,
+    ) {
+        let Some(peer) = self.peers.get(&report.source_node_addr) else {
+            return;
+        };
+        let session_age = peer.session_established_at().elapsed();
+        if report.fmp_replay_highest == 0
+            && session_age.as_secs() < DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS
+        {
+            trace!(
+                peer = %self.peer_display_name(&report.source_node_addr),
+                counter = report.fmp_counter,
+                session_age_ms = session_age.as_millis(),
+                "Ignoring likely stale FMP AEAD failure during fresh-session drain window"
+            );
+            return;
+        }
+
+        self.handle_decrypt_failure(&report.source_node_addr).await;
     }
 }

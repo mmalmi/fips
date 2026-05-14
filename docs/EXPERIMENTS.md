@@ -85,3 +85,27 @@
 - Regression tests: added coverage for ignored handoffs and ignored fallback
   address attempts after a peer is already active, plus kept the reply-learned
   first-contact route test green.
+
+## 2026-05-14 - Fresh FMP session stale-packet drain
+
+- Observation: after all peers were on the stale-traversal fix, mini still
+  logged worker FMP AEAD recovery rekeys for VM peers shortly after reconnect.
+  These were clustered around restart/rejoin windows rather than steady-state
+  throughput runs.
+- Correlation: at the same time, raw LAN and Tailscale pings from the MacBook
+  to mini stayed healthy with 0% loss and single-digit millisecond averages,
+  while the pre-restart nvpn path briefly hit multi-second ping queues. That
+  separates general Screen Sharing/Wi-Fi stutter from an nvpn-specific stale
+  session drain problem.
+- Root cause: a newly registered worker-owned FMP session starts with an empty
+  replay window. Stale encrypted datagrams from the previous link session can
+  pass the replay-window precheck, fail AEAD, and reach the recovery threshold
+  before the first clean packet on the new session resets the failure streak.
+- Fix: worker decrypt-failure reports now include the worker replay-window
+  highest accepted counter. During a bounded 30 second fresh-session window,
+  failures are ignored while that highest counter is still zero. Once any
+  packet authenticates, or once the grace window expires, the normal threshold
+  rekey/removal recovery path applies.
+- Regression tests: added coverage that fresh worker failures are suppressed,
+  that failures count normally after an authenticated counter, and that the
+  fresh-session grace is bounded.
