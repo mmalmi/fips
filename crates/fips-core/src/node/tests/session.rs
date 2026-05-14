@@ -470,6 +470,74 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[tokio::test]
+async fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary() {
+    // A-B-C with no preloaded coordinate cache. A must discover C through B,
+    // establish the end-to-end endpoint-data session over that route, and keep
+    // B as pure transit.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let mut transit_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("transit endpoint data I/O should attach");
+    let mut bob_endpoint = nodes[2]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("bob endpoint data I/O should attach");
+
+    let alice_addr = *nodes[0].node.node_addr();
+    let bob_addr = *nodes[2].node.node_addr();
+    let bob_identity = PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .send_endpoint_data(bob_identity, b"first-contact".to_vec())
+        .await
+        .expect("alice endpoint data should queue and trigger discovery");
+
+    for _ in 0..120 {
+        drain_to_quiescence(&mut nodes).await;
+        if let Ok(event) = bob_endpoint.event_rx.try_recv() {
+            match event {
+                NodeEndpointEvent::Data {
+                    source_node_addr,
+                    source_npub,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(source_node_addr, alice_addr);
+                    assert_eq!(source_npub, Some(nodes[0].node.npub()));
+                    assert_eq!(payload, b"first-contact");
+                }
+            }
+            assert!(
+                nodes[1].node.get_session(&alice_addr).is_none(),
+                "transit node must not create an app endpoint session for Alice"
+            );
+            assert!(
+                nodes[1].node.get_session(&bob_addr).is_none(),
+                "transit node must not create an app endpoint session for Bob"
+            );
+            assert!(
+                transit_endpoint.event_rx.try_recv().is_err(),
+                "transit node must not receive app endpoint data"
+            );
+            cleanup_nodes(&mut nodes).await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    cleanup_nodes(&mut nodes).await;
+    panic!("reply-learned first-contact endpoint data did not reach Bob");
+}
+
 // ============================================================================
 // Integration tests: 3-node forwarded session
 // ============================================================================

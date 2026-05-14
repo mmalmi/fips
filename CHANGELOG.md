@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stale Nostr UDP traversal completions/failures are now ignored once the peer
+  is already connected or already handshaking. This prevents speculative direct
+  path retries from creating duplicate link attempts and recovery-rekey noise
+  for peers that are already reachable through the mesh.
 - Reply-learned discovery now fans lookup requests out to live peers even when
   a tree/bloom candidate exists. This prevents stale tree state or
   NAT-asymmetric VM/host topologies from leaving peers permanently pending when

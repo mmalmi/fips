@@ -60,3 +60,28 @@
   claims.
 - Regression tests: added origin and transit fanout cases where a tree/bloom
   match exists and a live non-tree peer must still receive the lookup.
+- Deployment follow-up: once the VM daemons were rebuilt against
+  `fips-core`/`fips-endpoint` 0.3.3 and restarted, mini recovered from 6/8 to
+  8/8 peers and mini-to-VM pings succeeded with 0% loss. Product version alone
+  was not enough to distinguish the stale core because all daemons still
+  reported `nvpn` 4.0.15.
+
+## 2026-05-14 - Stale NAT traversal churn for already-routed peers
+
+- Observation: after the VM daemons were updated, mini usually saw all 8 peers
+  but still logged repeated `NAT traversal failed` lines for ubuntu-dev,
+  hashtree-node, and win11-dev, followed by `Session AEAD failures exceeded
+  threshold; starting recovery rekey`. A 90 second mini-to-ubuntu ping still
+  lost 1/90 packets and saw a 250 ms spike, while MacBook-to-mini stayed at 0%
+  loss.
+- Correlation: those peers were already reachable over FIPS when stale Nostr
+  traversal events arrived. The failure handler logged and attempted fallback
+  dialing before checking whether the peer had become active; the success path
+  could also adopt a traversal socket for an already-active peer.
+- Fix: stale Nostr traversal successes/failures now no-op when the peer is
+  already connected or has a handshake in progress. This keeps direct-path
+  probing from racing the mesh route and producing duplicate handshakes/rekey
+  recovery for peers that are already online.
+- Regression tests: added coverage for ignored handoffs and ignored fallback
+  address attempts after a peer is already active, plus kept the reply-learned
+  first-contact route test green.

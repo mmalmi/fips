@@ -907,6 +907,60 @@ fn test_schedule_retry_skips_connected_peer() {
 }
 
 #[tokio::test]
+async fn test_try_peer_addresses_skips_connected_peer() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, peer_identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let peer_config = crate::config::PeerConfig::new(peer_identity.npub(), "udp", "127.0.0.1:9");
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, peer_identity, 2000)
+        .unwrap();
+    let link_count = node.link_count();
+    let connection_count = node.connection_count();
+
+    node.try_peer_addresses(&peer_config, peer_identity, true)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        node.link_count(),
+        link_count,
+        "stale retry/traversal fallback must not create a duplicate link"
+    );
+    assert_eq!(
+        node.connection_count(),
+        connection_count,
+        "stale retry/traversal fallback must not create a duplicate handshake"
+    );
+}
+
+#[tokio::test]
+async fn test_try_peer_addresses_skips_connecting_peer() {
+    let mut node = make_node();
+    let peer_identity = make_peer_identity();
+    let peer_config = crate::config::PeerConfig::new(peer_identity.npub(), "udp", "127.0.0.1:9");
+    let pending = PeerConnection::outbound(LinkId::new(1), peer_identity, 1000);
+    node.add_connection(pending).unwrap();
+
+    node.try_peer_addresses(&peer_config, peer_identity, true)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "stale retry/traversal fallback must not start a second handshake"
+    );
+    assert_eq!(
+        node.link_count(),
+        0,
+        "stale retry/traversal fallback must not allocate a link while a handshake is pending"
+    );
+}
+
+#[tokio::test]
 async fn test_process_pending_retries_drops_expired_entries() {
     let mut node = make_node();
     let peer_identity = Identity::generate();

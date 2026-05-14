@@ -172,6 +172,14 @@ impl Node {
             .await
     }
 
+    fn is_connecting_to_peer(&self, peer_node_addr: &NodeAddr) -> bool {
+        self.connections.values().any(|conn| {
+            conn.expected_identity()
+                .map(|id| id.node_addr() == peer_node_addr)
+                .unwrap_or(false)
+        })
+    }
+
     /// Initiate a connection to a peer on a specific transport and address.
     ///
     /// For connectionless transports (UDP, Ethernet): allocates a link, starts
@@ -451,6 +459,23 @@ impl Node {
             match event {
                 BootstrapEvent::Established { traversal } => {
                     let peer_npub = traversal.peer_npub.clone();
+                    if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_npub) {
+                        let peer_addr = *peer_identity.node_addr();
+                        if self.peers.contains_key(&peer_addr) {
+                            debug!(
+                                peer_npub = %peer_npub,
+                                "Ignoring established NAT traversal for already-connected peer"
+                            );
+                            continue;
+                        }
+                        if self.is_connecting_to_peer(&peer_addr) {
+                            debug!(
+                                peer_npub = %peer_npub,
+                                "Ignoring established NAT traversal while peer handshake is already in progress"
+                            );
+                            continue;
+                        }
+                    }
                     match self.adopt_established_traversal(traversal).await {
                         Ok(_) => {
                             info!(peer_npub = %peer_npub, "Adopted NAT traversal socket");
@@ -467,6 +492,28 @@ impl Node {
                     peer_config,
                     reason,
                 } => {
+                    let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
+                        Ok(identity) => identity,
+                        Err(_) => continue,
+                    };
+                    let node_addr = *peer_identity.node_addr();
+                    if self.peers.contains_key(&node_addr) {
+                        debug!(
+                            npub = %peer_config.npub,
+                            error = %reason,
+                            "Ignoring failed NAT traversal for already-connected peer"
+                        );
+                        continue;
+                    }
+                    if self.is_connecting_to_peer(&node_addr) {
+                        debug!(
+                            npub = %peer_config.npub,
+                            error = %reason,
+                            "Ignoring failed NAT traversal while peer handshake is already in progress"
+                        );
+                        continue;
+                    }
+
                     let now_ms = Self::now_ms();
                     let decision = bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
                     if decision.should_warn {
@@ -517,11 +564,6 @@ impl Node {
                         });
                     }
 
-                    let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
-                        Ok(identity) => identity,
-                        Err(_) => continue,
-                    };
-
                     if self
                         .try_peer_addresses(&peer_config, peer_identity, false)
                         .await
@@ -530,7 +572,6 @@ impl Node {
                         continue;
                     }
 
-                    let node_addr = *peer_identity.node_addr();
                     self.schedule_retry(node_addr, now_ms);
                     if let Some(cooldown_until_ms) = decision.cooldown_until_ms
                         && let Some(state) = self.retry_pending.get_mut(&node_addr)
@@ -1928,6 +1969,22 @@ impl Node {
         peer_identity: PeerIdentity,
         allow_bootstrap_nat: bool,
     ) -> Result<(), NodeError> {
+        let peer_node_addr = *peer_identity.node_addr();
+        if self.peers.contains_key(&peer_node_addr) {
+            debug!(
+                npub = %peer_config.npub,
+                "Peer already exists, skipping address attempts"
+            );
+            return Ok(());
+        }
+        if self.is_connecting_to_peer(&peer_node_addr) {
+            debug!(
+                npub = %peer_config.npub,
+                "Connection already in progress, skipping address attempts"
+            );
+            return Ok(());
+        }
+
         // Static-first dialing: avoid delaying configured address attempts on
         // advert fetch/network latency.
         let static_addresses = self.static_peer_addresses(peer_config);
@@ -2070,6 +2127,20 @@ impl Node {
             }
         })?;
         let peer_node_addr = *peer_identity.node_addr();
+        if self.peers.contains_key(&peer_node_addr) {
+            debug!(
+                peer_npub = %traversal.peer_npub,
+                "Ignoring NAT traversal handoff for already-connected peer"
+            );
+            return Err(NodeError::PeerAlreadyExists(peer_node_addr));
+        }
+        if self.is_connecting_to_peer(&peer_node_addr) {
+            debug!(
+                peer_npub = %traversal.peer_npub,
+                "Ignoring NAT traversal handoff while peer handshake is already in progress"
+            );
+            return Err(NodeError::PeerAlreadyExists(peer_node_addr));
+        }
 
         self.peer_aliases
             .insert(peer_node_addr, peer_identity.short_npub());
