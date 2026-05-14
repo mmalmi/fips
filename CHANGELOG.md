@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- FSP packets from the previous key epoch that arrive during the post-rekey
+  drain window no longer count toward session AEAD recovery if they are too old
+  or replayed to authenticate with the retained previous session. Current-epoch
+  failures still trigger recovery, but stale old-epoch drain traffic no longer
+  causes unnecessary rekey churn.
 - FSP rekey initiators now retain and resend the final XK `SessionMsg3`
   while the responder has not proven the pending session. Old-session traffic
   during the drain window no longer clears that retained rekey payload, which

@@ -1,5 +1,28 @@
 # FIPS Experiments
 
+## 2026-05-14 - Ignore stale previous-epoch FSP drain failures
+
+- Observation: after `fips-core` 0.3.6 was deployed, all nvpn peers reported
+  8/8 mesh readiness and 150-180 second routed ping tests stayed at 0% loss, but
+  logs still showed occasional FSP AEAD recovery rekeys shortly after a peer
+  failed NAT traversal and fell back to routed FIPS.
+- Root cause: post-rekey drain keeps the previous FSP session so old-epoch
+  packets can still authenticate after cutover. If an old-epoch packet was a
+  duplicate or too old for the retained replay window, both the current and
+  previous sessions rejected it and the code counted that as current-session key
+  divergence.
+- Fix: while the drain window is active, packets that explicitly carry the
+  previous K-bit are treated as stale drain noise when both decrypt attempts
+  fail. Current-epoch failures still increment the recovery counter.
+- Verification: added
+  `stale_previous_epoch_failure_is_ignored_only_during_drain`; `cargo fmt
+  --all --check`, `cargo test -p fips-core decrypt_failure -- --nocapture`,
+  `cargo test -p fips-core --lib`, and `cargo test -p fips-endpoint` passed
+  locally.
+- Release policy note: do not publish another FIPS crate version for this fix
+  until nvpn has been built against this exact FIPS tree and verified on the
+  real mesh devices.
+
 ## 2026-05-14 - FSP rekey final-msg3 loss recovery
 
 - Observation: 90 second nvpn continuity tests across the Pi/Windows VM path

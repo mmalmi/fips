@@ -68,6 +68,11 @@ enum FspFrameOutcome {
         consecutive: u32,
         recover_session: bool,
     },
+    /// A packet from the previous key epoch arrived during the drain window,
+    /// but it could not be authenticated by the retained previous session
+    /// either. This is normally replayed or very stale post-cutover traffic,
+    /// not evidence that the current session diverged.
+    StaleEpochDrainFailure { counter: u64 },
 }
 
 struct PipelinedEndpointSend<'a> {
@@ -102,6 +107,12 @@ fn should_start_decrypt_failure_rekey(entry: &SessionEntry, consecutive: u32) ->
         && entry.is_established()
         && !entry.has_rekey_in_progress()
         && entry.pending_new_session().is_none()
+}
+
+fn should_ignore_stale_epoch_drain_failure(entry: &SessionEntry, received_k_bit: bool) -> bool {
+    entry.is_draining()
+        && entry.pending_new_session().is_none()
+        && received_k_bit != entry.current_k_bit()
 }
 
 impl Node {
@@ -304,6 +315,11 @@ impl Node {
                     match drain {
                         Some(pt) => (pt, false),
                         None => {
+                            if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
+                                break 'outcome FspFrameOutcome::StaleEpochDrainFailure {
+                                    counter: header.counter,
+                                };
+                            }
                             // Both current and previous failed. Once the
                             // consecutive-failure threshold trips, recover
                             // by rekeying in place instead of deleting this
@@ -430,6 +446,14 @@ impl Node {
                         );
                     }
                 }
+                return;
+            }
+            FspFrameOutcome::StaleEpochDrainFailure { counter } => {
+                trace!(
+                    src = %self.peer_display_name(src_addr),
+                    counter,
+                    "Ignoring stale FSP packet from previous key epoch during drain"
+                );
                 return;
             }
         };
@@ -2952,6 +2976,30 @@ mod tests {
             &entry,
             DECRYPT_FAILURE_RECOVERY_THRESHOLD
         ));
+    }
+
+    #[test]
+    fn stale_previous_epoch_failure_is_ignored_only_during_drain() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+
+        let old_k_bit = entry.current_k_bit();
+        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
+
+        entry.set_pending_session(make_xk_session(&local, &peer));
+        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
+
+        assert!(entry.cutover_to_new_session(2000));
+        assert_ne!(entry.current_k_bit(), old_k_bit);
+        assert!(should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
+        assert!(!should_ignore_stale_epoch_drain_failure(
+            &entry,
+            entry.current_k_bit()
+        ));
+
+        entry.complete_drain();
+        assert!(!should_ignore_stale_epoch_drain_failure(&entry, old_k_bit));
     }
 
     #[test]
