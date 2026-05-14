@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Session retries after discovery now restart stale non-established FSP
+  sessions so a fresh LookupResponse rebuilds `SessionSetup` with the current
+  route/coordinates instead of keeping an old pending handshake that can
+  blackhole routed or relayed peers.
 - FSP packets from the previous key epoch that arrive during the post-rekey
   drain window no longer count toward session AEAD recovery if they are too old
   or replayed to authenticate with the retained previous session. Current-epoch

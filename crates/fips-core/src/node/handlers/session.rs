@@ -15,6 +15,7 @@ use crate::node::session_wire::{
     FSP_PORT_IPV6_SHIM, FspCommonPrefix, FspEncryptedHeader, build_fsp_header,
     fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
+#[cfg(unix)]
 use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
@@ -23,11 +24,14 @@ use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
 use crate::protocol::{
-    CoordsRequired, FspInnerFlags, LinkMessageType, MtuExceeded, PathBroken, PathMtuNotification,
-    SESSION_DATAGRAM_HEADER_SIZE, SessionAck, SessionDatagram, SessionMessageType, SessionMsg3,
-    SessionReceiverReport, SessionSenderReport, SessionSetup,
+    CoordsRequired, FspInnerFlags, MtuExceeded, PathBroken, PathMtuNotification, SessionAck,
+    SessionDatagram, SessionMessageType, SessionMsg3, SessionReceiverReport, SessionSenderReport,
+    SessionSetup,
 };
+#[cfg(unix)]
+use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
 use crate::protocol::{coords_wire_size, encode_coords};
+#[cfg(unix)]
 use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use secp256k1::PublicKey;
@@ -75,6 +79,7 @@ enum FspFrameOutcome {
     StaleEpochDrainFailure { counter: u64 },
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 struct PipelinedEndpointSend<'a> {
     dest_addr: &'a NodeAddr,
     payload: &'a [u8],
@@ -2795,11 +2800,19 @@ impl Node {
             }
         };
 
-        // Skip if a session already exists
-        if let Some(existing) = self.sessions.get(&dest_addr)
-            && (existing.is_established() || existing.is_initiating())
-        {
-            return;
+        if let Some(existing) = self.sessions.get(&dest_addr) {
+            if existing.is_established() {
+                return;
+            }
+
+            // The old initiating session encoded its SessionSetup before the
+            // LookupResponse refreshed coord_cache/reverse routes. Rebuild it
+            // so the retry actually uses the newly discovered mesh path.
+            debug!(
+                dest = %self.peer_display_name(&dest_addr),
+                "Restarting pending session after discovery refreshed route"
+            );
+            self.sessions.remove(&dest_addr);
         }
 
         match self.initiate_session(dest_addr, dest_pubkey).await {

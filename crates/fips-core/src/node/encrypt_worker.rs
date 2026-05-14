@@ -1188,7 +1188,7 @@ fn flush_batch_sync(
             // Windows: encrypt worker pool isn't spawned (see
             // lifecycle.rs); this function is unreachable. Drop
             // values explicitly so the compiler sees them as used.
-            let _ = (socket, dest_addr, wire_buf);
+            let _ = (socket, dest_addr, wire_buf, drop_on_backpressure);
         }
     }
 

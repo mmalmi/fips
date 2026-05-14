@@ -3,11 +3,12 @@
 use super::*;
 use crate::config::RoutingMode;
 use crate::node::session::EndToEndState;
+use crate::node::session_wire::FSP_COMMON_PREFIX_SIZE;
 use crate::node::tests::spanning_tree::{
     TestNode, cleanup_nodes, generate_random_edges, lock_large_network_test,
     process_available_packets, run_tree_test, run_tree_test_with_mtus, verify_tree_convergence,
 };
-use crate::protocol::{SessionAck, SessionDatagram};
+use crate::protocol::{SessionAck, SessionDatagram, SessionSetup};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
 /// Populate all nodes' coordinate caches with each other's coords.
@@ -1601,12 +1602,19 @@ fn make_reply_learned_node_with_tree_peer() -> Node {
 }
 
 fn insert_initiating_session(node: &mut Node, dest: &Identity) {
-    let dest_addr = *dest.node_addr();
+    insert_initiating_session_for(node, *dest.node_addr(), dest.pubkey_full());
+}
+
+fn insert_initiating_session_for(
+    node: &mut Node,
+    dest_addr: NodeAddr,
+    dest_pubkey: secp256k1::PublicKey,
+) {
     let handshake =
-        crate::noise::HandshakeState::new_initiator(node.identity().keypair(), dest.pubkey_full());
+        crate::noise::HandshakeState::new_initiator(node.identity().keypair(), dest_pubkey);
     let entry = crate::node::session::SessionEntry::new(
         dest_addr,
-        dest.pubkey_full(),
+        dest_pubkey,
         EndToEndState::Initiating(handshake),
         1000,
         true,
@@ -1856,6 +1864,65 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
         baseline + 1,
         "discovery should be initiated exactly once"
     );
+}
+
+#[tokio::test]
+async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    nodes[0].node.learn_reverse_route(dest_addr, next_hop);
+
+    let now_ms = crate::time::now_ms();
+    let stale_coords = nodes[0].node.tree_state().my_coords().clone();
+    nodes[0]
+        .node
+        .coord_cache_mut()
+        .insert(dest_addr, stale_coords.clone(), now_ms);
+    insert_initiating_session_for(&mut nodes[0].node, dest_addr, dest_pubkey);
+    nodes[0]
+        .node
+        .pending_endpoint_data
+        .entry(dest_addr)
+        .or_default()
+        .push_back(b"queued".to_vec());
+
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    nodes[0]
+        .node
+        .coord_cache_mut()
+        .insert(dest_addr, fresh_coords.clone(), now_ms + 1);
+
+    nodes[0].node.retry_session_after_discovery(dest_addr).await;
+
+    let entry = nodes[0]
+        .node
+        .get_session(&dest_addr)
+        .expect("retry should install a fresh initiating session");
+    assert!(entry.is_initiating());
+    let setup_payload = entry
+        .handshake_payload()
+        .expect("fresh session should store SessionSetup for resend");
+    let setup = SessionSetup::decode(&setup_payload[FSP_COMMON_PREFIX_SIZE..])
+        .expect("stored setup should decode");
+    let setup_dest_path: Vec<NodeAddr> = setup.dest_coords.node_addrs().copied().collect();
+    let fresh_path: Vec<NodeAddr> = fresh_coords.node_addrs().copied().collect();
+    let stale_path: Vec<NodeAddr> = stale_coords.node_addrs().copied().collect();
+    assert_eq!(setup_dest_path, fresh_path);
+    assert_ne!(
+        setup_dest_path, stale_path,
+        "discovery retry must not keep stale destination coordinates"
+    );
+
+    cleanup_nodes(&mut nodes).await;
 }
 
 #[tokio::test]

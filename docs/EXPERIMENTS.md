@@ -1,5 +1,33 @@
 # FIPS Experiments
 
+## 2026-05-14 - Restart stale pending sessions after discovery
+
+- Observation: mini and win11-dev could exchange lookup/discovery traffic, and
+  discovery learned a relayed route, but the data session stayed `fips link
+  pending` and traffic blackholed. The same network still showed most peers
+  reachable, which pointed at first-contact session setup rather than global
+  mesh failure.
+- Root cause: `retry_session_after_discovery` returned when a non-established
+  session entry already existed. That left an initiating `SessionSetup` encoded
+  against stale or placeholder coordinates from before the LookupResponse
+  refreshed the coord cache and reverse route.
+- Fix: after discovery completes, established sessions are left alone, but
+  stale initiating/awaiting sessions are removed and re-initiated so the fresh
+  `SessionSetup` uses the newly learned route.
+- Verification: added
+  `test_discovery_restarts_stale_pending_session_with_fresh_coords`; local
+  focused, discovery, and full `fips-core --lib` test runs passed. Unpublished
+  nvpn builds from this tree were deployed to the MacBook, mini, Linux hosts,
+  and win11-dev; MacBook, mini, ubuntu-dev, hashtree-node, vader, and win11-dev
+  all reported 8/8 mesh readiness after restart.
+- Real-device result: mini-to-win11-dev over the relayed path completed a
+  90-packet ping with 0% loss. win11-dev-to-mini no longer blackholed but still
+  showed about 1% ICMP loss in two long ping runs, so this fix is verified for
+  the pending-session blackhole but not a final reliability/performance release
+  gate by itself.
+- Release policy note: keep this unpublished until the residual relayed-path
+  loss is either fixed or deliberately accepted after more device testing.
+
 ## 2026-05-14 - Ignore stale previous-epoch FSP drain failures
 
 - Observation: after `fips-core` 0.3.6 was deployed, all nvpn peers reported
