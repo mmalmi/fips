@@ -941,7 +941,14 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
     );
 
     tokio::time::sleep(Duration::from_millis(10)).await;
-    let dropped = drop_queued_packets_for_node(&mut nodes[1]);
+    let mut dropped = 0;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        dropped += drop_queued_packets_for_node(&mut nodes[1]);
+        if dropped > 0 {
+            break;
+        }
+    }
     assert!(dropped > 0, "fixture should drop the first SessionMsg3");
     assert!(
         nodes[1]
@@ -990,6 +997,150 @@ async fn test_established_initiator_resends_final_msg3_until_responder_establish
             .handshake_payload()
             .is_none(),
         "authentic responder traffic should clear the retained final msg3"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    drain_to_quiescence(&mut nodes).await;
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .state()
+            .is_established()
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .state()
+            .is_established()
+    );
+
+    assert!(
+        nodes[0].node.initiate_session_rekey(&node1_addr).await,
+        "rekey should start"
+    );
+
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(count > 0, "rekey msg1 should reach responder");
+
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(count > 0, "rekey msg2 should reach initiator");
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some(),
+        "initiator should have a pending new session"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "initiator must retain rekey msg3 for resend"
+    );
+
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if drop_queued_packets_for_node(&mut nodes[1]) > 0 {
+            break;
+        }
+    }
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_none(),
+        "responder should not have the new session before msg3 is resent"
+    );
+
+    nodes[1]
+        .node
+        .send_session_data(&node0_addr, 0, 0, b"old-session-proof")
+        .await
+        .expect("old session should remain usable while rekey msg3 is pending");
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(count > 0, "old-session proof should reach initiator");
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "old-session traffic must not clear retained rekey msg3"
+    );
+    let resend_count_before = nodes[0]
+        .node
+        .get_session(&node1_addr)
+        .unwrap()
+        .resend_count();
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let now_ms = Node::now_ms();
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(now_ms)
+        .await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .resend_count()
+            > resend_count_before,
+        "rekey msg3 resend should be recorded"
+    );
+
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(
+        count > 0,
+        "resender should deliver a replacement rekey msg3"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .pending_new_session()
+            .is_some(),
+        "responder should store the pending rekey session after resent msg3"
     );
 
     cleanup_nodes(&mut nodes).await;

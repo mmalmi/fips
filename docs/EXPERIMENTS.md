@@ -1,5 +1,28 @@
 # FIPS Experiments
 
+## 2026-05-14 - FSP rekey final-msg3 loss recovery
+
+- Observation: 90 second nvpn continuity tests across the Pi/Windows VM path
+  still showed occasional packet loss and clustered AEAD recovery churn near the
+  default 120 second FSP rekey interval, even after stale FMP session failures
+  were suppressed during fresh-session drain.
+- Root cause: initial XK establishment retained the final `SessionMsg3` for
+  resend, but the FSP rekey path sent the final rekey `SessionMsg3` once and
+  immediately installed a pending new session. If that packet was lost or
+  delayed, the initiator could cut over and emit new-session traffic while the
+  responder still had only the old session.
+- Fix: rekey initiators now store the encoded final `SessionMsg3` in the same
+  resend machinery used by initial establishment. The retained payload is
+  cleared only after pending rekey cutover has completed and authentic traffic
+  arrives on the current K-bit session, so old-session drain traffic cannot
+  accidentally cancel the repair path.
+- Regression tests: added a two-node rekey test that keeps old-session traffic
+  flowing while the final rekey message is pending, proves the retained payload
+  survives that traffic, and verifies the resend path gives the responder a
+  pending new session. `cargo test -p fips-core decrypt_failure`,
+  `cargo test -p fips-core test_rekey_initiator_resends_final_msg3_until_responder_has_pending_session -- --nocapture`,
+  and full `cargo test -p fips-core --lib` passed locally.
+
 ## 2026-05-14 - macOS Wi-Fi sender burst pacing
 
 - Observation: after the daemon bookkeeping stall was fixed, MacBook-to-mini

@@ -289,8 +289,8 @@ impl Node {
                     &header.header_bytes,
                 )
             };
-            let plaintext = match primary {
-                Ok(pt) => pt,
+            let (plaintext, decrypted_with_current) = match primary {
+                Ok(pt) => (pt, true),
                 Err(primary_err) => {
                     // Drain-window fallback on the same &mut entry borrow.
                     let drain = entry.previous_noise_session_mut().and_then(|prev| {
@@ -302,7 +302,7 @@ impl Node {
                         .ok()
                     });
                     match drain {
-                        Some(pt) => pt,
+                        Some(pt) => (pt, false),
                         None => {
                             // Both current and previous failed. Once the
                             // consecutive-failure threshold trips, recover
@@ -327,7 +327,11 @@ impl Node {
             // counter so a single bad packet doesn't carry forward
             // toward the threshold.
             entry.reset_decrypt_failures();
-            if entry.handshake_payload().is_some() {
+            if entry.handshake_payload().is_some()
+                && entry.pending_new_session().is_none()
+                && decrypted_with_current
+                && received_k_bit == entry.current_k_bit()
+            {
                 entry.clear_handshake_payload();
             }
 
@@ -821,6 +825,7 @@ impl Node {
             // Send SessionMsg3
             let msg3_wire = SessionMsg3::new(msg3);
             let msg3_payload = msg3_wire.encode();
+            let msg3_resend_payload = msg3_payload.clone();
             let my_addr = *self.node_addr();
             let mut datagram = SessionDatagram::new(my_addr, *src_addr, msg3_payload)
                 .with_ttl(self.config.node.session.default_ttl);
@@ -843,8 +848,11 @@ impl Node {
                 }
             };
 
+            let now_ms = Self::now_ms();
             entry.set_pending_session(session);
-            entry.set_rekey_completed_ms(Self::now_ms());
+            entry.set_rekey_completed_ms(now_ms);
+            let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
             self.sessions.insert(*src_addr, entry);
 
             debug!(

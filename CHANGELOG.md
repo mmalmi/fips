@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- FSP rekey initiators now retain and resend the final XK `SessionMsg3`
+  while the responder has not proven the pending session. Old-session traffic
+  during the drain window no longer clears that retained rekey payload, which
+  prevents a single lost final rekey packet from splitting peers across old/new
+  session keys and triggering AEAD recovery churn.
 - Worker-reported FMP AEAD failures are now suppressed during the bounded
   fresh-session drain window until the new worker replay window authenticates
   traffic. This prevents stale ciphertext left over from peer restart, roaming,
