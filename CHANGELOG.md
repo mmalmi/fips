@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reply-learned discovery now fans lookup requests out to live peers even when
+  a tree/bloom candidate exists. This prevents stale tree state or
+  NAT-asymmetric VM/host topologies from leaving peers permanently pending when
+  another neighbor has a working route.
+
 ### Added
 
 #### Security

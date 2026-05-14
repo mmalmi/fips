@@ -383,8 +383,8 @@ impl Node {
             }
         }
 
-        // Collect tree peers whose bloom filter contains the target
-        let forward_to: Vec<NodeAddr> = self
+        // Collect tree peers whose bloom filter contains the target.
+        let mut forward_to: Vec<NodeAddr> = self
             .peers
             .iter()
             .filter(|(addr, peer)| {
@@ -392,42 +392,46 @@ impl Node {
             })
             .map(|(addr, _)| *addr)
             .collect();
+        let tree_match_count = forward_to.len();
 
-        // Fallback: either non-tree bloom matches (original) or a tree flood
-        // (reply-learned first-contact discovery).
-        let (forward_to, used_fallback) = if forward_to.is_empty() {
-            let fallback: Vec<NodeAddr> =
-                if self.config.node.routing.mode == RoutingMode::ReplyLearned {
-                    self.peers
-                        .iter()
-                        .filter(|(addr, peer)| {
-                            **addr != *from && **addr != request.origin && peer.can_send()
-                        })
-                        .map(|(addr, _)| *addr)
-                        .collect()
-                } else {
-                    self.peers
-                        .iter()
-                        .filter(|(addr, peer)| {
-                            **addr != *from
-                                && !self.is_tree_peer(addr)
-                                && peer.may_reach(&request.target)
-                        })
-                        .map(|(addr, _)| *addr)
-                        .collect()
-                };
-            if fallback.is_empty() {
-                self.stats_mut().discovery.req_no_tree_peer += 1;
-                trace!(
-                    request_id = request.request_id,
-                    "No eligible peers to forward LookupRequest"
-                );
-                return;
-            }
-            (fallback, true)
-        } else {
-            (forward_to, false)
-        };
+        // Reply-learned routing treats tree/bloom reachability as a hint, not
+        // an exclusive path. In NAT-asymmetric meshes a stale tree candidate
+        // can blackhole first-contact discovery, so also ask live neighbors.
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let extra_peers: Vec<NodeAddr> = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| {
+                    **addr != *from && **addr != request.origin && peer.can_send()
+                })
+                .map(|(addr, _)| *addr)
+                .filter(|addr| !forward_to.contains(addr))
+                .collect();
+            forward_to.extend(extra_peers);
+        } else if forward_to.is_empty() {
+            forward_to = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| {
+                    **addr != *from && !self.is_tree_peer(addr) && peer.may_reach(&request.target)
+                })
+                .map(|(addr, _)| *addr)
+                .collect();
+        }
+
+        if forward_to.is_empty() {
+            self.stats_mut().discovery.req_no_tree_peer += 1;
+            trace!(
+                request_id = request.request_id,
+                "No eligible peers to forward LookupRequest"
+            );
+            return;
+        }
+
+        let used_fallback = (self.config.node.routing.mode == RoutingMode::ReplyLearned
+            && forward_to.len() > tree_match_count)
+            || (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                && tree_match_count == 0);
 
         if used_fallback {
             self.stats_mut().discovery.req_fallback_forwarded += 1;
@@ -475,24 +479,28 @@ impl Node {
         let request = LookupRequest::generate(*target, origin, origin_coords, ttl, 0);
 
         // Send first to tree peers whose bloom filter contains the target.
-        // Reply-learned mode can fall back to all sendable peers so first
-        // contact does not depend on stale tree state or reachability claims.
+        // Reply-learned mode also fans out to sendable peers: stale tree state
+        // and NAT asymmetry are common during joins, roaming, and VM/host
+        // topologies, and a single bad bloom match must not block discovery.
         let mut peer_addrs: Vec<NodeAddr> = self
             .peers
             .iter()
             .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.may_reach(target))
             .map(|(addr, _)| *addr)
             .collect();
-        let used_fallback =
-            peer_addrs.is_empty() && self.config.node.routing.mode == RoutingMode::ReplyLearned;
-        if used_fallback {
-            peer_addrs = self
+        let tree_match_count = peer_addrs.len();
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let extra_peers: Vec<NodeAddr> = self
                 .peers
                 .iter()
                 .filter(|(_, peer)| peer.can_send())
                 .map(|(addr, _)| *addr)
+                .filter(|addr| !peer_addrs.contains(addr))
                 .collect();
+            peer_addrs.extend(extra_peers);
         }
+        let used_fallback = self.config.node.routing.mode == RoutingMode::ReplyLearned
+            && peer_addrs.len() > tree_match_count;
 
         let peer_count = peer_addrs.len();
 
