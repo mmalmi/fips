@@ -10,7 +10,9 @@ containers running the full protocol stack.
 Fixed topologies with manual scripts for building, config generation,
 connectivity tests (ping, iperf), and network impairment (netem).
 Useful for deterministic debugging and validating specific topology
-configurations.
+configurations. The release gate also includes `static-mesh-perf`, a short
+Docker iperf smoke with a conservative bandwidth floor to catch severe
+throughput regressions.
 
 | Topology    | Nodes | Transport | Description                      |
 | ----------- | ----- | --------- | -------------------------------- |

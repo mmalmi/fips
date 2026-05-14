@@ -15,7 +15,7 @@
 #   -h, --help           Show this help
 #
 # Integration suites (default coverage):
-#   static-mesh, static-chain, rekey, rekey-accept-off,
+#   static-mesh, static-chain, static-mesh-perf, rekey, rekey-accept-off,
 #   rekey-outbound-only, gateway,
 #   acl-allowlist, firewall, nat-cone, nat-symmetric, nat-lan,
 #   nostr-publish-consume, stun-faults,
@@ -55,6 +55,7 @@ ONLY_SUITE=""
 
 # All integration suites matching ci.yml
 STATIC_SUITES=(static-mesh static-chain)
+STATIC_PERF_SUITES=(static-mesh-perf)
 REKEY_SUITES=(rekey rekey-accept-off rekey-outbound-only)
 # Each entry: "display-name scenario [--flag value ...]"
 CHAOS_SUITES=(
@@ -105,6 +106,9 @@ list_suites() {
     echo ""
     echo "  Static topologies:"
     for s in "${STATIC_SUITES[@]}"; do echo "    $s"; done
+    echo ""
+    echo "  Static performance smoke:"
+    for s in "${STATIC_PERF_SUITES[@]}"; do echo "    $s"; done
     echo ""
     echo "  Rekey:"
     for s in "${REKEY_SUITES[@]}"; do echo "    $s"; done
@@ -328,6 +332,41 @@ run_static() {
 
     docker compose -f "$compose" --profile "$topology" down --volumes --remove-orphans 2>/dev/null
     record "static-$topology" $rc
+}
+
+# Run a static topology throughput smoke. This is a coarse release gate for
+# catastrophic packet-path regressions, not a lab benchmark.
+run_static_perf() {
+    local topology="$1"
+    local compose="testing/static/docker-compose.yml"
+    local rc=0
+    local min_mbps="${FIPS_IPERF_MIN_MBPS:-250}"
+    local duration="${FIPS_IPERF_DURATION:-5}"
+
+    info "[$topology/perf] Generating configs"
+    bash testing/static/scripts/generate-configs.sh "$topology" || { record "static-$topology-perf" 1; return; }
+
+    info "[$topology/perf] Starting containers"
+    docker compose -f "$compose" --profile "$topology" up -d || { record "static-$topology-perf" 1; return; }
+
+    info "[$topology/perf] Running ping preflight"
+    if ! bash testing/static/scripts/ping-test.sh "$topology"; then
+        rc=1
+    else
+        info "[$topology/perf] Running iperf smoke (floor: ${min_mbps} Mbits/sec)"
+        if ! FIPS_IPERF_MIN_MBPS="$min_mbps" FIPS_IPERF_DURATION="$duration" \
+            bash testing/static/scripts/iperf-test.sh "$topology"; then
+            rc=1
+        fi
+    fi
+
+    if [[ $rc -ne 0 ]]; then
+        info "[$topology/perf] Collecting failure logs"
+        docker compose -f "$compose" --profile "$topology" logs --no-color 2>&1 | tail -100
+    fi
+
+    docker compose -f "$compose" --profile "$topology" down --volumes --remove-orphans 2>/dev/null
+    record "static-$topology-perf" $rc
 }
 
 # Run the rekey integration test
@@ -599,6 +638,13 @@ run_integration() {
         run_static "$topology"
     done
 
+    # Static throughput smoke (short and conservative; profiles share names)
+    for suite in "${STATIC_PERF_SUITES[@]}"; do
+        local topology="${suite#static-}"
+        topology="${topology%-perf}"
+        run_static_perf "$topology"
+    done
+
     # Rekey + rekey-accept-off + rekey-outbound-only variants
     run_rekey
     run_rekey_accept_off
@@ -700,6 +746,10 @@ run_suite() {
     case "$suite" in
         static-mesh|static-chain)
             run_static "${suite#static-}" ;;
+        static-*-perf)
+            local topology="${suite#static-}"
+            topology="${topology%-perf}"
+            run_static_perf "$topology" ;;
         rekey)
             run_rekey ;;
         rekey-accept-off)

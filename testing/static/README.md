@@ -18,7 +18,8 @@ construction, and discovery-driven multi-hop routing.
 Build the binary and generate configs:
 
 ```bash
-./testing/static/scripts/build.sh
+./testing/scripts/build.sh
+./testing/static/scripts/generate-configs.sh mesh
 ```
 
 Start the mesh (default topology):
@@ -29,6 +30,19 @@ docker compose -f testing/static/docker-compose.yml up -d
 ./testing/static/scripts/iperf-test.sh mesh     # bandwidth test
 docker compose -f testing/static/docker-compose.yml down
 ```
+
+For a release-gate style throughput smoke, set a conservative floor. This
+is meant to catch severe regressions in the packet path, not to replace
+machine-to-machine benchmarking:
+
+```bash
+FIPS_IPERF_DURATION=5 FIPS_IPERF_MIN_MBPS=250 \
+  ./testing/static/scripts/iperf-test.sh mesh
+```
+
+The GitHub CI and `testing/ci-local.sh` release gate run `static-mesh-perf`
+with that default 250 Mbit/s floor. Override `FIPS_IPERF_MIN_MBPS` locally
+when testing on a faster or slower Docker host.
 
 The mesh profile is activated by default via `.env`. To use a different
 topology, specify the profile explicitly:
@@ -181,8 +195,8 @@ This reads the topology definition and generates:
 The `npubs.env` file is sourced by the test scripts and injected into
 Docker containers via `env_file` in `docker-compose.yml`.
 
-The build script (`scripts/build.sh`) calls `generate-configs.sh`
-automatically after compiling.
+The build script copies the compiled binaries into the shared Docker test
+context. Generate the topology configs separately with `generate-configs.sh`.
 
 ### Adding a New Topology
 
@@ -199,10 +213,7 @@ each mesh needs unique node identities to avoid key conflicts. The optional
 `mesh-name` parameter generates deterministic per-mesh identities:
 
 ```bash
-# Build with derived identities
-./testing/static/scripts/build.sh mesh my-mesh-1
-
-# Or generate configs directly
+# Generate configs with derived identities
 ./testing/static/scripts/generate-configs.sh mesh my-mesh-1
 ./testing/static/scripts/generate-configs.sh mesh-public my-mesh-1
 ```
@@ -382,8 +393,8 @@ docker exec fips-node-a dig AAAA <npub>.fips @127.0.0.1
 the binary inside the container:
 
 ```bash
-md5sum testing/static/fips
-docker exec fips-node-a md5sum /usr/local/bin/fips
+shasum -a 256 testing/docker/fips
+docker exec fips-node-a sha256sum /usr/local/bin/fips
 ```
 
 **Increase convergence time**: If tests fail intermittently, the 5-second
@@ -391,5 +402,4 @@ convergence wait in `ping-test.sh` may be insufficient. Edit the `sleep`
 value at the top of the script.
 
 **Missing npubs.env**: If test scripts fail with "npubs.env not found", run
-`./testing/static/scripts/generate-configs.sh mesh` (or your topology) first,
-or use `./testing/static/scripts/build.sh` which generates configs automatically.
+`./testing/static/scripts/generate-configs.sh mesh` (or your topology) first.

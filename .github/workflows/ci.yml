@@ -309,6 +309,9 @@ jobs:
           - suite: static-chain
             type: static
             topology: chain
+          - suite: static-mesh-perf
+            type: static-perf
+            topology: mesh
           # ── Rekey integration test ──────────────────────────────────────────
           - suite: rekey
             type: rekey
@@ -447,27 +450,34 @@ jobs:
 
       # ── Static topology ────────────────────────────────────────────────────
       - name: Generate configs (static)
-        if: matrix.type == 'static'
+        if: matrix.type == 'static' || matrix.type == 'static-perf'
         run: bash testing/static/scripts/generate-configs.sh ${{ matrix.topology }}
 
       - name: Start containers (static)
-        if: matrix.type == 'static'
+        if: matrix.type == 'static' || matrix.type == 'static-perf'
         run: |
           docker compose -f testing/static/docker-compose.yml \
             --profile ${{ matrix.topology }} up -d
 
       - name: Run ping test (static)
-        if: matrix.type == 'static'
+        if: matrix.type == 'static' || matrix.type == 'static-perf'
         run: bash testing/static/scripts/ping-test.sh ${{ matrix.topology }}
 
+      - name: Run iperf smoke (static perf)
+        if: matrix.type == 'static-perf'
+        env:
+          FIPS_IPERF_DURATION: 5
+          FIPS_IPERF_MIN_MBPS: 250
+        run: bash testing/static/scripts/iperf-test.sh ${{ matrix.topology }}
+
       - name: Collect logs on failure (static)
-        if: matrix.type == 'static' && failure()
+        if: (matrix.type == 'static' || matrix.type == 'static-perf') && failure()
         run: |
           docker compose -f testing/static/docker-compose.yml \
             --profile ${{ matrix.topology }} logs --no-color
 
       - name: Stop containers (static)
-        if: matrix.type == 'static' && always()
+        if: (matrix.type == 'static' || matrix.type == 'static-perf') && always()
         run: |
           docker compose -f testing/static/docker-compose.yml \
             --profile ${{ matrix.topology }} down --volumes --remove-orphans

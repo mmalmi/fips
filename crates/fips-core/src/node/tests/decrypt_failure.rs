@@ -1,23 +1,38 @@
-//! Tests for the consecutive-decrypt-failure threshold force-removal path.
+//! Tests for the consecutive-decrypt-failure recovery path.
 //!
 //! Covers `Node::handle_decrypt_failure` (in `node/handlers/encrypted.rs`),
 //! which increments `ActivePeer::increment_decrypt_failures` on each AEAD
-//! verification failure and force-removes the peer once
-//! `DECRYPT_FAILURE_THRESHOLD` consecutive failures are observed. The
-//! threshold is a defensive signal against a peer whose session is
-//! desynchronized or under attack, so regression coverage of the wiring
-//! between counter, threshold, and peer eviction is security-relevant.
+//! verification failure and starts a link-session recovery rekey once
+//! `DECRYPT_FAILURE_THRESHOLD` consecutive failures are observed. Peer
+//! eviction is reserved for cases where recovery cannot be started.
 
 use super::*;
 
-/// Drive a fully-promoted peer to the decrypt-failure threshold and verify
-/// it is removed from both `peers` and `peers_by_index`.
+async fn make_started_udp_transport(id: u32) -> TransportHandle {
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let transport_id = TransportId::new(id);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some(format!("udp{}", id)),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    TransportHandle::Udp(udp)
+}
+
+/// Drive a fully-promoted peer to the decrypt-failure threshold with no usable
+/// transport and verify the old force-removal fallback still cleans up both
+/// `peers` and `peers_by_index`.
 ///
 /// Setup uses the `make_completed_connection` harness so the peer has a
 /// real `our_index`/`transport_id`, ensuring `remove_active_peer` exercises
 /// the full `peers_by_index` cleanup path (not just the bare `peers` table).
-#[test]
-fn test_decrypt_failure_threshold_removes_peer() {
+#[tokio::test]
+async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable() {
     // Threshold constant in node/handlers/encrypted.rs (kept in sync with
     // production code; see DECRYPT_FAILURE_THRESHOLD).
     const THRESHOLD: u32 = 20;
@@ -56,7 +71,7 @@ fn test_decrypt_failure_threshold_removes_peer() {
     // Drive failures up to (but not including) the threshold; peer must
     // remain present and the counter must increase monotonically.
     for expected in 1..THRESHOLD {
-        node.handle_decrypt_failure(&node_addr);
+        node.handle_decrypt_failure(&node_addr).await;
         let count = node
             .get_peer(&node_addr)
             .expect("peer must still be present below threshold")
@@ -72,8 +87,9 @@ fn test_decrypt_failure_threshold_removes_peer() {
         "peer must remain registered until threshold is reached"
     );
 
-    // The Nth failure crosses the threshold and triggers force-removal.
-    node.handle_decrypt_failure(&node_addr);
+    // The Nth failure crosses the threshold. Recovery cannot start because
+    // the peer's transport handle is absent, so we fall back to eviction.
+    node.handle_decrypt_failure(&node_addr).await;
 
     assert!(
         node.get_peer(&node_addr).is_none(),
@@ -90,4 +106,62 @@ fn test_decrypt_failure_threshold_removes_peer() {
             .contains_key(&(transport_id, our_index.as_u32())),
         "peers_by_index entry must be cleaned up at threshold"
     );
+}
+
+/// With a usable transport, the threshold should start an in-place FMP rekey
+/// and keep the existing peer/session alive instead of dropping the link.
+#[tokio::test]
+async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_available() {
+    const THRESHOLD: u32 = 20;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    node.transports
+        .insert(transport_id, make_started_udp_transport(1).await);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+
+    for expected in 1..THRESHOLD {
+        node.handle_decrypt_failure(&node_addr).await;
+        let count = node
+            .get_peer(&node_addr)
+            .expect("peer must still be present below threshold")
+            .consecutive_decrypt_failures();
+        assert_eq!(count, expected);
+    }
+
+    node.handle_decrypt_failure(&node_addr).await;
+
+    let peer = node
+        .get_peer(&node_addr)
+        .expect("recovery rekey should keep peer alive");
+    assert!(
+        peer.rekey_in_progress(),
+        "threshold should start an in-place recovery rekey"
+    );
+    assert_eq!(
+        peer.consecutive_decrypt_failures(),
+        0,
+        "starting recovery should reset the local failure streak"
+    );
+    let rekey_index = peer
+        .rekey_our_index()
+        .expect("recovery rekey must allocate a new local index");
+    assert!(
+        node.pending_outbound
+            .contains_key(&(transport_id, rekey_index.as_u32())),
+        "rekey msg2 dispatch must be registered"
+    );
+    assert!(
+        node.retry_pending.is_empty(),
+        "recovery rekey should not schedule a reconnect retry"
+    );
+
+    let mut transport = node.transports.remove(&transport_id).unwrap();
+    transport.stop().await.unwrap();
 }

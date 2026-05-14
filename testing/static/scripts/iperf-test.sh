@@ -2,6 +2,11 @@
 # End-to-end iperf3 bandwidth test between FIPS nodes via DNS resolution.
 # Usage: ./iperf-test.sh [mesh|chain] [--live]
 #
+# Optional environment:
+#   FIPS_IPERF_DURATION=10       Test duration in seconds
+#   FIPS_IPERF_PARALLEL=8        Parallel iperf streams
+#   FIPS_IPERF_MIN_MBPS=250      Fail if aggregate sender bandwidth is lower
+#
 # Requires containers to be running:
 #   docker compose --profile mesh up -d
 #   ./scripts/iperf-test.sh mesh
@@ -18,10 +23,51 @@ if [ "$2" = "--live" ] || [ "$1" = "--live" ]; then
     [ "$1" = "--live" ] && PROFILE="mesh"
 fi
 
-DURATION=10
-PARALLEL=8
+DURATION="${FIPS_IPERF_DURATION:-10}"
+PARALLEL="${FIPS_IPERF_PARALLEL:-8}"
+MIN_MBPS="${FIPS_IPERF_MIN_MBPS:-}"
 PASSED=0
 FAILED=0
+
+if [ "$LIVE_OUTPUT" = true ] && [ -n "$MIN_MBPS" ]; then
+    echo "Error: --live cannot enforce FIPS_IPERF_MIN_MBPS because output is not parsed." >&2
+    exit 1
+fi
+
+if [ -n "$MIN_MBPS" ] && ! [[ "$MIN_MBPS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "Error: FIPS_IPERF_MIN_MBPS must be numeric, got '$MIN_MBPS'." >&2
+    exit 1
+fi
+
+bandwidth_to_mbps() {
+    local value="$1"
+    local unit="$2"
+
+    awk -v value="$value" -v unit="$unit" '
+        BEGIN {
+            if (unit == "bits/sec") {
+                scale = 0.000001
+            } else if (unit == "Kbits/sec") {
+                scale = 0.001
+            } else if (unit == "Mbits/sec") {
+                scale = 1
+            } else if (unit == "Gbits/sec") {
+                scale = 1000
+            } else {
+                exit 2
+            }
+            printf "%.3f", value * scale
+        }
+    '
+}
+
+bandwidth_meets_min() {
+    local actual="$1"
+    local minimum="$2"
+
+    awk -v actual="$actual" -v minimum="$minimum" \
+        'BEGIN { exit !(actual + 0 >= minimum + 0) }'
+}
 
 # Node identities (from generated env file)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,9 +107,34 @@ iperf_test() {
             # Check if we got valid results
             if echo "$output" | grep -q "sender"; then
                 # Extract and display results (get SUM line for aggregate bandwidth)
-                local bandwidth=$(echo "$output" | grep "\[SUM\].*sender" | tail -1 | awk '{for(i=1;i<=NF;i++) if($i ~ /bits\/sec/) {print $(i-1), $i; exit}}')
+                local bandwidth
+                bandwidth=$(echo "$output" | grep "\[SUM\].*sender" | tail -1 | awk '{for(i=1;i<=NF;i++) if($i ~ /bits\/sec/) {print $(i-1), $i; exit}}')
+
+                local bandwidth_value bandwidth_unit bandwidth_mbps
+                read -r bandwidth_value bandwidth_unit <<< "$bandwidth"
+                if [ -z "$bandwidth_value" ] || [ -z "$bandwidth_unit" ]; then
+                    echo "FAIL (no aggregate bandwidth data)"
+                    echo "Output: $output"
+                    FAILED=$((FAILED + 1))
+                    return
+                fi
+
+                if ! bandwidth_mbps=$(bandwidth_to_mbps "$bandwidth_value" "$bandwidth_unit"); then
+                    echo "FAIL (unknown bandwidth unit: $bandwidth_unit)"
+                    echo "Output: $output"
+                    FAILED=$((FAILED + 1))
+                    return
+                fi
+
+                if [ -n "$MIN_MBPS" ] && ! bandwidth_meets_min "$bandwidth_mbps" "$MIN_MBPS"; then
+                    echo "FAIL (below ${MIN_MBPS} Mbits/sec floor)"
+                    echo "Bandwidth: $bandwidth (${bandwidth_mbps} Mbits/sec)"
+                    FAILED=$((FAILED + 1))
+                    return
+                fi
+
                 echo "OK"
-                echo "Bandwidth: $bandwidth"
+                echo "Bandwidth: $bandwidth (${bandwidth_mbps} Mbits/sec)"
                 PASSED=$((PASSED + 1))
             else
                 echo "FAIL (no bandwidth data)"
@@ -81,6 +152,10 @@ iperf_test() {
 
 echo "=== FIPS iperf3 Bandwidth Test ($PROFILE topology) ==="
 echo ""
+echo "Duration: ${DURATION}s, parallel streams: $PARALLEL"
+if [ -n "$MIN_MBPS" ]; then
+    echo "Minimum bandwidth: ${MIN_MBPS} Mbits/sec"
+fi
 
 # Wait for nodes to converge
 echo "Waiting 3s for mesh convergence..."

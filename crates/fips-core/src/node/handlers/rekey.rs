@@ -135,7 +135,7 @@ impl Node {
 
         // Initiate new rekeys
         for node_addr in peers_to_rekey {
-            self.initiate_rekey(&node_addr).await;
+            let _ = self.initiate_rekey(&node_addr).await;
         }
     }
 
@@ -144,19 +144,19 @@ impl Node {
     /// Creates a new IK handshake as initiator, sends msg1 over the existing
     /// link (same transport, same remote address), and stores the handshake
     /// state on the ActivePeer. No new Link or PeerConnection is created.
-    async fn initiate_rekey(&mut self, node_addr: &NodeAddr) {
+    pub(in crate::node) async fn initiate_rekey(&mut self, node_addr: &NodeAddr) -> bool {
         let peer = match self.peers.get(node_addr) {
             Some(p) => p,
-            None => return,
+            None => return false,
         };
 
         let transport_id = match peer.transport_id() {
             Some(t) => t,
-            None => return,
+            None => return false,
         };
         let remote_addr = match peer.current_addr() {
             Some(a) => a.clone(),
-            None => return,
+            None => return false,
         };
         let link_id = peer.link_id();
         let peer_pubkey = peer.identity().pubkey_full();
@@ -170,7 +170,7 @@ impl Node {
                     error = %e,
                     "Failed to allocate index for rekey"
                 );
-                return;
+                return false;
             }
         };
 
@@ -188,31 +188,33 @@ impl Node {
                     "Failed to generate rekey msg1"
                 );
                 let _ = self.index_allocator.free(our_index);
-                return;
+                return false;
             }
         };
 
         let wire_msg1 = build_msg1(our_index, &noise_msg1);
 
         // Send msg1 on the existing link (same transport + address)
-        if let Some(transport) = self.transports.get(&transport_id) {
-            match transport.send(&remote_addr, &wire_msg1).await {
-                Ok(_) => {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        our_index = %our_index,
-                        "Rekey initiated, sent msg1 on existing link"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        peer = %self.peer_display_name(node_addr),
-                        error = %e,
-                        "Failed to send rekey msg1"
-                    );
-                    let _ = self.index_allocator.free(our_index);
-                    return;
-                }
+        let Some(transport) = self.transports.get(&transport_id) else {
+            let _ = self.index_allocator.free(our_index);
+            return false;
+        };
+        match transport.send(&remote_addr, &wire_msg1).await {
+            Ok(_) => {
+                debug!(
+                    peer = %self.peer_display_name(node_addr),
+                    our_index = %our_index,
+                    "Rekey initiated, sent msg1 on existing link"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    peer = %self.peer_display_name(node_addr),
+                    error = %e,
+                    "Failed to send rekey msg1"
+                );
+                let _ = self.index_allocator.free(our_index);
+                return false;
             }
         }
 
@@ -221,11 +223,15 @@ impl Node {
         let now_ms = Self::now_ms();
         if let Some(peer) = self.peers.get_mut(node_addr) {
             peer.set_rekey_state(hs, our_index, wire_msg1, now_ms + resend_interval);
+        } else {
+            let _ = self.index_allocator.free(our_index);
+            return false;
         }
 
         // Register in pending_outbound for msg2 dispatch (maps to existing link)
         self.pending_outbound
             .insert((transport_id, our_index.as_u32()), link_id);
+        true
     }
 
     /// Resend pending rekey msg1s and abandon timed-out rekeys.

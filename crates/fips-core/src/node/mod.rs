@@ -563,8 +563,8 @@ pub struct Node {
     /// (anything that's not bulk EndpointData) back here for rx_loop
     /// to handle via the legacy path. Drained by a new rx_loop arm.
     decrypt_fallback_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptFallback>>,
-    decrypt_fallback_tx: tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptFallback>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptWorkerEvent>>,
+    decrypt_fallback_tx: tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptWorkerEvent>,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.

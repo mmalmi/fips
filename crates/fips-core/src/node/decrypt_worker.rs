@@ -126,7 +126,7 @@ pub(crate) struct DecryptJob {
     /// The rx_loop drains this in a select! arm and runs the legacy
     /// dispatch (handshakes, MMP reports, routing errors, IPv6-shim →
     /// TUN). Keeps the slow paths working unchanged.
-    pub fallback_tx: UnboundedSender<DecryptFallback>,
+    pub fallback_tx: UnboundedSender<DecryptWorkerEvent>,
 }
 
 /// Result of a successful FMP decrypt + replay accept, when the
@@ -172,6 +172,21 @@ pub(crate) struct DecryptFallback {
     pub packet_data: Vec<u8>,
     pub fmp_plaintext_offset: usize,
     pub fmp_plaintext_len: usize,
+}
+
+/// Report from the decrypt worker when a registered FMP session fails
+/// AEAD authentication. Routed back to rx_loop so peer/session recovery
+/// decisions stay in one place instead of being silently dropped inside
+/// the worker thread.
+pub(crate) struct DecryptFailureReport {
+    pub source_node_addr: NodeAddr,
+    pub fmp_counter: u64,
+}
+
+/// Event emitted by the decrypt worker to the rx_loop.
+pub(crate) enum DecryptWorkerEvent {
+    Plaintext(DecryptFallback),
+    DecryptFailure(DecryptFailureReport),
 }
 
 /// Messages travelling through the per-worker crossbeam channel.
@@ -427,7 +442,13 @@ fn handle_job(
         .open_in_place(nonce, Aad::from(&fmp_header), buf)
     {
         Ok(p) => p.len(),
-        Err(_) => return Ok(()), // tag check failed; drop silently
+        Err(_) => {
+            let _ = fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+                source_node_addr,
+                fmp_counter,
+            }));
+            return Ok(());
+        }
     };
 
     // FMP decrypt succeeded — accept the counter into the replay window.
@@ -492,7 +513,7 @@ fn handle_job(
     // Pass the buffer through by ownership + offset/length. No
     // per-packet allocation; rx_loop slices into `packet_data`.
     let _ = link_msg; // sanity-check borrow before sending buffer onward
-    let _ = fallback_tx.send(DecryptFallback {
+    let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback {
         source_node_addr,
         transport_id,
         remote_addr,
@@ -503,7 +524,7 @@ fn handle_job(
         packet_data,
         fmp_plaintext_offset: fmp_plaintext_start,
         fmp_plaintext_len: plaintext_len,
-    });
+    }));
     // Suppress unused-variable warnings for the (now-removed) FSP
     // fast path. The `state` lookup is still needed for the FMP
     // cipher + replay window above.
@@ -575,7 +596,7 @@ mod tests {
         );
 
         let (fallback_tx, mut fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DecryptFallback>();
+            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
 
         let job = DecryptJob {
             packet_data: wire,
@@ -593,7 +614,11 @@ mod tests {
 
         handle_job(&mut sessions, job).expect("worker job handled");
 
-        let fallback = fallback_rx.try_recv().expect("fallback delivered");
+        let event = fallback_rx.try_recv().expect("fallback delivered");
+        let fallback = match event {
+            DecryptWorkerEvent::Plaintext(fallback) => fallback,
+            DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
+        };
         assert_eq!(
             fallback.fmp_flags, flags_byte,
             "fmp_flags must round-trip from DecryptJob to DecryptFallback"
@@ -606,5 +631,60 @@ mod tests {
             fallback.fmp_flags & crate::node::wire::FLAG_SP != 0,
             "FLAG_SP bit lost on worker path"
         );
+    }
+
+    #[test]
+    fn worker_reports_fmp_aead_failure_to_rx_loop() {
+        let key_bytes = [0u8; 32];
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        let open_cipher = LessSafeKey::new(unbound);
+
+        let counter: u64 = 11;
+        const HDR: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+        let header = [0u8; HDR];
+        let mut wire = Vec::with_capacity(HDR + 4 + 1 + 16);
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&[0u8; 4]);
+        wire.push(0xAB);
+        wire.extend_from_slice(&[0u8; 16]); // invalid AEAD tag
+
+        let cache_key = (TransportId::new(1), 77u32);
+        let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
+        sessions.insert(
+            cache_key,
+            OwnedSessionState {
+                fmp_cipher: open_cipher,
+                fmp_replay: ReplayWindow::new(),
+                source_npub: None,
+            },
+        );
+
+        let (fallback_tx, mut fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let source_node_addr = crate::NodeAddr::from_bytes([9u8; 16]);
+        let job = DecryptJob {
+            packet_data: wire,
+            cache_key,
+            _transport_id: TransportId::new(1),
+            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            timestamp_ms: 1_000,
+            source_node_addr,
+            fmp_counter: counter,
+            fmp_flags: 0,
+            fmp_header: header,
+            fmp_ciphertext_offset: HDR,
+            fallback_tx,
+        };
+
+        handle_job(&mut sessions, job).expect("worker job handled");
+
+        let event = fallback_rx.try_recv().expect("failure delivered");
+        match event {
+            DecryptWorkerEvent::DecryptFailure(report) => {
+                assert_eq!(report.source_node_addr, source_node_addr);
+                assert_eq!(report.fmp_counter, counter);
+            }
+            DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
+        }
     }
 }

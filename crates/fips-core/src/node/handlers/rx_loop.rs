@@ -2,7 +2,7 @@
 
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
-use crate::node::decrypt_worker::DecryptFallback;
+use crate::node::decrypt_worker::{DecryptFailureReport, DecryptFallback, DecryptWorkerEvent};
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
     PHASE_MSG2,
@@ -132,8 +132,8 @@ impl Node {
                 // tunnel. Promoting fallback gives the kernel-side
                 // TCP machinery a fair chance to see its ACKs and
                 // keep cwnd growing.
-                Some(fallback) = decrypt_fallback_rx.recv() => {
-                    self.process_decrypt_fallback(fallback).await;
+                Some(event) = decrypt_fallback_rx.recv() => {
+                    self.process_decrypt_worker_event(event).await;
                     self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
                     self.flush_pending_sends().await;
                 }
@@ -288,6 +288,17 @@ impl Node {
     /// (without this both ECN CE propagation and spin-bit RTT
     /// observation are dropped on the worker path) and slices the
     /// plaintext out of the original wire buffer with zero allocation.
+    async fn process_decrypt_worker_event(&mut self, event: DecryptWorkerEvent) {
+        match event {
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                self.process_decrypt_fallback(fallback).await;
+            }
+            DecryptWorkerEvent::DecryptFailure(report) => {
+                self.process_decrypt_failure_report(report).await;
+            }
+        }
+    }
+
     async fn process_decrypt_fallback(&mut self, fallback: DecryptFallback) {
         let ce_flag = fallback.fmp_flags & FLAG_CE != 0;
         let sp_flag = fallback.fmp_flags & FLAG_SP != 0;
@@ -307,6 +318,15 @@ impl Node {
         .await;
     }
 
+    async fn process_decrypt_failure_report(&mut self, report: DecryptFailureReport) {
+        debug!(
+            peer = %self.peer_display_name(&report.source_node_addr),
+            counter = report.fmp_counter,
+            "Worker FMP AEAD decryption failed"
+        );
+        self.handle_decrypt_failure(&report.source_node_addr).await;
+    }
+
     /// Drain up to `budget` queued fallbacks without yielding back to
     /// `select!`. Returns the number processed. Called both from the
     /// promoted-fallback select arm (after the head item) and
@@ -314,14 +334,14 @@ impl Node {
     /// plaintexts can't accumulate behind a 256-packet inbound burst.
     async fn drain_decrypt_fallback(
         &mut self,
-        rx: &mut UnboundedReceiver<DecryptFallback>,
+        rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
         let mut drained = 0;
         while drained < budget {
             match rx.try_recv() {
-                Ok(fallback) => {
-                    self.process_decrypt_fallback(fallback).await;
+                Ok(event) => {
+                    self.process_decrypt_worker_event(event).await;
                     drained += 1;
                 }
                 Err(_) => break,

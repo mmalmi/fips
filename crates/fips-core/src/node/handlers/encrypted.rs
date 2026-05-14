@@ -22,8 +22,15 @@ use crate::transport::ReceivedPacket;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
-/// Force-remove a peer after this many consecutive decryption failures.
+/// Start link-session recovery after this many consecutive FMP AEAD failures.
 const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
+
+enum DecryptFailureAction {
+    None,
+    StartRecoveryRekey { consecutive_failures: u32 },
+    AwaitRecovery { consecutive_failures: u32 },
+    RemovePeer { consecutive_failures: u32 },
+}
 
 impl Node {
     /// Handle an encrypted frame (phase 0x0).
@@ -193,7 +200,7 @@ impl Node {
             Ok(len) => len,
             Err(e) => {
                 self.log_decrypt_failure(&node_addr, &header, &e);
-                self.handle_decrypt_failure(&node_addr);
+                self.handle_decrypt_failure(&node_addr).await;
                 return;
             }
         };
@@ -415,15 +422,86 @@ impl Node {
         }
     }
 
-    /// Increment decrypt failure counter and force-remove peer if threshold exceeded.
-    pub(in crate::node) fn handle_decrypt_failure(&mut self, node_addr: &crate::NodeAddr) {
-        if let Some(peer) = self.peers.get_mut(node_addr) {
+    /// Increment decrypt failure counter and recover stale FMP sessions.
+    ///
+    /// Stale encrypted packets can arrive after sleep/wake, network roaming,
+    /// rekey races, or peer restart. Removing the peer immediately causes a
+    /// visible traffic drop even when the existing link is healthy enough to
+    /// carry a replacement handshake. Prefer an in-place rekey and keep the
+    /// old session alive while that recovery handshake completes; only evict
+    /// when recovery cannot be started.
+    pub(in crate::node) async fn handle_decrypt_failure(&mut self, node_addr: &crate::NodeAddr) {
+        let rekey_enabled = self.config.node.rekey.enabled;
+        let action = {
+            let Some(peer) = self.peers.get_mut(node_addr) else {
+                return;
+            };
             let count = peer.increment_decrypt_failures();
-            if count >= DECRYPT_FAILURE_THRESHOLD {
+            if count < DECRYPT_FAILURE_THRESHOLD {
+                DecryptFailureAction::None
+            } else if rekey_enabled && peer.has_session() {
+                if !peer.rekey_in_progress() && peer.pending_new_session().is_none() {
+                    DecryptFailureAction::StartRecoveryRekey {
+                        consecutive_failures: count,
+                    }
+                } else {
+                    DecryptFailureAction::AwaitRecovery {
+                        consecutive_failures: count,
+                    }
+                }
+            } else {
+                DecryptFailureAction::RemovePeer {
+                    consecutive_failures: count,
+                }
+            }
+        };
+
+        match action {
+            DecryptFailureAction::None => {}
+            DecryptFailureAction::StartRecoveryRekey {
+                consecutive_failures,
+            } => {
                 warn!(
                     peer = %self.peer_display_name(node_addr),
-                    consecutive_failures = count,
-                    "Excessive decryption failures, removing peer"
+                    consecutive_failures,
+                    "FMP AEAD failures exceeded threshold; starting recovery rekey"
+                );
+                if self.initiate_rekey(node_addr).await {
+                    if let Some(peer) = self.peers.get_mut(node_addr) {
+                        peer.reset_decrypt_failures();
+                    }
+                } else {
+                    warn!(
+                        peer = %self.peer_display_name(node_addr),
+                        consecutive_failures,
+                        "Failed to start FMP recovery rekey; removing peer"
+                    );
+                    let addr = *node_addr;
+                    self.remove_active_peer(node_addr);
+                    let now_ms = Self::now_ms();
+                    self.schedule_reconnect(addr, now_ms);
+                }
+            }
+            DecryptFailureAction::AwaitRecovery {
+                consecutive_failures,
+            } => {
+                if consecutive_failures == DECRYPT_FAILURE_THRESHOLD
+                    || consecutive_failures.is_multiple_of(1000)
+                {
+                    debug!(
+                        peer = %self.peer_display_name(node_addr),
+                        consecutive_failures,
+                        "FMP AEAD failures continuing while recovery rekey is pending"
+                    );
+                }
+            }
+            DecryptFailureAction::RemovePeer {
+                consecutive_failures,
+            } => {
+                warn!(
+                    peer = %self.peer_display_name(node_addr),
+                    consecutive_failures,
+                    "FMP AEAD failures exceeded threshold and recovery is unavailable; removing peer"
                 );
                 let addr = *node_addr;
                 self.remove_active_peer(node_addr);
