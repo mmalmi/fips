@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::App;
 
 use super::helpers;
+use super::listening;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let data = match app.data.get(&crate::app::Tab::Node) {
@@ -23,7 +24,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(7), // Runtime
         Constraint::Length(7), // Identity
         Constraint::Length(6), // State (sparkline row adds one line)
-        Constraint::Length(9), // Traffic
+        Constraint::Length(9), // Traffic and fips0 listeners
         Constraint::Min(0),    // remaining
     ])
     .split(area);
@@ -31,7 +32,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     draw_runtime(frame, data, chunks[0]);
     draw_identity(frame, data, chunks[1]);
     draw_state(frame, data, chunks[2]);
-    draw_node_stats(frame, data, chunks[3]);
+
+    let traffic_chunks =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[3]);
+    draw_node_stats(frame, data, traffic_chunks[0]);
+    listening::draw(frame, app.listening_sockets.as_ref(), traffic_chunks[1]);
 }
 
 fn draw_runtime(frame: &mut Frame, data: &serde_json::Value, area: Rect) {

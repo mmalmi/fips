@@ -8,7 +8,13 @@ use std::net::SocketAddrV6;
 use serde::{Deserialize, Serialize};
 
 /// Default gateway DNS listen address.
-const DEFAULT_DNS_LISTEN: &str = "[::]:53";
+///
+/// The canonical gateway deployment already has a LAN resolver on port 53
+/// forwarding `.fips` queries to the gateway over loopback. Use an
+/// unprivileged loopback port by default to avoid colliding with dnsmasq,
+/// systemd-resolved, or BIND. Hosts without another resolver can set
+/// `gateway.dns.listen: "[::]:53"` explicitly.
+const DEFAULT_DNS_LISTEN: &str = "[::1]:5353";
 
 /// Default upstream DNS resolver (FIPS daemon).
 ///
@@ -118,7 +124,7 @@ pub struct PortForward {
 /// Gateway DNS resolver configuration (`gateway.dns.*`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayDnsConfig {
-    /// Listen address and port (default: `0.0.0.0:53`).
+    /// Listen address and port (default: `[::1]:5353`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen: Option<String>,
 
@@ -133,7 +139,7 @@ pub struct GatewayDnsConfig {
 }
 
 impl GatewayDnsConfig {
-    /// Get the listen address (default: `0.0.0.0:53`).
+    /// Get the listen address (default: `[::1]:5353`).
     pub fn listen(&self) -> &str {
         self.listen.as_deref().unwrap_or(DEFAULT_DNS_LISTEN)
     }
@@ -205,7 +211,7 @@ lan_interface: "eth0"
         assert!(!config.enabled);
         assert_eq!(config.pool, "fd01::/112");
         assert_eq!(config.lan_interface, "eth0");
-        assert_eq!(config.dns.listen(), "[::]:53");
+        assert_eq!(config.dns.listen(), "[::1]:5353");
         assert_eq!(config.dns.upstream(), "[::1]:5354");
         assert_eq!(config.dns.ttl(), 60);
         assert_eq!(config.grace_period(), 60);

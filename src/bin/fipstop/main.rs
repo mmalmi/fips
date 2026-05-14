@@ -65,6 +65,13 @@ fn fetch_data(
         }
     }
 
+    if app.active_tab == Tab::Node {
+        match rt.block_on(client.query("show_listening_sockets")) {
+            Ok(data) => app.listening_sockets = Some(data),
+            Err(_) => app.listening_sockets = None,
+        }
+    }
+
     // Gateway tab uses a separate socket
     if app.active_tab == Tab::Gateway {
         match rt.block_on(gateway_client.query("show_gateway")) {

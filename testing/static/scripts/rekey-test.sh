@@ -153,7 +153,7 @@ fi
 trap 'echo ""; echo "Test interrupted"; exit 130' INT
 
 # Wait times derived from rekey timer
-BASELINE_CONVERGENCE_TIMEOUT=50
+BASELINE_CONVERGENCE_TIMEOUT=60
 REKEY_SETTLE=12        # > DRAIN_WINDOW_SECS (10) so post-rekey samples are off the old session
 # First FMP rekey should follow shortly after the configured interval once the mesh is
 # fully converged. Keep this bounded to preserve a meaningful scheduling check
@@ -381,7 +381,8 @@ echo "Phase 4: Second rekey cycle (waiting ${SECOND_REKEY_WAIT}s)"
 sleep "$SECOND_REKEY_WAIT"
 
 # Verify connectivity after second rekey (back-to-back)
-echo "Phase 5: Post-second-rekey connectivity"
+echo "Phase 5: Post-second-rekey connectivity (settling ${REKEY_SETTLE}s)"
+sleep "$REKEY_SETTLE"
 ping_all
 phase_result "Post-second-rekey (all 20 pairs)"
 echo ""

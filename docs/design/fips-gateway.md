@@ -11,7 +11,7 @@ and send IPv6 packets can use the gateway.
 
 The gateway is a separate binary (`fips-gateway`), not part of the FIPS daemon.
 It connects to the daemon indirectly: `.fips` DNS queries are forwarded to the
-daemon's built-in resolver (localhost:5354), which resolves names to mesh
+daemon's built-in resolver (`[::1]:5354` by default), which resolves names to mesh
 addresses and primes its identity cache as a side effect. The gateway then
 allocates a virtual IP, installs NAT rules, and returns the virtual IP to the
 LAN client.
@@ -23,7 +23,7 @@ LAN client.
                         |
                         v
              +---------------------+
-             |   DNS Proxy         |  Listens on [::]:53
+             |   DNS Proxy         |  Listens on [::1]:5353
              |   (dns.rs)          |
              +---------------------+
                    |          |
@@ -31,7 +31,7 @@ LAN client.
                    |
                    v
           FIPS Daemon Resolver
-          (localhost:5354)
+          ([::1]:5354)
                    |
              mesh address (fd00::/8)
                    |
@@ -62,7 +62,7 @@ LAN client.
 ### Data Flow
 
 1. LAN client queries `hostname.fips` via DNS
-2. Gateway forwards to daemon resolver (localhost:5354)
+2. Gateway forwards to daemon resolver (`[::1]:5354` by default)
 3. Daemon resolves name to mesh address (fd00::/8), primes identity cache
 4. Gateway allocates virtual IP from pool, creates DNAT/SNAT rules and proxy NDP
    entry
@@ -186,10 +186,13 @@ of CIDR prefix length to prevent excessive memory allocation.
 
 ## DNS Resolution Flow
 
-1. Gateway listens on configured address (default `[::]:53`).
+1. Gateway listens on configured address (default `[::1]:5353`). The default
+   assumes a LAN resolver already owns port 53 and forwards `.fips` queries to
+   the gateway over loopback; set `listen: "[::]:53"` explicitly on hosts where
+   the gateway should answer LAN clients directly.
 2. Client sends DNS query.
 3. If the query is not for a `.fips` domain, return `REFUSED`.
-4. Forward the query to the daemon resolver at `127.0.0.1:5354` (configurable).
+4. Forward the query to the daemon resolver at `[::1]:5354` (configurable).
 5. If the daemon is unreachable or times out (5 seconds), return `SERVFAIL`.
 6. If the daemon returns NXDOMAIN or an error, forward the response as-is.
 7. Extract the AAAA record (fd00::/8 mesh address) from the daemon's response.
@@ -242,8 +245,8 @@ gateway:
   pool: "fd01::/112"
   lan_interface: "enp3s0"
   dns:
-    listen: "[::]:53"
-    upstream: "127.0.0.1:5354"
+    listen: "[::1]:5353"
+    upstream: "[::1]:5354"
     ttl: 60
   pool_grace_period: 60
   conntrack:
@@ -258,8 +261,8 @@ gateway:
 | `enabled` | bool | `false` | Enable the gateway. Must be `true` for `fips-gateway` to start. |
 | `pool` | string (CIDR) | required | Virtual IP pool range (e.g., `fd01::/112`). |
 | `lan_interface` | string | required | LAN-facing interface for proxy NDP entries. |
-| `dns.listen` | string | `[::]:53` | Address and port for the gateway DNS listener. |
-| `dns.upstream` | string | `127.0.0.1:5354` | FIPS daemon DNS resolver address. |
+| `dns.listen` | string | `[::1]:5353` | Address and port for the gateway DNS listener. The default avoids port 53 conflicts with an existing LAN resolver; set `[::]:53` explicitly when the gateway should answer clients directly. |
+| `dns.upstream` | string | `[::1]:5354` | FIPS daemon DNS resolver address. |
 | `dns.ttl` | u32 | `60` | DNS response TTL in seconds. Also governs mapping TTL. |
 | `pool_grace_period` | u64 | `60` | Seconds after last session before a mapping is reclaimed. |
 | `conntrack.tcp_established` | u64 | `432000` | TCP established timeout (seconds). 5 days. |
@@ -340,20 +343,20 @@ address.
 
 ### Port 53 Conflict
 
-If another DNS server (systemd-resolved, dnsmasq) is using port 53, the
-gateway cannot bind. Options:
+The default `[::1]:5353` should not collide with a normal resolver. If you
+override the gateway onto port 53 and another DNS server is already there,
+identify the owner:
 
 ```bash
 # Check what is using port 53
 ss -tulnp | grep :53
 
-# Use an alternate listen address
+# Return to the loopback default or choose another explicit listen address
 dns:
-  listen: "192.168.1.1:5353"
+  listen: "[::1]:5353"
 ```
 
-Then configure LAN clients to query the alternate port, or run a forwarding
-stub on port 53 that delegates `.fips` queries to the gateway.
+Then configure the existing resolver to forward `.fips` queries to the gateway.
 
 ## Security Considerations
 

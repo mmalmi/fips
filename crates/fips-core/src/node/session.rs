@@ -10,8 +10,14 @@ use std::time::Instant;
 use crate::NodeAddr;
 use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
+use crate::node::REKEY_JITTER_SECS;
 use crate::noise::{HandshakeState, NoiseSession};
+use rand::RngExt;
 use secp256k1::PublicKey;
+
+fn draw_rekey_jitter() -> i64 {
+    rand::rng().random_range(-REKEY_JITTER_SECS..=REKEY_JITTER_SECS)
+}
 
 /// State machine for an end-to-end session.
 ///
@@ -121,6 +127,8 @@ pub(crate) struct SessionEntry {
     /// When the FSP rekey handshake completed (initiator sent msg3, Unix ms).
     /// Used to defer cutover until msg3 has time to reach the responder.
     rekey_completed_ms: u64,
+    /// Per-session symmetric jitter applied to the rekey timer trigger.
+    rekey_jitter_secs: i64,
 
     /// Consecutive AEAD decryption failures from this peer.
     /// Reset on every successful decrypt. Drives auto re-handshake when
@@ -163,6 +171,7 @@ impl SessionEntry {
             rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
+            rekey_jitter_secs: draw_rekey_jitter(),
             consecutive_decrypt_failures: 0,
         }
     }
@@ -408,6 +417,11 @@ impl SessionEntry {
         self.rekey_completed_ms
     }
 
+    /// Per-session symmetric rekey-timer jitter offset (seconds).
+    pub(crate) fn rekey_jitter_secs(&self) -> i64 {
+        self.rekey_jitter_secs
+    }
+
     /// Record when the FSP rekey handshake completed (initiator side).
     pub(crate) fn set_rekey_completed_ms(&mut self, ms: u64) {
         self.rekey_completed_ms = ms;
@@ -453,6 +467,7 @@ impl SessionEntry {
         self.rekey_state = None;
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
+        self.rekey_jitter_secs = draw_rekey_jitter();
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();
@@ -481,6 +496,7 @@ impl SessionEntry {
         self.session_start_ms = now_ms;
         self.rekey_state = None;
         self.rekey_initiator = false;
+        self.rekey_jitter_secs = draw_rekey_jitter();
 
         // Reset MMP counters to avoid metric discontinuity
         let now = Instant::now();

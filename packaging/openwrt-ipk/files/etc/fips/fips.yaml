@@ -102,7 +102,6 @@ gateway:
   pool: "fd01::/112"
   lan_interface: "br-lan"
   dns:
-    listen: "[::1]:5353"        # gateway DNS listener (dnsmasq forwards here)
     upstream: "[::1]:5354"      # FIPS daemon DNS resolver (matches daemon default)
     ttl: 60                     # DNS TTL and mapping lifetime (seconds)
   pool_grace_period: 60         # seconds after last session before reclaiming

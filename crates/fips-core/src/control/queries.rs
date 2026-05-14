@@ -1107,6 +1107,42 @@ pub fn show_stats_history_all_peers(
     }))
 }
 
+/// `show_listening_sockets` - IPv6 listeners reachable from fips0, annotated
+/// with the current `inet fips` filter classification.
+pub fn show_listening_sockets(node: &Node) -> Value {
+    let fips0 = crate::FipsAddress::from_node_addr(node.identity().node_addr()).to_ipv6();
+    #[cfg(test)]
+    let sockets: Vec<super::listening::ListeningSocket> = Vec::new();
+    #[cfg(not(test))]
+    let sockets = super::listening::enumerate(fips0);
+    #[cfg(test)]
+    let classifier = super::firewall_state::FilterClassifier::no_firewall();
+    #[cfg(not(test))]
+    let classifier = super::firewall_state::FilterClassifier::query();
+
+    let rows: Vec<Value> = sockets
+        .iter()
+        .map(|socket| {
+            let filter = classifier.classify(socket.proto, socket.port);
+            json!({
+                "proto": socket.proto.as_str(),
+                "local_addr": socket.local_addr.to_string(),
+                "port": socket.port,
+                "pid": socket.pid,
+                "process": socket.process,
+                "filter": filter.as_str(),
+                "wildcard_bind": socket.wildcard_bind,
+            })
+        })
+        .collect();
+
+    json!({
+        "fips0_addr": fips0.to_string(),
+        "firewall_active": classifier.is_active(),
+        "sockets": rows,
+    })
+}
+
 /// Dispatch a command string to the appropriate query function.
 pub fn dispatch(node: &Node, command: &str, params: Option<&Value>) -> super::protocol::Response {
     match command {
@@ -1123,6 +1159,7 @@ pub fn dispatch(node: &Node, command: &str, params: Option<&Value>) -> super::pr
         "show_transports" => super::protocol::Response::ok(show_transports(node)),
         "show_routing" => super::protocol::Response::ok(show_routing(node)),
         "show_identity_cache" => super::protocol::Response::ok(show_identity_cache(node)),
+        "show_listening_sockets" => super::protocol::Response::ok(show_listening_sockets(node)),
         "show_stats_list" => super::protocol::Response::ok(show_stats_list()),
         "show_stats_history" => show_stats_history(node, params),
         "show_stats_all_history" => show_stats_all_history(node, params),
@@ -1411,6 +1448,15 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_show_listening_sockets() {
+        let node = build_test_node();
+        assert_snapshot(
+            "show_listening_sockets",
+            &render(show_listening_sockets(&node)),
+        );
+    }
+
+    #[test]
     fn snapshot_show_stats_list() {
         // Static — no Node needed.
         assert_snapshot("show_stats_list", &render(show_stats_list()));
@@ -1471,13 +1517,14 @@ mod tests {
             "show_transports",
             "show_routing",
             "show_identity_cache",
+            "show_listening_sockets",
             "show_stats_list",
             "show_stats_history",
             "show_stats_all_history",
             "show_stats_peers",
             "show_stats_history_all_peers",
         ];
-        assert_eq!(expected.len(), 18, "expected exactly 18 query handlers");
+        assert_eq!(expected.len(), 19, "expected exactly 19 query handlers");
         let node = build_test_node();
         for cmd in expected {
             // Each must dispatch successfully (status == "ok") with

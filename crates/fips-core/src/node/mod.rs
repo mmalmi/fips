@@ -62,6 +62,14 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+/// Half-range of the symmetric jitter applied to per-session rekey timers.
+///
+/// Each FMP/FSP session draws an offset uniformly from
+/// `[-REKEY_JITTER_SECS, +REKEY_JITTER_SECS]` seconds at construction and
+/// after each cutover. This preserves the configured mean interval while
+/// reducing dual-initiation bursts in symmetric-start meshes.
+pub(crate) const REKEY_JITTER_SECS: i64 = 15;
+
 /// Errors related to node operations.
 #[derive(Debug, Error)]
 pub enum NodeError {

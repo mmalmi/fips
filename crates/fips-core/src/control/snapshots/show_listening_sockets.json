@@ -1,0 +1,8 @@
+{
+  "data": {
+    "fips0_addr": "fd1b:4788:b7ab:7a43:6a61:1fc5:9fb1:e34c",
+    "firewall_active": false,
+    "sockets": []
+  },
+  "status": "ok"
+}

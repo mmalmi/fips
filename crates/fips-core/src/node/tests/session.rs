@@ -70,6 +70,69 @@ fn test_session_entry_new_initiating() {
 }
 
 #[test]
+fn test_session_entry_rekey_jitter_in_range() {
+    use crate::node::REKEY_JITTER_SECS;
+    use crate::noise::HandshakeState;
+
+    for _ in 0..100 {
+        let identity_a = Identity::generate();
+        let identity_b = Identity::generate();
+        let handshake =
+            HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
+
+        let entry = crate::node::session::SessionEntry::new(
+            *identity_b.node_addr(),
+            identity_b.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            1000,
+            true,
+        );
+
+        let jitter = entry.rekey_jitter_secs();
+        assert!(
+            (-REKEY_JITTER_SECS..=REKEY_JITTER_SECS).contains(&jitter),
+            "jitter {} outside [-{}, +{}]",
+            jitter,
+            REKEY_JITTER_SECS,
+            REKEY_JITTER_SECS
+        );
+    }
+}
+
+#[test]
+fn test_session_entry_rekey_jitter_mean_near_zero() {
+    use crate::noise::HandshakeState;
+
+    let mut sum = 0i64;
+    let n = 200i64;
+
+    for _ in 0..n {
+        let identity_a = Identity::generate();
+        let identity_b = Identity::generate();
+        let handshake =
+            HandshakeState::new_initiator(identity_a.keypair(), identity_b.pubkey_full());
+
+        let entry = crate::node::session::SessionEntry::new(
+            *identity_b.node_addr(),
+            identity_b.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            1000,
+            true,
+        );
+
+        sum += entry.rekey_jitter_secs();
+    }
+
+    let mean = sum / n;
+    assert!(
+        mean.abs() < 5,
+        "empirical mean {} not within 5 of 0 over {} samples",
+        mean,
+        n
+    );
+}
+
+#[test]
 fn test_session_entry_touch() {
     use crate::noise::HandshakeState;
 

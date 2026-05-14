@@ -92,6 +92,28 @@ pub fn pub_file_path(config_path: &Path) -> PathBuf {
         .join(PUB_FILENAME)
 }
 
+/// Resolve a default Unix-socket path under the canonical order:
+/// `/run/fips/<filename>` -> `$XDG_RUNTIME_DIR/fips/<filename>` -> `/tmp/fips-<filename>`.
+///
+/// `/run/fips` is the packaged convention. The resolver selects it whenever
+/// the directory exists so daemon and client defaults stay aligned. The daemon
+/// bind path creates missing parent directories; packaged installs create
+/// `/run/fips` via tmpfiles before service start.
+#[cfg(unix)]
+pub(crate) fn resolve_default_socket(filename: &str) -> String {
+    if Path::new("/run/fips").is_dir() {
+        return format!("/run/fips/{filename}");
+    }
+
+    if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR")
+        && Path::new(&xdg).is_dir()
+    {
+        return format!("{xdg}/fips/{filename}");
+    }
+
+    format!("/tmp/fips-{filename}")
+}
+
 /// Default control socket path for fipsctl / fipstop.
 ///
 /// On Unix, checks the system-wide path first (used when the daemon runs as
@@ -100,13 +122,7 @@ pub fn pub_file_path(config_path: &Path) -> PathBuf {
 pub fn default_control_path() -> PathBuf {
     #[cfg(unix)]
     {
-        if Path::new("/run/fips").exists() {
-            PathBuf::from("/run/fips/control.sock")
-        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(format!("{runtime_dir}/fips/control.sock"))
-        } else {
-            PathBuf::from("/tmp/fips-control.sock")
-        }
+        PathBuf::from(resolve_default_socket("control.sock"))
     }
     #[cfg(windows)]
     {
@@ -121,13 +137,7 @@ pub fn default_control_path() -> PathBuf {
 pub fn default_gateway_path() -> PathBuf {
     #[cfg(unix)]
     {
-        if Path::new("/run/fips").exists() {
-            PathBuf::from("/run/fips/gateway.sock")
-        } else if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(format!("{runtime_dir}/fips/gateway.sock"))
-        } else {
-            PathBuf::from("/tmp/fips-gateway.sock")
-        }
+        PathBuf::from(resolve_default_socket("gateway.sock"))
     }
     #[cfg(windows)]
     {
@@ -661,6 +671,9 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_empty_config() {
@@ -1352,6 +1365,92 @@ peers:
         assert!(!is_loopback_addr_str("[fd00::1]:2121"));
         assert!(!is_loopback_addr_str("core-vm.tail65015.ts.net:2121"));
         assert!(!is_loopback_addr_str("example.com:443"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_default_socket_call_sites_agree() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let control_client = default_control_path().to_string_lossy().into_owned();
+        let gateway_client = default_gateway_path().to_string_lossy().into_owned();
+        let control_daemon = ControlConfig::default().socket_path;
+
+        assert_eq!(control_daemon, control_client);
+
+        let control_dir = Path::new(&control_client)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let gateway_dir = Path::new(&gateway_client)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert_eq!(control_dir, gateway_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_default_socket_xdg_when_no_run_fips() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+
+        // SAFETY: serialized by ENV_MUTEX, so no other test in this module
+        // observes the transient process environment.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", temp_dir.path());
+        }
+
+        let path = resolve_default_socket("control.sock");
+
+        // SAFETY: serialized by ENV_MUTEX.
+        unsafe {
+            match prev_xdg {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        assert!(
+            path.starts_with("/run/fips/")
+                || path.starts_with(&format!("{}/fips/", temp_dir.path().display())),
+            "expected /run/fips or XDG path, got: {path}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_default_socket_tmp_when_xdg_invalid() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+
+        let prev_xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+        let bogus = "/nonexistent-xdg-runtime-dir-for-fips-test-zzz";
+
+        // SAFETY: serialized by ENV_MUTEX.
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", bogus);
+        }
+
+        let path = resolve_default_socket("gateway.sock");
+
+        // SAFETY: serialized by ENV_MUTEX.
+        unsafe {
+            match prev_xdg {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
+
+        assert!(
+            path.starts_with("/run/fips/") || path == "/tmp/fips-gateway.sock",
+            "expected /run/fips or /tmp fallback, got: {path}"
+        );
+        assert!(
+            !path.starts_with(bogus),
+            "stale XDG_RUNTIME_DIR leaked into resolver: {path}"
+        );
     }
 
     #[test]
