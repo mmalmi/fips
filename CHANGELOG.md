@@ -226,6 +226,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `send(2)` on a connected fd instead of repeating `sendto(2)` sockaddr
   work for every tunneled packet while the paired drain preserves
   inbound delivery.
+- macOS encrypt-worker drain batches now default to 8 packets instead
+  of 32. Darwin has no userspace UDP GSO/sendmmsg path, and MacBook
+  Wi-Fi sender tests showed large worker bursts could collapse TCP
+  throughput even without kernel `ENOBUFS`; the smaller default trims
+  burst size without forcing one worker wake per datagram, while
+  `FIPS_MACOS_WORKER_BATCH` remains available for machine-specific
+  benchmarks.
 - The connected-UDP worker path now reuses the connected socket's
   kernel peer address for dispatch instead of re-resolving the
   configured transport address per packet. This removes an avoidable
