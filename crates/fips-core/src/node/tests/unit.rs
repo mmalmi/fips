@@ -1,7 +1,9 @@
 use super::*;
+use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
 use crate::peer::PromotionResult;
 use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
+use std::sync::Arc;
 
 #[test]
 fn test_node_creation() {
@@ -957,6 +959,35 @@ async fn test_try_peer_addresses_skips_connecting_peer() {
         node.link_count(),
         0,
         "stale retry/traversal fallback must not allocate a link while a handshake is pending"
+    );
+}
+
+#[tokio::test]
+async fn test_nostr_traversal_failure_skips_connected_peer() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, peer_identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, peer_identity, 2000)
+        .unwrap();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    bootstrap.push_event_for_test(BootstrapEvent::Failed {
+        peer_config: crate::config::PeerConfig::new(peer_identity.npub(), "udp", "127.0.0.1:9"),
+        reason: "stale traversal failure".to_string(),
+    });
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    node.poll_nostr_discovery().await;
+
+    assert!(
+        bootstrap.failure_state_snapshot().is_empty(),
+        "stale failures for connected peers must not affect traversal cooldown"
+    );
+    assert!(
+        node.retry_pending.is_empty(),
+        "stale failures for connected peers must not enqueue reconnect attempts"
     );
 }
 
