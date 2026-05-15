@@ -136,6 +136,32 @@ impl Node {
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
+        self.initiate_peer_connection_inner(peer_config, false)
+            .await
+    }
+
+    /// Initiate a connection from the retry path.
+    ///
+    /// Same shape as [`initiate_peer_connection`] but tells
+    /// [`try_peer_addresses`] to dial Nostr-overlay addresses ahead of the
+    /// static `PeerConfig.addresses` list. On retry, static addresses are
+    /// likely stale (peer rebound, port changed, host restarted) — the
+    /// overlay advert was just refetched in `process_pending_retries`, so
+    /// it's the freshest ground truth available. Static remains as a
+    /// fallback for the case where the relay is unreachable but the peer's
+    /// IP/port haven't actually moved.
+    pub(super) async fn initiate_peer_retry_connection(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+    ) -> Result<(), NodeError> {
+        self.initiate_peer_connection_inner(peer_config, true).await
+    }
+
+    async fn initiate_peer_connection_inner(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+        prefer_overlay_first: bool,
+    ) -> Result<(), NodeError> {
         // Parse the peer's npub to get their identity
         let peer_identity =
             PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
@@ -168,7 +194,7 @@ impl Node {
             return Ok(());
         }
 
-        self.try_peer_addresses(peer_config, peer_identity, true)
+        self.try_peer_addresses(peer_config, peer_identity, true, prefer_overlay_first)
             .await
     }
 
@@ -565,7 +591,7 @@ impl Node {
                     }
 
                     if self
-                        .try_peer_addresses(&peer_config, peer_identity, false)
+                        .try_peer_addresses(&peer_config, peer_identity, false, false)
                         .await
                         .is_ok()
                     {
@@ -1968,6 +1994,7 @@ impl Node {
         peer_config: &PeerConfig,
         peer_identity: PeerIdentity,
         allow_bootstrap_nat: bool,
+        prefer_overlay_first: bool,
     ) -> Result<(), NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
         if self.peers.contains_key(&peer_node_addr) {
@@ -1985,9 +2012,36 @@ impl Node {
             return Ok(());
         }
 
+        let static_addresses = self.static_peer_addresses(peer_config);
+
+        // On retry the static list is likely stale (peer rebound, port
+        // changed, host restarted); the overlay advert was just refetched
+        // by process_pending_retries so it carries the freshest known
+        // endpoints. Try those first and fall through to static only when
+        // the overlay is empty/unreachable. On a cold start (and any other
+        // call site) the order is unchanged: static first, overlay
+        // fallback.
+        if prefer_overlay_first {
+            let overlay = self
+                .nostr_peer_fallback_addresses(peer_config, &static_addresses)
+                .await;
+            if !overlay.is_empty()
+                && self
+                    .attempt_peer_address_list(
+                        peer_config,
+                        peer_identity,
+                        allow_bootstrap_nat,
+                        &overlay,
+                    )
+                    .await
+                    .is_ok()
+            {
+                return Ok(());
+            }
+        }
+
         // Static-first dialing: avoid delaying configured address attempts on
         // advert fetch/network latency.
-        let static_addresses = self.static_peer_addresses(peer_config);
         if self
             .attempt_peer_address_list(
                 peer_config,
@@ -2001,7 +2055,7 @@ impl Node {
             return Ok(());
         }
 
-        {
+        if !prefer_overlay_first {
             let fallback = self
                 .nostr_peer_fallback_addresses(peer_config, &static_addresses)
                 .await;

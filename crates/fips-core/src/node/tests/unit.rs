@@ -84,7 +84,7 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 
-    node.try_peer_addresses(&peer_config, peer_identity, false)
+    node.try_peer_addresses(&peer_config, peer_identity, false, false)
         .await
         .unwrap();
 
@@ -922,7 +922,7 @@ async fn test_try_peer_addresses_skips_connected_peer() {
     let link_count = node.link_count();
     let connection_count = node.connection_count();
 
-    node.try_peer_addresses(&peer_config, peer_identity, true)
+    node.try_peer_addresses(&peer_config, peer_identity, true, false)
         .await
         .unwrap();
 
@@ -946,7 +946,7 @@ async fn test_try_peer_addresses_skips_connecting_peer() {
     let pending = PeerConnection::outbound(LinkId::new(1), peer_identity, 1000);
     node.add_connection(pending).unwrap();
 
-    node.try_peer_addresses(&peer_config, peer_identity, true)
+    node.try_peer_addresses(&peer_config, peer_identity, true, false)
         .await
         .unwrap();
 
@@ -1386,6 +1386,172 @@ async fn test_seed_path_mtu_tightens_looser_existing_value() {
         stored,
         Some(1280),
         "Direct-link seed (1280) must overwrite looser existing value (1452)"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+/// On retry, FIPS must dial the just-refreshed overlay advert ahead of the
+/// stale static `PeerConfig.addresses`. Previously, embedders that re-fed
+/// observed peer addresses as static config got wedged on dead UDP source
+/// ports across daemon restarts: UDP `initiate_connection` returns Ok the
+/// instant `sendto` succeeds (fire-and-forget) so `try_peer_addresses`
+/// short-circuited before the overlay advert was ever consulted, and every
+/// subsequent retry hit the same dead address. The fix routes retry calls
+/// through `initiate_peer_retry_connection`, which inverts the order so the
+/// just-refreshed overlay advert is dialed first.
+#[tokio::test]
+async fn test_retry_dials_overlay_advert_before_stale_static_udp() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    let mut node = Node::new(config).unwrap();
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+
+    let stale_static_addr = "127.0.0.1:9";
+    let fresh_overlay_addr = "127.0.0.1:55180";
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: fresh_overlay_addr.to_string(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let advert = NostrDiscovery::cached_advert_for_test(peer_npub.clone(), endpoint, now_secs);
+    bootstrap
+        .insert_advert_for_test(peer_npub.clone(), advert)
+        .await;
+    node.nostr_discovery = Some(bootstrap);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", stale_static_addr)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    node.initiate_peer_retry_connection(&peer_config)
+        .await
+        .unwrap();
+
+    let fresh = TransportAddr::from_string(fresh_overlay_addr);
+    let stale = TransportAddr::from_string(stale_static_addr);
+    assert!(
+        node.find_link_by_addr(transport_id, &fresh).is_some(),
+        "retry should dial the just-refreshed overlay advert {fresh_overlay_addr}"
+    );
+    assert!(
+        node.find_link_by_addr(transport_id, &stale).is_none(),
+        "retry must not dial the stale static {stale_static_addr} when a fresh advert is available"
+    );
+    assert_eq!(node.connection_count(), 1);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+/// Bootstrap (non-retry) call still tries the static `PeerConfig.addresses`
+/// first — the overlay-first reorder must be retry-scoped, not global. If
+/// this regresses, the cold-start path delays peer dials behind the relay
+/// fetch round-trip.
+#[tokio::test]
+async fn test_bootstrap_dials_static_before_overlay() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    let mut node = Node::new(config).unwrap();
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+
+    let static_addr = "127.0.0.1:9";
+    let overlay_addr = "127.0.0.1:55181";
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: overlay_addr.to_string(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let advert = NostrDiscovery::cached_advert_for_test(peer_npub.clone(), endpoint, now_secs);
+    bootstrap
+        .insert_advert_for_test(peer_npub.clone(), advert)
+        .await;
+    node.nostr_discovery = Some(bootstrap);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", static_addr)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    node.initiate_peer_connection(&peer_config).await.unwrap();
+
+    let stat = TransportAddr::from_string(static_addr);
+    let overlay = TransportAddr::from_string(overlay_addr);
+    assert!(
+        node.find_link_by_addr(transport_id, &stat).is_some(),
+        "cold-start must dial the static address first"
+    );
+    assert!(
+        node.find_link_by_addr(transport_id, &overlay).is_none(),
+        "cold-start must not consult the overlay before static succeeds"
     );
 
     for transport in node.transports.values_mut() {

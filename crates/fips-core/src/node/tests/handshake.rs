@@ -425,6 +425,115 @@ async fn test_run_rx_loop_handshake() {
     }
 }
 
+/// End-to-end test for the "restart with cached endpoint, no relay reachable"
+/// flow that powers `RecentPeerEndpoints` in the nostr-vpn daemon.
+///
+/// Two nodes are wired up with Nostr discovery fully disabled — exactly the
+/// state of a freshly-restarted daemon before it talks to any relay. Node A
+/// is configured with B's exact UDP socket address as a static
+/// `PeerConfig.addresses` entry (this is what nvpn feeds in from the
+/// persisted recent-peers cache). `initiate_peer_connections` then drives
+/// the handshake via `try_peer_addresses` → static dial — proving that the
+/// relay-less reconnect path works end-to-end, not just on paper.
+#[tokio::test]
+async fn test_static_address_handshake_without_nostr_discovery() {
+    use crate::Identity;
+    use crate::config::{ConnectPolicy, PeerAddress, PeerConfig, UdpConfig};
+    use crate::transport::udp::UdpTransport;
+    use crate::transport::{TransportHandle, packet_channel};
+    use tokio::time::Duration;
+
+    let mut config_a = Config::new();
+    config_a.node.discovery.nostr.enabled = false;
+    config_a.node.discovery.lan.enabled = false;
+
+    let mut config_b = Config::new();
+    config_b.node.discovery.nostr.enabled = false;
+    config_b.node.discovery.lan.enabled = false;
+
+    let identity_a = Identity::generate();
+    let identity_b = Identity::generate();
+
+    // Wire up node B first so we know its UDP bind address.
+    let transport_id = TransportId::new(1);
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+    let (packet_tx_b, packet_rx_b) = packet_channel(64);
+    let mut transport_b = UdpTransport::new(transport_id, None, udp_config.clone(), packet_tx_b);
+    transport_b.start_async().await.unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+
+    // Node A's static peer config: B's actual UDP address. This is
+    // structurally identical to what the daemon hands FIPS at boot when
+    // `recent_peers.json` is present and the relay path is cold.
+    config_a.peers.push(PeerConfig {
+        npub: identity_b.npub(),
+        alias: None,
+        addresses: vec![PeerAddress::new("udp", addr_b.to_string())],
+        connect_policy: ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    });
+
+    let mut node_a = Node::with_identity(identity_a, config_a).unwrap();
+    let mut node_b = Node::with_identity(identity_b, config_b).unwrap();
+
+    let (packet_tx_a, packet_rx_a) = packet_channel(64);
+    let mut transport_a = UdpTransport::new(transport_id, None, udp_config, packet_tx_a);
+    transport_a.start_async().await.unwrap();
+
+    node_a
+        .transports
+        .insert(transport_id, TransportHandle::Udp(transport_a));
+    node_b
+        .transports
+        .insert(transport_id, TransportHandle::Udp(transport_b));
+    node_a.packet_rx = Some(packet_rx_a);
+    node_b.packet_rx = Some(packet_rx_b);
+    node_a.state = NodeState::Running;
+    node_b.state = NodeState::Running;
+
+    // Kick off the static-address dial. This mirrors what
+    // Node::start does at boot via initiate_peer_connections.
+    node_a.initiate_peer_connections().await;
+
+    // Run both rx loops just long enough for msg1 → msg2 → msg3 to settle.
+    // 500ms is conservative for loopback; the existing handshake tests
+    // use the same budget.
+    let _ = tokio::time::timeout(Duration::from_millis(500), async {
+        tokio::select! {
+            _ = node_b.run_rx_loop() => {}
+            _ = node_a.run_rx_loop() => {}
+        }
+    })
+    .await;
+
+    let peer_a_addr = *PeerIdentity::from_pubkey_full(node_a.identity.pubkey_full()).node_addr();
+    let peer_b_addr = *PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full()).node_addr();
+
+    assert_eq!(
+        node_a.peer_count(),
+        1,
+        "node A should reach node B using only the cached static UDP address"
+    );
+    assert_eq!(
+        node_b.peer_count(),
+        1,
+        "node B should authenticate node A's static-only handshake"
+    );
+    assert!(node_a.get_peer(&peer_b_addr).is_some());
+    assert!(node_b.get_peer(&peer_a_addr).is_some());
+
+    for (_, t) in node_a.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+    for (_, t) in node_b.transports.iter_mut() {
+        t.stop().await.ok();
+    }
+}
+
 /// Integration test: simultaneous cross-connection (both nodes initiate).
 ///
 /// Simulates the live scenario where both nodes have auto_connect to each other.

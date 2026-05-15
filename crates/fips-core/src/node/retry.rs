@@ -278,7 +278,7 @@ impl Node {
                     .await;
             }
 
-            match self.initiate_peer_connection(&peer_config).await {
+            match self.initiate_peer_retry_connection(&peer_config).await {
                 Ok(()) => {
                     // Push retry_after_ms past the handshake timeout window so
                     // we don't re-fire on the next tick. If the handshake
