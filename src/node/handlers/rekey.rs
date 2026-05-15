@@ -85,25 +85,40 @@ impl Node {
 
         // Execute cutover for initiator side
         for node_addr in peers_to_cutover {
-            if let Some(peer) = self.peers.get_mut(&node_addr)
-                && let Some(_old_our_index) = peer.cutover_to_new_session()
-            {
-                // New index was pre-registered in peers_by_index during
-                // msg2 handling (handshake.rs). Verify, don't duplicate.
-                debug_assert!(
-                    peer.transport_id().is_some()
-                        && peer.our_index().is_some()
-                        && self.peers_by_index.contains_key(&(
-                            peer.transport_id().unwrap(),
-                            peer.our_index().unwrap().as_u32()
-                        )),
-                    "peers_by_index should contain pre-registered new index after cutover"
-                );
-                debug!(
-                    peer = %self.peer_display_name(&node_addr),
-                    "Rekey cutover complete (initiator), K-bit flipped"
-                );
+            let did_cutover = if let Some(peer) = self.peers.get_mut(&node_addr) {
+                if let Some(_old_our_index) = peer.cutover_to_new_session() {
+                    // New index was pre-registered in peers_by_index
+                    // during msg2 handling (handshake.rs).
+                    debug_assert!(
+                        peer.transport_id().is_some()
+                            && peer.our_index().is_some()
+                            && self.peers_by_index.contains_key(&(
+                                peer.transport_id().unwrap(),
+                                peer.our_index().unwrap().as_u32()
+                            )),
+                        "peers_by_index should contain pre-registered new index after cutover"
+                    );
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        "Rekey cutover complete (initiator), K-bit flipped"
+                    );
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            // Re-register the new session with the decrypt worker — the
+            // cache_key (transport_id, our_index) just changed, so the
+            // old worker entry is stale and every packet on the new
+            // session would miss the worker's HashMap lookup.
+            #[cfg(unix)]
+            if did_cutover {
+                self.register_decrypt_worker_session(&node_addr);
             }
+            #[cfg(not(unix))]
+            let _ = did_cutover;
         }
 
         // Execute drain completion
