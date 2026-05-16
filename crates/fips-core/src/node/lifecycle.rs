@@ -990,7 +990,7 @@ impl Node {
 
                 if self.peers.contains_key(&node_addr) {
                     let candidate = PeerAddress::new(transport_name, remote_addr.to_string());
-                    if self.active_peer_matches_any_candidate(
+                    if self.active_peer_candidate_is_fresh_enough_to_skip(
                         &node_addr,
                         std::slice::from_ref(&candidate),
                     ) {
@@ -1242,7 +1242,7 @@ impl Node {
             let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
             if self.peers.contains_key(&peer_node_addr) {
                 let candidate = PeerAddress::new("udp", peer.addr.to_string());
-                if self.active_peer_matches_any_candidate(
+                if self.active_peer_candidate_is_fresh_enough_to_skip(
                     &peer_node_addr,
                     std::slice::from_ref(&candidate),
                 ) {
@@ -2870,6 +2870,30 @@ impl Node {
         candidates
             .iter()
             .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
+    }
+
+    pub(in crate::node) fn active_peer_candidate_is_fresh_enough_to_skip(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidates: &[PeerAddress],
+    ) -> bool {
+        if !self.active_peer_matches_any_candidate(peer_node_addr, candidates) {
+            return false;
+        }
+        !self.active_peer_needs_same_path_refresh(peer_node_addr)
+    }
+
+    fn active_peer_needs_same_path_refresh(&self, peer_node_addr: &NodeAddr) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        let stale_after_ms = self
+            .config
+            .node
+            .heartbeat_interval_secs
+            .saturating_mul(1000)
+            .max(1000);
+        peer.idle_time(Self::now_ms()) > stale_after_ms
     }
 
     fn active_peer_matches_candidate(

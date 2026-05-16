@@ -2245,6 +2245,49 @@ async fn update_peers_does_not_churn_active_peer_already_on_known_candidate() {
     }
 }
 
+#[test]
+fn active_peer_same_path_discovery_skips_fresh_peer() {
+    let mut node = make_node();
+    let (_peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), Node::now_ms());
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    let candidate = crate::config::PeerAddress::new("udp", "127.0.0.1:9");
+
+    assert!(node.active_peer_candidate_is_fresh_enough_to_skip(
+        &peer_node_addr,
+        std::slice::from_ref(&candidate),
+    ));
+}
+
+#[test]
+fn active_peer_same_path_discovery_refreshes_stale_peer() {
+    let mut node = make_node();
+    let (_peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let stale_at = Node::now_ms().saturating_sub(
+        node.config
+            .node
+            .heartbeat_interval_secs
+            .saturating_add(1)
+            .saturating_mul(1000),
+    );
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), stale_at);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    let candidate = crate::config::PeerAddress::new("udp", "127.0.0.1:9");
+
+    assert!(!node.active_peer_candidate_is_fresh_enough_to_skip(
+        &peer_node_addr,
+        std::slice::from_ref(&candidate),
+    ));
+}
+
 #[tokio::test]
 async fn update_peers_races_new_alternative_even_when_current_path_is_still_known() {
     let mut node = make_node();
