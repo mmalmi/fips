@@ -9,7 +9,7 @@ use crate::discovery::nostr::{
 use crate::discovery::{BootstrapHandoffResult, EstablishedTraversal};
 use crate::node::acl::PeerAclContext;
 use crate::node::wire::build_msg1;
-use crate::peer::{PeerConnection, cross_connection_winner};
+use crate::peer::PeerConnection;
 use crate::protocol::{Disconnect, DisconnectReason};
 use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, packet_channel};
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
@@ -386,18 +386,11 @@ impl Node {
             return Ok(true);
         }
 
-        // Route refreshes are deliberately initiated only by the deterministic
-        // side whose outbound handshake would win cross-connection resolution.
-        // That lets both peers learn the same replacement session without
-        // creating two competing upgraded links.
-        if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
-            debug!(
-                peer = %self.peer_display_name(&peer_node_addr),
-                "Peer will own outbound alternate-path refresh"
-            );
-            return Ok(false);
-        }
-
+        // Keep the current link live and race fresh concrete candidates.
+        // Cross-connection resolution still decides which replacement link
+        // wins if both peers try the same upgrade; the important part here is
+        // that a stale path does not depend on the remote peer receiving our
+        // hint first before either side attempts the better address.
         self.try_active_peer_alternative_addresses(peer_config, peer_identity)
             .await
     }
@@ -1010,9 +1003,6 @@ impl Node {
                     ) {
                         continue;
                     }
-                    if !cross_connection_winner(self.identity.node_addr(), &node_addr, true) {
-                        continue;
-                    }
                     let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
                     if connect_budget == 0
                         || self
@@ -1259,9 +1249,6 @@ impl Node {
                     continue;
                 }
                 if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
-                    continue;
-                }
-                if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
                     continue;
                 }
                 if connect_budget == 0 || self.path_candidate_attempt_budget(&peer_node_addr) == 0 {

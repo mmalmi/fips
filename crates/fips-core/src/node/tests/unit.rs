@@ -1890,6 +1890,16 @@ fn peer_identity_for_outbound_refresh_owner(node: &Node) -> (Identity, PeerIdent
     }
 }
 
+fn peer_identity_for_outbound_refresh_loser(node: &Node) -> (Identity, PeerIdentity) {
+    loop {
+        let identity = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(identity.pubkey_full());
+        if node.identity.node_addr() > peer_identity.node_addr() {
+            return (identity, peer_identity);
+        }
+    }
+}
+
 fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
     crate::config::PeerConfig {
         npub,
@@ -1897,6 +1907,66 @@ fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
         addresses: vec![crate::config::PeerAddress::new("udp", addr)],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+    }
+}
+
+#[tokio::test]
+async fn update_peers_races_alternate_path_even_when_outbound_would_lose() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_loser(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let old_addr = TransportAddr::from_string("127.0.0.1:7");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &old_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            old_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
+    node.config.peers = vec![peer.clone()];
+
+    let outcome = node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.unchanged, 1);
+    assert_eq!(node.peer_count(), 1, "current active peer must remain live");
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "alternate path should be attempted even when our outbound would lose cross-connection"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&old_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
     }
 }
 
