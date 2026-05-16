@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-05-16
+
+### Fixed
+
+- `Node::run_open_discovery_sweep` now expedites the retry queue entry of
+  a CONFIGURED peer when a fresh overlay advert lands. Previously the
+  sweep skipped configured peers entirely (they're driven by the normal
+  retry path), so on cold-start every initial `initiate_peer_connection`
+  failed before any overlay data was available, each pushed the peer
+  into `retry_pending` with exponential backoff (5/10/20/40/80s), and by
+  the time the next backoff slot fired the Nostr advert had already
+  been cached — we just sat on it for ~80s. The sweep now pulls
+  `retry_after_ms` forward to "now" so the next `process_pending_retries`
+  tick fires immediately with the freshly available addresses. Cuts
+  cold-start time for NAT'd peers from ~1 min to a few seconds.
+
 ## [0.3.7] - 2026-05-15
 
 ### Fixed

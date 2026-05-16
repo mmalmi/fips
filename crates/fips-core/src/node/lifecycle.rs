@@ -1512,11 +1512,9 @@ impl Node {
         // candidates in a single advert are equally fresh.
         let seen_at_ms = Self::now_ms();
         for endpoint in endpoints {
-            let Some(candidate) = Self::overlay_endpoint_to_peer_address(
-                &endpoint,
-                next_priority,
-                seen_at_ms,
-            ) else {
+            let Some(candidate) =
+                Self::overlay_endpoint_to_peer_address(&endpoint, next_priority, seen_at_ms)
+            else {
                 continue;
             };
             if existing
@@ -1713,6 +1711,39 @@ impl Node {
             }
 
             if configured_npubs.contains(&npub) {
+                // Configured peers don't go through the open-discovery
+                // enqueue path — their `PeerConfig` is already in
+                // `self.config.peers()`, so the regular retry queue is
+                // what drives their reconnect. But on cold start with
+                // NAT'd peers, every initial `initiate_peer_connection`
+                // fails (no overlay data yet, static cache hints empty
+                // or stale), each pushes the peer into `retry_pending`
+                // with exponential backoff (5/10/20/40/80s), and by the
+                // time the next backoff slot fires the Nostr advert is
+                // already cached — we just don't act on it for ~80s.
+                //
+                // The arrival of an advert (which this sweep sees) means
+                // we now have a path to dial. If the peer's retry is
+                // scheduled in the future, pull it forward to "now" so
+                // the next `process_pending_retries` tick fires it
+                // immediately. The retry path (`initiate_peer_retry_
+                // connection` → `try_peer_addresses`) then refetches
+                // the advert and dials it — no behavioral change
+                // beyond schedule timing.
+                if let Ok(identity) = PeerIdentity::from_npub(&npub) {
+                    let configured_addr = *identity.node_addr();
+                    if let Some(state) = self.retry_pending.get_mut(&configured_addr)
+                        && state.retry_after_ms > now_ms
+                    {
+                        state.retry_after_ms = now_ms;
+                        debug!(
+                            caller = %caller,
+                            peer = %self.peer_display_name(&configured_addr),
+                            advert_age_secs = now_secs.saturating_sub(created_at_secs),
+                            "Expediting configured-peer retry after fresh overlay advert"
+                        );
+                    }
+                }
                 skipped_configured = skipped_configured.saturating_add(1);
                 continue;
             }
@@ -1755,11 +1786,9 @@ impl Node {
             let mut priority = 120u8;
             let seen_at_ms = Self::now_ms();
             for endpoint in endpoints {
-                let Some(candidate) = Self::overlay_endpoint_to_peer_address(
-                    &endpoint,
-                    priority,
-                    seen_at_ms,
-                ) else {
+                let Some(candidate) =
+                    Self::overlay_endpoint_to_peer_address(&endpoint, priority, seen_at_ms)
+                else {
                     continue;
                 };
                 if addresses.iter().any(|existing: &PeerAddress| {
@@ -2184,12 +2213,7 @@ impl Node {
         }
 
         if self
-            .attempt_peer_address_list(
-                peer_config,
-                peer_identity,
-                allow_bootstrap_nat,
-                &candidates,
-            )
+            .attempt_peer_address_list(peer_config, peer_identity, allow_bootstrap_nat, &candidates)
             .await
             .is_ok()
         {
