@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "fips-core"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "bluer",
  "crossbeam-channel",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "fips-endpoint"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "fips-core",
 ]

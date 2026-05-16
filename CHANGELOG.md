@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-05-17
+
+### Fixed
+
+- Reply-learned lookup fanout is limited to configured/bootstrap transit peers
+  so open-discovery peers do not become ambient transit for unrelated
+  destinations.
+- Open-discovery lookup fallback now respects the configured transit gate while
+  still allowing direct lookups to the discovered peer itself.
+
 ## [0.3.10] - 2026-05-16
 
 ### Fixed
