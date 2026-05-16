@@ -421,7 +421,14 @@ impl Node {
                 .peers
                 .iter()
                 .filter(|(addr, peer)| {
-                    **addr != *from && **addr != request.origin && peer.can_send()
+                    **addr != *from
+                        && **addr != request.origin
+                        && peer.can_send()
+                        && self.should_use_reply_learned_lookup_fallback_peer(
+                            addr,
+                            peer,
+                            &request.target,
+                        )
                 })
                 .map(|(addr, _)| *addr)
                 .filter(|addr| !forward_to.contains(addr))
@@ -515,7 +522,10 @@ impl Node {
             let extra_peers: Vec<NodeAddr> = self
                 .peers
                 .iter()
-                .filter(|(_, peer)| peer.can_send())
+                .filter(|(addr, peer)| {
+                    peer.can_send()
+                        && self.should_use_reply_learned_lookup_fallback_peer(addr, peer, target)
+                })
                 .map(|(addr, _)| *addr)
                 .filter(|addr| !peer_addrs.contains(addr))
                 .take(fallback_budget)
@@ -554,6 +564,22 @@ impl Node {
         }
 
         peer_count
+    }
+
+    fn should_use_reply_learned_lookup_fallback_peer(
+        &self,
+        peer_addr: &NodeAddr,
+        peer: &crate::peer::ActivePeer,
+        target: &NodeAddr,
+    ) -> bool {
+        if peer_addr == target {
+            return true;
+        }
+
+        match peer.transport_id() {
+            Some(transport_id) => !self.bootstrap_transports.contains(&transport_id),
+            None => true,
+        }
     }
 
     /// Initiate a discovery lookup if one is not already pending for this target.
