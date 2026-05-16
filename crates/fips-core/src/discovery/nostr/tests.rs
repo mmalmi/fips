@@ -39,7 +39,7 @@ fn can_reach(local_nat: NatType, remote_nat: NatType) -> bool {
 
 fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64>) -> nostr::Event {
     let keys = nostr::Keys::generate();
-    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"203.0.113.10:443"}]}"#;
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
     let mut builder = EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
         .custom_created_at(Timestamp::from(created_at_secs));
     if let Some(expiration_secs) = expiration_secs {
@@ -50,7 +50,7 @@ fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64
 
 fn signed_overlay_advert_event_for_app(app: &str) -> nostr::Event {
     let keys = nostr::Keys::generate();
-    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"203.0.113.10:443"}]}"#;
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
     EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
         .tags([Tag::custom(TagKind::custom("protocol"), [app.to_string()])])
         .sign_with_keys(&keys)
@@ -128,6 +128,51 @@ fn rejects_invalid_overlay_adverts() {
 }
 
 #[test]
+fn validate_overlay_advert_filters_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "10.44.236.44:51820".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "192.168.1.20:443".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "nat".to_string(),
+            },
+        ],
+        signal_relays: Some(vec!["wss://relay.example".to_string()]),
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(sanitized.endpoints.len(), 1);
+    assert_eq!(sanitized.endpoints[0].transport, OverlayTransportKind::Udp);
+    assert_eq!(sanitized.endpoints[0].addr, "nat");
+}
+
+#[test]
+fn validate_overlay_advert_rejects_only_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "10.44.236.44:51820".to_string(),
+        }],
+        signal_relays: None,
+        stun_servers: None,
+    };
+
+    assert!(NostrDiscovery::validate_overlay_advert(advert).is_err());
+}
+
+#[test]
 fn parses_only_signed_overlay_advert_events() {
     let event = signed_overlay_advert_event_for_app("fips-test");
     let event = VerifiedEvent::try_from(&event).expect("signed advert should verify");
@@ -142,7 +187,7 @@ fn parses_only_signed_overlay_advert_events() {
 #[test]
 fn rejects_tampered_overlay_advert_event_content() {
     let mut event = signed_overlay_advert_event_for_app("fips-test");
-    event.content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"198.51.100.20:443"}]}"#.to_string();
+    event.content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"1.1.1.1:443"}]}"#.to_string();
 
     let err = VerifiedEvent::try_from(&event)
         .expect_err("tampered advert content must fail event verification");
