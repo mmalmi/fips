@@ -463,6 +463,61 @@ impl Node {
             .min_by_key(|(id, _)| id.as_u32())
     }
 
+    pub(super) fn transport_discovery_candidate(
+        &self,
+        discovered_transport_id: TransportId,
+        discovered_addr: TransportAddr,
+    ) -> Option<(TransportId, TransportAddr, &'static str)> {
+        let transport = self.transports.get(&discovered_transport_id)?;
+        let transport_name = transport.transport_type().name;
+
+        if transport_name != "udp" {
+            return Some((discovered_transport_id, discovered_addr, transport_name));
+        }
+
+        let Some(remote_socket_addr) = discovered_addr
+            .as_str()
+            .and_then(|addr| addr.parse::<SocketAddr>().ok())
+        else {
+            if self.bootstrap_transports.contains(&discovered_transport_id) {
+                debug!(
+                    transport_id = %discovered_transport_id,
+                    remote_addr = %discovered_addr,
+                    "transport discovery: skip non-numeric UDP address from bootstrap transport"
+                );
+                return None;
+            }
+            return Some((discovered_transport_id, discovered_addr, transport_name));
+        };
+
+        let Some((transport_id, local_addr)) =
+            self.find_udp_transport_for_remote_addr(remote_socket_addr)
+        else {
+            debug!(
+                transport_id = %discovered_transport_id,
+                remote_addr = %discovered_addr,
+                "transport discovery: skip UDP peer with no compatible local socket"
+            );
+            return None;
+        };
+
+        if transport_id != discovered_transport_id {
+            debug!(
+                discovered_transport_id = %discovered_transport_id,
+                selected_transport_id = %transport_id,
+                local_addr = %local_addr,
+                remote_addr = %remote_socket_addr,
+                "transport discovery: selected compatible UDP transport"
+            );
+        }
+
+        Some((
+            transport_id,
+            TransportAddr::from_socket_addr(remote_socket_addr),
+            transport_name,
+        ))
+    }
+
     /// Initiate a connection to a peer on a specific transport and address.
     ///
     /// For connectionless transports (UDP, Ethernet): allocates a link, starts
@@ -690,7 +745,7 @@ impl Node {
         // Collect discoveries first to avoid borrow conflict with self
         let mut to_connect = Vec::new();
 
-        for (transport_id, transport) in &self.transports {
+        for transport in self.transports.values() {
             if !transport.is_operational() {
                 continue;
             }
@@ -704,6 +759,7 @@ impl Node {
                 Err(_) => continue,
             };
             for peer in discovered {
+                let discovered_transport_id = peer.transport_id;
                 let pubkey = match peer.pubkey_hint {
                     Some(pk) => pk,
                     None => continue,
@@ -715,10 +771,31 @@ impl Node {
                 if node_addr == *self.identity.node_addr() {
                     continue;
                 }
-                // Skip if already connected
+
+                let Some((candidate_transport_id, remote_addr, transport_name)) =
+                    self.transport_discovery_candidate(discovered_transport_id, peer.addr)
+                else {
+                    continue;
+                };
+
                 if self.peers.contains_key(&node_addr) {
+                    let candidate = PeerAddress::new(transport_name, remote_addr.to_string());
+                    if self.active_peer_matches_any_candidate(
+                        &node_addr,
+                        std::slice::from_ref(&candidate),
+                    ) {
+                        continue;
+                    }
+                    if self.is_connecting_to_peer(&node_addr) {
+                        continue;
+                    }
+                    if !cross_connection_winner(self.identity.node_addr(), &node_addr, true) {
+                        continue;
+                    }
+                    to_connect.push((candidate_transport_id, remote_addr, identity, true));
                     continue;
                 }
+
                 // Skip if connection already in progress
                 let connecting = self.connections.values().any(|c| {
                     c.expected_identity()
@@ -729,15 +806,16 @@ impl Node {
                     continue;
                 }
 
-                to_connect.push((*transport_id, peer.addr, identity));
+                to_connect.push((candidate_transport_id, remote_addr, identity, false));
             }
         }
 
-        for (transport_id, remote_addr, identity) in to_connect {
+        for (transport_id, remote_addr, identity, active_refresh) in to_connect {
             info!(
                 peer = %self.peer_display_name(identity.node_addr()),
                 transport_id = %transport_id,
                 remote_addr = %remote_addr,
+                active_refresh,
                 "Auto-connecting to discovered peer"
             );
             if let Err(e) = self

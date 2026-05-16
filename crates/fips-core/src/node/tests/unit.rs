@@ -159,6 +159,81 @@ async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
 }
 
 #[tokio::test]
+async fn test_transport_discovery_skips_incompatible_udp_address_family() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let candidate = node.transport_discovery_candidate(
+        transport_id,
+        crate::transport::TransportAddr::from_string("[fd00::1]:9"),
+    );
+
+    assert!(
+        candidate.is_none(),
+        "transport discovery must not feed IPv6 candidates to an IPv4 UDP socket"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_transport_discovery_avoids_bootstrap_udp_transport() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let bootstrap_id = TransportId::new(1);
+    let primary_id = TransportId::new(2);
+    for (transport_id, name) in [(bootstrap_id, "bootstrap"), (primary_id, "main")] {
+        let mut udp = UdpTransport::new(
+            transport_id,
+            Some(name.to_string()),
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx.clone(),
+        );
+        udp.start_async().await.unwrap();
+        node.transports
+            .insert(transport_id, TransportHandle::Udp(udp));
+    }
+    node.bootstrap_transports.insert(bootstrap_id);
+
+    let candidate = node
+        .transport_discovery_candidate(
+            bootstrap_id,
+            crate::transport::TransportAddr::from_string("127.0.0.1:9"),
+        )
+        .expect("primary UDP transport should be eligible");
+
+    assert_eq!(candidate.0, primary_id);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn test_udp_transport_picker_ignores_bootstrap_transports() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
