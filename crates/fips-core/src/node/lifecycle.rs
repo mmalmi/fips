@@ -59,6 +59,134 @@ impl Node {
     ///
     /// For each peer configured with AutoConnect policy, creates a link and
     /// peer entry, then starts the Noise handshake by sending the first message.
+    /// Replace the runtime peer list. Newly added auto-connect peers get
+    /// `initiate_peer_connection` immediately; removed peers are dropped from
+    /// the retry queue (the regular liveness timeout reaps any active session
+    /// — we don't proactively disconnect, since the same npub might be on its
+    /// way back via a fresh advert). Existing entries get their `addresses`
+    /// field refreshed so the next retry sees the latest hints.
+    pub(super) async fn update_peers(
+        &mut self,
+        new_peers: Vec<crate::config::PeerConfig>,
+    ) -> Result<crate::node::UpdatePeersOutcome, crate::node::NodeError> {
+        use std::collections::{HashMap, HashSet};
+
+        let mut new_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> =
+            HashMap::with_capacity(new_peers.len());
+        for peer in new_peers {
+            let identity = match PeerIdentity::from_npub(&peer.npub) {
+                Ok(id) => id,
+                Err(e) => {
+                    return Err(crate::node::NodeError::InvalidPeerNpub {
+                        npub: peer.npub.clone(),
+                        reason: e.to_string(),
+                    });
+                }
+            };
+            // Last-write-wins on duplicates so callers passing a multi-source
+            // candidate list (e.g. operator hints + recent-peers cache for
+            // the same npub) get the merge they meant.
+            new_by_addr.insert(*identity.node_addr(), peer);
+        }
+
+        let current_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> = self
+            .config
+            .peers()
+            .iter()
+            .filter_map(|pc| {
+                PeerIdentity::from_npub(&pc.npub)
+                    .ok()
+                    .map(|id| (*id.node_addr(), pc.clone()))
+            })
+            .collect();
+
+        let new_addrs: HashSet<_> = new_by_addr.keys().copied().collect();
+        let current_addrs: HashSet<_> = current_by_addr.keys().copied().collect();
+
+        let removed: Vec<_> = current_addrs.difference(&new_addrs).copied().collect();
+        let added: Vec<_> = new_addrs.difference(&current_addrs).copied().collect();
+        let kept: Vec<_> = new_addrs.intersection(&current_addrs).copied().collect();
+
+        let mut outcome = crate::node::UpdatePeersOutcome::default();
+
+        for node_addr in &removed {
+            if self.retry_pending.remove(node_addr).is_some() {
+                debug!(
+                    peer = %self.peer_display_name(node_addr),
+                    "Dropping retry entry for peer removed from runtime peer list"
+                );
+            }
+            self.peer_aliases.remove(node_addr);
+            outcome.removed += 1;
+        }
+
+        for node_addr in &kept {
+            let new_pc = &new_by_addr[node_addr];
+            let current_pc = &current_by_addr[node_addr];
+            if new_pc.addresses != current_pc.addresses
+                || new_pc.alias != current_pc.alias
+                || new_pc.connect_policy != current_pc.connect_policy
+                || new_pc.auto_reconnect != current_pc.auto_reconnect
+            {
+                outcome.updated += 1;
+                if let Some(state) = self.retry_pending.get_mut(node_addr) {
+                    state.peer_config = new_pc.clone();
+                }
+                if let Some(alias) = new_pc.alias.clone() {
+                    self.peer_aliases.insert(*node_addr, alias);
+                }
+            } else {
+                outcome.unchanged += 1;
+            }
+        }
+
+        let added_configs: Vec<crate::config::PeerConfig> =
+            added.iter().map(|addr| new_by_addr[addr].clone()).collect();
+
+        // Replace the live config peer list before initiating connections so
+        // any helper that consults `self.config.peers()` during the dial
+        // (alias lookup, retry-state seeding) sees the new entries.
+        self.config.peers = new_by_addr.into_values().collect();
+
+        for peer_config in added_configs {
+            outcome.added += 1;
+            let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+                continue;
+            };
+            let name = peer_config
+                .alias
+                .clone()
+                .unwrap_or_else(|| identity.short_npub());
+            self.peer_aliases.insert(*identity.node_addr(), name);
+            self.register_identity(*identity.node_addr(), identity.pubkey_full());
+
+            if !peer_config.is_auto_connect() {
+                continue;
+            }
+
+            if let Err(e) = self.initiate_peer_connection(&peer_config).await {
+                warn!(
+                    npub = %peer_config.npub,
+                    error = %e,
+                    "Failed to initiate connection for newly added peer"
+                );
+                if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
+                    self.schedule_retry(*peer_identity.node_addr(), Self::now_ms());
+                }
+                if matches!(e, crate::node::NodeError::NoTransportForType(_))
+                    && let Some(bootstrap) = self.nostr_discovery.clone()
+                {
+                    let npub = peer_config.npub.clone();
+                    tokio::spawn(async move {
+                        let _ = bootstrap.refetch_advert_for_stale_check(&npub).await;
+                    });
+                }
+            }
+        }
+
+        Ok(outcome)
+    }
+
     pub(super) async fn initiate_peer_connections(&mut self) {
         // Build display name map from all configured peers (alias or short npub),
         // and pre-seed the identity cache from each peer's npub so that TUN packets
@@ -136,31 +264,24 @@ impl Node {
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
-        self.initiate_peer_connection_inner(peer_config, false)
-            .await
+        self.initiate_peer_connection_inner(peer_config).await
     }
 
-    /// Initiate a connection from the retry path.
-    ///
-    /// Same shape as [`initiate_peer_connection`] but tells
-    /// [`try_peer_addresses`] to dial Nostr-overlay addresses ahead of the
-    /// static `PeerConfig.addresses` list. On retry, static addresses are
-    /// likely stale (peer rebound, port changed, host restarted) — the
-    /// overlay advert was just refetched in `process_pending_retries`, so
-    /// it's the freshest ground truth available. Static remains as a
-    /// fallback for the case where the relay is unreachable but the peer's
-    /// IP/port haven't actually moved.
+    /// Initiate a connection from the retry path. Identical to
+    /// [`initiate_peer_connection`] today — both paths fan out across every
+    /// known address (overlay-fresh first, then operator/cache hints) in a
+    /// single pass. The two entry points stay separate so callers can be
+    /// distinguished in tracing.
     pub(super) async fn initiate_peer_retry_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
-        self.initiate_peer_connection_inner(peer_config, true).await
+        self.initiate_peer_connection_inner(peer_config).await
     }
 
     async fn initiate_peer_connection_inner(
         &mut self,
         peer_config: &crate::config::PeerConfig,
-        prefer_overlay_first: bool,
     ) -> Result<(), NodeError> {
         // Parse the peer's npub to get their identity
         let peer_identity =
@@ -194,7 +315,7 @@ impl Node {
             return Ok(());
         }
 
-        self.try_peer_addresses(peer_config, peer_identity, true, prefer_overlay_first)
+        self.try_peer_addresses(peer_config, peer_identity, true)
             .await
     }
 
@@ -591,7 +712,7 @@ impl Node {
                     }
 
                     if self
-                        .try_peer_addresses(&peer_config, peer_identity, false, false)
+                        .try_peer_addresses(&peer_config, peer_identity, false)
                         .await
                         .is_ok()
                     {
@@ -1385,9 +1506,17 @@ impl Node {
             .max()
             .unwrap_or(100)
             .saturating_add(1);
+        // Stamp every overlay-derived candidate with the current wall clock
+        // so the dialer ranks it ahead of unstamped operator hints. We use a
+        // single timestamp per fetch (rather than per-endpoint) because all
+        // candidates in a single advert are equally fresh.
+        let seen_at_ms = Self::now_ms();
         for endpoint in endpoints {
-            let Some(candidate) = Self::overlay_endpoint_to_peer_address(&endpoint, next_priority)
-            else {
+            let Some(candidate) = Self::overlay_endpoint_to_peer_address(
+                &endpoint,
+                next_priority,
+                seen_at_ms,
+            ) else {
                 continue;
             };
             if existing
@@ -1408,17 +1537,17 @@ impl Node {
     fn overlay_endpoint_to_peer_address(
         endpoint: &OverlayEndpointAdvert,
         priority: u8,
+        seen_at_ms: u64,
     ) -> Option<PeerAddress> {
         let transport = match endpoint.transport {
             OverlayTransportKind::Udp => "udp",
             OverlayTransportKind::Tcp => "tcp",
             OverlayTransportKind::Tor => "tor",
         };
-        Some(PeerAddress::with_priority(
-            transport,
-            endpoint.addr.clone(),
-            priority,
-        ))
+        Some(
+            PeerAddress::with_priority(transport, endpoint.addr.clone(), priority)
+                .with_seen_at_ms(seen_at_ms),
+        )
     }
 
     async fn attempt_peer_address_list(
@@ -1624,9 +1753,13 @@ impl Node {
 
             let mut addresses = Vec::new();
             let mut priority = 120u8;
+            let seen_at_ms = Self::now_ms();
             for endpoint in endpoints {
-                let Some(candidate) = Self::overlay_endpoint_to_peer_address(&endpoint, priority)
-                else {
+                let Some(candidate) = Self::overlay_endpoint_to_peer_address(
+                    &endpoint,
+                    priority,
+                    seen_at_ms,
+                ) else {
                     continue;
                 };
                 if addresses.iter().any(|existing: &PeerAddress| {
@@ -1994,7 +2127,6 @@ impl Node {
         peer_config: &PeerConfig,
         peer_identity: PeerIdentity,
         allow_bootstrap_nat: bool,
-        prefer_overlay_first: bool,
     ) -> Result<(), NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
         if self.peers.contains_key(&peer_node_addr) {
@@ -2012,66 +2144,56 @@ impl Node {
             return Ok(());
         }
 
+        // Merge every candidate from every source we have for this peer
+        // (operator-configured static addresses, freshly fetched overlay
+        // adverts, callers' recent-peers caches via `update_peers`) and
+        // try them in order of `seen_at_ms` descending — most-recent
+        // first, source-agnostic. Addresses without a freshness signal
+        // sort last. Addresses are hints, not the final word; we try them
+        // all in one pass and stop at the first success.
         let static_addresses = self.static_peer_addresses(peer_config);
+        let overlay_addresses = self
+            .nostr_peer_fallback_addresses(peer_config, &static_addresses)
+            .await;
 
-        // On retry the static list is likely stale (peer rebound, port
-        // changed, host restarted); the overlay advert was just refetched
-        // by process_pending_retries so it carries the freshest known
-        // endpoints. Try those first and fall through to static only when
-        // the overlay is empty/unreachable. On a cold start (and any other
-        // call site) the order is unchanged: static first, overlay
-        // fallback.
-        if prefer_overlay_first {
-            let overlay = self
-                .nostr_peer_fallback_addresses(peer_config, &static_addresses)
-                .await;
-            if !overlay.is_empty()
-                && self
-                    .attempt_peer_address_list(
-                        peer_config,
-                        peer_identity,
-                        allow_bootstrap_nat,
-                        &overlay,
-                    )
-                    .await
-                    .is_ok()
-            {
-                return Ok(());
+        let mut candidates = Vec::with_capacity(overlay_addresses.len() + static_addresses.len());
+        for addr in overlay_addresses.into_iter().chain(static_addresses) {
+            if !candidates.iter().any(|existing: &PeerAddress| {
+                existing.transport == addr.transport && existing.addr == addr.addr
+            }) {
+                candidates.push(addr);
             }
         }
 
-        // Static-first dialing: avoid delaying configured address attempts on
-        // advert fetch/network latency.
+        // Stable sort: most-recently-observed first (Some > None), tiebreak
+        // by input order so equal-timestamp addresses keep operator-supplied
+        // priority and the overlay-then-static merge order survives when
+        // nothing has a freshness signal.
+        candidates.sort_by(|a, b| match (a.seen_at_ms, b.seen_at_ms) {
+            (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        if candidates.is_empty() {
+            return Err(NodeError::NoTransportForType(format!(
+                "no addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
         if self
             .attempt_peer_address_list(
                 peer_config,
                 peer_identity,
                 allow_bootstrap_nat,
-                &static_addresses,
+                &candidates,
             )
             .await
             .is_ok()
         {
             return Ok(());
-        }
-
-        if !prefer_overlay_first {
-            let fallback = self
-                .nostr_peer_fallback_addresses(peer_config, &static_addresses)
-                .await;
-            if !fallback.is_empty()
-                && self
-                    .attempt_peer_address_list(
-                        peer_config,
-                        peer_identity,
-                        allow_bootstrap_nat,
-                        &fallback,
-                    )
-                    .await
-                    .is_ok()
-            {
-                return Ok(());
-            }
         }
 
         Err(NodeError::NoTransportForType(format!(

@@ -271,6 +271,24 @@ pub(crate) enum NodeEndpointCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    /// Replace the runtime peer list. Newly added auto-connect peers get
+    /// `initiate_peer_connection` immediately; removed peers are dropped
+    /// from the retry queue (the regular liveness timeout reaps any active
+    /// session). Existing entries are kept and their `addresses` field is
+    /// refreshed so the next retry sees the latest hints.
+    UpdatePeers {
+        peers: Vec<crate::config::PeerConfig>,
+        response_tx: tokio::sync::oneshot::Sender<Result<UpdatePeersOutcome, NodeError>>,
+    },
+}
+
+/// Reports what changed in response to `UpdatePeers`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct UpdatePeersOutcome {
+    pub(crate) added: usize,
+    pub(crate) removed: usize,
+    pub(crate) updated: usize,
+    pub(crate) unchanged: usize,
 }
 
 /// Endpoint data events emitted by the node session receive path.

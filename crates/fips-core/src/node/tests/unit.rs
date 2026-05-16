@@ -84,7 +84,7 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 
-    node.try_peer_addresses(&peer_config, peer_identity, false, false)
+    node.try_peer_addresses(&peer_config, peer_identity, false)
         .await
         .unwrap();
 
@@ -922,7 +922,7 @@ async fn test_try_peer_addresses_skips_connected_peer() {
     let link_count = node.link_count();
     let connection_count = node.connection_count();
 
-    node.try_peer_addresses(&peer_config, peer_identity, true, false)
+    node.try_peer_addresses(&peer_config, peer_identity, true)
         .await
         .unwrap();
 
@@ -946,7 +946,7 @@ async fn test_try_peer_addresses_skips_connecting_peer() {
     let pending = PeerConnection::outbound(LinkId::new(1), peer_identity, 1000);
     node.add_connection(pending).unwrap();
 
-    node.try_peer_addresses(&peer_config, peer_identity, true, false)
+    node.try_peer_addresses(&peer_config, peer_identity, true)
         .await
         .unwrap();
 
@@ -1480,12 +1480,14 @@ async fn test_retry_dials_overlay_advert_before_stale_static_udp() {
     }
 }
 
-/// Bootstrap (non-retry) call still tries the static `PeerConfig.addresses`
-/// first — the overlay-first reorder must be retry-scoped, not global. If
-/// this regresses, the cold-start path delays peer dials behind the relay
-/// fetch round-trip.
+/// Cold-start dial also prefers the freshest known address regardless of
+/// source. With `addresses` treated as hints (not authoritative) and
+/// "try everything in one pass", the overlay candidate is tagged with the
+/// fetch wall clock and sorts ahead of the unstamped operator-supplied
+/// static address. Mirrors the retry path — there's no longer a separate
+/// cold-start-vs-retry preference.
 #[tokio::test]
-async fn test_bootstrap_dials_static_before_overlay() {
+async fn test_bootstrap_dials_freshest_address_first() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -1546,12 +1548,12 @@ async fn test_bootstrap_dials_static_before_overlay() {
     let stat = TransportAddr::from_string(static_addr);
     let overlay = TransportAddr::from_string(overlay_addr);
     assert!(
-        node.find_link_by_addr(transport_id, &stat).is_some(),
-        "cold-start must dial the static address first"
+        node.find_link_by_addr(transport_id, &overlay).is_some(),
+        "cold-start must dial the freshly observed overlay address first"
     );
     assert!(
-        node.find_link_by_addr(transport_id, &overlay).is_none(),
-        "cold-start must not consult the overlay before static succeeds"
+        node.find_link_by_addr(transport_id, &stat).is_none(),
+        "cold-start must skip the unstamped static address when a fresher candidate succeeds"
     );
 
     for transport in node.transports.values_mut() {
@@ -1573,5 +1575,147 @@ async fn test_seed_path_mtu_noop_for_unknown_transport() {
     assert!(
         map.get(&fips_addr).is_none(),
         "Seed must be a no-op when transport_id is not registered"
+    );
+}
+
+// === update_peers ============================================================
+
+fn npub_for_test() -> String {
+    Identity::generate().npub()
+}
+
+fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
+    crate::config::PeerConfig {
+        npub,
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", addr)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    }
+}
+
+#[tokio::test]
+async fn update_peers_returns_zero_on_empty_diff() {
+    let mut node = make_node();
+
+    let outcome = node.update_peers(Vec::new()).await.unwrap();
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 0);
+}
+
+#[tokio::test]
+async fn update_peers_adds_new_peer_and_registers_alias() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let mut peer = auto_connect_peer(npub.clone(), "127.0.0.1:9");
+    peer.alias = Some("alice".to_string());
+
+    let outcome = node.update_peers(vec![peer.clone()]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 0);
+    assert_eq!(node.config.peers.len(), 1);
+    let identity = PeerIdentity::from_npub(&peer.npub).unwrap();
+    assert_eq!(
+        node.peer_aliases.get(identity.node_addr()),
+        Some(&"alice".to_string())
+    );
+}
+
+#[tokio::test]
+async fn update_peers_removes_dropped_peer_and_clears_retry_state() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let peer = auto_connect_peer(npub.clone(), "127.0.0.1:9");
+
+    let _ = node.update_peers(vec![peer.clone()]).await.unwrap();
+
+    let identity = PeerIdentity::from_npub(&peer.npub).unwrap();
+    let node_addr = *identity.node_addr();
+    // Cold-add scheduled a retry because there's no transport.
+    assert!(node.retry_pending.contains_key(&node_addr));
+
+    let outcome = node.update_peers(Vec::new()).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 1);
+    assert!(node.config.peers.is_empty());
+    assert!(!node.retry_pending.contains_key(&node_addr));
+    assert!(!node.peer_aliases.contains_key(&node_addr));
+}
+
+#[tokio::test]
+async fn update_peers_reports_updated_when_addresses_change() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let original = auto_connect_peer(npub.clone(), "127.0.0.1:9");
+    let _ = node.update_peers(vec![original]).await.unwrap();
+
+    let new_version = auto_connect_peer(npub.clone(), "127.0.0.1:55180");
+    let outcome = node.update_peers(vec![new_version.clone()]).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 1);
+    assert_eq!(outcome.unchanged, 0);
+    assert_eq!(node.config.peers.len(), 1);
+    assert_eq!(node.config.peers[0].addresses[0].addr, "127.0.0.1:55180");
+}
+
+#[tokio::test]
+async fn update_peers_reports_unchanged_for_identical_entry() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let peer = auto_connect_peer(npub, "127.0.0.1:9");
+    let _ = node.update_peers(vec![peer.clone()]).await.unwrap();
+
+    let outcome = node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 1);
+}
+
+#[tokio::test]
+async fn update_peers_treats_seen_at_ms_as_metadata_not_a_change() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let baseline = auto_connect_peer(npub.clone(), "127.0.0.1:9");
+    let _ = node.update_peers(vec![baseline]).await.unwrap();
+
+    // Same identity + transport + addr + priority, but caller annotated
+    // a freshness observation. Should NOT register as an "updated" diff.
+    let mut refreshed = auto_connect_peer(npub, "127.0.0.1:9");
+    refreshed.addresses[0] = refreshed.addresses[0]
+        .clone()
+        .with_seen_at_ms(1_700_000_000_000);
+
+    let outcome = node.update_peers(vec![refreshed]).await.unwrap();
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 1);
+}
+
+#[tokio::test]
+async fn update_peers_rejects_invalid_npub_atomically() {
+    let mut node = make_node();
+    let valid = auto_connect_peer(npub_for_test(), "127.0.0.1:9");
+    let invalid = crate::config::PeerConfig {
+        npub: "not-a-real-npub".to_string(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    let result = node.update_peers(vec![valid, invalid]).await;
+    assert!(result.is_err(), "invalid npub must reject the whole batch");
+    assert!(
+        node.config.peers.is_empty(),
+        "rejected batch must not partially apply",
     );
 }

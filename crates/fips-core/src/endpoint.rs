@@ -41,6 +41,35 @@ pub struct FipsEndpointMessage {
     pub data: Vec<u8>,
 }
 
+/// Reports what changed in response to [`FipsEndpoint::update_peers`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdatePeersOutcome {
+    /// Number of npubs that were not previously in the runtime peer list
+    /// and got an `initiate_peer_connection` call.
+    pub added: usize,
+    /// Number of npubs that were dropped from the runtime peer list. Their
+    /// retry entries are gone; any active session stays up until the
+    /// regular liveness timeout reaps it.
+    pub removed: usize,
+    /// Number of npubs that were already in the list but had a different
+    /// `addresses`, `alias`, `connect_policy`, or `auto_reconnect` value.
+    /// The new values are now in effect for retries and aliasing.
+    pub updated: usize,
+    /// Number of npubs that were in the list and identical to the new entry.
+    pub unchanged: usize,
+}
+
+impl From<crate::node::UpdatePeersOutcome> for UpdatePeersOutcome {
+    fn from(value: crate::node::UpdatePeersOutcome) -> Self {
+        Self {
+            added: value.added,
+            removed: value.removed,
+            updated: value.updated,
+            unchanged: value.unchanged,
+        }
+    }
+}
+
 /// Authenticated FIPS peer state visible to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointPeer {
@@ -469,6 +498,31 @@ impl FipsEndpoint {
             source_npub,
             data: payload,
         })
+    }
+
+    /// Replace the runtime peer list. Newly added auto-connect peers get
+    /// dialed immediately using every known address (overlay-fresh first,
+    /// then operator/cache hints). Removed peers are dropped from the
+    /// retry queue but stay connected if they currently are — the regular
+    /// liveness timeout reaps idle sessions. Existing entries get their
+    /// `addresses` field refreshed so the next retry sees the latest hints.
+    ///
+    /// Pass an empty `addresses` vector for a peer if you want fips to
+    /// resolve them entirely from the Nostr advert at dial time.
+    pub async fn update_peers(
+        &self,
+        peers: Vec<crate::config::PeerConfig>,
+    ) -> Result<UpdatePeersOutcome, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::UpdatePeers { peers, response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        match response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+            Ok(outcome) => Ok(UpdatePeersOutcome::from(outcome)),
+            Err(error) => Err(FipsEndpointError::Node(error)),
+        }
     }
 
     /// Snapshot authenticated peers known by the endpoint.

@@ -1833,6 +1833,10 @@ impl Node {
                 // `send_endpoint_data` so they're not silent.
                 let _ = self.send_endpoint_data(remote, payload).await;
             }
+            NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
+                let result = self.update_peers(peers).await;
+                let _ = response_tx.send(result);
+            }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
                 let peers = self
                     .peers()
