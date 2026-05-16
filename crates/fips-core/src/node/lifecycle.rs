@@ -15,7 +15,7 @@ use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, 
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
 use crate::{NodeAddr, PeerIdentity};
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -52,6 +52,13 @@ fn is_unroutable_advert_ip(ip: IpAddr) -> bool {
     }
 }
 
+fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {
+    matches!(
+        (local, remote),
+        (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_))
+    )
+}
+
 const OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER: u64 = 2;
 
 impl Node {
@@ -63,8 +70,9 @@ impl Node {
     /// `initiate_peer_connection` immediately; removed peers are dropped from
     /// the retry queue (the regular liveness timeout reaps any active session
     /// — we don't proactively disconnect, since the same npub might be on its
-    /// way back via a fresh advert). Existing entries get their `addresses`
-    /// field refreshed so the next retry sees the latest hints.
+    /// way back via a fresh advert). Existing auto-connect entries with new
+    /// direct addresses are dialed immediately, and retry state is refreshed
+    /// so later attempts also use the latest hints.
     pub(super) async fn update_peers(
         &mut self,
         new_peers: Vec<crate::config::PeerConfig>,
@@ -120,6 +128,7 @@ impl Node {
             outcome.removed += 1;
         }
 
+        let mut auto_connect_refresh_configs = Vec::new();
         for node_addr in &kept {
             let new_pc = &new_by_addr[node_addr];
             let current_pc = &current_by_addr[node_addr];
@@ -131,12 +140,23 @@ impl Node {
                 outcome.updated += 1;
                 if let Some(state) = self.retry_pending.get_mut(node_addr) {
                     state.peer_config = new_pc.clone();
+                    state.retry_after_ms = Self::now_ms();
                 }
                 if let Some(alias) = new_pc.alias.clone() {
                     self.peer_aliases.insert(*node_addr, alias);
                 }
+                if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
+                    auto_connect_refresh_configs.push(new_pc.clone());
+                }
             } else {
                 outcome.unchanged += 1;
+                if new_pc.is_auto_connect()
+                    && !new_pc.addresses.is_empty()
+                    && !self.peers.contains_key(node_addr)
+                    && !self.is_connecting_to_peer(node_addr)
+                {
+                    auto_connect_refresh_configs.push(new_pc.clone());
+                }
             }
         }
 
@@ -180,6 +200,34 @@ impl Node {
                     tokio::spawn(async move {
                         let _ = bootstrap.refetch_advert_for_stale_check(&npub).await;
                     });
+                }
+            }
+        }
+
+        for peer_config in auto_connect_refresh_configs {
+            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+                continue;
+            };
+            let node_addr = *peer_identity.node_addr();
+            if self.peers.contains_key(&node_addr) || self.is_connecting_to_peer(&node_addr) {
+                continue;
+            }
+
+            match self.initiate_peer_connection(&peer_config).await {
+                Ok(()) => {
+                    let hs_timeout_ms = self.config.node.rate_limit.handshake_timeout_secs * 1000;
+                    if let Some(state) = self.retry_pending.get_mut(&node_addr) {
+                        state.peer_config = peer_config;
+                        state.retry_after_ms = Self::now_ms().saturating_add(hs_timeout_ms);
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        npub = %peer_config.npub,
+                        error = %e,
+                        "Refreshed peer addresses did not initiate a direct connection"
+                    );
+                    self.schedule_retry(node_addr, Self::now_ms());
                 }
             }
         }
@@ -488,37 +536,57 @@ impl Node {
             .insert((transport_id, our_index.as_u32()), link_id);
         self.connections.insert(link_id, connection);
 
-        // Send the wire format handshake message
+        // Send the wire format handshake message. If the very first send fails
+        // synchronously (for example an IPv6 candidate on an IPv4-only UDP
+        // socket), undo this candidate so the caller can try the next address
+        // in the same dial pass.
         let send_result = match self.transports.get(&transport_id) {
             Some(transport) => Some(transport.send(&remote_addr, &wire_msg1).await),
             None => None,
         };
-        if let Some(send_result) = send_result {
-            self.note_local_send_outcome(&send_result);
-            match send_result {
-                Ok(bytes) => {
-                    debug!(
-                        link_id = %link_id,
-                        our_index = %our_index,
-                        bytes,
-                        "Sent Noise handshake message 1 (wire format)"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        link_id = %link_id,
-                        transport_id = %transport_id,
-                        remote_addr = %remote_addr,
-                        our_index = %our_index,
-                        error = %e,
-                        "Failed to send handshake message"
-                    );
-                    // Mark connection as failed but don't remove it yet
-                    // The event loop can handle retry logic
-                    if let Some(conn) = self.connections.get_mut(&link_id) {
-                        conn.mark_failed();
+        match send_result {
+            Some(send_result) => {
+                self.note_local_send_outcome(&send_result);
+                match send_result {
+                    Ok(bytes) => {
+                        debug!(
+                            link_id = %link_id,
+                            our_index = %our_index,
+                            bytes,
+                            "Sent Noise handshake message 1 (wire format)"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            link_id = %link_id,
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            our_index = %our_index,
+                            error = %e,
+                            "Failed to send handshake message"
+                        );
+                        self.pending_outbound
+                            .remove(&(transport_id, our_index.as_u32()));
+                        self.connections.remove(&link_id);
+                        self.links.remove(&link_id);
+                        self.addr_to_link
+                            .remove(&(transport_id, remote_addr.clone()));
+                        let _ = self.index_allocator.free(our_index);
+                        return Err(NodeError::TransportError(e.to_string()));
                     }
                 }
+            }
+            None => {
+                self.pending_outbound
+                    .remove(&(transport_id, our_index.as_u32()));
+                self.connections.remove(&link_id);
+                self.links.remove(&link_id);
+                self.addr_to_link
+                    .remove(&(transport_id, remote_addr.clone()));
+                let _ = self.index_allocator.free(our_index);
+                return Err(NodeError::TransportError(format!(
+                    "transport {transport_id} disappeared before first handshake send"
+                )));
             }
         }
 
@@ -1615,6 +1683,22 @@ impl Node {
                         continue;
                     }
                 };
+                if addr.transport == "udp"
+                    && let Ok(remote_socket_addr) = addr.addr.parse::<SocketAddr>()
+                    && let Some(local_addr) = self
+                        .transports
+                        .get(&tid)
+                        .and_then(|transport| transport.local_addr())
+                    && !socket_addr_families_compatible(local_addr, remote_socket_addr)
+                {
+                    debug!(
+                        transport = %addr.transport,
+                        addr = %addr.addr,
+                        local_addr = %local_addr,
+                        "Skipping UDP address with incompatible IP family"
+                    );
+                    continue;
+                }
                 (tid, TransportAddr::from_string(&addr.addr))
             };
 

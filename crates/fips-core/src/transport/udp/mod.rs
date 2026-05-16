@@ -29,6 +29,13 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {
+    matches!(
+        (local, remote),
+        (SocketAddr::V4(_), SocketAddr::V4(_)) | (SocketAddr::V6(_), SocketAddr::V6(_))
+    )
+}
+
 /// Threshold above which `send_async` triggers a sendmmsg flush
 /// instead of just buffering. Matches the rx_loop's per-drain cap
 /// (256) so the trailing-burst flush at the end of a drain cycle can
@@ -393,6 +400,12 @@ impl UdpTransport {
 
         let socket_addr = self.resolve_cached(addr).await?;
         let socket = self.socket.as_ref().ok_or(TransportError::NotStarted)?;
+        let local_addr = self.local_addr.ok_or(TransportError::NotStarted)?;
+        if !socket_addr_families_compatible(local_addr, socket_addr) {
+            return Err(TransportError::InvalidAddress(format!(
+                "remote address family {socket_addr} is incompatible with local UDP socket {local_addr}"
+            )));
+        }
         match socket.send_to(data, &socket_addr).await {
             Ok(bytes_sent) => {
                 self.stats.record_send(bytes_sent);

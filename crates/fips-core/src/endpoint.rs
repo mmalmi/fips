@@ -53,7 +53,8 @@ pub struct UpdatePeersOutcome {
     pub removed: usize,
     /// Number of npubs that were already in the list but had a different
     /// `addresses`, `alias`, `connect_policy`, or `auto_reconnect` value.
-    /// The new values are now in effect for retries and aliasing.
+    /// The new values are now in effect for retries and aliasing; refreshed
+    /// direct addresses may also trigger a new direct dial for auto peers.
     pub updated: usize,
     /// Number of npubs that were in the list and identical to the new entry.
     pub unchanged: usize,

@@ -96,6 +96,67 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
 }
 
 #[tokio::test]
+async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
+    let peer_identity = Identity::generate();
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "[fd00::1]:9", 1),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9", 2),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+    let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
+
+    node.try_peer_addresses(&peer_config, peer_identity, false)
+        .await
+        .unwrap();
+
+    assert_eq!(node.connection_count(), 1);
+    assert_eq!(
+        node.connections
+            .values()
+            .next()
+            .and_then(|conn| conn.source_addr())
+            .and_then(|addr| addr.as_str()),
+        Some("127.0.0.1:9")
+    );
+    assert!(
+        node.find_link_by_addr(
+            transport_id,
+            &crate::transport::TransportAddr::from_string("[fd00::1]:9"),
+        )
+        .is_none(),
+        "IPv6 candidate must not allocate a failed link on an IPv4-only socket"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn test_udp_transport_picker_ignores_bootstrap_transports() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
@@ -1679,6 +1740,87 @@ async fn update_peers_reports_unchanged_for_identical_entry() {
     assert_eq!(outcome.removed, 0);
     assert_eq!(outcome.updated, 0);
     assert_eq!(outcome.unchanged, 1);
+}
+
+#[tokio::test]
+async fn update_peers_redials_existing_auto_peer_with_direct_hint() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let npub = npub_for_test();
+    let original = crate::config::PeerConfig {
+        npub: npub.clone(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+    node.config.peers = vec![original];
+
+    let refreshed = auto_connect_peer(npub, "127.0.0.1:9");
+    let outcome = node.update_peers(vec![refreshed]).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 1);
+    assert_eq!(node.connection_count(), 1);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn update_peers_redials_unchanged_auto_peer_without_link() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer = auto_connect_peer(npub_for_test(), "127.0.0.1:9");
+    node.config.peers = vec![peer.clone()];
+
+    let outcome = node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.removed, 0);
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 1);
+    assert_eq!(node.connection_count(), 1);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }
 
 #[tokio::test]
