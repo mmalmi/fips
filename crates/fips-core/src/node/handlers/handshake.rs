@@ -1030,9 +1030,15 @@ impl Node {
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
 
-            // Determine which connection wins
-            let this_wins =
-                cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound);
+            let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
+
+            // Determine which connection wins. A peer restart (different
+            // startup epoch) is not a normal cross-connection: the old link
+            // and FSP sessions are cryptographically stale, so the freshly
+            // authenticated connection must replace them regardless of the
+            // tie-breaker direction.
+            let this_wins = remote_epoch_changed
+                || cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound);
 
             if this_wins {
                 // This connection wins, replace the existing peer
@@ -1045,6 +1051,21 @@ impl Node {
                 {
                     self.deregister_session_index((old_tid, old_idx.as_u32()));
                     let _ = self.index_allocator.free(old_idx);
+                }
+
+                if remote_epoch_changed {
+                    if self.sessions.remove(&peer_node_addr).is_some() {
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            "Cleared stale FSP session after peer restart during promotion"
+                        );
+                    }
+                    info!(
+                        peer = %self.peer_display_name(&peer_node_addr),
+                        winner_link = %link_id,
+                        loser_link = %loser_link_id,
+                        "Peer restart detected during promotion, replacing stale active peer"
+                    );
                 }
 
                 self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
