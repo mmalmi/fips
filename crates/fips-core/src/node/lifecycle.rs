@@ -9,7 +9,7 @@ use crate::discovery::nostr::{
 use crate::discovery::{BootstrapHandoffResult, EstablishedTraversal};
 use crate::node::acl::PeerAclContext;
 use crate::node::wire::build_msg1;
-use crate::peer::PeerConnection;
+use crate::peer::{PeerConnection, cross_connection_winner};
 use crate::protocol::{Disconnect, DisconnectReason};
 use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, packet_channel};
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
@@ -152,7 +152,6 @@ impl Node {
                 outcome.unchanged += 1;
                 if new_pc.is_auto_connect()
                     && !new_pc.addresses.is_empty()
-                    && !self.peers.contains_key(node_addr)
                     && !self.is_connecting_to_peer(node_addr)
                 {
                     auto_connect_refresh_configs.push(new_pc.clone());
@@ -209,7 +208,31 @@ impl Node {
                 continue;
             };
             let node_addr = *peer_identity.node_addr();
-            if self.peers.contains_key(&node_addr) || self.is_connecting_to_peer(&node_addr) {
+            if self.is_connecting_to_peer(&node_addr) {
+                continue;
+            }
+
+            if self.peers.contains_key(&node_addr) {
+                match self
+                    .initiate_active_peer_alternative_connection(&peer_config)
+                    .await
+                {
+                    Ok(attempted) => {
+                        if attempted {
+                            debug!(
+                                peer = %self.peer_display_name(&node_addr),
+                                "Started non-disruptive alternate-path handshake for active peer"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        debug!(
+                            npub = %peer_config.npub,
+                            error = %e,
+                            "Active peer alternate-path refresh did not start"
+                        );
+                    }
+                }
                 continue;
             }
 
@@ -325,6 +348,46 @@ impl Node {
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
         self.initiate_peer_connection_inner(peer_config).await
+    }
+
+    async fn initiate_active_peer_alternative_connection(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+    ) -> Result<bool, NodeError> {
+        let peer_identity =
+            PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
+                npub: peer_config.npub.clone(),
+                reason: e.to_string(),
+            })?;
+        let peer_node_addr = *peer_identity.node_addr();
+
+        if !self.peers.contains_key(&peer_node_addr) {
+            self.initiate_peer_connection(peer_config).await?;
+            return Ok(true);
+        }
+
+        if self.is_connecting_to_peer(&peer_node_addr) {
+            debug!(
+                npub = %peer_config.npub,
+                "Connection already in progress, skipping active peer path refresh"
+            );
+            return Ok(false);
+        }
+
+        // Route refreshes are deliberately initiated only by the deterministic
+        // side whose outbound handshake would win cross-connection resolution.
+        // That lets both peers learn the same replacement session without
+        // creating two competing upgraded links.
+        if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
+            debug!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                "Peer will own outbound alternate-path refresh"
+            );
+            return Ok(false);
+        }
+
+        self.try_active_peer_alternative_addresses(peer_config, peer_identity)
+            .await
     }
 
     async fn initiate_peer_connection_inner(
@@ -2257,6 +2320,70 @@ impl Node {
             return Ok(());
         }
 
+        let candidates = self.peer_address_candidates(peer_config).await;
+
+        if candidates.is_empty() {
+            return Err(NodeError::NoTransportForType(format!(
+                "no addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
+        if self
+            .attempt_peer_address_list(peer_config, peer_identity, allow_bootstrap_nat, &candidates)
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+
+        Err(NodeError::NoTransportForType(format!(
+            "no operational transport for any of {}'s addresses",
+            peer_config.npub
+        )))
+    }
+
+    async fn try_active_peer_alternative_addresses(
+        &mut self,
+        peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> Result<bool, NodeError> {
+        let peer_node_addr = *peer_identity.node_addr();
+        let candidates = self.peer_address_candidates(peer_config).await;
+
+        if candidates.is_empty() {
+            return Err(NodeError::NoTransportForType(format!(
+                "no addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
+        if self.active_peer_matches_any_candidate(&peer_node_addr, &candidates) {
+            debug!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                "Active peer already uses a known concrete candidate"
+            );
+            return Ok(false);
+        }
+
+        let alternatives: Vec<_> = candidates
+            .into_iter()
+            .filter(|addr| !(addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat")))
+            .collect();
+
+        if alternatives.is_empty() {
+            return Err(NodeError::NoTransportForType(format!(
+                "no concrete alternate addresses known for {}",
+                peer_config.npub
+            )));
+        }
+
+        self.attempt_peer_address_list(peer_config, peer_identity, false, &alternatives)
+            .await?;
+        Ok(true)
+    }
+
+    async fn peer_address_candidates(&self, peer_config: &PeerConfig) -> Vec<PeerAddress> {
         // Merge every candidate from every source we have for this peer
         // (operator-configured static addresses, freshly fetched overlay
         // adverts, callers' recent-peers caches via `update_peers`) and
@@ -2289,25 +2416,39 @@ impl Node {
             (None, None) => std::cmp::Ordering::Equal,
         });
 
-        if candidates.is_empty() {
-            return Err(NodeError::NoTransportForType(format!(
-                "no addresses known for {}",
-                peer_config.npub
-            )));
-        }
+        candidates
+    }
 
-        if self
-            .attempt_peer_address_list(peer_config, peer_identity, allow_bootstrap_nat, &candidates)
-            .await
-            .is_ok()
+    fn active_peer_matches_any_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidates: &[PeerAddress],
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        let Some(current_addr) = peer.current_addr() else {
+            return false;
+        };
+        if peer
+            .transport_id()
+            .map(|id| self.bootstrap_transports.contains(&id))
+            .unwrap_or(false)
         {
-            return Ok(());
+            return false;
         }
+        let current_addr = current_addr.to_string();
+        let current_transport = peer
+            .transport_id()
+            .and_then(|id| self.transports.get(&id))
+            .map(|transport| transport.transport_type().name);
 
-        Err(NodeError::NoTransportForType(format!(
-            "no operational transport for any of {}'s addresses",
-            peer_config.npub
-        )))
+        candidates.iter().any(|candidate| {
+            candidate.addr == current_addr
+                && current_transport
+                    .map(|transport| transport == candidate.transport)
+                    .unwrap_or(true)
+        })
     }
 
     // === Control API methods ===

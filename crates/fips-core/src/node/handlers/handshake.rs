@@ -760,6 +760,11 @@ impl Node {
                 // The peer will keep their inbound session (complement of ours).
                 let outbound_our_index = conn.our_index();
                 let outbound_session = conn.take_session();
+                let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
+                let outbound_addr = conn
+                    .source_addr()
+                    .cloned()
+                    .unwrap_or_else(|| packet.remote_addr.clone());
 
                 let (outbound_session, outbound_our_index) = match (
                     outbound_session,
@@ -773,22 +778,26 @@ impl Node {
                     }
                 };
 
+                let mut loser_link_id = None;
+                let mut loser_session_index = None;
                 if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
                     let suppressed = peer.replay_suppressed_count();
+                    loser_link_id = Some(peer.link_id());
+                    loser_session_index = peer
+                        .transport_id()
+                        .zip(peer.our_index().map(|idx| idx.as_u32()));
                     let old_our_index = peer.replace_session(
                         outbound_session,
                         outbound_our_index,
                         header.sender_idx,
                     );
+                    peer.set_link_id(link_id);
+                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
+                    peer.mark_connected(packet.timestamp_ms);
 
-                    // Update peers_by_index: remove old inbound index, add outbound
-                    let transport_id = peer.transport_id().unwrap();
                     if let Some(old_idx) = old_our_index {
-                        self.deregister_session_index((transport_id, old_idx.as_u32()));
                         let _ = self.index_allocator.free(old_idx);
                     }
-                    self.peers_by_index
-                        .insert((transport_id, outbound_our_index.as_u32()), peer_node_addr);
 
                     if suppressed > 0 {
                         debug!(
@@ -802,12 +811,37 @@ impl Node {
                         peer = %self.peer_display_name(&peer_node_addr),
                         new_our_index = %outbound_our_index,
                         new_their_index = %header.sender_idx,
+                        transport_id = %outbound_transport_id,
+                        remote_addr = %outbound_addr,
                         "Cross-connection: swapped to outbound session (our outbound wins)"
                     );
                     // Re-register with the decrypt worker under the new
                     // cache_key (the old inbound index was deregistered
                     // above via deregister_session_index).
-                    self.register_decrypt_worker_session(&peer_node_addr);
+                }
+                if let Some(old_key) = loser_session_index {
+                    self.deregister_session_index(old_key);
+                }
+                self.peers_by_index.insert(
+                    (outbound_transport_id, outbound_our_index.as_u32()),
+                    peer_node_addr,
+                );
+                self.addr_to_link
+                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
+                self.register_decrypt_worker_session(&peer_node_addr);
+
+                self.pending_outbound.remove(&key);
+                if let Some(loser_link_id) = loser_link_id {
+                    if let Some(loser_link) = self.links.get(&loser_link_id) {
+                        let loser_tid = loser_link.transport_id();
+                        let loser_addr = loser_link.remote_addr().clone();
+                        if let Some(transport) = self.transports.get(&loser_tid) {
+                            transport.close_connection(&loser_addr).await;
+                        }
+                    }
+                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
+                    }
                 }
             } else {
                 // We're the larger node. Keep our inbound session (it pairs
@@ -833,19 +867,20 @@ impl Node {
                 if let Some(idx) = outbound_our_index {
                     let _ = self.index_allocator.free(idx);
                 }
-            }
 
-            // Clean up outbound connection state
-            self.pending_outbound.remove(&key);
-            // Close the losing TCP connection (no-op for connectionless)
-            if let Some(link) = self.links.get(&link_id) {
-                let tid = link.transport_id();
-                let addr = link.remote_addr().clone();
-                if let Some(transport) = self.transports.get(&tid) {
-                    transport.close_connection(&addr).await;
+                self.pending_outbound.remove(&key);
+                // Close the losing TCP connection (no-op for connectionless)
+                if let Some(link) = self.links.get(&link_id) {
+                    let tid = link.transport_id();
+                    let addr = link.remote_addr().clone();
+                    if let Some(transport) = self.transports.get(&tid) {
+                        transport.close_connection(&addr).await;
+                    }
+                }
+                if let Some(link) = self.remove_link(&link_id) {
+                    self.cleanup_bootstrap_transport_if_unused(link.transport_id());
                 }
             }
-            self.remove_link(&link_id);
 
             // Send TreeAnnounce now that sessions are aligned
             if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
