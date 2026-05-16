@@ -12,6 +12,9 @@ use crate::transport::{TransportAddr, TransportId};
 use crate::{NodeAddr, PeerIdentity};
 use tracing::{debug, info, trace, warn};
 
+const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
+const MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS: usize = 16;
+
 impl Node {
     /// Handle an incoming LookupRequest from a peer.
     ///
@@ -35,6 +38,7 @@ impl Node {
         };
 
         let now_ms = Self::now_ms();
+        self.purge_expired_requests(now_ms);
 
         // Dedup: drop if we've already seen this request_id.
         // Also serves as loop protection — tree routing is loop-free,
@@ -49,12 +53,20 @@ impl Node {
             return;
         }
 
+        if self.recent_requests.len() >= MAX_RECENT_DISCOVERY_REQUESTS {
+            debug!(
+                request_id = request.request_id,
+                from = %self.peer_display_name(from),
+                recent_requests = self.recent_requests.len(),
+                max_recent_requests = MAX_RECENT_DISCOVERY_REQUESTS,
+                "Discovery request dedup cache full, dropping LookupRequest"
+            );
+            return;
+        }
+
         // Record for reverse-path forwarding and dedup
         self.recent_requests
             .insert(request.request_id, RecentRequest::new(*from, now_ms));
-
-        // Lazy purge expired entries
-        self.purge_expired_requests(now_ms);
 
         // Are we the target?
         if request.target == *self.node_addr() {
@@ -403,6 +415,8 @@ impl Node {
         // an exclusive path. In NAT-asymmetric meshes a stale tree candidate
         // can blackhole first-contact discovery, so also ask live neighbors.
         if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let fallback_budget =
+                MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(forward_to.len());
             let extra_peers: Vec<NodeAddr> = self
                 .peers
                 .iter()
@@ -411,6 +425,7 @@ impl Node {
                 })
                 .map(|(addr, _)| *addr)
                 .filter(|addr| !forward_to.contains(addr))
+                .take(fallback_budget)
                 .collect();
             forward_to.extend(extra_peers);
         } else if forward_to.is_empty() {
@@ -495,12 +510,15 @@ impl Node {
             .collect();
         let tree_match_count = peer_addrs.len();
         if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            let fallback_budget =
+                MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(peer_addrs.len());
             let extra_peers: Vec<NodeAddr> = self
                 .peers
                 .iter()
                 .filter(|(_, peer)| peer.can_send())
                 .map(|(addr, _)| *addr)
                 .filter(|addr| !peer_addrs.contains(addr))
+                .take(fallback_budget)
                 .collect();
             peer_addrs.extend(extra_peers);
         }

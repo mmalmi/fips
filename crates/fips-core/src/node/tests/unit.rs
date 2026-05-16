@@ -999,6 +999,48 @@ fn test_schedule_retry_increments() {
     assert_eq!(state.retry_after_ms, 11_000 + 20_000);
 }
 
+/// Retry processing is paced so a large due set cannot start every
+/// handshake candidate in one maintenance tick.
+#[tokio::test]
+async fn test_process_pending_retries_is_budgeted_per_tick() {
+    let mut node = make_node();
+    let mut addrs = Vec::new();
+
+    for _ in 0..20 {
+        let identity = Identity::generate();
+        let npub = identity.npub();
+        let peer_identity = PeerIdentity::from_npub(&npub).unwrap();
+        let node_addr = *peer_identity.node_addr();
+        node.retry_pending.insert(
+            node_addr,
+            crate::node::retry::RetryState {
+                peer_config: crate::config::PeerConfig::new(npub, "udp", "10.0.0.2:2121"),
+                retry_count: 0,
+                retry_after_ms: 0,
+                reconnect: true,
+                expires_at_ms: None,
+            },
+        );
+        addrs.push(node_addr);
+    }
+
+    node.process_pending_retries(1).await;
+
+    let processed = addrs
+        .iter()
+        .filter(|addr| {
+            node.retry_pending
+                .get(addr)
+                .is_some_and(|state| state.retry_count > 0)
+        })
+        .count();
+    let deferred = addrs.len().saturating_sub(processed);
+
+    assert_eq!(processed, 16);
+    assert_eq!(deferred, 4);
+    assert_eq!(node.retry_pending.len(), 20);
+}
+
 /// Test that auto-connect peers retry indefinitely (never exhaust).
 #[test]
 fn test_schedule_retry_auto_connect_never_exhausts() {

@@ -14,7 +14,7 @@ use crate::protocol::{Disconnect, DisconnectReason};
 use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, packet_channel};
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
 use crate::{NodeAddr, PeerIdentity};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::thread;
 use std::time::Duration;
@@ -62,6 +62,7 @@ fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> boo
 const OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER: u64 = 2;
 const MAX_PARALLEL_PATH_CANDIDATES_PER_PEER: usize = 4;
 const MAX_AUTO_CONNECT_GRAPH_WARMUPS_PER_TICK: usize = 16;
+const MAX_DISCOVERY_CONNECTS_PER_TICK: usize = 16;
 
 impl Node {
     /// Initiate connections to configured static peers.
@@ -593,6 +594,12 @@ impl Node {
             .min(MAX_PARALLEL_PATH_CANDIDATES_PER_PEER.saturating_sub(in_flight_for_peer))
     }
 
+    fn discovery_connect_budget(&self) -> usize {
+        self.outbound_handshake_slots()
+            .min(self.outbound_link_slots())
+            .min(MAX_DISCOVERY_CONNECTS_PER_TICK)
+    }
+
     /// Find a UDP transport whose bound socket can send to `remote_addr`.
     ///
     /// LAN discovery can surface both IPv4 and IPv6 addresses for the same
@@ -930,6 +937,9 @@ impl Node {
     pub(super) async fn poll_transport_discovery(&mut self) {
         // Collect discoveries first to avoid borrow conflict with self
         let mut to_connect = Vec::new();
+        let mut queued_per_peer: HashMap<NodeAddr, usize> = HashMap::new();
+        let mut connect_budget = self.discovery_connect_budget();
+        let mut skipped_budget = 0usize;
 
         for transport in self.transports.values() {
             if !transport.is_operational() {
@@ -982,7 +992,19 @@ impl Node {
                     if !cross_connection_winner(self.identity.node_addr(), &node_addr, true) {
                         continue;
                     }
+                    let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
+                    if connect_budget == 0
+                        || self
+                            .path_candidate_attempt_budget(&node_addr)
+                            .saturating_sub(queued_for_peer)
+                            == 0
+                    {
+                        skipped_budget = skipped_budget.saturating_add(1);
+                        continue;
+                    }
                     to_connect.push((candidate_transport_id, remote_addr, identity, true));
+                    *queued_per_peer.entry(node_addr).or_default() += 1;
+                    connect_budget = connect_budget.saturating_sub(1);
                     continue;
                 }
 
@@ -994,8 +1016,28 @@ impl Node {
                     continue;
                 }
 
+                let queued_for_peer = queued_per_peer.get(&node_addr).copied().unwrap_or(0);
+                if connect_budget == 0
+                    || self
+                        .path_candidate_attempt_budget(&node_addr)
+                        .saturating_sub(queued_for_peer)
+                        == 0
+                {
+                    skipped_budget = skipped_budget.saturating_add(1);
+                    continue;
+                }
                 to_connect.push((candidate_transport_id, remote_addr, identity, false));
+                *queued_per_peer.entry(node_addr).or_default() += 1;
+                connect_budget = connect_budget.saturating_sub(1);
             }
+        }
+
+        if skipped_budget > 0 {
+            debug!(
+                skipped = skipped_budget,
+                queued = to_connect.len(),
+                "Transport discovery connect budget exhausted"
+            );
         }
 
         for (transport_id, remote_addr, identity, active_refresh) in to_connect {
@@ -1165,6 +1207,8 @@ impl Node {
         if events.is_empty() {
             return;
         }
+        let mut connect_budget = self.discovery_connect_budget();
+        let mut skipped_budget = 0usize;
         for event in events {
             let crate::discovery::lan::LanEvent::Discovered(peer) = event;
             let Some((transport_id, local_addr)) =
@@ -1199,6 +1243,10 @@ impl Node {
                 if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
                     continue;
                 }
+                if connect_budget == 0 || self.path_candidate_attempt_budget(&peer_node_addr) == 0 {
+                    skipped_budget = skipped_budget.saturating_add(1);
+                    continue;
+                }
                 info!(
                     npub = %identity.short_npub(),
                     addr = %peer.addr,
@@ -1215,9 +1263,14 @@ impl Node {
                         "lan: failed to initiate active peer alternate-path handshake"
                     );
                 }
+                connect_budget = connect_budget.saturating_sub(1);
                 continue;
             }
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+                continue;
+            }
+            if connect_budget == 0 || self.path_candidate_attempt_budget(&peer_node_addr) == 0 {
+                skipped_budget = skipped_budget.saturating_add(1);
                 continue;
             }
             info!(
@@ -1236,6 +1289,13 @@ impl Node {
                     "lan: failed to initiate connection to discovered peer"
                 );
             }
+            connect_budget = connect_budget.saturating_sub(1);
+        }
+        if skipped_budget > 0 {
+            debug!(
+                skipped = skipped_budget,
+                "lan: discovery connect budget exhausted"
+            );
         }
     }
 
