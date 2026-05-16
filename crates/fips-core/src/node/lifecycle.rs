@@ -195,10 +195,9 @@ impl Node {
                 if matches!(e, crate::node::NodeError::NoTransportForType(_))
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
-                    let npub = peer_config.npub.clone();
-                    tokio::spawn(async move {
-                        let _ = bootstrap.refetch_advert_for_stale_check(&npub).await;
-                    });
+                    bootstrap
+                        .request_advert_stale_check(peer_config.npub.clone())
+                        .await;
                 }
             }
         }
@@ -319,10 +318,9 @@ impl Node {
                 if matches!(e, crate::node::NodeError::NoTransportForType(_))
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
-                    let npub = peer_config.npub.clone();
-                    tokio::spawn(async move {
-                        let _ = bootstrap.refetch_advert_for_stale_check(&npub).await;
-                    });
+                    bootstrap
+                        .request_advert_stale_check(peer_config.npub.clone())
+                        .await;
                 }
             }
         }
@@ -842,13 +840,6 @@ impl Node {
                     let peer_npub = traversal.peer_npub.clone();
                     if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_npub) {
                         let peer_addr = *peer_identity.node_addr();
-                        if self.peers.contains_key(&peer_addr) {
-                            debug!(
-                                peer_npub = %peer_npub,
-                                "Ignoring established NAT traversal for already-connected peer"
-                            );
-                            continue;
-                        }
                         if self.is_connecting_to_peer(&peer_addr) {
                             debug!(
                                 peer_npub = %peer_npub,
@@ -920,29 +911,9 @@ impl Node {
                     // crossing. Fire-and-forget; the outcome is logged so
                     // operators can see when peers get cleaned up.
                     if decision.crossed_threshold {
-                        let bootstrap = bootstrap.clone();
-                        let npub = peer_config.npub.clone();
-                        tokio::spawn(async move {
-                            let outcome = bootstrap.refetch_advert_for_stale_check(&npub).await;
-                            match outcome {
-                                crate::discovery::nostr::NostrRefetchOutcome::Evicted => info!(
-                                    npub = %npub,
-                                    "stale-advert sweep: peer evicted from advert cache"
-                                ),
-                                crate::discovery::nostr::NostrRefetchOutcome::Refreshed => info!(
-                                    npub = %npub,
-                                    "stale-advert sweep: peer republished, cache refreshed and streak reset"
-                                ),
-                                crate::discovery::nostr::NostrRefetchOutcome::SameAdvert => debug!(
-                                    npub = %npub,
-                                    "stale-advert sweep: advert unchanged, cooldown stands"
-                                ),
-                                crate::discovery::nostr::NostrRefetchOutcome::Skipped => debug!(
-                                    npub = %npub,
-                                    "stale-advert sweep: skipped (relay error or no advert_relays)"
-                                ),
-                            }
-                        });
+                        bootstrap
+                            .request_advert_stale_check(peer_config.npub.clone())
+                            .await;
                     }
 
                     if self
@@ -1762,13 +1733,15 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return Vec::new();
         };
-        let endpoints = match bootstrap.advert_endpoints_for_peer(&peer_config.npub).await {
-            Ok(endpoints) => endpoints,
-            Err(err) => {
+        let endpoints = match bootstrap
+            .cached_advert_endpoints_for_peer(&peer_config.npub)
+            .await
+        {
+            Some(endpoints) => endpoints,
+            None => {
                 debug!(
                     npub = %peer_config.npub,
-                    error = %err,
-                    "Failed to resolve Nostr advert endpoints for configured peer"
+                    "No cached Nostr advert endpoints for configured peer"
                 );
                 return Vec::new();
             }
@@ -1807,6 +1780,21 @@ impl Node {
         fallback
     }
 
+    async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
+        if !self.config.node.discovery.nostr.enabled
+            || self.config.node.discovery.nostr.policy
+                == crate::config::NostrDiscoveryPolicy::Disabled
+        {
+            return false;
+        }
+        let Some(bootstrap) = self.nostr_discovery.clone() else {
+            return false;
+        };
+        bootstrap.request_connect(peer_config.clone()).await;
+        info!(npub = %peer_config.npub, "Started background Nostr UDP NAT traversal attempt");
+        true
+    }
+
     fn overlay_endpoint_to_peer_address(
         endpoint: &OverlayEndpointAdvert,
         priority: u8,
@@ -1835,13 +1823,11 @@ impl Node {
                 if !allow_bootstrap_nat {
                     continue;
                 }
-                let Some(bootstrap) = self.nostr_discovery.clone() else {
-                    debug!(npub = %peer_config.npub, "No Nostr overlay runtime for udp:nat address");
-                    continue;
-                };
-                bootstrap.request_connect(peer_config.clone()).await;
-                info!(npub = %peer_config.npub, "Started Nostr UDP NAT traversal attempt");
-                return Ok(());
+                if self.request_nostr_bootstrap(peer_config).await {
+                    return Ok(());
+                }
+                debug!(npub = %peer_config.npub, "No Nostr overlay runtime for udp:nat address");
+                continue;
             }
 
             let (transport_id, remote_addr) = if addr.transport == "ethernet" {
@@ -2467,6 +2453,9 @@ impl Node {
         let candidates = self.peer_address_candidates(peer_config).await;
 
         if candidates.is_empty() {
+            if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
+                return Ok(());
+            }
             return Err(NodeError::NoTransportForType(format!(
                 "no addresses known for {}",
                 peer_config.npub
@@ -2699,9 +2688,8 @@ impl Node {
         if self.peers.contains_key(&peer_node_addr) {
             debug!(
                 peer_npub = %traversal.peer_npub,
-                "Ignoring NAT traversal handoff for already-connected peer"
+                "Adopting NAT traversal handoff as alternate path for already-connected peer"
             );
-            return Err(NodeError::PeerAlreadyExists(peer_node_addr));
         }
         if self.is_connecting_to_peer(&peer_node_addr) {
             debug!(

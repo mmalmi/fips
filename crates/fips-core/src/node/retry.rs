@@ -259,22 +259,12 @@ impl Node {
 
             let peer_config = state.peer_config.clone();
 
-            // Refresh the peer's overlay advert before retrying. The cache is
-            // read-only on hit (see fetch_advert), so every retry without a
-            // refetch dials the same cached endpoint — and the most common
-            // reason a peer ended up in retry_pending is that the cached
-            // endpoint just stopped working (NAT rebind, port change, peer
-            // restart on a different port). Without this refresh the retry
-            // loop dials the same dead address forever.
-            //
-            // refetch_advert_for_stale_check uses the relay's advert as
-            // ground truth: replaces the cache if there's a newer one,
-            // evicts if the relay has nothing, otherwise leaves it. Cheap
-            // (one Filter fetch with 2s timeout) and bounded by the retry
-            // backoff cadence.
+            // Ask the Nostr runtime to refresh stale overlay adverts without
+            // blocking this maintenance tick; retry cadence can otherwise stall
+            // daemon status/control traffic behind relay fetch timeouts.
             if let Some(bootstrap) = self.nostr_discovery.clone() {
-                let _ = bootstrap
-                    .refetch_advert_for_stale_check(&peer_config.npub)
+                bootstrap
+                    .request_advert_stale_check(peer_config.npub.clone())
                     .await;
             }
 
@@ -310,10 +300,9 @@ impl Node {
                     if matches!(e, NodeError::NoTransportForType(_))
                         && let Some(bootstrap) = self.nostr_discovery.clone()
                     {
-                        let npub = peer_config.npub.clone();
-                        tokio::spawn(async move {
-                            let _ = bootstrap.refetch_advert_for_stale_check(&npub).await;
-                        });
+                        bootstrap
+                            .request_advert_stale_check(peer_config.npub.clone())
+                            .await;
                     }
                     // Immediate failure counts as an attempt — schedule next retry
                     // (reconnect flag is preserved on existing retry_pending entry)

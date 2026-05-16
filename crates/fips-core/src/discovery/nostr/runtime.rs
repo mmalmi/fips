@@ -169,6 +169,7 @@ pub struct NostrDiscovery {
     current_advert_event_id: RwLock<Option<EventId>>,
     pending_answers: Mutex<HashMap<String, oneshot::Sender<SignalEnvelope<TraversalAnswer>>>>,
     active_initiators: Mutex<HashSet<String>>,
+    active_refetches: Mutex<HashSet<String>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
     offer_slots: Arc<Semaphore>,
     event_tx: mpsc::UnboundedSender<BootstrapEvent>,
@@ -232,6 +233,7 @@ impl NostrDiscovery {
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
             active_initiators: Mutex::new(HashSet::new()),
+            active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
             offer_slots,
             event_tx,
@@ -524,6 +526,43 @@ impl NostrDiscovery {
         }
     }
 
+    pub async fn request_advert_stale_check(self: &Arc<Self>, peer_npub: String) -> bool {
+        if self.config.advert_relays.is_empty() {
+            return false;
+        }
+        {
+            let mut active = self.active_refetches.lock().await;
+            if !active.insert(peer_npub.clone()) {
+                return false;
+            }
+        }
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let outcome = runtime.refetch_advert_for_stale_check(&peer_npub).await;
+            match outcome {
+                NostrRefetchOutcome::Evicted => info!(
+                    npub = %peer_npub,
+                    "stale-advert sweep: peer evicted from advert cache"
+                ),
+                NostrRefetchOutcome::Refreshed => info!(
+                    npub = %peer_npub,
+                    "stale-advert sweep: peer republished, cache refreshed and streak reset"
+                ),
+                NostrRefetchOutcome::SameAdvert => debug!(
+                    npub = %peer_npub,
+                    "stale-advert sweep: relay still has same advert"
+                ),
+                NostrRefetchOutcome::Skipped => debug!(
+                    npub = %peer_npub,
+                    "stale-advert sweep: skipped"
+                ),
+            }
+            runtime.active_refetches.lock().await.remove(&peer_npub);
+        });
+        true
+    }
+
     pub async fn drain_events(&self) -> Vec<BootstrapEvent> {
         let mut out = Vec::new();
         let mut rx = self.event_rx.lock().await;
@@ -563,6 +602,20 @@ impl NostrDiscovery {
             })?;
         let advert = self.fetch_advert(peer_npub, target_pubkey).await?;
         Ok(advert.endpoints)
+    }
+
+    pub async fn cached_advert_endpoints_for_peer(
+        &self,
+        peer_npub: &str,
+    ) -> Option<Vec<OverlayEndpointAdvert>> {
+        self.prune_advert_cache().await;
+        let now = now_ms();
+        self.advert_cache
+            .read()
+            .await
+            .get(peer_npub)
+            .filter(|cached| cached.valid_until_ms > now)
+            .map(|cached| cached.advert.endpoints.clone())
     }
 
     pub async fn cached_open_discovery_candidates(
@@ -1642,6 +1695,7 @@ impl NostrDiscovery {
             current_advert_event_id: RwLock::new(None),
             pending_answers: Mutex::new(HashMap::new()),
             active_initiators: Mutex::new(HashSet::new()),
+            active_refetches: Mutex::new(HashSet::new()),
             seen_sessions: Mutex::new(HashMap::new()),
             offer_slots,
             event_tx,

@@ -118,7 +118,7 @@ async fn test_failed_adopted_traversal_cleans_up_transport() {
 }
 
 #[tokio::test]
-async fn test_adopted_traversal_skips_already_connected_peer() {
+async fn test_adopted_traversal_races_alternate_path_for_already_connected_peer() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);
     node.packet_tx = Some(packet_tx);
@@ -144,21 +144,22 @@ async fn test_adopted_traversal_skips_already_connected_peer() {
     )
     .with_transport_name("nostr-punched");
 
-    let result = node.adopt_established_traversal(handoff).await;
+    let result = node.adopt_established_traversal(handoff).await.unwrap();
 
+    assert_eq!(result.peer_node_addr, peer_addr);
     assert!(
-        matches!(result, Err(NodeError::PeerAlreadyExists(addr)) if addr == peer_addr),
-        "stale traversal handoff should be ignored once the peer is already active"
+        node.peers.contains_key(&peer_addr),
+        "active peer should remain in place while alternate path handshakes"
     );
     assert_eq!(
         node.link_count(),
-        link_count,
-        "ignored traversal must not create a duplicate link"
+        link_count + 1,
+        "alternate traversal should create one pending handshake link"
     );
     assert_eq!(
         node.transports.len(),
-        transport_count,
-        "ignored traversal must not leak an adopted transport"
+        transport_count + 1,
+        "alternate traversal should keep the adopted transport for the pending handshake"
     );
 }
 
