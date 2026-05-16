@@ -253,12 +253,16 @@ impl Node {
                 );
             }
 
-            // If we have queued application traffic for this target, retry
-            // session initiation. The coord_cache now has coords, so
-            // find_next_hop() should succeed.
-            if self.pending_tun_packets.contains_key(&target)
-                || self.pending_endpoint_data.contains_key(&target)
-            {
+            // If we have queued application traffic for this target, or the
+            // target is a configured auto-connect peer we are proactively
+            // warming, retry session initiation. The coord_cache now has
+            // coords, so find_next_hop() should succeed.
+            let has_queued_traffic = self.pending_tun_packets.contains_key(&target)
+                || self.pending_endpoint_data.contains_key(&target);
+            let should_warm_session = !has_queued_traffic
+                && self.should_warm_auto_connect_session(&target)
+                && self.graph_session_warmup_budget() > 0;
+            if has_queued_traffic || should_warm_session {
                 let tun_packets = self.pending_tun_packets.get(&target).map_or(0, |p| p.len());
                 let endpoint_payloads = self
                     .pending_endpoint_data
@@ -268,7 +272,8 @@ impl Node {
                     dest = %self.peer_display_name(&target),
                     queued_tun_packets = tun_packets,
                     queued_endpoint_payloads = endpoint_payloads,
-                    "Retrying queued traffic after discovery"
+                    proactive_warm = should_warm_session,
+                    "Retrying session after discovery"
                 );
                 self.retry_session_after_discovery(target).await;
             }
@@ -549,6 +554,16 @@ impl Node {
             debug!(
                 target_node = %self.peer_display_name(dest),
                 "Discovery lookup deduplicated, already pending"
+            );
+            return;
+        }
+
+        let max_pending = self.config.node.session.pending_max_destinations;
+        if self.pending_lookups.len() >= max_pending {
+            debug!(
+                target_node = %self.peer_display_name(dest),
+                max_pending,
+                "Discovery lookup suppressed, pending lookup queue full"
             );
             return;
         }

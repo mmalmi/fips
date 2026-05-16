@@ -1829,6 +1829,74 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
 }
 
 #[tokio::test]
+async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest_addr = *nodes[2].node.node_addr();
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("graph-peer".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_initiating()),
+        "configured peer should start an FIPS graph session without waiting for data"
+    );
+
+    drain_to_quiescence(&mut nodes).await;
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "proactive graph session should complete over the existing FIPS path"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_update_peers_starts_lookup_for_auto_connect_peer_without_cached_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    nodes[0].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+
+    let dest_addr = *nodes[2].node.node_addr();
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("lookup-peer".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert!(
+        nodes[0].node.pending_lookups.contains_key(&dest_addr),
+        "configured peer should start FIPS discovery immediately when no route is cached"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let dest = Identity::generate();

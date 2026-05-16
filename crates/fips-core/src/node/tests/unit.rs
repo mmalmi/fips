@@ -1130,9 +1130,29 @@ async fn test_try_peer_addresses_skips_connected_peer() {
 #[tokio::test]
 async fn test_try_peer_addresses_skips_connecting_peer() {
     let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
     let peer_identity = make_peer_identity();
     let peer_config = crate::config::PeerConfig::new(peer_identity.npub(), "udp", "127.0.0.1:9");
-    let pending = PeerConnection::outbound(LinkId::new(1), peer_identity, 1000);
+    let mut pending = PeerConnection::outbound(LinkId::new(1), peer_identity, 1000);
+    pending.set_transport_id(transport_id);
+    pending.set_source_addr(TransportAddr::from_string("127.0.0.1:9"));
     node.add_connection(pending).unwrap();
 
     node.try_peer_addresses(&peer_config, peer_identity, true)
@@ -1147,8 +1167,12 @@ async fn test_try_peer_addresses_skips_connecting_peer() {
     assert_eq!(
         node.link_count(),
         0,
-        "stale retry/traversal fallback must not allocate a link while a handshake is pending"
+        "stale retry/traversal fallback must not allocate a link for the duplicate path"
     );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
 }
 
 #[tokio::test]
@@ -1654,15 +1678,21 @@ async fn test_retry_dials_overlay_advert_before_stale_static_udp() {
 
     let fresh = TransportAddr::from_string(fresh_overlay_addr);
     let stale = TransportAddr::from_string(stale_static_addr);
+    let fresh_link = node.find_link_by_addr(transport_id, &fresh);
+    let stale_link = node.find_link_by_addr(transport_id, &stale);
     assert!(
-        node.find_link_by_addr(transport_id, &fresh).is_some(),
+        fresh_link.is_some(),
         "retry should dial the just-refreshed overlay advert {fresh_overlay_addr}"
     );
     assert!(
-        node.find_link_by_addr(transport_id, &stale).is_none(),
-        "retry must not dial the stale static {stale_static_addr} when a fresh advert is available"
+        stale_link.is_some(),
+        "retry should keep stale static {stale_static_addr} in the bounded path race"
     );
-    assert_eq!(node.connection_count(), 1);
+    assert!(
+        fresh_link.unwrap().as_u64() < stale_link.unwrap().as_u64(),
+        "fresh overlay advert should still be attempted before stale static"
+    );
+    assert_eq!(node.connection_count(), 2);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -1736,13 +1766,19 @@ async fn test_bootstrap_dials_freshest_address_first() {
 
     let stat = TransportAddr::from_string(static_addr);
     let overlay = TransportAddr::from_string(overlay_addr);
+    let overlay_link = node.find_link_by_addr(transport_id, &overlay);
+    let static_link = node.find_link_by_addr(transport_id, &stat);
     assert!(
-        node.find_link_by_addr(transport_id, &overlay).is_some(),
+        overlay_link.is_some(),
         "cold-start must dial the freshly observed overlay address first"
     );
     assert!(
-        node.find_link_by_addr(transport_id, &stat).is_none(),
-        "cold-start must skip the unstamped static address when a fresher candidate succeeds"
+        static_link.is_some(),
+        "cold-start should keep the unstamped static address in the bounded path race"
+    );
+    assert!(
+        overlay_link.unwrap().as_u64() < static_link.unwrap().as_u64(),
+        "fresh overlay advert should still be attempted before static address"
     );
 
     for transport in node.transports.values_mut() {
@@ -2135,6 +2171,105 @@ async fn update_peers_races_new_alternative_even_when_current_path_is_still_know
     let active = node.get_peer(&peer_node_addr).unwrap();
     assert_eq!(active.link_id(), old_link_id);
     assert_eq!(active.current_addr(), Some(&current_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn update_peers_races_more_alternatives_while_peer_is_connecting_with_budget() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            current_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let first = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::new("udp", "127.0.0.1:9"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:10"),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+    node.config.peers = vec![first.clone()];
+    let _ = node.update_peers(vec![first]).await.unwrap();
+    assert_eq!(node.connection_count(), 1);
+
+    let refreshed = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::new("udp", "127.0.0.1:9"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:10"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:11"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:12"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:13"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:14"),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+
+    let outcome = node.update_peers(vec![refreshed]).await.unwrap();
+
+    assert_eq!(outcome.updated, 1);
+    assert_eq!(
+        node.connection_count(),
+        4,
+        "one existing in-flight path plus three new paths should hit the per-peer race budget"
+    );
+    let attempted: std::collections::HashSet<_> = node
+        .connections
+        .values()
+        .filter_map(|conn| conn.source_addr().map(ToString::to_string))
+        .collect();
+    for addr in [
+        "127.0.0.1:10",
+        "127.0.0.1:11",
+        "127.0.0.1:12",
+        "127.0.0.1:13",
+    ] {
+        assert!(attempted.contains(addr), "missing attempted path {addr}");
+    }
+    assert!(
+        !attempted.contains("127.0.0.1:14"),
+        "candidate racing should be bounded per peer"
+    );
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

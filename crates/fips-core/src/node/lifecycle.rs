@@ -60,6 +60,8 @@ fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> boo
 }
 
 const OPEN_DISCOVERY_RETRY_LIFETIME_MULTIPLIER: u64 = 2;
+const MAX_PARALLEL_PATH_CANDIDATES_PER_PEER: usize = 4;
+const MAX_AUTO_CONNECT_GRAPH_WARMUPS_PER_TICK: usize = 16;
 
 impl Node {
     /// Initiate connections to configured static peers.
@@ -150,10 +152,7 @@ impl Node {
                 }
             } else {
                 outcome.unchanged += 1;
-                if new_pc.is_auto_connect()
-                    && !new_pc.addresses.is_empty()
-                    && !self.is_connecting_to_peer(node_addr)
-                {
+                if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
                     auto_connect_refresh_configs.push(new_pc.clone());
                 }
             }
@@ -207,9 +206,6 @@ impl Node {
                 continue;
             };
             let node_addr = *peer_identity.node_addr();
-            if self.is_connecting_to_peer(&node_addr) {
-                continue;
-            }
 
             if self.peers.contains_key(&node_addr) {
                 match self
@@ -253,6 +249,8 @@ impl Node {
                 }
             }
         }
+
+        self.warm_auto_connect_graph_sessions().await;
 
         Ok(outcome)
     }
@@ -324,6 +322,8 @@ impl Node {
                 }
             }
         }
+
+        self.warm_auto_connect_graph_sessions().await;
     }
 
     /// Initiate a connection to a single peer.
@@ -364,14 +364,6 @@ impl Node {
             return Ok(true);
         }
 
-        if self.is_connecting_to_peer(&peer_node_addr) {
-            debug!(
-                npub = %peer_config.npub,
-                "Connection already in progress, skipping active peer path refresh"
-            );
-            return Ok(false);
-        }
-
         // Route refreshes are deliberately initiated only by the deterministic
         // side whose outbound handshake would win cross-connection resolution.
         // That lets both peers learn the same replacement session without
@@ -410,20 +402,6 @@ impl Node {
             return Ok(());
         }
 
-        // Check if connection already in progress to this peer
-        let already_connecting = self.connections.values().any(|conn| {
-            conn.expected_identity()
-                .map(|id| id.node_addr() == &peer_node_addr)
-                .unwrap_or(false)
-        });
-        if already_connecting {
-            debug!(
-                npub = %peer_config.npub,
-                "Connection already in progress, skipping"
-            );
-            return Ok(());
-        }
-
         self.try_peer_addresses(peer_config, peer_identity, true)
             .await
     }
@@ -434,6 +412,185 @@ impl Node {
                 .map(|id| id.node_addr() == peer_node_addr)
                 .unwrap_or(false)
         })
+    }
+
+    fn is_connecting_to_peer_on_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> bool {
+        self.connections.values().any(|conn| {
+            conn.expected_identity()
+                .map(|id| id.node_addr() == peer_node_addr)
+                .unwrap_or(false)
+                && conn.transport_id() == Some(transport_id)
+                && conn.source_addr() == Some(remote_addr)
+        }) || self.pending_connects.iter().any(|pending| {
+            pending.peer_identity.node_addr() == peer_node_addr
+                && pending.transport_id == transport_id
+                && &pending.remote_addr == remote_addr
+        })
+    }
+
+    pub(in crate::node) fn should_warm_auto_connect_session(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        if self.peers.contains_key(peer_node_addr)
+            || self
+                .sessions
+                .get(peer_node_addr)
+                .is_some_and(|entry| entry.is_established())
+        {
+            return false;
+        }
+
+        self.config.peers().iter().any(|peer| {
+            peer.is_auto_connect()
+                && PeerIdentity::from_npub(&peer.npub)
+                    .map(|identity| identity.node_addr() == peer_node_addr)
+                    .unwrap_or(false)
+        })
+    }
+
+    pub(in crate::node) async fn warm_auto_connect_graph_sessions(&mut self) -> usize {
+        if !self.peers.values().any(|peer| peer.can_send()) {
+            return 0;
+        }
+
+        let mut budget = self.graph_session_warmup_budget();
+        if budget == 0 {
+            return 0;
+        }
+
+        let peer_identities: Vec<_> = self
+            .config
+            .auto_connect_peers()
+            .filter_map(|peer| PeerIdentity::from_npub(&peer.npub).ok())
+            .collect();
+
+        let mut warmed = 0;
+        for identity in peer_identities {
+            if budget == 0 {
+                break;
+            }
+
+            let peer_node_addr = *identity.node_addr();
+            if peer_node_addr == *self.identity.node_addr()
+                || !self.should_warm_auto_connect_session(&peer_node_addr)
+                || self
+                    .sessions
+                    .get(&peer_node_addr)
+                    .is_some_and(|entry| entry.is_initiating())
+            {
+                continue;
+            }
+
+            self.register_identity(peer_node_addr, identity.pubkey_full());
+
+            if self.find_next_hop(&peer_node_addr).is_some() {
+                match self
+                    .initiate_session(peer_node_addr, identity.pubkey_full())
+                    .await
+                {
+                    Ok(()) => {
+                        warmed += 1;
+                        budget = budget.saturating_sub(1);
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            "Warmed auto-connect peer session over existing FIPS graph"
+                        );
+                    }
+                    Err(NodeError::SendFailed { node_addr, reason })
+                        if node_addr == peer_node_addr && reason == "no route to destination" =>
+                    {
+                        self.maybe_initiate_lookup(&peer_node_addr).await;
+                        warmed += 1;
+                        budget = budget.saturating_sub(1);
+                    }
+                    Err(err) => {
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            error = %err,
+                            "Failed to warm auto-connect peer session"
+                        );
+                    }
+                }
+            } else {
+                self.maybe_initiate_lookup(&peer_node_addr).await;
+                warmed += 1;
+                budget = budget.saturating_sub(1);
+            }
+        }
+
+        warmed
+    }
+
+    pub(in crate::node) fn graph_session_warmup_budget(&self) -> usize {
+        let max_destinations = self.config.node.session.pending_max_destinations;
+        if max_destinations == 0 {
+            return 0;
+        }
+
+        let pending_sessions = self
+            .sessions
+            .values()
+            .filter(|entry| !entry.is_established())
+            .count();
+        let pending_total = pending_sessions.saturating_add(self.pending_lookups.len());
+        max_destinations
+            .saturating_sub(pending_total)
+            .min(MAX_AUTO_CONNECT_GRAPH_WARMUPS_PER_TICK)
+    }
+
+    fn outbound_handshake_slots(&self) -> usize {
+        let used = self
+            .connections
+            .len()
+            .saturating_add(self.pending_connects.len());
+        if self.max_connections == 0 {
+            usize::MAX
+        } else {
+            self.max_connections.saturating_sub(used)
+        }
+    }
+
+    fn outbound_link_slots(&self) -> usize {
+        if self.max_links == 0 {
+            usize::MAX
+        } else {
+            self.max_links.saturating_sub(self.links.len())
+        }
+    }
+
+    fn path_candidate_attempt_budget(&self, peer_node_addr: &NodeAddr) -> usize {
+        if !self.peers.contains_key(peer_node_addr)
+            && self.max_peers > 0
+            && self.peers.len() >= self.max_peers
+        {
+            return 0;
+        }
+
+        let in_flight_for_peer = self
+            .connections
+            .values()
+            .filter(|conn| {
+                conn.expected_identity()
+                    .map(|id| id.node_addr() == peer_node_addr)
+                    .unwrap_or(false)
+            })
+            .count()
+            .saturating_add(
+                self.pending_connects
+                    .iter()
+                    .filter(|pending| pending.peer_identity.node_addr() == peer_node_addr)
+                    .count(),
+            );
+
+        self.outbound_handshake_slots()
+            .min(self.outbound_link_slots())
+            .min(MAX_PARALLEL_PATH_CANDIDATES_PER_PEER.saturating_sub(in_flight_for_peer))
     }
 
     /// Find a UDP transport whose bound socket can send to `remote_addr`.
@@ -533,6 +690,37 @@ impl Node {
         peer_identity: PeerIdentity,
     ) -> Result<(), NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
+
+        if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+            debug!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                transport_id = %transport_id,
+                remote_addr = %remote_addr,
+                "Connection already in progress for candidate path"
+            );
+            return Ok(());
+        }
+
+        if self.outbound_handshake_slots() == 0 {
+            return Err(NodeError::MaxConnectionsExceeded {
+                max: self.max_connections,
+            });
+        }
+
+        if self.outbound_link_slots() == 0 {
+            return Err(NodeError::MaxLinksExceeded {
+                max: self.max_links,
+            });
+        }
+
+        if !self.peers.contains_key(&peer_node_addr)
+            && self.max_peers > 0
+            && self.peers.len() >= self.max_peers
+        {
+            return Err(NodeError::MaxPeersExceeded {
+                max: self.max_peers,
+            });
+        }
 
         self.authorize_peer(
             &peer_identity,
@@ -784,7 +972,11 @@ impl Node {
                     ) {
                         continue;
                     }
-                    if self.is_connecting_to_peer(&node_addr) {
+                    if self.is_connecting_to_peer_on_path(
+                        &node_addr,
+                        candidate_transport_id,
+                        &remote_addr,
+                    ) {
                         continue;
                     }
                     if !cross_connection_winner(self.identity.node_addr(), &node_addr, true) {
@@ -794,13 +986,11 @@ impl Node {
                     continue;
                 }
 
-                // Skip if connection already in progress
-                let connecting = self.connections.values().any(|c| {
-                    c.expected_identity()
-                        .map(|id| id.node_addr() == &node_addr)
-                        .unwrap_or(false)
-                });
-                if connecting {
+                if self.is_connecting_to_peer_on_path(
+                    &node_addr,
+                    candidate_transport_id,
+                    &remote_addr,
+                ) {
                     continue;
                 }
 
@@ -838,16 +1028,6 @@ impl Node {
             match event {
                 BootstrapEvent::Established { traversal } => {
                     let peer_npub = traversal.peer_npub.clone();
-                    if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_npub) {
-                        let peer_addr = *peer_identity.node_addr();
-                        if self.is_connecting_to_peer(&peer_addr) {
-                            debug!(
-                                peer_npub = %peer_npub,
-                                "Ignoring established NAT traversal while peer handshake is already in progress"
-                            );
-                            continue;
-                        }
-                    }
                     match self.adopt_established_traversal(traversal).await {
                         Ok(_) => {
                             info!(peer_npub = %peer_npub, "Adopted NAT traversal socket");
@@ -1013,7 +1193,7 @@ impl Node {
                 ) {
                     continue;
                 }
-                if self.is_connecting_to_peer(&peer_node_addr) {
+                if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                     continue;
                 }
                 if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
@@ -1037,12 +1217,7 @@ impl Node {
                 }
                 continue;
             }
-            let already_connecting = self.connections.values().any(|conn| {
-                conn.expected_identity()
-                    .map(|id| id.node_addr() == &peer_node_addr)
-                    .unwrap_or(false)
-            });
-            if already_connecting {
+            if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 continue;
             }
             info!(
@@ -1819,6 +1994,8 @@ impl Node {
         addresses: &[PeerAddress],
     ) -> Result<(), NodeError> {
         let mut attempted = false;
+        let peer_node_addr = *peer_identity.node_addr();
+        let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
 
         for addr in addresses {
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
@@ -1898,12 +2075,33 @@ impl Node {
                 (tid, TransportAddr::from_string(&addr.addr))
             };
 
+            if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+                attempted = true;
+                debug!(
+                    npub = %peer_config.npub,
+                    transport_id = %transport_id,
+                    remote_addr = %remote_addr,
+                    "Skipping duplicate in-flight candidate path"
+                );
+                continue;
+            }
+
+            if concrete_budget == 0 {
+                debug!(
+                    npub = %peer_config.npub,
+                    max_candidates = MAX_PARALLEL_PATH_CANDIDATES_PER_PEER,
+                    "Path candidate race budget exhausted"
+                );
+                break;
+            }
+
             match self
                 .initiate_connection(transport_id, remote_addr, peer_identity)
                 .await
             {
                 Ok(()) => {
                     attempted = true;
+                    concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
                 Err(e) => {
@@ -2451,13 +2649,6 @@ impl Node {
             );
             return Ok(());
         }
-        if self.is_connecting_to_peer(&peer_node_addr) {
-            debug!(
-                npub = %peer_config.npub,
-                "Connection already in progress, skipping address attempts"
-            );
-            return Ok(());
-        }
 
         let candidates = self.peer_address_candidates(peer_config).await;
 
@@ -2702,13 +2893,6 @@ impl Node {
                 peer_npub = %traversal.peer_npub,
                 "Adopting NAT traversal handoff as alternate path for already-connected peer"
             );
-        }
-        if self.is_connecting_to_peer(&peer_node_addr) {
-            debug!(
-                peer_npub = %traversal.peer_npub,
-                "Ignoring NAT traversal handoff while peer handshake is already in progress"
-            );
-            return Err(NodeError::PeerAlreadyExists(peer_node_addr));
         }
 
         self.peer_aliases
