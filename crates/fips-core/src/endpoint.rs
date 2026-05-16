@@ -14,6 +14,27 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+#[cfg(debug_assertions)]
+fn endpoint_debug_log(message: impl AsRef<str>) {
+    use std::io::Write as _;
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("nvpn-fips-endpoint-debug.log"))
+    {
+        let _ = writeln!(
+            file,
+            "{:?} {}",
+            std::time::SystemTime::now(),
+            message.as_ref()
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn endpoint_debug_log(_message: impl AsRef<str>) {}
+
 /// Errors returned by the endpoint API.
 #[derive(Debug, Error)]
 pub enum FipsEndpointError {
@@ -175,18 +196,26 @@ impl FipsEndpointBuilder {
 
     /// Bind and start the embedded endpoint.
     pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
+        endpoint_debug_log("FipsEndpointBuilder::bind begin");
         let config = self.prepared_config();
+        endpoint_debug_log("FipsEndpointBuilder::bind config prepared");
 
         let mut node = Node::new(config)?;
+        endpoint_debug_log("FipsEndpointBuilder::bind node created");
         let npub = node.npub();
         let node_addr = *node.node_addr();
         let address = *node.identity().address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
+        endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
         let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
+        endpoint_debug_log("FipsEndpointBuilder::bind endpoint data io attached");
+        endpoint_debug_log("FipsEndpointBuilder::bind node.start begin");
         node.start().await?;
+        endpoint_debug_log("FipsEndpointBuilder::bind node.start complete");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
+        endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
         let endpoint_commands = endpoint_data_io.command_tx;
 
         Ok(FipsEndpoint {
