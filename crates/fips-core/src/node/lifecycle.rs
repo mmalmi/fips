@@ -868,11 +868,19 @@ impl Node {
         self.queue_open_discovery_retries(&bootstrap).await;
     }
 
-    /// Extract the bare discovery scope from the Nostr discovery app tag,
-    /// which is encoded as `fips-overlay-v1:<scope>` by
-    /// `apply_default_scoped_discovery`. Returns `None` when no scope is
-    /// set, so the LAN browser surfaces every advert it sees.
+    /// Resolve the LAN-only discovery scope. Applications with explicit
+    /// connectivity config can set `node.discovery.lan.scope` without
+    /// changing the public Nostr discovery `app` tag. The older fallback
+    /// extracts a scope from the Nostr app tag used by default scoped
+    /// discovery.
     pub(super) fn lan_discovery_scope(&self) -> Option<String> {
+        if let Some(scope) = self.config.node.discovery.lan.scope.as_deref() {
+            let scope = scope.trim();
+            if !scope.is_empty() {
+                return Some(scope.to_string());
+            }
+        }
+
         let app = self.config.node.discovery.nostr.app.trim();
         if app.is_empty() {
             return None;

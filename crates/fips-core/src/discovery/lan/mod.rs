@@ -1,7 +1,7 @@
 //! LAN peer discovery via mDNS / DNS-SD (RFC 6762 / RFC 6763).
 //!
 //! Publishes a `_fips._udp.local.` service advert carrying our `npub` and
-//! discovery scope on the local link, and concurrently browses for the
+//! optional discovery scope on the local link, and concurrently browses for the
 //! same service type to learn peers reachable on the same broadcast
 //! domain. The result is sub-second peer pairing without any Nostr-relay
 //! roundtrip, STUN observation, or NAT traversal — the observed
@@ -14,9 +14,9 @@
 //! Noise XX handshake the Node initiates against the observed endpoint
 //! — a spoofed advert with another peer's npub fails the handshake and
 //! is silently dropped. Treat the mDNS advert as a routing hint, not as
-//! identity. The information leaked (our npub plus a LAN endpoint) is a
-//! subset of what we already publish on Nostr relays for every peer in
-//! the world to read, so there's no marginal privacy cost.
+//! identity. LAN discovery is link-local mDNS only. It is not a Nostr advert
+//! and does not leave the broadcast domain unless the operator's LAN bridges
+//! mDNS.
 //!
 //! ## Scope filtering
 //!
@@ -97,6 +97,14 @@ pub struct LanDiscoveryConfig {
     /// multiple isolated services on the same loopback interface.
     #[serde(default = "LanDiscoveryConfig::default_service_type")]
     pub service_type: String,
+    /// Optional application/network scope carried in the LAN-only TXT
+    /// record. Browsers that set a scope ignore adverts for other scopes.
+    ///
+    /// This is intentionally separate from Nostr discovery's public `app`
+    /// tag so applications can keep relay-visible adverts generic while
+    /// still isolating LAN discovery per private network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl Default for LanDiscoveryConfig {
@@ -104,6 +112,7 @@ impl Default for LanDiscoveryConfig {
         Self {
             enabled: Self::default_enabled(),
             service_type: Self::default_service_type(),
+            scope: None,
         }
     }
 }

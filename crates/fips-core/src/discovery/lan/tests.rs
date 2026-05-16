@@ -17,6 +17,7 @@ fn config_for(service_type: String) -> LanDiscoveryConfig {
     LanDiscoveryConfig {
         enabled: true,
         service_type,
+        scope: None,
     }
 }
 
