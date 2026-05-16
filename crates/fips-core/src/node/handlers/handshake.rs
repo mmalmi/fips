@@ -626,13 +626,33 @@ impl Node {
                 // Complete the rekey handshake on the ActivePeer
                 if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
                     match peer.complete_rekey_msg2(noise_msg2) {
-                        Ok(session) => {
+                        Ok((session, remote_epoch)) => {
                             let our_index = peer.rekey_our_index().unwrap_or(header.receiver_idx);
+                            let remote_epoch_changed = matches!(
+                                (peer.remote_epoch(), remote_epoch),
+                                (Some(old), Some(new)) if old != new
+                            );
+                            if remote_epoch.is_some() {
+                                peer.set_remote_epoch(remote_epoch);
+                            }
                             peer.set_pending_session(session, our_index, header.sender_idx);
 
                             if let Some(transport_id) = peer.transport_id() {
                                 self.peers_by_index
                                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
+                            }
+
+                            if remote_epoch_changed {
+                                if self.sessions.remove(&peer_node_addr).is_some() {
+                                    debug!(
+                                        peer = %display_name,
+                                        "Cleared stale FSP session after peer restart during FMP rekey"
+                                    );
+                                }
+                                info!(
+                                    peer = %display_name,
+                                    "Peer restart detected during FMP rekey, replacing stale endpoint session"
+                                );
                             }
 
                             debug!(

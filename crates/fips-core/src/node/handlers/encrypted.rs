@@ -24,7 +24,7 @@ use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 /// Start link-session recovery after this many consecutive FMP AEAD failures.
-const DECRYPT_FAILURE_THRESHOLD: u32 = 20;
+const DECRYPT_FAILURE_THRESHOLD: u32 = 4;
 /// Newly established worker-owned FMP sessions can briefly receive encrypted
 /// packets from the peer's previous link session after restart, rekey, roaming,
 /// or NAT traversal handoff. Until one packet authenticates on the new replay

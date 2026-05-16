@@ -37,7 +37,7 @@ async fn make_started_udp_transport(id: u32) -> TransportHandle {
 async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable() {
     // Threshold constant in node/handlers/encrypted.rs (kept in sync with
     // production code; see DECRYPT_FAILURE_THRESHOLD).
-    const THRESHOLD: u32 = 20;
+    const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
     let transport_id = TransportId::new(1);
@@ -114,7 +114,7 @@ async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable()
 /// and keep the existing peer/session alive instead of dropping the link.
 #[tokio::test]
 async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_available() {
-    const THRESHOLD: u32 = 20;
+    const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
     let transport_id = TransportId::new(1);
@@ -170,7 +170,7 @@ async fn test_decrypt_failure_threshold_starts_recovery_rekey_when_transport_ava
 
 #[tokio::test]
 async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
-    const THRESHOLD: u32 = 20;
+    const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
     let transport_id = TransportId::new(1);
@@ -212,7 +212,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
 
 #[tokio::test]
 async fn test_worker_decrypt_failures_count_after_authenticated_counter() {
-    const THRESHOLD: u32 = 20;
+    const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
     let transport_id = TransportId::new(1);
@@ -241,7 +241,7 @@ async fn test_worker_decrypt_failures_count_after_authenticated_counter() {
 
 #[tokio::test]
 async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
-    const THRESHOLD: u32 = 20;
+    const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
     let transport_id = TransportId::new(1);

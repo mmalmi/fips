@@ -1,6 +1,6 @@
 use super::*;
 use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
-use crate::node::wire::build_msg2;
+use crate::node::wire::{Msg1Header, build_msg2};
 use crate::peer::{ActivePeer, PromotionResult};
 use crate::transport::ReceivedPacket;
 use crate::transport::udp::UdpTransport;
@@ -2681,6 +2681,125 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
         !node.sessions.contains_key(&peer_node_addr),
         "old FSP session must be removed when the peer's startup epoch changes"
     );
+}
+
+#[tokio::test]
+async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("rekey-test".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut conn = PeerConnection::outbound(link_id, peer_identity, 1_000);
+    let old_msg1 = conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 1_000)
+        .unwrap();
+    let mut old_responder = PeerConnection::inbound(LinkId::new(98), 1_000);
+    let old_msg2 = old_responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &old_msg1, 1_000)
+        .unwrap();
+    conn.complete_handshake(&old_msg2, 1_000).unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    conn.set_our_index(our_index);
+    conn.set_their_index(SessionIndex::new(66));
+    conn.set_transport_id(transport_id);
+    conn.set_source_addr(remote_addr.clone());
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            transport_id,
+            remote_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.addr_to_link
+        .insert((transport_id, remote_addr.clone()), link_id);
+    node.connections.insert(link_id, conn);
+    node.promote_connection(link_id, peer_identity, 1_100)
+        .unwrap();
+    assert_eq!(
+        node.get_peer(&peer_node_addr).unwrap().remote_epoch(),
+        Some([0x11; 8])
+    );
+
+    let mut fsp_initiator =
+        HandshakeState::new_initiator(node.identity.keypair(), peer_full.pubkey_full());
+    let mut fsp_responder = HandshakeState::new_responder(peer_full.keypair());
+    fsp_initiator.set_local_epoch([0x01; 8]);
+    fsp_responder.set_local_epoch([0x02; 8]);
+    let fsp_msg1 = fsp_initiator.write_message_1().unwrap();
+    fsp_responder.read_message_1(&fsp_msg1).unwrap();
+    let fsp_msg2 = fsp_responder.write_message_2().unwrap();
+    fsp_initiator.read_message_2(&fsp_msg2).unwrap();
+    let stale_session = fsp_initiator.into_session().unwrap();
+    node.sessions.insert(
+        peer_node_addr,
+        SessionEntry::new(
+            peer_node_addr,
+            peer_full.pubkey_full(),
+            EndToEndState::Established(stale_session),
+            1_200,
+            true,
+        ),
+    );
+    assert!(node.sessions.contains_key(&peer_node_addr));
+
+    assert!(node.initiate_rekey(&peer_node_addr).await);
+    let rekey_msg1 = node
+        .get_peer(&peer_node_addr)
+        .unwrap()
+        .rekey_msg1()
+        .expect("rekey msg1 should be stored")
+        .to_vec();
+    let header = Msg1Header::parse(&rekey_msg1).expect("valid rekey msg1");
+    let noise_msg1 = &rekey_msg1[header.noise_msg1_offset..];
+
+    let mut new_responder = HandshakeState::new_responder(peer_full.keypair());
+    new_responder.set_local_epoch([0x22; 8]);
+    new_responder.read_message_1(noise_msg1).unwrap();
+    let new_msg2 = new_responder.write_message_2().unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, header.sender_idx, &new_msg2);
+    let packet =
+        ReceivedPacket::with_timestamp(transport_id, remote_addr.clone(), wire_msg2, 2_100);
+
+    node.handle_msg2(packet).await;
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.remote_epoch(), Some([0x22; 8]));
+    assert!(
+        active.pending_new_session().is_some(),
+        "FMP recovery rekey should still complete and await cutover"
+    );
+    assert!(
+        !node.sessions.contains_key(&peer_node_addr),
+        "old FSP session must be removed when FMP rekey learns a new peer startup epoch"
+    );
+
+    let mut transport = node.transports.remove(&transport_id).unwrap();
+    transport.stop().await.unwrap();
 }
 
 #[tokio::test]
