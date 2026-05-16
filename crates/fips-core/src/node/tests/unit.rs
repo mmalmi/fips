@@ -98,6 +98,57 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
 }
 
 #[tokio::test]
+async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
+    let peer_identity = Identity::generate();
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9", 1),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:10", 2),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+    let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
+
+    node.try_peer_addresses(&peer_config, peer_identity, false)
+        .await
+        .unwrap();
+
+    let mut addrs = node
+        .connections
+        .values()
+        .filter_map(|conn| conn.source_addr().and_then(|addr| addr.as_str()))
+        .collect::<Vec<_>>();
+    addrs.sort();
+    assert_eq!(addrs, vec!["127.0.0.1:10", "127.0.0.1:9"]);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
     let peer_identity = Identity::generate();
     let mut node = make_node();
@@ -2011,6 +2062,79 @@ async fn update_peers_does_not_churn_active_peer_already_on_known_candidate() {
         0,
         "known-good active concrete path should not be redialed every refresh"
     );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn update_peers_races_new_alternative_even_when_current_path_is_still_known() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let new_addr = TransportAddr::from_string("127.0.0.1:10");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            current_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let peer = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::new("udp", "127.0.0.1:9"),
+            crate::config::PeerAddress::new("udp", "127.0.0.1:10"),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+    };
+    node.config.peers = vec![peer.clone()];
+
+    let outcome = node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.unchanged, 1);
+    assert_eq!(node.peer_count(), 1, "existing link must stay live");
+    assert_eq!(node.connection_count(), 1);
+    assert_eq!(
+        node.connections
+            .values()
+            .next()
+            .and_then(|conn| conn.source_addr()),
+        Some(&new_addr)
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&current_addr));
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

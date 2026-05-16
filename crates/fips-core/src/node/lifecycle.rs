@@ -1818,13 +1818,16 @@ impl Node {
         allow_bootstrap_nat: bool,
         addresses: &[PeerAddress],
     ) -> Result<(), NodeError> {
+        let mut attempted = false;
+
         for addr in addresses {
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
                 if !allow_bootstrap_nat {
                     continue;
                 }
                 if self.request_nostr_bootstrap(peer_config).await {
-                    return Ok(());
+                    attempted = true;
+                    continue;
                 }
                 debug!(npub = %peer_config.npub, "No Nostr overlay runtime for udp:nat address");
                 continue;
@@ -1899,7 +1902,9 @@ impl Node {
                 .initiate_connection(transport_id, remote_addr, peer_identity)
                 .await
             {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    attempted = true;
+                }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
                 Err(e) => {
                     debug!(
@@ -1910,6 +1915,10 @@ impl Node {
                     );
                 }
             }
+        }
+
+        if attempted {
+            return Ok(());
         }
 
         Err(NodeError::NoTransportForType(format!(
@@ -2491,17 +2500,10 @@ impl Node {
             )));
         }
 
-        if self.active_peer_matches_any_candidate(&peer_node_addr, &candidates) {
-            debug!(
-                peer = %self.peer_display_name(&peer_node_addr),
-                "Active peer already uses a known concrete candidate"
-            );
-            return Ok(false);
-        }
-
         let alternatives: Vec<_> = candidates
             .into_iter()
             .filter(|addr| !(addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat")))
+            .filter(|addr| !self.active_peer_matches_candidate(&peer_node_addr, addr))
             .collect();
 
         if alternatives.is_empty() {
@@ -2522,8 +2524,10 @@ impl Node {
         // adverts, callers' recent-peers caches via `update_peers`) and
         // try them in order of `seen_at_ms` descending — most-recent
         // first, source-agnostic. Addresses without a freshness signal
-        // sort last. Addresses are hints, not the final word; we try them
-        // all in one pass and stop at the first success.
+        // sort last. Addresses are hints, not the final word; concrete
+        // candidates in a single pass race each other and `udp:nat` only
+        // starts background Nostr traversal without suppressing direct
+        // static/LAN attempts that appear later in the list.
         let static_addresses = self.static_peer_addresses(peer_config);
         let overlay_addresses = self
             .nostr_peer_fallback_addresses(peer_config, &static_addresses)
@@ -2557,6 +2561,16 @@ impl Node {
         peer_node_addr: &NodeAddr,
         candidates: &[PeerAddress],
     ) -> bool {
+        candidates
+            .iter()
+            .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
+    }
+
+    fn active_peer_matches_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidate: &PeerAddress,
+    ) -> bool {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
@@ -2576,12 +2590,10 @@ impl Node {
             .and_then(|id| self.transports.get(&id))
             .map(|transport| transport.transport_type().name);
 
-        candidates.iter().any(|candidate| {
-            candidate.addr == current_addr
-                && current_transport
-                    .map(|transport| transport == candidate.transport)
-                    .unwrap_or(true)
-        })
+        candidate.addr == current_addr
+            && current_transport
+                .map(|transport| transport == candidate.transport)
+                .unwrap_or(true)
     }
 
     // === Control API methods ===
