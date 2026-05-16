@@ -1,6 +1,8 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use crate::Identity;
+use mdns_sd::ScopedIp;
 
 use super::{LanDiscovery, LanDiscoveryConfig, LanEvent};
 
@@ -19,6 +21,29 @@ fn config_for(service_type: String) -> LanDiscoveryConfig {
         service_type,
         scope: None,
     }
+}
+
+#[test]
+fn scoped_ipv4_advert_becomes_socket_addr() {
+    let scoped = ScopedIp::from(IpAddr::V4(Ipv4Addr::new(192, 168, 178, 91)));
+    let addr = super::socket_addr_from_scoped_ip(&scoped, 51820);
+
+    assert_eq!(addr, Some(SocketAddr::from(([192, 168, 178, 91], 51820))));
+}
+
+#[test]
+fn scope_less_ipv6_link_local_advert_is_skipped() {
+    let scoped = ScopedIp::from(IpAddr::V6("fe80::32c5:99ff:fea7:5fe9".parse().unwrap()));
+
+    assert!(super::socket_addr_from_scoped_ip(&scoped, 51820).is_none());
+}
+
+#[test]
+fn non_link_local_ipv6_advert_is_preserved() {
+    let scoped = ScopedIp::from(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    let addr = super::socket_addr_from_scoped_ip(&scoped, 51820);
+
+    assert_eq!(addr, Some("[::1]:51820".parse().unwrap()));
 }
 
 async fn wait_for_peer(

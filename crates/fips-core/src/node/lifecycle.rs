@@ -438,6 +438,31 @@ impl Node {
         })
     }
 
+    /// Find a UDP transport whose bound socket can send to `remote_addr`.
+    ///
+    /// LAN discovery can surface both IPv4 and IPv6 addresses for the same
+    /// service. A wildcard IPv4 socket cannot send to an IPv6 link-local
+    /// target, and vice versa, so callers must choose by socket family rather
+    /// than by transport type alone.
+    fn find_udp_transport_for_remote_addr(
+        &self,
+        remote_addr: SocketAddr,
+    ) -> Option<(TransportId, SocketAddr)> {
+        self.transports
+            .iter()
+            .filter(|(id, handle)| {
+                handle.transport_type().name == "udp"
+                    && handle.is_operational()
+                    && !self.bootstrap_transports.contains(id)
+            })
+            .filter_map(|(id, handle)| {
+                let local_addr = handle.local_addr()?;
+                socket_addr_families_compatible(local_addr, remote_addr)
+                    .then_some((*id, local_addr))
+            })
+            .min_by_key(|(id, _)| id.as_u32())
+    }
+
     /// Initiate a connection to a peer on a specific transport and address.
     ///
     /// For connectionless transports (UDP, Ethernet): allocates a link, starts
@@ -897,9 +922,10 @@ impl Node {
         }
     }
 
-    /// Drain mDNS-discovered peers and initiate Noise XX handshakes for
-    /// any whose npub we don't already have a connection or active peer
-    /// for. The handshake itself is the authentication — a spoofed
+    /// Drain mDNS-discovered peers and initiate Noise XX handshakes. For
+    /// active peers this is a non-disruptive alternate-path refresh: the
+    /// current link stays live until a new handshake authenticates and
+    /// promotes. The handshake itself is the authentication — a spoofed
     /// mDNS advert with someone else's npub fails the XX exchange and
     /// is dropped.
     pub(super) async fn poll_lan_discovery(&mut self) {
@@ -910,15 +936,17 @@ impl Node {
         if events.is_empty() {
             return;
         }
-        // Snapshot the operational UDP transport set up front; mDNS
-        // discovery only yields UDP endpoints today.
-        let udp_transport_id = self.find_transport_for_type("udp");
-        let Some(transport_id) = udp_transport_id else {
-            debug!("lan: no operational UDP transport, skipping discovered peers");
-            return;
-        };
         for event in events {
             let crate::discovery::lan::LanEvent::Discovered(peer) = event;
+            let Some((transport_id, local_addr)) =
+                self.find_udp_transport_for_remote_addr(peer.addr)
+            else {
+                debug!(
+                    addr = %peer.addr,
+                    "lan: skip discovered peer with no compatible UDP transport"
+                );
+                continue;
+            };
             let identity = match crate::PeerIdentity::from_npub(&peer.npub) {
                 Ok(id) => id,
                 Err(err) => {
@@ -927,7 +955,37 @@ impl Node {
                 }
             };
             let peer_node_addr = *identity.node_addr();
+            let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
             if self.peers.contains_key(&peer_node_addr) {
+                let candidate = PeerAddress::new("udp", peer.addr.to_string());
+                if self.active_peer_matches_any_candidate(
+                    &peer_node_addr,
+                    std::slice::from_ref(&candidate),
+                ) {
+                    continue;
+                }
+                if self.is_connecting_to_peer(&peer_node_addr) {
+                    continue;
+                }
+                if !cross_connection_winner(self.identity.node_addr(), &peer_node_addr, true) {
+                    continue;
+                }
+                info!(
+                    npub = %identity.short_npub(),
+                    addr = %peer.addr,
+                    local_addr = %local_addr,
+                    "lan: initiating alternate-path handshake to active peer"
+                );
+                if let Err(err) = self
+                    .initiate_connection(transport_id, remote_addr, identity)
+                    .await
+                {
+                    debug!(
+                        npub = %peer.npub,
+                        error = %err,
+                        "lan: failed to initiate active peer alternate-path handshake"
+                    );
+                }
                 continue;
             }
             let already_connecting = self.connections.values().any(|conn| {
@@ -938,10 +996,10 @@ impl Node {
             if already_connecting {
                 continue;
             }
-            let remote_addr = crate::transport::TransportAddr::from_string(&peer.addr.to_string());
             info!(
                 npub = %identity.short_npub(),
                 addr = %peer.addr,
+                local_addr = %local_addr,
                 "lan: initiating handshake to discovered peer"
             );
             if let Err(err) = self
@@ -1743,33 +1801,33 @@ impl Node {
                     continue;
                 }
             } else {
-                let tid = match self.find_transport_for_type(&addr.transport) {
-                    Some(id) => id,
-                    None => {
-                        debug!(
-                            transport = %addr.transport,
-                            addr = %addr.addr,
-                            "No operational transport for address type"
-                        );
-                        continue;
+                let tid = if addr.transport == "udp"
+                    && let Ok(remote_socket_addr) = addr.addr.parse::<SocketAddr>()
+                {
+                    match self.find_udp_transport_for_remote_addr(remote_socket_addr) {
+                        Some((id, _)) => id,
+                        None => {
+                            debug!(
+                                transport = %addr.transport,
+                                addr = %addr.addr,
+                                "No compatible operational UDP transport for address"
+                            );
+                            continue;
+                        }
+                    }
+                } else {
+                    match self.find_transport_for_type(&addr.transport) {
+                        Some(id) => id,
+                        None => {
+                            debug!(
+                                transport = %addr.transport,
+                                addr = %addr.addr,
+                                "No operational transport for address type"
+                            );
+                            continue;
+                        }
                     }
                 };
-                if addr.transport == "udp"
-                    && let Ok(remote_socket_addr) = addr.addr.parse::<SocketAddr>()
-                    && let Some(local_addr) = self
-                        .transports
-                        .get(&tid)
-                        .and_then(|transport| transport.local_addr())
-                    && !socket_addr_families_compatible(local_addr, remote_socket_addr)
-                {
-                    debug!(
-                        transport = %addr.transport,
-                        addr = %addr.addr,
-                        local_addr = %local_addr,
-                        "Skipping UDP address with incompatible IP family"
-                    );
-                    continue;
-                }
                 (tid, TransportAddr::from_string(&addr.addr))
             };
 

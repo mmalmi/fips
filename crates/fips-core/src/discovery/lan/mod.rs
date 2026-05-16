@@ -26,11 +26,11 @@
 //! different mesh networks don't cross-feed each other.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -257,14 +257,22 @@ impl LanDiscovery {
                         }
                         let observed_at = Instant::now();
                         // mdns-sd may report multiple interface IPs for
-                        // a multi-homed responder. Surface all of them
-                        // — the Node side filters/dedups. mdns-sd 0.19
-                        // returns `ScopedIp` (with optional IPv6 zone);
-                        // we strip the zone here and pass plain IpAddr
-                        // — the consumer routes via standard tables.
+                        // a multi-homed responder. Surface all routable
+                        // candidates — the Node side filters/dedups and
+                        // only dials addresses compatible with an active
+                        // UDP socket family. IPv6 link-local addresses
+                        // require an interface scope; preserve it when
+                        // mdns-sd provides one, and skip unusable
+                        // scope-less link-local records.
                         for scoped in info.get_addresses() {
-                            let ip = scoped.to_ip_addr();
-                            let addr = SocketAddr::new(ip, port);
+                            let Some(addr) = socket_addr_from_scoped_ip(scoped, port) else {
+                                debug!(
+                                    npub = %short(&peer_npub),
+                                    addr = %scoped.to_ip_addr(),
+                                    "lan: skip scope-less IPv6 link-local advert"
+                                );
+                                continue;
+                            };
                             if events_tx
                                 .send(LanEvent::Discovered(LanDiscoveredPeer {
                                     npub: peer_npub.clone(),
@@ -333,6 +341,25 @@ impl LanDiscovery {
 fn short(npub: &str) -> &str {
     let end = 16.min(npub.len());
     &npub[..end]
+}
+
+fn socket_addr_from_scoped_ip(scoped: &ScopedIp, port: u16) -> Option<SocketAddr> {
+    match scoped {
+        ScopedIp::V4(v4) => Some(SocketAddr::V4(SocketAddrV4::new(*v4.addr(), port))),
+        ScopedIp::V6(v6) => {
+            let ip = *v6.addr();
+            let scope_id = v6.scope_id().index;
+            if ipv6_is_unicast_link_local(ip) && scope_id == 0 {
+                return None;
+            }
+            Some(SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope_id)))
+        }
+        _ => None,
+    }
+}
+
+fn ipv6_is_unicast_link_local(ip: std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 #[cfg(test)]
