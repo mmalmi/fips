@@ -1119,6 +1119,13 @@ pub struct NodeConfig {
     #[serde(default = "NodeConfig::default_system_files_enabled")]
     pub system_files_enabled: bool,
 
+    /// Enable off-task Unix encrypt/decrypt worker pools (`node.worker_pools_enabled`).
+    /// Embedded/mobile endpoints can disable this to keep crypto/send work inline
+    /// with the rx loop when platform extension sandboxes make OS-thread pools
+    /// unsuitable.
+    #[serde(default = "NodeConfig::default_worker_pools_enabled")]
+    pub worker_pools_enabled: bool,
+
     /// Log level (`node.log_level`). Case-insensitive.
     /// Valid values: trace, debug, info, warn, error. Default: info.
     #[serde(default)]
@@ -1151,6 +1158,7 @@ impl Default for NodeConfig {
             ecn: EcnConfig::default(),
             rekey: RekeyConfig::default(),
             system_files_enabled: true,
+            worker_pools_enabled: true,
             log_level: None,
         }
     }
@@ -1189,6 +1197,9 @@ impl NodeConfig {
         5
     }
     fn default_system_files_enabled() -> bool {
+        true
+    }
+    fn default_worker_pools_enabled() -> bool {
         true
     }
 }
