@@ -1045,6 +1045,8 @@ impl Node {
 
         let peer_node_addr = *verified_identity.node_addr();
         let is_outbound = connection.is_outbound();
+        let discovery_fallback_transit_allowed =
+            self.discovery_fallback_transit_for_promotion(&peer_node_addr);
 
         // Check for cross-connection
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
@@ -1112,6 +1114,10 @@ impl Node {
                 self.peers_by_index
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
                 self.retry_pending.remove(&peer_node_addr);
+                self.set_discovery_fallback_transit_allowed(
+                    peer_node_addr,
+                    discovery_fallback_transit_allowed,
+                );
                 self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
                 // Hand the new FMP recv state to the decrypt-worker
@@ -1220,6 +1226,10 @@ impl Node {
             self.peers_by_index
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
             self.retry_pending.remove(&peer_node_addr);
+            self.set_discovery_fallback_transit_allowed(
+                peer_node_addr,
+                discovery_fallback_transit_allowed,
+            );
             self.register_identity(peer_node_addr, verified_identity.pubkey_full());
 
             // Eagerly hand the FMP recv state to the decrypt-worker

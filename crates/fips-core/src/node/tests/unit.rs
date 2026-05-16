@@ -83,6 +83,7 @@ async fn test_nat_bootstrap_failure_falls_back_to_direct_udp_address() {
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 
@@ -128,6 +129,7 @@ async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 
@@ -179,6 +181,7 @@ async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
 
@@ -520,6 +523,53 @@ fn test_node_promote_connection() {
     assert_eq!(
         node.peers_by_index.get(&(transport_id, our_index.as_u32())),
         Some(&node_addr)
+    );
+}
+
+#[test]
+fn test_promote_open_discovery_retry_blocks_fallback_transit() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+
+    let retry = crate::node::retry::RetryState::new(crate::config::PeerConfig {
+        npub: identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    });
+    node.retry_pending.insert(node_addr, retry);
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    assert!(
+        node.discovery_fallback_transit_blocked_peers
+            .contains(&node_addr),
+        "open-discovery retry peers should not become ambient lookup transit"
+    );
+}
+
+#[test]
+fn test_promote_nonconfigured_open_discovery_peer_blocks_fallback_transit() {
+    let mut node = make_node();
+    node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    assert!(
+        node.discovery_fallback_transit_blocked_peers
+            .contains(&node_addr),
+        "nonconfigured peers accepted under open discovery should not be fallback transit"
     );
 }
 
@@ -1741,6 +1791,7 @@ async fn test_retry_dials_overlay_advert_before_stale_static_udp() {
         addresses: vec![crate::config::PeerAddress::new("udp", stale_static_addr)],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     node.initiate_peer_retry_connection(&peer_config)
@@ -1831,6 +1882,7 @@ async fn test_bootstrap_dials_freshest_address_first() {
         addresses: vec![crate::config::PeerAddress::new("udp", static_addr)],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     node.initiate_peer_connection(&peer_config).await.unwrap();
@@ -1907,6 +1959,7 @@ fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
         addresses: vec![crate::config::PeerAddress::new("udp", addr)],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     }
 }
 
@@ -2085,6 +2138,7 @@ async fn update_peers_redials_existing_auto_peer_with_direct_hint() {
         addresses: Vec::new(),
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     node.config.peers = vec![original];
 
@@ -2337,6 +2391,7 @@ async fn update_peers_races_new_alternative_even_when_current_path_is_still_know
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     node.config.peers = vec![peer.clone()];
 
@@ -2409,6 +2464,7 @@ async fn update_peers_races_more_alternatives_while_peer_is_connecting_with_budg
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
     node.config.peers = vec![first.clone()];
     let _ = node.update_peers(vec![first]).await.unwrap();
@@ -2427,6 +2483,7 @@ async fn update_peers_races_more_alternatives_while_peer_is_connecting_with_budg
         ],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     let outcome = node.update_peers(vec![refreshed]).await.unwrap();
@@ -2874,6 +2931,7 @@ async fn update_peers_rejects_invalid_npub_atomically() {
         addresses: Vec::new(),
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     let result = node.update_peers(vec![valid, invalid]).await;

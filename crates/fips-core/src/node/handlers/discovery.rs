@@ -576,6 +576,13 @@ impl Node {
             return true;
         }
 
+        if self
+            .discovery_fallback_transit_blocked_peers
+            .contains(peer_addr)
+        {
+            return false;
+        }
+
         match peer.transport_id() {
             Some(transport_id) => !self.bootstrap_transports.contains(&transport_id),
             None => true,

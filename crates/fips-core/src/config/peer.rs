@@ -79,6 +79,10 @@ fn default_auto_reconnect() -> bool {
     true
 }
 
+fn default_discovery_fallback_transit() -> bool {
+    true
+}
+
 impl PeerAddress {
     /// Create a new peer address.
     pub fn new(transport: impl Into<String>, addr: impl Into<String>) -> Self {
@@ -145,6 +149,14 @@ pub struct PeerConfig {
     /// backoff after MMP removes this peer due to liveness timeout.
     #[serde(default = "default_auto_reconnect")]
     pub auto_reconnect: bool,
+
+    /// Whether this peer may be used as an extra reply-learned lookup hop.
+    ///
+    /// Direct lookups to this peer are still allowed when false. This only
+    /// controls opportunistic fallback fanout through the peer for other
+    /// destinations.
+    #[serde(default = "default_discovery_fallback_transit")]
+    pub discovery_fallback_transit: bool,
 }
 
 impl Default for PeerConfig {
@@ -155,6 +167,7 @@ impl Default for PeerConfig {
             addresses: Vec::new(),
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
+            discovery_fallback_transit: default_discovery_fallback_transit(),
         }
     }
 }
@@ -172,6 +185,7 @@ impl PeerConfig {
             addresses: vec![PeerAddress::new(transport, addr)],
             connect_policy: ConnectPolicy::default(),
             auto_reconnect: default_auto_reconnect(),
+            discovery_fallback_transit: default_discovery_fallback_transit(),
         }
     }
 

@@ -669,6 +669,9 @@ pub struct Node {
     /// route fatal-protocol-mismatch observations back to the
     /// Nostr-discovery `failure_state` for long cooldown application.
     bootstrap_transport_npubs: HashMap<TransportId, String>,
+    /// Peers that should not be used as reply-learned fallback transit for
+    /// other destinations. Direct lookups to the peer are still permitted.
+    discovery_fallback_transit_blocked_peers: HashSet<NodeAddr>,
 
     // === Periodic Parent Re-evaluation ===
     /// Timestamp of last periodic parent re-evaluation (for pacing).
@@ -845,6 +848,7 @@ impl Node {
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),
+            discovery_fallback_transit_blocked_peers: HashSet::new(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -980,6 +984,7 @@ impl Node {
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),
+            discovery_fallback_transit_blocked_peers: HashSet::new(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -1959,6 +1964,44 @@ impl Node {
     /// Number of peers that can send traffic.
     pub fn sendable_peer_count(&self) -> usize {
         self.peers.values().filter(|p| p.can_send()).count()
+    }
+
+    pub(crate) fn set_discovery_fallback_transit_allowed(
+        &mut self,
+        peer_addr: NodeAddr,
+        allowed: bool,
+    ) {
+        if allowed {
+            self.discovery_fallback_transit_blocked_peers
+                .remove(&peer_addr);
+        } else {
+            self.discovery_fallback_transit_blocked_peers
+                .insert(peer_addr);
+        }
+    }
+
+    pub(crate) fn configured_discovery_fallback_transit(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<bool> {
+        self.config.peers().iter().find_map(|peer| {
+            PeerIdentity::from_npub(&peer.npub)
+                .ok()
+                .filter(|identity| identity.node_addr() == peer_addr)
+                .map(|_| peer.discovery_fallback_transit)
+        })
+    }
+
+    pub(crate) fn discovery_fallback_transit_for_promotion(&self, peer_addr: &NodeAddr) -> bool {
+        if let Some(retry_state) = self.retry_pending.get(peer_addr) {
+            return retry_state.peer_config.discovery_fallback_transit;
+        }
+
+        if let Some(allowed) = self.configured_discovery_fallback_transit(peer_addr) {
+            return allowed;
+        }
+
+        self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open
     }
 
     // === End-to-End Sessions ===

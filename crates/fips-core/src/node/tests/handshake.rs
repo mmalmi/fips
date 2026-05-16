@@ -475,6 +475,7 @@ async fn test_static_address_handshake_without_nostr_discovery() {
         addresses: vec![PeerAddress::new("udp", addr_b.to_string())],
         connect_policy: ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     });
 
     let mut node_a = Node::with_identity(identity_a, config_a).unwrap();

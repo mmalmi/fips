@@ -149,6 +149,7 @@ impl Node {
                 );
             }
             self.peer_aliases.remove(node_addr);
+            self.set_discovery_fallback_transit_allowed(*node_addr, false);
             outcome.removed += 1;
         }
 
@@ -160,8 +161,13 @@ impl Node {
                 || new_pc.alias != current_pc.alias
                 || new_pc.connect_policy != current_pc.connect_policy
                 || new_pc.auto_reconnect != current_pc.auto_reconnect
+                || new_pc.discovery_fallback_transit != current_pc.discovery_fallback_transit
             {
                 outcome.updated += 1;
+                self.set_discovery_fallback_transit_allowed(
+                    *node_addr,
+                    new_pc.discovery_fallback_transit,
+                );
                 if let Some(state) = self.retry_pending.get_mut(node_addr) {
                     state.peer_config = new_pc.clone();
                     state.retry_after_ms = Self::now_ms();
@@ -174,6 +180,10 @@ impl Node {
                 }
             } else {
                 outcome.unchanged += 1;
+                self.set_discovery_fallback_transit_allowed(
+                    *node_addr,
+                    new_pc.discovery_fallback_transit,
+                );
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
                     auto_connect_refresh_configs.push(new_pc.clone());
                 }
@@ -198,6 +208,10 @@ impl Node {
                 .clone()
                 .unwrap_or_else(|| identity.short_npub());
             self.peer_aliases.insert(*identity.node_addr(), name);
+            self.set_discovery_fallback_transit_allowed(
+                *identity.node_addr(),
+                peer_config.discovery_fallback_transit,
+            );
             self.register_identity(*identity.node_addr(), identity.pubkey_full());
 
             if !peer_config.is_auto_connect() {
@@ -2414,6 +2428,7 @@ impl Node {
                 addresses,
                 connect_policy: ConnectPolicy::AutoConnect,
                 auto_reconnect: true,
+                discovery_fallback_transit: false,
             });
             state.reconnect = false;
             state.retry_after_ms = now_ms;
@@ -2945,6 +2960,7 @@ impl Node {
             addresses: vec![PeerAddress::new(transport, address)],
             connect_policy: ConnectPolicy::Manual,
             auto_reconnect: false,
+            discovery_fallback_transit: true,
         };
 
         // Pre-seed identity cache (same as initiate_peer_connections does)

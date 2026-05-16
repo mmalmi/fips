@@ -1842,6 +1842,7 @@ async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
         addresses: Vec::new(),
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
@@ -1883,6 +1884,7 @@ async fn test_update_peers_starts_lookup_for_auto_connect_peer_without_cached_ro
         addresses: Vec::new(),
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
+        discovery_fallback_transit: true,
     };
 
     let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
