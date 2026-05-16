@@ -994,6 +994,106 @@ async fn test_reply_learned_forward_fanout_skips_disabled_transit_peer() {
 }
 
 #[tokio::test]
+async fn test_reply_learned_open_policy_skips_unconfigured_lookup_fanout() {
+    // In open Nostr discovery, ambient public peers can ask for arbitrary
+    // targets. Those lookups must not be amplified into the configured mesh by
+    // reply-learned fallback. Tree/bloom forwarding is still allowed; only the
+    // extra fallback fanout is suppressed for unconfigured origin/target pairs.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    assert!(
+        !nodes[1].node.is_tree_peer(&node2_addr),
+        "node2 should not be a tree peer in this regression fixture"
+    );
+
+    let target = make_node_addr(0x77);
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4747, target, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        !nodes[2].node.recent_requests.contains_key(&4747),
+        "open-discovery fallback must not amplify unconfigured public lookups"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_reply_learned_open_policy_allows_configured_lookup_fanout() {
+    // The open-discovery guard above must not break private nvpn-style lookup:
+    // when both origin and target are configured peers, reply-learned fallback
+    // can still use a non-tree direct neighbor to repair stale tree state.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    nodes[1].node.config.peers = vec![
+        crate::config::PeerConfig {
+            npub: nodes[0].node.npub(),
+            ..Default::default()
+        },
+        crate::config::PeerConfig {
+            npub: nodes[2].node.npub(),
+            ..Default::default()
+        },
+    ];
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    assert!(
+        !nodes[1].node.is_tree_peer(&node2_addr),
+        "node2 should not be a tree peer in this regression fixture"
+    );
+
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4848, node2_addr, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        nodes[2].node.recent_requests.contains_key(&4848),
+        "configured private lookup should still use reply-learned fallback"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_reply_learned_forwards_lookup_fanout_despite_tree_match() {
     // Topology: node0 asks node1 for node4. Node1 has a tree/bloom route via
     // node2 and a live non-tree neighbor node3. Reply-learned forwarding must

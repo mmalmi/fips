@@ -414,7 +414,12 @@ impl Node {
         // Reply-learned routing treats tree/bloom reachability as a hint, not
         // an exclusive path. In NAT-asymmetric meshes a stale tree candidate
         // can blackhole first-contact discovery, so also ask live neighbors.
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned
+            && self.should_use_reply_learned_lookup_fallback_for_origin_target(
+                &request.origin,
+                &request.target,
+            )
+        {
             let fallback_budget =
                 MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(forward_to.len());
             let extra_peers: Vec<NodeAddr> = self
@@ -516,7 +521,9 @@ impl Node {
             .map(|(addr, _)| *addr)
             .collect();
         let tree_match_count = peer_addrs.len();
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned
+            && self.should_use_reply_learned_lookup_fallback_for_target(target)
+        {
             let fallback_budget =
                 MAX_REPLY_LEARNED_EXTRA_LOOKUP_PEERS.saturating_sub(peer_addrs.len());
             let extra_peers: Vec<NodeAddr> = self
@@ -587,6 +594,27 @@ impl Node {
             Some(transport_id) => !self.bootstrap_transports.contains(&transport_id),
             None => true,
         }
+    }
+
+    fn should_use_reply_learned_lookup_fallback_for_origin_target(
+        &self,
+        origin: &NodeAddr,
+        target: &NodeAddr,
+    ) -> bool {
+        if self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open {
+            return true;
+        }
+
+        self.configured_discovery_fallback_transit(origin).is_some()
+            && self.configured_discovery_fallback_transit(target).is_some()
+    }
+
+    fn should_use_reply_learned_lookup_fallback_for_target(&self, target: &NodeAddr) -> bool {
+        if self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open {
+            return true;
+        }
+
+        self.configured_discovery_fallback_transit(target).is_some()
     }
 
     /// Initiate a discovery lookup if one is not already pending for this target.
