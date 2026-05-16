@@ -4,9 +4,7 @@
 //!
 //! - **`DiscoveryBackoff`** (originator-side, optional): Exponential
 //!   suppression of fresh lookups after the per-attempt sequence in
-//!   `node.discovery.attempt_timeouts_secs` has been exhausted.
-//!   **Disabled by default** (base/cap = 0); the per-attempt sequence
-//!   is the only retry pacing in the standard configuration. Reset on
+//!   `node.discovery.attempt_timeouts_secs` has been exhausted. Reset on
 //!   topology changes (parent change, new peer, first RTT, reconnection).
 //!
 //! - **`DiscoveryForwardRateLimiter`** (transit-side): Per-target minimum
@@ -23,10 +21,10 @@ use std::time::Duration;
 // ============================================================================
 
 /// Default base backoff after first lookup failure. `0` = disabled.
-const DEFAULT_BACKOFF_BASE_SECS: u64 = 0;
+const DEFAULT_BACKOFF_BASE_SECS: u64 = 30;
 
 /// Default maximum backoff cap. `0` = disabled.
-const DEFAULT_BACKOFF_MAX_SECS: u64 = 0;
+const DEFAULT_BACKOFF_MAX_SECS: u64 = 300;
 
 /// Backoff multiplier per consecutive failure.
 const BACKOFF_MULTIPLIER: u64 = 2;
@@ -52,7 +50,7 @@ struct BackoffEntry {
 }
 
 impl DiscoveryBackoff {
-    /// Create with default parameters (disabled — base/cap = 0).
+    /// Create with default parameters.
     pub fn new() -> Self {
         Self::with_params(DEFAULT_BACKOFF_BASE_SECS, DEFAULT_BACKOFF_MAX_SECS)
     }

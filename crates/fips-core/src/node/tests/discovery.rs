@@ -2006,4 +2006,21 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     assert_eq!(icmp_frame[0] >> 4, 6, "must be IPv6");
     assert_eq!(icmp_frame[6], 58, "next_header must be IPPROTO_ICMPV6 (58)");
     assert_eq!(icmp_frame[40], 1, "ICMPv6 type 1 = Destination Unreachable");
+
+    let baseline_suppressed = node.stats().discovery.req_backoff_suppressed;
+    node.maybe_initiate_lookup(&target_addr).await;
+    assert_eq!(
+        node.stats().discovery.req_backoff_suppressed,
+        baseline_suppressed + 1,
+        "an immediately repeated lookup for the same offline target must be backoff-suppressed"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline_initiated + 3,
+        "backoff suppression must not send another fresh LookupRequest"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&target_addr),
+        "backoff suppression must not re-open the pending lookup"
+    );
 }

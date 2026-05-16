@@ -647,8 +647,9 @@ impl Node {
             return;
         }
 
-        // Optional post-failure suppression. Defaults are 0/0 (inert);
-        // operators can opt in by setting `node.discovery.backoff_*_secs`.
+        // Post-failure suppression stops offline destinations from triggering
+        // a fresh network-wide discovery cycle immediately after timeout.
+        // Operators can disable it by setting both backoff values to 0.
         if self.discovery_backoff.is_suppressed(dest) {
             self.stats_mut().discovery.req_backoff_suppressed += 1;
             debug!(

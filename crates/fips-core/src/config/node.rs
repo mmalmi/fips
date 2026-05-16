@@ -203,9 +203,8 @@ pub struct DiscoveryConfig {
     #[serde(default = "DiscoveryConfig::default_recent_expiry_secs")]
     pub recent_expiry_secs: u64,
     /// Base backoff after lookup failure in seconds (`node.discovery.backoff_base_secs`).
-    /// Doubles per consecutive failure up to `backoff_max_secs`. Defaults to 0
-    /// (no post-failure suppression); the per-attempt sequence in
-    /// `attempt_timeouts_secs` provides the only retry pacing.
+    /// Doubles per consecutive failure up to `backoff_max_secs`. Set both to
+    /// 0 to disable post-failure suppression.
     #[serde(default = "DiscoveryConfig::default_backoff_base_secs")]
     pub backoff_base_secs: u64,
     /// Maximum backoff cap in seconds (`node.discovery.backoff_max_secs`).
@@ -233,8 +232,8 @@ impl Default for DiscoveryConfig {
             ttl: 64,
             attempt_timeouts_secs: vec![1, 2, 4, 8],
             recent_expiry_secs: 10,
-            backoff_base_secs: 0,
-            backoff_max_secs: 0,
+            backoff_base_secs: 30,
+            backoff_max_secs: 300,
             forward_min_interval_secs: 2,
             nostr: NostrDiscoveryConfig::default(),
             lan: crate::discovery::lan::LanDiscoveryConfig::default(),
@@ -253,10 +252,10 @@ impl DiscoveryConfig {
         10
     }
     fn default_backoff_base_secs() -> u64 {
-        0
+        30
     }
     fn default_backoff_max_secs() -> u64 {
-        0
+        300
     }
     fn default_forward_min_interval_secs() -> u64 {
         2
