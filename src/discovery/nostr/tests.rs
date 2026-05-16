@@ -39,7 +39,7 @@ fn can_reach(local_nat: NatType, remote_nat: NatType) -> bool {
 
 fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64>) -> nostr::Event {
     let keys = nostr::Keys::generate();
-    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"203.0.113.10:443"}]}"#;
+    let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
     let mut builder = EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
         .custom_created_at(Timestamp::from(created_at_secs));
     if let Some(expiration_secs) = expiration_secs {
@@ -116,6 +116,57 @@ fn rejects_invalid_overlay_adverts() {
         stun_servers: None,
     };
     assert!(NostrDiscovery::validate_overlay_advert(wrong_identifier).is_err());
+}
+
+#[test]
+fn validate_overlay_advert_filters_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "192.168.1.10:443".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "100.64.1.2:2121".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "8.8.8.8:443".to_string(),
+            },
+        ],
+        signal_relays: None,
+        stun_servers: None,
+    };
+
+    let validated = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(validated.endpoints.len(), 1);
+    assert_eq!(validated.endpoints[0].addr, "8.8.8.8:443");
+}
+
+#[test]
+fn validate_overlay_advert_rejects_only_unroutable_direct_endpoints() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Tcp,
+                addr: "127.0.0.1:443".to_string(),
+            },
+            OverlayEndpointAdvert {
+                transport: OverlayTransportKind::Udp,
+                addr: "10.0.0.2:2121".to_string(),
+            },
+        ],
+        signal_relays: None,
+        stun_servers: None,
+    };
+
+    let err = NostrDiscovery::validate_overlay_advert(advert).unwrap_err();
+    assert!(err.to_string().contains("missing publicly routable"));
 }
 
 #[test]

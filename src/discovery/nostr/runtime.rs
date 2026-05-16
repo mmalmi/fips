@@ -57,6 +57,67 @@ fn endpoint_summary(endpoints: &[OverlayEndpointAdvert]) -> String {
         .join(",")
 }
 
+fn is_unroutable_direct_advert_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+fn endpoint_advert_is_publicly_usable(endpoint: &OverlayEndpointAdvert) -> bool {
+    let addr = endpoint.addr.trim();
+    if addr.is_empty() {
+        return false;
+    }
+
+    if endpoint.transport == super::types::OverlayTransportKind::Udp
+        && addr.eq_ignore_ascii_case("nat")
+    {
+        return true;
+    }
+    if addr.eq_ignore_ascii_case("nat") {
+        return false;
+    }
+
+    match endpoint.transport {
+        super::types::OverlayTransportKind::Udp | super::types::OverlayTransportKind::Tcp => {
+            let Ok(socket_addr) = addr.parse::<SocketAddr>() else {
+                let Some((host, port)) = addr.rsplit_once(':') else {
+                    return false;
+                };
+                let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+                if host.is_empty() || port.trim().parse::<u16>().ok().is_none_or(|p| p == 0) {
+                    return false;
+                }
+                if host.eq_ignore_ascii_case("localhost") {
+                    return false;
+                }
+                return host
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+                    .is_none_or(|ip| !is_unroutable_direct_advert_ip(ip));
+            };
+            socket_addr.port() != 0 && !is_unroutable_direct_advert_ip(socket_addr.ip())
+        }
+        super::types::OverlayTransportKind::Tor => true,
+    }
+}
+
 /// Cached STUN-derived public address for an advert-eligible UDP transport
 /// bound to a wildcard. Lives on `NostrDiscovery` so the freshness window
 /// survives advert refresh cycles.
@@ -758,6 +819,7 @@ impl NostrDiscovery {
 
         advert.identifier = ADVERT_IDENTIFIER.to_string();
         advert.version = ADVERT_VERSION;
+        advert.endpoints.retain(endpoint_advert_is_publicly_usable);
         // Defensive: build_overlay_advert returns None on empty endpoints,
         // so this is only reachable from non-lifecycle callers.
         if advert.endpoints.is_empty() {
@@ -1300,12 +1362,11 @@ impl NostrDiscovery {
                 "missing required endpoints".to_string(),
             ));
         }
-        for endpoint in &advert.endpoints {
-            if endpoint.addr.trim().is_empty() {
-                return Err(BootstrapError::InvalidAdvert(
-                    "endpoint addr cannot be empty".to_string(),
-                ));
-            }
+        advert.endpoints.retain(endpoint_advert_is_publicly_usable);
+        if advert.endpoints.is_empty() {
+            return Err(BootstrapError::InvalidAdvert(
+                "missing publicly routable endpoints".to_string(),
+            ));
         }
 
         let has_nat = advert.has_udp_nat_endpoint();
