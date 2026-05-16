@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-05-16
+
+### Fixed
+
+- Active peers now race refreshed alternate paths without tearing down the
+  current working session first. This lets peers move from relayed or stale
+  paths to fresh direct candidates when discovery data changes.
+- Discovery retry work is bounded per tick so stale or unreachable peers cannot
+  overwhelm a node while reconnecting.
+- Recovery rekeys and peer restarts now refresh or reset stale FSP sessions,
+  preventing old session state from blackholing newly discovered paths.
+- Nostr discovery startup no longer blocks node startup while initial relay
+  work is in progress.
+- Stale same-path discovery updates now refresh active peer state instead of
+  being ignored as no-ops.
+
+### Added
+
+- Embedded startup tracing for FIPS users that need to diagnose slow startup.
+- Runtime control for disabling FIPS worker pools in constrained embeddings.
+
 ## [0.3.9] - 2026-05-16
 
 ### Fixed
