@@ -181,6 +181,16 @@ pub fn write_key_file(path: &Path, nsec: &str) -> Result<(), ConfigError> {
         source: e,
     })?;
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| ConfigError::WriteKeyFile {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
+    }
+
     file.write_all(nsec.as_bytes())
         .map_err(|e| ConfigError::WriteKeyFile {
             path: path.to_path_buf(),
@@ -901,6 +911,23 @@ node:
 
         let metadata = fs::metadata(&key_path).unwrap();
         assert_eq!(metadata.mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_key_file_permissions_are_tightened_on_overwrite() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("fips.key");
+        fs::write(&key_path, "old\n").unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_key_file(&key_path, "nsec1test").unwrap();
+
+        let metadata = fs::metadata(&key_path).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(read_key_file(&key_path).unwrap(), "nsec1test");
     }
 
     #[cfg(unix)]
