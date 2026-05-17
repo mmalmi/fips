@@ -601,20 +601,33 @@ impl Node {
         origin: &NodeAddr,
         target: &NodeAddr,
     ) -> bool {
-        if self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open {
-            return true;
+        let nostr = &self.config.node.discovery.nostr;
+        match nostr.policy {
+            crate::config::NostrDiscoveryPolicy::Open => {
+                self.configured_discovery_fallback_transit(origin).is_some()
+                    && self.configured_discovery_fallback_transit(target).is_some()
+            }
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
+                self.configured_discovery_fallback_transit(origin).is_some()
+                    && self.configured_discovery_fallback_transit(target).is_some()
+            }
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly
+            | crate::config::NostrDiscoveryPolicy::Disabled => true,
         }
-
-        self.configured_discovery_fallback_transit(origin).is_some()
-            && self.configured_discovery_fallback_transit(target).is_some()
     }
 
     fn should_use_reply_learned_lookup_fallback_for_target(&self, target: &NodeAddr) -> bool {
-        if self.config.node.discovery.nostr.policy != crate::config::NostrDiscoveryPolicy::Open {
-            return true;
+        let nostr = &self.config.node.discovery.nostr;
+        match nostr.policy {
+            crate::config::NostrDiscoveryPolicy::Open => {
+                self.configured_discovery_fallback_transit(target).is_some()
+            }
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly if nostr.enabled => {
+                self.configured_discovery_fallback_transit(target).is_some()
+            }
+            crate::config::NostrDiscoveryPolicy::ConfiguredOnly
+            | crate::config::NostrDiscoveryPolicy::Disabled => true,
         }
-
-        self.configured_discovery_fallback_transit(target).is_some()
     }
 
     /// Initiate a discovery lookup if one is not already pending for this target.

@@ -1040,6 +1040,53 @@ async fn test_reply_learned_open_policy_skips_unconfigured_lookup_fanout() {
 }
 
 #[tokio::test]
+async fn test_reply_learned_configured_policy_skips_unconfigured_lookup_fanout() {
+    // Configured-only Nostr discovery is used by private apps such as nvpn.
+    // It must not use reply-learned fallback to amplify lookups for public
+    // targets that are not in the configured roster.
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.config.node.discovery.nostr.enabled = true;
+    nodes[1].node.config.node.discovery.nostr.policy =
+        crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    assert!(
+        !nodes[1].node.is_tree_peer(&node2_addr),
+        "node2 should not be a tree peer in this regression fixture"
+    );
+
+    let target = make_node_addr(0x78);
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4788, target, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        !nodes[2].node.recent_requests.contains_key(&4788),
+        "configured-only fallback must not amplify unconfigured public lookups"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_reply_learned_open_policy_allows_configured_lookup_fanout() {
     // The open-discovery guard above must not break private nvpn-style lookup:
     // when both origin and target are configured peers, reply-learned fallback
