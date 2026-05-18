@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-05-18
+
+### Added
+
+- Embedded endpoints now expose live Nostr relay status snapshots and can
+  update discovery relay sets at runtime without rebuilding the endpoint.
+
 ## [0.3.12] - 2026-05-18
 
 ### Fixed
