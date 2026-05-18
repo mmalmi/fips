@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- [`PR-REVIEW.md`](PR-REVIEW.md) — the 13-criteria PR review checklist
+  the maintainer runs against every incoming PR, published at the
+  repo root so contributors can run the same pass on their own change
+  (directly or by handing the document to a coding agent) before
+  opening. Linked from `CONTRIBUTING.md` under "Submitting pull
+  requests" and "Further reading". Running the checklist before
+  opening surfaces problems that would otherwise come back as review
+  comments, saving a round trip.
+
 ### Changed
 
 - Sidecar example (`examples/sidecar-nostr-relay`): `udp.mtu` is now
