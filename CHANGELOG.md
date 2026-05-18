@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Nostr discovery startup is now non-blocking. `Node::start` no
+  longer waits for relay connect, subscribe, or initial advert
+  publish before returning. A slow or unreachable relay no longer
+  holds node startup hostage; local transports come up immediately
+  and the relay path catches up asynchronously in background tasks.
+  Subscribe retries with exponential backoff (2 s base, 60 s cap),
+  publish attempts time out at 10 s, and the new tasks are aborted
+  cleanly on `Node::stop`.
 - Sidecar example (`examples/sidecar-nostr-relay`): `udp.mtu` is now
   overridable via the `FIPS_UDP_MTU` environment variable, defaulting to
   1472 (preserving prior behavior). Plumbed through `docker-compose.yml`
