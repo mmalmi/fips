@@ -20,7 +20,7 @@ members = [
 resolver = "2"
 
 [dependencies]
-fips-core = { version = "0.3.11", path = "crates/fips-core" }
+fips-core = { version = "0.3.12", path = "crates/fips-core" }
 
 ratatui = "0.30"
 serde_json = "1.0"
