@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reply-learned routing now prefers a live learned mesh route over a stale
+  direct peer link, so failed NAT paths no longer hide an available routed path.
+
 ## [0.3.11] - 2026-05-17
 
 ### Fixed

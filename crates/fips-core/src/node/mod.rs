@@ -2239,9 +2239,15 @@ impl Node {
             return None;
         }
 
-        // 2. Direct peer
+        // 2. Healthy direct peer. Stale direct links remain usable, but in
+        // reply-learned mode they must not hide a live mesh route learned from
+        // recent traffic or discovery.
+        let direct_peer_can_send = self
+            .peers
+            .get(dest_node_addr)
+            .is_some_and(|peer| peer.can_send());
         if let Some(peer) = self.peers.get(dest_node_addr)
-            && peer.can_send()
+            && peer.is_healthy()
         {
             return Some(peer);
         }
@@ -2296,6 +2302,9 @@ impl Node {
             {
                 return self.peers.get(&next_hop_addr);
             }
+            if direct_peer_can_send {
+                return self.peers.get(dest_node_addr);
+            }
             return None;
         };
 
@@ -2340,6 +2349,10 @@ impl Node {
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
         {
             return self.peers.get(&next_hop_addr);
+        }
+
+        if direct_peer_can_send {
+            return self.peers.get(dest_node_addr);
         }
 
         None

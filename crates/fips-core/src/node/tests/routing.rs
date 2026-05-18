@@ -40,6 +40,37 @@ fn test_routing_direct_peer() {
     assert_eq!(result.unwrap().node_addr(), &peer_addr);
 }
 
+#[test]
+fn test_reply_learned_prefers_live_mesh_route_over_stale_direct_peer() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let direct_link = LinkId::new(1);
+    let (direct_conn, direct_id) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1000);
+    let dest_addr = *direct_id.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_id, 2000)
+        .unwrap();
+    node.get_peer_mut(&dest_addr).unwrap().mark_stale();
+
+    let mesh_link = LinkId::new(2);
+    let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);
+    let mesh_next_hop = *mesh_id.node_addr();
+    node.add_connection(mesh_conn).unwrap();
+    node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
+    node.learn_reverse_route(dest_addr, mesh_next_hop);
+
+    let result = node.find_next_hop(&dest_addr).expect("mesh route");
+    assert_eq!(
+        result.node_addr(),
+        &mesh_next_hop,
+        "a stale direct NAT path must not hide a learned live mesh route"
+    );
+}
+
 // === No route ===
 
 #[test]
