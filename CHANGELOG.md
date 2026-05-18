@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-05-18
+
+### Added
+
+- `wss://temp.iris.to` is now part of the built-in Nostr discovery relay
+  defaults for adverts and encrypted signaling.
+
 ## [0.3.13] - 2026-05-18
 
 ### Added

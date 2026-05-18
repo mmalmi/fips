@@ -450,6 +450,7 @@ impl NostrDiscoveryConfig {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
             "wss://offchain.pub".to_string(),
+            "wss://temp.iris.to".to_string(),
         ]
     }
 
@@ -458,6 +459,7 @@ impl NostrDiscoveryConfig {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
             "wss://offchain.pub".to_string(),
+            "wss://temp.iris.to".to_string(),
         ]
     }
 

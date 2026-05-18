@@ -107,7 +107,8 @@ transports:
 
 What this achieves: the node publishes a single `udp:<public-ip>:2121`
 endpoint to the three default advert relays
-(`wss://relay.damus.io`, `wss://nos.lol`, `wss://offchain.pub`).
+(`wss://relay.damus.io`, `wss://nos.lol`, `wss://offchain.pub`,
+`wss://temp.iris.to`).
 
 What the other side needs: with `node.discovery.nostr.enabled`, a
 configured peer can have either static `addresses` or an empty
@@ -290,7 +291,7 @@ defined in `src/config/node.rs`.
 | --- | --- | --- | --- |
 | `enabled` | bool | `false` | Master switch. When false, the discovery runtime is not started. |
 | `advertise` | bool | `true` | If true, publish this node's own overlay advert. |
-| `advert_relays` | list | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub"]` | Relays used to publish and fetch overlay adverts (kind 37195). |
+| `advert_relays` | list | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used to publish and fetch overlay adverts (kind 37195). |
 | `dm_relays` | list | same as `advert_relays` | Relays used for encrypted offer/answer signaling (kind 21059). |
 | `stun_servers` | list | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used to observe the local reflexive address before a punch. Peer-advertised STUN values are not used. |
 | `share_local_candidates` | bool | `false` | If true, include this node's RFC 1918 / ULA interface addresses as host candidates in the traversal offer. Off by default — sharing private host candidates is only useful when peers are on the same physical LAN, and tends to cause misleading punch successes when an asymmetric L3 path (corporate VPN, Tailscale subnet route, overlapping address space) makes a peer's private IP one-way reachable. Enable per-node only when same-LAN punching is wanted. |
