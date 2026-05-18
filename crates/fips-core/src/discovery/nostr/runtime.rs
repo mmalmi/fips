@@ -26,7 +26,7 @@ use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attemp
 use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, NostrFailureDecision, NostrPeerFailureView, NostrRefetchOutcome,
-    OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
+    NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
     TraversalAnswer, TraversalOffer,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
@@ -269,6 +269,39 @@ impl NostrDiscovery {
         *runtime.notify_task.lock().await = Some(runtime.clone().spawn_notify_loop(notifications));
 
         Ok(runtime)
+    }
+
+    pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
+        let mut statuses = self
+            .config
+            .advert_relays
+            .iter()
+            .chain(self.config.dm_relays.iter())
+            .map(|url| {
+                (
+                    url.clone(),
+                    NostrRelayStatus {
+                        url: url.clone(),
+                        status: "unknown".to_string(),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        for (relay_url, relay) in self.client.relays().await {
+            let url = relay_url.to_string();
+            statuses.insert(
+                url.clone(),
+                NostrRelayStatus {
+                    url,
+                    status: relay.status().to_string().to_ascii_lowercase(),
+                },
+            );
+        }
+
+        let mut statuses = statuses.into_values().collect::<Vec<_>>();
+        statuses.sort_by(|lhs, rhs| lhs.url.cmp(&rhs.url));
+        statuses
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {

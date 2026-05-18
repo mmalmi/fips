@@ -19,7 +19,10 @@ use crate::node::session_wire::{
 use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
-use crate::node::{Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeError};
+use crate::node::{
+    Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
+    NodeError,
+};
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
 };
@@ -1864,6 +1867,22 @@ impl Node {
                     })
                     .collect();
                 let _ = response_tx.send(peers);
+            }
+            NodeEndpointCommand::RelaySnapshot { response_tx } => {
+                let relays = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .relay_statuses()
+                        .await
+                        .into_iter()
+                        .map(|relay| NodeEndpointRelayStatus {
+                            url: relay.url,
+                            status: relay.status,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let _ = response_tx.send(relays);
             }
         }
     }

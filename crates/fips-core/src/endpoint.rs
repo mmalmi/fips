@@ -4,7 +4,9 @@
 //! peer admission and local routing policy while reusing FIPS connectivity.
 
 use crate::config::{NostrDiscoveryPolicy, TransportInstances, UdpConfig};
-use crate::node::{NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer};
+use crate::node::{
+    NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
+};
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -113,6 +115,13 @@ pub struct FipsEndpointPeer {
     pub bytes_sent: u64,
     /// Link bytes received.
     pub bytes_recv: u64,
+}
+
+/// Live Nostr relay state visible to an embedded application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointRelayStatus {
+    pub url: String,
+    pub status: String,
 }
 
 /// Builder for an embedded FIPS endpoint.
@@ -571,6 +580,20 @@ impl FipsEndpoint {
             .map_err(|_| FipsEndpointError::Closed)
     }
 
+    /// Snapshot live Nostr relay states used by the embedded endpoint.
+    pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::RelaySnapshot { response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        response_rx
+            .await
+            .map(|relays| relays.into_iter().map(FipsEndpointRelayStatus::from).collect())
+            .map_err(|_| FipsEndpointError::Closed)
+    }
+
     /// Send an outbound IPv6 packet into the FIPS session pipeline.
     pub async fn send_ip_packet(
         &self,
@@ -609,6 +632,15 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             packets_recv: peer.packets_recv,
             bytes_sent: peer.bytes_sent,
             bytes_recv: peer.bytes_recv,
+        }
+    }
+}
+
+impl From<NodeEndpointRelayStatus> for FipsEndpointRelayStatus {
+    fn from(relay: NodeEndpointRelayStatus) -> Self {
+        Self {
+            url: relay.url,
+            status: relay.status,
         }
     }
 }

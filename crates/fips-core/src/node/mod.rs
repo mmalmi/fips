@@ -271,6 +271,9 @@ pub(crate) enum NodeEndpointCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    RelaySnapshot {
+        response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
+    },
     /// Replace the runtime peer list. Newly added auto-connect peers get
     /// `initiate_peer_connection` immediately; removed peers are dropped
     /// from the retry queue (the regular liveness timeout reaps any active
@@ -314,6 +317,13 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) packets_recv: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_recv: u64,
+}
+
+/// Live Nostr relay state exposed to embedded endpoint callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NodeEndpointRelayStatus {
+    pub(crate) url: String,
+    pub(crate) status: String,
 }
 
 /// Node operational state.

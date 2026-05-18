@@ -57,6 +57,12 @@ pub enum BootstrapEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NostrRelayStatus {
+    pub url: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraversalAddress {
     pub protocol: String,
     pub ip: String,
