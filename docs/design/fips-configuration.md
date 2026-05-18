@@ -392,8 +392,9 @@ restarting the daemon. Hostnames are case-insensitive.
 
 ### Ethernet (`transports.ethernet.*`)
 
-Ethernet transport sends raw frames via AF_PACKET SOCK_DGRAM sockets.
-Requires `CAP_NET_RAW` or running as root. Linux only.
+Ethernet transport sends raw frames via AF_PACKET SOCK_DGRAM sockets on Linux
+and BPF devices on macOS. Requires `CAP_NET_RAW`/root on Linux or root access
+to `/dev/bpf*` on macOS.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -406,6 +407,7 @@ Requires `CAP_NET_RAW` or running as root. Linux only.
 | `announce` | bool | `false` | Broadcast announcement beacons on the LAN |
 | `auto_connect` | bool | `false` | Auto-connect to discovered peers |
 | `accept_connections` | bool | `false` | Accept incoming connection attempts from discovered peers |
+| `discovery_scope` | string | *(node LAN scope)* | Optional discovery scope carried in beacons; scoped transports ignore beacons from other scopes |
 | `beacon_interval_secs` | u64 | `30` | Announcement beacon interval in seconds (minimum 10) |
 
 **Named instances.** Multiple Ethernet interfaces can be configured by

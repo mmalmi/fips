@@ -1104,6 +1104,10 @@ impl Node {
                 .collect();
             let xonly = self.identity.pubkey();
             for (name, eth_config) in eth_instances {
+                let mut eth_config = eth_config;
+                if eth_config.discovery_scope.is_none() {
+                    eth_config.discovery_scope = self.lan_discovery_scope();
+                }
                 let transport_id = self.allocate_transport_id();
                 let mut eth =
                     EthernetTransport::new(transport_id, name, eth_config, packet_tx.clone());

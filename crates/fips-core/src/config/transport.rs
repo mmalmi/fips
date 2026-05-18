@@ -373,6 +373,14 @@ pub struct EthernetConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accept_connections: Option<bool>,
 
+    /// Optional discovery scope carried in Ethernet beacons.
+    ///
+    /// When set, this transport ignores Ethernet beacons from other scopes.
+    /// This is a discovery/noise filter, not an access-control mechanism. If
+    /// unset, the node-level LAN discovery scope is used when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_scope: Option<String>,
+
     /// Announcement beacon interval in seconds. Default: 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beacon_interval_secs: Option<u64>,
@@ -412,6 +420,11 @@ impl EthernetConfig {
     /// Whether to accept incoming connections. Default: false.
     pub fn accept_connections(&self) -> bool {
         self.accept_connections.unwrap_or(false)
+    }
+
+    /// Optional discovery scope for Ethernet beacons.
+    pub fn discovery_scope(&self) -> Option<&str> {
+        self.discovery_scope.as_deref().filter(|s| !s.is_empty())
     }
 
     /// Get the beacon interval, clamped to minimum. Default: 30s.

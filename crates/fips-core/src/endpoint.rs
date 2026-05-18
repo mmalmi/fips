@@ -3,7 +3,7 @@
 //! This module exposes a no-system-TUN runtime shape for apps that want to own
 //! peer admission and local routing policy while reusing FIPS connectivity.
 
-use crate::config::{NostrDiscoveryPolicy, TransportInstances, UdpConfig};
+use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
     NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
 };
@@ -130,6 +130,7 @@ pub struct FipsEndpointBuilder {
     config: Config,
     identity_nsec: Option<String>,
     discovery_scope: Option<String>,
+    local_ethernet_interfaces: Vec<String>,
     disable_system_networking: bool,
     packet_channel_capacity: usize,
 }
@@ -140,6 +141,7 @@ impl Default for FipsEndpointBuilder {
             config: Config::new(),
             identity_nsec: None,
             discovery_scope: None,
+            local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
             packet_channel_capacity: 1024,
         }
@@ -171,6 +173,17 @@ impl FipsEndpointBuilder {
         self
     }
 
+    /// Enable host-local Ethernet discovery on a private L2 interface.
+    ///
+    /// This is intended for veth/TAP interfaces attached to a per-host bridge
+    /// shared by FIPS-aware applications. The endpoint announces Ethernet
+    /// beacons, listens for matching peers, auto-connects to them, and accepts
+    /// inbound handshakes over the interface.
+    pub fn local_ethernet(mut self, interface: impl Into<String>) -> Self {
+        self.local_ethernet_interfaces.push(interface.into());
+        self
+    }
+
     /// Disable FIPS-owned TUN and DNS system integration.
     pub fn without_system_tun(mut self) -> Self {
         self.disable_system_networking = true;
@@ -199,6 +212,13 @@ impl FipsEndpointBuilder {
         if let Some(scope) = self.discovery_scope.as_deref() {
             config.node.discovery.lan.scope = Some(scope.to_string());
             apply_default_scoped_discovery(&mut config, scope);
+        }
+        for interface in &self.local_ethernet_interfaces {
+            add_endpoint_ethernet_transport(
+                &mut config,
+                interface,
+                self.discovery_scope.as_deref(),
+            );
         }
         config
     }
@@ -263,6 +283,68 @@ fn apply_default_scoped_discovery(config: &mut Config, scope: &str) {
         accept_connections: Some(true),
         ..UdpConfig::default()
     });
+}
+
+fn endpoint_ethernet_config(interface: &str, scope: Option<&str>) -> EthernetConfig {
+    EthernetConfig {
+        interface: interface.to_string(),
+        discovery: Some(true),
+        announce: Some(true),
+        auto_connect: Some(true),
+        accept_connections: Some(true),
+        discovery_scope: scope
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        ..EthernetConfig::default()
+    }
+}
+
+fn add_endpoint_ethernet_transport(config: &mut Config, interface: &str, scope: Option<&str>) {
+    let eth = endpoint_ethernet_config(interface, scope);
+    if config.transports.ethernet.is_empty() {
+        config.transports.ethernet = TransportInstances::Single(eth);
+        return;
+    }
+
+    let existing = std::mem::take(&mut config.transports.ethernet);
+    let mut named = match existing {
+        TransportInstances::Single(config) => {
+            let mut map = std::collections::HashMap::new();
+            map.insert("default".to_string(), config);
+            map
+        }
+        TransportInstances::Named(map) => map,
+    };
+
+    let base_name = endpoint_ethernet_instance_name(interface);
+    let mut name = base_name.clone();
+    let mut suffix = 2usize;
+    while named.contains_key(&name) {
+        name = format!("{base_name}-{suffix}");
+        suffix += 1;
+    }
+    named.insert(name, eth);
+    config.transports.ethernet = TransportInstances::Named(named);
+}
+
+fn endpoint_ethernet_instance_name(interface: &str) -> String {
+    let suffix: String = interface
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let suffix = suffix.trim_matches('-');
+    if suffix.is_empty() {
+        "local-ethernet".to_string()
+    } else {
+        format!("local-ethernet-{suffix}")
+    }
 }
 
 fn spawn_node_task(
@@ -748,6 +830,58 @@ mod tests {
         assert!(!udp.is_public());
         assert!(!udp.outbound_only());
         assert!(udp.accept_connections());
+    }
+
+    #[test]
+    fn local_ethernet_adds_scoped_discovery_transport() {
+        let config = FipsEndpoint::builder()
+            .discovery_scope("iris-chat:host")
+            .local_ethernet("fips-app0")
+            .prepared_config();
+
+        assert!(config.node.discovery.nostr.enabled);
+        assert_eq!(
+            config.node.discovery.lan.scope.as_deref(),
+            Some("iris-chat:host")
+        );
+
+        let eth = match config.transports.ethernet {
+            TransportInstances::Single(eth) => eth,
+            TransportInstances::Named(_) => panic!("expected a single Ethernet transport"),
+        };
+        assert_eq!(eth.interface, "fips-app0");
+        assert!(eth.discovery());
+        assert!(eth.announce());
+        assert!(eth.auto_connect());
+        assert!(eth.accept_connections());
+        assert_eq!(eth.discovery_scope(), Some("iris-chat:host"));
+    }
+
+    #[test]
+    fn local_ethernet_preserves_existing_ethernet_config() {
+        let mut explicit = Config::new();
+        explicit.transports.ethernet = TransportInstances::Single(EthernetConfig {
+            interface: "br-existing".to_string(),
+            announce: Some(false),
+            ..EthernetConfig::default()
+        });
+
+        let config = FipsEndpoint::builder()
+            .config(explicit)
+            .local_ethernet("fips-app0")
+            .prepared_config();
+
+        let TransportInstances::Named(map) = config.transports.ethernet else {
+            panic!("expected named Ethernet transports");
+        };
+        assert!(map.contains_key("default"));
+        let local = map
+            .get("local-ethernet-fips-app0")
+            .expect("local endpoint Ethernet transport");
+        assert_eq!(local.interface, "fips-app0");
+        assert!(local.announce());
+        assert!(local.auto_connect());
+        assert!(local.accept_connections());
     }
 
     #[test]

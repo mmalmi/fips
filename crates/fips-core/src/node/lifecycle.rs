@@ -708,6 +708,66 @@ impl Node {
         ))
     }
 
+    fn peer_address_string_for_transport_candidate(
+        &self,
+        transport_id: TransportId,
+        transport_name: &str,
+        remote_addr: &TransportAddr,
+    ) -> String {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if transport_name == "ethernet"
+            && remote_addr.as_bytes().len() == 6
+            && let Some(interface) = self
+                .transports
+                .get(&transport_id)
+                .and_then(|transport| transport.interface_name())
+        {
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(remote_addr.as_bytes());
+            return format!(
+                "{interface}/{}",
+                crate::transport::ethernet::format_mac(&mac)
+            );
+        }
+
+        remote_addr.to_string()
+    }
+
+    fn resolve_peer_address_for_match(
+        &self,
+        candidate: &PeerAddress,
+    ) -> Option<(TransportId, TransportAddr)> {
+        if candidate.transport == "udp" && candidate.addr.eq_ignore_ascii_case("nat") {
+            return None;
+        }
+
+        if candidate.transport == "ethernet" {
+            return self.resolve_ethernet_addr(&candidate.addr).ok();
+        }
+
+        if candidate.transport == "ble" {
+            #[cfg(bluer_available)]
+            {
+                return self.resolve_ble_addr(&candidate.addr).ok();
+            }
+            #[cfg(not(bluer_available))]
+            {
+                return None;
+            }
+        }
+
+        let transport_id = if candidate.transport == "udp"
+            && let Ok(remote_socket_addr) = candidate.addr.parse::<SocketAddr>()
+        {
+            self.find_udp_transport_for_remote_addr(remote_socket_addr)
+                .map(|(id, _)| id)?
+        } else {
+            self.find_transport_for_type(&candidate.transport)?
+        };
+
+        Some((transport_id, TransportAddr::from_string(&candidate.addr)))
+    }
+
     /// Initiate a connection to a peer on a specific transport and address.
     ///
     /// For connectionless transports (UDP, Ethernet): allocates a link, starts
@@ -1003,7 +1063,14 @@ impl Node {
                 };
 
                 if self.peers.contains_key(&node_addr) {
-                    let candidate = PeerAddress::new(transport_name, remote_addr.to_string());
+                    let candidate = PeerAddress::new(
+                        transport_name,
+                        self.peer_address_string_for_transport_candidate(
+                            candidate_transport_id,
+                            transport_name,
+                            &remote_addr,
+                        ),
+                    );
                     if self.active_peer_candidate_is_fresh_enough_to_skip(
                         &node_addr,
                         std::slice::from_ref(&candidate),
@@ -2922,6 +2989,12 @@ impl Node {
         let Some(current_addr) = peer.current_addr() else {
             return false;
         };
+        if let Some(peer_transport_id) = peer.transport_id()
+            && let Some((candidate_transport_id, candidate_addr)) =
+                self.resolve_peer_address_for_match(candidate)
+        {
+            return peer_transport_id == candidate_transport_id && current_addr == &candidate_addr;
+        }
         if peer
             .transport_id()
             .map(|id| self.bootstrap_transports.contains(&id))

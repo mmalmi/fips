@@ -14,7 +14,9 @@ use super::{
     TransportId, TransportState, TransportType,
 };
 use crate::config::EthernetConfig;
-use discovery::{DiscoveryBuffer, FRAME_TYPE_BEACON, FRAME_TYPE_DATA, build_beacon, parse_beacon};
+use discovery::{
+    DiscoveryBuffer, FRAME_TYPE_BEACON, FRAME_TYPE_DATA, build_scoped_beacon, parse_beacon_record,
+};
 use socket::{AsyncPacketSocket, ETHERNET_BROADCAST, PacketSocket};
 use stats::EthernetStats;
 
@@ -68,7 +70,10 @@ impl EthernetTransport {
         packet_tx: PacketTx,
     ) -> Self {
         let interface = config.interface.clone();
-        let discovery_buffer = Arc::new(DiscoveryBuffer::new(transport_id));
+        let discovery_buffer = Arc::new(DiscoveryBuffer::new(
+            transport_id,
+            config.discovery_scope().map(str::to_string),
+        ));
         let stats = Arc::new(EthernetStats::new());
 
         Self {
@@ -82,7 +87,7 @@ impl EthernetTransport {
             beacon_task: None,
             local_mac: None,
             interface,
-            effective_mtu: 1499, // default, updated on start
+            effective_mtu: 1497, // default, updated on start
             discovery_buffer,
             stats,
             local_pubkey: None,
@@ -162,6 +167,7 @@ impl EthernetTransport {
         let discovery_buffer = self.discovery_buffer.clone();
         let stats = self.stats.clone();
         let recv_socket = socket.clone();
+        let recv_local_mac = local_mac;
 
         let recv_task = tokio::spawn(async move {
             ethernet_receive_loop(
@@ -172,6 +178,7 @@ impl EthernetTransport {
                 discovery_enabled,
                 discovery_buffer,
                 stats,
+                recv_local_mac,
             )
             .await;
         });
@@ -182,6 +189,7 @@ impl EthernetTransport {
             if let Some(pubkey) = self.local_pubkey {
                 let beacon_socket = socket.clone();
                 let interval_secs = self.config.beacon_interval_secs();
+                let discovery_scope = self.config.discovery_scope().map(str::to_string);
                 let beacon_stats = self.stats.clone();
                 let beacon_transport_id = self.transport_id;
 
@@ -192,6 +200,7 @@ impl EthernetTransport {
                     beacon_sender_loop(
                         beacon_socket,
                         pubkey,
+                        discovery_scope,
                         interval_secs,
                         beacon_stats,
                         beacon_transport_id,
@@ -388,6 +397,7 @@ async fn ethernet_receive_loop(
     discovery_enabled: bool,
     discovery_buffer: Arc<DiscoveryBuffer>,
     stats: Arc<EthernetStats>,
+    local_mac: [u8; 6],
 ) {
     // Buffer with headroom: frame type prefix + MTU + some extra
     let mut buf = vec![0u8; mtu as usize + 100];
@@ -398,6 +408,14 @@ async fn ethernet_receive_loop(
         match socket.recv_from(&mut buf).await {
             Ok((len, src_mac)) => {
                 if len == 0 {
+                    continue;
+                }
+                if src_mac == local_mac {
+                    trace!(
+                        transport_id = %transport_id,
+                        local_mac = %format_mac(&local_mac),
+                        "Ignoring self-echoed Ethernet frame"
+                    );
                     continue;
                 }
 
@@ -443,8 +461,9 @@ async fn ethernet_receive_loop(
                     FRAME_TYPE_BEACON => {
                         stats.record_beacon_recv();
 
-                        if discovery_enabled && let Some(pubkey) = parse_beacon(&buf[..len]) {
-                            discovery_buffer.add_peer(src_mac, pubkey);
+                        if discovery_enabled && let Some(beacon) = parse_beacon_record(&buf[..len])
+                        {
+                            discovery_buffer.add_peer(src_mac, beacon);
                             trace!(
                                 transport_id = %transport_id,
                                 remote_mac = %format_mac(&src_mac),
@@ -489,6 +508,7 @@ async fn ethernet_receive_loop(
 async fn beacon_sender_loop(
     mut socket: Arc<AsyncPacketSocket>,
     pubkey: XOnlyPublicKey,
+    discovery_scope: Option<String>,
     interval_secs: u64,
     stats: Arc<EthernetStats>,
     transport_id: TransportId,
@@ -498,7 +518,7 @@ async fn beacon_sender_loop(
     /// Number of consecutive ENXIO errors before attempting socket reopen.
     const REOPEN_THRESHOLD: u32 = 3;
 
-    let beacon = build_beacon(&pubkey);
+    let beacon = build_scoped_beacon(&pubkey, discovery_scope.as_deref());
     let interval = tokio::time::Duration::from_secs(interval_secs);
 
     debug!(

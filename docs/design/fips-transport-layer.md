@@ -281,41 +281,42 @@ UDP (1500 vs 1472 MTU).
 - **Broadcast discovery**: Nodes discover each other via periodic beacon
   broadcasts on the shared medium, with no static peer configuration required
 - **Higher MTU**: Standard Ethernet frames carry 1500 bytes of payload,
-  yielding an effective FIPS MTU of 1499 after the frame type prefix
+  yielding an effective FIPS MTU of 1497 after the frame type and length
+  prefix
 - **Matches FIPS model**: Like UDP, Ethernet is connectionless and
   unreliable — datagrams flow immediately to any MAC address on the segment
 
 ### Implementation
 
-The Ethernet transport uses Linux AF_PACKET sockets in SOCK_DGRAM mode with
-EtherType 0x2121. SOCK_DGRAM mode
-lets the kernel handle Ethernet header construction and parsing — the
-transport deals only with payloads and MAC addresses.
+The Ethernet transport uses Linux AF_PACKET sockets in SOCK_DGRAM mode and
+macOS BPF devices with EtherType 0x2121. On Linux, SOCK_DGRAM mode lets the
+kernel handle Ethernet header construction and parsing; the transport deals
+only with payloads and MAC addresses.
 
 Data frames use a 3-byte header: a 1-byte frame type (`0x00`) followed by
 a 2-byte little-endian payload length. The length field allows the receiver
 to trim Ethernet minimum-frame padding that would otherwise corrupt AEAD
 verification. Beacon frames (`0x01`) use only the 1-byte type prefix
-(fixed 34-byte payload). Beacons and data share the same EtherType and
-socket.
+with a version byte, public key, and optional discovery scope.
+Beacons and data share the same EtherType and socket.
 
 | Property | Value |
 | -------- | ----- |
 | EtherType | 0x2121 |
-| Socket type | AF_PACKET SOCK_DGRAM |
+| Socket type | AF_PACKET SOCK_DGRAM on Linux, BPF on macOS |
 | Data frame header | `[type:1][length:2 LE][payload]` |
-| Beacon frame header | `[type:1][payload]` (fixed 34 bytes) |
+| Beacon frame header | `[type:1][version:1][pubkey:32][scope_len?:1][scope?:N]` |
 | Effective MTU | Interface MTU - 3 (typically 1497) |
 | Addressing | 6-byte MAC address |
-| Platform | Linux only (`CAP_NET_RAW` required) |
+| Platform | Linux (`CAP_NET_RAW` required), macOS (`/dev/bpf*` root access required) |
 
 ### Beacon Discovery
 
 Ethernet nodes discover peers via broadcast beacons sent to
-ff:ff:ff:ff:ff:ff. Each beacon is a 34-byte frame containing the sender's
-x-only public key. Receiving nodes extract the MAC source address from the
-frame and the public key from the payload, then report the discovered peer
-to FMP.
+ff:ff:ff:ff:ff:ff. Each beacon contains the sender's x-only public key and
+may carry a discovery scope. Receiving nodes extract the MAC source address from
+the frame and the public key from the payload, ignore cross-scope beacons when
+a scope is configured, then report the discovered peer to FMP.
 
 Four configuration flags control discovery behavior:
 
@@ -340,7 +341,7 @@ access points commonly isolate clients from each other's broadcast traffic.
 Startup logging:
 
 ```text
-Ethernet transport started name=eth0 interface=eth0 mac=aa:bb:cc:dd:ee:ff mtu=1499 if_mtu=1500
+Ethernet transport started name=eth0 interface=eth0 mac=aa:bb:cc:dd:ee:ff mtu=1497 if_mtu=1500
 ```
 
 ## TCP/IP: Firewall Traversal Transport
@@ -838,7 +839,7 @@ transitions through `Starting` to `Up` (operational). `stop()` moves to
 | --------- | ------ | ----- |
 | UDP/IP | **Implemented** | Primary transport, AsyncFd/recvmsg, SO_RXQ_OVFL kernel drop detection |
 | TCP/IP | **Implemented** | FMP header-based framing, non-blocking connect, per-connection MSS MTU |
-| Ethernet | **Implemented** | AF_PACKET SOCK_DGRAM, EtherType 0x2121, beacon discovery, Linux only |
+| Ethernet | **Implemented** | AF_PACKET SOCK_DGRAM / macOS BPF, EtherType 0x2121, scoped beacon discovery |
 | WiFi | Future direction | Infrastructure mode = Ethernet driver |
 | Tor | **Implemented** | Outbound SOCKS5, inbound via onion service, .onion and clearnet addressing |
 | BLE | Future direction | ATT_MTU negotiation, per-link MTU |
