@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nostr discovery: filter unroutable direct UDP/TCP advert endpoints.
+  Publisher and validator now retain only endpoints that parse as
+  concrete socket addresses with routable IPs and nonzero ports.
+  `udp:nat` rendezvous endpoints and Tor endpoints pass through
+  unchanged. Adverts that collapse to zero usable endpoints after
+  filtering are rejected with a clear "missing publicly routable
+  endpoints" error. Before this change, misconfigured nodes could
+  publish RFC1918, loopback, link-local, CGNAT 100.64/10, IPv6 ULA,
+  or IPv6 link-local endpoints into Nostr discovery, and consumers
+  would cache and dial them; in mixed LAN/VPN/NAT environments, that
+  could prefer a misleading one-way private path over the intended
+  `udp:nat` bootstrap.
 - Coord cache invalidation made surgical at parent-position-change
   and root-change sites. Replaces the previous unconditional
   `CoordCache::clear()` calls with two targeted methods:
