@@ -590,8 +590,35 @@ impl FipsEndpoint {
 
         response_rx
             .await
-            .map(|relays| relays.into_iter().map(FipsEndpointRelayStatus::from).collect())
+            .map(|relays| {
+                relays
+                    .into_iter()
+                    .map(FipsEndpointRelayStatus::from)
+                    .collect()
+            })
             .map_err(|_| FipsEndpointError::Closed)
+    }
+
+    /// Replace Nostr discovery relays without rebuilding the endpoint.
+    pub async fn update_relays(
+        &self,
+        advert_relays: Vec<String>,
+        dm_relays: Vec<String>,
+    ) -> Result<(), FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.endpoint_commands
+            .send(NodeEndpointCommand::UpdateRelays {
+                advert_relays,
+                dm_relays,
+                response_tx,
+            })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        response_rx
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?
+            .map_err(FipsEndpointError::Node)
     }
 
     /// Send an outbound IPv6 packet into the FIPS session pipeline.

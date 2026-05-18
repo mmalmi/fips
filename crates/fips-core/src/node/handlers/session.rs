@@ -1884,6 +1884,23 @@ impl Node {
                 };
                 let _ = response_tx.send(relays);
             }
+            NodeEndpointCommand::UpdateRelays {
+                advert_relays,
+                dm_relays,
+                response_tx,
+            } => {
+                let result = if let Some(discovery) = self.nostr_discovery_handle() {
+                    discovery
+                        .update_relays(advert_relays, dm_relays)
+                        .await
+                        .map_err(|error| NodeError::Discovery(error.to_string()))
+                } else {
+                    Err(NodeError::Discovery(
+                        "Nostr discovery is not running".to_string(),
+                    ))
+                };
+                let _ = response_tx.send(result);
+            }
         }
     }
 

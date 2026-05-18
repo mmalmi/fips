@@ -106,6 +106,9 @@ pub enum NodeError {
     #[error("invalid peer npub '{npub}': {reason}")]
     InvalidPeerNpub { npub: String, reason: String },
 
+    #[error("discovery error: {0}")]
+    Discovery(String),
+
     #[error("access denied: {0}")]
     AccessDenied(String),
 
@@ -273,6 +276,11 @@ pub(crate) enum NodeEndpointCommand {
     },
     RelaySnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
+    },
+    UpdateRelays {
+        advert_relays: Vec<String>,
+        dm_relays: Vec<String>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
     /// Replace the runtime peer list. Newly added auto-connect peers get
     /// `initiate_peer_connection` immediately; removed peers are dropped

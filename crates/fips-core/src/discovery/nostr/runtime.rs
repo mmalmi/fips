@@ -26,8 +26,8 @@ use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attemp
 use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, NostrFailureDecision, NostrPeerFailureView, NostrRefetchOutcome,
-    NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint, SIGNAL_KIND,
-    TraversalAnswer, TraversalOffer,
+    NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint,
+    SIGNAL_KIND, TraversalAnswer, TraversalOffer,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -160,12 +160,38 @@ const PUBLIC_UDP_ADDR_FAILURE_TTL: Duration = Duration::from_secs(60);
 const RELAY_STARTUP_OP_TIMEOUT: Duration = Duration::from_secs(5);
 const ADVERT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NostrRelayConfig {
+    advert_relays: Vec<String>,
+    dm_relays: Vec<String>,
+}
+
+impl From<&NostrDiscoveryConfig> for NostrRelayConfig {
+    fn from(config: &NostrDiscoveryConfig) -> Self {
+        Self {
+            advert_relays: config.advert_relays.clone(),
+            dm_relays: config.dm_relays.clone(),
+        }
+    }
+}
+
+impl NostrRelayConfig {
+    fn union(&self) -> HashSet<String> {
+        self.advert_relays
+            .iter()
+            .chain(self.dm_relays.iter())
+            .cloned()
+            .collect()
+    }
+}
+
 pub struct NostrDiscovery {
     client: Client,
     keys: nostr::Keys,
     pubkey: PublicKey,
     npub: String,
     config: NostrDiscoveryConfig,
+    relay_config: RwLock<NostrRelayConfig>,
     advert_cache: RwLock<HashMap<String, CachedOverlayAdvert>>,
     local_advert: RwLock<Option<OverlayAdvert>>,
     current_advert_event_id: RwLock<Option<EventId>>,
@@ -231,6 +257,7 @@ impl NostrDiscovery {
             keys,
             pubkey,
             npub,
+            relay_config: RwLock::new(NostrRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
@@ -272,11 +299,11 @@ impl NostrDiscovery {
     }
 
     pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
-        let mut statuses = self
-            .config
+        let relay_config = self.relay_config.read().await.clone();
+        let mut statuses = relay_config
             .advert_relays
             .iter()
-            .chain(self.config.dm_relays.iter())
+            .chain(relay_config.dm_relays.iter())
             .map(|url| {
                 (
                     url.clone(),
@@ -302,6 +329,59 @@ impl NostrDiscovery {
         let mut statuses = statuses.into_values().collect::<Vec<_>>();
         statuses.sort_by(|lhs, rhs| lhs.url.cmp(&rhs.url));
         statuses
+    }
+
+    pub async fn update_relays(
+        &self,
+        advert_relays: Vec<String>,
+        dm_relays: Vec<String>,
+    ) -> Result<(), BootstrapError> {
+        let next = NostrRelayConfig {
+            advert_relays,
+            dm_relays,
+        };
+
+        let previous = self.relay_config.read().await.clone();
+        if previous == next {
+            return Ok(());
+        }
+
+        let previous_union = previous.union();
+        let next_union = next.union();
+
+        for relay in next_union.difference(&previous_union) {
+            self.client
+                .add_relay(relay)
+                .await
+                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        }
+
+        for relay in previous_union.difference(&next_union) {
+            self.client
+                .force_remove_relay(relay)
+                .await
+                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        }
+
+        {
+            let mut relay_config = self.relay_config.write().await;
+            *relay_config = next;
+        }
+
+        for relay in next_union {
+            if let Err(error) = self.client.connect_relay(relay.clone()).await {
+                warn!(relay = %relay, error = %error, "failed to connect updated Nostr relay");
+            }
+        }
+
+        if let Err(error) = self.subscribe().await {
+            warn!(error = %error, "failed to subscribe updated Nostr relays");
+        }
+        if let Err(error) = self.publish_inbox_relays().await {
+            warn!(error = %error, "failed to publish updated Nostr inbox relay list");
+        }
+        self.request_publish_advert();
+        Ok(())
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
@@ -497,7 +577,8 @@ impl NostrDiscovery {
             Ok(p) => p,
             Err(_) => return NostrRefetchOutcome::Skipped,
         };
-        if self.config.advert_relays.is_empty() {
+        let relay_config = self.relay_config.read().await.clone();
+        if relay_config.advert_relays.is_empty() {
             return NostrRefetchOutcome::Skipped;
         }
         let cached_created_at = self
@@ -510,7 +591,7 @@ impl NostrDiscovery {
         let events = match self
             .client
             .fetch_events_from(
-                self.config.advert_relays.clone(),
+                relay_config.advert_relays.clone(),
                 Filter::new()
                     .author(target_pubkey)
                     .kind(Kind::Custom(ADVERT_KIND))
@@ -569,7 +650,8 @@ impl NostrDiscovery {
     }
 
     pub async fn request_advert_stale_check(self: &Arc<Self>, peer_npub: String) -> bool {
-        if self.config.advert_relays.is_empty() {
+        let relay_config = self.relay_config.read().await.clone();
+        if relay_config.advert_relays.is_empty() {
             return false;
         }
         {
@@ -948,9 +1030,10 @@ impl NostrDiscovery {
     }
 
     async fn subscribe(&self) -> Result<(), BootstrapError> {
+        let relay_config = self.relay_config.read().await.clone();
         self.client
             .subscribe_to(
-                self.config.dm_relays.clone(),
+                relay_config.dm_relays.clone(),
                 Filter::new()
                     .kind(Kind::Custom(SIGNAL_KIND))
                     .pubkey(self.pubkey)
@@ -962,7 +1045,7 @@ impl NostrDiscovery {
 
         self.client
             .subscribe_to(
-                self.config.advert_relays.clone(),
+                relay_config.advert_relays.clone(),
                 Filter::new()
                     .kind(Kind::Custom(ADVERT_KIND))
                     .identifier(ADVERT_IDENTIFIER),
@@ -975,8 +1058,8 @@ impl NostrDiscovery {
     }
 
     async fn publish_inbox_relays(&self) -> Result<(), BootstrapError> {
-        let tags = self
-            .config
+        let relay_config = self.relay_config.read().await.clone();
+        let tags = relay_config
             .dm_relays
             .iter()
             .filter_map(|relay| RelayUrl::parse(relay).ok())
@@ -993,7 +1076,7 @@ impl NostrDiscovery {
             .sign_with_keys(&self.keys)
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         self.client
-            .send_event_to(self.config.dm_relays.clone(), &event)
+            .send_event_to(relay_config.dm_relays.clone(), &event)
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         Ok(())
@@ -1003,7 +1086,8 @@ impl NostrDiscovery {
         let previous_event_id = self.current_advert_event_id.read().await.to_owned();
         if !self.config.advertise {
             if let Some(event_id) = previous_event_id {
-                self.publish_delete(&self.config.advert_relays, [event_id])
+                let relay_config = self.relay_config.read().await.clone();
+                self.publish_delete(&relay_config.advert_relays, [event_id])
                     .await?;
                 *self.current_advert_event_id.write().await = None;
             }
@@ -1065,13 +1149,14 @@ impl NostrDiscovery {
             .tags(tags)
             .sign_with_keys(&self.keys)
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        let relay_config = self.relay_config.read().await.clone();
         self.client
-            .send_event_to(self.config.advert_relays.clone(), &event)
+            .send_event_to(relay_config.advert_relays.clone(), &event)
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
         debug!(
             event = %short_id(&event.id.to_string()),
-            relays = self.config.advert_relays.len(),
+            relays = relay_config.advert_relays.len(),
             endpoints = %endpoint_summary(&advert.endpoints),
             ttl_secs = self.config.advert_ttl_secs,
             "advert: published"
@@ -1406,10 +1491,11 @@ impl NostrDiscovery {
             return Ok(cached.advert);
         }
 
+        let relay_config = self.relay_config.read().await.clone();
         let events = self
             .client
             .fetch_events_from(
-                self.config.advert_relays.clone(),
+                relay_config.advert_relays.clone(),
                 Filter::new()
                     .author(target_pubkey)
                     .kind(Kind::Custom(ADVERT_KIND))
@@ -1479,7 +1565,8 @@ impl NostrDiscovery {
                 }
             }
         }
-        for relay in &self.config.dm_relays {
+        let relay_config = self.relay_config.read().await.clone();
+        for relay in &relay_config.dm_relays {
             if !merged.contains(relay) {
                 merged.push(relay.clone());
             }
@@ -1491,8 +1578,9 @@ impl NostrDiscovery {
         &self,
         target_pubkey: PublicKey,
     ) -> Result<Vec<String>, BootstrapError> {
-        let mut lookup_relays = self.config.dm_relays.clone();
-        for relay in &self.config.advert_relays {
+        let relay_config = self.relay_config.read().await.clone();
+        let mut lookup_relays = relay_config.dm_relays.clone();
+        for relay in &relay_config.advert_relays {
             if !lookup_relays.contains(relay) {
                 lookup_relays.push(relay.clone());
             }
@@ -1514,7 +1602,7 @@ impl NostrDiscovery {
             Ok(events) => events,
             Err(err) => {
                 debug!(error = %err, "failed to fetch inbox relays, falling back to configured DM relays");
-                return Ok(self.config.dm_relays.clone());
+                return Ok(self.relay_config.read().await.dm_relays.clone());
             }
         };
         let newest = events.iter().max_by_key(|event| event.created_at.as_secs());
@@ -1526,7 +1614,7 @@ impl NostrDiscovery {
                 return Ok(relays);
             }
         }
-        Ok(self.config.dm_relays.clone())
+        Ok(self.relay_config.read().await.dm_relays.clone())
     }
 
     pub(super) fn parse_overlay_advert_event(
@@ -1815,6 +1903,7 @@ impl NostrDiscovery {
             keys,
             pubkey,
             npub,
+            relay_config: RwLock::new(NostrRelayConfig::from(&config)),
             config,
             advert_cache: RwLock::new(HashMap::new()),
             local_advert: RwLock::new(None),
