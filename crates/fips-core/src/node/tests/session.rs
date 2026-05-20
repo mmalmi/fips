@@ -68,6 +68,7 @@ fn test_session_entry_new_initiating() {
     assert!(!entry.state().is_awaiting_msg3());
     assert_eq!(entry.created_at(), 1000);
     assert_eq!(entry.last_activity(), 1000);
+    assert_eq!(entry.last_inbound_frame_ms(), 1000);
 }
 
 #[test]
@@ -2361,6 +2362,69 @@ fn test_purge_idle_sessions_mmp_activity_does_not_prevent_purge() {
         node.session_count(),
         0,
         "Session with MMP-only activity should be purged"
+    );
+}
+
+#[test]
+fn test_purge_idle_sessions_removes_outbound_only_stale_session() {
+    let mut node = make_node();
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    let session = make_noise_session(node.identity(), &remote);
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        EndToEndState::Established(session),
+        1000,
+        true,
+    );
+
+    // Simulate periodic outbound endpoint/application data keeping the old
+    // idle timer fresh while no authenticated FSP frame comes back.
+    entry.record_sent(128);
+    entry.touch(91_000);
+
+    node.sessions.insert(remote_addr, entry);
+
+    let now_ms = 92_000;
+    node.purge_idle_sessions(now_ms);
+
+    assert_eq!(
+        node.session_count(),
+        0,
+        "Outbound-only stale session should be purged so sends can re-handshake"
+    );
+}
+
+#[test]
+fn test_purge_idle_sessions_keeps_outbound_session_with_recent_inbound_frame() {
+    let mut node = make_node();
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+
+    let session = make_noise_session(node.identity(), &remote);
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        remote.pubkey_full(),
+        EndToEndState::Established(session),
+        1000,
+        true,
+    );
+
+    entry.record_sent(128);
+    entry.touch(91_000);
+    entry.touch_inbound_frame(91_500);
+
+    node.sessions.insert(remote_addr, entry);
+
+    let now_ms = 92_000;
+    node.purge_idle_sessions(now_ms);
+
+    assert_eq!(
+        node.session_count(),
+        1,
+        "Recent authenticated inbound FSP traffic should keep the session alive"
     );
 }
 

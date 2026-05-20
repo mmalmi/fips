@@ -391,6 +391,7 @@ impl Node {
                 // path MTU even when only reports flow.
                 mmp.path_mtu.observe_incoming_mtu(path_mtu);
             }
+            entry.touch_inbound_frame(Self::now_ms());
 
             FspFrameOutcome::Authentic {
                 plaintext,

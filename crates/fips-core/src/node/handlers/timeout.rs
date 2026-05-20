@@ -268,16 +268,24 @@ impl Node {
             return; // disabled
         }
 
-        let idle: Vec<_> = self
+        let expired: Vec<_> = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                entry.is_established() && now_ms.saturating_sub(entry.last_activity()) > timeout_ms
+            .filter_map(|(addr, entry)| {
+                if !entry.is_established() {
+                    return None;
+                }
+                if now_ms.saturating_sub(entry.last_activity()) > timeout_ms {
+                    return Some((*addr, "idle"));
+                }
+                if entry.has_stale_outbound_only_activity(now_ms, timeout_ms) {
+                    return Some((*addr, "outbound-only"));
+                }
+                None
             })
-            .map(|(addr, _)| *addr)
             .collect();
 
-        for addr in idle {
+        for (addr, reason) in expired {
             // Compute display name before removing the session
             let name = self.peer_display_name(&addr);
 
@@ -292,7 +300,8 @@ impl Node {
             debug!(
                 dest = %name,
                 idle_secs = timeout_ms / 1000,
-                "Idle session removed (no application data)"
+                reason,
+                "Idle session removed"
             );
         }
     }

@@ -76,6 +76,12 @@ pub(crate) struct SessionEntry {
     /// Only updated for DataPacket send/receive and session establishment.
     /// MMP reports do not update this field. Used for idle session timeout.
     last_activity: u64,
+    /// Last authenticated FSP frame received from this peer (Unix milliseconds).
+    ///
+    /// Outbound-only application traffic can keep `last_activity` fresh even
+    /// when the peer stopped returning valid FSP frames. This timestamp is
+    /// used to retire such stale sessions so the next send re-handshakes.
+    last_inbound_frame_ms: u64,
     /// When the session transitioned to Established (Unix milliseconds).
     /// Used to compute session-relative timestamps for the FSP inner header.
     /// Set to 0 until the session is established.
@@ -152,6 +158,7 @@ impl SessionEntry {
             state: Some(state),
             created_at: now_ms,
             last_activity: now_ms,
+            last_inbound_frame_ms: now_ms,
             session_start_ms: 0,
             coords_warmup_remaining: 0,
             is_initiator,
@@ -219,6 +226,11 @@ impl SessionEntry {
         self.last_activity = now_ms;
     }
 
+    /// Mark receipt of any authenticated FSP frame from the peer.
+    pub(crate) fn touch_inbound_frame(&mut self, now_ms: u64) {
+        self.last_inbound_frame_ms = now_ms;
+    }
+
     /// Check if the session is established.
     pub(crate) fn is_established(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.is_established())
@@ -243,6 +255,18 @@ impl SessionEntry {
     /// Get last activity time.
     pub(crate) fn last_activity(&self) -> u64 {
         self.last_activity
+    }
+
+    /// Get last authenticated inbound FSP frame time.
+    #[cfg(test)]
+    pub(crate) fn last_inbound_frame_ms(&self) -> u64 {
+        self.last_inbound_frame_ms
+    }
+
+    /// True when app sends are active but the peer has stopped proving
+    /// session-layer liveness by returning authenticated FSP frames.
+    pub(crate) fn has_stale_outbound_only_activity(&self, now_ms: u64, timeout_ms: u64) -> bool {
+        self.packets_sent > 0 && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
     }
 
     /// Remaining DataPackets that should include COORDS_PRESENT.
