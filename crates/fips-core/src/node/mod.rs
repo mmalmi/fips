@@ -42,6 +42,8 @@ use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
 use crate::transport::udp::UdpTransport;
+#[cfg(feature = "webrtc-transport")]
+use crate::transport::webrtc::WebRtcTransport;
 use crate::transport::{
     Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,
 };
@@ -1144,6 +1146,42 @@ impl Node {
             let transport_id = self.allocate_transport_id();
             let tor = TorTransport::new(transport_id, name, tor_config, packet_tx.clone());
             transports.push(TransportHandle::Tor(tor));
+        }
+
+        let webrtc_instances: Vec<_> = self
+            .config
+            .transports
+            .webrtc
+            .iter()
+            .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
+            .collect();
+
+        #[cfg(feature = "webrtc-transport")]
+        {
+            for (name, webrtc_config) in webrtc_instances {
+                let transport_id = self.allocate_transport_id();
+                match WebRtcTransport::new(
+                    transport_id,
+                    name,
+                    webrtc_config,
+                    packet_tx.clone(),
+                    &self.identity,
+                    &self.config.node.discovery.nostr,
+                ) {
+                    Ok(webrtc) => transports.push(TransportHandle::WebRtc(Box::new(webrtc))),
+                    Err(err) => {
+                        warn!(
+                            transport_id = %transport_id,
+                            error = %err,
+                            "failed to initialize WebRTC transport"
+                        );
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "webrtc-transport"))]
+        if !webrtc_instances.is_empty() {
+            warn!("WebRTC transport configured but this build lacks WebRTC transport support");
         }
 
         // Create BLE transport instances

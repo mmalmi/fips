@@ -9,6 +9,7 @@ mod types;
 mod tests;
 
 pub use runtime::NostrDiscovery;
+pub(crate) use signal::{build_signal_event, unwrap_signal_event};
 pub use types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, NostrFailureDecision, NostrPeerFailureView, NostrRefetchOutcome,

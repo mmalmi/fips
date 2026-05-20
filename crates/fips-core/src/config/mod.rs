@@ -42,7 +42,7 @@ pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
 pub use transport::SimTransportConfig;
 pub use transport::{
     BleConfig, DirectoryServiceConfig, EthernetConfig, TcpConfig, TorConfig, TransportInstances,
-    TransportsConfig, UdpConfig,
+    TransportsConfig, UdpConfig, WebRtcConfig,
 };
 
 /// Default config filename.
@@ -602,6 +602,11 @@ impl Config {
                 .transports
                 .tor
                 .iter()
+                .any(|(_, cfg)| cfg.advertise_on_nostr())
+            || self
+                .transports
+                .webrtc
+                .iter()
                 .any(|(_, cfg)| cfg.advertise_on_nostr());
 
         if any_transport_advertises_on_nostr && !nostr.enabled {
@@ -636,6 +641,16 @@ impl Config {
                     "NAT UDP advert publishing requires `node.discovery.nostr.stun_servers` to be non-empty".to_string(),
                 ));
             }
+        }
+
+        let has_webrtc_advert_without_relays = self.transports.webrtc.iter().any(|(_, cfg)| {
+            cfg.advertise_on_nostr() && cfg.signal_relays(&nostr.dm_relays).is_empty()
+        });
+
+        if nostr.enabled && has_webrtc_advert_without_relays {
+            return Err(ConfigError::Validation(
+                "WebRTC advert publishing requires `node.discovery.nostr.dm_relays` or `transports.webrtc.signal_relays` to be non-empty".to_string(),
+            ));
         }
 
         // Reject loopback UDP bind combined with non-loopback peer addresses.
@@ -1323,6 +1338,15 @@ peers:
 
         let err = config.validate().expect_err("validation should fail");
         assert!(err.to_string().contains("advertise_on_nostr"));
+
+        config.transports.udp = TransportInstances::default();
+        config.transports.webrtc = TransportInstances::Single(WebRtcConfig {
+            advertise_on_nostr: Some(true),
+            ..Default::default()
+        });
+
+        let err = config.validate().expect_err("validation should fail");
+        assert!(err.to_string().contains("advertise_on_nostr"));
     }
 
     #[test]
@@ -1378,6 +1402,27 @@ peers:
         config.node.discovery.nostr.stun_servers.clear();
         let err = config.validate().expect_err("validation should fail");
         assert!(err.to_string().contains("stun_servers"));
+    }
+
+    #[test]
+    fn test_validate_webrtc_advert_requires_relays() {
+        let mut config = Config::default();
+        config.node.discovery.nostr.enabled = true;
+        config.node.discovery.nostr.dm_relays.clear();
+        config.transports.webrtc = TransportInstances::Single(WebRtcConfig {
+            advertise_on_nostr: Some(true),
+            ..Default::default()
+        });
+
+        let err = config.validate().expect_err("validation should fail");
+        assert!(err.to_string().contains("dm_relays"));
+
+        if let TransportInstances::Single(cfg) = &mut config.transports.webrtc {
+            cfg.signal_relays = Some(vec!["wss://relay.example".to_string()]);
+        }
+        config
+            .validate()
+            .expect("WebRTC transport-specific relays should satisfy validation");
     }
 
     #[test]

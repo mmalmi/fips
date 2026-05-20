@@ -2647,6 +2647,7 @@ impl Node {
 
         let mut endpoints = Vec::new();
         let mut has_udp_nat = false;
+        let mut has_webrtc = false;
 
         for handle in self.transports.values() {
             if !handle.is_operational() {
@@ -2720,6 +2721,19 @@ impl Node {
                         });
                         has_udp_nat = true;
                     }
+                }
+                "webrtc" => {
+                    let Some(cfg) = self.lookup_webrtc_config(handle.name()) else {
+                        continue;
+                    };
+                    if !cfg.advertise_on_nostr() {
+                        continue;
+                    }
+                    endpoints.push(OverlayEndpointAdvert {
+                        transport: OverlayTransportKind::WebRtc,
+                        addr: hex::encode(self.identity.pubkey_full().serialize()),
+                    });
+                    has_webrtc = true;
                 }
                 "tcp" => {
                     let Some(cfg) = self.lookup_tcp_config(handle.name()) else {
@@ -2795,8 +2809,9 @@ impl Node {
             identifier: ADVERT_IDENTIFIER.to_string(),
             version: ADVERT_VERSION,
             endpoints,
-            signal_relays: has_udp_nat.then(|| self.config.node.discovery.nostr.dm_relays.clone()),
-            stun_servers: has_udp_nat
+            signal_relays: (has_udp_nat || has_webrtc)
+                .then(|| self.config.node.discovery.nostr.dm_relays.clone()),
+            stun_servers: (has_udp_nat || has_webrtc)
                 .then(|| self.config.node.discovery.nostr.stun_servers.clone()),
         })
     }
@@ -2827,6 +2842,17 @@ impl Node {
 
     fn lookup_tor_config(&self, transport_name: Option<&str>) -> Option<&crate::config::TorConfig> {
         match (&self.config.transports.tor, transport_name) {
+            (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
+            (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
+            _ => None,
+        }
+    }
+
+    fn lookup_webrtc_config(
+        &self,
+        transport_name: Option<&str>,
+    ) -> Option<&crate::config::WebRtcConfig> {
+        match (&self.config.transports.webrtc, transport_name) {
             (crate::config::TransportInstances::Single(cfg), None) => Some(cfg),
             (crate::config::TransportInstances::Named(configs), Some(name)) => configs.get(name),
             _ => None,

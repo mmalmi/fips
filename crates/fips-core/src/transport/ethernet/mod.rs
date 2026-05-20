@@ -389,6 +389,7 @@ impl Transport for EthernetTransport {
 // ============================================================================
 
 /// Ethernet receive loop — runs as a spawned task.
+#[allow(clippy::too_many_arguments)]
 async fn ethernet_receive_loop(
     socket: Arc<AsyncPacketSocket>,
     transport_id: TransportId,
@@ -505,6 +506,7 @@ async fn ethernet_receive_loop(
 /// the underlying veth interface is destroyed and recreated (e.g., during
 /// node churn in chaos tests). After `REOPEN_THRESHOLD` consecutive send
 /// failures, attempts to open a fresh socket on the same interface.
+#[allow(clippy::too_many_arguments)]
 async fn beacon_sender_loop(
     mut socket: Arc<AsyncPacketSocket>,
     pubkey: XOnlyPublicKey,
