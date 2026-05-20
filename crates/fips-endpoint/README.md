@@ -25,6 +25,10 @@ The interface must already exist and be up. The endpoint will announce scoped
 Ethernet beacons, auto-connect to matching peers on that L2 segment, and still
 use the normal scoped UDP/Nostr defaults when `discovery_scope` is set.
 
+`discovery_scope` is the Nostr advert app scope. A generic daemon can advertise
+`fips-overlay-v1`, while an application endpoint behind it can advertise a
+separate scope such as `hashtree-v1` with its own endpoint identity.
+
 ## Repository
 
 https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/fips

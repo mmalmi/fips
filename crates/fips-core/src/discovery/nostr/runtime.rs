@@ -27,7 +27,7 @@ use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
     CachedOverlayAdvert, NostrFailureDecision, NostrPeerFailureView, NostrRefetchOutcome,
     NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint,
-    SIGNAL_KIND, TraversalAnswer, TraversalOffer,
+    SIGNAL_KIND, TraversalAnswer, TraversalOffer, advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -136,7 +136,14 @@ fn endpoint_advert_is_publicly_usable(endpoint: &OverlayEndpointAdvert) -> bool 
             socket_addr.port() != 0 && !is_unroutable_direct_advert_ip(socket_addr.ip())
         }
         super::types::OverlayTransportKind::Tor => true,
+        super::types::OverlayTransportKind::WebRtc => is_compressed_pubkey_hex(addr),
     }
+}
+
+fn is_compressed_pubkey_hex(addr: &str) -> bool {
+    addr.len() == 66
+        && (addr.starts_with("02") || addr.starts_with("03"))
+        && addr.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 /// Cached STUN-derived public address for an advert-eligible UDP transport
@@ -595,7 +602,7 @@ impl NostrDiscovery {
                 Filter::new()
                     .author(target_pubkey)
                     .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(ADVERT_IDENTIFIER),
+                    .identifier(advert_d_tag(&self.config.app)),
                 Duration::from_secs(2),
             )
             .await
@@ -1048,7 +1055,7 @@ impl NostrDiscovery {
                 relay_config.advert_relays.clone(),
                 Filter::new()
                     .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(ADVERT_IDENTIFIER),
+                    .identifier(advert_d_tag(&self.config.app)),
                 None,
             )
             .await
@@ -1139,7 +1146,7 @@ impl NostrDiscovery {
 
         let expires_at = now_ms() + self.config.advert_ttl_secs * 1000;
         let tags = vec![
-            Tag::identifier(ADVERT_IDENTIFIER.to_string()),
+            Tag::identifier(advert_d_tag(&self.config.app)),
             Tag::custom(TagKind::custom("protocol"), [self.config.app.clone()]),
             Tag::custom(TagKind::custom("version"), [PROTOCOL_VERSION.to_string()]),
             Tag::expiration(Timestamp::from((expires_at / 1000).max(1))),
@@ -1499,7 +1506,7 @@ impl NostrDiscovery {
                 Filter::new()
                     .author(target_pubkey)
                     .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(ADVERT_IDENTIFIER),
+                    .identifier(advert_d_tag(&self.config.app)),
                 Duration::from_secs(2),
             )
             .await
@@ -1674,6 +1681,10 @@ impl NostrDiscovery {
         }
 
         let has_nat = advert.has_udp_nat_endpoint();
+        let has_webrtc = advert
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.transport == super::types::OverlayTransportKind::WebRtc);
         if has_nat {
             if advert
                 .signal_relays
@@ -1691,6 +1702,16 @@ impl NostrDiscovery {
             {
                 return Err(BootstrapError::InvalidAdvert(
                     "udp:nat endpoint requires stunServers".to_string(),
+                ));
+            }
+        } else if has_webrtc {
+            if advert
+                .signal_relays
+                .as_ref()
+                .is_none_or(|relays| relays.is_empty())
+            {
+                return Err(BootstrapError::InvalidAdvert(
+                    "webrtc endpoint requires signalRelays".to_string(),
                 ));
             }
         } else {

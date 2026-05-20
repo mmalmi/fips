@@ -2175,6 +2175,7 @@ impl Node {
             OverlayTransportKind::Udp => "udp",
             OverlayTransportKind::Tcp => "tcp",
             OverlayTransportKind::Tor => "tor",
+            OverlayTransportKind::WebRtc => "webrtc",
         };
         Some(
             PeerAddress::with_priority(transport, endpoint.addr.clone(), priority)

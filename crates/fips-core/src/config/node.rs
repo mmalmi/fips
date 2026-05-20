@@ -315,7 +315,7 @@ pub struct NostrDiscoveryConfig {
     /// peers are on the same physical LAN and same-LAN punching is wanted.
     #[serde(default)]
     pub share_local_candidates: bool,
-    /// Traversal application namespace and advert identifier suffix.
+    /// Traversal application namespace advertised in the Nostr protocol tag.
     #[serde(default = "NostrDiscoveryConfig::default_app")]
     pub app: String,
     /// Signaling TTL in seconds.

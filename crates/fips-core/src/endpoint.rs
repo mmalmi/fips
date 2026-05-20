@@ -273,7 +273,7 @@ fn apply_default_scoped_discovery(config: &mut Config, scope: &str) {
     config.node.discovery.nostr.advertise = true;
     config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
     config.node.discovery.nostr.share_local_candidates = true;
-    config.node.discovery.nostr.app = format!("fips-overlay-v1:{scope}");
+    config.node.discovery.nostr.app = scope.to_string();
     config.node.discovery.lan.scope = Some(scope.to_string());
     config.transports.udp = TransportInstances::Single(UdpConfig {
         bind_addr: Some("0.0.0.0:0".to_string()),
@@ -812,10 +812,7 @@ mod tests {
             NostrDiscoveryPolicy::Open
         );
         assert!(config.node.discovery.nostr.share_local_candidates);
-        assert_eq!(
-            config.node.discovery.nostr.app,
-            "fips-overlay-v1:nostr-vpn:test"
-        );
+        assert_eq!(config.node.discovery.nostr.app, "nostr-vpn:test");
         assert_eq!(
             config.node.discovery.lan.scope.as_deref(),
             Some("nostr-vpn:test")

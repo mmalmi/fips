@@ -83,6 +83,34 @@ fn serializes_direct_overlay_advert_without_nat_metadata() {
 }
 
 #[test]
+fn serializes_and_validates_webrtc_overlay_advert() {
+    let advert = OverlayAdvert {
+        identifier: ADVERT_IDENTIFIER.to_string(),
+        version: ADVERT_VERSION,
+        endpoints: vec![OverlayEndpointAdvert {
+            transport: OverlayTransportKind::WebRtc,
+            addr: "02".to_string() + &"11".repeat(32),
+        }],
+        signal_relays: Some(vec!["wss://relay.example".to_string()]),
+        stun_servers: Some(vec!["stun:stun.example.org:3478".to_string()]),
+    };
+
+    let json = serde_json::to_string(&advert).unwrap();
+    assert!(json.contains("\"transport\":\"webrtc\""));
+
+    let sanitized = NostrDiscovery::validate_overlay_advert(advert).unwrap();
+    assert_eq!(sanitized.endpoints.len(), 1);
+    assert_eq!(
+        sanitized.endpoints[0].transport,
+        OverlayTransportKind::WebRtc
+    );
+    assert_eq!(
+        sanitized.signal_relays,
+        Some(vec!["wss://relay.example".to_string()])
+    );
+}
+
+#[test]
 fn serializes_nat_overlay_advert_with_metadata() {
     let advert = OverlayAdvert {
         identifier: ADVERT_IDENTIFIER.to_string(),
