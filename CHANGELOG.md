@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-05-20
+
 ### Added
 
 - Embedded endpoints can now opt into host-local raw Ethernet discovery with
   `FipsEndpointBuilder::local_ethernet(interface)`. Ethernet beacons may carry
   an optional discovery scope label, and endpoint configs inherit the builder's
   discovery scope for local Ethernet beacons.
+
+### Fixed
+
+- Outbound-only stale FSP sessions now expire and re-handshake when peers stop
+  returning authenticated frames, preventing a direct path from staying wedged
+  until process restart.
 
 ## [0.3.14] - 2026-05-18
 
