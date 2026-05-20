@@ -315,7 +315,7 @@ pub struct NostrDiscoveryConfig {
     /// peers are on the same physical LAN and same-LAN punching is wanted.
     #[serde(default)]
     pub share_local_candidates: bool,
-    /// Traversal application namespace and advert identifier suffix.
+    /// Traversal application namespace advertised in the Nostr protocol tag.
     #[serde(default = "NostrDiscoveryConfig::default_app")]
     pub app: String,
     /// Signaling TTL in seconds.
@@ -450,6 +450,7 @@ impl NostrDiscoveryConfig {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
             "wss://offchain.pub".to_string(),
+            "wss://temp.iris.to".to_string(),
         ]
     }
 
@@ -458,6 +459,7 @@ impl NostrDiscoveryConfig {
             "wss://relay.damus.io".to_string(),
             "wss://nos.lol".to_string(),
             "wss://offchain.pub".to_string(),
+            "wss://temp.iris.to".to_string(),
         ]
     }
 

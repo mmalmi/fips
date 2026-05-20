@@ -19,12 +19,12 @@ pub(super) struct SignalEnvelope<T> {
     pub(super) sender_npub: String,
 }
 
-pub(super) struct UnwrappedSignal {
-    pub(super) sender: PublicKey,
-    pub(super) rumor: UnsignedEvent,
+pub(crate) struct UnwrappedSignal {
+    pub(crate) sender: PublicKey,
+    pub(crate) rumor: UnsignedEvent,
 }
 
-pub(super) async fn build_signal_event(
+pub(crate) async fn build_signal_event(
     signer: &nostr::Keys,
     receiver: PublicKey,
     rumor: UnsignedEvent,
@@ -52,7 +52,7 @@ pub(super) async fn build_signal_event(
         .map_err(|e| BootstrapError::Nostr(e.to_string()))
 }
 
-pub(super) async fn unwrap_signal_event(
+pub(crate) async fn unwrap_signal_event(
     signer: &nostr::Keys,
     event: &Event,
 ) -> Result<UnwrappedSignal, BootstrapError> {

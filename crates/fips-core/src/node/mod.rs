@@ -42,6 +42,8 @@ use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
 use crate::transport::udp::UdpTransport;
+#[cfg(feature = "webrtc-transport")]
+use crate::transport::webrtc::WebRtcTransport;
 use crate::transport::{
     Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,
 };
@@ -105,6 +107,9 @@ pub enum NodeError {
 
     #[error("invalid peer npub '{npub}': {reason}")]
     InvalidPeerNpub { npub: String, reason: String },
+
+    #[error("discovery error: {0}")]
+    Discovery(String),
 
     #[error("access denied: {0}")]
     AccessDenied(String),
@@ -271,6 +276,14 @@ pub(crate) enum NodeEndpointCommand {
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
+    RelaySnapshot {
+        response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointRelayStatus>>,
+    },
+    UpdateRelays {
+        advert_relays: Vec<String>,
+        dm_relays: Vec<String>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    },
     /// Replace the runtime peer list. Newly added auto-connect peers get
     /// `initiate_peer_connection` immediately; removed peers are dropped
     /// from the retry queue (the regular liveness timeout reaps any active
@@ -314,6 +327,13 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) packets_recv: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_recv: u64,
+}
+
+/// Live Nostr relay state exposed to embedded endpoint callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NodeEndpointRelayStatus {
+    pub(crate) url: String,
+    pub(crate) status: String,
 }
 
 /// Node operational state.
@@ -1086,6 +1106,10 @@ impl Node {
                 .collect();
             let xonly = self.identity.pubkey();
             for (name, eth_config) in eth_instances {
+                let mut eth_config = eth_config;
+                if eth_config.discovery_scope.is_none() {
+                    eth_config.discovery_scope = self.lan_discovery_scope();
+                }
                 let transport_id = self.allocate_transport_id();
                 let mut eth =
                     EthernetTransport::new(transport_id, name, eth_config, packet_tx.clone());
@@ -1122,6 +1146,42 @@ impl Node {
             let transport_id = self.allocate_transport_id();
             let tor = TorTransport::new(transport_id, name, tor_config, packet_tx.clone());
             transports.push(TransportHandle::Tor(tor));
+        }
+
+        let webrtc_instances: Vec<_> = self
+            .config
+            .transports
+            .webrtc
+            .iter()
+            .map(|(name, config)| (name.map(|s| s.to_string()), config.clone()))
+            .collect();
+
+        #[cfg(feature = "webrtc-transport")]
+        {
+            for (name, webrtc_config) in webrtc_instances {
+                let transport_id = self.allocate_transport_id();
+                match WebRtcTransport::new(
+                    transport_id,
+                    name,
+                    webrtc_config,
+                    packet_tx.clone(),
+                    &self.identity,
+                    &self.config.node.discovery.nostr,
+                ) {
+                    Ok(webrtc) => transports.push(TransportHandle::WebRtc(Box::new(webrtc))),
+                    Err(err) => {
+                        warn!(
+                            transport_id = %transport_id,
+                            error = %err,
+                            "failed to initialize WebRTC transport"
+                        );
+                    }
+                }
+            }
+        }
+        #[cfg(not(feature = "webrtc-transport"))]
+        if !webrtc_instances.is_empty() {
+            warn!("WebRTC transport configured but this build lacks WebRTC transport support");
         }
 
         // Create BLE transport instances

@@ -11,6 +11,15 @@ pub const SIGNAL_KIND: u16 = 21059;
 pub use crate::discovery::{PUNCH_ACK_MAGIC, PUNCH_MAGIC};
 pub const PROTOCOL_VERSION: &str = "1";
 
+pub fn advert_d_tag(app: &str) -> String {
+    let app = app.trim();
+    if app.is_empty() {
+        ADVERT_IDENTIFIER.to_string()
+    } else {
+        app.to_string()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error("bootstrap disabled")]
@@ -57,6 +66,12 @@ pub enum BootstrapEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NostrRelayStatus {
+    pub url: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraversalAddress {
     pub protocol: String,
     pub ip: String,
@@ -79,6 +94,7 @@ pub enum OverlayTransportKind {
     Udp,
     Tcp,
     Tor,
+    WebRtc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

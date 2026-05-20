@@ -29,9 +29,10 @@ header before the FMP payload on data frames: a 1-byte frame type
 (`0x00`) followed by a 2-byte little-endian payload length. The length
 field allows the receiver to trim Ethernet minimum-frame padding that
 would otherwise corrupt AEAD verification. Beacon frames (`0x01`) have
-no length field (fixed 34-byte payload). These bytes are consumed by the
-transport layer and are not visible to FMP. The effective MTU for FMP is
-the interface MTU minus three bytes (typically 1497).
+no length field; they carry a version byte, x-only public key, and optional
+discovery scope. These bytes are consumed by the transport layer and
+are not visible to FMP. The effective MTU for FMP is the interface MTU minus
+three bytes (typically 1497).
 
 ## Link-Layer Formats
 

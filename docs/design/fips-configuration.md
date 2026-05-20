@@ -193,8 +193,8 @@ without that feature ignore `udp:nat` bootstrap configuration.
 | `node.discovery.nostr.advert_cache_max_entries` | usize | `2048` | Max cached overlay adverts retained from relay traffic |
 | `node.discovery.nostr.seen_sessions_max_entries` | usize | `2048` | Max seen-session IDs retained for replay detection |
 | `node.discovery.nostr.advertise` | bool | `true` | Publish local endpoint adverts |
-| `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub"]` | Relays used for service adverts |
-| `node.discovery.nostr.dm_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub"]` | Relays used for encrypted signaling events |
+| `node.discovery.nostr.advert_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used for service adverts |
+| `node.discovery.nostr.dm_relays` | list[string] | `["wss://relay.damus.io", "wss://nos.lol", "wss://offchain.pub", "wss://temp.iris.to"]` | Relays used for encrypted signaling events |
 | `node.discovery.nostr.stun_servers` | list[string] | `["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478"]` | STUN servers used for local reflexive address discovery |
 | `node.discovery.nostr.app` | string | `"fips-overlay-v1"` | Traversal application namespace and advert identifier suffix |
 | `node.discovery.nostr.signal_ttl_secs` | u64 | `120` | Signaling TTL in seconds |
@@ -214,7 +214,7 @@ Initiators use only this local list for outbound STUN queries; peer-advertised
 STUN values are published for diagnostics/interoperability but are not used as
 arbitrary egress targets.
 The built-in advert and DM relay defaults point at widely-operated public
-relays (Damus, nos.lol, Primal) as best-effort endpoints; operators are
+relays (Damus, nos.lol, Primal, Iris) as best-effort endpoints; operators are
 encouraged to override them with their own relay preferences for production
 deployments.
 Advert freshness is enforced semantically: events with expired NIP-40
@@ -392,8 +392,9 @@ restarting the daemon. Hostnames are case-insensitive.
 
 ### Ethernet (`transports.ethernet.*`)
 
-Ethernet transport sends raw frames via AF_PACKET SOCK_DGRAM sockets.
-Requires `CAP_NET_RAW` or running as root. Linux only.
+Ethernet transport sends raw frames via AF_PACKET SOCK_DGRAM sockets on Linux
+and BPF devices on macOS. Requires `CAP_NET_RAW`/root on Linux or root access
+to `/dev/bpf*` on macOS.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -406,6 +407,7 @@ Requires `CAP_NET_RAW` or running as root. Linux only.
 | `announce` | bool | `false` | Broadcast announcement beacons on the LAN |
 | `auto_connect` | bool | `false` | Auto-connect to discovered peers |
 | `accept_connections` | bool | `false` | Accept incoming connection attempts from discovered peers |
+| `discovery_scope` | string | *(node LAN scope)* | Optional discovery scope carried in beacons; scoped transports ignore beacons from other scopes |
 | `beacon_interval_secs` | u64 | `30` | Announcement beacon interval in seconds (minimum 10) |
 
 **Named instances.** Multiple Ethernet interfaces can be configured by

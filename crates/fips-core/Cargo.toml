@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.3.11"
+version = "0.3.14"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -11,6 +11,7 @@ readme = "README.md"
 [features]
 default = []
 sim-transport = []
+webrtc-transport = ["dep:bytes", "dep:webrtc"]
 
 [dependencies]
 fips-identity = { version = "0.3.1", path = "../fips-identity" }
@@ -35,6 +36,8 @@ socket2 = { version = "0.6.2", features = ["all"] }
 tokio-socks = "0.5"
 portable-atomic = { version = "1", features = ["std"] }
 crossbeam-channel = "0.5"
+bytes = { version = "1", optional = true }
+webrtc = { version = "0.8", optional = true }
 
 nostr = { version = "0.44", features = ["std", "nip59"] }
 nostr-sdk = "0.44"

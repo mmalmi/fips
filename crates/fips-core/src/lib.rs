@@ -36,7 +36,7 @@ pub use fips_identity::{
 // Re-export config types
 #[cfg(feature = "sim-transport")]
 pub use config::SimTransportConfig;
-pub use config::{Config, ConfigError, IdentityConfig, TorConfig, UdpConfig};
+pub use config::{Config, ConfigError, IdentityConfig, TorConfig, UdpConfig, WebRtcConfig};
 pub use upper::config::{DnsConfig, TunConfig};
 
 // Re-export discovery types

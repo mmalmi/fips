@@ -270,6 +270,7 @@ transports:
   #   announce: true
   #   auto_connect: true
   #   accept_connections: true
+  #   discovery_scope: "my-private-host-mesh"
 
 peers:
   # Static peers for bootstrapping (UDP or TCP):
