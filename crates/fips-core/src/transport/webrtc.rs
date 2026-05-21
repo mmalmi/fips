@@ -35,6 +35,8 @@ use tracing::{debug, info, trace, warn};
 const WEBRTC_PROTOCOL: &str = "fips-webrtc-v1";
 const WEBRTC_SIGNAL_VERSION: u32 = 1;
 const SIGNAL_TTL_MS: u64 = 60_000;
+const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
+const WEBRTC_READY_FALLBACK_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,6 +92,7 @@ struct PendingDial {
 type ConnectionPool = Arc<Mutex<HashMap<TransportAddr, WebRtcConnection>>>;
 type PendingPool = Arc<Mutex<HashMap<TransportAddr, PendingDial>>>;
 type FailedPool = Arc<Mutex<HashMap<TransportAddr, String>>>;
+type ReadyPool = Arc<Mutex<HashSet<TransportAddr>>>;
 
 /// WebRTC transport for FIPS.
 pub struct WebRtcTransport {
@@ -102,6 +105,7 @@ pub struct WebRtcTransport {
     pool: ConnectionPool,
     pending: PendingPool,
     failed: FailedPool,
+    ready: ReadyPool,
     signal_rx: Option<mpsc::UnboundedReceiver<IncomingSignal>>,
     signal_task: Option<JoinHandle<()>>,
     signaling: Option<NostrWebRtcSignaling>,
@@ -146,6 +150,7 @@ impl WebRtcTransport {
             pool: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(HashMap::new())),
+            ready: Arc::new(Mutex::new(HashSet::new())),
             signal_rx: Some(signal_rx),
             signal_task: None,
             signaling: Some(signaling),
@@ -193,6 +198,7 @@ impl WebRtcTransport {
             pool: Arc::clone(&self.pool),
             pending: Arc::clone(&self.pending),
             failed: Arc::clone(&self.failed),
+            ready: Arc::clone(&self.ready),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
@@ -230,6 +236,7 @@ impl WebRtcTransport {
         }
         self.failed.lock().await.clear();
         self.pending.lock().await.clear();
+        self.ready.lock().await.clear();
         let mut pool = self.pool.lock().await;
         for (_, conn) in pool.drain() {
             let _ = conn.data_channel.close().await;
@@ -287,6 +294,7 @@ impl WebRtcTransport {
             pool: Arc::clone(&self.pool),
             pending: Arc::clone(&self.pending),
             failed: Arc::clone(&self.failed),
+            ready: Arc::clone(&self.ready),
             local_pubkey_hex: self.local_pubkey_hex.clone(),
             signal_relays: self.signal_relays.clone(),
             stun_servers: self.stun_servers.clone(),
@@ -312,7 +320,12 @@ impl WebRtcTransport {
         if let Ok(pool) = self.pool.try_lock()
             && pool.contains_key(addr)
         {
-            return ConnectionState::Connected;
+            if let Ok(ready) = self.ready.try_lock()
+                && ready.contains(addr)
+            {
+                return ConnectionState::Connected;
+            }
+            return ConnectionState::Connecting;
         }
         if let Ok(failed) = self.failed.try_lock()
             && let Some(reason) = failed.get(addr)
@@ -337,6 +350,7 @@ impl WebRtcTransport {
             let _ = conn.pc.close().await;
         }
         self.failed.lock().await.remove(addr);
+        self.ready.lock().await.remove(addr);
     }
 }
 
@@ -349,6 +363,7 @@ struct WebRtcRuntime {
     pool: ConnectionPool,
     pending: PendingPool,
     failed: FailedPool,
+    ready: ReadyPool,
     local_pubkey_hex: String,
     signal_relays: Vec<String>,
     stun_servers: Vec<String>,
@@ -384,6 +399,7 @@ impl WebRtcRuntime {
             Arc::clone(&self.pool),
             Arc::clone(&self.pending),
             Arc::clone(&self.failed),
+            Arc::clone(&self.ready),
         );
 
         self.pending.lock().await.insert(
@@ -499,6 +515,7 @@ impl WebRtcRuntime {
                     Arc::clone(&runtime.pool),
                     Arc::clone(&runtime.pending),
                     Arc::clone(&runtime.failed),
+                    Arc::clone(&runtime.ready),
                 );
             })
         }));
@@ -668,6 +685,7 @@ impl WebRtcRuntime {
         if let Some(pending) = self.pending.lock().await.remove(&addr) {
             let _ = pending.pc.close().await;
         }
+        self.ready.lock().await.remove(&addr);
         self.failed
             .lock()
             .await
@@ -911,14 +929,21 @@ fn wire_data_channel(
     pool: ConnectionPool,
     pending: PendingPool,
     failed: FailedPool,
+    ready: ReadyPool,
 ) {
     let recv_addr = remote_addr.clone();
     let recv_tx = packet_tx.clone();
+    let recv_ready = Arc::clone(&ready);
     data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
         let recv_addr = recv_addr.clone();
         let recv_tx = recv_tx.clone();
+        let recv_ready = Arc::clone(&recv_ready);
         Box::pin(async move {
             if msg.is_string {
+                return;
+            }
+            if msg.data.as_ref() == WEBRTC_READY_FRAME {
+                mark_webrtc_ready(transport_id, recv_addr, recv_ready).await;
                 return;
             }
             let _ = recv_tx.send(ReceivedPacket::new(
@@ -935,6 +960,7 @@ fn wire_data_channel(
     let open_pool = Arc::clone(&pool);
     let open_pending = Arc::clone(&pending);
     let open_failed = Arc::clone(&failed);
+    let open_ready = Arc::clone(&ready);
     data_channel.on_open(Box::new(move || {
         let open_addr = open_addr.clone();
         let open_pc = Arc::clone(&open_pc);
@@ -942,7 +968,9 @@ fn wire_data_channel(
         let open_pool = Arc::clone(&open_pool);
         let open_pending = Arc::clone(&open_pending);
         let open_failed = Arc::clone(&open_failed);
+        let open_ready = Arc::clone(&open_ready);
         Box::pin(async move {
+            let ready_dc = Arc::clone(&open_dc);
             open_failed.lock().await.remove(&open_addr);
             open_pending.lock().await.remove(&open_addr);
             open_pool.lock().await.insert(
@@ -952,6 +980,23 @@ fn wire_data_channel(
                     data_channel: open_dc,
                 },
             );
+            if let Err(err) = ready_dc
+                .send(&Bytes::copy_from_slice(WEBRTC_READY_FRAME))
+                .await
+            {
+                debug!(
+                    transport_id = %transport_id,
+                    remote_addr = %open_addr,
+                    error = %err,
+                    "Failed to send WebRTC ready marker"
+                );
+            }
+            spawn_webrtc_ready_fallback(
+                transport_id,
+                open_addr.clone(),
+                Arc::clone(&open_pool),
+                Arc::clone(&open_ready),
+            );
             debug!(remote_addr = %open_addr, "WebRTC data channel open");
         })
     }));
@@ -959,15 +1004,46 @@ fn wire_data_channel(
     let close_addr = remote_addr;
     let close_pool = pool;
     let close_pending = pending;
+    let close_ready = ready;
     data_channel.on_close(Box::new(move || {
         let close_addr = close_addr.clone();
         let close_pool = Arc::clone(&close_pool);
         let close_pending = Arc::clone(&close_pending);
+        let close_ready = Arc::clone(&close_ready);
         Box::pin(async move {
             close_pool.lock().await.remove(&close_addr);
             close_pending.lock().await.remove(&close_addr);
+            close_ready.lock().await.remove(&close_addr);
         })
     }));
+}
+
+async fn mark_webrtc_ready(
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    ready: ReadyPool,
+) {
+    if ready.lock().await.insert(remote_addr.clone()) {
+        debug!(
+            transport_id = %transport_id,
+            remote_addr = %remote_addr,
+            "WebRTC data channel remote ready"
+        );
+    }
+}
+
+fn spawn_webrtc_ready_fallback(
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    pool: ConnectionPool,
+    ready: ReadyPool,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(WEBRTC_READY_FALLBACK_MS)).await;
+        if pool.lock().await.contains_key(&remote_addr) {
+            mark_webrtc_ready(transport_id, remote_addr, ready).await;
+        }
+    });
 }
 
 fn validate_compressed_pubkey_addr(addr: &TransportAddr) -> Result<(), TransportError> {
