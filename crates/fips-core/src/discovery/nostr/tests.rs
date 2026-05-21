@@ -1,9 +1,10 @@
-use nostr::prelude::{EventBuilder, Kind, Tag, TagKind, Timestamp};
+use nostr::prelude::{EventBuilder, JsonUtil, Kind, Tag, TagKind, Timestamp};
 
 use super::runtime::{NostrDiscovery, VerifiedEvent};
 use super::signal::{
     FreshnessOutcome, build_signal_event, create_traversal_answer, create_traversal_offer,
-    estimate_clock_skew, validate_offer_freshness, validate_traversal_answer_for_offer,
+    estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
+    validate_traversal_answer_for_offer,
 };
 use super::stun::{parse_stun_binding_success, parse_stun_url};
 use super::traversal::{
@@ -773,4 +774,31 @@ async fn signal_events_use_current_timestamps() {
 
     assert!(created_at >= before);
     assert!(created_at <= after);
+}
+
+#[tokio::test]
+async fn unwraps_ts_built_webrtc_signal_wrap() {
+    let recipient =
+        nostr::Keys::parse("5555555555555555555555555555555555555555555555555555555555555555")
+            .expect("recipient key should parse");
+    let event = nostr::prelude::Event::from_json(
+        r#"{"id":"08d9b1f5201c7ea3054e43d99b641b8279b5c4d2b6a679f8f252a11b48cf937f","sig":"bfa4195e2472100cf02a541395d0eb32857cdec6321da6603e4ce1702d1a0083ca62153b05c96133650c9957c3d27c63dde1e1bc0c73cef2e837fc43d1910722","pubkey":"b98a19f1f0aec66a23e3a477f16165264a7e6befc7e16453fbb1108e93c541e9","created_at":1779364084,"kind":21059,"tags":[["p","9ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b"]],"content":"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"}"#,
+    )
+    .expect("event should parse");
+
+    let unwrapped = unwrap_signal_event(&recipient, &event)
+        .await
+        .expect("TS gift wrap should unwrap in Rust");
+
+    assert_eq!(
+        unwrapped.sender.to_string(),
+        "2c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991"
+    );
+    assert_eq!(unwrapped.rumor.kind, Kind::PrivateDirectMessage);
+    assert!(
+        unwrapped
+            .rumor
+            .content
+            .contains(r#""protocol":"fips-webrtc-v1""#)
+    );
 }

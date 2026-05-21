@@ -19,6 +19,7 @@ use ::webrtc::data_channel::data_channel_message::DataChannelMessage;
 use ::webrtc::ice_transport::ice_server::RTCIceServer;
 use ::webrtc::peer_connection::RTCPeerConnection;
 use ::webrtc::peer_connection::configuration::RTCConfiguration;
+use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use ::webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use bytes::Bytes;
 use nostr::prelude::{EventBuilder, Filter, Kind, PublicKey, Timestamp};
@@ -361,6 +362,7 @@ impl WebRtcRuntime {
         let session_id = random_session_id();
 
         let pc = Arc::new(self.new_peer_connection().await?);
+        wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let data_channel = pc
             .create_data_channel(
                 self.config.data_channel_label(),
@@ -427,11 +429,26 @@ impl WebRtcRuntime {
         };
         self.signaling
             .send_signal(&self.signal_relays, remote_xonly, &signal)
-            .await
+            .await?;
+        debug!(
+            transport_id = %self.transport_id,
+            remote_addr = %remote_addr,
+            session = %signal.session_id,
+            sdp_bytes = signal.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
+            "WebRTC offer sent"
+        );
+        Ok(())
     }
 
     async fn handle_incoming_signal(&self, incoming: IncomingSignal) -> Result<(), TransportError> {
         let signal = incoming.signal;
+        debug!(
+            transport_id = %self.transport_id,
+            kind = ?signal.kind,
+            session = %signal.session_id,
+            sender = %signal.sender,
+            "WebRTC signal received"
+        );
         self.validate_signal(&signal, incoming.sender)?;
         match signal.kind {
             WebRtcSignalKind::Offer => self.handle_offer(signal, incoming.sender).await,
@@ -465,6 +482,7 @@ impl WebRtcRuntime {
 
         let remote_addr = TransportAddr::from_string(&signal.sender);
         let pc = Arc::new(self.new_peer_connection().await?);
+        wire_peer_connection_state(self.transport_id, remote_addr.clone(), Arc::clone(&pc));
         let runtime = self.clone();
         let pc_for_data_channel = Arc::clone(&pc);
         pc.on_data_channel(Box::new(move |data_channel: Arc<RTCDataChannel>| {
@@ -510,13 +528,15 @@ impl WebRtcRuntime {
             .ok_or_else(|| TransportError::StartFailed("missing local WebRTC answer".into()))?
             .sdp;
         let now = now_ms();
+        let session_id = signal.session_id;
+        let signal_sender = signal.sender;
         let reply = WebRtcSignal {
             protocol: WEBRTC_PROTOCOL.to_string(),
             version: WEBRTC_SIGNAL_VERSION,
-            session_id: signal.session_id,
+            session_id,
             kind: WebRtcSignalKind::Answer,
             sender: self.local_pubkey_hex.clone(),
-            recipient: signal.sender,
+            recipient: signal_sender.clone(),
             sdp: Some(sdp),
             candidates: None,
             created_at_ms: now,
@@ -524,7 +544,15 @@ impl WebRtcRuntime {
         };
         self.signaling
             .send_signal(&self.signal_relays, sender_xonly, &reply)
-            .await
+            .await?;
+        debug!(
+            transport_id = %self.transport_id,
+            remote_addr = %signal_sender,
+            session = %reply.session_id,
+            sdp_bytes = reply.sdp.as_ref().map(|s| s.len()).unwrap_or(0),
+            "WebRTC answer sent"
+        );
+        Ok(())
     }
 
     async fn handle_answer(&self, signal: WebRtcSignal) -> Result<(), TransportError> {
@@ -545,7 +573,14 @@ impl WebRtcRuntime {
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
         pc.set_remote_description(answer)
             .await
-            .map_err(|e| TransportError::StartFailed(e.to_string()))
+            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
+        debug!(
+            transport_id = %self.transport_id,
+            remote_addr = %signal.sender,
+            session = %signal.session_id,
+            "WebRTC answer applied"
+        );
+        Ok(())
     }
 
     async fn send_reject(
@@ -705,6 +740,14 @@ impl NostrSignalSender {
             .send_event_to(relays.to_vec(), &event)
             .await
             .map_err(|e| TransportError::SendFailed(e.to_string()))?;
+        debug!(
+            receiver = %receiver,
+            relays = relays.len(),
+            event = %event.id,
+            kind = ?signal.kind,
+            session = %signal.session_id,
+            "WebRTC signal published"
+        );
         Ok(())
     }
 }
@@ -763,7 +806,7 @@ impl NostrWebRtcSignaling {
                 Filter::new()
                     .kind(Kind::Custom(SIGNAL_KIND))
                     .pubkey(local_pubkey)
-                    .limit(0),
+                    .limit(100),
                 None,
             )
             .await
@@ -813,13 +856,17 @@ fn spawn_notify_loop(
             let unwrapped = match unwrap_signal_event(&keys, &event).await {
                 Ok(unwrapped) => unwrapped,
                 Err(err) => {
-                    trace!(error = %err, "failed to unwrap WebRTC signal");
+                    debug!(error = %err, event = %event.id, "failed to unwrap WebRTC signal");
                     continue;
                 }
             };
             let signal = match serde_json::from_str::<WebRtcSignal>(&unwrapped.rumor.content) {
                 Ok(signal) if signal.protocol == WEBRTC_PROTOCOL => signal,
-                _ => continue,
+                Ok(_) => continue,
+                Err(err) => {
+                    debug!(error = %err, event = %event.id, "failed to parse WebRTC signal");
+                    continue;
+                }
             };
             let _ = signal_tx.send(IncomingSignal {
                 signal,
@@ -827,6 +874,25 @@ fn spawn_notify_loop(
             });
         }
     })
+}
+
+fn wire_peer_connection_state(
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    pc: Arc<RTCPeerConnection>,
+) {
+    let peer_addr = remote_addr.clone();
+    pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
+        let peer_addr = peer_addr.clone();
+        Box::pin(async move {
+            debug!(
+                transport_id = %transport_id,
+                remote_addr = %peer_addr,
+                state = %state,
+                "WebRTC peer connection state changed"
+            );
+        })
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
