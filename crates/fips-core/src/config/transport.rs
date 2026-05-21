@@ -826,12 +826,12 @@ pub struct WebRtcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_channel_label: Option<String>,
 
-    /// Ordered data channel delivery. Default: false.
+    /// Ordered data channel delivery. Default: true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordered: Option<bool>,
 
-    /// Maximum retransmits for partial reliability. Default: 0.
-    /// Set to null/omit for the unreliable datagram-like default.
+    /// Maximum retransmits for partial reliability. Default: unset, which uses
+    /// WebRTC's reliable data-channel mode. Set to 0 for datagram-like delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retransmits: Option<u16>,
 
@@ -894,12 +894,12 @@ impl WebRtcConfig {
 
     /// Whether the data channel is ordered.
     pub fn ordered(&self) -> bool {
-        self.ordered.unwrap_or(false)
+        self.ordered.unwrap_or(true)
     }
 
-    /// Get the configured max retransmits. Default is 0.
-    pub fn max_retransmits(&self) -> u16 {
-        self.max_retransmits.unwrap_or(0)
+    /// Get the configured max retransmits. None uses WebRTC's reliable mode.
+    pub fn max_retransmits(&self) -> Option<u16> {
+        self.max_retransmits
     }
 
     /// Resolve signaling relays, falling back to node discovery relays.

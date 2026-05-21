@@ -368,7 +368,7 @@ impl WebRtcRuntime {
                 self.config.data_channel_label(),
                 Some(RTCDataChannelInit {
                     ordered: Some(self.config.ordered()),
-                    max_retransmits: Some(self.config.max_retransmits()),
+                    max_retransmits: self.config.max_retransmits(),
                     ..Default::default()
                 }),
             )
