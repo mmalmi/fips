@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opt out of the debug split package and declare the `*-debug`
   variant as a conflict, so a stale debug build cannot own installed
   files across a package switch.
+- macOS package build: the `.pkg` architecture is now derived from
+  the Cargo `--target` triple instead of the build host's
+  `uname -m`. The arm64 and x86_64 release legs build on the same
+  Apple-silicon runner, so `uname -m` named both outputs
+  `fips-0.3.0-macos-arm64.pkg`; the release job's `merge-multiple`
+  artifact download then interleaved the two identically named
+  files into a single corrupt xar archive, and no x86_64 package
+  reached the release at all. (This shipped as the broken v0.3.0
+  macOS `.pkg`, GitHub #102.) The release workflow now also asserts
+  the arch-named file is present and carries a SHA-256 integrity
+  chain from the build runner through to `gh release upload`, so a
+  recurrence fails CI instead of publishing.
 - Nostr discovery: filter unroutable direct UDP/TCP advert endpoints.
   Publisher and validator now retain only endpoints that parse as
   concrete socket addresses with routable IPs and nonzero ports.
