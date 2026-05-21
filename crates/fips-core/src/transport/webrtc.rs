@@ -799,6 +799,16 @@ impl NostrWebRtcSignaling {
                     .map_err(|e| TransportError::StartFailed(e.to_string()))?;
             }
         }
+        let notifications = self.sender.client.notifications();
+        let keys = self.sender.keys.clone();
+        let signal_tx = self.signal_tx.clone();
+        self.notify_task = Some(spawn_notify_loop(keys, notifications, signal_tx));
+
+        for relay in &self.relays {
+            if let Err(error) = self.sender.client.connect_relay(relay.clone()).await {
+                warn!(relay = %relay, error = %error, "failed to connect WebRTC signal relay");
+            }
+        }
         self.sender
             .client
             .subscribe_to(
@@ -811,10 +821,6 @@ impl NostrWebRtcSignaling {
             )
             .await
             .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let notifications = self.sender.client.notifications();
-        let keys = self.sender.keys.clone();
-        let signal_tx = self.signal_tx.clone();
-        self.notify_task = Some(spawn_notify_loop(keys, notifications, signal_tx));
         let client = self.sender.client.clone();
         self.connect_task = Some(tokio::spawn(async move {
             client.connect().await;
