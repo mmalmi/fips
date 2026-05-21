@@ -9,7 +9,7 @@ pub mod config;
 pub mod control;
 pub mod discovery;
 pub mod endpoint;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub mod gateway;
 pub mod identity {
     pub use fips_identity::*;

@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
@@ -50,11 +50,10 @@ tun = { version = "0.8.5", features = ["async"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink = "0.20.0"
-rustables = "0.8.7"
 procfs = { version = "0.18", default-features = false }
 
-# bluer/BlueZ needs glibc -- see build.rs `bluer_available` cfg gate.
 [target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
+rustables = "0.8.7"
 bluer = { version = "0.17", features = ["bluetoothd", "l2cap"] }
 
 [target.'cfg(windows)'.dependencies]

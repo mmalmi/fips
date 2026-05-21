@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-05-21
+
+### Fixed
+
+- Musl Linux builds no longer pull in the nftables gateway dependency, avoiding
+  host-side `libclang` dynamic-loading failures when embedding FIPS in static
+  release binaries.
+
 ## [0.3.15] - 2026-05-20
 
 ### Added
