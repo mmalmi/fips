@@ -5,7 +5,9 @@
 //! outbound traffic, with stateful outbound TCP allowed and optional inbound TCP
 //! service ports.
 
+#[cfg(any(test, target_os = "macos"))]
 use std::fmt::Write as _;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Output;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
@@ -110,6 +112,7 @@ enum HostFirewallBackend {
         anchor_name: String,
         enable_token: Option<String>,
     },
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     Unsupported,
 }
@@ -542,6 +545,7 @@ fn parse_pf_enable_token(output: &str) -> Option<String> {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ensure_success(command: &'static str, output: Output) -> Result<Output, HostFirewallError> {
     if output.status.success() {
         Ok(output)

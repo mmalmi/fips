@@ -714,6 +714,9 @@ impl Node {
         transport_name: &str,
         remote_addr: &TransportAddr,
     ) -> String {
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (transport_id, transport_name);
+
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if transport_name == "ethernet"
             && remote_addr.as_bytes().len() == 6
