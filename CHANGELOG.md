@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `fips-core` now exposes a reusable host firewall helper for FIPS TUN
+  interfaces, with Linux nftables and macOS PF backends.
+
 ## [0.3.16] - 2026-05-21
 
 ### Fixed
