@@ -62,6 +62,12 @@ impl Node {
     /// This creates a new inbound connection. Rate limiting is applied
     /// before any expensive crypto operations.
     pub(in crate::node) async fn handle_msg1(&mut self, packet: ReceivedPacket) {
+        debug!(
+            transport_id = %packet.transport_id,
+            remote_addr = %packet.remote_addr,
+            bytes = packet.data.len(),
+            "Received msg1"
+        );
         // === RATE LIMITING (before any processing) ===
         if !self.msg1_rate_limiter.start_handshake() {
             debug!(
@@ -78,6 +84,11 @@ impl Node {
         // deadlocks when the larger-NodeAddr side has accept_connections=false.
         if !self.should_admit_msg1(packet.transport_id, &packet.remote_addr) {
             self.msg1_rate_limiter.complete_handshake();
+            debug!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                "Msg1 rejected by accept-connections gate"
+            );
             return;
         }
 

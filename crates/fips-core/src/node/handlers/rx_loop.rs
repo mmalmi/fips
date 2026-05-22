@@ -384,6 +384,14 @@ impl Node {
             Some(p) => p,
             None => return, // Malformed prefix
         };
+        debug!(
+            transport_id = %packet.transport_id,
+            remote_addr = %packet.remote_addr,
+            bytes = packet.data.len(),
+            phase = prefix.phase,
+            version = prefix.version,
+            "FMP packet dispatch"
+        );
 
         if prefix.version != FMP_VERSION {
             debug!(

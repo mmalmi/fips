@@ -940,17 +940,32 @@ fn wire_data_channel(
         let recv_ready = Arc::clone(&recv_ready);
         Box::pin(async move {
             if msg.is_string {
+                debug!(
+                    transport_id = %transport_id,
+                    remote_addr = %recv_addr,
+                    "WebRTC string data channel message ignored"
+                );
                 return;
             }
             if msg.data.as_ref() == WEBRTC_READY_FRAME {
                 mark_webrtc_ready(transport_id, recv_addr, recv_ready).await;
                 return;
             }
-            let _ = recv_tx.send(ReceivedPacket::new(
-                transport_id,
-                recv_addr,
-                msg.data.to_vec(),
-            ));
+            let data = msg.data.to_vec();
+            debug!(
+                transport_id = %transport_id,
+                remote_addr = %recv_addr,
+                bytes = data.len(),
+                first_byte = data.first().copied(),
+                "WebRTC data channel packet received"
+            );
+            if let Err(err) = recv_tx.send(ReceivedPacket::new(transport_id, recv_addr, data)) {
+                warn!(
+                    transport_id = %transport_id,
+                    error = %err,
+                    "WebRTC packet enqueue failed"
+                );
+            }
         })
     }));
 
