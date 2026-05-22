@@ -21,6 +21,8 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
+const PACKET_DRAIN_BUDGET: usize = 256;
+const RX_LOOP_MAINTENANCE_TIMEOUT: Duration = Duration::from_millis(500);
 
 impl Node {
     /// Run the receive event loop.
@@ -137,60 +139,41 @@ impl Node {
                     self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
                     self.flush_pending_sends().await;
                 }
-                // Keep maintenance above the hot packet drains in this
-                // biased select. Sustained UDP/TUN traffic can otherwise
-                // keep packet branches ready long enough to delay MMP
-                // reports, rekey retries, congestion samples, and connected
-                // UDP activation until after the dataplane already looks
-                // unhealthy.
-                _ = tick.tick() => {
-                    self.run_rx_loop_maintenance_tick().await;
-                }
                 packet = packet_rx.recv() => {
                     match packet {
-                        Some(p) => self.process_packet(p).await,
+                        Some(p) => {
+                            self.drain_packet_rx(
+                                &mut packet_rx,
+                                &mut decrypt_fallback_rx,
+                                Some(p),
+                                PACKET_DRAIN_BUDGET,
+                            ).await;
+                        }
                         None => break, // channel closed
                     }
-                    // Drain remaining ready inbound packets in a tight loop
-                    // before yielding back to select! — every yield is a
-                    // futex hop on tokio's multi-thread scheduler, and at
-                    // line rate the kernel UDP queue typically has several
-                    // datagrams available per wake. Caps at a batch
-                    // boundary so other branches (tick, control) eventually
-                    // get a turn even under sustained load.
-                    let mut drained: usize = 1; // counts the packet processed above
-                    while drained < 256 {
-                        if drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
-                            // Interleave fallback drain so bounced FMP
-                            // plaintexts (heartbeats, post-FSP-decrypt
-                            // TCP ACKs, control frames) don't sit in
-                            // the fallback queue for a full 256-packet
-                            // burst. Without this, even the
-                            // priority-first ordering above can't help
-                            // once we're inside this inner loop.
-                            self.drain_decrypt_fallback(
-                                &mut decrypt_fallback_rx,
-                                FALLBACK_INTERLEAVE_BUDGET,
-                            )
-                            .await;
-                        }
-                        match packet_rx.try_recv() {
-                            Ok(p) => {
-                                self.process_packet(p).await;
-                                drained += 1;
-                            }
-                            Err(_) => break,
-                        }
+                }
+                _ = tick.tick() => {
+                    let drained = self.drain_packet_rx(
+                        &mut packet_rx,
+                        &mut decrypt_fallback_rx,
+                        None,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        debug!(
+                            drained,
+                            "Drained queued packets before rx-loop maintenance"
+                        );
                     }
-                    // One trailing fallback drain so the last bounced
-                    // packets of the burst aren't held up by the
-                    // post-burst send flush.
-                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 256)
-                        .await;
-                    // Flush any batched sends triggered by inbound
-                    // packets (e.g. forwarded SessionDatagrams, MMP
-                    // reports, tree announces).
-                    self.flush_pending_sends().await;
+                    if tokio::time::timeout(
+                        RX_LOOP_MAINTENANCE_TIMEOUT,
+                        self.run_rx_loop_maintenance_tick(),
+                    ).await.is_err() {
+                        warn!(
+                            timeout_ms = RX_LOOP_MAINTENANCE_TIMEOUT.as_millis() as u64,
+                            "RX loop maintenance timed out; continuing packet processing"
+                        );
+                    }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
@@ -252,6 +235,50 @@ impl Node {
 
         info!("RX event loop stopped (channel closed)");
         Ok(())
+    }
+
+    async fn drain_packet_rx(
+        &mut self,
+        packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
+        decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        first_packet: Option<ReceivedPacket>,
+        budget: usize,
+    ) -> usize {
+        let mut drained = 0usize;
+        if let Some(packet) = first_packet {
+            self.process_packet(packet).await;
+            drained = 1;
+        }
+
+        // Drain remaining ready inbound packets in a tight loop before
+        // yielding back to select! Every yield is a scheduler hop, and at
+        // line rate transports typically have several packets available per
+        // wake. Caps at a batch boundary so other branches eventually get a
+        // turn even under sustained load.
+        while drained < budget {
+            if drained > 0 && drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
+                self.drain_decrypt_fallback(decrypt_fallback_rx, FALLBACK_INTERLEAVE_BUDGET)
+                    .await;
+            }
+            match packet_rx.try_recv() {
+                Ok(packet) => {
+                    self.process_packet(packet).await;
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        if drained > 0 {
+            // One trailing fallback drain so the last bounced packets of the
+            // burst aren't held up by the post-burst send flush.
+            self.drain_decrypt_fallback(decrypt_fallback_rx, PACKET_DRAIN_BUDGET)
+                .await;
+            // Flush any batched sends triggered by inbound packets (e.g.
+            // forwarded SessionDatagrams, MMP reports, tree announces).
+            self.flush_pending_sends().await;
+        }
+        drained
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self) {
