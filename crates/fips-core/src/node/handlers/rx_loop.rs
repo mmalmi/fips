@@ -12,7 +12,7 @@ use crate::transport::ReceivedPacket;
 use crate::transport::TransportHandle;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// How often the raw-packet drain loop yields a slice of work to the
 /// decrypt-fallback drain. Keeps TCP ACK / heartbeat / handshake
@@ -384,14 +384,25 @@ impl Node {
             Some(p) => p,
             None => return, // Malformed prefix
         };
-        debug!(
-            transport_id = %packet.transport_id,
-            remote_addr = %packet.remote_addr,
-            bytes = packet.data.len(),
-            phase = prefix.phase,
-            version = prefix.version,
-            "FMP packet dispatch"
-        );
+        if matches!(prefix.phase, PHASE_MSG1 | PHASE_MSG2) {
+            debug!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                bytes = packet.data.len(),
+                phase = prefix.phase,
+                version = prefix.version,
+                "FMP handshake packet dispatch"
+            );
+        } else {
+            trace!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                bytes = packet.data.len(),
+                phase = prefix.phase,
+                version = prefix.version,
+                "FMP packet dispatch"
+            );
+        }
 
         if prefix.version != FMP_VERSION {
             debug!(

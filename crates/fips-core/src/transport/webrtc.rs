@@ -952,13 +952,26 @@ fn wire_data_channel(
                 return;
             }
             let data = msg.data.to_vec();
-            debug!(
-                transport_id = %transport_id,
-                remote_addr = %recv_addr,
-                bytes = data.len(),
-                first_byte = data.first().copied(),
-                "WebRTC data channel packet received"
-            );
+            match data.first().copied() {
+                Some(1 | 2) => {
+                    debug!(
+                        transport_id = %transport_id,
+                        remote_addr = %recv_addr,
+                        bytes = data.len(),
+                        first_byte = data.first().copied(),
+                        "WebRTC data channel handshake packet received"
+                    );
+                }
+                _ => {
+                    trace!(
+                        transport_id = %transport_id,
+                        remote_addr = %recv_addr,
+                        bytes = data.len(),
+                        first_byte = data.first().copied(),
+                        "WebRTC data channel packet received"
+                    );
+                }
+            }
             if let Err(err) = recv_tx.send(ReceivedPacket::new(transport_id, recv_addr, data)) {
                 warn!(
                     transport_id = %transport_id,
