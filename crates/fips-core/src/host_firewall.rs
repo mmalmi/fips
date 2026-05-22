@@ -110,6 +110,8 @@ enum HostFirewallBackend {
         anchor_name: String,
         enable_token: Option<String>,
     },
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    Unsupported,
 }
 
 impl HostFirewallGuard {
@@ -183,6 +185,8 @@ impl Drop for HostFirewallGuard {
                     release_pf_enable_token(token);
                 }
             }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            HostFirewallBackend::Unsupported => {}
         }
     }
 }

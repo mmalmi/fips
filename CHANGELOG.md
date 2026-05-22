@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-05-22
+
+### Fixed
+
+- `fips-core` host firewall support now compiles on unsupported targets such as
+  iOS and Android, while still reporting host firewall support as unavailable.
+
+## [0.3.17] - 2026-05-22
+
 ### Added
 
 - `fips-core` now exposes a reusable host firewall helper for FIPS TUN
