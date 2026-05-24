@@ -25,7 +25,7 @@
 pub mod stats;
 pub mod stream;
 
-use super::resolve_socket_addr;
+use super::resolve_socket_addrs;
 use super::{
     ConnectionState, DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr,
     TransportError, TransportId, TransportState, TransportType,
@@ -340,25 +340,20 @@ impl TcpTransport {
         &self,
         addr: &TransportAddr,
     ) -> Result<Arc<Mutex<OwnedWriteHalf>>, TransportError> {
-        let socket_addr = resolve_socket_addr(addr).await?;
+        let socket_addrs = resolve_socket_addrs(addr).await?;
         let timeout_ms = self.config.connect_timeout_ms();
 
-        // Connect with timeout
-        let stream = match tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            TcpStream::connect(socket_addr),
-        )
-        .await
-        {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(_)) => {
-                self.stats.record_connect_refused();
-                return Err(TransportError::ConnectionRefused);
-            }
-            Err(_) => {
+        let stream = match connect_to_any_addr(&socket_addrs, timeout_ms).await {
+            Ok(stream) => stream,
+            Err(error @ TransportError::Timeout) => {
                 self.stats.record_connect_timeout();
-                return Err(TransportError::Timeout);
+                return Err(error);
             }
+            Err(error @ TransportError::ConnectionRefused) => {
+                self.stats.record_connect_refused();
+                return Err(error);
+            }
+            Err(error) => return Err(error),
         };
 
         // Configure socket options via socket2
@@ -464,11 +459,7 @@ impl TcpTransport {
             }
         }
 
-        // Validate address is UTF-8 before spawning (fail fast on bad input)
-        let addr_string = addr
-            .as_str()
-            .ok_or_else(|| TransportError::InvalidAddress("not valid UTF-8".into()))?
-            .to_string();
+        let socket_addrs = resolve_socket_addrs(addr).await?;
         let timeout_ms = self.config.connect_timeout_ms();
         let config = self.config.clone();
         let transport_id = self.transport_id;
@@ -482,52 +473,26 @@ impl TcpTransport {
         );
 
         let task = tokio::spawn(async move {
-            // Resolve address (may involve DNS for hostnames)
-            let socket_addr: SocketAddr = if let Ok(sa) = addr_string.parse() {
-                sa
-            } else {
-                tokio::net::lookup_host(&addr_string)
-                    .await
-                    .map_err(|e| {
-                        TransportError::InvalidAddress(format!(
-                            "DNS resolution failed for {}: {}",
-                            addr_string, e
-                        ))
-                    })?
-                    .next()
-                    .ok_or_else(|| {
-                        TransportError::InvalidAddress(format!(
-                            "DNS resolution returned no addresses for {}",
-                            addr_string
-                        ))
-                    })?
-            };
-
-            // Connect with timeout
-            let stream = match tokio::time::timeout(
-                Duration::from_millis(timeout_ms),
-                TcpStream::connect(socket_addr),
-            )
-            .await
-            {
-                Ok(Ok(stream)) => stream,
-                Ok(Err(e)) => {
+            let stream = match connect_to_any_addr(&socket_addrs, timeout_ms).await {
+                Ok(stream) => stream,
+                Err(error @ TransportError::ConnectionRefused) => {
                     debug!(
                         transport_id = %transport_id,
                         remote_addr = %remote_addr,
-                        error = %e,
+                        error = %error,
                         "Background TCP connect refused"
                     );
-                    return Err(TransportError::ConnectionRefused);
+                    return Err(error);
                 }
-                Err(_) => {
+                Err(error @ TransportError::Timeout) => {
                     debug!(
                         transport_id = %transport_id,
                         remote_addr = %remote_addr,
                         "Background TCP connect timed out"
                     );
-                    return Err(TransportError::Timeout);
+                    return Err(error);
                 }
+                Err(error) => return Err(error),
             };
 
             // Configure socket options via socket2
@@ -947,6 +912,41 @@ async fn tcp_receive_loop(
 // Socket Configuration Helpers
 // ============================================================================
 
+async fn connect_to_any_addr(
+    socket_addrs: &[SocketAddr],
+    timeout_ms: u64,
+) -> Result<TcpStream, TransportError> {
+    let mut last_error = None;
+    for socket_addr in socket_addrs {
+        match tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            TcpStream::connect(socket_addr),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(error)) => {
+                trace!(
+                    remote_addr = %socket_addr,
+                    error = %error,
+                    "TCP connect candidate failed"
+                );
+                last_error = Some(TransportError::ConnectionRefused);
+            }
+            Err(_) => {
+                trace!(
+                    remote_addr = %socket_addr,
+                    timeout_ms,
+                    "TCP connect candidate timed out"
+                );
+                last_error = Some(TransportError::Timeout);
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| TransportError::InvalidAddress("no TCP addresses to dial".to_string())))
+}
+
 /// Configure a TCP socket with the transport's settings.
 fn configure_socket(
     stream: &std::net::TcpStream,
@@ -1072,6 +1072,19 @@ mod tests {
         }
     }
 
+    async fn unused_loopback_addr(except_port: u16) -> SocketAddr {
+        for port in 49152..65535 {
+            if port == except_port {
+                continue;
+            }
+            let addr = SocketAddr::from(([127, 0, 0, 1], port));
+            if TcpStream::connect(addr).await.is_err() {
+                return addr;
+            }
+        }
+        panic!("no unused loopback port found");
+    }
+
     #[tokio::test]
     async fn test_start_stop() {
         let (tx, _rx) = packet_channel(100);
@@ -1085,6 +1098,25 @@ mod tests {
 
         transport.stop_async().await.unwrap();
         assert_eq!(transport.state(), TransportState::Down);
+    }
+
+    #[tokio::test]
+    async fn connect_to_any_addr_tries_later_candidates() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let good_addr = listener.local_addr().unwrap();
+        let bad_addr = unused_loopback_addr(good_addr.port()).await;
+        let accept = tokio::spawn(async move { listener.accept().await });
+
+        let stream = connect_to_any_addr(&[bad_addr, good_addr], 1_000)
+            .await
+            .expect("second TCP candidate should connect");
+        drop(stream);
+
+        timeout(Duration::from_secs(1), accept)
+            .await
+            .expect("listener should accept")
+            .expect("accept task should not panic")
+            .expect("accept should succeed");
     }
 
     #[tokio::test]

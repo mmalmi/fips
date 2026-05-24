@@ -1369,28 +1369,50 @@ impl TransportHandle {
 pub(crate) async fn resolve_socket_addr(
     addr: &TransportAddr,
 ) -> Result<SocketAddr, TransportError> {
+    resolve_socket_addrs(addr)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            TransportError::InvalidAddress(format!(
+                "DNS resolution returned no addresses for {}",
+                addr.as_str().unwrap_or("<non-utf8>")
+            ))
+        })
+}
+
+/// Resolve a TransportAddr to every SocketAddr returned by the resolver.
+///
+/// Numeric IP addresses still bypass DNS. Hostnames keep the resolver's
+/// address order, and callers that establish connections should try more than
+/// one address so dual-stack hosts still work when one address family is
+/// temporarily broken.
+pub(crate) async fn resolve_socket_addrs(
+    addr: &TransportAddr,
+) -> Result<Vec<SocketAddr>, TransportError> {
     let s = addr
         .as_str()
         .ok_or_else(|| TransportError::InvalidAddress("not valid UTF-8".into()))?;
 
     // Fast path: numeric IP address — no DNS lookup
     if let Ok(sock_addr) = s.parse::<SocketAddr>() {
-        return Ok(sock_addr);
+        return Ok(vec![sock_addr]);
     }
 
     // Slow path: DNS resolution
-    tokio::net::lookup_host(s)
+    let addrs = tokio::net::lookup_host(s)
         .await
         .map_err(|e| {
             TransportError::InvalidAddress(format!("DNS resolution failed for {}: {}", s, e))
         })?
-        .next()
-        .ok_or_else(|| {
-            TransportError::InvalidAddress(format!(
-                "DNS resolution returned no addresses for {}",
-                s
-            ))
-        })
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(TransportError::InvalidAddress(format!(
+            "DNS resolution returned no addresses for {}",
+            s
+        )));
+    }
+    Ok(addrs)
 }
 
 // ============================================================================
