@@ -60,6 +60,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- NAT-traversal cross-init adoption is now deterministic under
+  simultaneous dual-initiation. Previously, when two peers'
+  Nostr-mediated UDP punches completed within the same scheduling
+  window, each side's bootstrap-completion event arrived with an
+  in-flight handshake already recorded against the other peer (each
+  side had received an inbound msg1 from the other's pre-punch
+  outbound attempt). The deduplication skip then fired on both
+  sides, neither installed the fresh traversal socket as canonical,
+  and the 45-second peer-adoption budget expired with both nodes
+  stuck waiting for an adoption that never happened. The handler now
+  applies the same deterministic NodeAddr tie-breaker the codebase
+  already uses for rekey dual-initiation and cross-connection
+  resolution: the smaller NodeAddr wins as adopter, tears down its
+  in-flight handshake state, and proceeds with adoption; the larger
+  NodeAddr keeps the skip semantics, and its in-flight outbound is
+  reconciled by the cross-connection logic when the winner's fresh
+  msg1 arrives over the adopted socket. The dual cross-init stall is
+  eliminated; cross-init NAT-traversal completes in well under a
+  second even under host CPU contention.
 - FSP session rekey is now hitless under packet loss and reordering.
   Previously, a rekey could leave the two endpoints holding different
   key sets for a brief window — if a handshake message was lost in
