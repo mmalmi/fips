@@ -224,6 +224,12 @@ pub struct DiscoveryConfig {
     /// for same-LAN peers is large (sub-second pairing, no relay).
     #[serde(default = "DiscoveryConfig::default_lan")]
     pub lan: crate::discovery::lan::LanDiscoveryConfig,
+    /// Same-host process discovery through `~/.fips/instances/*.json`.
+    /// Embedded endpoints with a discovery scope enable this so local VMs,
+    /// browser helpers, and native app processes can find loopback-reachable
+    /// FIPS sockets without polling relays or relying on mDNS loopback.
+    #[serde(default = "DiscoveryConfig::default_local")]
+    pub local: crate::discovery::local::LocalInstanceDiscoveryConfig,
 }
 
 impl Default for DiscoveryConfig {
@@ -237,6 +243,7 @@ impl Default for DiscoveryConfig {
             forward_min_interval_secs: 2,
             nostr: NostrDiscoveryConfig::default(),
             lan: crate::discovery::lan::LanDiscoveryConfig::default(),
+            local: crate::discovery::local::LocalInstanceDiscoveryConfig::default(),
         }
     }
 }
@@ -265,6 +272,9 @@ impl DiscoveryConfig {
     }
     fn default_lan() -> crate::discovery::lan::LanDiscoveryConfig {
         crate::discovery::lan::LanDiscoveryConfig::default()
+    }
+    fn default_local() -> crate::discovery::local::LocalInstanceDiscoveryConfig {
+        crate::discovery::local::LocalInstanceDiscoveryConfig::default()
     }
 }
 

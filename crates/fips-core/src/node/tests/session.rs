@@ -1631,6 +1631,16 @@ fn add_direct_peer_for_identity(node: &mut Node, identity: &Identity) {
     );
 }
 
+fn has_outbound_handshake_to(node: &Node, dest_addr: &NodeAddr) -> bool {
+    node.connections.values().any(|conn| {
+        conn.is_outbound()
+            && conn
+                .expected_identity()
+                .map(|identity| identity.node_addr() == dest_addr)
+                .unwrap_or(false)
+    })
+}
+
 #[test]
 fn test_identity_cache_populated_on_promote() {
     use crate::peer::PromotionResult;
@@ -1865,6 +1875,89 @@ async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
             .get_session(&dest_addr)
             .is_some_and(|entry| entry.is_established()),
         "proactive graph session should complete over the existing FIPS path"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_update_peers_prefers_existing_graph_over_direct_address() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest_addr = *nodes[2].node.node_addr();
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("graph-before-direct".to_string()),
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            nodes[2].addr.to_string(),
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    let outcome = nodes[0].node.update_peers(vec![peer]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_initiating()),
+        "configured peer should warm over the existing FIPS graph"
+    );
+    assert!(
+        !has_outbound_handshake_to(&nodes[0].node, &dest_addr),
+        "a usable graph route should suppress direct outgoing auto-connect"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_graph_auto_connect_timeout_falls_back_to_direct_address() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest_addr = *nodes[2].node.node_addr();
+    let peer = crate::config::PeerConfig {
+        npub: nodes[2].node.npub(),
+        alias: Some("graph-timeout-direct".to_string()),
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            nodes[2].addr.to_string(),
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    nodes[0].node.update_peers(vec![peer]).await.unwrap();
+    assert!(
+        !has_outbound_handshake_to(&nodes[0].node, &dest_addr),
+        "direct path should not be tried before graph session timeout"
+    );
+
+    let last_activity = nodes[0]
+        .node
+        .get_session(&dest_addr)
+        .expect("graph session should be pending")
+        .last_activity();
+    let timeout_ms = nodes[0].node.config.node.rate_limit.handshake_timeout_secs * 1000;
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(last_activity + timeout_ms + 1)
+        .await;
+
+    assert!(
+        has_outbound_handshake_to(&nodes[0].node, &dest_addr),
+        "a graph route that does not complete should fall back to direct auto-connect"
     );
 
     cleanup_nodes(&mut nodes).await;

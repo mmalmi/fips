@@ -1,7 +1,7 @@
 //! Node lifecycle management: start, stop, and peer connection initiation.
 
 use super::{Node, NodeError, NodeState};
-use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+use crate::config::{ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerConfig};
 use crate::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, NostrDiscovery, OverlayAdvert,
     OverlayEndpointAdvert, OverlayTransportKind,
@@ -218,6 +218,21 @@ impl Node {
                 continue;
             }
 
+            match self
+                .try_auto_connect_graph_session(&peer_config, identity.clone())
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(err) => {
+                    debug!(
+                        npub = %peer_config.npub,
+                        error = %err,
+                        "Existing FIPS graph did not warm newly added peer"
+                    );
+                }
+            }
+
             if let Err(e) = self.initiate_peer_connection(&peer_config).await {
                 warn!(
                     npub = %peer_config.npub,
@@ -265,6 +280,21 @@ impl Node {
                     }
                 }
                 continue;
+            }
+
+            match self
+                .try_auto_connect_graph_session(&peer_config, peer_identity.clone())
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(err) => {
+                    debug!(
+                        npub = %peer_config.npub,
+                        error = %err,
+                        "Existing FIPS graph did not warm refreshed peer"
+                    );
+                }
             }
 
             match self.initiate_peer_connection(&peer_config).await {
@@ -331,6 +361,24 @@ impl Node {
         );
 
         for peer_config in peer_configs {
+            let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
+                Ok(identity) => identity,
+                Err(_) => continue,
+            };
+            match self
+                .try_auto_connect_graph_session(&peer_config, peer_identity.clone())
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(err) => {
+                    debug!(
+                        npub = %peer_config.npub,
+                        error = %err,
+                        "Existing FIPS graph did not warm auto-connect peer"
+                    );
+                }
+            }
             if let Err(e) = self.initiate_peer_connection(&peer_config).await {
                 warn!(
                     npub = %peer_config.npub,
@@ -360,6 +408,52 @@ impl Node {
         }
 
         self.warm_auto_connect_graph_sessions().await;
+    }
+
+    pub(in crate::node) async fn try_auto_connect_graph_session(
+        &mut self,
+        peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> Result<bool, NodeError> {
+        if !peer_config.is_auto_connect() {
+            return Ok(false);
+        }
+
+        let peer_node_addr = *peer_identity.node_addr();
+        if self.peers.contains_key(&peer_node_addr) {
+            return Ok(false);
+        }
+        if self
+            .sessions
+            .get(&peer_node_addr)
+            .is_some_and(|entry| entry.is_established() || entry.is_initiating())
+        {
+            return Ok(true);
+        }
+        if self.find_next_hop(&peer_node_addr).is_none() {
+            return Ok(false);
+        }
+
+        self.register_identity(peer_node_addr, peer_identity.pubkey_full());
+        match self
+            .initiate_session(peer_node_addr, peer_identity.pubkey_full())
+            .await
+        {
+            Ok(()) => {
+                debug!(
+                    peer = %self.peer_display_name(&peer_node_addr),
+                    "Warmed auto-connect peer session over existing FIPS graph"
+                );
+                Ok(true)
+            }
+            Err(NodeError::SendFailed { node_addr, reason })
+                if node_addr == peer_node_addr && reason == "no route to destination" =>
+            {
+                self.maybe_initiate_lookup(&peer_node_addr).await;
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Initiate a connection to a single peer.
@@ -1288,6 +1382,266 @@ impl Node {
         }
     }
 
+    pub(super) fn start_local_instance_discovery(&mut self) {
+        if !self.config.node.discovery.local.enabled {
+            return;
+        }
+        let Some(scope) = self.lan_discovery_scope() else {
+            debug!("local instance discovery not started: no discovery scope");
+            return;
+        };
+        let now_ms = Self::now_ms();
+        match crate::discovery::local::LocalInstanceRegistry::new(
+            self.identity.npub(),
+            scope,
+            &self.config.node.discovery.local,
+            now_ms,
+        ) {
+            Ok(registry) => {
+                self.local_instance_registry = Some(registry);
+                self.local_instance_started_at_ms = Some(now_ms);
+                self.last_local_instance_publish_ms = None;
+                self.last_local_instance_scan_ms = None;
+                self.publish_local_instance_record(now_ms);
+                info!("Same-host FIPS instance discovery enabled");
+            }
+            Err(crate::discovery::local::LocalInstanceRegistryError::Disabled) => {
+                debug!("same-host FIPS instance discovery disabled");
+            }
+            Err(err) => {
+                debug!(error = %err, "same-host FIPS instance discovery not started");
+            }
+        }
+    }
+
+    fn local_instance_contacts(&self) -> Vec<crate::discovery::local::LocalInstanceContact> {
+        let mut contacts = Vec::new();
+        for handle in self.transports.values() {
+            if !handle.is_operational() || !handle.accept_connections() {
+                continue;
+            }
+            let transport = handle.transport_type().name;
+            if transport != "udp" && transport != "tcp" {
+                continue;
+            }
+            let Some(local_addr) = handle.local_addr() else {
+                continue;
+            };
+            let Some(contact) =
+                crate::discovery::local::contact_for_transport_addr(transport, local_addr)
+            else {
+                continue;
+            };
+            if contacts
+                .iter()
+                .any(|existing: &crate::discovery::local::LocalInstanceContact| {
+                    existing.transport == contact.transport && existing.addr == contact.addr
+                })
+            {
+                continue;
+            }
+            contacts.push(contact);
+        }
+        contacts
+    }
+
+    fn publish_local_instance_record(&mut self, now_ms: u64) {
+        let Some(registry) = self.local_instance_registry.clone() else {
+            return;
+        };
+        let contacts = self.local_instance_contacts();
+        match registry.publish(contacts, now_ms) {
+            Ok(()) => {
+                self.last_local_instance_publish_ms = Some(now_ms);
+            }
+            Err(err) => {
+                debug!(error = %err, "failed to publish same-host FIPS instance record");
+            }
+        }
+    }
+
+    fn maybe_publish_local_instance_record(&mut self, now_ms: u64) {
+        if self.local_instance_registry.is_none() {
+            return;
+        }
+        let interval_ms = self.config.node.discovery.local.publish_interval_ms();
+        let due = self
+            .last_local_instance_publish_ms
+            .map(|last| now_ms.saturating_sub(last) >= interval_ms)
+            .unwrap_or(true);
+        if due {
+            self.publish_local_instance_record(now_ms);
+        }
+    }
+
+    fn local_instance_scan_due(&self, now_ms: u64) -> bool {
+        if self.local_instance_registry.is_none() {
+            return false;
+        }
+        let cfg = &self.config.node.discovery.local;
+        let interval_ms = if self
+            .local_instance_started_at_ms
+            .map(|started| now_ms.saturating_sub(started) <= cfg.startup_scan_duration_ms())
+            .unwrap_or(false)
+        {
+            cfg.startup_scan_interval_ms()
+        } else {
+            cfg.scan_interval_ms()
+        };
+        self.last_local_instance_scan_ms
+            .map(|last| now_ms.saturating_sub(last) >= interval_ms)
+            .unwrap_or(true)
+    }
+
+    fn local_instance_peer_allowed(&self, identity: &PeerIdentity) -> bool {
+        if self.config.peers().iter().any(|peer| {
+            PeerIdentity::from_npub(&peer.npub)
+                .map(|configured| configured.node_addr() == identity.node_addr())
+                .unwrap_or(false)
+        }) {
+            return true;
+        }
+        self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Open
+    }
+
+    fn local_instance_peer_addresses(
+        &self,
+        record: &crate::discovery::local::LocalInstanceRecord,
+    ) -> Vec<PeerAddress> {
+        let mut addresses = Vec::new();
+        for contact in &record.contacts {
+            if contact.transport != "udp" && contact.transport != "tcp" {
+                continue;
+            }
+            let Ok(socket_addr) = contact.addr.parse::<SocketAddr>() else {
+                debug!(
+                    npub = %record.npub,
+                    transport = %contact.transport,
+                    addr = %contact.addr,
+                    "local instance discovery: skip non-socket contact"
+                );
+                continue;
+            };
+            if !socket_addr.ip().is_loopback() {
+                debug!(
+                    npub = %record.npub,
+                    addr = %contact.addr,
+                    "local instance discovery: skip non-loopback contact"
+                );
+                continue;
+            }
+            let address =
+                PeerAddress::with_priority(contact.transport.clone(), contact.addr.clone(), 10)
+                    .with_seen_at_ms(record.updated_at_ms);
+            if addresses.iter().any(|existing: &PeerAddress| {
+                existing.transport == address.transport && existing.addr == address.addr
+            }) {
+                continue;
+            }
+            addresses.push(address);
+        }
+        addresses
+    }
+
+    /// Scan the same-host registry only on startup and then at a low cadence.
+    /// This avoids a per-second filesystem poll while preserving the fast path
+    /// for processes launched around the same time.
+    pub(super) async fn poll_local_instance_discovery(&mut self) {
+        let Some(registry) = self.local_instance_registry.clone() else {
+            return;
+        };
+        let now_ms = Self::now_ms();
+        self.maybe_publish_local_instance_record(now_ms);
+        if !self.local_instance_scan_due(now_ms) {
+            return;
+        }
+        self.last_local_instance_scan_ms = Some(now_ms);
+
+        let records = match registry.scan(now_ms, self.config.node.discovery.local.stale_after_ms())
+        {
+            Ok(records) => records,
+            Err(err) => {
+                debug!(error = %err, "same-host FIPS instance scan failed");
+                return;
+            }
+        };
+        if records.is_empty() {
+            return;
+        }
+
+        let mut connect_budget = self.discovery_connect_budget();
+        let mut skipped_budget = 0usize;
+        for record in records {
+            let identity = match PeerIdentity::from_npub(&record.npub) {
+                Ok(identity) => identity,
+                Err(err) => {
+                    debug!(npub = %record.npub, error = %err, "local instance discovery: skip bad npub");
+                    continue;
+                }
+            };
+            let peer_node_addr = *identity.node_addr();
+            if peer_node_addr == *self.identity.node_addr() {
+                continue;
+            }
+            if !self.local_instance_peer_allowed(&identity) {
+                debug!(
+                    npub = %identity.short_npub(),
+                    "local instance discovery: skip unconfigured peer"
+                );
+                continue;
+            }
+
+            let addresses = self.local_instance_peer_addresses(&record);
+            if addresses.is_empty() {
+                continue;
+            }
+
+            if self.peers.contains_key(&peer_node_addr)
+                && self.active_peer_candidate_is_fresh_enough_to_skip(&peer_node_addr, &addresses)
+            {
+                continue;
+            }
+
+            for address in addresses {
+                let Some((transport_id, remote_addr)) =
+                    self.resolve_peer_address_for_match(&address)
+                else {
+                    continue;
+                };
+                if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
+                    continue;
+                }
+                if connect_budget == 0 || self.path_candidate_attempt_budget(&peer_node_addr) == 0 {
+                    skipped_budget = skipped_budget.saturating_add(1);
+                    continue;
+                }
+                info!(
+                    npub = %identity.short_npub(),
+                    transport = %address.transport,
+                    addr = %address.addr,
+                    "same-host FIPS instance discovery: initiating handshake"
+                );
+                if let Err(err) = self
+                    .initiate_connection(transport_id, remote_addr, identity.clone())
+                    .await
+                {
+                    debug!(
+                        npub = %record.npub,
+                        error = %err,
+                        "same-host FIPS instance discovery: failed to initiate connection"
+                    );
+                }
+                connect_budget = connect_budget.saturating_sub(1);
+            }
+        }
+        if skipped_budget > 0 {
+            debug!(
+                skipped = skipped_budget,
+                "same-host FIPS instance discovery connect budget exhausted"
+            );
+        }
+    }
+
     /// Drain mDNS-discovered peers and initiate Noise XX handshakes. For
     /// active peers this is a non-disruptive alternate-path refresh: the
     /// current link stays live until a new handshake authenticates and
@@ -1674,6 +2028,9 @@ impl Node {
             }
         }
 
+        self.start_local_instance_discovery();
+        self.poll_local_instance_discovery().await;
+
         // Connect to static peers before TUN is active
         // This allows handshake messages to be sent before we start accepting packets
         node_start_debug_log("Node::start initiate peer connections begin");
@@ -1975,6 +2332,12 @@ impl Node {
         // we don't get a clean unregister out before the daemon exits.
         if let Some(lan) = self.lan_discovery.take() {
             lan.shutdown().await;
+        }
+
+        if let Some(registry) = self.local_instance_registry.take()
+            && let Err(err) = registry.remove()
+        {
+            debug!(error = %err, "failed to remove same-host FIPS instance record");
         }
 
         // Shutdown transports (they're packet producers)

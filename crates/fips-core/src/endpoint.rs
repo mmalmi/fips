@@ -211,6 +211,7 @@ impl FipsEndpointBuilder {
         }
         if let Some(scope) = self.discovery_scope.as_deref() {
             config.node.discovery.lan.scope = Some(scope.to_string());
+            config.node.discovery.local.enabled = true;
             apply_default_scoped_discovery(&mut config, scope);
         }
         for interface in &self.local_ethernet_interfaces {
@@ -275,6 +276,7 @@ fn apply_default_scoped_discovery(config: &mut Config, scope: &str) {
     config.node.discovery.nostr.share_local_candidates = true;
     config.node.discovery.nostr.app = scope.to_string();
     config.node.discovery.lan.scope = Some(scope.to_string());
+    config.node.discovery.local.enabled = true;
     config.transports.udp = TransportInstances::Single(UdpConfig {
         bind_addr: Some("0.0.0.0:0".to_string()),
         advertise_on_nostr: Some(true),
@@ -817,6 +819,7 @@ mod tests {
             config.node.discovery.lan.scope.as_deref(),
             Some("nostr-vpn:test")
         );
+        assert!(config.node.discovery.local.enabled);
 
         let udp = match config.transports.udp {
             TransportInstances::Single(udp) => udp,
@@ -910,6 +913,7 @@ mod tests {
             config.node.discovery.lan.scope.as_deref(),
             Some("nostr-vpn:test")
         );
+        assert!(config.node.discovery.local.enabled);
         let udp = match config.transports.udp {
             TransportInstances::Single(udp) => udp,
             TransportInstances::Named(_) => panic!("expected explicit UDP transport"),

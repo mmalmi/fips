@@ -7,6 +7,7 @@
 //! existing Noise/FMP transport path can take over.
 
 pub mod lan;
+pub mod local;
 pub mod nostr;
 
 use crate::config::UdpConfig;

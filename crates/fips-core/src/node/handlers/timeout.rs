@@ -181,12 +181,46 @@ impl Node {
             .map(|(addr, _)| *addr)
             .collect();
 
+        let direct_fallbacks: Vec<_> = timed_out
+            .iter()
+            .filter_map(|addr| {
+                self.config.auto_connect_peers().find_map(|peer| {
+                    crate::PeerIdentity::from_npub(&peer.npub)
+                        .ok()
+                        .filter(|identity| identity.node_addr() == addr)
+                        .and_then(|_| {
+                            (!peer.addresses.is_empty() || self.config.node.discovery.nostr.enabled)
+                                .then(|| peer.clone())
+                        })
+                })
+            })
+            .collect();
+
         for addr in &timed_out {
             let name = self.peer_display_name(addr);
             info!(dest = %name, "Session handshake timed out, removing");
             self.sessions.remove(addr);
             self.pending_tun_packets.remove(addr);
             self.pending_endpoint_data.remove(addr);
+        }
+
+        for peer_config in direct_fallbacks {
+            let peer_identity = crate::PeerIdentity::from_npub(&peer_config.npub).ok();
+            let peer_node_addr = peer_identity.as_ref().map(|identity| *identity.node_addr());
+            info!(
+                npub = %peer_config.npub,
+                "FIPS graph session timed out; trying direct auto-connect path"
+            );
+            if let Err(err) = self.initiate_peer_connection(&peer_config).await {
+                debug!(
+                    npub = %peer_config.npub,
+                    error = %err,
+                    "Direct auto-connect fallback after graph timeout did not start"
+                );
+                if let Some(peer_node_addr) = peer_node_addr {
+                    self.schedule_retry(peer_node_addr, now_ms);
+                }
+            }
         }
 
         // Established initiators keep the final XK msg3 for a short resend

@@ -671,6 +671,13 @@ pub struct Node {
     /// initiated against an mDNS-observed endpoint is what proves the
     /// peer holds the matching private key.
     lan_discovery: Option<Arc<crate::discovery::lan::LanDiscovery>>,
+    /// Same-host JSON registry under `~/.fips/instances`. Records are
+    /// loopback routing hints only; peer identity is still verified by the
+    /// Noise handshake.
+    local_instance_registry: Option<crate::discovery::local::LocalInstanceRegistry>,
+    local_instance_started_at_ms: Option<u64>,
+    last_local_instance_publish_ms: Option<u64>,
+    last_local_instance_scan_ms: Option<u64>,
     /// Wall-clock ms when Nostr discovery successfully started, used to
     /// schedule the one-shot startup advert sweep after a settle delay.
     /// `None` until discovery comes up; remains `None` if discovery is
@@ -865,6 +872,10 @@ impl Node {
             nostr_discovery: None,
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,
+            local_instance_registry: None,
+            local_instance_started_at_ms: None,
+            last_local_instance_publish_ms: None,
+            last_local_instance_scan_ms: None,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),
@@ -1001,6 +1012,10 @@ impl Node {
             nostr_discovery: None,
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,
+            local_instance_registry: None,
+            local_instance_started_at_ms: None,
+            last_local_instance_publish_ms: None,
+            last_local_instance_scan_ms: None,
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),

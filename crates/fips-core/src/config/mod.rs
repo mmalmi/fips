@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
 pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward, Proto};
 pub use node::{
