@@ -3300,15 +3300,12 @@ impl Node {
     }
 
     async fn peer_address_candidates(&self, peer_config: &PeerConfig) -> Vec<PeerAddress> {
-        // Merge every candidate from every source we have for this peer
-        // (operator-configured static addresses, freshly fetched overlay
-        // adverts, callers' recent-peers caches via `update_peers`) and
-        // try them in order of `seen_at_ms` descending — most-recent
-        // first, source-agnostic. Addresses without a freshness signal
-        // sort last. Addresses are hints, not the final word; concrete
-        // candidates in a single pass race each other and `udp:nat` only
-        // starts background Nostr traversal without suppressing direct
-        // static/LAN attempts that appear later in the list.
+        // Merge every candidate from every source we have for this peer.
+        // Explicitly configured addresses keep first shot, then freshly
+        // fetched overlay adverts are appended as fallback candidates. This
+        // lets native peers try known LAN/nvpn/static UDP routes before
+        // slower WebRTC/Nostr-discovered paths, while still racing every
+        // concrete candidate that fits in the per-peer budget.
         let static_addresses = self.static_peer_addresses(peer_config);
         let overlay_addresses = self
             .nostr_peer_fallback_addresses(peer_config, &static_addresses)
@@ -3323,11 +3320,12 @@ impl Node {
             }
         }
 
-        // Stable sort: most-recently-observed first (Some > None), tiebreak
-        // by input order so equal-timestamp addresses keep operator-supplied
-        // priority and the overlay-then-static merge order survives when
-        // nothing has a freshness signal.
+        // Stable sort: explicit priority first, with recency only breaking
+        // ties inside a source tier. `nostr_peer_fallback_addresses` assigns
+        // overlay addresses priorities after the static max, so a fresh
+        // overlay advert cannot leapfrog an operator-provided direct hint.
         candidates.sort_by(|a, b| match (a.seen_at_ms, b.seen_at_ms) {
+            _ if a.priority != b.priority => a.priority.cmp(&b.priority),
             (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,

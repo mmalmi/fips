@@ -46,13 +46,14 @@ pub struct PeerAddress {
     #[serde(default = "default_priority")]
     pub priority: u8,
 
-    /// Wall-clock observation timestamp (Unix ms) for ranking by recency.
+    /// Wall-clock observation timestamp (Unix ms) for ranking by recency
+    /// within the same priority.
     ///
     /// `None` means "no freshness signal" — typically an operator-edited
-    /// static config. The dialer sorts candidates by this field descending
-    /// (most recent first) and tries every address in one pass; `None`
-    /// values sort last. Skipped from serde so that round-tripping a
-    /// config file doesn't produce noisy empty fields.
+    /// static config. The dialer primarily honors explicit address priority
+    /// and only uses this field to order otherwise-equal candidates. Skipped
+    /// from serde so that round-tripping a config file doesn't produce noisy
+    /// empty fields.
     ///
     /// Excluded from `PartialEq`: refreshing the timestamp on a peer that's
     /// otherwise unchanged should not flag it as "updated" in
