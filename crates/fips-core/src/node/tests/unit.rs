@@ -1948,6 +1948,45 @@ fn auto_connect_peer(npub: String, addr: &str) -> crate::config::PeerConfig {
 }
 
 #[tokio::test]
+async fn update_peers_preserves_input_priority_order() {
+    let mut node = make_node();
+    let first = Identity::generate();
+    let second = Identity::generate();
+    let third = Identity::generate();
+
+    let first_original = auto_connect_peer(first.npub(), "127.0.0.1:9");
+    let second_peer = auto_connect_peer(second.npub(), "127.0.0.1:10");
+    let third_peer = auto_connect_peer(third.npub(), "127.0.0.1:11");
+    let first_updated = auto_connect_peer(first.npub(), "127.0.0.1:12");
+
+    let outcome = node
+        .update_peers(vec![
+            first_original,
+            second_peer.clone(),
+            third_peer.clone(),
+            first_updated.clone(),
+        ])
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.added, 3);
+    assert_eq!(
+        node.config
+            .peers
+            .iter()
+            .map(|peer| peer.npub.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            first_updated.npub.as_str(),
+            second_peer.npub.as_str(),
+            third_peer.npub.as_str(),
+        ],
+        "caller priority order should survive de-duplication"
+    );
+    assert_eq!(node.config.peers[0].addresses, first_updated.addresses);
+}
+
+#[tokio::test]
 async fn update_peers_races_alternate_path_even_when_outbound_would_lose() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);

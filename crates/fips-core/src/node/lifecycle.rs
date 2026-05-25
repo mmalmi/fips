@@ -105,6 +105,7 @@ impl Node {
 
         let mut new_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> =
             HashMap::with_capacity(new_peers.len());
+        let mut new_order = Vec::with_capacity(new_peers.len());
         for peer in new_peers {
             let identity = match PeerIdentity::from_npub(&peer.npub) {
                 Ok(id) => id,
@@ -118,7 +119,11 @@ impl Node {
             // Last-write-wins on duplicates so callers passing a multi-source
             // candidate list (e.g. operator hints + recent-peers cache for
             // the same npub) get the merge they meant.
-            new_by_addr.insert(*identity.node_addr(), peer);
+            let node_addr = *identity.node_addr();
+            if !new_by_addr.contains_key(&node_addr) {
+                new_order.push(node_addr);
+            }
+            new_by_addr.insert(node_addr, peer);
         }
 
         let current_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> = self
@@ -190,13 +195,19 @@ impl Node {
             }
         }
 
-        let added_configs: Vec<crate::config::PeerConfig> =
-            added.iter().map(|addr| new_by_addr[addr].clone()).collect();
+        let added_configs: Vec<crate::config::PeerConfig> = new_order
+            .iter()
+            .filter(|addr| added.contains(addr))
+            .map(|addr| new_by_addr[addr].clone())
+            .collect();
 
         // Replace the live config peer list before initiating connections so
         // any helper that consults `self.config.peers()` during the dial
         // (alias lookup, retry-state seeding) sees the new entries.
-        self.config.peers = new_by_addr.into_values().collect();
+        self.config.peers = new_order
+            .iter()
+            .filter_map(|addr| new_by_addr.get(addr).cloned())
+            .collect();
 
         for peer_config in added_configs {
             outcome.added += 1;
