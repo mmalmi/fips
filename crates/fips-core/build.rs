@@ -1,14 +1,18 @@
 use std::process::Command;
 
-fn main() {
-    // Git commit hash (short)
-    let git_hash = Command::new("git")
-        .args(["rev-parse", "--short=10", "HEAD"])
+fn git_output(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+        .filter(|s| !s.is_empty())
+}
+
+fn main() {
+    // Git commit hash (short)
+    let git_hash = git_output(&["rev-parse", "--short=10", "HEAD"]).unwrap_or_default();
     println!("cargo:rustc-env=FIPS_GIT_HASH={git_hash}");
 
     // Dirty working tree
@@ -30,9 +34,19 @@ fn main() {
         println!("cargo:rustc-env=FIPS_TARGET={target}");
     }
 
-    // Rebuild when commits change
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/");
+    // Rebuild when the checked-out commit changes. Do not watch the whole refs
+    // tree: routine `git fetch` updates unrelated refs and should not invalidate
+    // Cargo's cache for dependents.
+    if let Some(head_path) = git_output(&["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={head_path}");
+    } else {
+        println!("cargo:rerun-if-changed=.git/HEAD");
+    }
+    if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"]) {
+        if let Some(head_ref_path) = git_output(&["rev-parse", "--git-path", &head_ref]) {
+            println!("cargo:rerun-if-changed={head_ref_path}");
+        }
+    }
 
     // Support reproducible builds (Debian packaging)
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
