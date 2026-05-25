@@ -2561,7 +2561,24 @@ impl Node {
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
 
         for addr in addresses {
+            if attempted && addr.seen_at_ms.is_some() {
+                debug!(
+                    npub = %peer_config.npub,
+                    transport = %addr.transport,
+                    addr = %addr.addr,
+                    "Skipping overlay fallback because a configured direct candidate is already in flight"
+                );
+                continue;
+            }
+
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
+                if attempted {
+                    debug!(
+                        npub = %peer_config.npub,
+                        "Skipping Nostr NAT fallback because a configured direct candidate is already in flight"
+                    );
+                    continue;
+                }
                 if !allow_bootstrap_nat {
                     continue;
                 }

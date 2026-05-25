@@ -1727,12 +1727,11 @@ async fn test_seed_path_mtu_tightens_looser_existing_value() {
     }
 }
 
-/// On retry, configured direct addresses keep priority, but a fresh overlay
-/// advert must still stay in the same bounded race. That way native peers try
-/// known LAN/nvpn routes first without getting wedged forever when a direct
-/// UDP hint no longer works.
+/// On retry, configured direct addresses keep priority and suppress fresh
+/// overlay fallbacks for that attempt. This prevents a healthy static LAN/nvpn
+/// route from racing extra WebRTC/ICE sockets on every reconnect tick.
 #[tokio::test]
-async fn test_retry_dials_static_udp_before_overlay_advert() {
+async fn test_retry_dials_static_udp_without_overlay_advert_race() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -1798,18 +1797,14 @@ async fn test_retry_dials_static_udp_before_overlay_advert() {
     let fresh_link = node.find_link_by_addr(transport_id, &fresh);
     let stale_link = node.find_link_by_addr(transport_id, &stale);
     assert!(
-        fresh_link.is_some(),
-        "retry should dial the just-refreshed overlay advert {fresh_overlay_addr}"
+        fresh_link.is_none(),
+        "retry should not race overlay advert {fresh_overlay_addr} while a static candidate is in flight"
     );
     assert!(
         stale_link.is_some(),
         "retry should keep stale static {stale_static_addr} in the bounded path race"
     );
-    assert!(
-        stale_link.unwrap().as_u64() < fresh_link.unwrap().as_u64(),
-        "explicit static UDP should be attempted before overlay fallback"
-    );
-    assert_eq!(node.connection_count(), 2);
+    assert_eq!(node.connection_count(), 1);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -1817,11 +1812,11 @@ async fn test_retry_dials_static_udp_before_overlay_advert() {
 }
 
 /// Cold-start dial prefers explicitly configured direct hints before overlay
-/// adverts. With `addresses` treated as hints (not authoritative) and "try
-/// everything in one pass", the overlay candidate remains in the bounded race
-/// but cannot leapfrog operator-supplied static UDP.
+/// adverts. Static addresses are tried first and suppress overlay fallback for
+/// the current attempt so configured native routes do not create extra
+/// connection pressure while their handshake is in flight.
 #[tokio::test]
-async fn test_bootstrap_dials_static_address_first() {
+async fn test_bootstrap_dials_static_address_without_overlay_race() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -1885,16 +1880,12 @@ async fn test_bootstrap_dials_static_address_first() {
     let overlay_link = node.find_link_by_addr(transport_id, &overlay);
     let static_link = node.find_link_by_addr(transport_id, &stat);
     assert!(
-        overlay_link.is_some(),
-        "cold-start should keep the freshly observed overlay fallback"
+        overlay_link.is_none(),
+        "cold-start should not race overlay fallback while a static candidate is in flight"
     );
     assert!(
         static_link.is_some(),
         "cold-start should keep the unstamped static address in the bounded path race"
-    );
-    assert!(
-        static_link.unwrap().as_u64() < overlay_link.unwrap().as_u64(),
-        "static address should be attempted before overlay fallback"
     );
 
     for transport in node.transports.values_mut() {
