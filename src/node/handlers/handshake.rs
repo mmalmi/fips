@@ -207,6 +207,35 @@ impl Node {
             possible_restart = true;
         }
 
+        // Early cap check: at max_peers and this is a net-new identity?
+        // Bypass for known peers (reconnect / cross-connection) — admitting
+        // them doesn't grow peers.len(). This silent-drops the Msg1 before
+        // the Msg2 build/send and index allocation, avoiding wasted wire
+        // bytes and giving the peer cleaner semantics (no fake-completed
+        // handshake whose data frames subsequently fail decryption here).
+        // The late cap check inside promote_connection() is intentionally
+        // left in place as defense-in-depth.
+        if self.max_peers > 0 && self.peers.len() >= self.max_peers {
+            let is_known_active = self.peers.contains_key(&peer_node_addr);
+            let is_pending_outbound = self.connections.iter().any(|(_, conn)| {
+                conn.expected_identity()
+                    .map(|id| *id.node_addr() == peer_node_addr)
+                    .unwrap_or(false)
+            });
+            if !is_known_active && !is_pending_outbound {
+                debug!(
+                    peer = %self.peer_display_name(&peer_node_addr),
+                    max = self.max_peers,
+                    "Silent-dropping Msg1 at max_peers cap (early gate; no Msg2 sent)"
+                );
+                // `link_id` was allocated above but `conn` is still a local
+                // (not yet inserted into self.connections / self.links /
+                // self.addr_to_link), so the local drop suffices.
+                self.msg1_rate_limiter.complete_handshake();
+                return;
+            }
+        }
+
         // Epoch-based restart detection and duplicate msg1 handling.
         //
         // If we fell through from the addr_to_link check above with
