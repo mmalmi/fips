@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Outbound connection initiation now honors the `node.limits.max_peers`
+  cap that was previously only checked on inbound msg1 admission. Four
+  paths gated: auto-reconnect retries (`process_pending_retries`),
+  Nostr-mediated discovery's `BootstrapEvent::Established` adoption, and
+  both sides of the Nostr-mediated NAT-traversal punch (offer initiation
+  in the runtime's outgoing path, offer acceptance in the responder's
+  incoming-offer handler). At saturation, a node now performs zero
+  outbound work on these paths; only existing peer maintenance and
+  overlay-advert refresh continue. The inbound gate at
+  `handshake.rs:1114` is unchanged. Introduces a shared
+  `Node::outbound_admission_check()` helper so the invariant is
+  grep-able and unit-testable.
 - Mesh-size estimator (`compute_mesh_size`) no longer double-counts the
   parent's bloom cardinality during the transient cache window after a
   local parent-switch. Symptom: `fipsctl show status` / fipstop displayed
