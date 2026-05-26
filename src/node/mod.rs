@@ -1173,6 +1173,9 @@ impl Node {
 
         // Children's filters: each child's subtree is disjoint
         for (peer_addr, peer) in &self.peers {
+            if peer_addr == &parent_id {
+                continue;
+            }
             if let Some(decl) = self.tree_state.peer_declaration(peer_addr)
                 && *decl.parent_id() == my_addr
             {
