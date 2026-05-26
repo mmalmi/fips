@@ -145,6 +145,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `handshake.rs:1114` is unchanged. Introduces a shared
   `Node::outbound_admission_check()` helper so the invariant is
   grep-able and unit-testable.
+- Inbound `handle_msg1` now silent-drops at `node.limits.max_peers`
+  saturation *before* building/sending Msg2, instead of replying with
+  Msg2 and then rejecting at `promote_connection`. Adds an early cap
+  check positioned after identity verification (so the
+  reconnect / cross-connection bypass for known peers still fires) and
+  before index allocation + Msg2 wire send. The late cap check inside
+  `promote_connection` is intentionally retained as
+  defense-in-depth. Wire savings observed in a 45 s ops tcpdump at
+  saturation: ~3.6 cap-denials/s × Msg2 (~104 B + AEAD compute) each.
+  Bigger win is cleaner peer-side semantics — no fake-completed
+  handshake whose subsequent data frames fail decryption on this side.
 - Mesh-size estimator (`compute_mesh_size`) no longer double-counts the
   parent's bloom cardinality during the transient cache window after a
   local parent-switch. Symptom: `fipsctl show status` / fipstop displayed
