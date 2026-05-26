@@ -1,6 +1,7 @@
 use super::*;
+use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::ReceivedPacket;
-use crate::node::acl::PeerAclReloader;
+use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use crate::node::wire::{build_msg1, build_msg2};
 use crate::utils::index::SessionIndex;
 use std::path::PathBuf;
@@ -36,6 +37,48 @@ fn test_system_files_disabled_uses_memory_only_acl() {
     assert_eq!(status.effective_mode, "default_open");
     assert!(!status.enforcement_active);
     assert!(!node.reload_peer_acl());
+}
+
+#[test]
+fn configured_only_discovery_rejects_nonconfigured_peer() {
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    let node = Node::new(config).unwrap();
+    let stranger = Identity::generate();
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(stranger.pubkey_full()),
+        PeerAclContext::InboundHandshake,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(matches!(result, Err(NodeError::AccessDenied(_))));
+}
+
+#[test]
+fn configured_only_discovery_allows_configured_peer() {
+    let peer = Identity::generate();
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    config.peers = vec![PeerConfig {
+        npub: peer.npub(),
+        ..PeerConfig::default()
+    }];
+    let node = Node::new(config).unwrap();
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(peer.pubkey_full()),
+        PeerAclContext::InboundHandshake,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(result.is_ok());
 }
 
 #[tokio::test]

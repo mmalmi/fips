@@ -9,6 +9,7 @@
 //! evaluated first, an allowlist match overrides a denylist match for the
 //! same peer.
 
+use crate::config::NostrDiscoveryPolicy;
 use crate::node::{Node, NodeError};
 use crate::transport::{TransportAddr, TransportId};
 use crate::upper::hosts::{DEFAULT_HOSTS_PATH, HostMap, HostMapReloader, file_mtime};
@@ -414,6 +415,19 @@ impl PeerAclReloader {
 }
 
 impl Node {
+    fn enforces_configured_only_peer_admission(&self) -> bool {
+        self.config.node.discovery.nostr.enabled
+            && self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::ConfiguredOnly
+    }
+
+    fn is_configured_peer_identity(&self, peer_identity: &PeerIdentity) -> bool {
+        self.config.peers().iter().any(|peer| {
+            PeerIdentity::from_npub(&peer.npub)
+                .map(|configured| configured.node_addr() == peer_identity.node_addr())
+                .unwrap_or(false)
+        })
+    }
+
     /// Reload the peer ACL if the ACL or hosts files changed.
     pub(crate) fn reload_peer_acl(&mut self) -> bool {
         self.peer_acl.check_reload()
@@ -432,6 +446,25 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> Result<(), NodeError> {
+        if self.enforces_configured_only_peer_admission()
+            && !self.is_configured_peer_identity(peer_identity)
+        {
+            let peer_node_addr = *peer_identity.node_addr();
+            warn!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                npub = %peer_identity.npub(),
+                transport_id = %transport_id,
+                remote_addr = %remote_addr,
+                context = %context,
+                "Rejected non-configured peer by configured-only discovery policy"
+            );
+
+            return Err(NodeError::AccessDenied(format!(
+                "peer {} rejected by configured-only discovery policy",
+                peer_identity.npub()
+            )));
+        }
+
         let decision = self.peer_acl.acl().check(peer_identity);
         if decision.allowed() {
             return Ok(());
