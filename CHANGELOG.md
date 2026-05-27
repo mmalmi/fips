@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-05-27
+
+### Added
+
+- `fips-core` now exposes `node.connected_udp.*` settings for the connected UDP
+  fast path, including configurable file-descriptor reserve headroom.
+
+### Fixed
+
+- Connected UDP activation now respects the process `RLIMIT_NOFILE` budget so
+  high-peer nodes do not exhaust descriptors while installing per-peer sockets.
+- Peer receive-drain shutdown now closes its wake pipe promptly and avoids
+  blocking when an idle connected UDP drain is dropped.
+- Multi-file YAML config loading now deep-merges partial sections so overlays
+  can set `node.connected_udp` without replacing unrelated `node` defaults.
+
+### Changed
+
+- Debian service packaging now raises `LimitNOFILE` for higher-capacity FIPS
+  nodes.
+
+## [0.3.19] - 2026-05-27
+
+### Fixed
+
+- FSP rekey handling now preserves epoch state more defensively.
+- Configured-only discovery now rejects unknown peers instead of accepting
+  ambient overlay discoveries.
+- Peer update priority is preserved when refreshing peer configuration.
+- Static peer dialing avoids an overlay race after startup.
+- Build metadata no longer forces Cargo rebuilds after unrelated git fetches.
+
 ## [0.3.18] - 2026-05-22
 
 ### Fixed

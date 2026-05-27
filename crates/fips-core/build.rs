@@ -42,10 +42,10 @@ fn main() {
     } else {
         println!("cargo:rerun-if-changed=.git/HEAD");
     }
-    if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"]) {
-        if let Some(head_ref_path) = git_output(&["rev-parse", "--git-path", &head_ref]) {
-            println!("cargo:rerun-if-changed={head_ref_path}");
-        }
+    if let Some(head_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"])
+        && let Some(head_ref_path) = git_output(&["rev-parse", "--git-path", &head_ref])
+    {
+        println!("cargo:rerun-if-changed={head_ref_path}");
     }
 
     // Support reproducible builds (Debian packaging)

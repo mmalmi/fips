@@ -10,6 +10,19 @@ node:
     #
     # Or set an explicit key (overrides persistent):
     # nsec: "nsec1..."
+  # Bootstrap nodes should raise max_peers/max_links together with the
+  # service/process file descriptor limit.
+  # limits:
+  #   max_peers: 4096
+  #   max_links: 4096
+  connected_udp:
+    # Per-peer connected UDP fast path. Existing env overrides are also
+    # supported for A/B tests: FIPS_CONNECTED_UDP and
+    # FIPS_CONNECTED_UDP_FD_RESERVE.
+    enabled: true
+    # Headroom to leave for non-connected-UDP file descriptors. This is
+    # not the peer cap; connected UDP uses ~3 FDs per installed peer.
+    fd_reserve: 128
   discovery:
     # Optional Nostr-mediated overlay endpoint discovery.
     # nostr:

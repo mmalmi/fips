@@ -26,8 +26,10 @@
 //! showed the problem was mismatched listener/peer `SO_REUSE*` state:
 //! with the live listener and connected sibling in the same reuse group,
 //! the connected `send(2)` path improves the MacBook Wi-Fi sender case
-//! and is now the default. Operators can still disable it with
-//! `FIPS_MACOS_CONNECTED_UDP=0` or `FIPS_CONNECTED_UDP=0` for A/B tests.
+//! and is now the default. Operators can configure it through
+//! `node.connected_udp.*`; `FIPS_MACOS_CONNECTED_UDP`,
+//! `FIPS_CONNECTED_UDP`, and `FIPS_CONNECTED_UDP_FD_RESERVE` remain
+//! environment overrides for A/B tests.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -37,6 +39,9 @@ use crate::transport::TransportHandle;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tracing::{debug, info, warn};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CONNECTED_UDP_FDS_PER_PEER: usize = 3;
 
 impl Node {
     /// Tick-driven activation of per-peer connected UDP sockets.
@@ -52,7 +57,7 @@ impl Node {
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            if !connected_udp_enabled() {
+            if !connected_udp_enabled(self.config.node.connected_udp.enabled) {
                 return;
             }
 
@@ -129,6 +134,21 @@ impl Node {
                 TransportHandle::Udp(u) => u,
                 _ => return Ok(()), // not a UDP transport — feature N/A
             };
+            let installed_count = self.connected_udp_installed_count();
+            let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
+            let fd_soft_limit = connected_udp_fd_soft_limit();
+            if !connected_udp_fd_budget_allows(installed_count, fd_soft_limit, fd_reserve) {
+                return Err(match fd_soft_limit {
+                    Some(limit) => format!(
+                        "fd budget exhausted: connected_udp_peers={}, soft_limit={}, reserve={}, fds_per_peer={}",
+                        installed_count, limit, fd_reserve, CONNECTED_UDP_FDS_PER_PEER
+                    ),
+                    None => format!(
+                        "fd budget exhausted: connected_udp_peers={}, reserve={}, fds_per_peer={}",
+                        installed_count, fd_reserve, CONNECTED_UDP_FDS_PER_PEER
+                    ),
+                });
+            }
             let peer_sa = udp
                 .resolve_for_off_task(&peer_transport_addr)
                 .await
@@ -187,6 +207,14 @@ impl Node {
         Ok(())
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn connected_udp_installed_count(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|peer| peer.connected_udp().is_some())
+            .count()
+    }
+
     /// Clear the per-peer connected UDP socket + drain for a peer.
     /// Called on peer disconnect / removal. The drain thread exits
     /// via self-pipe; the kernel fd closes when the last `Arc`
@@ -208,15 +236,15 @@ impl Node {
 }
 
 #[cfg(target_os = "linux")]
-fn connected_udp_enabled() -> bool {
-    env_flag("FIPS_CONNECTED_UDP").unwrap_or(true)
+fn connected_udp_enabled(config_enabled: bool) -> bool {
+    env_flag("FIPS_CONNECTED_UDP").unwrap_or(config_enabled)
 }
 
 #[cfg(target_os = "macos")]
-fn connected_udp_enabled() -> bool {
+fn connected_udp_enabled(config_enabled: bool) -> bool {
     env_flag("FIPS_MACOS_CONNECTED_UDP")
         .or_else(|| env_flag("FIPS_CONNECTED_UDP"))
-        .unwrap_or(true)
+        .unwrap_or(config_enabled)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -226,5 +254,65 @@ fn env_flag(name: &str) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_fd_reserve(config_reserve: usize) -> usize {
+    std::env::var("FIPS_CONNECTED_UDP_FD_RESERVE")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(config_reserve)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_fd_soft_limit() -> Option<usize> {
+    let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    let limit = unsafe { limit.assume_init() };
+    if limit.rlim_cur == libc::RLIM_INFINITY {
+        None
+    } else {
+        Some((limit.rlim_cur as u128).min(usize::MAX as u128) as usize)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_fd_budget_allows(
+    installed_peers: usize,
+    soft_limit: Option<usize>,
+    reserve: usize,
+) -> bool {
+    let Some(soft_limit) = soft_limit else {
+        return true;
+    };
+    let available = soft_limit.saturating_sub(reserve);
+    installed_peers
+        .saturating_add(1)
+        .saturating_mul(CONNECTED_UDP_FDS_PER_PEER)
+        <= available
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fd_budget_reserves_headroom_for_other_sockets() {
+        assert!(connected_udp_fd_budget_allows(0, Some(131), 128));
+        assert!(!connected_udp_fd_budget_allows(1, Some(131), 128));
+    }
+
+    #[test]
+    fn fd_budget_treats_unlimited_or_unknown_limit_as_allowed() {
+        assert!(connected_udp_fd_budget_allows(10_000, None, 128));
+    }
+
+    #[test]
+    fn fd_budget_saturates_when_reserve_exceeds_limit() {
+        assert!(!connected_udp_fd_budget_allows(0, Some(64), 128));
     }
 }

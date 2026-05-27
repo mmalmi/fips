@@ -34,9 +34,10 @@ pub use crate::discovery::local::LocalInstanceDiscoveryConfig;
 #[cfg(target_os = "linux")]
 pub use gateway::{ConntrackConfig, GatewayConfig, GatewayDnsConfig, PortForward, Proto};
 pub use node::{
-    BloomConfig, BuffersConfig, CacheConfig, ControlConfig, DiscoveryConfig, LimitsConfig,
-    NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig, RekeyConfig,
-    RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig, TreeConfig,
+    BloomConfig, BuffersConfig, CacheConfig, ConnectedUdpConfig, ControlConfig, DiscoveryConfig,
+    LimitsConfig, NodeConfig, NostrDiscoveryConfig, NostrDiscoveryPolicy, RateLimitConfig,
+    RekeyConfig, RetryConfig, RoutingConfig, RoutingMode, SessionConfig, SessionMmpConfig,
+    TreeConfig,
 };
 pub use peer::{ConnectPolicy, PeerAddress, PeerConfig};
 #[cfg(feature = "sim-transport")]
@@ -455,16 +456,36 @@ impl Config {
     ///
     /// Paths are processed in order, with later paths overriding earlier ones.
     pub fn load_from_paths(paths: &[PathBuf]) -> Result<(Self, Vec<PathBuf>), ConfigError> {
-        let mut config = Config::default();
+        let mut merged = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         let mut loaded_paths = Vec::new();
 
         for path in paths {
             if path.exists() {
-                let file_config = Self::load_file(path)?;
-                config.merge(file_config);
+                let contents =
+                    std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                let mut file_config: serde_yaml::Value =
+                    serde_yaml::from_str(&contents).map_err(|e| ConfigError::ParseYaml {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                if file_config.is_null() {
+                    file_config = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+                }
+                merge_yaml_value(&mut merged, file_config);
                 loaded_paths.push(path.clone());
             }
         }
+
+        let config = serde_yaml::from_value(merged).map_err(|e| ConfigError::ParseYaml {
+            path: loaded_paths
+                .last()
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from("<merged config>")),
+            source: e,
+        })?;
 
         Ok((config, loaded_paths))
     }
@@ -691,6 +712,22 @@ impl Config {
     }
 }
 
+fn merge_yaml_value(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
+    match (base, overlay) {
+        (serde_yaml::Value::Mapping(base_map), serde_yaml::Value::Mapping(overlay_map)) => {
+            for (key, value) in overlay_map {
+                match base_map.get_mut(&key) {
+                    Some(existing) => merge_yaml_value(existing, value),
+                    None => {
+                        base_map.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay) => *base_slot = overlay,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,6 +876,49 @@ node:
         let (config, loaded) = Config::load_from_paths(&paths).unwrap();
 
         assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            config.node.identity.nsec,
+            Some("high_priority_nsec".to_string())
+        );
+    }
+
+    #[test]
+    fn test_load_from_paths_deep_merges_partial_node_sections() {
+        let temp_dir = TempDir::new().unwrap();
+        let low_priority = temp_dir.path().join("low.yaml");
+        let high_priority = temp_dir.path().join("high.yaml");
+
+        fs::write(
+            &low_priority,
+            r#"
+node:
+  limits:
+    max_peers: 4096
+  connected_udp:
+    fd_reserve: 2048
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            &high_priority,
+            r#"
+node:
+  identity:
+    nsec: "high_priority_nsec"
+  connected_udp:
+    enabled: false
+"#,
+        )
+        .unwrap();
+
+        let (config, loaded) =
+            Config::load_from_paths(&[low_priority.clone(), high_priority.clone()]).unwrap();
+
+        assert_eq!(loaded, vec![low_priority, high_priority]);
+        assert_eq!(config.node.limits.max_peers, 4096);
+        assert!(!config.node.connected_udp.enabled);
+        assert_eq!(config.node.connected_udp.fd_reserve, 2048);
         assert_eq!(
             config.node.identity.nsec,
             Some("high_priority_nsec".to_string())

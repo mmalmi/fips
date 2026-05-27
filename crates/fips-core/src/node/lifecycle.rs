@@ -230,7 +230,7 @@ impl Node {
             }
 
             match self
-                .try_auto_connect_graph_session(&peer_config, identity.clone())
+                .try_auto_connect_graph_session(&peer_config, identity)
                 .await
             {
                 Ok(true) => continue,
@@ -294,7 +294,7 @@ impl Node {
             }
 
             match self
-                .try_auto_connect_graph_session(&peer_config, peer_identity.clone())
+                .try_auto_connect_graph_session(&peer_config, peer_identity)
                 .await
             {
                 Ok(true) => continue,
@@ -377,7 +377,7 @@ impl Node {
                 Err(_) => continue,
             };
             match self
-                .try_auto_connect_graph_session(&peer_config, peer_identity.clone())
+                .try_auto_connect_graph_session(&peer_config, peer_identity)
                 .await
             {
                 Ok(true) => continue,
@@ -1633,7 +1633,7 @@ impl Node {
                     "same-host FIPS instance discovery: initiating handshake"
                 );
                 if let Err(err) = self
-                    .initiate_connection(transport_id, remote_addr, identity.clone())
+                    .initiate_connection(transport_id, remote_addr, identity)
                     .await
                 {
                     debug!(

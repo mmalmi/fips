@@ -39,7 +39,7 @@ pub(crate) struct PeerRecvDrain {
     /// Write end of the shutdown self-pipe. Write a single byte to
     /// wake the drain thread out of `poll(2)` so it sees the stop
     /// flag and exits.
-    stop_pipe_tx: RawFd,
+    stop_pipe_tx: Option<RawFd>,
     /// Atomic stop signal — primary mechanism for the drain thread
     /// to know it should exit. Set before writing to `stop_pipe_tx`
     /// so the thread observes the flag once woken.
@@ -88,7 +88,7 @@ impl PeerRecvDrain {
 
         match thread {
             Ok(join) => Ok(Self {
-                stop_pipe_tx: pipe_tx,
+                stop_pipe_tx: Some(pipe_tx),
                 stop,
                 join: Some(join),
             }),
@@ -109,18 +109,33 @@ impl Drop for PeerRecvDrain {
     fn drop(&mut self) {
         // 1. Set the stop flag.
         self.stop.store(true, Ordering::Release);
-        // 2. Wake the drain thread by writing to the self-pipe. One
-        //    byte is enough; the thread's poll will return on
-        //    POLLIN, observe the stop flag, and exit.
-        let byte = 1u8;
-        let _ = unsafe { libc::write(self.stop_pipe_tx, &byte as *const _ as *const _, 1) };
+
+        // 2. Wake the drain thread. Closing the write end after the
+        //    best-effort byte write guarantees poll(2) observes either
+        //    POLLIN or POLLHUP, even if write(2) is interrupted or the
+        //    pipe reader already exited.
+        if let Some(fd) = self.stop_pipe_tx.take() {
+            let byte = [1u8];
+            loop {
+                let r = unsafe { libc::write(fd, byte.as_ptr() as *const libc::c_void, 1) };
+                if r >= 0 {
+                    break;
+                }
+                let err = io::Error::last_os_error();
+                if err.kind() != io::ErrorKind::Interrupted {
+                    break;
+                }
+            }
+            unsafe { libc::close(fd) };
+        }
+
         // 3. Join — bounded wait, the thread exits within one
         //    poll-iteration of seeing the stop flag.
-        if let Some(j) = self.join.take() {
+        if let Some(j) = self.join.take()
+            && j.thread().id() != std::thread::current().id()
+        {
             let _ = j.join();
         }
-        // 4. Close the write end of the pipe.
-        unsafe { libc::close(self.stop_pipe_tx) };
     }
 }
 
@@ -446,5 +461,25 @@ mod tests {
         }
         // Drop the drain handle — should stop the thread within one
         // poll iteration.
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_idle_drain_returns_promptly() {
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        let peer_addr = peer.local_addr().expect("peer local_addr");
+        let socket = Arc::new(
+            ConnectedPeerSocket::open("127.0.0.1:0".parse().unwrap(), peer_addr, 1 << 20, 1 << 20)
+                .expect("ConnectedPeerSocket::open"),
+        );
+        let (tx, _rx) = mpsc::unbounded_channel::<ReceivedPacket>();
+        let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx)
+            .expect("PeerRecvDrain::spawn");
+
+        let started = std::time::Instant::now();
+        drop(drain);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "drain drop should not block the caller"
+        );
     }
 }

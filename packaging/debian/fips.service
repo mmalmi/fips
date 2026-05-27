@@ -8,6 +8,7 @@ Type=simple
 ExecStart=/usr/bin/fips --config /etc/fips/fips.yaml
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=65535
 
 # Control socket directory (/run/fips/).
 # Group-accessible so 'fips' group members can use fipsctl/fipstop.

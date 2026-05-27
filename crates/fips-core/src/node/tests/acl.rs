@@ -1,6 +1,6 @@
 use super::*;
-use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::ReceivedPacket;
+use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use crate::node::wire::{build_msg1, build_msg2};
 use crate::utils::index::SessionIndex;

@@ -56,6 +56,46 @@ impl LimitsConfig {
     }
 }
 
+/// Connected UDP fast-path configuration (`node.connected_udp.*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectedUdpConfig {
+    /// Enable per-peer connected UDP sockets (`node.connected_udp.enabled`).
+    ///
+    /// Environment overrides are still honored for operational A/B tests:
+    /// `FIPS_CONNECTED_UDP`, and on macOS `FIPS_MACOS_CONNECTED_UDP`.
+    #[serde(default = "ConnectedUdpConfig::default_enabled")]
+    pub enabled: bool,
+
+    /// Number of process file descriptors to leave for non-connected-UDP use
+    /// (`node.connected_udp.fd_reserve`).
+    ///
+    /// This is headroom, not a peer cap. Connected UDP uses three FDs per
+    /// installed peer, so the effective fast-path peer budget is roughly
+    /// `(RLIMIT_NOFILE - fd_reserve) / 3`, also bounded by
+    /// `node.limits.max_peers`.
+    #[serde(default = "ConnectedUdpConfig::default_fd_reserve")]
+    pub fd_reserve: usize,
+}
+
+impl Default for ConnectedUdpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            fd_reserve: Self::default_fd_reserve(),
+        }
+    }
+}
+
+impl ConnectedUdpConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_fd_reserve() -> usize {
+        128
+    }
+}
+
 /// Rate limiting (`node.rate_limit.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
@@ -1069,6 +1109,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub limits: LimitsConfig,
 
+    /// Connected UDP fast path (`node.connected_udp.*`).
+    #[serde(default)]
+    pub connected_udp: ConnectedUdpConfig,
+
     /// Rate limiting (`node.rate_limit.*`).
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
@@ -1154,6 +1198,7 @@ impl Default for NodeConfig {
             link_dead_timeout_secs: 30,
             fast_link_dead_timeout_secs: 5,
             limits: LimitsConfig::default(),
+            connected_udp: ConnectedUdpConfig::default(),
             rate_limit: RateLimitConfig::default(),
             retry: RetryConfig::default(),
             cache: CacheConfig::default(),
@@ -1242,6 +1287,21 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.after_secs, 30);
         assert_eq!(c.after_messages, 1 << 48);
+    }
+
+    #[test]
+    fn test_connected_udp_config_defaults() {
+        let c = ConnectedUdpConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.fd_reserve, 128);
+    }
+
+    #[test]
+    fn test_connected_udp_config_yaml() {
+        let yaml = "enabled: false\nfd_reserve: 4096\n";
+        let c: ConnectedUdpConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!c.enabled);
+        assert_eq!(c.fd_reserve, 4096);
     }
 
     #[test]
