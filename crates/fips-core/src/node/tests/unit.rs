@@ -2964,3 +2964,255 @@ async fn update_peers_rejects_invalid_npub_atomically() {
         "rejected batch must not partially apply",
     );
 }
+
+fn inject_dummy_peers(node: &mut Node, count: usize) {
+    for i in 0..count {
+        let identity = make_peer_identity();
+        let addr = *identity.node_addr();
+        let peer = ActivePeer::new(identity, LinkId::new((i + 1) as u64), 0);
+        node.peers.insert(addr, peer);
+    }
+}
+
+#[test]
+fn outbound_admission_check_direct() {
+    let mut node = make_node();
+    node.set_max_peers(3);
+
+    assert!(node.outbound_admission_check());
+    inject_dummy_peers(&mut node, 2);
+    assert!(node.outbound_admission_check());
+    inject_dummy_peers(&mut node, 1);
+    assert!(!node.outbound_admission_check());
+    inject_dummy_peers(&mut node, 1);
+    assert!(!node.outbound_admission_check());
+
+    let mut uncapped = make_node();
+    uncapped.set_max_peers(0);
+    assert!(uncapped.outbound_admission_check());
+    inject_dummy_peers(&mut uncapped, 50);
+    assert!(uncapped.outbound_admission_check());
+}
+
+#[tokio::test]
+async fn process_pending_retries_gated_at_capacity() {
+    let mut node = make_node();
+    node.set_max_peers(2);
+    inject_dummy_peers(&mut node, 2);
+
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+    let peer_node_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+    let mut state = super::super::retry::RetryState::new(crate::config::PeerConfig::new(
+        peer_npub,
+        "udp",
+        "127.0.0.1:9",
+    ));
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    let before_peers = node.peer_count();
+    let before_connections = node.connection_count();
+
+    node.process_pending_retries(1_000).await;
+
+    let state = node
+        .retry_pending
+        .get(&peer_node_addr)
+        .expect("retry entry must be preserved when suppressed at capacity");
+    assert_eq!(state.retry_count, 0);
+    assert_eq!(state.retry_after_ms, 0);
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.connection_count(), before_connections);
+}
+
+#[tokio::test]
+async fn poll_nostr_discovery_established_gated_at_capacity() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let mut node = make_node();
+    node.set_max_peers(2);
+    inject_dummy_peers(&mut node, 2);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    let peer_identity = Identity::generate();
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "cap-test-session",
+            peer_identity.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    let before_peers = node.peer_count();
+    let before_links = node.link_count();
+    let before_connections = node.connection_count();
+
+    node.poll_nostr_discovery().await;
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.link_count(), before_links);
+    assert_eq!(node.connection_count(), before_connections);
+}
+
+#[test]
+fn nostr_discovery_outbound_admission_atomic_roundtrip() {
+    let bootstrap = NostrDiscovery::new_for_test();
+    assert!(bootstrap.outbound_admission_allowed());
+    bootstrap.set_outbound_admission(false);
+    assert!(!bootstrap.outbound_admission_allowed());
+    bootstrap.set_outbound_admission(true);
+    assert!(bootstrap.outbound_admission_allowed());
+}
+
+async fn craft_and_send_msg1(
+    node_b: &Node,
+    sender_identity: &Identity,
+    socket_a: &tokio::net::UdpSocket,
+    addr_b: std::net::SocketAddr,
+    timestamp_ms: u64,
+) -> NodeAddr {
+    use crate::node::wire::build_msg1;
+    use crate::utils::index::SessionIndex;
+
+    let peer_b_identity = PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full());
+    let sender_pubkey_id = PeerIdentity::from_pubkey_full(sender_identity.pubkey_full());
+    let sender_node_addr = *sender_pubkey_id.node_addr();
+
+    let link_id = LinkId::new(0xDEAD_BEEF);
+    let mut conn = PeerConnection::outbound(link_id, peer_b_identity, timestamp_ms);
+
+    let sender_keypair = sender_identity.keypair();
+    let mut startup_epoch = [0u8; 8];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut startup_epoch);
+    let noise_msg1 = conn
+        .start_handshake(sender_keypair, startup_epoch, timestamp_ms)
+        .expect("start_handshake should produce noise msg1");
+
+    let sender_index = SessionIndex::new(0x5151);
+    let wire_msg1 = build_msg1(sender_index, &noise_msg1);
+
+    socket_a
+        .send_to(&wire_msg1, addr_b)
+        .await
+        .expect("sender_socket.send_to");
+    sender_node_addr
+}
+
+async fn pump_one_msg1_into_node(
+    node: &mut Node,
+    packet_rx: &mut crate::transport::PacketRx,
+    timeout_ms: u64,
+) -> Result<(), &'static str> {
+    use tokio::time::{Duration, timeout};
+    let packet = timeout(Duration::from_millis(timeout_ms), packet_rx.recv())
+        .await
+        .map_err(|_| "timed out waiting for msg1 on packet_rx")?
+        .ok_or("packet channel closed")?;
+    node.handle_msg1(packet).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn handle_msg1_silent_drops_at_cap_for_new_peer() {
+    use crate::config::UdpConfig;
+    use tokio::time::{Duration, timeout};
+
+    let mut node = make_node();
+    node.set_max_peers(2);
+    inject_dummy_peers(&mut node, 2);
+    assert_eq!(node.peer_count(), 2);
+
+    let transport_id_b = TransportId::new(1);
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_b.start_async().await.unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+    node.transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    let socket_a = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind sender socket");
+
+    let before_peers = node.peer_count();
+    let before_pending = node.msg1_rate_limiter.pending_count();
+    let sender = Identity::generate();
+    let sender_node_addr = craft_and_send_msg1(&node, &sender, &socket_a, addr_b, 1000).await;
+
+    assert!(!node.peers.contains_key(&sender_node_addr));
+
+    pump_one_msg1_into_node(&mut node, &mut packet_rx_b, 1000)
+        .await
+        .expect("msg1 must reach packet_rx_b");
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert!(!node.peers.contains_key(&sender_node_addr));
+    assert_eq!(node.msg1_rate_limiter.pending_count(), before_pending);
+
+    let mut buf = [0u8; 2048];
+    let recv = timeout(Duration::from_millis(300), socket_a.recv_from(&mut buf)).await;
+    let received_bytes = recv.ok().and_then(|inner| inner.ok()).map(|(n, _)| n);
+    assert!(
+        received_bytes.is_none(),
+        "Msg2 must not be sent at max_peers cap; observed {received_bytes:?} bytes"
+    );
+}
+
+#[tokio::test]
+async fn handle_msg1_admits_existing_peer_at_cap() {
+    use crate::config::UdpConfig;
+
+    let mut node = make_node();
+    node.set_max_peers(2);
+    inject_dummy_peers(&mut node, 1);
+
+    let existing_sender = Identity::generate();
+    let existing_pid = PeerIdentity::from_pubkey_full(existing_sender.pubkey_full());
+    let existing_node_addr = *existing_pid.node_addr();
+    let existing_link_id = LinkId::new(7777);
+    let peer = ActivePeer::new(existing_pid, existing_link_id, 0);
+    node.peers.insert(existing_node_addr, peer);
+    assert_eq!(node.peer_count(), 2);
+
+    let transport_id_b = TransportId::new(1);
+    let udp_config = UdpConfig {
+        bind_addr: Some("127.0.0.1:0".to_string()),
+        mtu: Some(1280),
+        ..Default::default()
+    };
+    let (packet_tx_b, mut packet_rx_b) = packet_channel(64);
+    let mut transport_b = UdpTransport::new(transport_id_b, None, udp_config, packet_tx_b);
+    transport_b.start_async().await.unwrap();
+    let addr_b = transport_b.local_addr().unwrap();
+    node.transports
+        .insert(transport_id_b, TransportHandle::Udp(transport_b));
+
+    let socket_a = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind sender socket");
+
+    let before_pending = node.msg1_rate_limiter.pending_count();
+    let sender_node_addr =
+        craft_and_send_msg1(&node, &existing_sender, &socket_a, addr_b, 2000).await;
+    assert_eq!(sender_node_addr, existing_node_addr);
+
+    pump_one_msg1_into_node(&mut node, &mut packet_rx_b, 1000)
+        .await
+        .expect("msg1 must reach packet_rx_b");
+
+    assert_eq!(node.peer_count(), 2);
+    assert!(node.peers.contains_key(&existing_node_addr));
+    assert_eq!(node.msg1_rate_limiter.pending_count(), before_pending);
+}

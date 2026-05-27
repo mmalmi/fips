@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nostr::nips::nip17;
@@ -220,6 +221,9 @@ pub struct NostrDiscovery {
     /// (keyed by `TransportId.as_u32()`). Populated on demand by
     /// `learn_public_udp_addr()` and refreshed by TTL.
     public_udp_addr_cache: RwLock<HashMap<u32, CachedPublicUdpAddr>>,
+    /// Capacity gate refreshed by `Node` once per tick. The inbound Msg1 gate
+    /// remains authoritative; this only suppresses wasted traversal work.
+    outbound_admission: AtomicBool,
 }
 
 impl NostrDiscovery {
@@ -284,6 +288,7 @@ impl NostrDiscovery {
             advertise_task: Mutex::new(None),
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
+            outbound_admission: AtomicBool::new(true),
         });
 
         // Subscribe to the relay-pool broadcast channel BEFORE issuing the
@@ -303,6 +308,14 @@ impl NostrDiscovery {
         *runtime.notify_task.lock().await = Some(runtime.clone().spawn_notify_loop(notifications));
 
         Ok(runtime)
+    }
+
+    pub fn set_outbound_admission(&self, allow: bool) {
+        self.outbound_admission.store(allow, Ordering::Relaxed);
+    }
+
+    pub(crate) fn outbound_admission_allowed(&self) -> bool {
+        self.outbound_admission.load(Ordering::Relaxed)
     }
 
     pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
@@ -1183,6 +1196,13 @@ impl NostrDiscovery {
         peer_config: PeerConfig,
     ) -> Result<EstablishedTraversal, BootstrapError> {
         let peer_short = short_npub(&peer_config.npub);
+        if !self.outbound_admission_allowed() {
+            debug!(
+                peer = %peer_short,
+                "traversal: initiator suppressed, Node at capacity"
+            );
+            return Err(BootstrapError::Disabled);
+        }
         debug!(peer = %peer_short, "traversal: initiator starting");
         let target_pubkey =
             PublicKey::parse(&peer_config.npub).map_err(|e| BootstrapError::InvalidPeerNpub {
@@ -1366,6 +1386,14 @@ impl NostrDiscovery {
         sender_npub: String,
     ) -> Result<(), BootstrapError> {
         let peer_short = short_npub(&sender_npub);
+        if !self.outbound_admission_allowed() {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                "traversal: incoming offer dropped, Node at capacity"
+            );
+            return Ok(());
+        }
         let offer_received_at = now_ms();
         debug!(
             peer = %peer_short,
@@ -1944,6 +1972,7 @@ impl NostrDiscovery {
             advertise_task: Mutex::new(None),
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
+            outbound_admission: AtomicBool::new(true),
         }
     }
 

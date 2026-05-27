@@ -218,6 +218,24 @@ impl Node {
             possible_restart = true;
         }
 
+        if self.max_peers > 0 && self.peers.len() >= self.max_peers {
+            let is_known_active = self.peers.contains_key(&peer_node_addr);
+            let is_pending_outbound = self.connections.iter().any(|(_, conn)| {
+                conn.expected_identity()
+                    .map(|id| *id.node_addr() == peer_node_addr)
+                    .unwrap_or(false)
+            });
+            if !is_known_active && !is_pending_outbound {
+                debug!(
+                    peer = %self.peer_display_name(&peer_node_addr),
+                    max = self.max_peers,
+                    "Silent-dropping Msg1 at max_peers cap (early gate; no Msg2 sent)"
+                );
+                self.msg1_rate_limiter.complete_handshake();
+                return;
+            }
+        }
+
         // Epoch-based restart detection and duplicate msg1 handling.
         //
         // If we fell through from the addr_to_link check above with

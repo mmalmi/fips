@@ -1636,6 +1636,9 @@ impl Node {
 
         // Children's filters: each child's subtree is disjoint
         for (peer_addr, peer) in &self.peers {
+            if peer_addr == &parent_id {
+                continue;
+            }
             if let Some(decl) = self.tree_state.peer_declaration(peer_addr)
                 && *decl.parent_id() == my_addr
             {
@@ -1793,6 +1796,12 @@ impl Node {
     /// Set the maximum number of peers (authenticated).
     pub fn set_max_peers(&mut self, max: usize) {
         self.max_peers = max;
+    }
+
+    /// Returns false when the node is at or above the configured
+    /// `max_peers` cap. `max_peers == 0` means uncapped.
+    pub(crate) fn outbound_admission_check(&self) -> bool {
+        self.max_peers == 0 || self.peers.len() < self.max_peers
     }
 
     /// Set the maximum number of links.

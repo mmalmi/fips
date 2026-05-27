@@ -462,6 +462,13 @@ impl Node {
             self.send_tree_announce_to_all().await;
             let all_peers: Vec<NodeAddr> = self.peers.keys().copied().collect();
             self.bloom_state.mark_all_updates_needed(all_peers);
+        } else {
+            trace!(
+                seq = self.tree_state.my_declaration().sequence(),
+                root = %self.tree_state.root(),
+                "Periodic TreeAnnounce re-broadcast (no state change)"
+            );
+            self.send_tree_announce_to_all().await;
         }
     }
 

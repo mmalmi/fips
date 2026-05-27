@@ -1262,6 +1262,8 @@ impl Node {
             return;
         };
 
+        bootstrap.set_outbound_admission(self.outbound_admission_check());
+
         if let Err(err) = self.refresh_overlay_advert(&bootstrap).await {
             debug!(error = %err, "Failed to refresh local Nostr overlay advert");
         }
@@ -1269,6 +1271,15 @@ impl Node {
         for event in bootstrap.drain_events().await {
             match event {
                 BootstrapEvent::Established { traversal } => {
+                    if !self.outbound_admission_check() {
+                        debug!(
+                            peer_npub = %traversal.peer_npub,
+                            peers = self.peers.len(),
+                            max_peers = self.max_peers,
+                            "Dropping established NAT traversal: at capacity"
+                        );
+                        continue;
+                    }
                     let peer_npub = traversal.peer_npub.clone();
                     match self.adopt_established_traversal(traversal).await {
                         Ok(_) => {

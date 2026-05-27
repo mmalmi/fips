@@ -443,6 +443,72 @@ async fn test_bloom_filter_split_horizon() {
     cleanup_nodes(&mut nodes).await;
 }
 
+#[test]
+fn compute_mesh_size_skips_parent_under_stale_peer_declaration() {
+    use crate::bloom::BloomFilter;
+    use crate::peer::ActivePeer;
+    use crate::tree::{ParentDeclaration, TreeCoordinate};
+
+    let mut node = make_node();
+    let my_addr = *node.tree_state().my_node_addr();
+
+    let (parent_identity, parent_addr) = loop {
+        let candidate = make_peer_identity();
+        let addr = *candidate.node_addr();
+        if addr < my_addr {
+            break (candidate, addr);
+        }
+    };
+    let mut parent_peer = ActivePeer::new(parent_identity, LinkId::new(1), 0);
+    let mut parent_filter = BloomFilter::new();
+    for i in 0..5u8 {
+        let mut bytes = [0u8; 16];
+        bytes[0] = 0x80 | i;
+        parent_filter.insert(&NodeAddr::from_bytes(bytes));
+    }
+    parent_peer.update_filter(parent_filter, 1, 0);
+    node.peers.insert(parent_addr, parent_peer);
+
+    let child_identity = make_peer_identity();
+    let child_addr = *child_identity.node_addr();
+    let mut child_peer = ActivePeer::new(child_identity, LinkId::new(2), 0);
+    let mut child_filter = BloomFilter::new();
+    for i in 0..3u8 {
+        let mut bytes = [0u8; 16];
+        bytes[0] = 0xC0 | i;
+        child_filter.insert(&NodeAddr::from_bytes(bytes));
+    }
+    child_peer.update_filter(child_filter, 1, 0);
+    node.peers.insert(child_addr, child_peer);
+
+    let parent_ancestry = TreeCoordinate::root_with_meta(parent_addr, 1, 1);
+    let child_ancestry = TreeCoordinate::root_with_meta(child_addr, 1, 1);
+    let parent_decl_stale = ParentDeclaration::new(parent_addr, my_addr, 1, 1);
+    let child_decl = ParentDeclaration::new(child_addr, my_addr, 1, 1);
+    node.tree_state_mut()
+        .update_peer(parent_decl_stale, parent_ancestry);
+    node.tree_state_mut()
+        .update_peer(child_decl, child_ancestry);
+
+    node.tree_state_mut().set_parent(parent_addr, 2, 1);
+    node.tree_state_mut().recompute_coords();
+    assert!(
+        !node.tree_state().is_root(),
+        "test setup broken: node should not be its own root after parent switch"
+    );
+
+    node.compute_mesh_size();
+
+    let estimate = node
+        .estimated_mesh_size()
+        .expect("estimator should produce a value with filter data present");
+    let diff = (estimate as i64 - 9).abs();
+    assert!(
+        diff <= 1,
+        "expected mesh-size estimate around 9 (1+5+3), got {estimate}"
+    );
+}
+
 /// 100-node random graph: bloom filter exchange at scale.
 #[tokio::test]
 async fn test_bloom_filter_convergence_100_nodes() {
