@@ -1071,7 +1071,7 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .handshake_payload()
+            .rekey_msg3_payload()
             .is_some(),
         "initiator must retain rekey msg3 for resend"
     );
@@ -1104,7 +1104,7 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .handshake_payload()
+            .rekey_msg3_payload()
             .is_some(),
         "old-session traffic must not clear retained rekey msg3"
     );
@@ -1112,20 +1112,17 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
         .node
         .get_session(&node1_addr)
         .unwrap()
-        .resend_count();
+        .rekey_msg3_resend_count();
 
     tokio::time::sleep(Duration::from_millis(10)).await;
     let now_ms = Node::now_ms();
-    nodes[0]
-        .node
-        .resend_pending_session_handshakes(now_ms)
-        .await;
+    nodes[0].node.resend_pending_session_msg3(now_ms).await;
     assert!(
         nodes[0]
             .node
             .get_session(&node1_addr)
             .unwrap()
-            .resend_count()
+            .rekey_msg3_resend_count()
             > resend_count_before,
         "rekey msg3 resend should be recorded"
     );

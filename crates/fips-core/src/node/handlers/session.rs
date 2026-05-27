@@ -8,7 +8,7 @@
 use crate::NodeAddr;
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
-use crate::node::session::{EndToEndState, SessionEntry};
+use crate::node::session::{EndToEndState, EpochSlot, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
     FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE,
@@ -64,7 +64,7 @@ enum FspFrameOutcome {
     NotEstablished,
     /// Decrypted payload was shorter than `FSP_INNER_HEADER_SIZE`.
     BadInnerHeader,
-    /// Both current and previous (drain-window) AEAD attempts failed.
+    /// All live epoch AEAD attempts failed.
     /// `consecutive` tracks the post-failure counter; if it crossed the
     /// threshold, `recover_session` is true so the post-borrow path can
     /// start an in-place recovery rekey against the same peer. The old
@@ -281,71 +281,59 @@ impl Node {
                 break 'outcome FspFrameOutcome::NotEstablished;
             }
 
-            // K-bit flip detection. Read + cutover share the borrow.
-            // Logging uses `src_addr` (a NodeAddr) directly because
-            // `self.peer_display_name` would conflict with the &mut
-            // borrow on `self.sessions`. K-bit flips are rare so a
-            // less-friendly log identifier on this line is acceptable.
-            if received_k_bit != entry.current_k_bit() && entry.pending_new_session().is_some() {
-                info!(
-                    src = %src_addr,
-                    "Peer FSP K-bit flip detected, promoting new session"
-                );
-                let now_ms = Self::now_ms();
-                entry.handle_peer_kbit_flip(now_ms);
-            }
-
-            let session = match entry.state_mut() {
-                EndToEndState::Established(s) => s,
-                _ => break 'outcome FspFrameOutcome::NotEstablished,
-            };
-
-            let primary = {
+            let now_ms = Self::now_ms();
+            let (plaintext, slot) = {
                 let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                session.decrypt_with_replay_check_and_aad(
+                match entry.fsp_trial_decrypt(
                     ciphertext,
                     header.counter,
                     &header.header_bytes,
-                )
-            };
-            let (plaintext, decrypted_with_current) = match primary {
-                Ok(pt) => (pt, true),
-                Err(primary_err) => {
-                    // Drain-window fallback on the same &mut entry borrow.
-                    let drain = entry.previous_noise_session_mut().and_then(|prev| {
-                        prev.decrypt_with_replay_check_and_aad(
-                            ciphertext,
-                            header.counter,
-                            &header.header_bytes,
-                        )
-                        .ok()
-                    });
-                    match drain {
-                        Some(pt) => (pt, false),
-                        None => {
-                            if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
-                                break 'outcome FspFrameOutcome::StaleEpochDrainFailure {
-                                    counter: header.counter,
-                                };
-                            }
-                            // Both current and previous failed. Once the
-                            // consecutive-failure threshold trips, recover
-                            // by rekeying in place instead of deleting this
-                            // session. That keeps old-session packets
-                            // decryptable until the new session cuts over.
-                            let consecutive = entry.record_decrypt_failure();
-                            let recover_session =
-                                should_start_decrypt_failure_rekey(entry, consecutive);
-                            break 'outcome FspFrameOutcome::DecryptFailed {
-                                error: primary_err,
+                    received_k_bit,
+                    now_ms,
+                ) {
+                    Some(result) => result,
+                    None => {
+                        if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
+                            break 'outcome FspFrameOutcome::StaleEpochDrainFailure {
                                 counter: header.counter,
-                                consecutive,
-                                recover_session,
                             };
                         }
+                        // Every live epoch failed. Once the consecutive-failure
+                        // threshold trips, recover by rekeying in place instead
+                        // of deleting this session. That keeps old-session
+                        // packets decryptable until the new session cuts over.
+                        let consecutive = entry.record_decrypt_failure();
+                        let recover_session =
+                            should_start_decrypt_failure_rekey(entry, consecutive);
+                        break 'outcome FspFrameOutcome::DecryptFailed {
+                            error: crate::noise::NoiseError::DecryptionFailed,
+                            counter: header.counter,
+                            consecutive,
+                            recover_session,
+                        };
                     }
                 }
             };
+
+            match slot {
+                EpochSlot::Pending => {
+                    // A frame that authenticates against pending proves the
+                    // peer reached the new epoch; promote pending to current.
+                    if entry.rekey_msg3_payload().is_some() {
+                        entry.confirm_peer_new_epoch();
+                    }
+                    entry.handle_peer_kbit_flip(now_ms);
+                }
+                EpochSlot::Current => {
+                    // If the initiator already cut over on its timer, a
+                    // current-epoch frame confirms the responder received msg3.
+                    if entry.rekey_msg3_payload().is_some() && entry.pending_new_session().is_none()
+                    {
+                        entry.confirm_peer_new_epoch();
+                    }
+                }
+                EpochSlot::Previous => {}
+            }
 
             // Successful decrypt — reset the per-session failure
             // counter so a single bad packet doesn't carry forward
@@ -353,7 +341,7 @@ impl Node {
             entry.reset_decrypt_failures();
             if entry.handshake_payload().is_some()
                 && entry.pending_new_session().is_none()
-                && decrypted_with_current
+                && slot == EpochSlot::Current
                 && received_k_bit == entry.current_k_bit()
             {
                 entry.clear_handshake_payload();
@@ -394,7 +382,7 @@ impl Node {
                 // path MTU even when only reports flow.
                 mmp.path_mtu.observe_incoming_mtu(path_mtu);
             }
-            entry.touch_inbound_frame(Self::now_ms());
+            entry.touch_inbound_frame(now_ms);
 
             FspFrameOutcome::Authentic {
                 plaintext,
@@ -885,7 +873,7 @@ impl Node {
             entry.set_pending_session(session);
             entry.set_rekey_completed_ms(now_ms);
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
+            entry.set_rekey_msg3_payload(msg3_resend_payload, now_ms + resend_interval);
             self.sessions.insert(*src_addr, entry);
 
             debug!(

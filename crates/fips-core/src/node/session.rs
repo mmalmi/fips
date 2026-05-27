@@ -39,6 +39,17 @@ pub(crate) enum EndToEndState {
     Established(NoiseSession),
 }
 
+/// Which key epoch an encrypted FSP frame authenticated against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EpochSlot {
+    /// The current active session.
+    Current,
+    /// A completed rekey session that has not yet been promoted.
+    Pending,
+    /// The old session retained during the drain window after cutover.
+    Previous,
+}
+
 impl EndToEndState {
     /// Check if the session is established and ready for data.
     pub(crate) fn is_established(&self) -> bool {
@@ -122,6 +133,8 @@ pub(crate) struct SessionEntry {
     previous_noise_session: Option<NoiseSession>,
     /// When drain window started (Unix ms). 0 = no drain.
     drain_started_ms: u64,
+    /// Last inbound frame time that authenticated against `previous`.
+    previous_last_used_ms: u64,
     /// In-progress rekey state (runs alongside Established session).
     rekey_state: Option<HandshakeState>,
     /// Pending completed session awaiting K-bit cutover.
@@ -133,6 +146,14 @@ pub(crate) struct SessionEntry {
     /// When the FSP rekey handshake completed (initiator sent msg3, Unix ms).
     /// Used to defer cutover until msg3 has time to reach the responder.
     rekey_completed_ms: u64,
+    /// Encoded SessionMsg3 payload retained for rekey retransmission.
+    rekey_msg3_payload: Option<Vec<u8>>,
+    /// Next rekey msg3 retransmission deadline (Unix ms). 0 = unscheduled.
+    rekey_msg3_next_resend_ms: u64,
+    /// Number of rekey msg3 retransmissions performed.
+    rekey_msg3_resend_count: u32,
+    /// True once the peer has authenticated on the new rekey epoch.
+    peer_new_epoch_confirmed: bool,
     /// Per-session symmetric jitter applied to the rekey timer trigger.
     rekey_jitter_secs: i64,
 
@@ -173,11 +194,16 @@ impl SessionEntry {
             current_k_bit: false,
             previous_noise_session: None,
             drain_started_ms: 0,
+            previous_last_used_ms: 0,
             rekey_state: None,
             pending_new_session: None,
             rekey_initiator: false,
             last_peer_rekey_ms: 0,
             rekey_completed_ms: 0,
+            rekey_msg3_payload: None,
+            rekey_msg3_next_resend_ms: 0,
+            rekey_msg3_resend_count: 0,
+            peer_new_epoch_confirmed: false,
             rekey_jitter_secs: draw_rekey_jitter(),
             consecutive_decrypt_failures: 0,
         }
@@ -401,8 +427,17 @@ impl SessionEntry {
     }
 
     /// Get the previous session for decryption fallback during drain.
+    #[cfg(test)]
     pub(crate) fn previous_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
         self.previous_noise_session.as_mut()
+    }
+
+    /// Mutable access to the current established session.
+    pub(crate) fn current_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
+        match self.state.as_mut() {
+            Some(EndToEndState::Established(session)) => Some(session),
+            _ => None,
+        }
     }
 
     /// Whether we initiated the current rekey.
@@ -451,6 +486,89 @@ impl SessionEntry {
         self.rekey_completed_ms = ms;
     }
 
+    /// Retain the encoded rekey SessionMsg3 payload for retransmission.
+    pub(crate) fn set_rekey_msg3_payload(&mut self, payload: Vec<u8>, next_resend_at_ms: u64) {
+        self.rekey_msg3_payload = Some(payload);
+        self.rekey_msg3_next_resend_ms = next_resend_at_ms;
+        self.rekey_msg3_resend_count = 0;
+        self.peer_new_epoch_confirmed = false;
+    }
+
+    /// Get the retained rekey SessionMsg3 payload.
+    pub(crate) fn rekey_msg3_payload(&self) -> Option<&[u8]> {
+        self.rekey_msg3_payload.as_deref()
+    }
+
+    /// When the next rekey SessionMsg3 retransmission should fire.
+    pub(crate) fn rekey_msg3_next_resend_ms(&self) -> u64 {
+        self.rekey_msg3_next_resend_ms
+    }
+
+    /// Number of rekey SessionMsg3 retransmissions performed.
+    pub(crate) fn rekey_msg3_resend_count(&self) -> u32 {
+        self.rekey_msg3_resend_count
+    }
+
+    /// Record a rekey SessionMsg3 retransmission and schedule the next one.
+    pub(crate) fn record_rekey_msg3_resend(&mut self, next_resend_at_ms: u64) {
+        self.rekey_msg3_resend_count += 1;
+        self.rekey_msg3_next_resend_ms = next_resend_at_ms;
+    }
+
+    /// Clear the retained rekey SessionMsg3 payload.
+    pub(crate) fn clear_rekey_msg3_payload(&mut self) {
+        self.rekey_msg3_payload = None;
+        self.rekey_msg3_next_resend_ms = 0;
+        self.rekey_msg3_resend_count = 0;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_new_epoch_confirmed(&self) -> bool {
+        self.peer_new_epoch_confirmed
+    }
+
+    /// Mark the peer as confirmed on the new epoch and stop msg3 retransmission.
+    pub(crate) fn confirm_peer_new_epoch(&mut self) {
+        self.peer_new_epoch_confirmed = true;
+        self.clear_rekey_msg3_payload();
+    }
+
+    /// Trial-decrypt an FSP frame against every live key epoch.
+    pub(crate) fn fsp_trial_decrypt(
+        &mut self,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+        received_k_bit: bool,
+        now_ms: u64,
+    ) -> Option<(Vec<u8>, EpochSlot)> {
+        let pending_first =
+            received_k_bit != self.current_k_bit && self.pending_new_session.is_some();
+        let order = if pending_first {
+            [EpochSlot::Pending, EpochSlot::Current, EpochSlot::Previous]
+        } else {
+            [EpochSlot::Current, EpochSlot::Pending, EpochSlot::Previous]
+        };
+
+        for slot in order {
+            let session = match slot {
+                EpochSlot::Current => self.current_noise_session_mut(),
+                EpochSlot::Pending => self.pending_new_session.as_mut(),
+                EpochSlot::Previous => self.previous_noise_session.as_mut(),
+            };
+            if let Some(session) = session
+                && let Ok(plaintext) =
+                    session.decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+            {
+                if slot == EpochSlot::Previous {
+                    self.refresh_previous_use(now_ms);
+                }
+                return Some((plaintext, slot));
+            }
+        }
+        None
+    }
+
     /// Store a completed rekey session.
     pub(crate) fn set_pending_session(&mut self, session: NoiseSession) {
         self.pending_new_session = Some(session);
@@ -468,11 +586,7 @@ impl SessionEntry {
         self.rekey_state.take()
     }
 
-    /// Cut over to the pending new session (initiator side).
-    ///
-    /// Moves current session to previous (for drain), promotes pending to current,
-    /// flips the K-bit.
-    pub(crate) fn cutover_to_new_session(&mut self, now_ms: u64) -> bool {
+    fn promote_pending(&mut self, now_ms: u64) -> bool {
         let new_session = match self.pending_new_session.take() {
             Some(s) => s,
             None => return false,
@@ -483,6 +597,7 @@ impl SessionEntry {
             self.previous_noise_session = Some(old);
         }
         self.drain_started_ms = now_ms;
+        self.previous_last_used_ms = 0;
 
         // Promote pending to current
         self.state = Some(EndToEndState::Established(new_session));
@@ -501,38 +616,23 @@ impl SessionEntry {
         true
     }
 
+    /// Cut over to the pending new session (initiator side).
+    pub(crate) fn cutover_to_new_session(&mut self, now_ms: u64) -> bool {
+        self.promote_pending(now_ms)
+    }
+
     /// Handle receiving a K-bit flip from the peer (responder side).
     pub(crate) fn handle_peer_kbit_flip(&mut self, now_ms: u64) -> bool {
-        let new_session = match self.pending_new_session.take() {
-            Some(s) => s,
-            None => return false,
-        };
-
-        // Demote current to previous for drain
-        if let Some(EndToEndState::Established(old)) = self.state.take() {
-            self.previous_noise_session = Some(old);
-        }
-        self.drain_started_ms = now_ms;
-
-        // Promote pending to current
-        self.state = Some(EndToEndState::Established(new_session));
-        self.current_k_bit = !self.current_k_bit;
-        self.session_start_ms = now_ms;
-        self.rekey_state = None;
-        self.rekey_initiator = false;
-        self.rekey_jitter_secs = draw_rekey_jitter();
-
-        // Reset MMP counters to avoid metric discontinuity
-        let now = Instant::now();
-        if let Some(mmp) = &mut self.mmp {
-            mmp.reset_for_rekey(now);
-        }
-        true
+        self.promote_pending(now_ms)
     }
 
     /// Check if the drain window has expired.
     pub(crate) fn drain_expired(&self, now_ms: u64, drain_ms: u64) -> bool {
-        self.drain_started_ms > 0 && now_ms.saturating_sub(self.drain_started_ms) >= drain_ms
+        if self.drain_started_ms == 0 {
+            return false;
+        }
+        let deadline_anchor = self.drain_started_ms.max(self.previous_last_used_ms);
+        now_ms.saturating_sub(deadline_anchor) >= drain_ms
     }
 
     /// Whether a drain is in progress.
@@ -540,10 +640,18 @@ impl SessionEntry {
         self.drain_started_ms > 0
     }
 
+    /// Refresh the drain deadline after a frame authenticates against `previous`.
+    pub(crate) fn refresh_previous_use(&mut self, now_ms: u64) {
+        if self.drain_started_ms > 0 {
+            self.previous_last_used_ms = now_ms;
+        }
+    }
+
     /// Complete the drain: drop previous session.
     pub(crate) fn complete_drain(&mut self) {
         self.previous_noise_session = None;
         self.drain_started_ms = 0;
+        self.previous_last_used_ms = 0;
     }
 
     /// Abandon an in-progress rekey.
@@ -552,6 +660,8 @@ impl SessionEntry {
         self.pending_new_session = None;
         self.rekey_initiator = false;
         self.rekey_completed_ms = 0;
+        self.clear_rekey_msg3_payload();
+        self.peer_new_epoch_confirmed = false;
     }
 
     // === Decrypt Failure Tracking ===
@@ -572,5 +682,377 @@ impl SessionEntry {
     #[cfg(test)]
     pub(crate) fn consecutive_decrypt_failures(&self) -> u32 {
         self.consecutive_decrypt_failures
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_previous_session_for_test(&mut self, session: NoiseSession, now_ms: u64) {
+        self.previous_noise_session = Some(session);
+        self.drain_started_ms = now_ms;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn previous_highest_counter(&self) -> Option<u64> {
+        self.previous_noise_session
+            .as_ref()
+            .map(|session| session.highest_received_counter())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_highest_counter(&self) -> Option<u64> {
+        self.pending_new_session
+            .as_ref()
+            .map(|session| session.highest_received_counter())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_highest_counter(&self) -> Option<u64> {
+        match self.state.as_ref() {
+            Some(EndToEndState::Established(session)) => Some(session.highest_received_counter()),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod overlapping_epoch_tests {
+    use super::*;
+    use crate::node::session_wire::{FSP_FLAG_K, build_fsp_header};
+    use secp256k1::{Keypair, Secp256k1, SecretKey};
+
+    fn keypair(seed: u8) -> Keypair {
+        let secp = Secp256k1::new();
+        let mut bytes = [1u8; 32];
+        bytes[0] = seed;
+        let sk = SecretKey::from_slice(&bytes).expect("valid secret key");
+        Keypair::from_secret_key(&secp, &sk)
+    }
+
+    fn xk_pair(init_seed: u8, resp_seed: u8) -> (NoiseSession, NoiseSession) {
+        let init_kp = keypair(init_seed);
+        let resp_kp = keypair(resp_seed);
+        let mut initiator = HandshakeState::new_xk_initiator(init_kp, resp_kp.public_key());
+        initiator.set_local_epoch([0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44]);
+        let mut responder = HandshakeState::new_xk_responder(resp_kp);
+        responder.set_local_epoch([0xD4, 0xC3, 0xB2, 0xA1, 0x44, 0x33, 0x22, 0x11]);
+
+        let msg1 = initiator.write_xk_message_1().unwrap();
+        responder.read_xk_message_1(&msg1).unwrap();
+        let msg2 = responder.write_xk_message_2().unwrap();
+        initiator.read_xk_message_2(&msg2).unwrap();
+        let msg3 = initiator.write_xk_message_3().unwrap();
+        responder.read_xk_message_3(&msg3).unwrap();
+
+        (
+            initiator.into_session().unwrap(),
+            responder.into_session().unwrap(),
+        )
+    }
+
+    fn seal(sender: &mut NoiseSession, plaintext: &[u8], k_bit: bool) -> (Vec<u8>, u64, [u8; 12]) {
+        let counter = sender.current_send_counter();
+        let flags = if k_bit { FSP_FLAG_K } else { 0 };
+        let header = build_fsp_header(counter, flags, plaintext.len() as u16);
+        let ciphertext = sender.encrypt_with_aad(plaintext, &header).unwrap();
+        (ciphertext, counter, header)
+    }
+
+    fn entry_with_current(session: NoiseSession) -> SessionEntry {
+        let addr = NodeAddr::from_bytes([7u8; 16]);
+        let pubkey = keypair(99).public_key();
+        let mut entry = SessionEntry::new(
+            addr,
+            pubkey,
+            EndToEndState::Established(session),
+            1_000,
+            true,
+        );
+        entry.mark_established(1_000);
+        entry
+    }
+
+    #[test]
+    fn trial_decrypt_picks_current() {
+        let (mut cur_send, cur_recv) = xk_pair(1, 2);
+        let (_p_send, p_recv) = xk_pair(3, 4);
+        let (_o_send, o_recv) = xk_pair(5, 6);
+
+        let mut entry = entry_with_current(cur_recv);
+        entry.set_pending_session(p_recv);
+        entry.set_previous_session_for_test(o_recv, 1_000);
+
+        let (ct, counter, hdr) = seal(&mut cur_send, b"steady-state", false);
+        let (pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, false, 2_000)
+            .expect("current frame must decrypt");
+
+        assert_eq!(pt, b"steady-state");
+        assert_eq!(slot, EpochSlot::Current);
+        assert_eq!(entry.pending_highest_counter(), Some(0));
+        assert_eq!(entry.previous_highest_counter(), Some(0));
+    }
+
+    #[test]
+    fn trial_decrypt_picks_pending_and_promotes() {
+        let (_cur_send, cur_recv) = xk_pair(1, 2);
+        let (mut p_send, p_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(cur_recv);
+        let k_before = entry.current_k_bit();
+        entry.set_pending_session(p_recv);
+
+        let (ct, counter, hdr) = seal(&mut p_send, b"new-epoch", !k_before);
+        let (pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, !k_before, 2_000)
+            .expect("pending frame must decrypt");
+        assert_eq!(pt, b"new-epoch");
+        assert_eq!(slot, EpochSlot::Pending);
+
+        entry.handle_peer_kbit_flip(2_000);
+        assert!(entry.pending_new_session().is_none());
+        assert!(entry.previous_highest_counter().is_some());
+        assert_ne!(entry.current_k_bit(), k_before);
+    }
+
+    #[test]
+    fn trial_decrypt_picks_previous_during_drain() {
+        let (mut old_send, old_recv) = xk_pair(1, 2);
+        let (_new_send, new_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(new_recv);
+        entry.set_previous_session_for_test(old_recv, 1_500);
+        let k_after = entry.current_k_bit();
+
+        let (ct, counter, hdr) = seal(&mut old_send, b"old-straggler", !k_after);
+        let (pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, !k_after, 3_000)
+            .expect("previous frame must decrypt");
+
+        assert_eq!(pt, b"old-straggler");
+        assert_eq!(slot, EpochSlot::Previous);
+        assert_eq!(entry.current_k_bit(), k_after);
+        assert!(entry.is_draining());
+    }
+
+    #[test]
+    fn trial_decrypt_reordered_old_after_cutover() {
+        let (mut cur_send, cur_recv) = xk_pair(1, 2);
+        let (mut p_send, p_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(cur_recv);
+        let k_before = entry.current_k_bit();
+        entry.set_pending_session(p_recv);
+
+        let (ct_new, c_new, hdr_new) = seal(&mut p_send, b"after-cutover", !k_before);
+        let (_pt, slot) = entry
+            .fsp_trial_decrypt(&ct_new, c_new, &hdr_new, !k_before, 2_000)
+            .unwrap();
+        assert_eq!(slot, EpochSlot::Pending);
+        entry.handle_peer_kbit_flip(2_000);
+
+        let (ct_old, c_old, hdr_old) = seal(&mut cur_send, b"reordered-old", k_before);
+        let (pt, slot) = entry
+            .fsp_trial_decrypt(&ct_old, c_old, &hdr_old, k_before, 2_500)
+            .expect("reordered old-epoch frame must still decrypt");
+        assert_eq!(pt, b"reordered-old");
+        assert_eq!(slot, EpochSlot::Previous);
+    }
+
+    #[test]
+    fn trial_decrypt_replay_is_per_slot() {
+        let (mut cur_send, cur_recv) = xk_pair(1, 2);
+        let (mut p_send, p_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(cur_recv);
+        let k_before = entry.current_k_bit();
+        entry.set_pending_session(p_recv);
+
+        let (ct, counter, hdr) = seal(&mut cur_send, b"first", k_before);
+        let (_pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, k_before, 2_000)
+            .unwrap();
+        assert_eq!(slot, EpochSlot::Current);
+
+        assert!(
+            entry
+                .fsp_trial_decrypt(&ct, counter, &hdr, k_before, 2_100)
+                .is_none(),
+            "a genuine replay must be rejected by every slot"
+        );
+        assert_eq!(entry.pending_highest_counter(), Some(0));
+
+        let (ct_p, c_p, hdr_p) = seal(&mut p_send, b"pending-c0", !k_before);
+        assert_eq!(c_p, 0);
+        let (pt, slot) = entry
+            .fsp_trial_decrypt(&ct_p, c_p, &hdr_p, !k_before, 2_200)
+            .expect("pending frame must decrypt despite current replay overlap");
+        assert_eq!(pt, b"pending-c0");
+        assert_eq!(slot, EpochSlot::Pending);
+    }
+
+    #[test]
+    fn trial_decrypt_failed_slot_leaves_replay_window_intact() {
+        let (_cur_send, cur_recv) = xk_pair(1, 2);
+        let (mut p_send, p_recv) = xk_pair(3, 4);
+        let (_o_send, o_recv) = xk_pair(5, 6);
+
+        let mut entry = entry_with_current(cur_recv);
+        let k_before = entry.current_k_bit();
+        entry.set_pending_session(p_recv);
+        entry.set_previous_session_for_test(o_recv, 1_000);
+
+        for _ in 0..4 {
+            let _ = seal(&mut p_send, b"warmup", !k_before);
+        }
+        let (ct, counter, hdr) = seal(&mut p_send, b"pending-hit", !k_before);
+        assert_eq!(counter, 4);
+
+        let (_pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, false, 2_000)
+            .expect("pending frame must decrypt");
+        assert_eq!(slot, EpochSlot::Pending);
+
+        assert_eq!(entry.current_highest_counter(), Some(0));
+        assert_eq!(entry.previous_highest_counter(), Some(0));
+        assert_eq!(entry.pending_highest_counter(), Some(4));
+    }
+
+    #[test]
+    fn msg3_retransmit_stops_on_peer_new_epoch_confirmed() {
+        let (_cur_send, cur_recv) = xk_pair(1, 2);
+        let (mut p_send, p_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(cur_recv);
+        entry.set_pending_session(p_recv);
+        entry.set_rekey_completed_ms(1_000);
+        entry.set_rekey_msg3_payload(vec![0xAB; 73], 1_500);
+
+        assert!(entry.cutover_to_new_session(2_000));
+        assert!(entry.rekey_msg3_payload().is_some());
+        assert!(!entry.peer_new_epoch_confirmed());
+
+        let k_now = entry.current_k_bit();
+        let (ct, counter, hdr) = seal(&mut p_send, b"peer-on-new-epoch", k_now);
+        let (_pt, slot) = entry
+            .fsp_trial_decrypt(&ct, counter, &hdr, k_now, 2_500)
+            .unwrap();
+        assert_eq!(slot, EpochSlot::Current);
+        assert!(entry.rekey_msg3_payload().is_some() && entry.pending_new_session().is_none());
+        entry.confirm_peer_new_epoch();
+        assert!(entry.peer_new_epoch_confirmed());
+        assert!(entry.rekey_msg3_payload().is_none());
+    }
+
+    #[test]
+    fn msg3_retransmit_budget_exhaustion_abandons_cleanly() {
+        let (_cur_send, cur_recv) = xk_pair(1, 2);
+        let (_p_send, p_recv) = xk_pair(3, 4);
+
+        let mut entry = entry_with_current(cur_recv);
+        entry.set_pending_session(p_recv);
+        entry.set_rekey_completed_ms(1_000);
+        entry.set_rekey_msg3_payload(vec![0xCD; 73], 1_500);
+
+        let max_resends = 8;
+        for i in 0..max_resends {
+            entry.record_rekey_msg3_resend(2_000 + i as u64 * 100);
+        }
+        assert_eq!(entry.rekey_msg3_resend_count(), max_resends);
+
+        entry.abandon_rekey();
+        assert!(entry.rekey_msg3_payload().is_none());
+        assert!(entry.pending_new_session().is_none());
+        assert!(!entry.has_rekey_in_progress());
+        assert!(entry.is_established());
+        assert!(!entry.peer_new_epoch_confirmed());
+    }
+
+    #[test]
+    fn initiator_cutover_keeps_responder_old_epoch_decryptable() {
+        let (old_a, old_b) = xk_pair(1, 2);
+        let (new_a, mut new_b) = xk_pair(3, 4);
+
+        let mut a = entry_with_current(old_a);
+        a.set_rekey_completed_ms(1_000);
+        a.set_rekey_msg3_payload(vec![0xEE; 73], 1_500);
+        a.set_pending_session(new_a);
+        assert!(a.cutover_to_new_session(2_000));
+        assert!(a.rekey_msg3_payload().is_some());
+
+        let mut b = entry_with_current(old_b);
+
+        let (ct_new, c_new, hdr_new) = seal(&mut new_b, b"new-from-a", true);
+        assert!(
+            b.fsp_trial_decrypt(&ct_new, c_new, &hdr_new, true, 2_100)
+                .is_none(),
+            "responder without msg3 drops the new-epoch frame cleanly"
+        );
+
+        let (ct_old, c_old, hdr_old) = {
+            let b_old = b.current_noise_session_mut().unwrap();
+            seal(b_old, b"old-from-b", false)
+        };
+        let (pt, slot) = a
+            .fsp_trial_decrypt(&ct_old, c_old, &hdr_old, false, 2_200)
+            .expect("initiator must still decrypt the responder's old-epoch frame");
+        assert_eq!(pt, b"old-from-b");
+        assert_eq!(slot, EpochSlot::Previous);
+
+        let (new_a2, mut new_b2) = xk_pair(3, 4);
+        b.set_pending_session(new_a2);
+        let (ct_new2, c_new2, hdr_new2) = seal(&mut new_b2, b"new-from-a-2", true);
+        let (pt, slot) = b
+            .fsp_trial_decrypt(&ct_new2, c_new2, &hdr_new2, true, 2_300)
+            .expect("responder must decrypt new-epoch frame once pending is installed");
+        assert_eq!(pt, b"new-from-a-2");
+        assert_eq!(slot, EpochSlot::Pending);
+    }
+
+    #[test]
+    fn drain_expiry_is_peer_progress_aware() {
+        const DRAIN_MS: u64 = 10_000;
+        let cutover_ms = 1_000;
+
+        let (mut old_send, old_recv) = xk_pair(1, 2);
+        let (_new_send, new_recv) = xk_pair(3, 4);
+        let mut entry = entry_with_current(old_recv);
+        entry.set_pending_session(new_recv);
+        assert!(entry.cutover_to_new_session(cutover_ms));
+        assert!(entry.is_draining());
+
+        let k_old = !entry.current_k_bit();
+        for &t in &[5_000u64, 15_000, 25_000] {
+            let (ct, counter, hdr) = seal(&mut old_send, b"still-old-epoch", k_old);
+            let (_pt, slot) = entry
+                .fsp_trial_decrypt(&ct, counter, &hdr, k_old, t)
+                .expect("old-epoch frame must still decrypt while peer uses it");
+            assert_eq!(slot, EpochSlot::Previous);
+            assert!(
+                !entry.drain_expired(t, DRAIN_MS),
+                "previous slot must not be retired while peer keeps using it"
+            );
+            assert!(entry.previous_highest_counter().is_some());
+        }
+
+        assert!(!entry.drain_expired(34_999, DRAIN_MS));
+        assert!(entry.drain_expired(35_000, DRAIN_MS));
+
+        entry.complete_drain();
+        assert!(entry.previous_highest_counter().is_none());
+        assert!(!entry.is_draining());
+    }
+
+    #[test]
+    fn drain_expiry_unaffected_when_peer_off_old_epoch() {
+        const DRAIN_MS: u64 = 10_000;
+        let cutover_ms = 1_000;
+
+        let (_old_send, old_recv) = xk_pair(1, 2);
+        let (_new_send, new_recv) = xk_pair(3, 4);
+        let mut entry = entry_with_current(old_recv);
+        entry.set_pending_session(new_recv);
+        assert!(entry.cutover_to_new_session(cutover_ms));
+
+        assert!(!entry.drain_expired(cutover_ms + DRAIN_MS - 1, DRAIN_MS));
+        assert!(entry.drain_expired(cutover_ms + DRAIN_MS, DRAIN_MS));
     }
 }

@@ -286,10 +286,79 @@ impl Node {
         }
     }
 
+    /// Retransmit FSP rekey msg3 until the responder is confirmed on the new epoch.
+    pub(in crate::node) async fn resend_pending_session_msg3(&mut self, now_ms: u64) {
+        if !self.config.node.rekey.enabled || self.sessions.is_empty() {
+            return;
+        }
+
+        let interval_ms = self.config.node.rate_limit.handshake_resend_interval_ms;
+        let backoff = self.config.node.rate_limit.handshake_resend_backoff;
+        let max_resends = self.config.node.rate_limit.handshake_max_resends;
+        let ttl = self.config.node.session.default_ttl;
+        let my_addr = *self.node_addr();
+
+        let mut to_resend: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
+        let mut to_abandon: Vec<NodeAddr> = Vec::new();
+
+        for (node_addr, entry) in &self.sessions {
+            let payload = match entry.rekey_msg3_payload() {
+                Some(payload) => payload,
+                None => continue,
+            };
+            if entry.rekey_msg3_next_resend_ms() == 0 || now_ms < entry.rekey_msg3_next_resend_ms()
+            {
+                continue;
+            }
+            if entry.rekey_msg3_resend_count() >= max_resends {
+                to_abandon.push(*node_addr);
+                continue;
+            }
+            to_resend.push((*node_addr, payload.to_vec()));
+        }
+
+        for node_addr in to_abandon {
+            if let Some(entry) = self.sessions.get_mut(&node_addr) {
+                entry.abandon_rekey();
+            }
+            warn!(
+                peer = %self.peer_display_name(&node_addr),
+                "FSP rekey aborted: msg3 unconfirmed after max retransmissions"
+            );
+        }
+
+        for (node_addr, payload) in to_resend {
+            let mut datagram = SessionDatagram::new(my_addr, node_addr, payload).with_ttl(ttl);
+            let sent = match self.send_session_datagram(&mut datagram).await {
+                Ok(_) => true,
+                Err(error) => {
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        error = %error,
+                        "FSP rekey msg3 retransmission failed"
+                    );
+                    false
+                }
+            };
+
+            if sent && let Some(entry) = self.sessions.get_mut(&node_addr) {
+                let count = entry.rekey_msg3_resend_count() + 1;
+                let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
+                entry.record_rekey_msg3_resend(next);
+                trace!(
+                    peer = %self.peer_display_name(&node_addr),
+                    resend = count,
+                    "Resent FSP rekey msg3"
+                );
+            }
+        }
+    }
+
     /// Periodic session (FSP) rekey check. Called from the tick loop.
     ///
     /// For each established session:
-    /// - If the initiator has a pending session, perform K-bit cutover
+    /// - If the initiator has a pending session past the liveness timer,
+    ///   perform K-bit cutover
     /// - If the drain window has expired, clean up the previous session
     /// - If the rekey timer/counter fires, initiate a new XK handshake
     pub(in crate::node) async fn check_session_rekey(&mut self) {
@@ -335,7 +404,10 @@ impl Node {
                 continue;
             }
             if entry.pending_new_session().is_some() {
-                continue; // Responder with pending session, wait for initiator's K-bit
+                continue; // Pending session present, awaiting cutover
+            }
+            if entry.rekey_msg3_payload().is_some() {
+                continue; // Current rekey still awaits peer confirmation.
             }
             if entry.is_rekey_dampened(now_ms, dampening_ms) {
                 continue;

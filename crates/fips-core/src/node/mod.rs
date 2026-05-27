@@ -45,7 +45,8 @@ use crate::transport::udp::UdpTransport;
 #[cfg(feature = "webrtc-transport")]
 use crate::transport::webrtc::WebRtcTransport;
 use crate::transport::{
-    Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError, TransportHandle, TransportId,
+    ConnectionState, Link, LinkId, PacketRx, PacketTx, TransportAddr, TransportError,
+    TransportHandle, TransportId,
 };
 use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;
@@ -2790,6 +2791,18 @@ impl Node {
             .transports
             .get(&transport_id)
             .ok_or(NodeError::TransportNotFound(transport_id))?;
+        match transport_for_send.connection_state(&remote_addr) {
+            ConnectionState::Connected => {}
+            other => {
+                if matches!(other, ConnectionState::None) {
+                    let _ = transport_for_send.connect(&remote_addr).await;
+                }
+                return Err(NodeError::SendFailed {
+                    node_addr: *node_addr,
+                    reason: format!("transport connection not ready: {:?}", other),
+                });
+            }
+        }
         let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
         if let Some(workers) = self.encrypt_workers.as_ref().cloned()
             && is_udp
