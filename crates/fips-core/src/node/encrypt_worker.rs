@@ -57,13 +57,15 @@ use crate::transport::udp::socket::AsyncUdpSocket;
 use crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 #[cfg(target_os = "macos")]
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::sync::OnceLock;
-#[cfg(target_os = "macos")]
 use std::sync::{Condvar, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -138,6 +140,11 @@ pub(crate) struct FmpSendJob {
     /// send-queue exhaustion. Control/rekey frames keep retrying so
     /// congestion cannot strand the session.
     pub drop_on_backpressure: bool,
+    /// Bounded scheduler weight for this send target. `1` is normal
+    /// best-effort service; configured peers can get a small boost and
+    /// future paid traffic can use the same clamp without bypassing fairness.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub scheduling_weight: u8,
     /// Monotonic timestamp captured before dispatch into the worker
     /// queue, used only when pipeline tracing is enabled.
     pub queued_at: Option<std::time::Instant>,
@@ -152,6 +159,8 @@ pub(crate) struct FspSealJob {
 
 struct QueuedFmpSendJob {
     job: FmpSendJob,
+    #[cfg(not(target_os = "macos"))]
+    fair_reserved: bool,
     #[cfg(target_os = "macos")]
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
@@ -163,6 +172,8 @@ impl QueuedFmpSendJob {
     fn direct(job: FmpSendJob) -> Self {
         Self {
             job,
+            #[cfg(not(target_os = "macos"))]
+            fair_reserved: false,
             #[cfg(target_os = "macos")]
             macos_flow: None,
             #[cfg(target_os = "macos")]
@@ -179,14 +190,41 @@ impl QueuedFmpSendJob {
             macos_seq,
         }
     }
+
+    #[cfg(not(target_os = "macos"))]
+    fn flow_key(&self) -> SocketAddr {
+        self.job.dest_addr
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn drop_on_backpressure(&self) -> bool {
+        self.job.drop_on_backpressure
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn mark_fair_reserved(&mut self) {
+        self.fair_reserved = true;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn fair_reserved(&self) -> bool {
+        self.fair_reserved
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn scheduling_weight(&self) -> usize {
+        self.job
+            .scheduling_weight
+            .clamp(MIN_SEND_WEIGHT, MAX_SEND_WEIGHT) as usize
+    }
 }
 
 /// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
-/// destination** across N worker tasks via per-worker bounded
-/// crossbeam channels. The bounded queue intentionally backpressures
-/// the rx_loop if encryption/sending falls behind, because these jobs
-/// carry tunneled IP packets; silently dropping them here looks like
-/// heavy loss to TCP-over-TUN and collapses throughput.
+/// destination** across N worker tasks via per-worker bounded queues.
+/// The bounded queue intentionally backpressures the rx_loop if
+/// encryption/sending falls behind, because these jobs carry tunneled
+/// IP packets; silently dropping them here looks like heavy loss to
+/// TCP-over-TUN and collapses throughput.
 ///
 /// **Ordering: hash-by-destination, not round-robin.** Round-robin
 /// across N workers causes UDP packet reordering on the wire, which
@@ -202,20 +240,83 @@ impl QueuedFmpSendJob {
 /// opted into the ordered sender. Live Wi-Fi sender tests showed the
 /// worker-owned path beats the per-flow ordered sender handoff when the
 /// Darwin UDP syscall/pacer path, not FMP AEAD, is the limiting stage.
-/// Per-worker bounded queue cap. Keep this near
-/// wireguard-go's outbound queue size: a much deeper queue hides a
-/// saturated macOS UDP sender from TCP for tens of milliseconds,
-/// inflating RTT/retransmits instead of pushing back to TUN promptly.
-///
-/// Linux uses crossbeam's bounded channel; macOS uses a tiny custom
-/// bounded queue that wakes a worker only when the queue transitions
-/// from empty to non-empty. `sample(1)` showed crossbeam's per-packet
-/// Darwin `semaphore_signal_trap` dominating the rx_loop dispatch path
-/// on saturated single-peer runs, even when the worker was already
-/// active and about to drain the next packet. Bounded so the producer
-/// back-pressures the rx_loop if the worker thread can't keep up —
-/// same rationale as the bounded endpoint_commands channel upstream.
+/// Per-flow bounded queue cap. Keep this near wireguard-go's outbound
+/// queue size: a much deeper queue hides a saturated sender from TCP
+/// for tens of milliseconds, inflating RTT/retransmits instead of
+/// pushing back to TUN promptly.
 const WORKER_CHANNEL_CAP: usize = 1024;
+#[cfg(not(target_os = "macos"))]
+const WORKER_TOTAL_CHANNEL_CAP: usize = WORKER_CHANNEL_CAP * 4;
+#[cfg(not(target_os = "macos"))]
+const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_SEND_WEIGHT: u8 = 1;
+pub(crate) const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
+#[cfg(not(target_os = "macos"))]
+const MIN_SEND_WEIGHT: u8 = 1;
+#[cfg(not(target_os = "macos"))]
+const MAX_SEND_WEIGHT: u8 = 4;
+
+#[cfg(not(target_os = "macos"))]
+type FairFlowMap =
+    HashMap<SocketAddr, FairFlowQueue, std::hash::BuildHasherDefault<SocketAddrFastHasher>>;
+
+#[cfg(not(target_os = "macos"))]
+struct SocketAddrFastHasher(u64);
+
+#[cfg(not(target_os = "macos"))]
+impl Default for SocketAddrFastHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl std::hash::Hasher for SocketAddrFastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = 0u64;
+            for (idx, byte) in chunk.iter().enumerate() {
+                word |= u64::from(*byte) << (idx * 8);
+            }
+            self.write_u64(word);
+        }
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 ^= i.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        self.0 = self.0.rotate_left(27).wrapping_mul(0x94d0_49bb_1331_11eb);
+    }
+
+    fn write_u128(&mut self, i: u128) {
+        self.write_u64(i as u64);
+        self.write_u64((i >> 64) as u64);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn socket_addr_fast_hash(addr: &SocketAddr) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = SocketAddrFastHasher::default();
+    addr.hash(&mut hasher);
+    hasher.finish()
+}
 
 #[cfg(target_os = "macos")]
 struct MacWorkerSender {
@@ -376,23 +477,332 @@ impl MacWorkerReceiver {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+struct FairWorkerSender {
+    tx: Sender<QueuedFmpSendJob>,
+    admission: Arc<FairAdmission>,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct FairWorkerReceiver {
+    rx: Receiver<QueuedFmpSendJob>,
+    admission: Arc<FairAdmission>,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct FairAdmission {
+    state: Mutex<FairAdmissionState>,
+    not_full: Condvar,
+    total_cap: usize,
+    per_flow_cap: usize,
+    fast_lane_cap: usize,
+}
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+struct FairAdmissionState {
+    flows: FairFlowMap,
+    total_len: usize,
+    full_waiters: usize,
+    closed: bool,
+}
+
+#[cfg(not(target_os = "macos"))]
+struct FairFlowQueue {
+    queued: usize,
+    weight: usize,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairFlowQueue {
+    fn new(weight: usize) -> Self {
+        Self { queued: 0, weight }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+enum FairReserve {
+    Reserved,
+    Full,
+    Dropped,
+    Closed,
+}
+
+#[cfg(not(target_os = "macos"))]
+enum FairWorkerTryPushError {
+    Full(Box<QueuedFmpSendJob>),
+    Dropped,
+    Closed,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl std::fmt::Debug for FairWorkerTryPushError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full(_) => f.write_str("Full"),
+            Self::Dropped => f.write_str("Dropped"),
+            Self::Closed => f.write_str("Closed"),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct FairWorkerPushError;
+
+#[cfg(not(target_os = "macos"))]
+fn fair_worker_channel(
+    total_cap: usize,
+    per_flow_cap: usize,
+    _quantum_bytes: usize,
+) -> (FairWorkerSender, FairWorkerReceiver) {
+    let (tx, rx) = bounded(total_cap);
+    let admission = Arc::new(FairAdmission {
+        state: Mutex::new(FairAdmissionState::default()),
+        not_full: Condvar::new(),
+        total_cap,
+        per_flow_cap,
+        fast_lane_cap: per_flow_cap.saturating_mul(2).min(total_cap),
+    });
+    (
+        FairWorkerSender {
+            tx,
+            admission: Arc::clone(&admission),
+        },
+        FairWorkerReceiver { rx, admission },
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairWorkerSender {
+    fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
+        let key = job.flow_key();
+        let drop_on_backpressure = job.drop_on_backpressure();
+        let job = if self.tx.len() < self.admission.fast_lane_cap {
+            match self.tx.try_send(job) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(job)) => job,
+                Err(TrySendError::Disconnected(job)) => {
+                    drop(job);
+                    return Err(FairWorkerTryPushError::Closed);
+                }
+            }
+        } else {
+            job
+        };
+
+        match self
+            .admission
+            .try_reserve(key, job.scheduling_weight(), drop_on_backpressure)
+        {
+            FairReserve::Reserved => {
+                let mut job = job;
+                job.mark_fair_reserved();
+                match self.tx.try_send(job) {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(job)) => {
+                        self.admission.release(key);
+                        Err(FairWorkerTryPushError::Full(Box::new(job)))
+                    }
+                    Err(TrySendError::Disconnected(job)) => {
+                        self.admission.release(key);
+                        drop(job);
+                        Err(FairWorkerTryPushError::Closed)
+                    }
+                }
+            }
+            FairReserve::Full => Err(FairWorkerTryPushError::Full(Box::new(job))),
+            FairReserve::Dropped => {
+                drop(job);
+                Err(FairWorkerTryPushError::Dropped)
+            }
+            FairReserve::Closed => {
+                drop(job);
+                Err(FairWorkerTryPushError::Closed)
+            }
+        }
+    }
+
+    fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
+        let key = job.flow_key();
+        let weight = job.scheduling_weight();
+        if self.admission.reserve_blocking(key, weight).is_err() {
+            drop(job);
+            return Err(FairWorkerPushError);
+        }
+        let mut job = job;
+        job.mark_fair_reserved();
+        if let Err(SendError(job)) = self.tx.send(job) {
+            self.admission.release(key);
+            drop(job);
+            return Err(FairWorkerPushError);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairAdmission {
+    fn try_reserve(
+        &self,
+        key: SocketAddr,
+        weight: usize,
+        drop_on_backpressure: bool,
+    ) -> FairReserve {
+        let mut state = self
+            .state
+            .lock()
+            .expect("encrypt worker fair admission poisoned");
+        if state.closed {
+            return FairReserve::Closed;
+        }
+        if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+            return FairReserve::Reserved;
+        }
+        if drop_on_backpressure && !(state.flows.len() == 1 && state.flows.contains_key(&key)) {
+            FairReserve::Dropped
+        } else {
+            FairReserve::Full
+        }
+    }
+
+    fn reserve_blocking(&self, key: SocketAddr, weight: usize) -> Result<(), FairWorkerPushError> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("encrypt worker fair admission poisoned");
+        loop {
+            if state.closed {
+                return Err(FairWorkerPushError);
+            }
+            if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+                return Ok(());
+            }
+            state.full_waiters += 1;
+            state = self
+                .not_full
+                .wait(state)
+                .expect("encrypt worker fair admission poisoned");
+            state.full_waiters = state.full_waiters.saturating_sub(1);
+        }
+    }
+
+    fn release(&self, key: SocketAddr) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("encrypt worker fair admission poisoned");
+        if let Some(flow) = state.flows.get_mut(&key) {
+            flow.queued = flow.queued.saturating_sub(1);
+            if flow.queued == 0 {
+                state.flows.remove(&key);
+            }
+        }
+        state.total_len = state.total_len.saturating_sub(1);
+        let should_notify = state.full_waiters > 0;
+        drop(state);
+        if should_notify {
+            self.not_full.notify_all();
+        }
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("encrypt worker fair admission poisoned");
+        state.closed = true;
+        drop(state);
+        self.not_full.notify_all();
+    }
+
+    fn reserve_locked(
+        state: &mut FairAdmissionState,
+        total_cap: usize,
+        per_flow_cap: usize,
+        key: SocketAddr,
+        weight: usize,
+    ) -> bool {
+        if state.total_len >= total_cap {
+            return false;
+        }
+        let weight = weight.clamp(MIN_SEND_WEIGHT as usize, MAX_SEND_WEIGHT as usize);
+        let flow_cap = per_flow_cap.saturating_mul(weight).min(total_cap).max(1);
+        match state.flows.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let flow = entry.get_mut();
+                flow.weight = flow.weight.max(weight);
+                let cap = per_flow_cap
+                    .saturating_mul(flow.weight)
+                    .min(total_cap)
+                    .max(1);
+                if flow.queued >= cap {
+                    return false;
+                }
+                flow.queued += 1;
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let mut flow = FairFlowQueue::new(weight);
+                if flow.queued >= flow_cap {
+                    return false;
+                }
+                flow.queued = 1;
+                entry.insert(flow);
+            }
+        }
+        state.total_len += 1;
+        true
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for FairWorkerSender {
+    fn drop(&mut self) {
+        self.admission.close();
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairWorkerReceiver {
+    fn recv_batch(&self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
+        debug_assert!(batch.is_empty());
+        let first = match self.rx.recv() {
+            Ok(job) => job,
+            Err(_) => return false,
+        };
+        if first.fair_reserved() {
+            self.admission.release(first.flow_key());
+        }
+        batch.push(first);
+        while batch.len() < max {
+            match self.rx.try_recv() {
+                Ok(job) => {
+                    if job.fair_reserved() {
+                        self.admission.release(job.flow_key());
+                    }
+                    batch.push(job);
+                }
+                Err(_) => break,
+            }
+        }
+        true
+    }
+}
+
 #[cfg(target_os = "macos")]
 type WorkerSender = MacWorkerSender;
 
 #[cfg(not(target_os = "macos"))]
-type WorkerSender = Sender<QueuedFmpSendJob>;
+type WorkerSender = FairWorkerSender;
 
 /// Handle to the encrypt worker pool.
 ///
-/// Workers are **dedicated `std::thread`s** with **`crossbeam_channel`**
-/// between them and the rx_loop. The earlier tokio-task version of
-/// this worker pool was the right shape, but every cross-runtime
+/// Workers are **dedicated `std::thread`s** with bounded queues between
+/// them and the rx_loop. The earlier tokio-task version of this worker
+/// pool was the right shape, but every cross-runtime
 /// wake (rx_loop's tokio task → tokio worker task) costs the tokio
 /// scheduler an internal hop. Replacing the worker side with a sync
-/// OS thread, and the channel with crossbeam (where both `.send()`
-/// and `.recv()` are wait-free fast-paths and the blocking wake is a
-/// single kernel futex), cuts the dispatch round-trip to the
-/// platform minimum — same pattern boringtun uses for its main loop.
+/// OS thread cuts the dispatch round-trip to the platform minimum —
+/// same pattern boringtun uses for its main loop.
 ///
 /// **Ordering: hash-by-destination** so single-flow TCP keeps its
 /// FIFO ordering (round-robin caused 8000 retransmits in an earlier
@@ -428,7 +838,11 @@ impl EncryptWorkerPool {
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let (tx, rx) = bounded::<QueuedFmpSendJob>(WORKER_CHANNEL_CAP);
+                let (tx, rx) = fair_worker_channel(
+                    WORKER_TOTAL_CHANNEL_CAP,
+                    WORKER_CHANNEL_CAP,
+                    WORKER_FAIR_QUANTUM_BYTES,
+                );
                 std::thread::Builder::new()
                     .name(format!("fips-encrypt-{i}"))
                     .spawn(move || run_worker(i, rx))
@@ -500,10 +914,7 @@ impl EncryptWorkerPool {
 
     #[cfg(not(target_os = "macos"))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        job.dest_addr.hash(&mut h);
-        let idx = (h.finish() as usize) % self.senders.len();
+        let idx = (socket_addr_fast_hash(&job.dest_addr) as usize) % self.senders.len();
         (idx, QueuedFmpSendJob::direct(job))
     }
 
@@ -534,9 +945,10 @@ impl EncryptWorkerPool {
 
     #[cfg(not(target_os = "macos"))]
     fn dispatch_to_worker(&self, idx: usize, job: QueuedFmpSendJob) {
-        match self.senders[idx].try_send(job) {
+        let sender = &self.senders[idx];
+        match sender.try_push(job) {
             Ok(()) => {}
-            Err(TrySendError::Full(job)) => {
+            Err(FairWorkerTryPushError::Full(job)) => {
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 let n = FULL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -547,11 +959,23 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(SendError(_)) = self.senders[idx].send(job) {
+                if let Err(FairWorkerPushError) = sender.push_blocking(*job) {
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(FairWorkerTryPushError::Dropped) => {
+                static DROP_COUNT: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 8 || n.is_multiple_of(10000) {
+                    warn!(
+                        worker = idx,
+                        drops = n + 1,
+                        "EncryptWorker fair queue full; dropping bulk data packet"
+                    );
+                }
+            }
+            Err(FairWorkerTryPushError::Closed) => {
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
@@ -922,37 +1346,20 @@ fn push_mac_completion(
     }
 }
 
-/// Sync OS-thread worker loop. Blocks on the crossbeam channel via
-/// kernel futex (no tokio runtime involvement), drains follow-on
-/// packets into a fixed-size local batch, then issues one
-/// `sendmmsg(2)` per drain cycle.
+/// Sync OS-thread worker loop. Blocks on the bounded fair queue,
+/// drains follow-on packets into a fixed-size local batch, then issues
+/// one `sendmmsg(2)` per drain cycle.
 #[cfg(not(target_os = "macos"))]
-fn run_worker(idx: usize, rx: Receiver<QueuedFmpSendJob>) {
+fn run_worker(idx: usize, rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
     const BATCH_SIZE: usize = 32;
     let mut batch: Vec<QueuedFmpSendJob> = Vec::with_capacity(BATCH_SIZE);
 
-    loop {
-        // Blocking recv — parks the OS thread on the channel's
-        // internal Condvar/futex until a job arrives or the channel
-        // closes.
-        let first = match rx.recv() {
-            Ok(j) => j,
-            Err(_) => break, // all senders dropped → graceful exit
-        };
-        batch.push(first);
-        // Drain follow-on jobs without blocking, up to BATCH_SIZE.
-        // Same drain pattern as the bounded mpsc one above — gives
-        // sendmmsg something to amortise over.
-        while batch.len() < BATCH_SIZE {
-            match rx.try_recv() {
-                Ok(j) => batch.push(j),
-                Err(_) => break,
-            }
-        }
+    while rx.recv_batch(&mut batch, BATCH_SIZE) {
         if let Err(err) = flush_batch_sync(&mut batch) {
             debug!(worker = idx, error = %err, "FMP encrypt worker batch flush failed");
+            batch.clear();
         }
     }
     trace!(worker = idx, "FMP encrypt worker thread exiting");
@@ -1043,7 +1450,7 @@ fn flush_batch_sync(
             macos_seq,
         } = queued;
         #[cfg(not(target_os = "macos"))]
-        let QueuedFmpSendJob { job } = queued;
+        let QueuedFmpSendJob { job, .. } = queued;
 
         let FmpSendJob {
             cipher,
@@ -1055,6 +1462,7 @@ fn flush_batch_sync(
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket,
             drop_on_backpressure,
+            scheduling_weight: _,
             queued_at,
         } = job;
         crate::perf_profile::record_since(
@@ -1847,6 +2255,7 @@ mod unix_tests {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 connected_socket: None,
                 drop_on_backpressure: true,
+                scheduling_weight: DEFAULT_SEND_WEIGHT,
                 queued_at: None,
             }];
 
@@ -1874,6 +2283,210 @@ mod unix_tests {
             )
             .expect("inner open");
             assert_eq!(inner_plaintext, fsp_plaintext);
+        });
+    }
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod fair_queue_tests {
+    use super::*;
+    use crate::transport::udp::socket::UdpRawSocket;
+    use ring::aead::{LessSafeKey, UnboundKey};
+
+    fn test_cipher() -> LessSafeKey {
+        let unbound =
+            UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0u8; 32]).expect("build key");
+        LessSafeKey::new(unbound)
+    }
+
+    fn with_test_socket(test: impl FnOnce(AsyncUdpSocket, LessSafeKey)) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            test(raw.into_async().expect("into_async"), test_cipher());
+        });
+    }
+
+    fn queued_job(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        payload_len: usize,
+        drop_on_backpressure: bool,
+        scheduling_weight: u8,
+    ) -> QueuedFmpSendJob {
+        let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
+        wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
+        wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
+        QueuedFmpSendJob::direct(FmpSendJob {
+            cipher: cipher.clone(),
+            counter: 0,
+            wire_buf,
+            fsp_seal: None,
+            socket,
+            dest_addr,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket: None,
+            drop_on_backpressure,
+            scheduling_weight,
+            queued_at: None,
+        })
+    }
+
+    #[test]
+    fn single_flow_full_backpressures_instead_of_dropping() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(2, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10000".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, 128, true, 1))
+                    .is_ok()
+            );
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, 128, true, 1))
+                    .is_ok()
+            );
+            assert!(matches!(
+                tx.try_push(queued_job(socket, &cipher, addr, 128, true, 1)),
+                Err(FairWorkerTryPushError::Full(_))
+            ));
+        });
+    }
+
+    #[test]
+    fn new_flow_can_enter_when_hot_flow_reaches_per_flow_cap() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = fair_worker_channel(4, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let hot: SocketAddr = "127.0.0.1:10001".parse().unwrap();
+            let quiet: SocketAddr = "127.0.0.1:10002".parse().unwrap();
+
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket, &cipher, quiet, 128, true, 1))
+                .unwrap();
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 4));
+            let dests: Vec<_> = batch.iter().map(QueuedFmpSendJob::flow_key).collect();
+            assert_eq!(dests.len(), 3);
+            assert_eq!(dests.iter().filter(|addr| **addr == hot).count(), 2);
+            assert_eq!(dests.iter().filter(|addr| **addr == quiet).count(), 1);
+        });
+    }
+
+    #[test]
+    fn hot_flow_drops_when_others_are_waiting() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let hot: SocketAddr = "127.0.0.1:10003".parse().unwrap();
+            let quiet: SocketAddr = "127.0.0.1:10004".parse().unwrap();
+
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, quiet, 128, true, 1))
+                .unwrap();
+
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
+                .unwrap();
+            assert!(matches!(
+                tx.try_push(queued_job(socket, &cipher, hot, 128, true, 1)),
+                Err(FairWorkerTryPushError::Dropped)
+            ));
+        });
+    }
+
+    #[test]
+    fn single_flow_drains_full_batch() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = fair_worker_channel(16, 16, 2048);
+            let addr: SocketAddr = "127.0.0.1:10005".parse().unwrap();
+
+            for _ in 0..8 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    1500,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .unwrap();
+            }
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 8));
+            assert_eq!(batch.len(), 8);
+            assert!(batch.iter().all(|job| job.flow_key() == addr));
+        });
+    }
+
+    #[test]
+    fn boosted_flow_gets_larger_queue_budget() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(12, 2, 2048);
+            let boosted: SocketAddr = "127.0.0.1:10006".parse().unwrap();
+            let normal: SocketAddr = "127.0.0.1:10007".parse().unwrap();
+
+            for _ in 0..8 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    boosted,
+                    1500,
+                    true,
+                    EXPLICIT_PEER_SEND_WEIGHT,
+                ))
+                .unwrap();
+            }
+            assert!(matches!(
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    boosted,
+                    1500,
+                    true,
+                    EXPLICIT_PEER_SEND_WEIGHT,
+                )),
+                Err(FairWorkerTryPushError::Full(_))
+            ));
+
+            for _ in 0..2 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    normal,
+                    1500,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .unwrap();
+            }
+            assert!(matches!(
+                tx.try_push(queued_job(
+                    socket,
+                    &cipher,
+                    normal,
+                    1500,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                )),
+                Err(FairWorkerTryPushError::Dropped)
+            ));
         });
     }
 }
@@ -2115,6 +2728,7 @@ mod tests {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     connected_socket: None,
                     drop_on_backpressure: true,
+                    scheduling_weight: DEFAULT_SEND_WEIGHT,
                     queued_at: None,
                 }
             }

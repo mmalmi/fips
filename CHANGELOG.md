@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-05-27
+
+### Fixed
+
+- Connected UDP peer drains now consume `SO_ERROR` after `POLLERR`, preventing
+  unreachable peers from waking the drain loop continuously.
+- Linux encrypted sends now use bounded fair admission per peer, so saturated
+  bootstrap/server nodes share sender capacity across peers while preserving a
+  small priority boost for explicitly configured peers.
+
 ## [0.3.21] - 2026-05-27
 
 ### Fixed

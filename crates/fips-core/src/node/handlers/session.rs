@@ -2310,6 +2310,7 @@ impl Node {
             }
             entry.touch(send.now_ms);
         }
+        let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
             cipher: fmp_cipher,
@@ -2326,6 +2327,7 @@ impl Node {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket,
             drop_on_backpressure: true,
+            scheduling_weight,
             queued_at: crate::perf_profile::stamp(),
         });
 

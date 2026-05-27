@@ -208,6 +208,7 @@ impl Node {
             .iter()
             .filter_map(|addr| new_by_addr.get(addr).cloned())
             .collect();
+        self.configured_peer_send_weights = Self::configured_peer_send_weights(&self.config);
 
         for peer_config in added_configs {
             outcome.added += 1;
