@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-05-27
+
+### Fixed
+
+- Ported upstream admission gates so saturated nodes stop starting outbound
+  retries, Nostr NAT traversal handshakes, or Msg2 replies for net-new peers
+  once `node.limits.max_peers` is reached.
+- TreeAnnounce now re-broadcasts periodically even when parent selection is
+  unchanged, letting stable meshes heal missed announce delivery.
+- Mesh-size estimation no longer double-counts the current parent while cached
+  peer declarations are stale after a parent switch.
+
 ## [0.3.20] - 2026-05-27
 
 ### Added

@@ -1761,7 +1761,13 @@ async fn test_retry_dials_static_udp_without_overlay_advert_race() {
     let peer_identity = Identity::generate();
     let peer_npub = peer_identity.npub();
 
-    let stale_static_addr = "127.0.0.1:9";
+    let static_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind static sink");
+    let stale_static_addr = static_sink
+        .local_addr()
+        .expect("static sink local addr")
+        .to_string();
     let fresh_overlay_addr = "127.0.0.1:55180";
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
@@ -1782,18 +1788,22 @@ async fn test_retry_dials_static_udp_without_overlay_advert_race() {
     let peer_config = crate::config::PeerConfig {
         npub: peer_npub.clone(),
         alias: None,
-        addresses: vec![crate::config::PeerAddress::new("udp", stale_static_addr)],
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            stale_static_addr.clone(),
+        )],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
+    node.config.peers.push(peer_config.clone());
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
         .unwrap();
 
     let fresh = TransportAddr::from_string(fresh_overlay_addr);
-    let stale = TransportAddr::from_string(stale_static_addr);
+    let stale = TransportAddr::from_string(&stale_static_addr);
     let fresh_link = node.find_link_by_addr(transport_id, &fresh);
     let stale_link = node.find_link_by_addr(transport_id, &stale);
     assert!(
@@ -1846,7 +1856,13 @@ async fn test_bootstrap_dials_static_address_without_overlay_race() {
     let peer_identity = Identity::generate();
     let peer_npub = peer_identity.npub();
 
-    let static_addr = "127.0.0.1:9";
+    let static_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind static sink");
+    let static_addr = static_sink
+        .local_addr()
+        .expect("static sink local addr")
+        .to_string();
     let overlay_addr = "127.0.0.1:55181";
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
@@ -1867,15 +1883,16 @@ async fn test_bootstrap_dials_static_address_without_overlay_race() {
     let peer_config = crate::config::PeerConfig {
         npub: peer_npub.clone(),
         alias: None,
-        addresses: vec![crate::config::PeerAddress::new("udp", static_addr)],
+        addresses: vec![crate::config::PeerAddress::new("udp", static_addr.clone())],
         connect_policy: crate::config::ConnectPolicy::AutoConnect,
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
+    node.config.peers.push(peer_config.clone());
 
     node.initiate_peer_connection(&peer_config).await.unwrap();
 
-    let stat = TransportAddr::from_string(static_addr);
+    let stat = TransportAddr::from_string(&static_addr);
     let overlay = TransportAddr::from_string(overlay_addr);
     let overlay_link = node.find_link_by_addr(transport_id, &overlay);
     let static_link = node.find_link_by_addr(transport_id, &stat);
