@@ -452,6 +452,7 @@ overhead.
 | `transports.tcp.bind_addr` | string | *(none)* | Listen address (e.g., `"0.0.0.0:8443"`). If omitted, outbound-only mode. |
 | `transports.tcp.mtu` | u16 | `1400` | Default MTU. Per-connection MTU derived from `TCP_MAXSEG` when available. |
 | `transports.tcp.connect_timeout_ms` | u64 | `5000` | Outbound connect timeout in milliseconds |
+| `transports.tcp.first_frame_timeout_ms` | u64 | `3000` | Inbound accepted sockets must deliver one complete FMP frame within this window. `0` disables. |
 | `transports.tcp.nodelay` | bool | `true` | `TCP_NODELAY` (disable Nagle for low latency) |
 | `transports.tcp.keepalive_secs` | u64 | `30` | TCP keepalive interval in seconds (0 = disabled) |
 | `transports.tcp.recv_buf_size` | usize | `2097152` | Socket receive buffer size in bytes (2 MB) |
@@ -877,6 +878,7 @@ transports:
   #   bind_addr: "0.0.0.0:8443"     # listen address (omit for outbound-only)
   #   mtu: 1400                      # default MTU
   #   connect_timeout_ms: 5000       # outbound connect timeout
+  #   first_frame_timeout_ms: 3000   # close inbound partial-frame holds
   #   nodelay: true                  # TCP_NODELAY
   #   keepalive_secs: 30             # keepalive interval (0 = disabled)
   #   recv_buf_size: 2097152         # 2 MB

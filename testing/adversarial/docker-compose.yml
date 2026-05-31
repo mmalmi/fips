@@ -1,0 +1,54 @@
+name: fips-adversarial
+
+networks:
+  ingress:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.33.0.0/24
+
+x-test-image: &test-image
+  image: fips-test:latest
+  build:
+    context: ../docker
+
+services:
+  victim:
+    <<: *test-image
+    container_name: fips-adversarial-victim
+    hostname: victim
+    entrypoint: ["fips", "--config", "/etc/fips/fips.yaml"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    environment:
+      - RUST_LOG=info,fips::node::handlers::handshake=debug,fips::transport::tcp=debug
+    volumes:
+      - ./configs/victim.yaml:/etc/fips/fips.yaml:ro
+      - ./scripts:/adversarial/scripts:ro
+    networks:
+      ingress:
+        ipv4_address: 172.33.0.10
+
+  attacker:
+    <<: *test-image
+    container_name: fips-adversarial-attacker
+    hostname: attacker
+    entrypoint: ["/bin/bash", "-lc", "sleep infinity"]
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    volumes:
+      - ./scripts:/adversarial/scripts:ro
+      - ./results:/results
+    networks:
+      ingress:
+        ipv4_address: 172.33.0.20

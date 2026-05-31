@@ -21,6 +21,7 @@ pub struct TcpStats {
     pub connections_rejected: AtomicU64,
     pub connect_timeouts: AtomicU64,
     pub connect_refused: AtomicU64,
+    pub first_frame_timeouts: AtomicU64,
 }
 
 impl TcpStats {
@@ -39,6 +40,7 @@ impl TcpStats {
             connections_rejected: AtomicU64::new(0),
             connect_timeouts: AtomicU64::new(0),
             connect_refused: AtomicU64::new(0),
+            first_frame_timeouts: AtomicU64::new(0),
         }
     }
 
@@ -94,6 +96,11 @@ impl TcpStats {
         self.connect_refused.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record an inbound connection that timed out before its first frame.
+    pub fn record_first_frame_timeout(&self) {
+        self.first_frame_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a snapshot of all counters.
     pub fn snapshot(&self) -> TcpStatsSnapshot {
         TcpStatsSnapshot {
@@ -109,6 +116,7 @@ impl TcpStats {
             connections_rejected: self.connections_rejected.load(Ordering::Relaxed),
             connect_timeouts: self.connect_timeouts.load(Ordering::Relaxed),
             connect_refused: self.connect_refused.load(Ordering::Relaxed),
+            first_frame_timeouts: self.first_frame_timeouts.load(Ordering::Relaxed),
         }
     }
 }
@@ -134,4 +142,5 @@ pub struct TcpStatsSnapshot {
     pub connections_rejected: u64,
     pub connect_timeouts: u64,
     pub connect_refused: u64,
+    pub first_frame_timeouts: u64,
 }

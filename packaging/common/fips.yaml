@@ -80,6 +80,10 @@ transports:
   tcp:
     # Accepts inbound connections. No static outbound peers.
     bind_addr: "0.0.0.0:8443"
+    # Close accepted inbound TCP sockets that do not deliver their first
+    # complete FMP frame quickly. Defends against slowloris-style partial
+    # prefix/body holds. Set 0 to disable.
+    # first_frame_timeout_ms: 3000
     # advertise_on_nostr: true
 
   # Ethernet transport — uncomment and set your interface name.

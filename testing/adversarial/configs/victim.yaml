@@ -1,0 +1,43 @@
+node:
+  identity:
+    nsec: "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  limits:
+    max_connections: 64
+    max_peers: 8
+    max_links: 8
+    max_pending_inbound: 64
+  rate_limit:
+    handshake_burst: 20
+    handshake_rate: 5.0
+    handshake_timeout_secs: 10
+    handshake_resend_interval_ms: 1000
+    handshake_resend_backoff: 2.0
+    handshake_max_resends: 2
+  buffers:
+    packet_channel: 256
+    tun_channel: 16
+    dns_channel: 16
+  control:
+    enabled: true
+    socket_path: "/run/fips/control.sock"
+
+tun:
+  enabled: false
+
+dns:
+  enabled: false
+
+transports:
+  udp:
+    bind_addr: "0.0.0.0:2121"
+    mtu: 1280
+    recv_buf_size: 1048576
+    send_buf_size: 1048576
+    accept_connections: true
+  tcp:
+    bind_addr: "0.0.0.0:8443"
+    mtu: 1400
+    keepalive_secs: 0
+    max_inbound_connections: 64
+
+peers: []

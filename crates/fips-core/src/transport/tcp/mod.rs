@@ -45,7 +45,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout};
 use tracing::{debug, info, trace, warn};
 
 // ============================================================================
@@ -189,6 +189,7 @@ impl TcpTransport {
                 keepalive_secs: self.config.keepalive_secs(),
                 recv_buf: self.config.recv_buf_size(),
                 send_buf: self.config.send_buf_size(),
+                first_frame_timeout_ms: self.config.first_frame_timeout_ms(),
             };
 
             let accept_task = tokio::spawn(async move {
@@ -389,6 +390,7 @@ impl TcpTransport {
                 pool,
                 mtu,
                 recv_stats,
+                None,
             )
             .await;
         });
@@ -600,6 +602,7 @@ impl TcpTransport {
                 pool,
                 mss_mtu,
                 recv_stats,
+                None,
             )
             .await;
         });
@@ -699,6 +702,7 @@ struct AcceptConfig {
     keepalive_secs: u64,
     recv_buf: usize,
     send_buf: usize,
+    first_frame_timeout_ms: u64,
 }
 
 /// TCP accept loop — runs as a spawned task when bind_addr is configured.
@@ -718,6 +722,7 @@ async fn accept_loop(
         keepalive_secs,
         recv_buf,
         send_buf,
+        first_frame_timeout_ms,
     } = cfg;
     debug!(transport_id = %transport_id, "TCP accept loop starting");
 
@@ -803,6 +808,7 @@ async fn accept_loop(
                         recv_pool,
                         conn_mtu,
                         recv_stats,
+                        first_frame_timeout(first_frame_timeout_ms),
                     )
                     .await;
                 });
@@ -854,6 +860,7 @@ async fn tcp_receive_loop(
     pool: ConnectionPool,
     mtu: u16,
     stats: Arc<TcpStats>,
+    first_frame_timeout: Option<Duration>,
 ) {
     debug!(
         transport_id = %transport_id,
@@ -861,9 +868,32 @@ async fn tcp_receive_loop(
         "TCP receive loop starting"
     );
 
+    let mut first_frame = true;
     loop {
-        match read_fmp_packet(&mut reader, mtu).await {
+        let read_result = if first_frame {
+            match first_frame_timeout {
+                Some(limit) => match timeout(limit, read_fmp_packet(&mut reader, mtu)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        stats.record_first_frame_timeout();
+                        debug!(
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            timeout_ms = limit.as_millis(),
+                            "TCP inbound connection timed out before first complete FMP frame"
+                        );
+                        break;
+                    }
+                },
+                None => read_fmp_packet(&mut reader, mtu).await,
+            }
+        } else {
+            read_fmp_packet(&mut reader, mtu).await
+        };
+
+        match read_result {
             Ok(data) => {
+                first_frame = false;
                 stats.record_recv(data.len());
 
                 trace!(
@@ -906,6 +936,10 @@ async fn tcp_receive_loop(
         remote_addr = %remote_addr,
         "TCP receive loop stopped"
     );
+}
+
+fn first_frame_timeout(timeout_ms: u64) -> Option<Duration> {
+    (timeout_ms > 0).then(|| Duration::from_millis(timeout_ms))
 }
 
 // ============================================================================
@@ -1209,6 +1243,42 @@ mod tests {
 
         t1.stop_async().await.unwrap();
         t2.stop_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn inbound_first_frame_timeout_closes_slowloris_connection() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (tx, _rx) = packet_channel(100);
+        let config = TcpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            first_frame_timeout_ms: Some(50),
+            max_inbound_connections: Some(1),
+            ..Default::default()
+        };
+        let mut transport = TcpTransport::new(TransportId::new(1), None, config, tx);
+        transport.start_async().await.unwrap();
+
+        let addr = transport.local_addr().unwrap();
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(b"\x01").await.unwrap();
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if transport.stats.snapshot().first_frame_timeouts >= 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("slowloris connection should hit first-frame timeout");
+
+        let pool = transport.pool.lock().await;
+        assert_eq!(pool.len(), 0);
+        drop(pool);
+
+        transport.stop_async().await.unwrap();
     }
 
     #[tokio::test]

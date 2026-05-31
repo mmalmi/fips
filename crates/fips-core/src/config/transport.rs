@@ -445,6 +445,10 @@ const DEFAULT_TCP_MTU: u16 = 1400;
 /// Default TCP connect timeout in milliseconds.
 const DEFAULT_TCP_CONNECT_TIMEOUT_MS: u64 = 5000;
 
+/// Default timeout for an accepted inbound TCP connection to deliver its
+/// first complete FMP frame.
+const DEFAULT_TCP_FIRST_FRAME_TIMEOUT_MS: u64 = 3000;
+
 /// Default TCP keepalive interval in seconds.
 const DEFAULT_TCP_KEEPALIVE_SECS: u64 = 30;
 
@@ -473,6 +477,12 @@ pub struct TcpConfig {
     /// Outbound connect timeout in milliseconds. Defaults to 5000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
+
+    /// Inbound first-frame timeout in milliseconds. Accepted connections
+    /// must deliver one complete FMP frame within this window or they are
+    /// closed. Set to 0 to disable. Defaults to 3000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_frame_timeout_ms: Option<u64>,
 
     /// Enable TCP_NODELAY (disable Nagle). Defaults to true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +530,12 @@ impl TcpConfig {
     pub fn connect_timeout_ms(&self) -> u64 {
         self.connect_timeout_ms
             .unwrap_or(DEFAULT_TCP_CONNECT_TIMEOUT_MS)
+    }
+
+    /// Get the inbound first-frame timeout in milliseconds. 0 disables it.
+    pub fn first_frame_timeout_ms(&self) -> u64 {
+        self.first_frame_timeout_ms
+            .unwrap_or(DEFAULT_TCP_FIRST_FRAME_TIMEOUT_MS)
     }
 
     /// Whether TCP_NODELAY is enabled. Default: true.
