@@ -63,8 +63,9 @@ impl Node {
     ///
     /// Only schedules if the peer is an auto-connect peer and max retries
     /// have not been exhausted (unless `reconnect` is true, which retries
-    /// indefinitely). Does nothing if the peer is already connected or has
-    /// a connection in progress.
+    /// indefinitely). An active peer suppresses retry only when it is already
+    /// on a fresh configured direct path; fallback paths keep bounded direct
+    /// refresh retries alive.
     pub(super) fn schedule_retry(&mut self, node_addr: NodeAddr, now_ms: u64) {
         let retry_cfg = &self.config.node.retry;
         let max_retries = retry_cfg.max_retries;
@@ -72,9 +73,28 @@ impl Node {
             return;
         }
 
-        // Don't retry if peer is already connected
+        let peer_config = self
+            .retry_pending
+            .get(&node_addr)
+            .map(|state| state.peer_config.clone())
+            .or_else(|| {
+                self.config
+                    .auto_connect_peers()
+                    .find(|pc| {
+                        PeerIdentity::from_npub(&pc.npub)
+                            .map(|id| *id.node_addr() == node_addr)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+            });
+
         if self.peers.contains_key(&node_addr) {
-            return;
+            let Some(pc) = peer_config.as_ref() else {
+                return;
+            };
+            if !self.active_peer_should_keep_direct_retry(&node_addr, pc) {
+                return;
+            }
         }
 
         let base_interval_ms = retry_cfg.base_interval_secs * 1000;
@@ -103,17 +123,6 @@ impl Node {
                 "Scheduling connection retry"
             );
         } else {
-            // First failure — find the matching PeerConfig
-            let peer_config = self
-                .config
-                .auto_connect_peers()
-                .find(|pc| {
-                    PeerIdentity::from_npub(&pc.npub)
-                        .map(|id| *id.node_addr() == node_addr)
-                        .unwrap_or(false)
-                })
-                .cloned();
-
             if let Some(pc) = peer_config {
                 let mut state = RetryState::new(pc);
                 state.retry_count = 1;
@@ -260,9 +269,69 @@ impl Node {
         }
 
         for node_addr in due.into_iter().take(MAX_RETRY_CONNECTIONS_PER_TICK) {
-            // Peer may have connected inbound while we waited
             if self.peers.contains_key(&node_addr) {
-                self.retry_pending.remove(&node_addr);
+                let Some(peer_config) = self
+                    .retry_pending
+                    .get(&node_addr)
+                    .map(|state| state.peer_config.clone())
+                else {
+                    continue;
+                };
+
+                if !self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
+                    self.retry_pending.remove(&node_addr);
+                    continue;
+                }
+
+                debug!(
+                    peer = %self.peer_display_name(&node_addr),
+                    "Attempting direct-path retry while fallback peer remains active"
+                );
+
+                if let Some(bootstrap) = self.nostr_discovery.clone() {
+                    bootstrap
+                        .request_advert_stale_check(peer_config.npub.clone())
+                        .await;
+                }
+
+                match self
+                    .initiate_active_peer_alternative_connection(&peer_config)
+                    .await
+                {
+                    Ok(true) => {
+                        let hs_timeout_ms =
+                            self.config.node.rate_limit.handshake_timeout_secs * 1000;
+                        if let Some(state) = self.retry_pending.get_mut(&node_addr) {
+                            state.retry_after_ms = now_ms + hs_timeout_ms;
+                        }
+                        debug!(
+                            peer = %self.peer_display_name(&node_addr),
+                            "Direct-path retry initiated while preserving active fallback peer"
+                        );
+                    }
+                    Ok(false) => {
+                        if self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
+                            self.schedule_retry(node_addr, now_ms);
+                        } else {
+                            self.retry_pending.remove(&node_addr);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            peer = %self.peer_display_name(&node_addr),
+                            error = %e,
+                            "Direct-path retry initiation failed while fallback peer remains active"
+                        );
+                        if matches!(e, NodeError::NoTransportForType(_))
+                            && let Some(bootstrap) = self.nostr_discovery.clone()
+                        {
+                            bootstrap
+                                .request_advert_stale_check(peer_config.npub.clone())
+                                .await;
+                        }
+                        self.schedule_retry(node_addr, now_ms);
+                    }
+                }
                 continue;
             }
 

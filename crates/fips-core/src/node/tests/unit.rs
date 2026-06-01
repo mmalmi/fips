@@ -1218,6 +1218,35 @@ fn test_schedule_retry_skips_connected_peer() {
     );
 }
 
+#[test]
+fn test_schedule_retry_keeps_connected_bootstrap_peer_refreshable() {
+    let peer_full = Identity::generate();
+    let peer_npub = peer_full.npub();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_npub,
+        "udp",
+        "127.0.0.1:9",
+    ));
+    let mut node = Node::new(config).unwrap();
+
+    let bootstrap_id = TransportId::new(99);
+    node.bootstrap_transports.insert(bootstrap_id);
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:9"));
+    node.peers.insert(peer_node_addr, active_peer);
+
+    node.schedule_retry(peer_node_addr, 3_000);
+
+    assert!(
+        node.retry_pending.contains_key(&peer_node_addr),
+        "bootstrap/fallback paths should not permanently suppress direct refresh retries"
+    );
+}
+
 #[tokio::test]
 async fn test_try_peer_addresses_skips_connected_peer() {
     let mut node = make_node();
@@ -1495,6 +1524,29 @@ fn test_promote_clears_retry_pending() {
     assert!(
         !node.retry_pending.contains_key(&node_addr),
         "retry_pending should be cleared on successful promotion"
+    );
+}
+
+#[test]
+fn test_promote_keeps_retry_pending_for_bootstrap_path() {
+    let mut node = make_node();
+    let bootstrap_id = TransportId::new(1);
+    node.bootstrap_transports.insert(bootstrap_id);
+
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, bootstrap_id, 1000);
+    let node_addr = *identity.node_addr();
+    let peer_config = crate::config::PeerConfig::new(identity.npub(), "udp", "127.0.0.1:5000");
+
+    node.retry_pending
+        .insert(node_addr, super::super::retry::RetryState::new(peer_config));
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+
+    assert!(
+        node.retry_pending.contains_key(&node_addr),
+        "promotion over bootstrap/fallback transport should keep direct refresh retry state"
     );
 }
 
@@ -1904,6 +1956,103 @@ async fn test_bootstrap_dials_static_address_without_overlay_race() {
         static_link.is_some(),
         "cold-start should keep the unstamped static address in the bounded path race"
     );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_retry_races_fresh_overlay_udp_candidates_without_static_direct() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    let mut node = Node::new(config).unwrap();
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+
+    let first_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind first sink");
+    let second_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind second sink");
+    let first_addr = first_sink
+        .local_addr()
+        .expect("first sink addr")
+        .to_string();
+    let second_addr = second_sink
+        .local_addr()
+        .expect("second sink addr")
+        .to_string();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let first_endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: first_addr.clone(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut advert =
+        NostrDiscovery::cached_advert_for_test(peer_npub.clone(), first_endpoint, now_secs);
+    advert.advert.endpoints.push(OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: second_addr.clone(),
+    });
+    bootstrap
+        .insert_advert_for_test(peer_npub.clone(), advert)
+        .await;
+    node.nostr_discovery = Some(bootstrap);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers.push(peer_config.clone());
+
+    node.initiate_peer_retry_connection(&peer_config)
+        .await
+        .unwrap();
+
+    assert!(
+        node.find_link_by_addr(transport_id, &TransportAddr::from_string(&first_addr))
+            .is_some(),
+        "first overlay UDP candidate should be raced"
+    );
+    assert!(
+        node.find_link_by_addr(transport_id, &TransportAddr::from_string(&second_addr))
+            .is_some(),
+        "a fresh overlay attempt must not suppress a later direct UDP candidate"
+    );
+    assert_eq!(node.connection_count(), 2);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -2604,6 +2753,66 @@ async fn update_peers_races_primary_path_when_active_peer_uses_bootstrap_transpo
     );
     let conn = node.connections.values().next().unwrap();
     assert_eq!(conn.transport_id(), Some(primary_id));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let bootstrap_id = TransportId::new(1);
+    let primary_id = TransportId::new(2);
+    for (transport_id, name) in [(bootstrap_id, "nostr-nat"), (primary_id, "main")] {
+        let mut udp = UdpTransport::new(
+            transport_id,
+            Some(name.to_string()),
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx.clone(),
+        );
+        udp.start_async().await.unwrap();
+        node.transports
+            .insert(transport_id, TransportHandle::Udp(udp));
+    }
+    node.bootstrap_transports.insert(bootstrap_id);
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:8"));
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
+    node.config.peers = vec![peer.clone()];
+    let mut state = super::super::retry::RetryState::new(peer);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert_eq!(node.peer_count(), 1);
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "retry maintenance should race the configured direct path even while fallback remains active"
+    );
+    let conn = node.connections.values().next().unwrap();
+    assert_eq!(conn.transport_id(), Some(primary_id));
+    assert!(
+        node.retry_pending
+            .get(&peer_node_addr)
+            .is_some_and(|state| state.retry_after_ms > 1_000),
+        "retry state should stay pending until the direct-path handshake wins or times out"
+    );
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

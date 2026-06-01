@@ -1142,7 +1142,7 @@ impl Node {
                 self.peers.insert(peer_node_addr, new_peer);
                 self.peers_by_index
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
-                self.retry_pending.remove(&peer_node_addr);
+                self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.set_discovery_fallback_transit_allowed(
                     peer_node_addr,
                     discovery_fallback_transit_allowed,
@@ -1254,7 +1254,7 @@ impl Node {
             self.peers.insert(peer_node_addr, new_peer);
             self.peers_by_index
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
-            self.retry_pending.remove(&peer_node_addr);
+            self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
             self.set_discovery_fallback_transit_allowed(
                 peer_node_addr,
                 discovery_fallback_transit_allowed,

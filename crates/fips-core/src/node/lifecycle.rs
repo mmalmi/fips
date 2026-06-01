@@ -435,6 +435,9 @@ impl Node {
         if self.peers.contains_key(&peer_node_addr) {
             return Ok(false);
         }
+        if self.auto_connect_should_race_direct_path(peer_config) {
+            return Ok(false);
+        }
         if self
             .sessions
             .get(&peer_node_addr)
@@ -468,6 +471,10 @@ impl Node {
         }
     }
 
+    fn auto_connect_should_race_direct_path(&self, peer_config: &PeerConfig) -> bool {
+        !peer_config.addresses.is_empty() || self.config.node.discovery.nostr.enabled
+    }
+
     /// Initiate a connection to a single peer.
     ///
     /// Creates a link, starts the Noise handshake, and sends the first message.
@@ -490,7 +497,7 @@ impl Node {
         self.initiate_peer_connection_inner(peer_config).await
     }
 
-    async fn initiate_active_peer_alternative_connection(
+    pub(in crate::node) async fn initiate_active_peer_alternative_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<bool, NodeError> {
@@ -2470,7 +2477,10 @@ impl Node {
         info!(sent, total = peer_addrs.len(), reason = %reason, "Sent disconnect notifications");
     }
 
-    fn static_peer_addresses(&self, peer_config: &PeerConfig) -> Vec<PeerAddress> {
+    pub(in crate::node) fn static_peer_addresses(
+        &self,
+        peer_config: &PeerConfig,
+    ) -> Vec<PeerAddress> {
         peer_config
             .addresses_by_priority()
             .into_iter()
@@ -2580,11 +2590,13 @@ impl Node {
         addresses: &[PeerAddress],
     ) -> Result<(), NodeError> {
         let mut attempted = false;
+        let mut configured_candidate_attempted = false;
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
 
         for addr in addresses {
-            if attempted && addr.seen_at_ms.is_some() {
+            let is_overlay_candidate = addr.seen_at_ms.is_some();
+            if configured_candidate_attempted && is_overlay_candidate {
                 debug!(
                     npub = %peer_config.npub,
                     transport = %addr.transport,
@@ -2595,7 +2607,7 @@ impl Node {
             }
 
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
-                if attempted {
+                if configured_candidate_attempted {
                     debug!(
                         npub = %peer_config.npub,
                         "Skipping Nostr NAT fallback because a configured direct candidate is already in flight"
@@ -2680,6 +2692,9 @@ impl Node {
 
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 attempted = true;
+                if !is_overlay_candidate {
+                    configured_candidate_attempted = true;
+                }
                 debug!(
                     npub = %peer_config.npub,
                     transport_id = %transport_id,
@@ -2704,6 +2719,9 @@ impl Node {
             {
                 Ok(()) => {
                     attempted = true;
+                    if !is_overlay_candidate {
+                        configured_candidate_attempted = true;
+                    }
                     concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
@@ -3297,6 +3315,13 @@ impl Node {
             .await
             .is_ok()
         {
+            if allow_bootstrap_nat {
+                self.request_nostr_bootstrap(peer_config).await;
+            }
+            return Ok(());
+        }
+
+        if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
             return Ok(());
         }
 
@@ -3315,6 +3340,9 @@ impl Node {
         let candidates = self.peer_address_candidates(peer_config).await;
 
         if candidates.is_empty() {
+            if self.request_nostr_bootstrap(peer_config).await {
+                return Ok(true);
+            }
             return Err(NodeError::NoTransportForType(format!(
                 "no addresses known for {}",
                 peer_config.npub
@@ -3323,18 +3351,19 @@ impl Node {
 
         let alternatives: Vec<_> = candidates
             .into_iter()
-            .filter(|addr| !(addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat")))
             .filter(|addr| !self.active_peer_matches_candidate(&peer_node_addr, addr))
             .collect();
 
         if alternatives.is_empty() {
-            return Err(NodeError::NoTransportForType(format!(
-                "no concrete alternate addresses known for {}",
-                peer_config.npub
-            )));
+            if self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config)
+                && self.request_nostr_bootstrap(peer_config).await
+            {
+                return Ok(true);
+            }
+            return Ok(false);
         }
 
-        self.attempt_peer_address_list(peer_config, peer_identity, false, &alternatives)
+        self.attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
             .await?;
         Ok(true)
     }
@@ -3394,6 +3423,54 @@ impl Node {
             return false;
         }
         !self.active_peer_needs_same_path_refresh(peer_node_addr)
+    }
+
+    pub(in crate::node) fn active_peer_should_keep_direct_retry(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+
+        let static_addresses = self.static_peer_addresses(peer_config);
+        if !static_addresses.is_empty() {
+            return !self
+                .active_peer_candidate_is_fresh_enough_to_skip(peer_node_addr, &static_addresses);
+        }
+
+        if peer_config.npub.is_empty() {
+            return false;
+        }
+
+        if !self.config.node.discovery.nostr.enabled
+            || self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Disabled
+        {
+            return false;
+        }
+
+        peer.transport_id()
+            .and_then(|id| self.transports.get(&id))
+            .map(|transport| transport.transport_type().name != "udp")
+            .unwrap_or(true)
+    }
+
+    pub(in crate::node) fn clear_retry_unless_direct_refresh_needed(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+    ) {
+        let keep_retry = self
+            .retry_pending
+            .get(peer_node_addr)
+            .map(|state| state.peer_config.clone())
+            .is_some_and(|peer_config| {
+                self.active_peer_should_keep_direct_retry(peer_node_addr, &peer_config)
+            });
+
+        if !keep_retry {
+            self.retry_pending.remove(peer_node_addr);
+        }
     }
 
     fn active_peer_needs_same_path_refresh(&self, peer_node_addr: &NodeAddr) -> bool {
