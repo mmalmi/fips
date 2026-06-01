@@ -38,6 +38,10 @@ pub enum SessionMessageType {
     CoordsWarmup = 0x14,
     /// App-facing endpoint payload, without DataPacket port dispatch.
     EndpointData = 0x15,
+    /// NAT traversal offer carried over an established end-to-end FIPS session.
+    TraversalOffer = 0x16,
+    /// NAT traversal answer carried over an established end-to-end FIPS session.
+    TraversalAnswer = 0x17,
 
     // Link-layer error signals (0x20-0x2F) — plaintext, from transit routers
     /// Router cache miss — needs coordinates (link-layer error signal).
@@ -58,6 +62,8 @@ impl SessionMessageType {
             0x13 => Some(SessionMessageType::PathMtuNotification),
             0x14 => Some(SessionMessageType::CoordsWarmup),
             0x15 => Some(SessionMessageType::EndpointData),
+            0x16 => Some(SessionMessageType::TraversalOffer),
+            0x17 => Some(SessionMessageType::TraversalAnswer),
             0x20 => Some(SessionMessageType::CoordsRequired),
             0x21 => Some(SessionMessageType::PathBroken),
             0x22 => Some(SessionMessageType::MtuExceeded),
@@ -80,6 +86,8 @@ impl fmt::Display for SessionMessageType {
             SessionMessageType::PathMtuNotification => "PathMtuNotification",
             SessionMessageType::CoordsWarmup => "CoordsWarmup",
             SessionMessageType::EndpointData => "EndpointData",
+            SessionMessageType::TraversalOffer => "TraversalOffer",
+            SessionMessageType::TraversalAnswer => "TraversalAnswer",
             SessionMessageType::CoordsRequired => "CoordsRequired",
             SessionMessageType::PathBroken => "PathBroken",
             SessionMessageType::MtuExceeded => "MtuExceeded",

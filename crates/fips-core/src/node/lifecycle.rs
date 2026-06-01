@@ -3,22 +3,30 @@
 use super::{Node, NodeError, NodeState};
 use crate::config::{ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerConfig};
 use crate::discovery::nostr::{
-    ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, NostrDiscovery, OverlayAdvert,
-    OverlayEndpointAdvert, OverlayTransportKind,
+    ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, MeshTraversalSignal, NostrDiscovery,
+    OverlayAdvert, OverlayEndpointAdvert, OverlayTransportKind,
 };
 use crate::discovery::{BootstrapHandoffResult, EstablishedTraversal};
 use crate::node::acl::PeerAclContext;
 use crate::node::wire::build_msg1;
 use crate::peer::PeerConnection;
-use crate::protocol::{Disconnect, DisconnectReason};
+use crate::protocol::{Disconnect, DisconnectReason, SessionMessageType};
 use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, packet_channel};
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
 use crate::{NodeAddr, PeerIdentity};
+use secp256k1::PublicKey;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeshSignalSessionAction {
+    Send,
+    Defer,
+    Drop,
+}
 
 #[cfg(debug_assertions)]
 fn node_start_debug_log(message: impl AsRef<str>) {
@@ -1271,19 +1279,31 @@ impl Node {
         };
 
         bootstrap.set_outbound_admission(self.outbound_admission_check());
+        bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
 
         if let Err(err) = self.refresh_overlay_advert(&bootstrap).await {
             debug!(error = %err, "Failed to refresh local Nostr overlay advert");
         }
 
+        self.drain_nostr_mesh_signals(&bootstrap).await;
+
         for event in bootstrap.drain_events().await {
             match event {
                 BootstrapEvent::Established { traversal } => {
-                    if !self.outbound_admission_check() {
+                    let active_refresh = PeerIdentity::from_npub(&traversal.peer_npub)
+                        .ok()
+                        .is_some_and(|identity| self.peers.contains_key(identity.node_addr()));
+                    let admission_allowed = if active_refresh {
+                        self.outbound_direct_refresh_admission_check()
+                    } else {
+                        self.outbound_admission_check()
+                    };
+                    if !admission_allowed {
                         debug!(
                             peer_npub = %traversal.peer_npub,
                             peers = self.peers.len(),
                             max_peers = self.max_peers,
+                            active_refresh,
                             "Dropping established NAT traversal: at capacity"
                         );
                         continue;
@@ -1310,12 +1330,47 @@ impl Node {
                         Err(_) => continue,
                     };
                     let node_addr = *peer_identity.node_addr();
+                    let now_ms = Self::now_ms();
                     if self.peers.contains_key(&node_addr) {
-                        debug!(
-                            npub = %peer_config.npub,
-                            error = %reason,
-                            "Ignoring failed NAT traversal for already-connected peer"
-                        );
+                        if self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
+                            let decision =
+                                bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
+                            if decision.should_warn {
+                                warn!(
+                                    npub = %peer_config.npub,
+                                    error = %reason,
+                                    consecutive_failures = decision.consecutive_failures,
+                                    cooldown_secs = decision
+                                        .cooldown_until_ms
+                                        .map(|t| t.saturating_sub(now_ms) / 1000),
+                                    "Direct-path NAT traversal upgrade failed"
+                                );
+                            } else {
+                                debug!(
+                                    npub = %peer_config.npub,
+                                    error = %reason,
+                                    consecutive_failures = decision.consecutive_failures,
+                                    "Direct-path NAT traversal upgrade failed (suppressed by warn-rate-limit)"
+                                );
+                            }
+                            if decision.crossed_threshold {
+                                bootstrap
+                                    .request_advert_stale_check(peer_config.npub.clone())
+                                    .await;
+                            }
+                            self.schedule_retry(node_addr, now_ms);
+                            if let Some(cooldown_until_ms) = decision.cooldown_until_ms
+                                && let Some(state) = self.retry_pending.get_mut(&node_addr)
+                            {
+                                state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+                            }
+                        } else {
+                            debug!(
+                                npub = %peer_config.npub,
+                                error = %reason,
+                                "Ignoring failed NAT traversal for already-connected peer on fresh direct path"
+                            );
+                        }
                         continue;
                     }
                     if self.is_connecting_to_peer(&node_addr) {
@@ -1327,7 +1382,6 @@ impl Node {
                         continue;
                     }
 
-                    let now_ms = Self::now_ms();
                     let decision = bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
                     if decision.should_warn {
                         warn!(
@@ -1381,6 +1435,145 @@ impl Node {
         self.maybe_run_startup_open_discovery_sweep(&bootstrap)
             .await;
         self.queue_open_discovery_retries(&bootstrap).await;
+        self.queue_active_fallback_direct_retries(&bootstrap);
+    }
+
+    async fn drain_nostr_mesh_signals(&mut self, bootstrap: &std::sync::Arc<NostrDiscovery>) {
+        let mut deferred = Vec::new();
+
+        for signal in bootstrap.drain_mesh_signals().await {
+            let (peer_npub, msg_type, payload) = match &signal {
+                MeshTraversalSignal::Offer { peer_npub, offer } => {
+                    let payload = match serde_json::to_vec(&offer) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            debug!(
+                                peer = %peer_npub,
+                                error = %error,
+                                "Failed to encode mesh traversal offer"
+                            );
+                            continue;
+                        }
+                    };
+                    (
+                        peer_npub.clone(),
+                        SessionMessageType::TraversalOffer.to_byte(),
+                        payload,
+                    )
+                }
+                MeshTraversalSignal::Answer { peer_npub, answer } => {
+                    let payload = match serde_json::to_vec(&answer) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            debug!(
+                                peer = %peer_npub,
+                                error = %error,
+                                "Failed to encode mesh traversal answer"
+                            );
+                            continue;
+                        }
+                    };
+                    (
+                        peer_npub.clone(),
+                        SessionMessageType::TraversalAnswer.to_byte(),
+                        payload,
+                    )
+                }
+            };
+
+            let peer_identity = match PeerIdentity::from_npub(&peer_npub) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    debug!(
+                        peer = %peer_npub,
+                        error = %error,
+                        "Cannot send mesh traversal signal to invalid peer npub"
+                    );
+                    continue;
+                }
+            };
+            let peer_addr = *peer_identity.node_addr();
+            match self
+                .mesh_signal_session_action(peer_addr, peer_identity.pubkey_full())
+                .await
+            {
+                MeshSignalSessionAction::Send => {}
+                MeshSignalSessionAction::Defer => {
+                    deferred.push(signal);
+                    continue;
+                }
+                MeshSignalSessionAction::Drop => continue,
+            }
+
+            if let Err(error) = self.send_session_msg(&peer_addr, msg_type, &payload).await {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    error = %error,
+                    "Failed to send mesh traversal signal"
+                );
+            }
+        }
+
+        for signal in deferred {
+            bootstrap.requeue_mesh_signal(signal);
+        }
+    }
+
+    async fn mesh_signal_session_action(
+        &mut self,
+        peer_addr: NodeAddr,
+        peer_pubkey: PublicKey,
+    ) -> MeshSignalSessionAction {
+        if let Some(entry) = self.sessions.get(&peer_addr) {
+            if entry.is_established() {
+                return MeshSignalSessionAction::Send;
+            }
+            if entry.is_initiating() || entry.is_awaiting_msg3() {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    "Deferring mesh traversal signal until end-to-end session is established"
+                );
+                return MeshSignalSessionAction::Defer;
+            }
+        }
+
+        if self.find_next_hop(&peer_addr).is_none() {
+            debug!(
+                peer = %self.peer_display_name(&peer_addr),
+                "Cannot warm mesh traversal signal session without a FIPS route"
+            );
+            self.maybe_initiate_lookup(&peer_addr).await;
+            return MeshSignalSessionAction::Drop;
+        }
+
+        self.register_identity(peer_addr, peer_pubkey);
+        match self.initiate_session(peer_addr, peer_pubkey).await {
+            Ok(()) => {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    "Warming end-to-end session for mesh traversal signal"
+                );
+                MeshSignalSessionAction::Defer
+            }
+            Err(NodeError::SendFailed { node_addr, reason })
+                if node_addr == peer_addr && reason == "no route to destination" =>
+            {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    "Cannot warm mesh traversal signal session without a FIPS route"
+                );
+                self.maybe_initiate_lookup(&peer_addr).await;
+                MeshSignalSessionAction::Drop
+            }
+            Err(error) => {
+                debug!(
+                    peer = %self.peer_display_name(&peer_addr),
+                    error = %error,
+                    "Failed to warm end-to-end session for mesh traversal signal"
+                );
+                MeshSignalSessionAction::Drop
+            }
+        }
     }
 
     /// Resolve the LAN-only discovery scope. Applications with explicit
@@ -2524,10 +2717,11 @@ impl Node {
             .max()
             .unwrap_or(100)
             .saturating_add(1);
-        // Stamp every overlay-derived candidate with the current wall clock
-        // so the dialer ranks it ahead of unstamped operator hints. We use a
-        // single timestamp per fetch (rather than per-endpoint) because all
-        // candidates in a single advert are equally fresh.
+        // Stamp every overlay-derived candidate with the current wall clock.
+        // The dialer still honors explicit priority first; this timestamp is
+        // only a recency tiebreaker within the same priority tier. We use a
+        // single timestamp per fetch because all candidates in one advert are
+        // equally fresh.
         let seen_at_ms = Self::now_ms();
         for endpoint in endpoints {
             let Some(candidate) =
@@ -2560,9 +2754,29 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return false;
         };
-        bootstrap.request_connect(peer_config.clone()).await;
-        info!(npub = %peer_config.npub, "Started background Nostr UDP NAT traversal attempt");
+        bootstrap.set_outbound_admission(self.outbound_admission_check());
+        bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
+        let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
+        bootstrap
+            .request_connect_with_mesh_signaling(peer_config.clone(), mesh_signaling_allowed)
+            .await;
+        info!(
+            npub = %peer_config.npub,
+            mesh_signaling_allowed,
+            "Started background UDP NAT traversal attempt"
+        );
         true
+    }
+
+    pub(in crate::node) fn mesh_signaling_allowed_for_peer(
+        &self,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+            return false;
+        };
+        let peer_addr = identity.node_addr();
+        self.configured_peer(peer_addr).is_some()
     }
 
     fn overlay_endpoint_to_peer_address(
@@ -2590,30 +2804,11 @@ impl Node {
         addresses: &[PeerAddress],
     ) -> Result<(), NodeError> {
         let mut attempted = false;
-        let mut configured_candidate_attempted = false;
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
 
         for addr in addresses {
-            let is_overlay_candidate = addr.seen_at_ms.is_some();
-            if configured_candidate_attempted && is_overlay_candidate {
-                debug!(
-                    npub = %peer_config.npub,
-                    transport = %addr.transport,
-                    addr = %addr.addr,
-                    "Skipping overlay fallback because a configured direct candidate is already in flight"
-                );
-                continue;
-            }
-
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
-                if configured_candidate_attempted {
-                    debug!(
-                        npub = %peer_config.npub,
-                        "Skipping Nostr NAT fallback because a configured direct candidate is already in flight"
-                    );
-                    continue;
-                }
                 if !allow_bootstrap_nat {
                     continue;
                 }
@@ -2692,9 +2887,6 @@ impl Node {
 
             if self.is_connecting_to_peer_on_path(&peer_node_addr, transport_id, &remote_addr) {
                 attempted = true;
-                if !is_overlay_candidate {
-                    configured_candidate_attempted = true;
-                }
                 debug!(
                     npub = %peer_config.npub,
                     transport_id = %transport_id,
@@ -2719,9 +2911,6 @@ impl Node {
             {
                 Ok(()) => {
                     attempted = true;
-                    if !is_overlay_candidate {
-                        configured_candidate_attempted = true;
-                    }
                     concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
@@ -2749,6 +2938,45 @@ impl Node {
     async fn queue_open_discovery_retries(&mut self, bootstrap: &std::sync::Arc<NostrDiscovery>) {
         self.run_open_discovery_sweep(bootstrap, None, "per-tick")
             .await;
+    }
+
+    pub(in crate::node) fn queue_active_fallback_direct_retries(
+        &mut self,
+        bootstrap: &std::sync::Arc<NostrDiscovery>,
+    ) {
+        let now_ms = Self::now_ms();
+        let peer_configs = self
+            .config
+            .auto_connect_peers()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for peer_config in peer_configs {
+            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+                continue;
+            };
+            let node_addr = *peer_identity.node_addr();
+
+            if self.retry_pending.contains_key(&node_addr)
+                || !self.peers.contains_key(&node_addr)
+                || self.is_connecting_to_peer(&node_addr)
+                || !self.active_peer_should_keep_direct_retry(&node_addr, &peer_config)
+            {
+                continue;
+            }
+
+            let cooldown_until_ms = bootstrap.cooldown_until(&peer_config.npub, now_ms);
+            let mut state = super::retry::RetryState::new(peer_config.clone());
+            state.reconnect = true;
+            state.retry_after_ms = cooldown_until_ms.unwrap_or(now_ms);
+            self.retry_pending.insert(node_addr, state);
+
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                cooldown_secs = cooldown_until_ms.map(|t| t.saturating_sub(now_ms) / 1000),
+                "Queued direct-path retry for active fallback peer"
+            );
+        }
     }
 
     /// Open-discovery cache sweep. Iterates the cached overlay adverts and
@@ -3028,10 +3256,24 @@ impl Node {
             self.max_peers.saturating_sub(self.peers.len())
         };
 
-        connection_slots.min(peer_slots)
+        let link_slots = if self.max_links == 0 {
+            usize::MAX
+        } else {
+            self.max_links.saturating_sub(self.links.len())
+        };
+
+        connection_slots.min(peer_slots).min(link_slots)
     }
 
-    fn open_discovery_enqueue_budget(&self, configured_npubs: &HashSet<String>) -> usize {
+    pub(in crate::node) fn open_discovery_enqueue_budget(
+        &self,
+        configured_npubs: &HashSet<String>,
+    ) -> usize {
+        let current_open_discovery_active = self
+            .peers
+            .values()
+            .filter(|peer| !configured_npubs.contains(&peer.npub()))
+            .count();
         let current_open_discovery_pending = self
             .retry_pending
             .values()
@@ -3044,6 +3286,7 @@ impl Node {
             .discovery
             .nostr
             .open_discovery_max_pending
+            .saturating_sub(current_open_discovery_active)
             .saturating_sub(current_open_discovery_pending);
 
         cap_remaining.min(self.available_outbound_slots())
@@ -3338,9 +3581,11 @@ impl Node {
     ) -> Result<bool, NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
         let candidates = self.peer_address_candidates(peer_config).await;
+        let should_try_nostr =
+            self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config);
 
         if candidates.is_empty() {
-            if self.request_nostr_bootstrap(peer_config).await {
+            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
                 return Ok(true);
             }
             return Err(NodeError::NoTransportForType(format!(
@@ -3355,17 +3600,34 @@ impl Node {
             .collect();
 
         if alternatives.is_empty() {
-            if self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config)
-                && self.request_nostr_bootstrap(peer_config).await
-            {
+            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
                 return Ok(true);
             }
             return Ok(false);
         }
 
-        self.attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
-            .await?;
-        Ok(true)
+        let needs_separate_nostr_attempt = should_try_nostr
+            && !alternatives
+                .iter()
+                .any(|addr| addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat"));
+        let address_result = self
+            .attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
+            .await;
+        let nostr_attempted =
+            needs_separate_nostr_attempt && self.request_nostr_bootstrap(peer_config).await;
+
+        match address_result {
+            Ok(()) => Ok(true),
+            Err(err) if nostr_attempted => {
+                debug!(
+                    npub = %peer_config.npub,
+                    error = %err,
+                    "Static active-peer direct-path alternatives failed; Nostr traversal still queued"
+                );
+                Ok(true)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn peer_address_candidates(&self, peer_config: &PeerConfig) -> Vec<PeerAddress> {

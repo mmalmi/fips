@@ -24,6 +24,7 @@
 use super::super::{ReceivedPacket, TransportAddr, TransportId};
 use super::PacketTx;
 use super::connected_peer::ConnectedPeerSocket;
+use crate::discovery::is_punch_packet;
 use std::io;
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -245,6 +246,15 @@ fn drain_loop(
             // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
             let mut data = std::mem::replace(&mut backing[i], vec![0u8; BUF_SIZE]);
             data.truncate(len);
+            if is_punch_packet(&data) {
+                trace!(
+                    transport_id = %transport_id,
+                    peer_addr = %peer_addr,
+                    bytes = len,
+                    "fips-peer-drain: dropping stray punch probe/ack"
+                );
+                continue;
+            }
             let packet = ReceivedPacket::new(transport_id, packet_addr.clone(), data);
             if packet_tx.send(packet).is_err() {
                 trace!("fips-peer-drain: packet channel closed; exiting");

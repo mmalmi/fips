@@ -337,7 +337,9 @@ async fn run_punch_attempt_once(
         }
         break Ok(remote);
     };
-    send_handle.abort();
+    if result.is_err() {
+        send_handle.abort();
+    }
     result
 }
 

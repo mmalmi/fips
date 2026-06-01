@@ -15,7 +15,7 @@ pub(super) const FRESHNESS_SKEW_TOLERANCE_MS: u64 = 60_000;
 
 pub(super) struct SignalEnvelope<T> {
     pub(super) payload: T,
-    pub(super) event_id: EventId,
+    pub(super) event_id: Option<EventId>,
     pub(super) sender_npub: String,
 }
 

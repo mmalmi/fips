@@ -34,7 +34,7 @@ use self::wire::{
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
-use crate::config::RoutingMode;
+use crate::config::{PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1827,10 +1827,32 @@ impl Node {
         self.max_peers = max;
     }
 
-    /// Returns false when the node is at or above the configured
-    /// `max_peers` cap. `max_peers == 0` means uncapped.
+    /// Returns false when starting more outbound work would exceed a resource
+    /// cap. A cap of `0` means uncapped.
     pub(crate) fn outbound_admission_check(&self) -> bool {
-        self.max_peers == 0 || self.peers.len() < self.max_peers
+        let connection_used = self
+            .connections
+            .len()
+            .saturating_add(self.pending_connects.len());
+        let peer_allowed = self.max_peers == 0 || self.peers.len() < self.max_peers;
+        let connection_allowed =
+            self.max_connections == 0 || connection_used < self.max_connections;
+        let link_allowed = self.max_links == 0 || self.links.len() < self.max_links;
+        peer_allowed && connection_allowed && link_allowed
+    }
+
+    /// Like `outbound_admission_check`, but for racing a better path to a
+    /// peer that is already authenticated. This may temporarily add a
+    /// connection/link, but it does not consume a new peer slot.
+    pub(crate) fn outbound_direct_refresh_admission_check(&self) -> bool {
+        let connection_used = self
+            .connections
+            .len()
+            .saturating_add(self.pending_connects.len());
+        let connection_allowed =
+            self.max_connections == 0 || connection_used < self.max_connections;
+        let link_allowed = self.max_links == 0 || self.links.len() < self.max_links;
+        connection_allowed && link_allowed
     }
 
     /// Set the maximum number of links.
@@ -2098,11 +2120,15 @@ impl Node {
         &self,
         peer_addr: &NodeAddr,
     ) -> Option<bool> {
-        self.config.peers().iter().find_map(|peer| {
+        self.configured_peer(peer_addr)
+            .map(|peer| peer.discovery_fallback_transit)
+    }
+
+    pub(crate) fn configured_peer(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
+        self.config.peers().iter().find(|peer| {
             PeerIdentity::from_npub(&peer.npub)
                 .ok()
-                .filter(|identity| identity.node_addr() == peer_addr)
-                .map(|_| peer.discovery_fallback_transit)
+                .is_some_and(|identity| identity.node_addr() == peer_addr)
         })
     }
 

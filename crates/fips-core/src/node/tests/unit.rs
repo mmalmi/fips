@@ -1330,14 +1330,29 @@ async fn test_nostr_traversal_failure_skips_connected_peer() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     let link_id = LinkId::new(1);
-    let (conn, peer_identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let now_ms = Node::now_ms();
+    let (conn, peer_identity) = make_completed_connection(&mut node, link_id, transport_id, now_ms);
     node.add_connection(conn).unwrap();
-    node.promote_connection(link_id, peer_identity, 2000)
+    node.promote_connection(link_id, peer_identity, now_ms)
         .unwrap();
+    let peer_addr = *peer_identity.node_addr();
+    let current_addr = node
+        .peers
+        .get(&peer_addr)
+        .and_then(|peer| peer.current_addr().cloned())
+        .expect("promoted test peer has a current address");
+    node.peers
+        .get_mut(&peer_addr)
+        .expect("promoted test peer")
+        .touch(Node::now_ms());
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     bootstrap.push_event_for_test(BootstrapEvent::Failed {
-        peer_config: crate::config::PeerConfig::new(peer_identity.npub(), "udp", "127.0.0.1:9"),
+        peer_config: crate::config::PeerConfig::new(
+            peer_identity.npub(),
+            "udp",
+            current_addr.to_string(),
+        ),
         reason: "stale traversal failure".to_string(),
     });
     node.nostr_discovery = Some(bootstrap.clone());
@@ -1351,6 +1366,51 @@ async fn test_nostr_traversal_failure_skips_connected_peer() {
     assert!(
         node.retry_pending.is_empty(),
         "stale failures for connected peers must not enqueue reconnect attempts"
+    );
+}
+
+#[tokio::test]
+async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown() {
+    let mut node = make_node();
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let transport_id = TransportId::new(44);
+    let peer = Identity::generate();
+    let peer_npub = peer.npub();
+
+    node.nostr_discovery = Some(bootstrap.clone());
+    node.bootstrap_transports.insert(transport_id);
+    node.bootstrap_transport_npubs
+        .insert(transport_id, peer_npub.clone());
+
+    let remote = crate::transport::TransportAddr::from_string("127.0.0.1:9");
+    let mut punch = vec![0u8; 24];
+    punch[..4].copy_from_slice(&crate::discovery::PUNCH_MAGIC.to_be_bytes());
+    node.process_packet(ReceivedPacket::new(transport_id, remote.clone(), punch))
+        .await;
+
+    node.process_packet(ReceivedPacket::new(
+        transport_id,
+        remote.clone(),
+        vec![0x45, 0x00, 0x00, 0x00],
+    ))
+    .await;
+
+    assert!(
+        bootstrap.failure_state_snapshot().is_empty(),
+        "stray punch/IPv4-looking datagrams must not poison bootstrap cooldown"
+    );
+
+    node.process_packet(ReceivedPacket::new(
+        transport_id,
+        remote,
+        vec![0x11, 0x00, 0x00, 0x00],
+    ))
+    .await;
+
+    assert_eq!(
+        bootstrap.failure_state_snapshot().len(),
+        1,
+        "a plausible FMP packet with a different version should still be treated as structural"
     );
 }
 
@@ -1779,11 +1839,11 @@ async fn test_seed_path_mtu_tightens_looser_existing_value() {
     }
 }
 
-/// On retry, configured direct addresses keep priority and suppress fresh
-/// overlay fallbacks for that attempt. This prevents a healthy static LAN/nvpn
-/// route from racing extra WebRTC/ICE sockets on every reconnect tick.
+/// On retry, configured direct addresses keep priority but fresh overlay
+/// fallbacks still race inside the per-peer candidate budget. A stale static
+/// LAN/nvpn hint must not pin the peer to a path that cannot reply.
 #[tokio::test]
-async fn test_retry_dials_static_udp_without_overlay_advert_race() {
+async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -1859,26 +1919,25 @@ async fn test_retry_dials_static_udp_without_overlay_advert_race() {
     let fresh_link = node.find_link_by_addr(transport_id, &fresh);
     let stale_link = node.find_link_by_addr(transport_id, &stale);
     assert!(
-        fresh_link.is_none(),
-        "retry should not race overlay advert {fresh_overlay_addr} while a static candidate is in flight"
+        fresh_link.is_some(),
+        "retry should race fresh overlay advert {fresh_overlay_addr} alongside the static candidate"
     );
     assert!(
         stale_link.is_some(),
         "retry should keep stale static {stale_static_addr} in the bounded path race"
     );
-    assert_eq!(node.connection_count(), 1);
+    assert_eq!(node.connection_count(), 2);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
     }
 }
 
-/// Cold-start dial prefers explicitly configured direct hints before overlay
-/// adverts. Static addresses are tried first and suppress overlay fallback for
-/// the current attempt so configured native routes do not create extra
-/// connection pressure while their handshake is in flight.
+/// Cold-start dial keeps explicitly configured direct hints first, but does
+/// not let them suppress a fresh overlay advert. This avoids getting stuck on
+/// stale private hints after a network move.
 #[tokio::test]
-async fn test_bootstrap_dials_static_address_without_overlay_race() {
+async fn test_bootstrap_races_static_address_and_overlay_advert() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -1949,13 +2008,14 @@ async fn test_bootstrap_dials_static_address_without_overlay_race() {
     let overlay_link = node.find_link_by_addr(transport_id, &overlay);
     let static_link = node.find_link_by_addr(transport_id, &stat);
     assert!(
-        overlay_link.is_none(),
-        "cold-start should not race overlay fallback while a static candidate is in flight"
+        overlay_link.is_some(),
+        "cold-start should race fresh overlay fallback alongside a static candidate"
     );
     assert!(
         static_link.is_some(),
         "cold-start should keep the unstamped static address in the bounded path race"
     );
+    assert_eq!(node.connection_count(), 2);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -2820,6 +2880,156 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
 }
 
 #[tokio::test]
+async fn active_fallback_static_hint_also_queues_nostr_traversal() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new("udp", "127.0.0.1:9")],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    config.peers = vec![peer_config.clone()];
+    let mut node = Node::new(config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let bootstrap_id = TransportId::new(1);
+    let primary_id = TransportId::new(2);
+    for (transport_id, name) in [(bootstrap_id, "fips-mesh"), (primary_id, "main")] {
+        let mut udp = UdpTransport::new(
+            transport_id,
+            Some(name.to_string()),
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx.clone(),
+        );
+        udp.start_async().await.unwrap();
+        node.transports
+            .insert(transport_id, TransportHandle::Udp(udp));
+    }
+    node.bootstrap_transports.insert(bootstrap_id);
+
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:8"));
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity.keypair(), peer_full.pubkey_full());
+    let mut responder = HandshakeState::new_responder(peer_full.keypair());
+    initiator.set_local_epoch([0x01; 8]);
+    responder.set_local_epoch([0x02; 8]);
+    let msg1 = initiator.write_message_1().expect("msg1");
+    responder.read_message_1(&msg1).expect("read msg1");
+    let msg2 = responder.write_message_2().expect("msg2");
+    initiator.read_message_2(&msg2).expect("read msg2");
+    node.sessions.insert(
+        peer_node_addr,
+        SessionEntry::new(
+            peer_node_addr,
+            peer_full.pubkey_full(),
+            EndToEndState::Established(initiator.into_session().expect("session")),
+            1_000,
+            true,
+        ),
+    );
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "static direct hint should still be raced while fallback remains active"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        1,
+        "stale static hints must not suppress Nostr/mesh traversal refresh"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn mesh_signal_warms_session_instead_of_dropping_without_established_session() {
+    use super::spanning_tree::{run_tree_test, verify_tree_convergence};
+    use crate::discovery::nostr::{MeshTraversalSignal, TraversalOffer};
+
+    let mut nodes = run_tree_test(2, &[(0, 1)], false).await;
+    verify_tree_convergence(&nodes);
+
+    let peer_node_addr = *nodes[1].node.node_addr();
+    let peer_npub = nodes[1].node.identity().npub();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    bootstrap.push_mesh_signal_for_test(MeshTraversalSignal::Offer {
+        peer_npub: peer_npub.clone(),
+        offer: TraversalOffer {
+            message_type: "offer".to_string(),
+            session_id: "session".to_string(),
+            issued_at: 1,
+            expires_at: 2,
+            nonce: "nonce".to_string(),
+            sender_npub: nodes[0].node.identity().npub(),
+            recipient_npub: peer_npub,
+            reflexive_address: None,
+            local_addresses: Vec::new(),
+            stun_server: None,
+        },
+    });
+    nodes[0].node.config.node.discovery.nostr.enabled = true;
+    nodes[0].node.config.peers = vec![peer_config];
+    nodes[0].node.nostr_discovery = Some(bootstrap.clone());
+
+    nodes[0].node.poll_nostr_discovery().await;
+
+    assert!(
+        nodes[0]
+            .node
+            .sessions
+            .get(&peer_node_addr)
+            .is_some_and(|entry| entry.is_initiating()),
+        "mesh signal delivery should warm an end-to-end session over the existing mesh route"
+    );
+    assert_eq!(
+        bootstrap.drain_mesh_signals().await.len(),
+        1,
+        "mesh signal should be deferred until the warmed session is established"
+    );
+}
+
+#[tokio::test]
 async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
     let mut node = make_node();
     let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
@@ -3220,6 +3430,81 @@ fn outbound_admission_check_direct() {
     assert!(uncapped.outbound_admission_check());
 }
 
+#[test]
+fn open_discovery_budget_counts_active_non_configured_peers() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.open_discovery_max_pending = 2;
+    let mut node = Node::new(config).unwrap();
+    let configured_npubs = std::collections::HashSet::new();
+
+    assert_eq!(node.open_discovery_enqueue_budget(&configured_npubs), 2);
+    inject_dummy_peers(&mut node, 1);
+    assert_eq!(node.open_discovery_enqueue_budget(&configured_npubs), 1);
+    inject_dummy_peers(&mut node, 1);
+    assert_eq!(
+        node.open_discovery_enqueue_budget(&configured_npubs),
+        0,
+        "live open-discovery peers must consume the same cap as pending retries"
+    );
+}
+
+#[test]
+fn outbound_admission_check_respects_connection_and_link_caps() {
+    let mut node = make_node();
+    node.set_max_connections(2);
+    node.set_max_links(2);
+    assert!(node.outbound_admission_check());
+
+    node.links.insert(
+        LinkId::new(1),
+        Link::connectionless(
+            LinkId::new(1),
+            TransportId::new(1),
+            TransportAddr::from_string("127.0.0.1:10"),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links.insert(
+        LinkId::new(2),
+        Link::connectionless(
+            LinkId::new(2),
+            TransportId::new(1),
+            TransportAddr::from_string("127.0.0.1:11"),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    assert!(
+        !node.outbound_admission_check(),
+        "bootstrap/open-discovery work must stop at max_links, not only max_peers"
+    );
+
+    let mut node = make_node();
+    node.set_max_connections(1);
+    let peer_identity = make_peer_identity();
+    let link_id = LinkId::new(3);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:12");
+    let mut conn = PeerConnection::outbound(link_id, peer_identity, 1_000);
+    conn.set_transport_id(TransportId::new(1));
+    conn.set_source_addr(remote_addr.clone());
+    node.links.insert(
+        link_id,
+        Link::connectionless(
+            link_id,
+            TransportId::new(1),
+            remote_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.connections.insert(link_id, conn);
+    assert!(
+        !node.outbound_admission_check(),
+        "bootstrap/open-discovery work must stop at max_connections"
+    );
+}
+
 #[tokio::test]
 async fn process_pending_retries_gated_at_capacity() {
     let mut node = make_node();
@@ -3287,6 +3572,120 @@ async fn poll_nostr_discovery_established_gated_at_capacity() {
     assert_eq!(node.connection_count(), before_connections);
 }
 
+#[tokio::test]
+async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    bootstrap.push_event_for_test(BootstrapEvent::Failed {
+        peer_config: peer_config.clone(),
+        reason: "signal timeout waiting for answer".to_string(),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    node.poll_nostr_discovery().await;
+
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("failed direct upgrade should keep active-peer retry");
+    assert_eq!(state.retry_count, 1);
+    assert!(
+        state.retry_after_ms > 0,
+        "failed direct upgrade should back off instead of retrying every tick"
+    );
+    assert_eq!(state.peer_config.npub, peer_config.npub);
+}
+
+#[test]
+fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.queue_active_fallback_direct_retries(&bootstrap);
+
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("active fallback peer should get direct retry state");
+    assert_eq!(state.peer_config.npub, peer_config.npub);
+    assert_eq!(state.retry_count, 0);
+    assert!(state.reconnect);
+}
+
+#[tokio::test]
+async fn process_pending_retries_allows_active_direct_refresh_at_peer_capacity() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.set_max_peers(1);
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.reconnect = true;
+    state.retry_after_ms = 0;
+    node.retry_pending.insert(peer_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("active peer retry should remain scheduled after failed initiation");
+    assert_eq!(
+        state.retry_count, 1,
+        "active direct refresh should be processed even when peer slots are full"
+    );
+}
+
 #[test]
 fn nostr_discovery_outbound_admission_atomic_roundtrip() {
     let bootstrap = NostrDiscovery::new_for_test();
@@ -3295,6 +3694,120 @@ fn nostr_discovery_outbound_admission_atomic_roundtrip() {
     assert!(!bootstrap.outbound_admission_allowed());
     bootstrap.set_outbound_admission(true);
     assert!(bootstrap.outbound_admission_allowed());
+
+    assert!(bootstrap.direct_refresh_admission_allowed());
+    bootstrap.set_direct_refresh_admission(false);
+    assert!(!bootstrap.direct_refresh_admission_allowed());
+    bootstrap.set_direct_refresh_admission(true);
+    assert!(bootstrap.direct_refresh_admission_allowed());
+}
+
+#[tokio::test]
+async fn poll_nostr_discovery_established_active_peer_bypasses_peer_capacity() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.set_max_peers(1);
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "active-refresh-session",
+            peer_identity.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    node.poll_nostr_discovery().await;
+
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "active-peer traversal should reach adoption even when peer slots are full"
+    );
+}
+
+#[test]
+fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::HandshakeState;
+
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    assert!(
+        node.mesh_signaling_allowed_for_peer(&peer_config),
+        "configured roster peers should be allowed to use mesh signaling before the end-to-end session is warm"
+    );
+
+    let mut initiator =
+        HandshakeState::new_initiator(node.identity.keypair(), peer_identity.pubkey_full());
+    let mut responder = HandshakeState::new_responder(peer_identity.keypair());
+    initiator.set_local_epoch([0x01; 8]);
+    responder.set_local_epoch([0x02; 8]);
+    let msg1 = initiator.write_message_1().expect("msg1");
+    responder.read_message_1(&msg1).expect("read msg1");
+    let msg2 = responder.write_message_2().expect("msg2");
+    initiator.read_message_2(&msg2).expect("read msg2");
+    let session = initiator.into_session().expect("session");
+
+    let peer_addr = *PeerIdentity::from_npub(&peer_config.npub)
+        .expect("peer identity")
+        .node_addr();
+    node.sessions.insert(
+        peer_addr,
+        SessionEntry::new(
+            peer_addr,
+            peer_identity.pubkey_full(),
+            EndToEndState::Established(session),
+            1_000,
+            true,
+        ),
+    );
+
+    assert!(node.mesh_signaling_allowed_for_peer(&peer_config));
+    assert!(
+        !node
+            .configured_discovery_fallback_transit(&peer_addr)
+            .expect("peer should still be configured"),
+        "mesh signaling should not require ambient transit permission"
+    );
+
+    let unconfigured = Identity::generate();
+    let unconfigured_peer = crate::config::PeerConfig::new(unconfigured.npub(), "udp", "nat");
+    assert!(!node.mesh_signaling_allowed_for_peer(&unconfigured_peer));
 }
 
 async fn craft_and_send_msg1(

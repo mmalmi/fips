@@ -2,6 +2,7 @@
 
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
+use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptFallback, DecryptWorkerEvent};
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
@@ -399,12 +400,21 @@ impl Node {
     /// Process a single received packet.
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
-    async fn process_packet(&mut self, packet: ReceivedPacket) {
+    pub(in crate::node) async fn process_packet(&mut self, packet: ReceivedPacket) {
         let _t_total = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
         crate::perf_profile::record_since(
             crate::perf_profile::Stage::TransportQueueWait,
             packet.trace_enqueued_at,
         );
+        if is_punch_packet(&packet.data) {
+            trace!(
+                transport_id = %packet.transport_id,
+                remote_addr = %packet.remote_addr,
+                bytes = packet.data.len(),
+                "Dropping stray punch probe/ack in FMP rx loop"
+            );
+            return;
+        }
         if packet.data.len() < COMMON_PREFIX_SIZE {
             return; // Drop packets too short for common prefix
         }
@@ -447,7 +457,10 @@ impl Node {
             // though no msg1/msg2 exchange can ever succeed. Bump the
             // discovery-layer cooldown to the long protocol-mismatch
             // window and emit a single WARN per fresh observation.
-            if self.bootstrap_transports.contains(&packet.transport_id)
+            let looks_like_fmp_phase =
+                matches!(prefix.phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
+            if looks_like_fmp_phase
+                && self.bootstrap_transports.contains(&packet.transport_id)
                 && let Some(npub) = self
                     .bootstrap_transport_npubs
                     .get(&packet.transport_id)

@@ -241,16 +241,6 @@ impl Node {
             return;
         }
 
-        if !self.outbound_admission_check() {
-            debug!(
-                peers = self.peers.len(),
-                max_peers = self.max_peers,
-                retry_pending = self.retry_pending.len(),
-                "Suppressing auto-reconnect retries: at capacity"
-            );
-            return;
-        }
-
         // Collect retries that are due
         let due: Vec<NodeAddr> = self
             .retry_pending
@@ -270,6 +260,15 @@ impl Node {
 
         for node_addr in due.into_iter().take(MAX_RETRY_CONNECTIONS_PER_TICK) {
             if self.peers.contains_key(&node_addr) {
+                if !self.outbound_direct_refresh_admission_check() {
+                    debug!(
+                        peer = %self.peer_display_name(&node_addr),
+                        retry_pending = self.retry_pending.len(),
+                        "Suppressing active-peer direct refresh retry: at connection/link capacity"
+                    );
+                    continue;
+                }
+
                 let Some(peer_config) = self
                     .retry_pending
                     .get(&node_addr)
@@ -332,6 +331,16 @@ impl Node {
                         self.schedule_retry(node_addr, now_ms);
                     }
                 }
+                continue;
+            }
+
+            if !self.outbound_admission_check() {
+                debug!(
+                    peers = self.peers.len(),
+                    max_peers = self.max_peers,
+                    retry_pending = self.retry_pending.len(),
+                    "Suppressing auto-reconnect retry: at capacity"
+                );
                 continue;
             }
 

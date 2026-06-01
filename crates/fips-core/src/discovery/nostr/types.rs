@@ -65,6 +65,18 @@ pub enum BootstrapEvent {
     },
 }
 
+#[derive(Debug, Clone)]
+pub enum MeshTraversalSignal {
+    Offer {
+        peer_npub: String,
+        offer: TraversalOffer,
+    },
+    Answer {
+        peer_npub: String,
+        answer: TraversalAnswer,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NostrRelayStatus {
     pub url: String,

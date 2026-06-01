@@ -26,9 +26,9 @@ use super::stun::observe_traversal_addresses;
 use super::traversal::{nonce, now_ms, planned_remote_endpoints, run_punch_attempt};
 use super::types::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, BootstrapError, BootstrapEvent,
-    CachedOverlayAdvert, NostrFailureDecision, NostrPeerFailureView, NostrRefetchOutcome,
-    NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION, PunchHint,
-    SIGNAL_KIND, TraversalAnswer, TraversalOffer, advert_d_tag,
+    CachedOverlayAdvert, MeshTraversalSignal, NostrFailureDecision, NostrPeerFailureView,
+    NostrRefetchOutcome, NostrRelayStatus, OverlayAdvert, OverlayEndpointAdvert, PROTOCOL_VERSION,
+    PunchHint, SIGNAL_KIND, TraversalAnswer, TraversalOffer, advert_d_tag,
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
@@ -208,8 +208,10 @@ pub struct NostrDiscovery {
     active_refetches: Mutex<HashSet<String>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
     offer_slots: Arc<Semaphore>,
-    event_tx: mpsc::UnboundedSender<BootstrapEvent>,
-    event_rx: Mutex<mpsc::UnboundedReceiver<BootstrapEvent>>,
+    event_tx: mpsc::Sender<BootstrapEvent>,
+    event_rx: Mutex<mpsc::Receiver<BootstrapEvent>>,
+    mesh_signal_tx: mpsc::Sender<MeshTraversalSignal>,
+    mesh_signal_rx: Mutex<mpsc::Receiver<MeshTraversalSignal>>,
     connect_task: Mutex<Option<JoinHandle<()>>>,
     relay_startup_task: Mutex<Option<JoinHandle<()>>>,
     publish_task: Mutex<Option<JoinHandle<()>>>,
@@ -224,6 +226,10 @@ pub struct NostrDiscovery {
     /// Capacity gate refreshed by `Node` once per tick. The inbound Msg1 gate
     /// remains authoritative; this only suppresses wasted traversal work.
     outbound_admission: AtomicBool,
+    /// Capacity gate for racing a better path to an already-authenticated
+    /// peer. This bypasses the peer-slot cap while still honoring
+    /// connection/link caps.
+    direct_refresh_admission: AtomicBool,
 }
 
 impl NostrDiscovery {
@@ -253,7 +259,8 @@ impl NostrDiscovery {
         }
         let pubkey = keys.public_key();
         let npub = crate::encode_npub(&identity.pubkey());
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
+        let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
         let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
 
         let failure_state = FailureState::new(
@@ -280,6 +287,8 @@ impl NostrDiscovery {
             offer_slots,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            mesh_signal_tx,
+            mesh_signal_rx: Mutex::new(mesh_signal_rx),
             connect_task: Mutex::new(None),
             relay_startup_task: Mutex::new(None),
             publish_task: Mutex::new(None),
@@ -289,6 +298,7 @@ impl NostrDiscovery {
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
             outbound_admission: AtomicBool::new(true),
+            direct_refresh_admission: AtomicBool::new(true),
         });
 
         // Subscribe to the relay-pool broadcast channel BEFORE issuing the
@@ -316,6 +326,23 @@ impl NostrDiscovery {
 
     pub(crate) fn outbound_admission_allowed(&self) -> bool {
         self.outbound_admission.load(Ordering::Relaxed)
+    }
+
+    pub fn set_direct_refresh_admission(&self, allow: bool) {
+        self.direct_refresh_admission
+            .store(allow, Ordering::Relaxed);
+    }
+
+    pub(crate) fn direct_refresh_admission_allowed(&self) -> bool {
+        self.direct_refresh_admission.load(Ordering::Relaxed)
+    }
+
+    fn traversal_initiator_admission_allowed(&self, mesh_signaling_allowed: bool) -> bool {
+        if mesh_signaling_allowed {
+            self.direct_refresh_admission_allowed()
+        } else {
+            self.outbound_admission_allowed()
+        }
     }
 
     pub async fn relay_statuses(&self) -> Vec<NostrRelayStatus> {
@@ -405,6 +432,15 @@ impl NostrDiscovery {
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
+        self.request_connect_with_mesh_signaling(peer_config, false)
+            .await;
+    }
+
+    pub(crate) async fn request_connect_with_mesh_signaling(
+        self: &Arc<Self>,
+        peer_config: PeerConfig,
+        mesh_signaling_allowed: bool,
+    ) {
         let peer_npub = peer_config.npub.clone();
         {
             let mut active = self.active_initiators.lock().await;
@@ -415,14 +451,17 @@ impl NostrDiscovery {
 
         let runtime = Arc::clone(self);
         tokio::spawn(async move {
-            let event = match runtime.connect_peer(peer_config.clone()).await {
+            let event = match runtime
+                .connect_peer(peer_config.clone(), mesh_signaling_allowed)
+                .await
+            {
                 Ok(traversal) => BootstrapEvent::Established { traversal },
                 Err(err) => BootstrapEvent::Failed {
                     peer_config,
                     reason: err.to_string(),
                 },
             };
-            let _ = runtime.event_tx.send(event);
+            runtime.emit_event(event).await;
             runtime.active_initiators.lock().await.remove(&peer_npub);
         });
     }
@@ -716,6 +755,64 @@ impl NostrDiscovery {
         out
     }
 
+    pub(crate) async fn drain_mesh_signals(&self) -> Vec<MeshTraversalSignal> {
+        let mut out = Vec::new();
+        let mut rx = self.mesh_signal_rx.lock().await;
+        while let Ok(signal) = rx.try_recv() {
+            out.push(signal);
+        }
+        out
+    }
+
+    pub(crate) fn requeue_mesh_signal(&self, signal: MeshTraversalSignal) -> bool {
+        let (kind, peer_npub) = match &signal {
+            MeshTraversalSignal::Offer { peer_npub, .. } => ("offer", peer_npub.clone()),
+            MeshTraversalSignal::Answer { peer_npub, .. } => ("answer", peer_npub.clone()),
+        };
+        if let Err(error) = self.mesh_signal_tx.try_send(signal) {
+            debug!(
+                kind,
+                peer = %short_npub(&peer_npub),
+                error = %error,
+                "dropping deferred mesh traversal signal because node signal channel is full"
+            );
+            return false;
+        }
+        true
+    }
+
+    async fn emit_event(&self, event: BootstrapEvent) {
+        let (kind, peer_npub) = match &event {
+            BootstrapEvent::Established { traversal } => {
+                ("established", traversal.peer_npub.clone())
+            }
+            BootstrapEvent::Failed { peer_config, .. } => ("failed", peer_config.npub.clone()),
+        };
+        if self.event_tx.send(event).await.is_err() {
+            debug!(
+                kind,
+                peer = %short_npub(&peer_npub),
+                "dropping Nostr traversal event because node event receiver is closed"
+            );
+        }
+    }
+
+    async fn emit_mesh_signal(&self, signal: MeshTraversalSignal) -> bool {
+        let (kind, peer_npub) = match &signal {
+            MeshTraversalSignal::Offer { peer_npub, .. } => ("offer", peer_npub.clone()),
+            MeshTraversalSignal::Answer { peer_npub, .. } => ("answer", peer_npub.clone()),
+        };
+        if self.mesh_signal_tx.send(signal).await.is_err() {
+            debug!(
+                kind,
+                peer = %short_npub(&peer_npub),
+                "dropping mesh traversal signal because node signal channel is closed"
+            );
+            return false;
+        }
+        true
+    }
+
     pub async fn update_local_advert(
         self: &Arc<Self>,
         advert: Option<OverlayAdvert>,
@@ -915,7 +1012,7 @@ impl NostrDiscovery {
                         {
                             let _ = tx.send(SignalEnvelope {
                                 payload: answer,
-                                event_id: event.id,
+                                event_id: Some(event.id),
                                 sender_npub: sender_npub.clone(),
                             });
                         }
@@ -1194,30 +1291,66 @@ impl NostrDiscovery {
     async fn connect_peer(
         &self,
         peer_config: PeerConfig,
+        mesh_signaling_allowed: bool,
     ) -> Result<EstablishedTraversal, BootstrapError> {
         let peer_short = short_npub(&peer_config.npub);
-        if !self.outbound_admission_allowed() {
+        if !self.traversal_initiator_admission_allowed(mesh_signaling_allowed) {
             debug!(
                 peer = %peer_short,
+                mesh_signaling_allowed,
                 "traversal: initiator suppressed, Node at capacity"
             );
             return Err(BootstrapError::Disabled);
         }
-        debug!(peer = %peer_short, "traversal: initiator starting");
+        debug!(
+            peer = %peer_short,
+            mesh_signaling_allowed,
+            "traversal: initiator starting"
+        );
         let target_pubkey =
             PublicKey::parse(&peer_config.npub).map_err(|e| BootstrapError::InvalidPeerNpub {
                 npub: peer_config.npub.clone(),
                 reason: e.to_string(),
             })?;
-        let advert = self.fetch_advert(&peer_config.npub, target_pubkey).await?;
-        if !advert.has_udp_nat_endpoint() {
-            return Err(BootstrapError::MissingNatEndpoint(peer_config.npub.clone()));
-        }
-        let relays = self
-            .preferred_signal_relays(target_pubkey, Some(&advert))
-            .await?;
-        if relays.is_empty() {
-            return Err(BootstrapError::MissingRelays(peer_config.npub));
+
+        let mut relays = Vec::new();
+        let mut nostr_setup_error = None;
+        match self.fetch_advert(&peer_config.npub, target_pubkey).await {
+            Ok(advert) => {
+                if advert.has_udp_nat_endpoint() {
+                    match self
+                        .preferred_signal_relays(target_pubkey, Some(&advert))
+                        .await
+                    {
+                        Ok(preferred) => relays = preferred,
+                        Err(err) if mesh_signaling_allowed => {
+                            debug!(
+                                peer = %peer_short,
+                                error = %err,
+                                "traversal: continuing with mesh signaling after relay lookup failure"
+                            );
+                            nostr_setup_error = Some(err);
+                        }
+                        Err(err) => return Err(err),
+                    }
+                } else if mesh_signaling_allowed {
+                    debug!(
+                        peer = %peer_short,
+                        "traversal: peer advert has no udp:nat endpoint; trying mesh signaling"
+                    );
+                } else {
+                    return Err(BootstrapError::MissingNatEndpoint(peer_config.npub.clone()));
+                }
+            }
+            Err(err) if mesh_signaling_allowed => {
+                debug!(
+                    peer = %peer_short,
+                    error = %err,
+                    "traversal: continuing with mesh signaling after advert lookup failure"
+                );
+                nostr_setup_error = Some(err);
+            }
+            Err(err) => return Err(err),
         }
 
         let base_socket = bind_traversal_udp_socket()?;
@@ -1254,14 +1387,58 @@ impl NostrDiscovery {
             .lock()
             .await
             .insert(offer.nonce.clone(), tx);
-        let offer_event = self.send_signal(&relays, target_pubkey, &offer).await?;
-        debug!(
-            peer = %peer_short,
-            session = %short_id(&offer.session_id),
-            relays = relays.len(),
-            event = %short_id(&offer_event.id.to_string()),
-            "traversal: offer sent"
-        );
+
+        let mesh_offer_sent = mesh_signaling_allowed
+            && self
+                .emit_mesh_signal(MeshTraversalSignal::Offer {
+                    peer_npub: peer_config.npub.clone(),
+                    offer: offer.clone(),
+                })
+                .await;
+        if mesh_offer_sent {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                "traversal: offer queued for FIPS mesh signaling"
+            );
+        }
+
+        let offer_event = if relays.is_empty() {
+            None
+        } else {
+            match self.send_signal(&relays, target_pubkey, &offer).await {
+                Ok(event) => {
+                    debug!(
+                        peer = %peer_short,
+                        session = %short_id(&offer.session_id),
+                        relays = relays.len(),
+                        event = %short_id(&event.id.to_string()),
+                        "traversal: offer sent over Nostr"
+                    );
+                    Some(event)
+                }
+                Err(err) if mesh_offer_sent => {
+                    debug!(
+                        peer = %peer_short,
+                        session = %short_id(&offer.session_id),
+                        error = %err,
+                        "traversal: Nostr offer failed; waiting for mesh-signaled answer"
+                    );
+                    nostr_setup_error = Some(err);
+                    None
+                }
+                Err(err) => {
+                    let _ = self.pending_answers.lock().await.remove(&offer.nonce);
+                    return Err(err);
+                }
+            }
+        };
+
+        if !mesh_offer_sent && offer_event.is_none() {
+            let _ = self.pending_answers.lock().await.remove(&offer.nonce);
+            return Err(nostr_setup_error
+                .unwrap_or_else(|| BootstrapError::MissingRelays(peer_config.npub.clone())));
+        }
 
         let answer = match tokio::time::timeout(
             Duration::from_secs(self.config.signal_ttl_secs),
@@ -1287,6 +1464,7 @@ impl NostrDiscovery {
             peer = %peer_short,
             session = %short_id(&offer.session_id),
             accepted = answer.payload.accepted,
+            signal_path = if answer.event_id.is_some() { "nostr" } else { "fips-mesh" },
             reflexive = %answer.payload.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
             local = answer.payload.local_addresses.len(),
             "traversal: answer received"
@@ -1366,17 +1544,231 @@ impl NostrDiscovery {
             "traversal: initiator punch succeeded"
         );
 
-        let _ = self
-            .publish_delete(&relays, [offer_event.id, answer.event_id])
-            .await;
+        let answer_via_nostr = answer.event_id.is_some();
+        let delete_ids = offer_event
+            .as_ref()
+            .map(|event| event.id)
+            .into_iter()
+            .chain(answer.event_id)
+            .collect::<Vec<_>>();
+        if !delete_ids.is_empty() {
+            let _ = self.publish_delete(&relays, delete_ids).await;
+        }
 
         self.failure_state
             .record_success(&peer_config.npub, now_ms());
 
+        let transport_name = if answer_via_nostr {
+            "nostr-nat"
+        } else {
+            "fips-mesh-nat"
+        };
         Ok(
             EstablishedTraversal::new(session_id, peer_config.npub, remote_addr, base_socket)
-                .with_transport_name("nostr-nat"),
+                .with_transport_name(transport_name),
         )
+    }
+
+    pub(crate) async fn receive_mesh_traversal_answer(
+        &self,
+        answer: TraversalAnswer,
+        sender_npub: String,
+    ) {
+        if answer.message_type != "answer" || answer.recipient_npub != self.npub {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&answer.session_id),
+                "traversal: ignoring mesh answer with mismatched type or recipient"
+            );
+            return;
+        }
+
+        if let Some(tx) = self
+            .pending_answers
+            .lock()
+            .await
+            .remove(&answer.in_reply_to)
+        {
+            let _ = tx.send(SignalEnvelope {
+                payload: answer,
+                event_id: None,
+                sender_npub,
+            });
+        } else {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&answer.session_id),
+                "traversal: ignoring mesh answer without pending offer"
+            );
+        }
+    }
+
+    pub(crate) async fn receive_mesh_traversal_offer(
+        self: &Arc<Self>,
+        offer: TraversalOffer,
+        sender_npub: String,
+    ) {
+        if offer.message_type != "offer" || offer.recipient_npub != self.npub {
+            debug!(
+                peer = %short_npub(&sender_npub),
+                session = %short_id(&offer.session_id),
+                "traversal: ignoring mesh offer with mismatched type or recipient"
+            );
+            return;
+        }
+
+        let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
+            warn!(
+                sender_npub = %sender_npub,
+                limit = self.config.max_concurrent_incoming_offers,
+                "rate-limited inbound mesh traversal offer (max_concurrent_incoming_offers reached); offer dropped"
+            );
+            return;
+        };
+
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(err) = runtime.handle_incoming_mesh_offer(offer, sender_npub).await {
+                debug!(error = %err, "failed to handle mesh traversal offer");
+            }
+        });
+    }
+
+    async fn handle_incoming_mesh_offer(
+        self: Arc<Self>,
+        offer: TraversalOffer,
+        sender_npub: String,
+    ) -> Result<(), BootstrapError> {
+        let peer_short = short_npub(&sender_npub);
+        if !self.direct_refresh_admission_allowed() {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                "traversal: incoming mesh offer dropped, Node at connection/link capacity"
+            );
+            return Ok(());
+        }
+        let offer_received_at = now_ms();
+        debug!(
+            peer = %peer_short,
+            session = %short_id(&offer.session_id),
+            reflexive = %offer.reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
+            local = offer.local_addresses.len(),
+            "traversal: mesh offer received"
+        );
+        let outcome = validate_offer_freshness(
+            &offer,
+            offer_received_at,
+            self.config.signal_ttl_secs * 1000,
+            &sender_npub,
+            &self.npub,
+        )?;
+        if outcome == FreshnessOutcome::FreshWithinSkewTolerance {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                offer_issued_at = offer.issued_at,
+                offer_received_at = offer_received_at,
+                "traversal: mesh offer accepted within clock-skew tolerance"
+            );
+        }
+        self.mark_session_seen(&offer.session_id).await?;
+
+        let base_socket = bind_traversal_udp_socket()?;
+        let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
+            &base_socket,
+            &self.config.stun_servers,
+            self.config.share_local_candidates,
+            super::stun::TRAVERSAL_STUN_TIMEOUT,
+        )
+        .await?;
+        let accepted = reflexive_address.is_some() || !local_addresses.is_empty();
+        debug!(
+            peer = %peer_short,
+            session = %short_id(&offer.session_id),
+            accepted = accepted,
+            reflexive = %reflexive_address.as_ref().map(|a| format!("{}:{}", a.ip, a.port)).unwrap_or_else(|| "-".into()),
+            local = local_addresses.len(),
+            "traversal: mesh responder STUN observed"
+        );
+        let answer = create_traversal_answer(
+            offer.session_id.clone(),
+            now_ms(),
+            self.config.signal_ttl_secs * 1000,
+            nonce(),
+            self.npub.clone(),
+            offer.sender_npub.clone(),
+            offer.nonce.clone(),
+            accepted,
+            reflexive_address,
+            local_addresses,
+            stun_server,
+            accepted.then(|| self.punch_hint()),
+            (!accepted).then_some("no-usable-addresses".to_string()),
+            Some(offer_received_at),
+        );
+        if !self
+            .emit_mesh_signal(MeshTraversalSignal::Answer {
+                peer_npub: sender_npub.clone(),
+                answer: answer.clone(),
+            })
+            .await
+        {
+            return Err(BootstrapError::Protocol(
+                "mesh traversal answer queue full".to_string(),
+            ));
+        }
+        debug!(
+            peer = %peer_short,
+            session = %short_id(&offer.session_id),
+            accepted = accepted,
+            "traversal: answer queued for FIPS mesh signaling"
+        );
+        if !accepted {
+            return Ok(());
+        }
+
+        let planned_remotes = planned_remote_endpoints(
+            &answer.local_addresses,
+            answer.reflexive_address.as_ref(),
+            &offer.local_addresses,
+            offer.reflexive_address.as_ref(),
+            true,
+        )?;
+
+        if let Ok(remote_addr) = run_punch_attempt(
+            &base_socket,
+            &offer.session_id,
+            &planned_remotes.remotes,
+            answer
+                .punch
+                .clone()
+                .expect("accepted answers always include a punch hint"),
+            Duration::from_secs(self.config.attempt_timeout_secs),
+            planned_remotes.preferred_count,
+        )
+        .await
+        {
+            debug!(
+                peer = %peer_short,
+                session = %short_id(&offer.session_id),
+                remote = %remote_addr,
+                "traversal: mesh responder punch succeeded"
+            );
+            self.emit_event(BootstrapEvent::Established {
+                traversal: EstablishedTraversal::new(
+                    offer.session_id,
+                    offer.sender_npub,
+                    remote_addr,
+                    base_socket,
+                )
+                .with_transport_name("fips-mesh-nat"),
+            })
+            .await;
+        }
+
+        Ok(())
     }
 
     async fn handle_incoming_offer(
@@ -1495,7 +1887,7 @@ impl NostrDiscovery {
                 remote = %remote_addr,
                 "traversal: responder punch succeeded"
             );
-            let _ = self.event_tx.send(BootstrapEvent::Established {
+            self.emit_event(BootstrapEvent::Established {
                 traversal: EstablishedTraversal::new(
                     offer.session_id,
                     offer.sender_npub,
@@ -1503,7 +1895,8 @@ impl NostrDiscovery {
                     base_socket,
                 )
                 .with_transport_name("nostr-nat"),
-            });
+            })
+            .await;
         }
 
         let _ = self.publish_delete(&relays, [answer_event.id]).await;
@@ -1940,7 +2333,8 @@ impl NostrDiscovery {
             .build();
         let config = NostrDiscoveryConfig::default();
         let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
+        let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
         let failure_state = FailureState::new(
             config.failure_streak_threshold,
             config.extended_cooldown_secs,
@@ -1964,6 +2358,8 @@ impl NostrDiscovery {
             offer_slots,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            mesh_signal_tx,
+            mesh_signal_rx: Mutex::new(mesh_signal_rx),
             connect_task: Mutex::new(None),
             relay_startup_task: Mutex::new(None),
             publish_task: Mutex::new(None),
@@ -1973,6 +2369,7 @@ impl NostrDiscovery {
             failure_state,
             public_udp_addr_cache: RwLock::new(HashMap::new()),
             outbound_admission: AtomicBool::new(true),
+            direct_refresh_admission: AtomicBool::new(true),
         }
     }
 
@@ -2007,6 +2404,158 @@ impl NostrDiscovery {
     /// Queue a bootstrap event directly for lifecycle tests without live relays
     /// or a running traversal task.
     pub(crate) fn push_event_for_test(&self, event: BootstrapEvent) {
-        let _ = self.event_tx.send(event);
+        let _ = self.event_tx.try_send(event);
+    }
+
+    pub(crate) fn push_mesh_signal_for_test(&self, signal: MeshTraversalSignal) {
+        let _ = self.mesh_signal_tx.try_send(signal);
+    }
+
+    pub(crate) async fn active_initiator_count_for_test(&self) -> usize {
+        self.active_initiators.lock().await.len()
+    }
+}
+
+fn event_channel_capacity(config: &NostrDiscoveryConfig) -> usize {
+    let work_limit = config
+        .open_discovery_max_pending
+        .max(config.max_concurrent_incoming_offers)
+        .max(1);
+
+    // This channel carries traversal outcomes/signals back to the node, not
+    // just permission to start new open-discovery work. Give it enough burst
+    // room for roster peers, startup cache sweeps, and inbound offers without
+    // turning the open-discovery cap into an event-loss trigger.
+    work_limit.saturating_mul(4).clamp(64, 4096)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::nostr::TraversalAddress;
+
+    #[test]
+    fn event_channel_capacity_tracks_open_and_inbound_limits() {
+        let mut config = NostrDiscoveryConfig {
+            open_discovery_max_pending: 8,
+            max_concurrent_incoming_offers: 16,
+            ..Default::default()
+        };
+        assert_eq!(event_channel_capacity(&config), 64);
+
+        config.open_discovery_max_pending = 32;
+        config.max_concurrent_incoming_offers = 4;
+        assert_eq!(event_channel_capacity(&config), 128);
+
+        config.open_discovery_max_pending = 0;
+        config.max_concurrent_incoming_offers = 0;
+        assert_eq!(event_channel_capacity(&config), 64);
+
+        config.open_discovery_max_pending = 5000;
+        config.max_concurrent_incoming_offers = 1;
+        assert_eq!(event_channel_capacity(&config), 4096);
+    }
+
+    #[test]
+    fn mesh_signaled_initiators_use_direct_refresh_admission() {
+        let discovery = NostrDiscovery::new_for_test();
+
+        discovery.set_outbound_admission(false);
+        discovery.set_direct_refresh_admission(true);
+
+        assert!(
+            !discovery.traversal_initiator_admission_allowed(false),
+            "ordinary Nostr traversal should still obey peer-slot capacity"
+        );
+        assert!(
+            discovery.traversal_initiator_admission_allowed(true),
+            "mesh-signaled direct refresh should bypass only the peer-slot cap"
+        );
+
+        discovery.set_direct_refresh_admission(false);
+        assert!(
+            !discovery.traversal_initiator_admission_allowed(true),
+            "mesh-signaled direct refresh should still obey connection/link capacity"
+        );
+    }
+
+    #[tokio::test]
+    async fn mesh_signal_channel_roundtrips_offer() {
+        let discovery = NostrDiscovery::new_for_test();
+        let offer = TraversalOffer {
+            message_type: "offer".to_string(),
+            session_id: "session".to_string(),
+            issued_at: 1,
+            expires_at: 2,
+            nonce: "nonce".to_string(),
+            sender_npub: discovery.npub.clone(),
+            recipient_npub: "npub1peer".to_string(),
+            reflexive_address: None,
+            local_addresses: Vec::new(),
+            stun_server: None,
+        };
+
+        assert!(
+            discovery
+                .emit_mesh_signal(MeshTraversalSignal::Offer {
+                    peer_npub: "npub1peer".to_string(),
+                    offer: offer.clone(),
+                })
+                .await
+        );
+
+        let signals = discovery.drain_mesh_signals().await;
+        assert_eq!(signals.len(), 1);
+        match &signals[0] {
+            MeshTraversalSignal::Offer {
+                peer_npub,
+                offer: got,
+            } => {
+                assert_eq!(peer_npub, "npub1peer");
+                assert_eq!(got, &offer);
+            }
+            MeshTraversalSignal::Answer { .. } => panic!("expected mesh offer"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mesh_answer_resolves_pending_offer_without_nostr_event() {
+        let discovery = NostrDiscovery::new_for_test();
+        let (tx, rx) = oneshot::channel();
+        discovery
+            .pending_answers
+            .lock()
+            .await
+            .insert("offer-nonce".to_string(), tx);
+        let answer = TraversalAnswer {
+            message_type: "answer".to_string(),
+            session_id: "session".to_string(),
+            issued_at: 1,
+            expires_at: 2,
+            nonce: "answer-nonce".to_string(),
+            sender_npub: "npub1peer".to_string(),
+            recipient_npub: discovery.npub.clone(),
+            in_reply_to: "offer-nonce".to_string(),
+            accepted: true,
+            reflexive_address: None,
+            local_addresses: vec![TraversalAddress {
+                protocol: "udp".to_string(),
+                ip: "127.0.0.1".to_string(),
+                port: 51820,
+            }],
+            stun_server: None,
+            punch: None,
+            reason: None,
+            offer_received_at: None,
+        };
+
+        discovery
+            .receive_mesh_traversal_answer(answer.clone(), "npub1peer".to_string())
+            .await;
+
+        let envelope = rx.await.expect("pending answer should resolve");
+        assert_eq!(envelope.payload, answer);
+        assert!(envelope.event_id.is_none());
+        assert_eq!(envelope.sender_npub, "npub1peer");
     }
 }

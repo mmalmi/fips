@@ -6,7 +6,9 @@ use super::signal::{
     estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
     validate_traversal_answer_for_offer,
 };
-use super::stun::{parse_stun_binding_success, parse_stun_url};
+use super::stun::{
+    compatible_stun_targets, parse_stun_binding_success, parse_stun_url, perform_stun_any,
+};
 use super::traversal::{
     PunchStrategy, build_punch_packet, parse_punch_packet, plan_punch_targets,
     planned_remote_endpoints, session_hash,
@@ -306,6 +308,74 @@ fn parses_ipv6_xor_mapped_address() {
     assert_eq!(parse_stun_binding_success(&packet, &txn_id), Some(addr));
 }
 
+#[tokio::test]
+async fn stun_observation_uses_first_success_without_waiting_for_dead_first_server() {
+    let silent = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind silent STUN socket");
+    let silent_addr = silent.local_addr().expect("silent addr");
+    let responder = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind responder STUN socket");
+    let responder_addr = responder.local_addr().expect("responder addr");
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        let (len, src) = responder.recv_from(&mut buf).await.expect("recv STUN");
+        let txn_id: [u8; 12] = buf[8..20]
+            .try_into()
+            .expect("binding request should carry transaction id");
+        let src_ip = match src.ip() {
+            std::net::IpAddr::V4(ip) => ip,
+            std::net::IpAddr::V6(_) => panic!("test uses IPv4 sockets"),
+        };
+        let cookie = 0x2112_a442u32.to_be_bytes();
+        let mut response = Vec::new();
+        response.extend_from_slice(&0x0101u16.to_be_bytes());
+        response.extend_from_slice(&12u16.to_be_bytes());
+        response.extend_from_slice(&0x2112_a442u32.to_be_bytes());
+        response.extend_from_slice(&txn_id);
+        response.extend_from_slice(&0x0020u16.to_be_bytes());
+        response.extend_from_slice(&8u16.to_be_bytes());
+        response.push(0);
+        response.push(0x01);
+        response.extend_from_slice(&(src.port() ^ 0x2112).to_be_bytes());
+        for (octet, mask) in src_ip.octets().into_iter().zip(cookie) {
+            response.push(octet ^ mask);
+        }
+        assert!(len >= 20);
+        responder
+            .send_to(&response, src)
+            .await
+            .expect("send STUN response");
+    });
+
+    let client = std::net::UdpSocket::bind("0.0.0.0:0").expect("bind client");
+    client
+        .set_nonblocking(true)
+        .expect("tokio requires nonblocking socket");
+    let client_port = client.local_addr().expect("client addr").port();
+    let servers = vec![
+        format!("stun:{}", silent_addr),
+        format!("stun:{}", responder_addr),
+    ];
+
+    let started = std::time::Instant::now();
+    let (mapped, stun_server) =
+        perform_stun_any(&client, &servers, std::time::Duration::from_secs(2))
+            .await
+            .expect("second STUN server should answer");
+
+    assert_eq!(stun_server, format!("stun:{}", responder_addr));
+    assert_eq!(mapped.expect("mapped address").port(), client_port);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "parallel STUN should not wait for the silent first server"
+    );
+
+    drop(silent);
+}
+
 #[test]
 fn builds_and_parses_probe_packets() {
     let packet = build_punch_packet(PunchPacketKind::Probe, 7, "sess-1");
@@ -313,6 +383,26 @@ fn builds_and_parses_probe_packets() {
     assert_eq!(parsed.kind, PunchPacketKind::Probe);
     assert_eq!(parsed.sequence, 7);
     assert_eq!(parsed.session_hash, session_hash("sess-1"));
+}
+
+#[test]
+fn stun_targets_keep_socket_family_when_dns_returns_ipv6_first() {
+    let local_addr: std::net::SocketAddr = "0.0.0.0:51820".parse().unwrap();
+    let ipv6_first: Vec<std::net::SocketAddr> = vec![
+        "[2001:4860:4864:5:8000::1]:19302".parse().unwrap(),
+        "74.125.250.129:19302".parse().unwrap(),
+    ];
+
+    let targets = compatible_stun_targets(local_addr, ipv6_first);
+
+    assert_eq!(
+        targets,
+        vec![
+            "74.125.250.129:19302"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+        ]
+    );
 }
 
 #[test]

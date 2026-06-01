@@ -50,49 +50,88 @@ pub(super) async fn observe_traversal_addresses(
         Vec::new()
     };
 
-    let mut last_error = None;
-    for stun_server in stun_servers {
-        match perform_stun(socket, stun_server, per_server_timeout).await {
-            Ok(mapped) => {
-                debug!(
-                    stun_server = %stun_server,
-                    reflexive = ?mapped,
-                    "STUN observation succeeded"
-                );
-                return Ok((
-                    mapped.map(|addr| TraversalAddress {
-                        protocol: "udp".to_string(),
-                        ip: addr.ip().to_string(),
-                        port: addr.port(),
-                    }),
-                    local_addresses.clone(),
-                    Some(stun_server.clone()),
-                ));
-            }
-            Err(err) => last_error = Some(err),
+    match perform_stun_any(socket, stun_servers, per_server_timeout).await {
+        Ok((mapped, stun_server)) => {
+            debug!(
+                stun_server = %stun_server,
+                reflexive = ?mapped,
+                "STUN observation succeeded"
+            );
+            return Ok((
+                mapped.map(|addr| TraversalAddress {
+                    protocol: "udp".to_string(),
+                    ip: addr.ip().to_string(),
+                    port: addr.port(),
+                }),
+                local_addresses.clone(),
+                Some(stun_server),
+            ));
         }
-    }
-
-    if let Some(err) = last_error {
-        debug!(error = %err, "stun observation failed, falling back to LAN-only addresses");
+        Err(err) => {
+            debug!(error = %err, "stun observation failed, falling back to LAN-only addresses");
+        }
     }
 
     Ok((None, local_addresses, None))
 }
 
-async fn perform_stun(
+pub(super) async fn perform_stun_any(
     socket: &std::net::UdpSocket,
-    stun_server: &str,
+    stun_servers: &[String],
     response_timeout: Duration,
-) -> Result<Option<SocketAddr>, BootstrapError> {
-    let endpoint = parse_stun_url(stun_server)?;
-    let txn_id = random_txn_id();
-    let request = create_stun_binding_request(txn_id);
-    let addr = resolve_udp_target(&endpoint.host, endpoint.port)
-        .await?
-        .ok_or_else(|| BootstrapError::Stun(format!("no address for {}", stun_server)))?;
+) -> Result<(Option<SocketAddr>, String), BootstrapError> {
+    if stun_servers.is_empty() {
+        return Err(BootstrapError::Stun(
+            "no STUN servers configured".to_string(),
+        ));
+    }
+
     let udp = UdpSocket::from_std(socket.try_clone()?)?;
-    udp.send_to(&request, addr).await?;
+    let local_addr = socket.local_addr()?;
+    let mut requests = Vec::new();
+    let mut last_error = None;
+    for stun_server in stun_servers {
+        let endpoint = match parse_stun_url(stun_server) {
+            Ok(endpoint) => endpoint,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+        let targets = match resolve_udp_targets(&endpoint.host, endpoint.port).await {
+            Ok(addrs) => compatible_stun_targets(local_addr, addrs),
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+        if targets.is_empty() {
+            last_error = Some(BootstrapError::Stun(format!(
+                "no compatible address for {}",
+                stun_server
+            )));
+            continue;
+        }
+        for addr in targets {
+            let txn_id = random_txn_id();
+            let request = create_stun_binding_request(txn_id);
+            match udp.send_to(&request, addr).await {
+                Ok(_) => requests.push((stun_server.clone(), txn_id)),
+                Err(err) => {
+                    last_error = Some(BootstrapError::Stun(format!(
+                        "send to {} ({}) failed: {}",
+                        stun_server, addr, err
+                    )));
+                }
+            }
+        }
+    }
+
+    if requests.is_empty() {
+        return Err(last_error
+            .unwrap_or_else(|| BootstrapError::Stun("no usable STUN servers".to_string())));
+    }
+
     let mut buf = [0u8; 2048];
     let deadline = tokio::time::Instant::now() + response_timeout;
     loop {
@@ -100,14 +139,40 @@ async fn perform_stun(
         let Ok(Ok((len, _remote))) = result else {
             break;
         };
-        if let Some(mapped) = parse_stun_binding_success(&buf[..len], &txn_id) {
-            return Ok(Some(mapped));
+        for (stun_server, txn_id) in &requests {
+            if let Some(mapped) = parse_stun_binding_success(&buf[..len], txn_id) {
+                return Ok((Some(mapped), stun_server.clone()));
+            }
         }
     }
+
     Err(BootstrapError::Stun(format!(
-        "timed out waiting for {}",
-        stun_server
+        "timed out waiting for {} STUN request(s)",
+        requests.len()
     )))
+}
+
+pub(super) fn compatible_stun_targets(
+    local_addr: SocketAddr,
+    addrs: Vec<SocketAddr>,
+) -> Vec<SocketAddr> {
+    addrs
+        .into_iter()
+        .filter(|addr| addr.is_ipv4() == local_addr.is_ipv4())
+        .collect()
+}
+
+async fn resolve_udp_targets(host: &str, port: u16) -> Result<Vec<SocketAddr>, BootstrapError> {
+    let normalized_host = host
+        .strip_prefix('[')
+        .and_then(|trimmed| trimmed.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let results = lookup_host((normalized_host, port)).await?;
+    Ok(results.collect())
 }
 
 pub(super) fn parse_stun_url(input: &str) -> Result<StunEndpoint, BootstrapError> {
@@ -234,19 +299,6 @@ fn parse_xor_mapped_address(value: &[u8], txn_id: &[u8; 12]) -> Option<SocketAdd
         }
         _ => None,
     }
-}
-
-async fn resolve_udp_target(host: &str, port: u16) -> Result<Option<SocketAddr>, BootstrapError> {
-    let normalized_host = host
-        .strip_prefix('[')
-        .and_then(|trimmed| trimmed.strip_suffix(']'))
-        .unwrap_or(host);
-
-    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
-        return Ok(Some(SocketAddr::new(ip, port)));
-    }
-    let mut results = lookup_host((normalized_host, port)).await?;
-    Ok(results.next())
 }
 
 fn local_addresses_from_port(port: u16) -> Vec<String> {

@@ -6,6 +6,7 @@
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
 use crate::NodeAddr;
+use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
 use crate::node::session::{EndToEndState, EpochSlot, SessionEntry};
@@ -544,6 +545,12 @@ impl Node {
                 payload.drain(..FSP_INNER_HEADER_SIZE);
                 self.deliver_endpoint_data(src_addr, payload);
             }
+            Some(SessionMessageType::TraversalOffer) => {
+                self.handle_mesh_traversal_offer(src_addr, rest).await;
+            }
+            Some(SessionMessageType::TraversalAnswer) => {
+                self.handle_mesh_traversal_answer(src_addr, rest).await;
+            }
             Some(SessionMessageType::SenderReport) => {
                 self.handle_session_sender_report(src_addr, rest);
             }
@@ -576,6 +583,100 @@ impl Node {
         // Flush any pending outbound packets (e.g., simultaneous initiation
         // where responder also had queued outbound packets)
         self.flush_pending_packets(src_addr).await;
+    }
+
+    async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
+        let Some(bootstrap) = self.nostr_discovery.clone() else {
+            trace!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal offer without Nostr discovery runtime"
+            );
+            return;
+        };
+        if self.configured_peer(src_addr).is_none() {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal offer from unconfigured peer"
+            );
+            return;
+        }
+        let Some(sender_npub) = self.npub_for_node_addr(src_addr) else {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal offer without known sender npub"
+            );
+            return;
+        };
+        let offer = match serde_json::from_slice::<TraversalOffer>(body) {
+            Ok(offer) => offer,
+            Err(error) => {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    error = %error,
+                    "Malformed mesh traversal offer"
+                );
+                return;
+            }
+        };
+        if offer.sender_npub != sender_npub {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                claimed = %offer.sender_npub,
+                actual = %sender_npub,
+                "Ignoring mesh traversal offer with sender mismatch"
+            );
+            return;
+        }
+        bootstrap
+            .receive_mesh_traversal_offer(offer, sender_npub)
+            .await;
+    }
+
+    async fn handle_mesh_traversal_answer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
+        let Some(bootstrap) = self.nostr_discovery.clone() else {
+            trace!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal answer without Nostr discovery runtime"
+            );
+            return;
+        };
+        if self.configured_peer(src_addr).is_none() {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal answer from unconfigured peer"
+            );
+            return;
+        }
+        let Some(sender_npub) = self.npub_for_node_addr(src_addr) else {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                "Ignoring mesh traversal answer without known sender npub"
+            );
+            return;
+        };
+        let answer = match serde_json::from_slice::<TraversalAnswer>(body) {
+            Ok(answer) => answer,
+            Err(error) => {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    error = %error,
+                    "Malformed mesh traversal answer"
+                );
+                return;
+            }
+        };
+        if answer.sender_npub != sender_npub {
+            debug!(
+                src = %self.peer_display_name(src_addr),
+                claimed = %answer.sender_npub,
+                actual = %sender_npub,
+                "Ignoring mesh traversal answer with sender mismatch"
+            );
+            return;
+        }
+        bootstrap
+            .receive_mesh_traversal_answer(answer, sender_npub)
+            .await;
     }
 
     /// Handle an incoming SessionSetup (Noise XK msg1).
