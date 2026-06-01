@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-06-01
+
+### Fixed
+
+- FMP rekey responders now wait for an authenticated peer K-bit flip instead
+  of time-cutting over on their own maintenance tick, avoiding split-session
+  direct links after rekey churn.
+- Connected UDP peer drains now detach their worker thread on drop, avoiding a
+  runtime-driver deadlock during direct-path teardown.
+
+## [0.3.23] - 2026-06-01
+
+### Fixed
+
+- Connected UDP drains drop stray NAT punch probes after adoption so stale
+  punch traffic cannot poison direct peer receive paths.
+- Direct-path refresh now keeps existing mesh reachability while retrying stale
+  endpoint hints, including active-peer traversal retries with backoff.
+- Nostr mesh signaling can warm configured roster peer sessions over an
+  existing mesh route before direct NAT traversal is established.
+- Open-discovery enqueue limits now count already-active non-roster peers so
+  cached transit peers cannot bypass the pending-peer cap.
+
 ## [0.3.22] - 2026-05-27
 
 ### Fixed

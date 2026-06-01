@@ -7,6 +7,24 @@ use crate::transport::udp::UdpTransport;
 use crate::transport::{TransportHandle, packet_channel};
 use std::sync::Arc;
 
+fn make_test_fmp_session(
+    local: &Identity,
+    peer: &Identity,
+    local_epoch: [u8; 8],
+    peer_epoch: [u8; 8],
+) -> crate::noise::NoiseSession {
+    let mut initiator =
+        crate::noise::HandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+    let mut responder = crate::noise::HandshakeState::new_responder(peer.keypair());
+    initiator.set_local_epoch(local_epoch);
+    responder.set_local_epoch(peer_epoch);
+    let msg1 = initiator.write_message_1().unwrap();
+    responder.read_message_1(&msg1).unwrap();
+    let msg2 = responder.write_message_2().unwrap();
+    initiator.read_message_2(&msg2).unwrap();
+    initiator.into_session().unwrap()
+}
+
 #[test]
 fn test_node_creation() {
     let node = make_node();
@@ -596,6 +614,61 @@ fn test_promote_registers_decrypt_worker() {
         node.decrypt_registered_sessions
             .contains(&(transport_id, our_index.as_u32())),
         "decrypt_registered_sessions must contain the new session after promote"
+    );
+}
+
+#[tokio::test]
+async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let pending_our_index = SessionIndex::new(11);
+    let pending_their_index = SessionIndex::new(21);
+
+    let current_session = make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
+    let mut active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        current_session,
+        old_our_index,
+        old_their_index,
+        transport_id,
+        remote_addr,
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x02; 8]),
+    );
+    active_peer.set_pending_session(
+        pending_session,
+        pending_our_index,
+        pending_their_index,
+        false,
+    );
+
+    node.peers.insert(peer_node_addr, active_peer);
+    node.peers_by_index
+        .insert((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers_by_index
+        .insert((transport_id, pending_our_index.as_u32()), peer_node_addr);
+
+    node.check_rekey().await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active_peer.our_index(), Some(old_our_index));
+    assert_eq!(active_peer.their_index(), Some(old_their_index));
+    assert!(active_peer.pending_new_session().is_some());
+    assert!(
+        !active_peer.pending_rekey_initiator(),
+        "FMP responder must wait for peer K-bit instead of cutting over on its own tick"
     );
 }
 

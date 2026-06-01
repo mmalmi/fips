@@ -384,13 +384,15 @@ impl TcpTransport {
         let recv_task = tokio::spawn(async move {
             tcp_receive_loop(
                 read_half,
-                transport_id,
-                remote_addr.clone(),
-                packet_tx,
-                pool,
-                mtu,
-                recv_stats,
-                None,
+                TcpReceiveContext {
+                    transport_id,
+                    remote_addr,
+                    packet_tx,
+                    pool,
+                    mtu,
+                    stats: recv_stats,
+                    first_frame_timeout: None,
+                },
             )
             .await;
         });
@@ -596,13 +598,15 @@ impl TcpTransport {
         let recv_task = tokio::spawn(async move {
             tcp_receive_loop(
                 read_half,
-                transport_id,
-                remote_addr.clone(),
-                packet_tx,
-                pool,
-                mss_mtu,
-                recv_stats,
-                None,
+                TcpReceiveContext {
+                    transport_id,
+                    remote_addr,
+                    packet_tx,
+                    pool,
+                    mtu: mss_mtu,
+                    stats: recv_stats,
+                    first_frame_timeout: None,
+                },
             )
             .await;
         });
@@ -802,13 +806,15 @@ async fn accept_loop(
                 let recv_task = tokio::spawn(async move {
                     tcp_receive_loop(
                         read_half,
-                        transport_id,
-                        recv_addr,
-                        recv_packet_tx,
-                        recv_pool,
-                        conn_mtu,
-                        recv_stats,
-                        first_frame_timeout(first_frame_timeout_ms),
+                        TcpReceiveContext {
+                            transport_id,
+                            remote_addr: recv_addr,
+                            packet_tx: recv_packet_tx,
+                            pool: recv_pool,
+                            mtu: conn_mtu,
+                            stats: recv_stats,
+                            first_frame_timeout: first_frame_timeout(first_frame_timeout_ms),
+                        },
                     )
                     .await;
                 });
@@ -852,8 +858,7 @@ async fn accept_loop(
 /// Reads complete FMP packets using the stream reader, delivers them to
 /// the node via the packet channel. On error or EOF, removes the
 /// connection from the pool and exits.
-async fn tcp_receive_loop(
-    mut reader: tokio::net::tcp::OwnedReadHalf,
+struct TcpReceiveContext {
     transport_id: TransportId,
     remote_addr: TransportAddr,
     packet_tx: PacketTx,
@@ -861,7 +866,19 @@ async fn tcp_receive_loop(
     mtu: u16,
     stats: Arc<TcpStats>,
     first_frame_timeout: Option<Duration>,
-) {
+}
+
+async fn tcp_receive_loop(mut reader: tokio::net::tcp::OwnedReadHalf, ctx: TcpReceiveContext) {
+    let TcpReceiveContext {
+        transport_id,
+        remote_addr,
+        packet_tx,
+        pool,
+        mtu,
+        stats,
+        first_frame_timeout,
+    } = ctx;
+
     debug!(
         transport_id = %transport_id,
         remote_addr = %remote_addr,

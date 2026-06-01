@@ -130,13 +130,10 @@ impl Drop for PeerRecvDrain {
             unsafe { libc::close(fd) };
         }
 
-        // 3. Join — bounded wait, the thread exits within one
-        //    poll-iteration of seeing the stop flag.
-        if let Some(j) = self.join.take()
-            && j.thread().id() != std::thread::current().id()
-        {
-            let _ = j.join();
-        }
+        // 3. Detach the std::thread. Joining here can block the single
+        // runtime driver while the drain worker is parked in blocking_send
+        // waiting for that same runtime to make progress.
+        drop(self.join.take());
     }
 }
 

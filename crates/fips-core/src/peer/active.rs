@@ -14,7 +14,7 @@ use crate::{FipsAddress, NodeAddr, PeerIdentity};
 use rand::RngExt;
 use secp256k1::XOnlyPublicKey;
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn draw_rekey_jitter() -> i64 {
     rand::rng().random_range(-REKEY_JITTER_SECS..=REKEY_JITTER_SECS)
@@ -178,6 +178,10 @@ pub struct ActivePeer {
     pending_our_index: Option<SessionIndex>,
     /// Pending new session's their_index.
     pending_their_index: Option<SessionIndex>,
+    /// True when this node initiated the pending FMP rekey.
+    pending_rekey_initiator: bool,
+    /// When the pending FMP rekey completed locally.
+    pending_rekey_completed_at: Option<Instant>,
     /// Whether a rekey is currently in progress (handshake sent, not yet complete).
     rekey_in_progress: bool,
     /// When we last received a rekey msg1 from this peer (dampening).
@@ -264,6 +268,8 @@ impl ActivePeer {
             pending_new_session: None,
             pending_our_index: None,
             pending_their_index: None,
+            pending_rekey_initiator: false,
+            pending_rekey_completed_at: None,
             rekey_in_progress: false,
             last_peer_rekey: None,
             rekey_handshake: None,
@@ -349,6 +355,8 @@ impl ActivePeer {
             pending_new_session: None,
             pending_our_index: None,
             pending_their_index: None,
+            pending_rekey_initiator: false,
+            pending_rekey_completed_at: None,
             rekey_in_progress: false,
             last_peer_rekey: None,
             rekey_handshake: None,
@@ -974,19 +982,37 @@ impl ActivePeer {
         self.pending_new_session.as_ref()
     }
 
+    /// Whether this node should drive the K-bit cutover for the pending FMP rekey.
+    pub fn pending_rekey_initiator(&self) -> bool {
+        self.pending_rekey_initiator
+    }
+
+    /// Whether the locally initiated pending FMP rekey has waited long enough
+    /// to cut over. Responders cut over only after observing the peer's K-bit.
+    pub fn pending_rekey_cutover_due(&self, delay: Duration) -> bool {
+        self.pending_rekey_initiator
+            && self
+                .pending_rekey_completed_at
+                .is_some_and(|completed| completed.elapsed() >= delay)
+    }
+
     /// Store a completed rekey session and its indices.
     ///
-    /// Called when the rekey handshake completes. The session is held
-    /// as pending until the initiator flips the K-bit on the next outbound packet.
+    /// Called when the rekey handshake completes. Initiators cut over after a
+    /// short grace period; responders hold the session pending until they
+    /// authenticate the peer's K-bit flip.
     pub fn set_pending_session(
         &mut self,
         session: NoiseSession,
         our_index: SessionIndex,
         their_index: SessionIndex,
+        initiated_by_local: bool,
     ) {
         self.pending_new_session = Some(session);
         self.pending_our_index = Some(our_index);
         self.pending_their_index = Some(their_index);
+        self.pending_rekey_initiator = initiated_by_local;
+        self.pending_rekey_completed_at = Some(Instant::now());
         self.rekey_in_progress = false;
         // Clear initiator handshake state (index now lives in pending_our_index)
         self.rekey_our_index = None;
@@ -1014,6 +1040,8 @@ impl ActivePeer {
         self.noise_session = Some(new_session);
         self.our_index = new_our_index;
         self.their_index = new_their_index;
+        self.pending_rekey_initiator = false;
+        self.pending_rekey_completed_at = None;
 
         // Flip K-bit and reset timing
         self.current_k_bit = !self.current_k_bit;
@@ -1021,6 +1049,7 @@ impl ActivePeer {
         self.session_start = Instant::now();
         self.rekey_in_progress = false;
         self.rekey_jitter_secs = draw_rekey_jitter();
+        self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
 
         // Reset MMP counters to avoid metric discontinuity
@@ -1050,6 +1079,8 @@ impl ActivePeer {
         self.noise_session = Some(new_session);
         self.our_index = new_our_index;
         self.their_index = new_their_index;
+        self.pending_rekey_initiator = false;
+        self.pending_rekey_completed_at = None;
 
         // Match peer's K-bit
         self.current_k_bit = !self.current_k_bit;
@@ -1057,6 +1088,7 @@ impl ActivePeer {
         self.session_start = Instant::now();
         self.rekey_in_progress = false;
         self.rekey_jitter_secs = draw_rekey_jitter();
+        self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
 
         // Reset MMP counters to avoid metric discontinuity
@@ -1105,6 +1137,8 @@ impl ActivePeer {
         self.rekey_our_index.take().or_else(|| {
             self.pending_new_session = None;
             self.pending_their_index = None;
+            self.pending_rekey_initiator = false;
+            self.pending_rekey_completed_at = None;
             self.pending_our_index.take()
         })
     }

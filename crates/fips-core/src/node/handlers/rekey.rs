@@ -10,6 +10,7 @@ use crate::node::Node;
 use crate::node::wire::build_msg1;
 use crate::noise::HandshakeState;
 use crate::protocol::{SessionDatagram, SessionSetup};
+use std::time::Duration;
 use tracing::{debug, trace, warn};
 
 /// Keep previous session alive for this long after cutover.
@@ -18,6 +19,10 @@ const DRAIN_WINDOW_SECS: u64 = 10;
 /// Suppress local rekey initiation for this long after receiving
 /// a peer's rekey msg1.
 const REKEY_DAMPENING_SECS: u64 = 30;
+
+/// Delay FMP initiator cutover after receiving msg2. The responder keeps the
+/// pending session until it authenticates the peer's K-bit flip.
+const FMP_CUTOVER_DELAY_MS: u64 = 250;
 
 /// Delay FSP initiator cutover after handshake completion to allow
 /// XK msg3 to reach the responder before K-bit-flipped data arrives.
@@ -48,9 +53,12 @@ impl Node {
                 continue;
             }
 
-            // 1. Initiator-side cutover: we completed a rekey and have
-            //    a pending session ready. Cut over on the next tick.
-            if peer.pending_new_session().is_some() && !peer.rekey_in_progress() {
+            // 1. Initiator-side cutover: we completed a rekey and have a
+            //    pending session ready. Responders wait for the peer's K-bit.
+            if peer.pending_new_session().is_some()
+                && !peer.rekey_in_progress()
+                && peer.pending_rekey_cutover_due(Duration::from_millis(FMP_CUTOVER_DELAY_MS))
+            {
                 peers_to_cutover.push(*node_addr);
                 continue;
             }

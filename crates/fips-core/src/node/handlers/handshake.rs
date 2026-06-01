@@ -374,6 +374,7 @@ impl Node {
                                 noise_session,
                                 our_new_index,
                                 header.sender_idx,
+                                false,
                             );
                             peer.record_peer_rekey();
                         }
@@ -664,7 +665,7 @@ impl Node {
                             if remote_epoch.is_some() {
                                 peer.set_remote_epoch(remote_epoch);
                             }
-                            peer.set_pending_session(session, our_index, header.sender_idx);
+                            peer.set_pending_session(session, our_index, header.sender_idx, true);
 
                             if let Some(transport_id) = peer.transport_id() {
                                 self.peers_by_index
