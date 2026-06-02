@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-06-02
+
+### Fixed
+
+- Saturated encrypt-worker queues now drop bulk endpoint data instead of
+  blocking the node receive loop, preventing active tunnels from being
+  removed by false link-dead timeouts while control traffic is still queued.
+- macOS encrypt workers now reserve and prioritize capacity for FIPS control
+  frames so heartbeats, traversal signals, and routing control can pass ahead
+  of bulk tunnel traffic under Screen Sharing or other high-rate streams.
+
 ## [0.3.25] - 2026-06-02
 
 ### Fixed

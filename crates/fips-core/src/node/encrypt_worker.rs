@@ -196,7 +196,6 @@ impl QueuedFmpSendJob {
         self.job.dest_addr
     }
 
-    #[cfg(not(target_os = "macos"))]
     fn drop_on_backpressure(&self) -> bool {
         self.job.drop_on_backpressure
     }
@@ -221,10 +220,11 @@ impl QueuedFmpSendJob {
 
 /// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
 /// destination** across N worker tasks via per-worker bounded queues.
-/// The bounded queue intentionally backpressures the rx_loop if
-/// encryption/sending falls behind, because these jobs carry tunneled
-/// IP packets; silently dropping them here looks like heavy loss to
-/// TCP-over-TUN and collapses throughput.
+/// The bounded queue keeps bulk tunnel packets from growing without
+/// bound when encryption/sending falls behind. Control traffic must not
+/// sit behind that bulk backlog: blocking the rx_loop on a full send
+/// queue also blocks decrypt-fallback/liveness processing, which can
+/// turn a busy tunnel into a false link-dead removal.
 ///
 /// **Ordering: hash-by-destination, not round-robin.** Round-robin
 /// across N workers causes UDP packet reordering on the wire, which
@@ -245,6 +245,8 @@ impl QueuedFmpSendJob {
 /// for tens of milliseconds, inflating RTT/retransmits instead of
 /// pushing back to TUN promptly.
 const WORKER_CHANNEL_CAP: usize = 1024;
+#[cfg(target_os = "macos")]
+const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const WORKER_TOTAL_CHANNEL_CAP: usize = WORKER_CHANNEL_CAP * 4;
 #[cfg(not(target_os = "macos"))]
@@ -339,9 +341,35 @@ struct MacWorkerQueueInner {
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 struct MacWorkerQueueState {
-    queue: VecDeque<QueuedFmpSendJob>,
+    control_queue: VecDeque<QueuedFmpSendJob>,
+    bulk_queue: VecDeque<QueuedFmpSendJob>,
     waiting: bool,
     closed: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl MacWorkerQueueState {
+    fn len(&self) -> usize {
+        self.control_queue.len() + self.bulk_queue.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.control_queue.is_empty() && self.bulk_queue.is_empty()
+    }
+
+    fn push_job(&mut self, job: QueuedFmpSendJob) {
+        if job.drop_on_backpressure() {
+            self.bulk_queue.push_back(job);
+        } else {
+            self.control_queue.push_back(job);
+        }
+    }
+
+    fn pop_job(&mut self) -> Option<QueuedFmpSendJob> {
+        self.control_queue
+            .pop_front()
+            .or_else(|| self.bulk_queue.pop_front())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -357,7 +385,8 @@ struct MacWorkerPushError;
 fn mac_worker_channel(cap: usize) -> (MacWorkerSender, MacWorkerReceiver) {
     let inner = Arc::new(MacWorkerQueueInner {
         state: Mutex::new(MacWorkerQueueState {
-            queue: VecDeque::with_capacity(cap),
+            control_queue: VecDeque::with_capacity(MAC_WORKER_CONTROL_RESERVE_CAP),
+            bulk_queue: VecDeque::with_capacity(cap),
             waiting: false,
             closed: false,
         }),
@@ -385,12 +414,17 @@ impl MacWorkerSender {
             drop(job);
             return Err(MacWorkerTryPushError::Closed);
         }
-        if state.queue.len() >= self.inner.cap {
+        let cap = if job.drop_on_backpressure() {
+            self.inner.cap
+        } else {
+            self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
+        };
+        if state.len() >= cap {
             return Err(MacWorkerTryPushError::Full(Box::new(job)));
         }
-        let was_empty = state.queue.is_empty();
+        let was_empty = state.is_empty();
         let should_notify = was_empty && state.waiting;
-        state.queue.push_back(job);
+        state.push_job(job);
         drop(state);
         if should_notify {
             self.inner.not_empty.notify_one();
@@ -409,10 +443,15 @@ impl MacWorkerSender {
                 drop(job);
                 return Err(MacWorkerPushError);
             }
-            if state.queue.len() < self.inner.cap {
-                let was_empty = state.queue.is_empty();
+            let cap = if job.drop_on_backpressure() {
+                self.inner.cap
+            } else {
+                self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
+            };
+            if state.len() < cap {
+                let was_empty = state.is_empty();
                 let should_notify = was_empty && state.waiting;
-                state.queue.push_back(job);
+                state.push_job(job);
                 drop(state);
                 if should_notify {
                     self.inner.not_empty.notify_one();
@@ -453,7 +492,7 @@ impl MacWorkerReceiver {
             .lock()
             .expect("encrypt worker queue poisoned");
         loop {
-            while let Some(job) = state.queue.pop_front() {
+            while let Some(job) = state.pop_job() {
                 batch.push(job);
                 if batch.len() >= max {
                     break;
@@ -923,6 +962,10 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
+                if job.drop_on_backpressure() {
+                    record_encrypt_worker_bulk_queue_drop(idx);
+                    return;
+                }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 let n = FULL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -949,6 +992,10 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
+                if job.drop_on_backpressure() {
+                    record_encrypt_worker_bulk_queue_drop(idx);
+                    return;
+                }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 let n = FULL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -964,21 +1011,24 @@ impl EncryptWorkerPool {
                 }
             }
             Err(FairWorkerTryPushError::Dropped) => {
-                static DROP_COUNT: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n < 8 || n.is_multiple_of(10000) {
-                    warn!(
-                        worker = idx,
-                        drops = n + 1,
-                        "EncryptWorker fair queue full; dropping bulk data packet"
-                    );
-                }
+                record_encrypt_worker_bulk_queue_drop(idx);
             }
             Err(FairWorkerTryPushError::Closed) => {
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
+    }
+}
+
+fn record_encrypt_worker_bulk_queue_drop(worker: usize) {
+    static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n < 8 || n.is_multiple_of(10000) {
+        warn!(
+            worker = worker,
+            drops = n + 1,
+            "EncryptWorker queue full; dropping bulk data packet"
+        );
     }
 }
 
@@ -2283,6 +2333,103 @@ mod unix_tests {
             )
             .expect("inner open");
             assert_eq!(inner_plaintext, fsp_plaintext);
+        });
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_queue_tests {
+    use super::*;
+    use crate::transport::udp::socket::UdpRawSocket;
+    use ring::aead::{LessSafeKey, UnboundKey};
+
+    fn test_cipher() -> LessSafeKey {
+        let unbound =
+            UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0u8; 32]).expect("build key");
+        LessSafeKey::new(unbound)
+    }
+
+    fn with_test_socket(test: impl FnOnce(AsyncUdpSocket, LessSafeKey)) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            test(raw.into_async().expect("into_async"), test_cipher());
+        });
+    }
+
+    fn queued_job(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        drop_on_backpressure: bool,
+    ) -> QueuedFmpSendJob {
+        let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
+        wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
+        wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
+        QueuedFmpSendJob::direct(FmpSendJob {
+            cipher: cipher.clone(),
+            counter: 0,
+            wire_buf,
+            fsp_seal: None,
+            socket,
+            dest_addr,
+            connected_socket: None,
+            drop_on_backpressure,
+            scheduling_weight: DEFAULT_SEND_WEIGHT,
+            queued_at: None,
+        })
+    }
+
+    #[test]
+    fn mac_worker_prioritizes_control_when_bulk_queue_is_full() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = mac_worker_channel(2);
+            let addr: SocketAddr = "127.0.0.1:10010".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, true))
+                    .is_ok()
+            );
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, true))
+                    .is_ok()
+            );
+            assert!(
+                tx.try_push(queued_job(socket, &cipher, addr, false))
+                    .is_ok()
+            );
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 3));
+            assert_eq!(batch.len(), 3);
+            assert!(!batch[0].drop_on_backpressure());
+            assert!(batch[1].drop_on_backpressure());
+            assert!(batch[2].drop_on_backpressure());
+        });
+    }
+
+    #[test]
+    fn mac_worker_rejects_bulk_when_bulk_queue_is_full() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = mac_worker_channel(2);
+            let addr: SocketAddr = "127.0.0.1:10011".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, true))
+                    .is_ok()
+            );
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, true))
+                    .is_ok()
+            );
+            assert!(matches!(
+                tx.try_push(queued_job(socket, &cipher, addr, true)),
+                Err(MacWorkerTryPushError::Full(_))
+            ));
         });
     }
 }
