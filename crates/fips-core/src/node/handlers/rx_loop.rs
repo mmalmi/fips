@@ -286,6 +286,11 @@ impl Node {
     async fn run_rx_loop_maintenance_tick(&mut self) {
         self.check_timeouts();
         let now_ms = Self::now_ms();
+        // Link liveness must run before slower retry/discovery/report work:
+        // this whole maintenance future is guarded by a watchdog timeout, and
+        // under bulk send pressure a late heartbeat is indistinguishable from a
+        // dead direct path on the remote peer.
+        self.check_link_heartbeats().await;
         self.reload_peer_acl();
         self.poll_pending_connects().await;
         self.poll_nostr_discovery().await;
@@ -304,7 +309,6 @@ impl Node {
         self.record_stats_history();
         self.check_mmp_reports().await;
         self.check_session_mmp_reports().await;
-        self.check_link_heartbeats().await;
         self.check_rekey().await;
         self.check_session_rekey().await;
         self.check_pending_lookups(now_ms).await;

@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale local route errors now stop shortening link-dead detection after a
   brief recovery window, and rx-loop maintenance stalls no longer count as
   repeated bad NAT traversal paths.
+- Link heartbeats now run before slower retry/discovery maintenance so the
+  watchdog cannot skip liveness traffic during bulk tunnel pressure.
 
 ## [0.3.26] - 2026-06-02
 
