@@ -161,8 +161,25 @@ pub enum NodeError {
     #[error("transport error: {0}")]
     TransportError(String),
 
+    #[error("local route unavailable: {0}")]
+    LocalRouteUnavailable(String),
+
     #[error("bootstrap handoff failed: {0}")]
     BootstrapHandoff(String),
+}
+
+impl NodeError {
+    pub(in crate::node) fn from_transport_error(error: TransportError) -> Self {
+        if error.is_local_route_unavailable() {
+            Self::LocalRouteUnavailable(error.to_string())
+        } else {
+            Self::TransportError(error.to_string())
+        }
+    }
+
+    pub(in crate::node) fn is_local_route_unavailable(&self) -> bool {
+        matches!(self, Self::LocalRouteUnavailable(_))
+    }
 }
 
 /// Source-attributed packet delivered by a node running without a system TUN.
@@ -2770,14 +2787,7 @@ impl Node {
                     self.last_local_send_failure_at = None;
                 }
             }
-            Err(TransportError::Io(e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::NetworkUnreachable
-                        | std::io::ErrorKind::HostUnreachable
-                        | std::io::ErrorKind::AddrNotAvailable
-                ) =>
-            {
+            Err(error) if error.is_local_route_unavailable() => {
                 self.last_local_send_failure_at = Some(std::time::Instant::now());
             }
             Err(_) => {}

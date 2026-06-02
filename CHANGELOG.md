@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Local route outages during network changes now retry quickly without
+  increasing peer/NAT failure backoff, so transient `Network is unreachable`
+  or `No route to host` sends do not strand peers on stale relay paths.
+
 ## [0.3.26] - 2026-06-02
 
 ### Fixed

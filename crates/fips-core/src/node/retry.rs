@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 
 // MAX_BACKOFF_MS is now derived from config: node.retry.max_backoff_secs * 1000
 const MAX_RETRY_CONNECTIONS_PER_TICK: usize = 16;
+const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 
 /// Tracks retry state for a peer across connection attempts.
 pub struct RetryState {
@@ -137,6 +138,79 @@ impl Node {
                 self.retry_pending.insert(node_addr, state);
             }
             // If not found in auto_connect_peers, no retry (one-shot connection)
+        }
+    }
+
+    /// Schedule a quick retry for local underlay route/socket failures.
+    ///
+    /// These errors mean the local OS could not send at all during a network
+    /// transition. They should not count as peer failures or increase the
+    /// exponential retry count.
+    pub(super) fn schedule_local_route_retry(&mut self, node_addr: NodeAddr, now_ms: u64) {
+        let retry_cfg = &self.config.node.retry;
+        if retry_cfg.max_retries == 0 {
+            return;
+        }
+
+        let peer_config = self
+            .retry_pending
+            .get(&node_addr)
+            .map(|state| state.peer_config.clone())
+            .or_else(|| {
+                self.config
+                    .auto_connect_peers()
+                    .find(|pc| {
+                        PeerIdentity::from_npub(&pc.npub)
+                            .map(|id| *id.node_addr() == node_addr)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+            });
+
+        if self.peers.contains_key(&node_addr) {
+            let Some(pc) = peer_config.as_ref() else {
+                return;
+            };
+            if !self.active_peer_should_keep_direct_retry(&node_addr, pc) {
+                return;
+            }
+        }
+
+        let retry_after_ms = now_ms.saturating_add(LOCAL_ROUTE_RETRY_DELAY_MS);
+        let peer_name = self.peer_display_name(&node_addr);
+
+        if let Some(state) = self.retry_pending.get_mut(&node_addr) {
+            state.reconnect = true;
+            state.retry_after_ms = retry_after_ms;
+            debug!(
+                peer = %peer_name,
+                retry = state.retry_count,
+                delay_ms = LOCAL_ROUTE_RETRY_DELAY_MS,
+                "Local route unavailable, scheduling short retry"
+            );
+        } else if let Some(pc) = peer_config {
+            let mut state = RetryState::new(pc);
+            state.reconnect = true;
+            state.retry_after_ms = retry_after_ms;
+            debug!(
+                peer = %peer_name,
+                delay_ms = LOCAL_ROUTE_RETRY_DELAY_MS,
+                "Local route unavailable on first attempt, scheduling short retry"
+            );
+            self.retry_pending.insert(node_addr, state);
+        }
+    }
+
+    pub(super) fn schedule_retry_after_error(
+        &mut self,
+        node_addr: NodeAddr,
+        now_ms: u64,
+        error: &NodeError,
+    ) {
+        if error.is_local_route_unavailable() {
+            self.schedule_local_route_retry(node_addr, now_ms);
+        } else {
+            self.schedule_retry(node_addr, now_ms);
         }
     }
 
@@ -396,7 +470,7 @@ impl Node {
                                 .request_advert_stale_check(peer_config.npub.clone())
                                 .await;
                         }
-                        self.schedule_retry(node_addr, now_ms);
+                        self.schedule_retry_after_error(node_addr, now_ms, &e);
                     }
                 }
                 continue;
@@ -472,7 +546,7 @@ impl Node {
                     }
                     // Immediate failure counts as an attempt — schedule next retry
                     // (reconnect flag is preserved on existing retry_pending entry)
-                    self.schedule_retry(node_addr, now_ms);
+                    self.schedule_retry_after_error(node_addr, now_ms, &e);
                 }
             }
         }

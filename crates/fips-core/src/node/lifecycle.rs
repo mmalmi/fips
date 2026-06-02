@@ -260,7 +260,7 @@ impl Node {
                     "Failed to initiate connection for newly added peer"
                 );
                 if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry(*peer_identity.node_addr(), Self::now_ms());
+                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 }
                 if matches!(e, crate::node::NodeError::NoTransportForType(_))
                     && let Some(bootstrap) = self.nostr_discovery.clone()
@@ -331,7 +331,7 @@ impl Node {
                         error = %e,
                         "Refreshed peer addresses did not initiate a direct connection"
                     );
-                    self.schedule_retry(node_addr, Self::now_ms());
+                    self.schedule_retry_after_error(node_addr, Self::now_ms(), &e);
                 }
             }
         }
@@ -410,7 +410,7 @@ impl Node {
                 // (e.g. cached endpoints stale, NAT rebinds, all addresses
                 // currently unreachable) recover without a daemon restart.
                 if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry(*peer_identity.node_addr(), Self::now_ms());
+                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 }
                 // No-transport failures most often mean the cached overlay
                 // advert is pointing at a dead post-NAT-rebind address. The
@@ -1004,7 +1004,7 @@ impl Node {
                         // Clean up link
                         self.links.remove(&link_id);
                         self.addr_to_link.remove(&(transport_id, remote_addr));
-                        return Err(NodeError::TransportError(e.to_string()));
+                        return Err(NodeError::from_transport_error(e));
                     }
                 }
             }
@@ -1120,7 +1120,7 @@ impl Node {
                         self.addr_to_link
                             .remove(&(transport_id, remote_addr.clone()));
                         let _ = self.index_allocator.free(our_index);
-                        return Err(NodeError::TransportError(e.to_string()));
+                        return Err(NodeError::from_transport_error(e));
                     }
                 }
             }
@@ -2823,6 +2823,7 @@ impl Node {
         addresses: &[PeerAddress],
     ) -> Result<(), NodeError> {
         let mut attempted = false;
+        let mut local_route_error = None;
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
 
@@ -2934,6 +2935,9 @@ impl Node {
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
                 Err(e) => {
+                    if e.is_local_route_unavailable() && local_route_error.is_none() {
+                        local_route_error = Some(e.to_string());
+                    }
                     debug!(
                         npub = %peer_config.npub,
                         transport_id = %transport_id,
@@ -2946,6 +2950,10 @@ impl Node {
 
         if attempted {
             return Ok(());
+        }
+
+        if let Some(error) = local_route_error {
+            return Err(NodeError::LocalRouteUnavailable(error));
         }
 
         Err(NodeError::NoTransportForType(format!(

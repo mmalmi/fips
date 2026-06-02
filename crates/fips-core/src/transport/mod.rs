@@ -217,6 +217,39 @@ pub enum TransportError {
     Io(#[from] std::io::Error),
 }
 
+impl TransportError {
+    /// True when the local OS says the outbound underlay path is temporarily
+    /// unsendable, rather than the peer or protocol being bad.
+    pub fn is_local_route_unavailable(&self) -> bool {
+        match self {
+            TransportError::Io(error) => is_local_route_error_kind(error.kind()),
+            TransportError::SendFailed(message) => is_local_route_error_text(message),
+            _ => false,
+        }
+    }
+}
+
+fn is_local_route_error_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::NetworkUnreachable
+            | std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::AddrNotAvailable
+    )
+}
+
+fn is_local_route_error_text(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("network is unreachable")
+        || lower.contains("no route to host")
+        || lower.contains("host is unreachable")
+        || lower.contains("can't assign requested address")
+        || lower.contains("cannot assign requested address")
+        || lower.contains("os error 51")
+        || lower.contains("os error 65")
+        || lower.contains("os error 49")
+}
+
 // ============================================================================
 // Transport Type Metadata
 // ============================================================================

@@ -1151,6 +1151,51 @@ fn test_schedule_retry_increments() {
     assert_eq!(state.retry_after_ms, 11_000 + 20_000);
 }
 
+#[test]
+fn test_local_route_transport_error_is_classified() {
+    let error =
+        crate::transport::TransportError::SendFailed("No route to host (os error 65)".to_string());
+
+    let node_error = NodeError::from_transport_error(error);
+    assert!(matches!(node_error, NodeError::LocalRouteUnavailable(_)));
+}
+
+#[test]
+fn test_schedule_local_route_retry_does_not_increase_backoff() {
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+    let peer_node_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_npub,
+        "udp",
+        "10.0.0.2:2121",
+    ));
+
+    let mut node = Node::new(config).unwrap();
+
+    node.schedule_retry(peer_node_addr, 1_000);
+    {
+        let state = node.retry_pending.get(&peer_node_addr).unwrap();
+        assert_eq!(state.retry_count, 1);
+        assert_eq!(state.retry_after_ms, 11_000);
+    }
+
+    node.schedule_local_route_retry(peer_node_addr, 2_000);
+
+    let state = node.retry_pending.get(&peer_node_addr).unwrap();
+    assert_eq!(
+        state.retry_count, 1,
+        "local route outages must not count as peer failures"
+    );
+    assert_eq!(
+        state.retry_after_ms, 4_000,
+        "route recovery should be retried quickly instead of waiting on prior backoff"
+    );
+    assert!(state.reconnect);
+}
+
 /// Retry processing is paced so a large due set cannot start every
 /// handshake candidate in one maintenance tick.
 #[tokio::test]
