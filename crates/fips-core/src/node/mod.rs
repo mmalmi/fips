@@ -34,7 +34,7 @@ use self::wire::{
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
-use crate::config::{PeerConfig, RoutingMode};
+use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1839,6 +1839,28 @@ impl Node {
             self.max_connections == 0 || connection_used < self.max_connections;
         let link_allowed = self.max_links == 0 || self.links.len() < self.max_links;
         peer_allowed && connection_allowed && link_allowed
+    }
+
+    /// Admission for public/open-discovery outbound work. This includes the
+    /// general connection/link caps and, when open Nostr discovery is enabled,
+    /// the configured non-peer budget.
+    pub(crate) fn open_discovery_outbound_admission_check(&self) -> bool {
+        if !self.outbound_admission_check() {
+            return false;
+        }
+
+        let nostr = &self.config.node.discovery.nostr;
+        if !nostr.enabled || nostr.policy != NostrDiscoveryPolicy::Open {
+            return true;
+        }
+
+        let configured_npubs = self
+            .config
+            .peers()
+            .iter()
+            .map(|peer| peer.npub.clone())
+            .collect::<HashSet<_>>();
+        self.open_discovery_enqueue_budget(&configured_npubs) > 0
     }
 
     /// Like `outbound_admission_check`, but for racing a better path to a

@@ -1278,7 +1278,7 @@ impl Node {
             return;
         };
 
-        bootstrap.set_outbound_admission(self.outbound_admission_check());
+        bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
 
         if let Err(err) = self.refresh_overlay_advert(&bootstrap).await {
@@ -2754,7 +2754,7 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return false;
         };
-        bootstrap.set_outbound_admission(self.outbound_admission_check());
+        bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
         let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
         bootstrap

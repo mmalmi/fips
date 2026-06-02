@@ -3522,6 +3522,22 @@ fn open_discovery_budget_counts_active_non_configured_peers() {
 }
 
 #[test]
+fn open_discovery_outbound_admission_stops_at_public_peer_budget() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 1;
+    let mut node = Node::new(config).unwrap();
+
+    assert!(node.open_discovery_outbound_admission_check());
+    inject_dummy_peers(&mut node, 1);
+    assert!(
+        !node.open_discovery_outbound_admission_check(),
+        "public traversal offers must not bypass the active open-discovery peer budget"
+    );
+}
+
+#[test]
 fn outbound_admission_check_respects_connection_and_link_caps() {
     let mut node = make_node();
     node.set_max_connections(2);
