@@ -3751,6 +3751,18 @@ async fn link_dead_recent_endpoint_path_enters_traversal_cooldown() {
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     node.nostr_discovery = Some(bootstrap.clone());
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let recent_path_timeout = node
+        .recent_endpoint_link_dead_timeout(
+            &peer_addr,
+            std::time::Duration::from_secs(node.config.node.link_dead_timeout_secs),
+            std::time::Duration::from_secs(node.config.node.fast_link_dead_timeout_secs),
+        )
+        .expect("recent endpoint path should get bounded liveness timeout");
+    assert_eq!(recent_path_timeout, std::time::Duration::from_secs(22));
 
     node.record_link_dead_path_failure(&peer_addr, 1_000).await;
 

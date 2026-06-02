@@ -231,18 +231,7 @@ impl Node {
             return;
         };
 
-        let Some(peer) = self.peers.get(node_addr) else {
-            return;
-        };
-        let via_bootstrap_transport = peer
-            .transport_id()
-            .map(|id| self.bootstrap_transports.contains(&id))
-            .unwrap_or(false);
-        let via_recent_endpoint = peer_config.addresses.iter().any(|addr| {
-            addr.seen_at_ms.is_some() && self.active_peer_matches_candidate(node_addr, addr)
-        });
-
-        if !via_bootstrap_transport && !via_recent_endpoint {
+        if !self.active_peer_uses_traversal_path(node_addr, &peer_config) {
             return;
         }
 

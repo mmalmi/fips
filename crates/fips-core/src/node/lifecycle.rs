@@ -3808,6 +3808,32 @@ impl Node {
                 .unwrap_or(true)
     }
 
+    pub(in crate::node) fn active_peer_uses_recent_endpoint_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        peer_config.addresses.iter().any(|addr| {
+            addr.seen_at_ms.is_some() && self.active_peer_matches_candidate(peer_node_addr, addr)
+        })
+    }
+
+    pub(in crate::node) fn active_peer_uses_traversal_path(
+        &self,
+        peer_node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> bool {
+        let via_bootstrap_transport = self
+            .peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .map(|id| self.bootstrap_transports.contains(&id))
+            .unwrap_or(false);
+
+        via_bootstrap_transport
+            || self.active_peer_uses_recent_endpoint_path(peer_node_addr, peer_config)
+    }
+
     // === Control API methods ===
 
     /// Connect to a peer via the control API.

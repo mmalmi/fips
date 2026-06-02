@@ -4,7 +4,6 @@
 //! periodic report generation on the tick timer, and emits periodic
 //! and teardown metric logs.
 
-use crate::NodeAddr;
 use crate::mmp::MmpMode;
 use crate::mmp::MmpSessionState;
 use crate::mmp::report::{ReceiverReport, SenderReport};
@@ -13,6 +12,7 @@ use crate::protocol::{
     LinkMessageType, PathMtuNotification, SessionMessageType, SessionReceiverReport,
     SessionSenderReport,
 };
+use crate::{NodeAddr, PeerIdentity};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
@@ -505,6 +505,26 @@ impl Node {
         );
     }
 
+    pub(in crate::node) fn recent_endpoint_link_dead_timeout(
+        &self,
+        node_addr: &NodeAddr,
+        dead_timeout: Duration,
+        fast_dead_timeout: Duration,
+    ) -> Option<Duration> {
+        let peer_config = self.config.auto_connect_peers().find(|pc| {
+            PeerIdentity::from_npub(&pc.npub)
+                .map(|id| id.node_addr() == node_addr)
+                .unwrap_or(false)
+        })?;
+        if !self.active_peer_uses_recent_endpoint_path(node_addr, peer_config) {
+            return None;
+        }
+
+        let heartbeat = Duration::from_secs(self.config.node.heartbeat_interval_secs.max(1));
+        let recent_path_timeout = heartbeat.saturating_mul(2) + Duration::from_secs(2);
+        Some(recent_path_timeout.max(fast_dead_timeout).min(dead_timeout))
+    }
+
     /// Send heartbeats and remove dead peers.
     ///
     /// Called from the tick handler. Sends a 1-byte heartbeat to each peer
@@ -521,7 +541,7 @@ impl Node {
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
         let dead_timeout = Duration::from_secs(self.config.node.link_dead_timeout_secs);
         let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
-        let effective_dead_timeout = match self.last_local_send_failure_at() {
+        let local_send_failure_timeout = match self.last_local_send_failure_at() {
             Some(t) if now.duration_since(t) < dead_timeout => fast_dead_timeout.min(dead_timeout),
             _ => dead_timeout,
         };
@@ -529,9 +549,16 @@ impl Node {
 
         // Collect heartbeats to send and dead peers to remove
         let mut heartbeats: Vec<NodeAddr> = Vec::new();
-        let mut dead_peers: Vec<NodeAddr> = Vec::new();
+        let mut dead_peers: Vec<(NodeAddr, Duration)> = Vec::new();
 
         for (node_addr, peer) in self.peers.iter() {
+            let effective_dead_timeout = self
+                .recent_endpoint_link_dead_timeout(
+                    node_addr,
+                    local_send_failure_timeout,
+                    fast_dead_timeout,
+                )
+                .unwrap_or(local_send_failure_timeout);
             // Check liveness via MMP receiver last_recv_time.
             // Fall back to session_start for peers that never sent data.
             let is_dead = if let Some(mmp) = peer.mmp() {
@@ -544,7 +571,7 @@ impl Node {
                 false
             };
             if is_dead {
-                dead_peers.push(*node_addr);
+                dead_peers.push((*node_addr, effective_dead_timeout));
                 continue;
             }
 
@@ -561,11 +588,11 @@ impl Node {
         // Remove dead peers and schedule auto-reconnect
         let now_ms = Self::now_ms();
 
-        for addr in &dead_peers {
+        for (addr, effective_dead_timeout) in &dead_peers {
             warn!(
                 peer = %self.peer_display_name(addr),
                 timeout_secs = effective_dead_timeout.as_secs(),
-                fast = effective_dead_timeout < dead_timeout,
+                fast = *effective_dead_timeout < dead_timeout,
                 "Removing peer: link dead timeout"
             );
             self.record_link_dead_path_failure(addr, now_ms).await;
@@ -575,7 +602,7 @@ impl Node {
 
         // Send heartbeats (skip peers we just removed)
         for addr in heartbeats {
-            if dead_peers.contains(&addr) {
+            if dead_peers.iter().any(|(dead_addr, _)| dead_addr == &addr) {
                 continue;
             }
             if let Some(peer) = self.peers.get_mut(&addr) {
