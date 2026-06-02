@@ -3777,6 +3777,27 @@ fn local_send_failure_fast_dead_signal_expires_quickly() {
     );
 }
 
+#[test]
+fn fmp_bulk_classifier_detects_established_session_datagrams() {
+    let src = make_node_addr(1);
+    let dst = make_node_addr(2);
+    let fsp_payload = crate::node::session_wire::build_fsp_header(7, 0, 0).to_vec();
+    let datagram = crate::protocol::SessionDatagram::new(src, dst, fsp_payload);
+    assert!(fmp_plaintext_is_bulk_session_datagram(&datagram.encode()));
+
+    let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
+    assert!(!fmp_plaintext_is_bulk_session_datagram(&heartbeat));
+
+    let setup_prefix = crate::node::session_wire::build_fsp_handshake_prefix(
+        crate::node::session_wire::FSP_PHASE_MSG1,
+        0,
+    );
+    let setup_datagram = crate::protocol::SessionDatagram::new(src, dst, setup_prefix.to_vec());
+    assert!(!fmp_plaintext_is_bulk_session_datagram(
+        &setup_datagram.encode()
+    ));
+}
+
 #[tokio::test]
 async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
     let peer_identity = Identity::generate();
@@ -3880,6 +3901,62 @@ async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
     }
+}
+
+#[tokio::test]
+async fn proven_recent_endpoint_path_uses_normal_dead_timeout() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(23),
+    );
+    node.peers.insert(peer_addr, active);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.peers.contains_key(&peer_addr),
+        "a proven path at 23s silence should survive the 30s normal dead timeout"
+    );
 }
 
 #[tokio::test]

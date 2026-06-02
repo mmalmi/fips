@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeated bad NAT traversal paths.
 - Link heartbeats now run before slower retry/discovery maintenance so the
   watchdog cannot skip liveness traffic during bulk tunnel pressure.
+- Proven direct endpoint paths now use the normal link-dead timeout instead
+  of staying on the short "recent endpoint" timer forever, and FMP worker
+  queueing now classifies established session datagrams as bulk correctly.
 
 ## [0.3.26] - 2026-06-02
 

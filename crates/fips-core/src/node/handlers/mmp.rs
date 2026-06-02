@@ -550,15 +550,22 @@ impl Node {
         let mut dead_peers: Vec<(NodeAddr, Duration)> = Vec::new();
 
         for (node_addr, peer) in self.peers.iter() {
-            let effective_dead_timeout = self
-                .recent_endpoint_link_dead_timeout(
+            // Check liveness via MMP receiver last_recv_time.
+            // Fall back to session_start for peers that never sent data.
+            let received_authenticated_frame = peer
+                .mmp()
+                .and_then(|mmp| mmp.receiver.last_recv_time())
+                .is_some();
+            let effective_dead_timeout = if received_authenticated_frame {
+                local_send_failure_timeout
+            } else {
+                self.recent_endpoint_link_dead_timeout(
                     node_addr,
                     local_send_failure_timeout,
                     fast_dead_timeout,
                 )
-                .unwrap_or(local_send_failure_timeout);
-            // Check liveness via MMP receiver last_recv_time.
-            // Fall back to session_start for peers that never sent data.
+                .unwrap_or(local_send_failure_timeout)
+            };
             let is_dead = if let Some(mmp) = peer.mmp() {
                 let reference_time = mmp
                     .receiver

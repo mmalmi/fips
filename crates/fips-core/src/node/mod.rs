@@ -36,6 +36,7 @@ use crate::bloom::BloomState;
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
+use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
@@ -54,8 +55,8 @@ use crate::upper::icmp_rate_limit::IcmpRateLimiter;
 use crate::upper::tun::{TunError, TunOutboundRx, TunState, TunTx};
 use crate::utils::index::IndexAllocator;
 use crate::{
-    Config, ConfigError, FipsAddress, Identity, IdentityError, NodeAddr, PeerIdentity,
-    SessionMessageType, encode_npub,
+    Config, ConfigError, FipsAddress, Identity, IdentityError, LinkMessageType, NodeAddr,
+    PeerIdentity, encode_npub,
 };
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -66,6 +67,20 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
+    if !plaintext
+        .first()
+        .is_some_and(|ty| *ty == LinkMessageType::SessionDatagram.to_byte())
+    {
+        return false;
+    }
+    let Some(fsp_payload) = plaintext.get(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE..) else {
+        return false;
+    };
+    FspCommonPrefix::parse(fsp_payload)
+        .is_some_and(|prefix| prefix.phase == FSP_PHASE_ESTABLISHED && !prefix.is_unencrypted())
+}
 
 /// Half-range of the symmetric jitter applied to per-session rekey timers.
 ///
@@ -3034,9 +3049,7 @@ impl Node {
                         dest_addr: socket_addr,
                         #[cfg(any(target_os = "linux", target_os = "macos"))]
                         connected_socket,
-                        drop_on_backpressure: plaintext
-                            .first()
-                            .is_some_and(|ty| *ty == SessionMessageType::EndpointData.to_byte()),
+                        drop_on_backpressure: fmp_plaintext_is_bulk_session_datagram(plaintext),
                         scheduling_weight,
                         queued_at: crate::perf_profile::stamp(),
                     });
