@@ -428,6 +428,47 @@ impl Node {
         })
     }
 
+    fn open_discovery_active_or_pending_for_peer(&self, peer_identity: &PeerIdentity) -> bool {
+        let peer_node_addr = peer_identity.node_addr();
+        self.peers.contains_key(peer_node_addr) || self.retry_pending.contains_key(peer_node_addr)
+    }
+
+    fn open_discovery_non_configured_occupancy(&self, configured_npubs: &HashSet<String>) -> usize {
+        let active = self
+            .peers
+            .values()
+            .filter(|peer| !configured_npubs.contains(&peer.npub()))
+            .count();
+        let pending = self
+            .retry_pending
+            .values()
+            .filter(|state| !configured_npubs.contains(&state.peer_config.npub))
+            .count();
+
+        active.saturating_add(pending)
+    }
+
+    fn admits_open_discovery_peer(&self, peer_identity: &PeerIdentity) -> bool {
+        let nostr = &self.config.node.discovery.nostr;
+        if !nostr.enabled || nostr.policy != NostrDiscoveryPolicy::Open {
+            return true;
+        }
+        if self.is_configured_peer_identity(peer_identity)
+            || self.open_discovery_active_or_pending_for_peer(peer_identity)
+        {
+            return true;
+        }
+
+        let configured_npubs = self
+            .config
+            .peers()
+            .iter()
+            .map(|peer| peer.npub.clone())
+            .collect::<HashSet<_>>();
+        self.open_discovery_non_configured_occupancy(&configured_npubs)
+            < nostr.open_discovery_max_pending
+    }
+
     /// Reload the peer ACL if the ACL or hosts files changed.
     pub(crate) fn reload_peer_acl(&mut self) -> bool {
         self.peer_acl.check_reload()
@@ -461,6 +502,26 @@ impl Node {
 
             return Err(NodeError::AccessDenied(format!(
                 "peer {} rejected by configured-only discovery policy",
+                peer_identity.npub()
+            )));
+        }
+
+        if matches!(context, PeerAclContext::InboundHandshake)
+            && !self.admits_open_discovery_peer(peer_identity)
+        {
+            let peer_node_addr = *peer_identity.node_addr();
+            warn!(
+                peer = %self.peer_display_name(&peer_node_addr),
+                npub = %peer_identity.npub(),
+                transport_id = %transport_id,
+                remote_addr = %remote_addr,
+                context = %context,
+                open_discovery_max_pending = self.config.node.discovery.nostr.open_discovery_max_pending,
+                "Rejected non-configured inbound peer by open-discovery admission cap"
+            );
+
+            return Err(NodeError::AccessDenied(format!(
+                "peer {} rejected by open-discovery admission cap",
                 peer_identity.npub()
             )));
         }

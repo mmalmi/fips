@@ -3,6 +3,7 @@ use crate::ReceivedPacket;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use crate::node::wire::{build_msg1, build_msg2};
+use crate::peer::ActivePeer;
 use crate::utils::index::SessionIndex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,6 +74,62 @@ fn configured_only_discovery_allows_configured_peer() {
 
     let result = node.authorize_peer(
         &PeerIdentity::from_pubkey_full(peer.pubkey_full()),
+        PeerAclContext::InboundHandshake,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn open_discovery_rejects_new_nonconfigured_inbound_peer_at_cap() {
+    let active = Identity::generate();
+    let stranger = Identity::generate();
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 1;
+    let mut node = Node::new(config).unwrap();
+    let active_identity = PeerIdentity::from_pubkey_full(active.pubkey_full());
+    node.peers.insert(
+        *active_identity.node_addr(),
+        ActivePeer::new(active_identity, LinkId::new(1), 0),
+    );
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(stranger.pubkey_full()),
+        PeerAclContext::InboundHandshake,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(matches!(result, Err(NodeError::AccessDenied(_))));
+}
+
+#[test]
+fn open_discovery_allows_configured_inbound_peer_at_cap() {
+    let active = Identity::generate();
+    let configured = Identity::generate();
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 1;
+    config.peers = vec![PeerConfig {
+        npub: configured.npub(),
+        ..PeerConfig::default()
+    }];
+    let mut node = Node::new(config).unwrap();
+    let active_identity = PeerIdentity::from_pubkey_full(active.pubkey_full());
+    node.peers.insert(
+        *active_identity.node_addr(),
+        ActivePeer::new(active_identity, LinkId::new(1), 0),
+    );
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(configured.pubkey_full()),
         PeerAclContext::InboundHandshake,
         TransportId::new(1),
         &TransportAddr::from_string("127.0.0.1:9000"),

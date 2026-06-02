@@ -63,7 +63,7 @@ impl Node {
 
             // Collect candidate NodeAddrs first so we can iterate
             // without holding the &mut on self.peers across awaits.
-            let candidates: Vec<NodeAddr> = self
+            let mut candidates: Vec<NodeAddr> = self
                 .peers
                 .iter()
                 .filter_map(|(addr, peer)| {
@@ -78,6 +78,7 @@ impl Node {
                     }
                 })
                 .collect();
+            candidates.sort_by_key(|addr| self.configured_peer(addr).is_none());
             for addr in candidates {
                 if let Err(e) = self.activate_connected_udp_for_peer(&addr).await {
                     static FAILURES: AtomicU64 = AtomicU64::new(0);
