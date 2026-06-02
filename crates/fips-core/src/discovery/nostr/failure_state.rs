@@ -139,6 +139,50 @@ impl FailureState {
         decision
     }
 
+    /// Record that a path completed traversal/handshake but later died
+    /// under link liveness. This is stronger evidence than a failed offer:
+    /// the path was selected for real traffic and then stopped delivering
+    /// authenticated frames, so apply the extended cooldown immediately.
+    pub(super) fn record_unstable_path(&self, npub: &str, now_ms: u64) -> FailureDecision {
+        let mut map = self.inner.lock().expect("failure-state mutex poisoned");
+        let entry = map
+            .entry(npub.to_string())
+            .or_insert_with(|| NpubFailureRecord::new(now_ms));
+
+        let previous = entry.consecutive_failures;
+        entry.consecutive_failures = entry
+            .consecutive_failures
+            .saturating_add(1)
+            .max(self.threshold);
+        entry.last_failure_at_ms = now_ms;
+
+        let cooldown_until_ms = Some(now_ms.saturating_add(self.extended_cooldown_ms));
+        entry.cooldown_until_ms = cooldown_until_ms;
+        let crossed_threshold =
+            previous < self.threshold && entry.consecutive_failures >= self.threshold;
+
+        let should_warn = !matches!(
+            entry.last_warn_at_ms,
+            Some(last) if now_ms.saturating_sub(last) < self.warn_log_interval_ms
+        );
+        if should_warn {
+            entry.last_warn_at_ms = Some(now_ms);
+        }
+
+        let decision = FailureDecision {
+            consecutive_failures: entry.consecutive_failures,
+            should_warn,
+            cooldown_until_ms,
+            crossed_threshold,
+        };
+
+        if map.len() > self.max_entries {
+            evict_oldest(&mut map, self.max_entries);
+        }
+
+        decision
+    }
+
     /// Record a successful traversal — clears the streak and cooldown.
     /// Last-observed skew is retained until next eviction since it's
     /// useful to display in `show_peers` even for healthy peers.

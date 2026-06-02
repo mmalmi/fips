@@ -2696,6 +2696,16 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return Vec::new();
         };
+        if bootstrap
+            .cooldown_until(&peer_config.npub, Self::now_ms())
+            .is_some()
+        {
+            debug!(
+                npub = %peer_config.npub,
+                "Skipping cached Nostr fallback endpoints while peer is in traversal cooldown"
+            );
+            return Vec::new();
+        }
         let endpoints = match bootstrap
             .cached_advert_endpoints_for_peer(&peer_config.npub)
             .await
@@ -2754,6 +2764,15 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return false;
         };
+        let now_ms = Self::now_ms();
+        if let Some(cooldown_until_ms) = bootstrap.cooldown_until(&peer_config.npub, now_ms) {
+            debug!(
+                npub = %peer_config.npub,
+                cooldown_secs = cooldown_until_ms.saturating_sub(now_ms) / 1000,
+                "Skipping Nostr traversal request while peer is in cooldown"
+            );
+            return false;
+        }
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
         let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
@@ -3065,6 +3084,11 @@ impl Node {
                 // beyond schedule timing.
                 if let Ok(identity) = PeerIdentity::from_npub(&npub) {
                     let configured_addr = *identity.node_addr();
+                    if bootstrap.cooldown_until(&npub, now_ms).is_some() {
+                        skipped_cooldown = skipped_cooldown.saturating_add(1);
+                        skipped_configured = skipped_configured.saturating_add(1);
+                        continue;
+                    }
                     if let Some(state) = self.retry_pending.get_mut(&configured_addr)
                         && state.retry_after_ms > now_ms
                     {
@@ -3748,7 +3772,7 @@ impl Node {
         peer.idle_time(Self::now_ms()) > stale_after_ms
     }
 
-    fn active_peer_matches_candidate(
+    pub(in crate::node) fn active_peer_matches_candidate(
         &self,
         peer_node_addr: &NodeAddr,
         candidate: &PeerAddress,

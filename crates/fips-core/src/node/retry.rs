@@ -114,7 +114,7 @@ impl Node {
                 return;
             }
             let delay = state.backoff_ms(base_interval_ms, max_backoff_ms);
-            state.retry_after_ms = now_ms + delay;
+            state.retry_after_ms = state.retry_after_ms.max(now_ms + delay);
             debug!(
                 peer = %peer_name,
                 retry = state.retry_count,
@@ -185,7 +185,7 @@ impl Node {
             state.reconnect = true;
             state.retry_count += 1;
             let delay = state.backoff_ms(base_interval_ms, max_backoff_ms);
-            state.retry_after_ms = now_ms + delay;
+            state.retry_after_ms = state.retry_after_ms.max(now_ms + delay);
             debug!(
                 peer = %peer_name,
                 retry = state.retry_count,
@@ -207,6 +207,85 @@ impl Node {
         );
 
         self.retry_pending.insert(node_addr, state);
+    }
+
+    /// Penalize a traversal/recent-endpoint path that authenticated but then
+    /// died under MMP liveness. Failed handshakes already feed Nostr cooldown;
+    /// this covers the subtler case where a direct path succeeds briefly and
+    /// then flaps forever unless retry cooldown is preserved.
+    pub(super) async fn record_link_dead_path_failure(
+        &mut self,
+        node_addr: &NodeAddr,
+        now_ms: u64,
+    ) {
+        let peer_config = self
+            .config
+            .auto_connect_peers()
+            .find(|pc| {
+                PeerIdentity::from_npub(&pc.npub)
+                    .map(|id| id.node_addr() == node_addr)
+                    .unwrap_or(false)
+            })
+            .cloned();
+        let Some(peer_config) = peer_config else {
+            return;
+        };
+
+        let Some(peer) = self.peers.get(node_addr) else {
+            return;
+        };
+        let via_bootstrap_transport = peer
+            .transport_id()
+            .map(|id| self.bootstrap_transports.contains(&id))
+            .unwrap_or(false);
+        let via_recent_endpoint = peer_config.addresses.iter().any(|addr| {
+            addr.seen_at_ms.is_some() && self.active_peer_matches_candidate(node_addr, addr)
+        });
+
+        if !via_bootstrap_transport && !via_recent_endpoint {
+            return;
+        }
+
+        let Some(bootstrap) = self.nostr_discovery.clone() else {
+            return;
+        };
+
+        let decision = bootstrap.record_unstable_path(&peer_config.npub, now_ms);
+        let cooldown_secs = decision
+            .cooldown_until_ms
+            .map(|t| t.saturating_sub(now_ms) / 1000);
+        if decision.should_warn {
+            warn!(
+                peer = %self.peer_display_name(node_addr),
+                npub = %peer_config.npub,
+                consecutive_failures = decision.consecutive_failures,
+                cooldown_secs = ?cooldown_secs,
+                "Traversal path marked unstable after link-dead timeout"
+            );
+        } else {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                npub = %peer_config.npub,
+                consecutive_failures = decision.consecutive_failures,
+                cooldown_secs = ?cooldown_secs,
+                "Traversal path marked unstable after link-dead timeout"
+            );
+        }
+
+        if decision.crossed_threshold {
+            bootstrap
+                .request_advert_stale_check(peer_config.npub.clone())
+                .await;
+        }
+
+        if let Some(cooldown_until_ms) = decision.cooldown_until_ms {
+            let state = self
+                .retry_pending
+                .entry(*node_addr)
+                .or_insert_with(|| RetryState::new(peer_config.clone()));
+            state.reconnect = true;
+            state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+        }
     }
 
     /// Process pending retries whose time has arrived.

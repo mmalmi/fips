@@ -479,6 +479,19 @@ impl NostrDiscovery {
         }
     }
 
+    /// Mark a traversal-backed path as unstable after it completed but later
+    /// died under link liveness. Unlike a failed offer, this applies cooldown
+    /// immediately so the node does not keep re-promoting the same bad path.
+    pub fn record_unstable_path(&self, npub: &str, now_ms: u64) -> NostrFailureDecision {
+        let d = self.failure_state.record_unstable_path(npub, now_ms);
+        NostrFailureDecision {
+            consecutive_failures: d.consecutive_failures,
+            should_warn: d.should_warn,
+            cooldown_until_ms: d.cooldown_until_ms,
+            crossed_threshold: d.crossed_threshold,
+        }
+    }
+
     /// Record a successful traversal — clears the streak/cooldown.
     pub fn record_traversal_success(&self, npub: &str, now_ms: u64) {
         self.failure_state.record_success(npub, now_ms);

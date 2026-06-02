@@ -3703,6 +3703,83 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
     assert_eq!(state.peer_config.npub, peer_config.npub);
 }
 
+#[tokio::test]
+async fn link_dead_recent_endpoint_path_enters_traversal_cooldown() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.set_current_addr(
+        transport_id,
+        &crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    node.record_link_dead_path_failure(&peer_addr, 1_000).await;
+
+    let cooldown_until = bootstrap
+        .cooldown_until(&peer_config.npub, 1_000)
+        .expect("unstable recent endpoint should enter cooldown");
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("link-dead penalty should seed retry state");
+    assert!(state.reconnect);
+    assert_eq!(state.peer_config.npub, peer_config.npub);
+    assert!(state.retry_after_ms >= cooldown_until);
+
+    node.schedule_reconnect(peer_addr, 1_000);
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("reconnect should preserve retry state");
+    assert!(
+        state.retry_after_ms >= cooldown_until,
+        "schedule_reconnect must not pull cooled-down retry forward"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[test]
 fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     let peer_identity = Identity::generate();

@@ -568,6 +568,7 @@ impl Node {
                 fast = effective_dead_timeout < dead_timeout,
                 "Removing peer: link dead timeout"
             );
+            self.record_link_dead_path_failure(addr, now_ms).await;
             self.remove_active_peer(addr);
             self.schedule_reconnect(*addr, now_ms);
         }
