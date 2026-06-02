@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-06-02
+
+### Fixed
+
+- Direct-path traversal failures now cool down stale recent endpoint paths
+  after link-dead timeouts instead of repeatedly promoting a silent path.
+- Recently advertised endpoint paths now use a bounded liveness timeout so a
+  stale direct path fails over sooner without shortening normal relayed links.
+
 ## [0.3.24] - 2026-06-01
 
 ### Fixed
