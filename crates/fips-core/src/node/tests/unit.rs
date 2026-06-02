@@ -3704,7 +3704,7 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
 }
 
 #[tokio::test]
-async fn link_dead_recent_endpoint_path_enters_traversal_cooldown() {
+async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
         npub: peer_identity.npub(),
@@ -3766,22 +3766,38 @@ async fn link_dead_recent_endpoint_path_enters_traversal_cooldown() {
 
     node.record_link_dead_path_failure(&peer_addr, 1_000).await;
 
-    let cooldown_until = bootstrap
-        .cooldown_until(&peer_config.npub, 1_000)
-        .expect("unstable recent endpoint should enter cooldown");
-    let state = node
-        .retry_pending
-        .get(&peer_addr)
-        .expect("link-dead penalty should seed retry state");
-    assert!(state.reconnect);
-    assert_eq!(state.peer_config.npub, peer_config.npub);
-    assert!(state.retry_after_ms >= cooldown_until);
+    assert!(
+        bootstrap.cooldown_until(&peer_config.npub, 1_000).is_none(),
+        "one transient link-dead event should not suppress direct traversal"
+    );
 
     node.schedule_reconnect(peer_addr, 1_000);
     let state = node
         .retry_pending
         .get(&peer_addr)
-        .expect("reconnect should preserve retry state");
+        .expect("link-dead reconnect should seed retry state");
+    assert!(state.reconnect);
+    assert_eq!(state.peer_config.npub, peer_config.npub);
+    assert_eq!(state.retry_after_ms, 1_000 + 5_000);
+
+    for now_ms in [2_000, 3_000, 4_000, 5_000] {
+        node.record_link_dead_path_failure(&peer_addr, now_ms).await;
+    }
+
+    let cooldown_until = bootstrap
+        .cooldown_until(&peer_config.npub, 5_000)
+        .expect("repeated unstable endpoint paths should enter cooldown");
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("threshold link-dead penalty should preserve retry state");
+    assert!(state.retry_after_ms >= cooldown_until);
+
+    node.schedule_reconnect(peer_addr, 5_000);
+    let state = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("reconnect should preserve cooled-down retry state");
     assert!(
         state.retry_after_ms >= cooldown_until,
         "schedule_reconnect must not pull cooled-down retry forward"
