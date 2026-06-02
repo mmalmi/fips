@@ -430,22 +430,37 @@ impl Node {
 
     fn open_discovery_active_or_pending_for_peer(&self, peer_identity: &PeerIdentity) -> bool {
         let peer_node_addr = peer_identity.node_addr();
-        self.peers.contains_key(peer_node_addr) || self.retry_pending.contains_key(peer_node_addr)
+        self.peers.contains_key(peer_node_addr)
+            || self.retry_pending.contains_key(peer_node_addr)
+            || self.connections.values().any(|conn| {
+                conn.expected_identity()
+                    .is_some_and(|id| id == peer_identity)
+            })
     }
 
     fn open_discovery_non_configured_occupancy(&self, configured_npubs: &HashSet<String>) -> usize {
-        let active = self
-            .peers
+        let mut occupied = HashSet::new();
+        for (peer_addr, peer) in &self.peers {
+            if !configured_npubs.contains(&peer.npub()) {
+                occupied.insert(*peer_addr);
+            }
+        }
+        for (peer_addr, state) in &self.retry_pending {
+            if !configured_npubs.contains(&state.peer_config.npub) {
+                occupied.insert(*peer_addr);
+            }
+        }
+        for identity in self
+            .connections
             .values()
-            .filter(|peer| !configured_npubs.contains(&peer.npub()))
-            .count();
-        let pending = self
-            .retry_pending
-            .values()
-            .filter(|state| !configured_npubs.contains(&state.peer_config.npub))
-            .count();
+            .filter_map(|conn| conn.expected_identity())
+        {
+            if !configured_npubs.contains(&identity.npub()) {
+                occupied.insert(*identity.node_addr());
+            }
+        }
 
-        active.saturating_add(pending)
+        occupied.len()
     }
 
     fn admits_open_discovery_peer(&self, peer_identity: &PeerIdentity) -> bool {

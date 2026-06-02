@@ -3,7 +3,7 @@ use crate::ReceivedPacket;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig};
 use crate::node::acl::{PeerAclContext, PeerAclReloader};
 use crate::node::wire::{build_msg1, build_msg2};
-use crate::peer::ActivePeer;
+use crate::peer::{ActivePeer, PeerConnection};
 use crate::utils::index::SessionIndex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -96,6 +96,32 @@ fn open_discovery_rejects_new_nonconfigured_inbound_peer_at_cap() {
     node.peers.insert(
         *active_identity.node_addr(),
         ActivePeer::new(active_identity, LinkId::new(1), 0),
+    );
+
+    let result = node.authorize_peer(
+        &PeerIdentity::from_pubkey_full(stranger.pubkey_full()),
+        PeerAclContext::InboundHandshake,
+        TransportId::new(1),
+        &TransportAddr::from_string("127.0.0.1:9000"),
+    );
+
+    assert!(matches!(result, Err(NodeError::AccessDenied(_))));
+}
+
+#[test]
+fn open_discovery_counts_inflight_nonconfigured_handshakes_at_cap() {
+    let inflight = Identity::generate();
+    let stranger = Identity::generate();
+    let mut config = Config::new();
+    config.node.system_files_enabled = false;
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::Open;
+    config.node.discovery.nostr.open_discovery_max_pending = 1;
+    let mut node = Node::new(config).unwrap();
+    let inflight_identity = PeerIdentity::from_pubkey_full(inflight.pubkey_full());
+    node.connections.insert(
+        LinkId::new(1),
+        PeerConnection::outbound(LinkId::new(1), inflight_identity, 0),
     );
 
     let result = node.authorize_peer(
