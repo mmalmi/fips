@@ -65,6 +65,8 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Half-range of the symmetric jitter applied to per-session rekey timers.
 ///
 /// Each FMP/FSP session draws an offset uniformly from
@@ -747,6 +749,11 @@ pub struct Node {
     /// `fast_link_dead_timeout_secs` while our outbound is observed
     /// broken — direct kernel evidence beats waiting on receive-silence.
     last_local_send_failure_at: Option<std::time::Instant>,
+    /// Set when the rx loop could not complete its 1s maintenance work
+    /// inside the watchdog timeout. Link-dead detection may be valid during
+    /// overload, but traversal cooldown should not punish a path just because
+    /// our own scheduler/worker queue was late.
+    last_rx_loop_maintenance_timeout_at: Option<std::time::Instant>,
 
     // === Display Names ===
     /// Human-readable names for configured peers (alias or short npub).
@@ -908,6 +915,7 @@ impl Node {
             last_mesh_size_log: None,
             last_self_warn: None,
             last_local_send_failure_at: None,
+            last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
             peer_acl,
@@ -1050,6 +1058,7 @@ impl Node {
             last_mesh_size_log: None,
             last_self_warn: None,
             last_local_send_failure_at: None,
+            last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
             peer_acl,
@@ -2794,10 +2803,39 @@ impl Node {
         }
     }
 
-    /// Returns the wall-clock instant of the most recent observed local
-    /// outbound failure, if any. Used by the link-dead reaper.
-    pub(in crate::node) fn last_local_send_failure_at(&self) -> Option<std::time::Instant> {
-        self.last_local_send_failure_at
+    /// Return the active dead-timeout after considering recent local route
+    /// failures. The fast-dead signal is intentionally short-lived: on the
+    /// UDP worker path a send call can return before the kernel result is
+    /// observed, so a single stale route error must not compress liveness for
+    /// the whole normal dead-timeout window.
+    pub(in crate::node) fn local_send_failure_dead_timeout(
+        &mut self,
+        now: std::time::Instant,
+        dead_timeout: std::time::Duration,
+        fast_dead_timeout: std::time::Duration,
+    ) -> std::time::Duration {
+        match self.last_local_send_failure_at {
+            Some(t) if now.duration_since(t) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW => {
+                fast_dead_timeout.min(dead_timeout)
+            }
+            Some(_) => {
+                self.last_local_send_failure_at = None;
+                dead_timeout
+            }
+            None => dead_timeout,
+        }
+    }
+
+    pub(in crate::node) fn mark_rx_loop_maintenance_timeout(&mut self) {
+        self.last_rx_loop_maintenance_timeout_at = Some(std::time::Instant::now());
+    }
+
+    pub(in crate::node) fn rx_loop_maintenance_timed_out_recently(&self) -> bool {
+        let Some(t) = self.last_rx_loop_maintenance_timeout_at else {
+            return false;
+        };
+        let grace = std::time::Duration::from_secs(self.config.node.link_dead_timeout_secs.max(1));
+        std::time::Instant::now().duration_since(t) <= grace
     }
 
     /// Like `send_encrypted_link_message` but allows setting the FMP CE flag.

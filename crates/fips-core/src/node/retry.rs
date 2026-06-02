@@ -309,6 +309,15 @@ impl Node {
             return;
         }
 
+        if self.rx_loop_maintenance_timed_out_recently() {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                npub = %peer_config.npub,
+                "Skipping traversal instability penalty after recent rx-loop maintenance timeout"
+            );
+            return;
+        }
+
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return;
         };

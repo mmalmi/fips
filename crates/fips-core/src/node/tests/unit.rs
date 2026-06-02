@@ -3748,6 +3748,35 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
     assert_eq!(state.peer_config.npub, peer_config.npub);
 }
 
+#[test]
+fn local_send_failure_fast_dead_signal_expires_quickly() {
+    let mut node = make_node();
+    let now = std::time::Instant::now();
+    let dead_timeout = std::time::Duration::from_secs(30);
+    let fast_dead_timeout = std::time::Duration::from_secs(5);
+
+    node.last_local_send_failure_at = Some(now);
+
+    assert_eq!(
+        node.local_send_failure_dead_timeout(now, dead_timeout, fast_dead_timeout),
+        fast_dead_timeout
+    );
+    assert!(node.last_local_send_failure_at.is_some());
+
+    assert_eq!(
+        node.local_send_failure_dead_timeout(
+            now + std::time::Duration::from_secs(4),
+            dead_timeout,
+            fast_dead_timeout,
+        ),
+        dead_timeout
+    );
+    assert!(
+        node.last_local_send_failure_at.is_none(),
+        "stale route failures must not keep compressing link-dead timeout"
+    );
+}
+
 #[tokio::test]
 async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
     let peer_identity = Identity::generate();
@@ -3851,6 +3880,53 @@ async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
     }
+}
+
+#[tokio::test]
+async fn link_dead_after_rx_loop_timeout_does_not_cool_down_traversal_path() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.config.node.link_dead_timeout_secs = 30;
+
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.set_current_addr(
+        TransportId::new(1),
+        &crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+    node.mark_rx_loop_maintenance_timeout();
+
+    for now_ms in [1_000, 2_000, 3_000, 4_000, 5_000] {
+        node.record_link_dead_path_failure(&peer_addr, now_ms).await;
+    }
+
+    assert!(
+        bootstrap.cooldown_until(&peer_config.npub, 5_000).is_none(),
+        "local rx-loop stalls must not be counted as repeated bad traversal paths"
+    );
+    assert!(
+        node.retry_pending.get(&peer_addr).is_none(),
+        "skipping traversal penalty must not seed cooldown retry state"
+    );
 }
 
 #[test]

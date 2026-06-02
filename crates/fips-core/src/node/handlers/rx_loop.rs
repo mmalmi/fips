@@ -170,6 +170,7 @@ impl Node {
                         RX_LOOP_MAINTENANCE_TIMEOUT,
                         self.run_rx_loop_maintenance_tick(),
                     ).await.is_err() {
+                        self.mark_rx_loop_maintenance_timeout();
                         warn!(
                             timeout_ms = RX_LOOP_MAINTENANCE_TIMEOUT.as_millis() as u64,
                             "RX loop maintenance timed out; continuing packet processing"

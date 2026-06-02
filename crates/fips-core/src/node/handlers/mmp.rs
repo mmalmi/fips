@@ -541,10 +541,8 @@ impl Node {
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
         let dead_timeout = Duration::from_secs(self.config.node.link_dead_timeout_secs);
         let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
-        let local_send_failure_timeout = match self.last_local_send_failure_at() {
-            Some(t) if now.duration_since(t) < dead_timeout => fast_dead_timeout.min(dead_timeout),
-            _ => dead_timeout,
-        };
+        let local_send_failure_timeout =
+            self.local_send_failure_dead_timeout(now, dead_timeout, fast_dead_timeout);
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
 
         // Collect heartbeats to send and dead peers to remove

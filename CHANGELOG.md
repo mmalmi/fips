@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local route outages during network changes now retry quickly without
   increasing peer/NAT failure backoff, so transient `Network is unreachable`
   or `No route to host` sends do not strand peers on stale relay paths.
+- Stale local route errors now stop shortening link-dead detection after a
+  brief recovery window, and rx-loop maintenance stalls no longer count as
+  repeated bad NAT traversal paths.
 
 ## [0.3.26] - 2026-06-02
 
