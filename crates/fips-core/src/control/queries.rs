@@ -125,6 +125,10 @@ pub fn show_peers(node: &Node) -> Value {
                 .collect()
         })
         .unwrap_or_default();
+    let retry_state: std::collections::HashMap<_, _> = node
+        .retry_state_iter()
+        .map(|(addr, state)| (*addr, state.retry_after_ms))
+        .collect();
 
     let peers: Vec<Value> = node
         .peers()
@@ -197,6 +201,11 @@ pub fn show_peers(node: &Node) -> Value {
                 "in_cooldown": false,
                 "cooldown_until_ms": Value::Null,
                 "last_observed_skew_ms": Value::Null,
+                "direct_probe_pending": retry_state.contains_key(&node_addr),
+                "direct_probe_after_ms": retry_state
+                    .get(&node_addr)
+                    .map(|t| json!(t))
+                    .unwrap_or(Value::Null),
             });
             if let Some(state) = nostr_state.get(&npub) {
                 nostr_obj["consecutive_failures"] = json!(state.consecutive_failures);

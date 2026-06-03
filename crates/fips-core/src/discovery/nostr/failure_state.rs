@@ -140,9 +140,13 @@ impl FailureState {
     }
 
     /// Record that a path completed traversal/handshake but later died under
-    /// link liveness. This is stronger evidence than a failed offer, but a
-    /// single quiet spell can be transient on UDP/NAT paths, so keep the same
-    /// thresholded cooldown policy as ordinary traversal failures.
+    /// link liveness.
+    ///
+    /// This is path-level evidence, not peer-level evidence: it is useful for
+    /// logs and stale-advert refresh thresholding, but it must not install the
+    /// peer-wide traversal cooldown used for repeated failed offers. Fallback
+    /// transports should continue carrying traffic while direct candidates are
+    /// probed in the background.
     pub(super) fn record_unstable_path(&self, npub: &str, now_ms: u64) -> FailureDecision {
         let mut map = self.inner.lock().expect("failure-state mutex poisoned");
         let entry = map
@@ -153,13 +157,6 @@ impl FailureState {
         entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
         entry.last_failure_at_ms = now_ms;
 
-        let cooldown_until_ms = if entry.consecutive_failures >= self.threshold {
-            let cooldown = now_ms.saturating_add(self.extended_cooldown_ms);
-            entry.cooldown_until_ms = Some(cooldown);
-            Some(cooldown)
-        } else {
-            entry.cooldown_until_ms
-        };
         let crossed_threshold =
             previous < self.threshold && entry.consecutive_failures >= self.threshold;
 
@@ -174,7 +171,7 @@ impl FailureState {
         let decision = FailureDecision {
             consecutive_failures: entry.consecutive_failures,
             should_warn,
-            cooldown_until_ms,
+            cooldown_until_ms: entry.cooldown_until_ms,
             crossed_threshold,
         };
 

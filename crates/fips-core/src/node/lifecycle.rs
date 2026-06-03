@@ -1359,7 +1359,8 @@ impl Node {
                                     .await;
                             }
                             self.schedule_retry(node_addr, now_ms);
-                            if let Some(cooldown_until_ms) = decision.cooldown_until_ms
+                            if self.nostr_cooldown_applies_to_peer_config(&peer_config)
+                                && let Some(cooldown_until_ms) = decision.cooldown_until_ms
                                 && let Some(state) = self.retry_pending.get_mut(&node_addr)
                             {
                                 state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
@@ -1420,7 +1421,8 @@ impl Node {
                     }
 
                     self.schedule_retry(node_addr, now_ms);
-                    if let Some(cooldown_until_ms) = decision.cooldown_until_ms
+                    if self.nostr_cooldown_applies_to_peer_config(&peer_config)
+                        && let Some(cooldown_until_ms) = decision.cooldown_until_ms
                         && let Some(state) = self.retry_pending.get_mut(&node_addr)
                     {
                         // Push the next retry past the cooldown so the
@@ -2696,9 +2698,10 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return Vec::new();
         };
-        if bootstrap
-            .cooldown_until(&peer_config.npub, Self::now_ms())
-            .is_some()
+        if self.nostr_cooldown_applies_to_peer_config(peer_config)
+            && bootstrap
+                .cooldown_until(&peer_config.npub, Self::now_ms())
+                .is_some()
         {
             debug!(
                 npub = %peer_config.npub,
@@ -2754,7 +2757,7 @@ impl Node {
         fallback
     }
 
-    async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
+    pub(in crate::node) async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
         if !self.config.node.discovery.nostr.enabled
             || self.config.node.discovery.nostr.policy
                 == crate::config::NostrDiscoveryPolicy::Disabled
@@ -2765,7 +2768,9 @@ impl Node {
             return false;
         };
         let now_ms = Self::now_ms();
-        if let Some(cooldown_until_ms) = bootstrap.cooldown_until(&peer_config.npub, now_ms) {
+        if self.nostr_cooldown_applies_to_peer_config(peer_config)
+            && let Some(cooldown_until_ms) = bootstrap.cooldown_until(&peer_config.npub, now_ms)
+        {
             debug!(
                 npub = %peer_config.npub,
                 cooldown_secs = cooldown_until_ms.saturating_sub(now_ms) / 1000,
@@ -2785,6 +2790,10 @@ impl Node {
             "Started background UDP NAT traversal attempt"
         );
         true
+    }
+
+    fn nostr_cooldown_applies_to_peer_config(&self, peer_config: &PeerConfig) -> bool {
+        !self.mesh_signaling_allowed_for_peer(peer_config)
     }
 
     pub(in crate::node) fn mesh_signaling_allowed_for_peer(
@@ -2969,7 +2978,7 @@ impl Node {
 
     pub(in crate::node) fn queue_active_fallback_direct_retries(
         &mut self,
-        bootstrap: &std::sync::Arc<NostrDiscovery>,
+        _bootstrap: &std::sync::Arc<NostrDiscovery>,
     ) {
         let now_ms = Self::now_ms();
         let peer_configs = self
@@ -2992,15 +3001,13 @@ impl Node {
                 continue;
             }
 
-            let cooldown_until_ms = bootstrap.cooldown_until(&peer_config.npub, now_ms);
             let mut state = super::retry::RetryState::new(peer_config.clone());
             state.reconnect = true;
-            state.retry_after_ms = cooldown_until_ms.unwrap_or(now_ms);
+            state.retry_after_ms = now_ms;
             self.retry_pending.insert(node_addr, state);
 
             debug!(
                 peer = %self.peer_display_name(&node_addr),
-                cooldown_secs = cooldown_until_ms.map(|t| t.saturating_sub(now_ms) / 1000),
                 "Queued direct-path retry for active fallback peer"
             );
         }
@@ -3683,15 +3690,16 @@ impl Node {
             }
         }
 
-        // Stable sort: explicit priority first, with recency only breaking
-        // ties inside a source tier. `nostr_peer_fallback_addresses` assigns
-        // overlay addresses priorities after the static max, so a fresh
-        // overlay advert cannot leapfrog an operator-provided direct hint.
+        // Stable sort: recently observed candidates win over unstamped static
+        // hints, then explicit priority and recency break ties. Static hints
+        // remain candidates, but they are not privileged forever after a
+        // network move; a fresh advert/STUN-observed endpoint gets the first
+        // shot when the race budget is tight.
         candidates.sort_by(|a, b| match (a.seen_at_ms, b.seen_at_ms) {
-            _ if a.priority != b.priority => a.priority.cmp(&b.priority),
-            (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ if a.priority != b.priority => a.priority.cmp(&b.priority),
+            (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
             (None, None) => std::cmp::Ordering::Equal,
         });
 

@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 // MAX_BACKOFF_MS is now derived from config: node.retry.max_backoff_secs * 1000
 const MAX_RETRY_CONNECTIONS_PER_TICK: usize = 16;
 const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
+const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 2_000;
 
 /// Tracks retry state for a peer across connection attempts.
 pub struct RetryState {
@@ -283,10 +284,71 @@ impl Node {
         self.retry_pending.insert(node_addr, state);
     }
 
-    /// Penalize a traversal/recent-endpoint path that authenticated but then
-    /// died under MMP liveness. Failed handshakes already feed Nostr cooldown;
-    /// this covers the subtler case where a direct path succeeds briefly and
-    /// then flaps forever unless retry cooldown is preserved.
+    /// Schedule a quick direct re-probe after link liveness removes a path.
+    ///
+    /// Link-dead means the currently selected path went quiet, not that the
+    /// peer or every candidate should be penalized. Keep fallback/session
+    /// routing free to carry traffic, but make the direct retry loop eligible
+    /// again quickly instead of preserving old traversal cooldowns or
+    /// exponential backoff from this dead path.
+    pub(super) fn schedule_link_dead_reprobe(&mut self, node_addr: NodeAddr, now_ms: u64) {
+        let retry_cfg = &self.config.node.retry;
+        if retry_cfg.max_retries == 0 {
+            return;
+        }
+
+        let peer_config = self
+            .retry_pending
+            .get(&node_addr)
+            .map(|state| state.peer_config.clone())
+            .or_else(|| {
+                self.config
+                    .auto_connect_peers()
+                    .find(|pc| {
+                        PeerIdentity::from_npub(&pc.npub)
+                            .map(|id| *id.node_addr() == node_addr)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+            });
+
+        let Some(peer_config) = peer_config else {
+            return;
+        };
+
+        if !peer_config.auto_reconnect {
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                "Auto-reconnect disabled for peer, skipping link-dead direct re-probe"
+            );
+            return;
+        }
+
+        let retry_after_ms = now_ms.saturating_add(LINK_DEAD_DIRECT_REPROBE_DELAY_MS);
+        let peer_name = self.peer_display_name(&node_addr);
+        let state = self
+            .retry_pending
+            .entry(node_addr)
+            .or_insert_with(|| RetryState::new(peer_config.clone()));
+        state.peer_config = peer_config;
+        state.reconnect = true;
+        state.retry_count = 0;
+        state.retry_after_ms = retry_after_ms;
+        state.expires_at_ms = None;
+
+        debug!(
+            peer = %peer_name,
+            delay_ms = LINK_DEAD_DIRECT_REPROBE_DELAY_MS,
+            "Scheduling quick direct re-probe after link-dead removal"
+        );
+    }
+
+    /// Record a traversal/recent-endpoint path that authenticated but then
+    /// died under MMP liveness.
+    ///
+    /// Link-dead is path evidence, not peer evidence: it should refresh stale
+    /// adverts and diagnostics, but it must not pin a configured peer behind a
+    /// long Nostr traversal cooldown while mesh/fallback traffic continues.
     pub(super) async fn record_link_dead_path_failure(
         &mut self,
         node_addr: &NodeAddr,
@@ -350,13 +412,12 @@ impl Node {
                 .await;
         }
 
-        if let Some(cooldown_until_ms) = decision.cooldown_until_ms {
-            let state = self
-                .retry_pending
-                .entry(*node_addr)
-                .or_insert_with(|| RetryState::new(peer_config.clone()));
-            state.reconnect = true;
-            state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
+        if decision.cooldown_until_ms.is_some() {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                npub = %peer_config.npub,
+                "Ignoring traversal cooldown for link-dead path; direct re-probe remains scheduled separately"
+            );
         }
     }
 

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-06-03
+
+### Changed
+
+- Embedded endpoint peer snapshots now report pending direct UDP probes so
+  applications can show fallback transport and background direct probing as
+  separate states.
+
+### Fixed
+
+- Link-dead direct paths now schedule quick direct reprobes while keeping
+  fallback mesh/relay traffic active, instead of preserving long peer retry
+  backoff.
+- Link-dead direct liveness failures no longer create long Nostr traversal
+  cooldowns for configured peers, and configured mesh-signal refreshes can
+  still request immediate reciprocal probing during stale endpoint churn.
+- Fresh overlay-discovered UDP candidates now outrank stale unstamped static
+  hints when the retry budget is constrained.
+
 ## [0.3.27] - 2026-06-02
 
 ### Fixed

@@ -480,8 +480,9 @@ impl NostrDiscovery {
     }
 
     /// Mark a traversal-backed path as unstable after it completed but later
-    /// died under link liveness. Unlike a failed offer, this applies cooldown
-    /// immediately so the node does not keep re-promoting the same bad path.
+    /// died under link liveness. This records diagnostics and threshold
+    /// crossing without creating a new peer-wide cooldown; direct probing is
+    /// paced by the node retry loop.
     pub fn record_unstable_path(&self, npub: &str, now_ms: u64) -> NostrFailureDecision {
         let d = self.failure_state.record_unstable_path(npub, now_ms);
         NostrFailureDecision {

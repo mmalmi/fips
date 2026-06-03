@@ -602,7 +602,7 @@ impl Node {
             );
             self.record_link_dead_path_failure(addr, now_ms).await;
             self.remove_active_peer(addr);
-            self.schedule_reconnect(*addr, now_ms);
+            self.schedule_link_dead_reprobe(*addr, now_ms);
         }
 
         // Send heartbeats (skip peers we just removed)

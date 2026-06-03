@@ -1642,6 +1642,41 @@ fn test_schedule_reconnect_fresh_state() {
     assert_eq!(state.retry_after_ms, 1_000 + expected_delay);
 }
 
+#[test]
+fn test_schedule_link_dead_reprobe_resets_backoff() {
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+    let peer_node_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_npub,
+        "udp",
+        "10.0.0.2:2121",
+    ));
+
+    let mut node = Node::new(config).unwrap();
+    node.schedule_retry(peer_node_addr, 1_000);
+    node.schedule_retry(peer_node_addr, 11_000);
+    assert_eq!(
+        node.retry_pending.get(&peer_node_addr).unwrap().retry_count,
+        2
+    );
+
+    node.schedule_link_dead_reprobe(peer_node_addr, 31_000);
+
+    let state = node.retry_pending.get(&peer_node_addr).unwrap();
+    assert!(state.reconnect);
+    assert_eq!(
+        state.retry_count, 0,
+        "link-dead direct paths should not preserve peer-level exponential backoff"
+    );
+    assert_eq!(
+        state.retry_after_ms, 33_000,
+        "link-dead should schedule a quick direct re-probe"
+    );
+}
+
 /// Test that a graceful Disconnect from an auto-connect peer schedules reconnect.
 ///
 /// Regression test for issue #60: `handle_disconnect` previously called
@@ -2134,6 +2169,111 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
         "cold-start should keep the unstamped static address in the bounded path race"
     );
     assert_eq!(node.connection_count(), 2);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn test_fresh_overlay_candidate_preempts_stale_static_when_budget_tight() {
+    use crate::config::NostrDiscoveryPolicy;
+    use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    config.node.limits.max_connections = 1;
+    config.node.limits.max_links = 1;
+    let mut node = Node::new(config).unwrap();
+    node.set_max_connections(1);
+    node.set_max_links(1);
+
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+
+    let static_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind static sink");
+    let stale_static_addr = static_sink
+        .local_addr()
+        .expect("static sink local addr")
+        .to_string();
+    let overlay_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind overlay sink");
+    let fresh_overlay_addr = overlay_sink
+        .local_addr()
+        .expect("overlay sink local addr")
+        .to_string();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let endpoint = OverlayEndpointAdvert {
+        transport: OverlayTransportKind::Udp,
+        addr: fresh_overlay_addr.clone(),
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let advert = NostrDiscovery::cached_advert_for_test(peer_npub.clone(), endpoint, now_secs);
+    bootstrap
+        .insert_advert_for_test(peer_npub.clone(), advert)
+        .await;
+    node.nostr_discovery = Some(bootstrap);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub.clone(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::new(
+            "udp",
+            stale_static_addr.clone(),
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers.push(peer_config.clone());
+
+    node.initiate_peer_retry_connection(&peer_config)
+        .await
+        .unwrap();
+
+    assert!(
+        node.find_link_by_addr(
+            transport_id,
+            &TransportAddr::from_string(&fresh_overlay_addr)
+        )
+        .is_some(),
+        "fresh Nostr/STUN-discovered endpoint should get the first candidate slot"
+    );
+    assert!(
+        node.find_link_by_addr(
+            transport_id,
+            &TransportAddr::from_string(&stale_static_addr)
+        )
+        .is_none(),
+        "stale static hint should remain a candidate but not win the only slot"
+    );
+    assert_eq!(node.connection_count(), 1);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -3092,6 +3232,47 @@ async fn active_fallback_static_hint_also_queues_nostr_traversal() {
 }
 
 #[tokio::test]
+async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() {
+    use crate::config::NostrDiscoveryPolicy;
+
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
+    config.peers = vec![peer_config.clone()];
+    let mut node = Node::new(config).expect("node");
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    for i in 0..5 {
+        bootstrap.record_traversal_failure(&peer_config.npub, 1_000 + i * 1_000);
+    }
+    assert!(
+        bootstrap.cooldown_until(&peer_config.npub, 6_000).is_some(),
+        "fixture should put the peer in traversal cooldown"
+    );
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    assert!(
+        node.request_nostr_bootstrap(&peer_config).await,
+        "configured direct refresh should still send a call-me-maybe style mesh/Nostr request"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        1,
+        "cooldown must not suppress immediate direct refresh probing for configured peers"
+    );
+}
+
+#[tokio::test]
 async fn mesh_signal_warms_session_instead_of_dropping_without_established_session() {
     use super::spanning_tree::{run_tree_test, verify_tree_convergence};
     use crate::discovery::nostr::{MeshTraversalSignal, TraversalOffer};
@@ -3799,7 +3980,7 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
 }
 
 #[tokio::test]
-async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
+async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
         npub: peer_identity.npub(),
@@ -3866,37 +4047,43 @@ async fn link_dead_recent_endpoint_path_retries_before_traversal_cooldown() {
         "one transient link-dead event should not suppress direct traversal"
     );
 
-    node.schedule_reconnect(peer_addr, 1_000);
+    node.schedule_link_dead_reprobe(peer_addr, 1_000);
     let state = node
         .retry_pending
         .get(&peer_addr)
         .expect("link-dead reconnect should seed retry state");
     assert!(state.reconnect);
     assert_eq!(state.peer_config.npub, peer_config.npub);
-    assert_eq!(state.retry_after_ms, 1_000 + 5_000);
+    assert_eq!(state.retry_count, 0);
+    assert_eq!(state.retry_after_ms, 1_000 + 2_000);
 
     for now_ms in [2_000, 3_000, 4_000, 5_000] {
         node.record_link_dead_path_failure(&peer_addr, now_ms).await;
     }
 
-    let cooldown_until = bootstrap
-        .cooldown_until(&peer_config.npub, 5_000)
-        .expect("repeated unstable endpoint paths should enter cooldown");
+    assert!(
+        bootstrap.cooldown_until(&peer_config.npub, 5_000).is_none(),
+        "repeated link-dead endpoint paths should not install peer traversal cooldown"
+    );
     let state = node
         .retry_pending
         .get(&peer_addr)
         .expect("threshold link-dead penalty should preserve retry state");
-    assert!(state.retry_after_ms >= cooldown_until);
+    assert_eq!(
+        state.retry_after_ms, 3_000,
+        "link-dead diagnostics must not push retry behind traversal cooldown"
+    );
 
-    node.schedule_reconnect(peer_addr, 5_000);
+    node.schedule_link_dead_reprobe(peer_addr, 5_000);
     let state = node
         .retry_pending
         .get(&peer_addr)
         .expect("reconnect should preserve cooled-down retry state");
-    assert!(
-        state.retry_after_ms >= cooldown_until,
-        "schedule_reconnect must not pull cooled-down retry forward"
+    assert_eq!(
+        state.retry_after_ms, 7_000,
+        "each link-dead removal should make direct probing eligible again quickly"
     );
+    assert_eq!(state.retry_count, 0);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -4037,6 +4224,52 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     assert_eq!(state.peer_config.npub, peer_config.npub);
     assert_eq!(state.retry_count, 0);
     assert!(state.reconnect);
+}
+
+#[test]
+fn show_peers_reports_fallback_active_with_direct_probe_pending() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    let bootstrap_transport = TransportId::new(77);
+    node.bootstrap_transports.insert(bootstrap_transport);
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.set_current_addr(
+        bootstrap_transport,
+        &crate::transport::TransportAddr::from_string("fips"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = 42_000;
+    node.retry_pending.insert(peer_addr, retry);
+
+    let peers = crate::control::queries::show_peers(&node);
+    let peer_json = peers["peers"]
+        .as_array()
+        .and_then(|peers| peers.first())
+        .expect("one peer");
+    assert_eq!(peer_json["transport_addr"], "fips");
+    assert_eq!(peer_json["nostr_traversal"]["direct_probe_pending"], true);
+    assert_eq!(
+        peer_json["nostr_traversal"]["direct_probe_after_ms"],
+        42_000
+    );
 }
 
 #[tokio::test]

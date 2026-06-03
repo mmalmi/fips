@@ -362,6 +362,8 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) packets_recv: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_recv: u64,
+    pub(crate) direct_probe_pending: bool,
+    pub(crate) direct_probe_after_ms: Option<u64>,
 }
 
 /// Live Nostr relay state exposed to embedded endpoint callers.

@@ -115,6 +115,11 @@ pub struct FipsEndpointPeer {
     pub bytes_sent: u64,
     /// Link bytes received.
     pub bytes_recv: u64,
+    /// Whether direct UDP probing is queued while this peer may still be
+    /// reachable through a fallback transport.
+    pub direct_probe_pending: bool,
+    /// Millisecond timestamp when the queued direct probe becomes eligible.
+    pub direct_probe_after_ms: Option<u64>,
 }
 
 /// Live Nostr relay state visible to an embedded application.
@@ -743,6 +748,8 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             packets_recv: peer.packets_recv,
             bytes_sent: peer.bytes_sent,
             bytes_recv: peer.bytes_recv,
+            direct_probe_pending: peer.direct_probe_pending,
+            direct_probe_after_ms: peer.direct_probe_after_ms,
         }
     }
 }

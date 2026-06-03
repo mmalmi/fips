@@ -1935,6 +1935,7 @@ impl Node {
                     .peers()
                     .map(|peer| {
                         let link_id = peer.link_id();
+                        let retry_state = self.retry_pending.get(peer.node_addr());
                         let transport_type = self.get_link(&link_id).and_then(|link| {
                             self.get_transport(&link.transport_id())
                                 .map(|handle| handle.transport_type().name.to_string())
@@ -1953,6 +1954,8 @@ impl Node {
                             packets_recv: stats.packets_recv,
                             bytes_sent: stats.bytes_sent,
                             bytes_recv: stats.bytes_recv,
+                            direct_probe_pending: retry_state.is_some(),
+                            direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
                         }
                     })
                     .collect();
