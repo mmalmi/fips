@@ -2781,14 +2781,22 @@ impl Node {
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
         let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
-        bootstrap
+        let started = bootstrap
             .request_connect_with_mesh_signaling(peer_config.clone(), mesh_signaling_allowed)
             .await;
-        info!(
-            npub = %peer_config.npub,
-            mesh_signaling_allowed,
-            "Started background UDP NAT traversal attempt"
-        );
+        if started {
+            info!(
+                npub = %peer_config.npub,
+                mesh_signaling_allowed,
+                "Started background UDP NAT traversal attempt"
+            );
+        } else {
+            debug!(
+                npub = %peer_config.npub,
+                mesh_signaling_allowed,
+                "Background UDP NAT traversal attempt already in progress"
+            );
+        }
         true
     }
 

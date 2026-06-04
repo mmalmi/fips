@@ -432,7 +432,8 @@ impl NostrDiscovery {
     }
 
     pub async fn request_connect(self: &Arc<Self>, peer_config: PeerConfig) {
-        self.request_connect_with_mesh_signaling(peer_config, false)
+        let _ = self
+            .request_connect_with_mesh_signaling(peer_config, false)
             .await;
     }
 
@@ -440,12 +441,12 @@ impl NostrDiscovery {
         self: &Arc<Self>,
         peer_config: PeerConfig,
         mesh_signaling_allowed: bool,
-    ) {
+    ) -> bool {
         let peer_npub = peer_config.npub.clone();
         {
             let mut active = self.active_initiators.lock().await;
             if !active.insert(peer_npub.clone()) {
-                return;
+                return false;
             }
         }
 
@@ -464,6 +465,7 @@ impl NostrDiscovery {
             runtime.emit_event(event).await;
             runtime.active_initiators.lock().await.remove(&peer_npub);
         });
+        true
     }
 
     /// Record a NAT-traversal failure for `npub`, returning the
@@ -2491,6 +2493,30 @@ mod tests {
             !discovery.traversal_initiator_admission_allowed(true),
             "mesh-signaled direct refresh should still obey connection/link capacity"
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_connect_request_reports_already_active() {
+        let discovery = Arc::new(NostrDiscovery::new_for_test());
+        let peer_npub = nostr::Keys::generate()
+            .public_key()
+            .to_bech32()
+            .expect("peer npub");
+        let peer_config = PeerConfig::new(peer_npub, "udp", "nat");
+
+        assert!(
+            discovery
+                .request_connect_with_mesh_signaling(peer_config.clone(), true)
+                .await,
+            "first request should spawn an initiator"
+        );
+        assert!(
+            !discovery
+                .request_connect_with_mesh_signaling(peer_config, true)
+                .await,
+            "second request for the same peer should be deduped"
+        );
+        assert_eq!(discovery.active_initiator_count_for_test().await, 1);
     }
 
     #[tokio::test]
