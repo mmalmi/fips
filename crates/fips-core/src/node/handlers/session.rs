@@ -1931,7 +1931,7 @@ impl Node {
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
-                let peers = self
+                let mut peers = self
                     .peers()
                     .map(|peer| {
                         let link_id = peer.link_id();
@@ -1943,6 +1943,7 @@ impl Node {
                         let stats = peer.link_stats();
                         NodeEndpointPeer {
                             npub: peer.npub(),
+                            connected: true,
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
                             link_id: link_id.as_u64(),
@@ -1958,7 +1959,35 @@ impl Node {
                             direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
                         }
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
+
+                for (node_addr, retry_state) in self.retry_pending.iter() {
+                    if self.peers.contains_key(node_addr)
+                        || !self
+                            .config
+                            .peers
+                            .iter()
+                            .any(|peer| peer.npub == retry_state.peer_config.npub)
+                    {
+                        continue;
+                    }
+
+                    peers.push(NodeEndpointPeer {
+                        npub: retry_state.peer_config.npub.clone(),
+                        connected: false,
+                        transport_addr: None,
+                        transport_type: None,
+                        link_id: 0,
+                        srtt_ms: None,
+                        packets_sent: 0,
+                        packets_recv: 0,
+                        bytes_sent: 0,
+                        bytes_recv: 0,
+                        direct_probe_pending: true,
+                        direct_probe_after_ms: Some(retry_state.retry_after_ms),
+                    });
+                }
+
                 let _ = response_tx.send(peers);
             }
             NodeEndpointCommand::RelaySnapshot { response_tx } => {

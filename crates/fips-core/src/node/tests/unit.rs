@@ -1677,6 +1677,62 @@ fn test_schedule_link_dead_reprobe_resets_backoff() {
     );
 }
 
+#[tokio::test]
+async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "10.0.0.2:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let transit_identity = Identity::generate();
+    let transit_peer = PeerIdentity::from_pubkey(transit_identity.pubkey());
+    let transit_addr = *transit_peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).unwrap();
+    node.peers.insert(
+        transit_addr,
+        ActivePeer::new(transit_peer, LinkId::new(9), 0),
+    );
+
+    node.discovery_backoff.record_failure(&peer_addr);
+    assert!(
+        node.discovery_backoff.is_suppressed(&peer_addr),
+        "fixture should start with stale discovery backoff"
+    );
+
+    node.schedule_link_dead_reprobe(peer_addr, 10_000);
+    node.maybe_initiate_link_dead_fallback_lookup(&peer_addr)
+        .await;
+
+    let retry = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("direct retry should stay queued");
+    assert_eq!(retry.retry_after_ms, 12_000);
+    assert!(
+        node.pending_lookups.contains_key(&peer_addr),
+        "link-dead should immediately ask fallback peers for a route"
+    );
+    assert!(
+        !node.discovery_backoff.is_suppressed(&peer_addr),
+        "dead direct paths should not inherit stale peer discovery backoff"
+    );
+}
+
 /// Test that a graceful Disconnect from an auto-connect peer schedules reconnect.
 ///
 /// Regression test for issue #60: `handle_disconnect` previously called
@@ -4224,6 +4280,93 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     assert_eq!(state.peer_config.npub, peer_config.npub);
     assert_eq!(state.retry_count, 0);
     assert!(state.reconnect);
+}
+
+#[test]
+fn stale_udp_nostr_peer_without_static_addresses_keeps_direct_retry() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("203.0.113.24:51820"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    assert!(
+        node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
+        "a stale UDP peer with only Nostr/NAT discovery must keep probing direct before link-dead"
+    );
+}
+
+#[test]
+fn fresh_udp_nostr_peer_without_static_addresses_skips_direct_retry() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let now_ms = Node::now_ms();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("203.0.113.24:51820"),
+    );
+    node.peers.insert(peer_addr, active);
+
+    assert!(
+        !node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
+        "a fresh concrete UDP peer should not churn background traversal attempts"
+    );
 }
 
 #[test]

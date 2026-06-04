@@ -703,6 +703,38 @@ impl Node {
         }
     }
 
+    /// Ask existing mesh neighbors for a route after a direct link goes dead.
+    ///
+    /// MMP link-dead is evidence about the selected path, not proof that the
+    /// peer is unreachable. Direct retry state is scheduled separately; this
+    /// lookup keeps fallback routing warm so traffic can move through a live
+    /// transit peer while UDP candidates keep being re-probed.
+    pub(in crate::node) async fn maybe_initiate_link_dead_fallback_lookup(
+        &mut self,
+        dest: &NodeAddr,
+    ) {
+        if !self.retry_pending.contains_key(dest) {
+            return;
+        }
+
+        let has_fallback_peer = self.peers.iter().any(|(addr, peer)| {
+            addr != dest
+                && peer.can_send()
+                && (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                    || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
+        });
+        if !has_fallback_peer {
+            debug!(
+                target_node = %self.peer_display_name(dest),
+                "Skipping link-dead fallback lookup, no sendable fallback peer"
+            );
+            return;
+        }
+
+        self.discovery_backoff.record_success(dest);
+        self.maybe_initiate_lookup(dest).await;
+    }
+
     /// Check pending lookups for next-attempt or final timeout.
     ///
     /// Called periodically from the tick handler. The lookup state machine

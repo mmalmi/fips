@@ -354,6 +354,7 @@ pub(crate) enum NodeEndpointEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NodeEndpointPeer {
     pub(crate) npub: String,
+    pub(crate) connected: bool,
     pub(crate) transport_addr: Option<String>,
     pub(crate) transport_type: Option<String>,
     pub(crate) link_id: u64,

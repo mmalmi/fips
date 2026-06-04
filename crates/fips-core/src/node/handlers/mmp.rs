@@ -603,6 +603,7 @@ impl Node {
             self.record_link_dead_path_failure(addr, now_ms).await;
             self.remove_active_peer(addr);
             self.schedule_link_dead_reprobe(*addr, now_ms);
+            self.maybe_initiate_link_dead_fallback_lookup(addr).await;
         }
 
         // Send heartbeats (skip peers we just removed)

@@ -99,6 +99,8 @@ impl From<crate::node::UpdatePeersOutcome> for UpdatePeersOutcome {
 pub struct FipsEndpointPeer {
     /// Peer Nostr public key.
     pub npub: String,
+    /// Whether an authenticated link-layer peer is currently active.
+    pub connected: bool,
     /// Current underlay transport address, when a link has authenticated.
     pub transport_addr: Option<String>,
     /// Current underlay transport kind, when known.
@@ -740,6 +742,7 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
     fn from(peer: NodeEndpointPeer) -> Self {
         Self {
             npub: peer.npub,
+            connected: peer.connected,
             transport_addr: peer.transport_addr,
             transport_type: peer.transport_type,
             link_id: peer.link_id,

@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.29] - 2026-06-04
+
+### Fixed
+
+- Stale active UDP peers that rely on Nostr/NAT discovery now keep a direct
+  refresh probe pending before link-dead removal, so NAT-rebound mobile
+  hotspot paths can refresh instead of briefly falling back to mesh.
+- Link-dead direct peers now immediately refresh fallback discovery through
+  live transit peers while direct UDP probing continues in the background.
+- Embedded endpoint peer snapshots now distinguish retry-only direct probes
+  from authenticated link-layer connectivity.
 
 ## [0.3.28] - 2026-06-03
 

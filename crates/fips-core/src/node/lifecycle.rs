@@ -3752,10 +3752,23 @@ impl Node {
             return false;
         }
 
-        peer.transport_id()
-            .and_then(|id| self.transports.get(&id))
-            .map(|transport| transport.transport_type().name != "udp")
-            .unwrap_or(true)
+        let Some(transport_id) = peer.transport_id() else {
+            return true;
+        };
+
+        if self.bootstrap_transports.contains(&transport_id) {
+            return self.active_peer_needs_same_path_refresh(peer_node_addr);
+        }
+
+        let Some(transport) = self.transports.get(&transport_id) else {
+            return true;
+        };
+
+        if transport.transport_type().name != "udp" {
+            return true;
+        }
+
+        self.active_peer_needs_same_path_refresh(peer_node_addr)
     }
 
     pub(in crate::node) fn clear_retry_unless_direct_refresh_needed(
