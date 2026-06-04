@@ -440,7 +440,11 @@ impl Node {
         }
 
         let peer_node_addr = *peer_identity.node_addr();
-        if self.peers.contains_key(&peer_node_addr) {
+        if self
+            .peers
+            .get(&peer_node_addr)
+            .is_some_and(|peer| peer.can_send())
+        {
             return Ok(false);
         }
         if self.auto_connect_should_race_direct_path(peer_config) {
@@ -587,7 +591,10 @@ impl Node {
         &self,
         peer_node_addr: &NodeAddr,
     ) -> bool {
-        if self.peers.contains_key(peer_node_addr)
+        if self
+            .peers
+            .get(peer_node_addr)
+            .is_some_and(|peer| peer.can_send())
             || self
                 .sessions
                 .get(peer_node_addr)

@@ -138,7 +138,7 @@ impl Node {
             let peer_costs: std::collections::HashMap<crate::NodeAddr, f64> = self
                 .peers
                 .iter()
-                .filter(|(_, p)| p.has_srtt())
+                .filter(|(_, p)| p.can_send() && p.has_srtt())
                 .map(|(a, p)| (*a, p.link_cost()))
                 .collect();
             if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
@@ -543,6 +543,7 @@ impl Node {
         let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
         let local_send_failure_timeout =
             self.local_send_failure_dead_timeout(now, dead_timeout, fast_dead_timeout);
+        let defer_dead_peer_removal = self.rx_loop_maintenance_timed_out_recently();
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
 
         // Collect heartbeats to send and dead peers to remove
@@ -550,6 +551,10 @@ impl Node {
         let mut dead_peers: Vec<(NodeAddr, Duration)> = Vec::new();
 
         for (node_addr, peer) in self.peers.iter() {
+            if !peer.can_send() {
+                continue;
+            }
+
             // Check liveness via MMP receiver last_recv_time.
             // Fall back to session_start for peers that never sent data.
             let received_authenticated_frame = peer
@@ -576,7 +581,16 @@ impl Node {
                 false
             };
             if is_dead {
-                dead_peers.push((*node_addr, effective_dead_timeout));
+                if defer_dead_peer_removal {
+                    debug!(
+                        peer = %self.peer_display_name(node_addr),
+                        timeout_secs = effective_dead_timeout.as_secs(),
+                        "Deferring link-dead peer removal after recent rx-loop maintenance timeout"
+                    );
+                    heartbeats.push(*node_addr);
+                } else {
+                    dead_peers.push((*node_addr, effective_dead_timeout));
+                }
                 continue;
             }
 
@@ -598,10 +612,10 @@ impl Node {
                 peer = %self.peer_display_name(addr),
                 timeout_secs = effective_dead_timeout.as_secs(),
                 fast = *effective_dead_timeout < dead_timeout,
-                "Removing peer: link dead timeout"
+                "Marking peer path link-dead"
             );
             self.record_link_dead_path_failure(addr, now_ms).await;
-            self.remove_active_peer(addr);
+            self.remove_link_dead_peer(addr);
             self.schedule_link_dead_reprobe(*addr, now_ms);
             self.maybe_initiate_link_dead_fallback_lookup(addr).await;
         }
@@ -611,14 +625,18 @@ impl Node {
             if dead_peers.iter().any(|(dead_addr, _)| dead_addr == &addr) {
                 continue;
             }
-            if let Some(peer) = self.peers.get_mut(&addr) {
-                peer.mark_heartbeat_sent(now);
-            }
-            if let Err(e) = self
+            match self
                 .send_encrypted_link_message(&addr, &heartbeat_msg)
                 .await
             {
-                trace!(peer = %self.peer_display_name(&addr), error = %e, "Failed to send heartbeat");
+                Ok(()) => {
+                    if let Some(peer) = self.peers.get_mut(&addr) {
+                        peer.mark_heartbeat_sent(now);
+                    }
+                }
+                Err(e) => {
+                    debug!(peer = %self.peer_display_name(&addr), error = %e, "Failed to send heartbeat");
+                }
             }
         }
     }

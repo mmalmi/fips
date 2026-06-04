@@ -1238,6 +1238,60 @@ async fn test_process_pending_retries_is_budgeted_per_tick() {
     assert_eq!(node.retry_pending.len(), 20);
 }
 
+#[tokio::test]
+async fn active_direct_refresh_retries_are_background_budgeted() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    let mut node = Node::new(config).unwrap();
+    let mut addrs = Vec::new();
+
+    for _ in 0..6 {
+        let identity = Identity::generate();
+        let npub = identity.npub();
+        let peer_identity = PeerIdentity::from_npub(&npub).unwrap();
+        let node_addr = *peer_identity.node_addr();
+        let peer_config = crate::config::PeerConfig {
+            npub,
+            alias: None,
+            addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+        node.config.peers.push(peer_config.clone());
+        node.peers
+            .insert(node_addr, ActivePeer::new(peer_identity, LinkId::new(7), 0));
+        node.retry_pending.insert(
+            node_addr,
+            crate::node::retry::RetryState {
+                peer_config,
+                retry_count: 0,
+                retry_after_ms: 0,
+                reconnect: true,
+                expires_at_ms: None,
+            },
+        );
+        addrs.push(node_addr);
+    }
+
+    node.process_pending_retries(1_000).await;
+
+    let processed = addrs
+        .iter()
+        .filter(|addr| {
+            node.retry_pending
+                .get(addr)
+                .is_some_and(|state| state.retry_count > 0)
+        })
+        .count();
+
+    assert_eq!(
+        processed, 2,
+        "active direct refresh retries should be paced as background probes"
+    );
+    assert_eq!(node.retry_pending.len(), 6);
+}
+
 /// Test that auto-connect peers retry indefinitely (never exhaust).
 #[test]
 fn test_schedule_retry_auto_connect_never_exhausts() {
@@ -1671,9 +1725,10 @@ fn test_schedule_link_dead_reprobe_resets_backoff() {
         state.retry_count, 0,
         "link-dead direct paths should not preserve peer-level exponential backoff"
     );
-    assert_eq!(
-        state.retry_after_ms, 33_000,
-        "link-dead should schedule a quick direct re-probe"
+    assert!(
+        (33_000..=38_000).contains(&state.retry_after_ms),
+        "link-dead should schedule a quick jittered direct re-probe, got {}",
+        state.retry_after_ms
     );
 }
 
@@ -1722,7 +1777,11 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
         .retry_pending
         .get(&peer_addr)
         .expect("direct retry should stay queued");
-    assert_eq!(retry.retry_after_ms, 12_000);
+    assert!(
+        (12_000..=17_000).contains(&retry.retry_after_ms),
+        "link-dead fallback lookup should preserve the quick jittered direct retry, got {}",
+        retry.retry_after_ms
+    );
     assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "link-dead should immediately ask fallback peers for a route"
@@ -4111,7 +4170,11 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
     assert!(state.reconnect);
     assert_eq!(state.peer_config.npub, peer_config.npub);
     assert_eq!(state.retry_count, 0);
-    assert_eq!(state.retry_after_ms, 1_000 + 2_000);
+    assert!(
+        (3_000..=8_000).contains(&state.retry_after_ms),
+        "link-dead retry should stay quick but jittered, got {}",
+        state.retry_after_ms
+    );
 
     for now_ms in [2_000, 3_000, 4_000, 5_000] {
         node.record_link_dead_path_failure(&peer_addr, now_ms).await;
@@ -4125,8 +4188,9 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
         .retry_pending
         .get(&peer_addr)
         .expect("threshold link-dead penalty should preserve retry state");
-    assert_eq!(
-        state.retry_after_ms, 3_000,
+    let first_retry_after_ms = state.retry_after_ms;
+    assert!(
+        (3_000..=8_000).contains(&first_retry_after_ms),
         "link-dead diagnostics must not push retry behind traversal cooldown"
     );
 
@@ -4135,8 +4199,8 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
         .retry_pending
         .get(&peer_addr)
         .expect("reconnect should preserve cooled-down retry state");
-    assert_eq!(
-        state.retry_after_ms, 7_000,
+    assert!(
+        (7_000..=12_000).contains(&state.retry_after_ms),
         "each link-dead removal should make direct probing eligible again quickly"
     );
     assert_eq!(state.retry_count, 0);
@@ -4246,6 +4310,270 @@ async fn link_dead_after_rx_loop_timeout_does_not_cool_down_traversal_path() {
     assert!(
         node.retry_pending.get(&peer_addr).is_none(),
         "skipping traversal penalty must not seed cooldown retry state"
+    );
+}
+
+#[tokio::test]
+async fn link_dead_marks_link_reconnecting_and_preserves_queued_packets() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.9:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let transit_identity = Identity::generate();
+    let transit_peer = PeerIdentity::from_pubkey(transit_identity.pubkey());
+    let transit_addr = *transit_peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config.clone());
+    let link_session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let endpoint_session = make_test_fmp_session(&local_identity, &peer_identity, [3; 8], [4; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        link_session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(31),
+    );
+    node.peers.insert(peer_addr, active);
+    node.peers.insert(
+        transit_addr,
+        ActivePeer::new(transit_peer, LinkId::new(9), 0),
+    );
+
+    node.sessions.insert(
+        peer_addr,
+        crate::node::session::SessionEntry::new(
+            peer_addr,
+            peer_identity.pubkey_full(),
+            crate::node::session::EndToEndState::Established(endpoint_session),
+            1_000,
+            true,
+        ),
+    );
+    node.pending_tun_packets
+        .insert(peer_addr, std::collections::VecDeque::from([vec![1, 2, 3]]));
+    node.pending_endpoint_data
+        .insert(peer_addr, std::collections::VecDeque::from([vec![4, 5, 6]]));
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.peers.contains_key(&peer_addr),
+        "link-dead should keep the authenticated peer identity"
+    );
+    assert!(
+        !node.get_peer(&peer_addr).expect("peer").can_send(),
+        "link-dead should make the stale direct path non-sendable"
+    );
+    assert!(
+        node.sessions
+            .get(&peer_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "link-dead should preserve the established FSP session so fallback can carry traffic immediately"
+    );
+    assert_eq!(
+        node.pending_tun_packets
+            .get(&peer_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "queued TUN packets should survive direct link teardown"
+    );
+    assert_eq!(
+        node.pending_endpoint_data
+            .get(&peer_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "queued endpoint data should survive direct link teardown"
+    );
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "direct reprobe should still be scheduled"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&peer_addr),
+        "fallback lookup should start while queued packets are preserved"
+    );
+}
+
+#[test]
+fn reconnecting_auto_connect_peer_is_eligible_for_graph_session_warmup() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).expect("node");
+
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.mark_reconnecting();
+    node.peers.insert(peer_addr, active);
+
+    assert!(
+        node.should_warm_auto_connect_session(&peer_addr),
+        "a reconnecting direct peer should still warm an end-to-end fallback session"
+    );
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "a reconnecting direct peer must not be selected as a data next-hop"
+    );
+}
+
+#[tokio::test]
+async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(31),
+    );
+    node.peers.insert(peer_addr, active);
+    node.mark_rx_loop_maintenance_timeout();
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.peers.contains_key(&peer_addr),
+        "a local rx-loop stall is inconclusive and must not flap a direct peer to fallback"
+    );
+    assert!(
+        node.retry_pending.get(&peer_addr).is_none(),
+        "deferring a locally suspect link-dead timeout should not schedule a direct reconnect"
+    );
+}
+
+#[tokio::test]
+async fn failed_heartbeat_send_does_not_suppress_next_probe() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.9:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+    node.config.node.link_dead_timeout_secs = 30;
+
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    node.peers.insert(peer_addr, active);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.peers
+            .get(&peer_addr)
+            .expect("peer should remain active")
+            .last_heartbeat_sent()
+            .is_none(),
+        "a failed heartbeat send must stay eligible for the next heartbeat tick"
     );
 }
 

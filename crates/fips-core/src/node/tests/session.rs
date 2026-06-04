@@ -1603,6 +1603,18 @@ fn insert_initiating_session(node: &mut Node, dest: &Identity) {
     insert_initiating_session_for(node, *dest.node_addr(), dest.pubkey_full());
 }
 
+fn insert_established_session(node: &mut Node, dest: &Identity) {
+    let session = make_noise_session(node.identity(), dest);
+    let entry = crate::node::session::SessionEntry::new(
+        *dest.node_addr(),
+        dest.pubkey_full(),
+        EndToEndState::Established(session),
+        1000,
+        true,
+    );
+    node.sessions.insert(*dest.node_addr(), entry);
+}
+
 fn insert_initiating_session_for(
     node: &mut Node,
     dest_addr: NodeAddr,
@@ -1837,6 +1849,42 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
 }
 
 #[tokio::test]
+async fn test_endpoint_data_for_established_session_with_no_route_queues_and_discovers() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    insert_established_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_none(),
+        "fixture should model an established end-to-end session whose direct path disappeared"
+    );
+
+    let baseline = node.stats().discovery.req_initiated;
+    let remote = crate::PeerIdentity::from_pubkey_full(dest.pubkey_full());
+
+    node.send_endpoint_data(remote, b"status-probe".to_vec())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        node.pending_endpoint_data
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "endpoint payload should stay queued while fallback discovery repairs the route"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "route loss under an established session must start mesh discovery"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
 async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
@@ -1872,6 +1920,143 @@ async fn test_update_peers_warms_auto_connect_session_over_existing_graph() {
             .get_session(&dest_addr)
             .is_some_and(|entry| entry.is_established()),
         "proactive graph session should complete over the existing FIPS path"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_link_dead_fallback_warms_session_over_existing_graph() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    let dest_npub = nodes[2].node.npub();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    nodes[0].node.config.peers.push(crate::config::PeerConfig {
+        npub: dest_npub,
+        alias: Some("link-dead-fallback".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+
+    assert!(
+        nodes[0].node.find_next_hop(&dest_addr).is_some(),
+        "fixture should have an existing graph route through the transit peer"
+    );
+
+    let baseline = nodes[0].node.stats().discovery.req_initiated;
+    nodes[0]
+        .node
+        .schedule_link_dead_reprobe(dest_addr, crate::time::now_ms());
+    nodes[0]
+        .node
+        .maybe_initiate_link_dead_fallback_lookup(&dest_addr)
+        .await;
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_initiating()),
+        "link-dead should immediately warm a fresh FSP session over fallback"
+    );
+    assert!(
+        !nodes[0].node.pending_lookups.contains_key(&dest_addr),
+        "known fallback route should avoid waiting for a discovery round trip"
+    );
+    assert_eq!(
+        nodes[0].node.stats().discovery.req_initiated,
+        baseline,
+        "warming over a known graph route should not initiate discovery"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let src_addr = *nodes[0].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("session should initiate over graph route");
+    drain_to_quiescence(&mut nodes).await;
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "fixture should start with an established end-to-end session"
+    );
+
+    let direct_identity =
+        crate::PeerIdentity::from_pubkey_full(nodes[2].node.identity().pubkey_full());
+    let direct_session = make_noise_session(nodes[0].node.identity(), nodes[2].node.identity());
+    let direct_peer = crate::peer::ActivePeer::with_session(
+        direct_identity,
+        LinkId::new(77),
+        crate::time::now_ms(),
+        direct_session,
+        crate::utils::index::SessionIndex::new(21),
+        crate::utils::index::SessionIndex::new(22),
+        nodes[0].transport_id,
+        nodes[2].addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &nodes[0].node.config.node.mmp,
+        None,
+    );
+    nodes[0].node.peers.insert(dest_addr, direct_peer);
+
+    nodes[0].node.remove_link_dead_peer(&dest_addr);
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "link-dead direct path must not discard the end-to-end session"
+    );
+    assert!(
+        !nodes[0]
+            .node
+            .get_peer(&dest_addr)
+            .expect("direct peer should remain tracked")
+            .can_send(),
+        "link-dead direct peer should not hide graph fallback"
+    );
+
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    nodes[2].node.tun_tx = Some(tun_tx);
+
+    let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"link-dead-fallback-data");
+
+    nodes[0].node.handle_tun_outbound(ipv6_packet.clone()).await;
+    drain_to_quiescence(&mut nodes).await;
+
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    assert_eq!(
+        delivered,
+        vec![ipv6_packet],
+        "fallback graph route should carry traffic while direct is reconnecting"
     );
 
     cleanup_nodes(&mut nodes).await;
@@ -2003,6 +2188,43 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
     assert!(
         node.pending_lookups.contains_key(&dest_addr),
         "a stale pending session must start mesh discovery in reply-learned mode"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_tun_packet_for_established_session_with_no_route_queues_and_discovers() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_established_session(&mut node, &dest);
+    assert!(
+        node.find_next_hop(&dest_addr).is_none(),
+        "fixture should model an established end-to-end session whose direct path disappeared"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_tun_outbound(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_tun_packets
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "TUN packet should stay queued while fallback discovery repairs the route"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "route loss under an established session must start mesh discovery"
     );
     assert_eq!(
         node.stats().discovery.req_initiated,

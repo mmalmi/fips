@@ -2032,14 +2032,6 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<(), NodeError> {
         let dest_addr = *remote.node_addr();
-        if self
-            .sessions
-            .get(&dest_addr)
-            .is_some_and(|entry| entry.is_established())
-        {
-            return self.send_session_endpoint_data(&dest_addr, &payload).await;
-        }
-
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
         self.send_or_queue_endpoint_data(dest_addr, Some(dest_pubkey), payload)
@@ -2054,7 +2046,20 @@ impl Node {
     ) -> Result<(), NodeError> {
         if let Some(entry) = self.sessions.get(&dest_addr) {
             if entry.is_established() {
-                return self.send_session_endpoint_data(&dest_addr, &payload).await;
+                match self.send_session_endpoint_data(&dest_addr, &payload).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
+                        debug!(
+                            dest = %self.peer_display_name(&dest_addr),
+                            error = %error,
+                            "Established endpoint-data session lost route; queueing payload and probing fallback"
+                        );
+                        self.queue_pending_endpoint_data(dest_addr, payload);
+                        self.maybe_initiate_lookup(&dest_addr).await;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             self.queue_pending_endpoint_data(dest_addr, payload);
             let should_discover = self.config.node.routing.mode
@@ -2091,6 +2096,14 @@ impl Node {
         }
         self.queue_pending_endpoint_data(dest_addr, payload);
         Ok(())
+    }
+
+    fn session_send_needs_path_recovery(error: &NodeError, dest_addr: &NodeAddr) -> bool {
+        matches!(
+            error,
+            NodeError::SendFailed { node_addr, reason }
+                if node_addr == dest_addr && reason == "no route to destination"
+        ) || error.is_local_route_unavailable()
     }
 
     /// Send app-owned endpoint bytes over an established session without DataPacket ports.
@@ -2804,7 +2817,17 @@ impl Node {
                     }
                 }
                 if let Err(e) = self.send_ipv6_packet(&dest_addr, &ipv6_packet).await {
-                    debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to send TUN packet via session");
+                    if Self::session_send_needs_path_recovery(&e, &dest_addr) {
+                        debug!(
+                            dest = %self.peer_display_name(&dest_addr),
+                            error = %e,
+                            "Established TUN session lost route; queueing packet and probing fallback"
+                        );
+                        self.queue_pending_packet(dest_addr, ipv6_packet);
+                        self.maybe_initiate_lookup(&dest_addr).await;
+                    } else {
+                        debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Failed to send TUN packet via session");
+                    }
                 }
                 return;
             }

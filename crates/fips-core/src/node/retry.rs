@@ -12,8 +12,16 @@ use tracing::{debug, info, warn};
 
 // MAX_BACKOFF_MS is now derived from config: node.retry.max_backoff_secs * 1000
 const MAX_RETRY_CONNECTIONS_PER_TICK: usize = 16;
+const MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK: usize = 2;
 const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 2_000;
+const LINK_DEAD_DIRECT_REPROBE_JITTER_MS: u64 = 5_000;
+
+fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
+    let bytes = node_addr.as_bytes();
+    let seed = u16::from(bytes[0]) << 8 | u16::from(bytes[1]);
+    u64::from(seed) % (LINK_DEAD_DIRECT_REPROBE_JITTER_MS + 1)
+}
 
 /// Tracks retry state for a peer across connection attempts.
 pub struct RetryState {
@@ -324,7 +332,9 @@ impl Node {
             return;
         }
 
-        let retry_after_ms = now_ms.saturating_add(LINK_DEAD_DIRECT_REPROBE_DELAY_MS);
+        let jitter_ms = link_dead_reprobe_jitter_ms(&node_addr);
+        let delay_ms = LINK_DEAD_DIRECT_REPROBE_DELAY_MS.saturating_add(jitter_ms);
+        let retry_after_ms = now_ms.saturating_add(delay_ms);
         let peer_name = self.peer_display_name(&node_addr);
         let state = self
             .retry_pending
@@ -338,7 +348,8 @@ impl Node {
 
         debug!(
             peer = %peer_name,
-            delay_ms = LINK_DEAD_DIRECT_REPROBE_DELAY_MS,
+            delay_ms,
+            jitter_ms,
             "Scheduling quick direct re-probe after link-dead removal"
         );
     }
@@ -453,24 +464,47 @@ impl Node {
             return;
         }
 
-        // Collect retries that are due
+        // Collect retries that are due. Existing peers are active direct-path
+        // refreshes; keep those in the background so a synchronized link-dead
+        // event cannot start a handshake/traversal storm that competes with
+        // fallback traffic recovery.
         let due: Vec<NodeAddr> = self
             .retry_pending
             .iter()
             .filter(|(_, state)| now_ms >= state.retry_after_ms)
             .map(|(addr, _)| *addr)
             .collect();
-        let deferred = due.len().saturating_sub(MAX_RETRY_CONNECTIONS_PER_TICK);
-        if deferred > 0 {
+        let (active_due, reconnect_due): (Vec<NodeAddr>, Vec<NodeAddr>) = due
+            .into_iter()
+            .partition(|node_addr| self.peers.contains_key(node_addr));
+        let reconnect_deferred = reconnect_due
+            .len()
+            .saturating_sub(MAX_RETRY_CONNECTIONS_PER_TICK);
+        let active_deferred = active_due
+            .len()
+            .saturating_sub(MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK);
+        if reconnect_deferred > 0 || active_deferred > 0 {
             debug!(
-                due = due.len(),
-                processing = MAX_RETRY_CONNECTIONS_PER_TICK,
-                deferred,
+                reconnect_due = reconnect_due.len(),
+                reconnect_processing = MAX_RETRY_CONNECTIONS_PER_TICK,
+                reconnect_deferred,
+                active_due = active_due.len(),
+                active_processing = MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK,
+                active_deferred,
                 "Retry processing budget exhausted; deferring remaining peers"
             );
         }
 
-        for node_addr in due.into_iter().take(MAX_RETRY_CONNECTIONS_PER_TICK) {
+        let due = reconnect_due
+            .into_iter()
+            .take(MAX_RETRY_CONNECTIONS_PER_TICK)
+            .chain(
+                active_due
+                    .into_iter()
+                    .take(MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK),
+            );
+
+        for node_addr in due {
             if self.peers.contains_key(&node_addr) {
                 if !self.outbound_direct_refresh_admission_check() {
                     debug!(

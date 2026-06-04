@@ -301,7 +301,7 @@ require_bootstrap_activity() {
     local container="$1"
     local logs
     logs="$(docker logs "$container" 2>&1 || true)"
-    if ! grep -Eq "bootstrap failed|Started Nostr( UDP)? NAT traversal attempt" <<<"$logs"; then
+    if ! grep -Eq "bootstrap failed|Started (background UDP |Nostr( UDP)? )NAT traversal attempt|Direct-path NAT traversal upgrade failed" <<<"$logs"; then
         echo "Expected bootstrap activity in ${container} logs" >&2
         return 1
     fi

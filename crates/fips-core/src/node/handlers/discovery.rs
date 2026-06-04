@@ -9,7 +9,7 @@ use crate::config::RoutingMode;
 use crate::node::{Node, RecentRequest};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
-use crate::{NodeAddr, PeerIdentity};
+use crate::{NodeAddr, NodeError, PeerIdentity};
 use tracing::{debug, info, trace, warn};
 
 const MAX_RECENT_DISCOVERY_REQUESTS: usize = 4096;
@@ -732,6 +732,46 @@ impl Node {
         }
 
         self.discovery_backoff.record_success(dest);
+
+        if self.find_next_hop(dest).is_some()
+            && !self
+                .sessions
+                .get(dest)
+                .is_some_and(|entry| entry.is_established() || entry.is_initiating())
+        {
+            if let Some(pubkey) = self.pubkey_for_node_addr(dest) {
+                match self.initiate_session(*dest, pubkey).await {
+                    Ok(()) => {
+                        debug!(
+                            target_node = %self.peer_display_name(dest),
+                            "Warmed fallback session after link-dead direct path"
+                        );
+                        return;
+                    }
+                    Err(NodeError::SendFailed { node_addr, reason })
+                        if node_addr == *dest && reason == "no route to destination" =>
+                    {
+                        debug!(
+                            target_node = %self.peer_display_name(dest),
+                            "Fallback route disappeared while warming link-dead session"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            target_node = %self.peer_display_name(dest),
+                            error = %error,
+                            "Failed to warm fallback session after link-dead direct path"
+                        );
+                    }
+                }
+            } else {
+                debug!(
+                    target_node = %self.peer_display_name(dest),
+                    "Cannot warm fallback session after link-dead without cached identity"
+                );
+            }
+        }
+
         self.maybe_initiate_lookup(dest).await;
     }
 

@@ -102,6 +102,47 @@ impl Node {
     /// selects an alternative or becomes root, and marks remaining peers
     /// for pending tree announce (delivered on next tick).
     pub(in crate::node) fn remove_active_peer(&mut self, node_addr: &NodeAddr) {
+        self.remove_active_peer_inner(node_addr, false);
+    }
+
+    /// Degrade a dead link while preserving peer/session continuity.
+    ///
+    /// A link-dead timeout proves that one authenticated transport path has
+    /// stopped producing inbound traffic. It does not prove that the remote
+    /// endpoint identity is gone. Keep the authenticated FMP peer around so a
+    /// late authenticated packet can revive the path, and keep the end-to-end
+    /// FSP session so user traffic can move over an existing graph/fallback
+    /// route without a cold re-handshake.
+    pub(in crate::node) fn remove_link_dead_peer(&mut self, node_addr: &NodeAddr) {
+        self.mark_link_dead_peer_inner(node_addr, true);
+    }
+
+    fn mark_link_dead_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
+        let peer_name = self.peer_display_name(node_addr);
+        let Some(peer) = self.peers.get_mut(node_addr) else {
+            debug!(peer = %peer_name, "Peer already removed");
+            return;
+        };
+
+        let link_id = peer.link_id();
+        peer.mark_reconnecting();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        peer.clear_connected_udp();
+
+        if !preserve_queued_packets {
+            self.pending_tun_packets.remove(node_addr);
+            self.pending_endpoint_data.remove(node_addr);
+        }
+
+        info!(
+            peer = %peer_name,
+            link_id = %link_id,
+            preserve_queued_packets,
+            "Peer link marked reconnecting after link-dead timeout"
+        );
+    }
+
+    fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
         let peer = match self.peers.remove(node_addr) {
             Some(p) => p,
             None => {
@@ -132,19 +173,24 @@ impl Node {
 
         // Remove any end-to-end session associated with this peer.
         //
-        // Sessions are tracked separately from peers (self.sessions vs self.peers).
-        // Leaving a stale session alive after removing the peer causes:
-        //   1. check_session_mmp_reports() keeps logging stale "MMP session metrics"
-        //      with frozen counters until purge_idle_sessions() eventually fires.
-        //   2. initiate_session() finds is_established() == true on the stale entry
-        //      and silently returns Ok(()), preventing a new session from being
-        //      established even after the link layer reconnects successfully.
+        // Sessions are tracked separately from peers (self.sessions vs
+        // self.peers). Leaving a stale session alive after link removal causes:
+        //   1. check_session_mmp_reports() keeps logging stale
+        //      "MMP session metrics" with frozen counters until
+        //      purge_idle_sessions() eventually fires.
+        //   2. initiate_session() finds is_established() == true on the stale
+        //      entry and silently returns Ok(()), preventing a new session over
+        //      fallback or a recovered direct link.
         if let Some(session_entry) = self.sessions.remove(node_addr)
             && let Some(mmp) = session_entry.mmp()
         {
             Self::log_session_mmp_teardown(&peer_name, mmp);
         }
-        self.pending_tun_packets.remove(node_addr);
+
+        if !preserve_queued_packets {
+            self.pending_tun_packets.remove(node_addr);
+            self.pending_endpoint_data.remove(node_addr);
+        }
 
         let link_id = peer.link_id();
         let transport_id = peer.transport_id();
@@ -195,6 +241,7 @@ impl Node {
             peer = %self.peer_display_name(node_addr),
             link_id = %link_id,
             tree_changed = tree_changed,
+            preserve_queued_packets,
             "Peer removed and state cleaned up"
         );
     }

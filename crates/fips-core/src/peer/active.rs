@@ -788,7 +788,9 @@ impl ActivePeer {
     /// Update last seen timestamp.
     pub fn touch(&mut self, current_time_ms: u64) {
         self.last_seen = current_time_ms;
-        // If we were stale, receiving traffic makes us connected again
+        // Stale links are still sendable, so authenticated traffic refreshes
+        // them. Reconnecting links were declared link-dead and need a fresh
+        // handshake/reprobe before they can carry traffic again.
         if self.connectivity == ConnectivityState::Stale {
             self.connectivity = ConnectivityState::Connected;
         }
@@ -1272,6 +1274,9 @@ mod tests {
         assert!(peer.is_healthy());
 
         peer.mark_reconnecting();
+        assert!(!peer.can_send());
+        peer.touch(2500);
+        assert_eq!(peer.connectivity(), ConnectivityState::Reconnecting);
         assert!(!peer.can_send());
 
         peer.mark_connected(3000);

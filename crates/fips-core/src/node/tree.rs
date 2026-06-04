@@ -222,7 +222,7 @@ impl Node {
         let peer_costs: HashMap<NodeAddr, f64> = self
             .peers
             .iter()
-            .filter(|(_, peer)| peer.has_srtt())
+            .filter(|(_, peer)| peer.can_send() && peer.has_srtt())
             .map(|(addr, peer)| (*addr, peer.link_cost()))
             .collect();
         if let Some(new_parent) = self.tree_state.evaluate_parent(&peer_costs) {
@@ -295,7 +295,7 @@ impl Node {
                 let peer_costs: HashMap<NodeAddr, f64> = self
                     .peers
                     .iter()
-                    .filter(|(_, peer)| peer.has_srtt())
+                    .filter(|(_, peer)| peer.can_send() && peer.has_srtt())
                     .map(|(addr, peer)| (*addr, peer.link_cost()))
                     .collect();
                 if self.tree_state.handle_parent_lost(&peer_costs) {
@@ -407,7 +407,7 @@ impl Node {
         let peer_costs: HashMap<NodeAddr, f64> = self
             .peers
             .iter()
-            .filter(|(_, peer)| peer.has_srtt())
+            .filter(|(_, peer)| peer.can_send() && peer.has_srtt())
             .map(|(addr, peer)| (*addr, peer.link_cost()))
             .collect();
 
@@ -489,7 +489,7 @@ impl Node {
             let peer_costs: HashMap<NodeAddr, f64> = self
                 .peers
                 .iter()
-                .filter(|(_, peer)| peer.has_srtt())
+                .filter(|(_, peer)| peer.can_send() && peer.has_srtt())
                 .map(|(addr, peer)| (*addr, peer.link_cost()))
                 .collect();
             let changed = self.tree_state.handle_parent_lost(&peer_costs);
