@@ -3,7 +3,7 @@
 //! Tick-driven, idempotent, **on by default** for established UDP peers on
 //! Linux and macOS:
 //!
-//! - **Tick-driven:** every node tick, scan established UDP peers
+//! - **Tick-driven:** every node tick, scan healthy established UDP peers
 //!   that don't yet have a connected socket installed and try to
 //!   open one. No need to thread an activation call through every
 //!   handshake-completion code path.
@@ -46,7 +46,7 @@ const CONNECTED_UDP_FDS_PER_PEER: usize = 3;
 
 impl Node {
     /// Tick-driven activation of per-peer connected UDP sockets.
-    /// Scans established UDP peers that don't yet have a connected
+    /// Scans healthy established UDP peers that don't yet have a connected
     /// socket and opens one. No-op when there are no eligible peers
     /// (e.g. only non-UDP transports). Enabled on Linux and macOS:
     /// both kernels route a matching peer 5-tuple to the connected
@@ -68,15 +68,7 @@ impl Node {
                 .peers
                 .iter()
                 .filter_map(|(addr, peer)| {
-                    let has_session = peer.noise_session().is_some();
-                    let has_transport = peer.transport_id().is_some();
-                    let has_addr = peer.current_addr().is_some();
-                    let already_active = peer.connected_udp().is_some();
-                    if has_session && has_transport && has_addr && !already_active {
-                        Some(*addr)
-                    } else {
-                        None
-                    }
+                    connected_udp_activation_candidate(peer).then_some(*addr)
                 })
                 .collect();
             candidates.sort_by_key(|addr| self.configured_peer(addr).is_none());
@@ -112,8 +104,8 @@ impl Node {
             let Some(peer) = self.peers.get(node_addr) else {
                 return Ok(());
             };
-            if peer.connected_udp().is_some() {
-                return Ok(()); // already activated
+            if !connected_udp_activation_candidate(peer) {
+                return Ok(());
             }
             let Some(tid) = peer.transport_id() else {
                 return Ok(());
@@ -187,7 +179,7 @@ impl Node {
 
         // Install on the peer, idempotent re-check.
         if let Some(peer) = self.peers.get_mut(node_addr) {
-            if peer.connected_udp().is_some() {
+            if !connected_udp_activation_candidate(peer) {
                 // Lost the race — somebody else activated us first.
                 // Drop the new socket + drain so we don't leak.
                 drop(drain);
@@ -235,6 +227,15 @@ impl Node {
     /// call us unconditionally.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, _node_addr: &NodeAddr) {}
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_activation_candidate(peer: &crate::peer::ActivePeer) -> bool {
+    peer.is_healthy()
+        && peer.noise_session().is_some()
+        && peer.transport_id().is_some()
+        && peer.current_addr().is_some()
+        && peer.connected_udp().is_none()
 }
 
 #[cfg(target_os = "linux")]
@@ -301,6 +302,43 @@ fn connected_udp_fd_budget_allows(
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+    use crate::noise::HandshakeState;
+    use crate::peer::ActivePeer;
+    use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+    use crate::utils::index::SessionIndex;
+    use crate::{Identity, PeerIdentity};
+
+    fn make_noise_session(local: &Identity, peer: &Identity) -> crate::noise::NoiseSession {
+        let mut initiator = HandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+        let mut responder = HandshakeState::new_responder(peer.keypair());
+        initiator.set_local_epoch([1; 8]);
+        responder.set_local_epoch([2; 8]);
+        let msg1 = initiator.write_message_1().unwrap();
+        responder.read_message_1(&msg1).unwrap();
+        let msg2 = responder.write_message_2().unwrap();
+        initiator.read_message_2(&msg2).unwrap();
+        initiator.into_session().unwrap()
+    }
+
+    fn make_established_udp_peer() -> ActivePeer {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(7),
+            1_000,
+            make_noise_session(&local, &peer),
+            SessionIndex::new(11),
+            SessionIndex::new(12),
+            TransportId::new(1),
+            TransportAddr::from_string("127.0.0.1:2121"),
+            LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([2; 8]),
+        )
+    }
 
     #[test]
     fn fd_budget_reserves_headroom_for_other_sockets() {
@@ -316,5 +354,21 @@ mod tests {
     #[test]
     fn fd_budget_saturates_when_reserve_exceeds_limit() {
         assert!(!connected_udp_fd_budget_allows(0, Some(64), 128));
+    }
+
+    #[test]
+    fn stale_peer_is_not_connected_udp_activation_candidate() {
+        let mut peer = make_established_udp_peer();
+        assert!(
+            connected_udp_activation_candidate(&peer),
+            "healthy established UDP peer should get the connected-UDP fast path"
+        );
+
+        peer.mark_stale();
+
+        assert!(
+            !connected_udp_activation_candidate(&peer),
+            "link-dead paths stay probeable but must not regain a trusted connected-UDP payload socket"
+        );
     }
 }
