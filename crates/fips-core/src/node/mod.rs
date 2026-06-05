@@ -2467,6 +2467,14 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let direct_payload_eligible = healthy_direct_route.is_some();
+        let payload_candidate_can_send = |addr: &NodeAddr, peer: &ActivePeer| {
+            if addr == dest_node_addr {
+                direct_payload_eligible
+            } else {
+                peer.can_send()
+            }
+        };
 
         // A healthy direct path is not automatically the best path. A
         // hotspot/NAT hairpin can remain sendable with high RTT or mild loss;
@@ -2480,7 +2488,7 @@ impl Node {
             Some(
                 self.peers
                     .iter()
-                    .filter(|(_, peer)| peer.can_send())
+                    .filter(|(addr, peer)| payload_candidate_can_send(addr, peer))
                     .map(|(addr, _)| *addr)
                     .collect::<HashSet<_>>(),
             )
@@ -2545,7 +2553,14 @@ impl Node {
         // 4. Bloom filter candidates — requires dest_coords for loop-free selection.
         //    If no candidate is strictly closer, fall through to tree routing.
         let coordinate_route_addr = {
-            let candidates: Vec<&ActivePeer> = self.destination_in_filters(dest_node_addr);
+            let candidates: Vec<&ActivePeer> = self
+                .peers
+                .iter()
+                .filter(|(addr, peer)| {
+                    payload_candidate_can_send(addr, peer) && peer.may_reach(dest_node_addr)
+                })
+                .map(|(_, peer)| peer)
+                .collect();
             if !candidates.is_empty() {
                 self.select_best_candidate(&candidates, &dest_coords)
                     .map(|peer| *peer.node_addr())
@@ -2560,14 +2575,11 @@ impl Node {
         }
 
         // 5. Greedy tree routing fallback
-        let tree_route_addr = self
-            .tree_state
-            .find_next_hop(&dest_coords)
-            .filter(|next_hop_id| {
-                self.peers
-                    .get(next_hop_id)
-                    .is_some_and(|peer| peer.can_send())
-            });
+        let tree_route_addr = self.select_tree_payload_candidate(
+            &dest_coords,
+            dest_node_addr,
+            direct_payload_eligible,
+        );
         if let Some(next_hop_addr) = tree_route_addr
             && fallback_beats_direct(self, next_hop_addr)
         {
@@ -2626,6 +2638,50 @@ impl Node {
         let direct_cost = direct.link_cost();
         let candidate_cost = candidate.link_cost();
         candidate_cost + ROUTING_FALLBACK_MIN_COST_ADVANTAGE < direct_cost
+    }
+
+    fn select_tree_payload_candidate(
+        &self,
+        dest_coords: &crate::tree::TreeCoordinate,
+        direct_dest: &NodeAddr,
+        direct_payload_eligible: bool,
+    ) -> Option<NodeAddr> {
+        if self.tree_state.my_coords().root_id() != dest_coords.root_id() {
+            return None;
+        }
+
+        let my_distance = self.tree_state.my_coords().distance_to(dest_coords);
+        let mut best: Option<(NodeAddr, usize)> = None;
+
+        for (peer_addr, peer) in &self.peers {
+            if peer_addr == direct_dest {
+                if !direct_payload_eligible {
+                    continue;
+                }
+            } else if !peer.can_send() {
+                continue;
+            }
+
+            let Some(peer_coords) = self.tree_state.peer_coords(peer_addr) else {
+                continue;
+            };
+            let distance = peer_coords.distance_to(dest_coords);
+            if distance >= my_distance {
+                continue;
+            }
+
+            let dominated = match &best {
+                None => true,
+                Some((best_id, best_dist)) => {
+                    distance < *best_dist || (distance == *best_dist && peer_addr < best_id)
+                }
+            };
+            if dominated {
+                best = Some((*peer_addr, distance));
+            }
+        }
+
+        best.map(|(peer_addr, _)| peer_addr)
     }
 
     pub(in crate::node) fn session_direct_path_is_degraded(
