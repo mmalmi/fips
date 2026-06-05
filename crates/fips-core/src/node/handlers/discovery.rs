@@ -267,14 +267,21 @@ impl Node {
 
             // If we have queued application traffic for this target, or the
             // target is a configured auto-connect peer we are proactively
-            // warming, retry session initiation. The coord_cache now has
-            // coords, so find_next_hop() should succeed.
+            // warming, retry session initiation or flush the existing session.
+            // The coord_cache now has coords, so find_next_hop() should
+            // succeed. Established sessions need a flush, not a re-handshake:
+            // retry_session_after_discovery intentionally leaves established
+            // sessions alone.
             let has_queued_traffic = self.pending_tun_packets.contains_key(&target)
                 || self.pending_endpoint_data.contains_key(&target);
             let should_warm_session = !has_queued_traffic
                 && self.should_warm_auto_connect_session(&target)
                 && self.graph_session_warmup_budget() > 0;
             if has_queued_traffic || should_warm_session {
+                let session_established = self
+                    .sessions
+                    .get(&target)
+                    .is_some_and(|entry| entry.is_established());
                 let tun_packets = self.pending_tun_packets.get(&target).map_or(0, |p| p.len());
                 let endpoint_payloads = self
                     .pending_endpoint_data
@@ -287,7 +294,11 @@ impl Node {
                     proactive_warm = should_warm_session,
                     "Retrying session after discovery"
                 );
-                self.retry_session_after_discovery(target).await;
+                if has_queued_traffic && session_established {
+                    self.flush_pending_packets(&target).await;
+                } else {
+                    self.retry_session_after_discovery(target).await;
+                }
             }
         }
     }

@@ -2592,6 +2592,76 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
 }
 
 #[tokio::test]
+async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let src_addr = *nodes[0].node.node_addr();
+    let fallback_next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("session should initiate over graph route");
+    drain_to_quiescence(&mut nodes).await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "fixture should start with an established end-to-end session"
+    );
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+
+    let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
+    let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"queued-fallback");
+    nodes[0]
+        .node
+        .pending_tun_packets
+        .entry(dest_addr)
+        .or_default()
+        .push_back(ipv6_packet.clone());
+
+    let request_id = 4242;
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof_data =
+        crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
+    let proof = nodes[2].node.identity().sign(&proof_data);
+    let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
+    let response_payload = &response.encode()[1..];
+
+    let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+    nodes[2].node.tun_tx = Some(tun_tx);
+    nodes[0]
+        .node
+        .handle_lookup_response(&fallback_next_hop, response_payload)
+        .await;
+    drain_to_quiescence(&mut nodes).await;
+
+    assert!(
+        !nodes[0].node.pending_tun_packets.contains_key(&dest_addr),
+        "discovery should flush queued TUN traffic through the established session"
+    );
+    let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
+    assert_eq!(
+        delivered,
+        vec![ipv6_packet],
+        "fresh discovery route should carry queued session traffic over fallback"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_tun_outbound_unknown_destination() {
     // Inject a packet for an unknown destination — should get ICMPv6 back
     let edges = vec![(0, 1)];

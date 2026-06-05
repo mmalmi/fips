@@ -3044,7 +3044,7 @@ impl Node {
     }
 
     /// Flush pending packets for a destination whose session just reached Established.
-    async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
+    pub(in crate::node) async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
         if let Some(packets) = self.pending_tun_packets.remove(dest_addr) {
             for packet in packets {
                 if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
