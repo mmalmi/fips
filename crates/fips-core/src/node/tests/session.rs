@@ -2338,8 +2338,8 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
 
     let lossy = SessionReceiverReport {
         highest_counter: 120,
-        cumulative_packets_recv: 112,
-        cumulative_bytes_recv: 11_200,
+        cumulative_packets_recv: 118,
+        cumulative_bytes_recv: 11_800,
         timestamp_echo: 0,
         dwell_time: 0,
         max_burst_loss: 0,

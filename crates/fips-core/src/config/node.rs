@@ -61,8 +61,10 @@ impl LimitsConfig {
 pub struct ConnectedUdpConfig {
     /// Enable per-peer connected UDP sockets (`node.connected_udp.enabled`).
     ///
-    /// Environment overrides are still honored for operational A/B tests:
-    /// `FIPS_CONNECTED_UDP`, and on macOS `FIPS_MACOS_CONNECTED_UDP`.
+    /// `FIPS_CONNECTED_UDP` remains honored for operational A/B tests. The
+    /// old macOS-specific `FIPS_MACOS_CONNECTED_UDP=0` no longer disables the
+    /// default fast path, but `=1` is still accepted as an enable-only legacy
+    /// override.
     #[serde(default = "ConnectedUdpConfig::default_enabled")]
     pub enabled: bool,
 

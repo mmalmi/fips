@@ -68,9 +68,10 @@ use tracing::{debug, warn};
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 const SESSION_DIRECT_DEGRADED_HOLD_MS: u64 = 20_000;
-const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 8;
-const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.20;
-const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.05;
+const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
+const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
+const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
+const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
 
 fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     if !plaintext
@@ -2430,7 +2431,8 @@ impl Node {
     ///
     /// Routing priority:
     /// 1. Destination is self → `None` (local delivery)
-    /// 2. Destination is a direct peer → that peer
+    /// 2. Destination is a healthy direct peer → that peer, unless a known
+    ///    fallback next-hop has a meaningful link-quality advantage.
     /// 3. Reply-learned routes in `reply_learned` mode. These are locally
     ///    observed reverse paths, selected with weighted multipath plus
     ///    periodic coordinate/tree exploration.
@@ -2456,19 +2458,23 @@ impl Node {
         let now_ms = Self::now_ms();
         let direct_session_degraded = self.session_direct_path_is_degraded(dest_node_addr, now_ms);
 
-        // 2. Healthy direct peer. Stale direct links remain usable, but in
-        // reply-learned mode they must not hide a live mesh route learned from
-        // recent traffic or discovery.
         let direct_peer_can_send = self
             .peers
             .get(dest_node_addr)
             .is_some_and(|peer| peer.can_send());
-        if let Some(peer) = self.peers.get(dest_node_addr)
-            && peer.is_healthy()
-            && !direct_session_degraded
-        {
-            return Some(peer);
-        }
+        let healthy_direct_route = self
+            .peers
+            .get(dest_node_addr)
+            .filter(|peer| peer.is_healthy() && !direct_session_degraded)
+            .map(|_| *dest_node_addr);
+
+        // A healthy direct path is not automatically the best path. A
+        // hotspot/NAT hairpin can remain sendable with high RTT or mild loss;
+        // in that case a lower-cost mesh next-hop should carry traffic while
+        // direct probes continue in the background.
+        let fallback_beats_direct = |node: &Self, fallback_addr: NodeAddr| {
+            node.route_candidate_beats_direct(healthy_direct_route, fallback_addr)
+        };
 
         let sendable_learned_peers = if self.config.node.routing.mode == RoutingMode::ReplyLearned {
             Some(
@@ -2498,11 +2504,19 @@ impl Node {
         });
         if let Some(sendable) = &sendable_learned_peers
             && !explore_fallback
-            && let Some(next_hop_addr) =
-                self.learned_routes
-                    .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
         {
-            return self.peers.get(&next_hop_addr);
+            let eligible = sendable
+                .iter()
+                .copied()
+                .filter(|addr| fallback_beats_direct(self, *addr))
+                .collect::<HashSet<_>>();
+            if !eligible.is_empty()
+                && let Some(next_hop_addr) =
+                    self.learned_routes
+                        .select_next_hop(dest_node_addr, now_ms, |addr| eligible.contains(addr))
+            {
+                return self.peers.get(&next_hop_addr);
+            }
         }
 
         // Look up cached destination coordinates (required by both bloom and tree paths).
@@ -2511,12 +2525,16 @@ impl Node {
             .get_and_touch(dest_node_addr, now_ms)
             .cloned()
         else {
-            if let Some(sendable) = &sendable_learned_peers
+            if (healthy_direct_route.is_none() || explore_fallback)
+                && let Some(sendable) = &sendable_learned_peers
                 && let Some(next_hop_addr) =
                     self.learned_routes
                         .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
             {
                 return self.peers.get(&next_hop_addr);
+            }
+            if let Some(direct_addr) = healthy_direct_route {
+                return self.peers.get(&direct_addr);
             }
             if direct_peer_can_send {
                 return self.peers.get(dest_node_addr);
@@ -2535,7 +2553,9 @@ impl Node {
                 None
             }
         };
-        if let Some(next_hop_addr) = coordinate_route_addr {
+        if let Some(next_hop_addr) = coordinate_route_addr
+            && fallback_beats_direct(self, next_hop_addr)
+        {
             return self.peers.get(&next_hop_addr);
         }
 
@@ -2548,15 +2568,22 @@ impl Node {
                     .get(next_hop_id)
                     .is_some_and(|peer| peer.can_send())
             });
-        if let Some(next_hop_addr) = tree_route_addr {
+        if let Some(next_hop_addr) = tree_route_addr
+            && fallback_beats_direct(self, next_hop_addr)
+        {
             return self.peers.get(&next_hop_addr);
         }
+
         if explore_fallback {
             return sendable_learned_peers.as_ref().and_then(|sendable| {
                 self.learned_routes
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
                     .and_then(|next_hop_addr| self.peers.get(&next_hop_addr))
             });
+        }
+
+        if let Some(direct_addr) = healthy_direct_route {
+            return self.peers.get(&direct_addr);
         }
 
         if let Some(sendable) = &sendable_learned_peers
@@ -2572,6 +2599,33 @@ impl Node {
         }
 
         None
+    }
+
+    fn route_candidate_beats_direct(
+        &self,
+        healthy_direct_route: Option<NodeAddr>,
+        candidate_addr: NodeAddr,
+    ) -> bool {
+        let Some(direct_addr) = healthy_direct_route else {
+            return true;
+        };
+        if candidate_addr == direct_addr {
+            return false;
+        }
+
+        let Some(direct) = self.peers.get(&direct_addr) else {
+            return true;
+        };
+        let Some(candidate) = self.peers.get(&candidate_addr) else {
+            return false;
+        };
+        if !candidate.can_send() {
+            return false;
+        }
+
+        let direct_cost = direct.link_cost();
+        let candidate_cost = candidate.link_cost();
+        candidate_cost + ROUTING_FALLBACK_MIN_COST_ADVANTAGE < direct_cost
     }
 
     pub(in crate::node) fn session_direct_path_is_degraded(

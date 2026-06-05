@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.32] - 2026-06-05
+
+### Fixed
+
+- Healthy-but-slow direct UDP paths no longer hide clearly better learned or
+  tree fallback routes; fallback can carry traffic while direct probing
+  continues.
+- Session traffic now demotes direct UDP after moderate recent loss instead
+  of waiting for severe loss or link-dead timeout.
+- Legacy macOS `FIPS_MACOS_CONNECTED_UDP=0` environment overrides no longer
+  disable the default connected-UDP fast path from stale launchd plists.
+
 ## [0.3.31] - 2026-06-05
 
 ### Fixed

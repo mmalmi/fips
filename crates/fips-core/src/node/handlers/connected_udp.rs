@@ -27,9 +27,10 @@
 //! with the live listener and connected sibling in the same reuse group,
 //! the connected `send(2)` path improves the MacBook Wi-Fi sender case
 //! and is now the default. Operators can configure it through
-//! `node.connected_udp.*`; `FIPS_MACOS_CONNECTED_UDP`,
-//! `FIPS_CONNECTED_UDP`, and `FIPS_CONNECTED_UDP_FD_RESERVE` remain
-//! environment overrides for A/B tests.
+//! `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
+//! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
+//! tests. The old macOS-specific `FIPS_MACOS_CONNECTED_UDP=0` is ignored
+//! so stale launchd plists do not disable the now-default fast path.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -243,8 +244,8 @@ fn connected_udp_enabled(config_enabled: bool) -> bool {
 
 #[cfg(target_os = "macos")]
 fn connected_udp_enabled(config_enabled: bool) -> bool {
-    env_flag("FIPS_MACOS_CONNECTED_UDP")
-        .or_else(|| env_flag("FIPS_CONNECTED_UDP"))
+    env_flag("FIPS_CONNECTED_UDP")
+        .or_else(|| env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
         .unwrap_or(config_enabled)
 }
 

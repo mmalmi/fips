@@ -753,8 +753,8 @@ mod platform {
     fn macos_connected_udp_listener_enabled() -> bool {
         static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *VALUE.get_or_init(|| {
-            macos_env_flag("FIPS_MACOS_CONNECTED_UDP")
-                .or_else(|| macos_env_flag("FIPS_CONNECTED_UDP"))
+            macos_env_flag("FIPS_CONNECTED_UDP")
+                .or_else(|| macos_env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
                 .unwrap_or(true)
         })
     }
