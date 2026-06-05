@@ -1,6 +1,6 @@
 [package]
 name = "fips-core"
-version = "0.3.38"
+version = "0.3.39"
 edition = "2024"
 description = "Reusable FIPS mesh, endpoint, transport, and protocol library"
 license = "MIT"
