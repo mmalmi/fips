@@ -162,8 +162,9 @@ async fn test_tcp_mixed_transport_coexistence() {
 /// TCP connection drop is detected by MMP link-dead timeout.
 ///
 /// Establishes peering, force-closes the TCP connection, then verifies
-/// that `check_link_heartbeats()` marks the path reconnecting after the
-/// link-dead timeout fires while preserving peer/session continuity.
+/// that `check_link_heartbeats()` marks the path stale after the link-dead
+/// timeout fires while preserving peer/session continuity. Stale paths remain
+/// sendable for probes/reconnect attempts but are not healthy payload routes.
 #[tokio::test]
 async fn test_tcp_connection_loss_detection() {
     let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
@@ -204,8 +205,12 @@ async fn test_tcp_connection_loss_detection() {
         .get_peer(&addr_1)
         .expect("link-dead should preserve peer identity");
     assert!(
-        !peer.can_send(),
-        "node 0 should mark node 1 path reconnecting after link-dead"
+        peer.can_send(),
+        "node 0 should keep node 1 path probeable after link-dead"
+    );
+    assert!(
+        !peer.is_healthy(),
+        "node 0 should remove node 1 path from healthy payload routing after link-dead"
     );
 
     cleanup_nodes(&mut nodes).await;
@@ -213,8 +218,8 @@ async fn test_tcp_connection_loss_detection() {
 
 /// TCP reconnection after link death: connect-on-send re-establishes the link.
 ///
-/// After both peers detect a dead link and mark paths reconnecting, a fresh
-/// handshake triggers TCP connect-on-send to open a new connection.
+/// After both peers detect a dead link and mark paths stale, a fresh handshake
+/// triggers TCP connect-on-send to open a new connection.
 /// Verifies that bidirectional peering is restored.
 #[tokio::test]
 async fn test_tcp_reconnection_after_link_death() {
@@ -251,20 +256,21 @@ async fn test_tcp_reconnection_after_link_death() {
     nodes[0].node.check_link_heartbeats().await;
     nodes[1].node.check_link_heartbeats().await;
 
-    // Both should keep the peer identity while marking the path unusable
+    // Both should keep the peer identity while marking the path stale: still
+    // probeable, but no longer healthy for payload routing.
     assert!(
         nodes[0]
             .node
             .get_peer(&addr_1)
-            .is_some_and(|peer| !peer.can_send()),
-        "node 0 should mark node 1 path reconnecting"
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "node 0 should mark node 1 path stale"
     );
     assert!(
         nodes[1]
             .node
             .get_peer(&addr_0)
-            .is_some_and(|peer| !peer.can_send()),
-        "node 1 should mark node 0 path reconnecting"
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "node 1 should mark node 0 path stale"
     );
 
     // Re-initiate handshake — triggers TCP connect-on-send

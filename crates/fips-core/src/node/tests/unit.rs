@@ -4539,7 +4539,7 @@ async fn link_dead_after_rx_loop_timeout_does_not_cool_down_traversal_path() {
         "local rx-loop stalls must not be counted as repeated bad traversal paths"
     );
     assert!(
-        node.retry_pending.get(&peer_addr).is_none(),
+        !node.retry_pending.contains_key(&peer_addr),
         "skipping traversal penalty must not seed cooldown retry state"
     );
 }
@@ -4785,7 +4785,7 @@ async fn link_dead_after_recent_rx_loop_timeout_defers_peer_removal() {
         "a local rx-loop stall is inconclusive and must not flap a direct peer to fallback"
     );
     assert!(
-        node.retry_pending.get(&peer_addr).is_none(),
+        !node.retry_pending.contains_key(&peer_addr),
         "deferring a locally suspect link-dead timeout should not schedule a direct reconnect"
     );
 }

@@ -74,9 +74,9 @@ const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
 const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
 
 fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
-    if !plaintext
+    if plaintext
         .first()
-        .is_some_and(|ty| *ty == LinkMessageType::SessionDatagram.to_byte())
+        .is_none_or(|ty| *ty != LinkMessageType::SessionDatagram.to_byte())
     {
         return false;
     }
