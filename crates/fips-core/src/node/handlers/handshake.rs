@@ -805,6 +805,144 @@ impl Node {
                 }
             };
 
+            let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
+            let outbound_addr = conn
+                .source_addr()
+                .cloned()
+                .unwrap_or_else(|| packet.remote_addr.clone());
+            let outbound_alternate_path = self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                peer.transport_id() != Some(outbound_transport_id)
+                    || peer.current_addr() != Some(&outbound_addr)
+            });
+
+            if outbound_alternate_path {
+                // This is not a simultaneous connection race: we already had
+                // a usable peer and explicitly dialed a different concrete
+                // transport tuple as a path refresh. A completed authenticated
+                // outbound handshake is enough proof to promote the new path,
+                // even if the normal cross-connection tie-breaker would keep
+                // the old session.
+                let outbound_our_index = conn.our_index();
+                let outbound_session = conn.take_session();
+                let outbound_remote_epoch = conn.remote_epoch();
+
+                let (outbound_session, outbound_our_index) = match (
+                    outbound_session,
+                    outbound_our_index,
+                ) {
+                    (Some(s), Some(idx)) => (s, idx),
+                    _ => {
+                        warn!(peer = %self.peer_display_name(&peer_node_addr), "Incomplete outbound alternate-path connection");
+                        self.pending_outbound.remove(&key);
+                        if let Some(link) = self.remove_link(&link_id) {
+                            self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                        }
+                        return;
+                    }
+                };
+
+                let display_name = self.peer_display_name(&peer_node_addr);
+                let remote_epoch_changed = self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                    matches!(
+                        (peer.remote_epoch(), outbound_remote_epoch),
+                        (Some(old), Some(new)) if old != new
+                    )
+                });
+                let mut loser_link_id = None;
+                let mut loser_session_index = None;
+                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                    let suppressed = peer.replay_suppressed_count();
+                    loser_link_id = Some(peer.link_id());
+                    loser_session_index = peer
+                        .transport_id()
+                        .zip(peer.our_index().map(|idx| idx.as_u32()));
+                    let old_our_index = peer.replace_session(
+                        outbound_session,
+                        outbound_our_index,
+                        header.sender_idx,
+                    );
+                    peer.set_link_id(link_id);
+                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
+                    if outbound_remote_epoch.is_some() {
+                        peer.set_remote_epoch(outbound_remote_epoch);
+                    }
+                    peer.mark_connected(packet.timestamp_ms);
+
+                    if let Some(old_idx) = old_our_index {
+                        let _ = self.index_allocator.free(old_idx);
+                    }
+
+                    if suppressed > 0 {
+                        debug!(
+                            peer = %display_name,
+                            count = suppressed,
+                            "Suppressed replay detections during link transition"
+                        );
+                    }
+                }
+
+                if let Some(old_key) = loser_session_index {
+                    self.deregister_session_index(old_key);
+                }
+                self.seed_path_mtu_for_link_peer(
+                    &peer_node_addr,
+                    outbound_transport_id,
+                    &outbound_addr,
+                );
+                self.peers_by_index.insert(
+                    (outbound_transport_id, outbound_our_index.as_u32()),
+                    peer_node_addr,
+                );
+                self.addr_to_link
+                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
+                self.clear_session_direct_path_degraded(&peer_node_addr);
+                self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
+                self.register_identity(peer_node_addr, peer_identity.pubkey_full());
+                self.register_decrypt_worker_session(&peer_node_addr);
+
+                if remote_epoch_changed {
+                    if self.sessions.remove(&peer_node_addr).is_some() {
+                        debug!(
+                            peer = %display_name,
+                            "Cleared stale FSP session after peer restart during outbound path refresh"
+                        );
+                    }
+                    info!(
+                        peer = %display_name,
+                        "Peer restart detected during outbound path refresh, replacing stale endpoint session"
+                    );
+                }
+
+                self.pending_outbound.remove(&key);
+                if let Some(loser_link_id) = loser_link_id {
+                    if let Some(loser_link) = self.links.get(&loser_link_id) {
+                        let loser_tid = loser_link.transport_id();
+                        let loser_addr = loser_link.remote_addr().clone();
+                        if let Some(transport) = self.transports.get(&loser_tid) {
+                            transport.close_connection(&loser_addr).await;
+                        }
+                    }
+                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
+                    }
+                }
+
+                debug!(
+                    peer = %display_name,
+                    link_id = %link_id,
+                    transport_id = %outbound_transport_id,
+                    remote_addr = %outbound_addr,
+                    "Promoted outbound alternate-path refresh"
+                );
+
+                if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
+                    debug!(peer = %display_name, error = %e, "Failed to send TreeAnnounce after outbound path refresh");
+                }
+                self.bloom_state.mark_update_needed(peer_node_addr);
+                self.reset_discovery_backoff();
+                return;
+            }
+
             if our_outbound_wins {
                 // We're the smaller node. Swap to outbound session + indices.
                 // The peer will keep their inbound session (complement of ours).
