@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.33] - 2026-06-05
+
+### Fixed
+
+- Link-dead direct UDP paths now become stale/probeable instead of
+  reconnecting, so nvpn roster sessions can keep sending over mesh fallback
+  while direct probes and late authenticated packets revive the path.
+
 ## [0.3.32] - 2026-06-05
 
 ### Fixed

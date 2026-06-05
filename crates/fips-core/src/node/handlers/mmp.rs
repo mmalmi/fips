@@ -546,7 +546,7 @@ impl Node {
         let defer_dead_peer_removal = self.rx_loop_maintenance_timed_out_recently();
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
 
-        // Collect heartbeats to send and dead peers to remove
+        // Collect heartbeats to send and direct paths to demote.
         let mut heartbeats: Vec<NodeAddr> = Vec::new();
         let mut dead_peers: Vec<(NodeAddr, Duration)> = Vec::new();
 
@@ -571,15 +571,16 @@ impl Node {
                 )
                 .unwrap_or(local_send_failure_timeout)
             };
-            let is_dead = if let Some(mmp) = peer.mmp() {
-                let reference_time = mmp
-                    .receiver
-                    .last_recv_time()
-                    .unwrap_or(peer.session_start());
-                now.duration_since(reference_time) >= effective_dead_timeout
-            } else {
-                false
-            };
+            let is_dead = peer.is_healthy()
+                && if let Some(mmp) = peer.mmp() {
+                    let reference_time = mmp
+                        .receiver
+                        .last_recv_time()
+                        .unwrap_or(peer.session_start());
+                    now.duration_since(reference_time) >= effective_dead_timeout
+                } else {
+                    false
+                };
             if is_dead {
                 if defer_dead_peer_removal {
                     debug!(
@@ -604,7 +605,7 @@ impl Node {
             }
         }
 
-        // Remove dead peers and schedule auto-reconnect
+        // Demote dead direct paths and schedule direct re-probe.
         let now_ms = Self::now_ms();
 
         for (addr, effective_dead_timeout) in &dead_peers {
@@ -612,7 +613,7 @@ impl Node {
                 peer = %self.peer_display_name(addr),
                 timeout_secs = effective_dead_timeout.as_secs(),
                 fast = *effective_dead_timeout < dead_timeout,
-                "Marking peer path link-dead"
+                "Marking direct path stale after link-dead timeout"
             );
             self.record_link_dead_path_failure(addr, now_ms).await;
             self.remove_link_dead_peer(addr);

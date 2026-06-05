@@ -4537,7 +4537,7 @@ async fn link_dead_after_rx_loop_timeout_does_not_cool_down_traversal_path() {
 }
 
 #[tokio::test]
-async fn link_dead_marks_link_reconnecting_and_preserves_queued_packets() {
+async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
@@ -4618,8 +4618,12 @@ async fn link_dead_marks_link_reconnecting_and_preserves_queued_packets() {
         "link-dead should keep the authenticated peer identity"
     );
     assert!(
-        !node.get_peer(&peer_addr).expect("peer").can_send(),
-        "link-dead should make the stale direct path non-sendable"
+        node.get_peer(&peer_addr).expect("peer").can_send(),
+        "link-dead should keep the stale direct path sendable for probes and late recovery"
+    );
+    assert!(
+        !node.get_peer(&peer_addr).expect("peer").is_healthy(),
+        "link-dead should remove the dead direct path from healthy-direct routing"
     );
     assert!(
         node.sessions
@@ -4648,6 +4652,27 @@ async fn link_dead_marks_link_reconnecting_and_preserves_queued_packets() {
     assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "fallback lookup should start while queued packets are preserved"
+    );
+
+    let first_retry_after = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("direct reprobe should stay scheduled")
+        .retry_after_ms;
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.get_peer(&peer_addr).expect("peer").can_send(),
+        "a stale path should remain probeable instead of flapping to reconnecting"
+    );
+    assert_eq!(
+        node.retry_pending
+            .get(&peer_addr)
+            .expect("direct reprobe should stay scheduled")
+            .retry_after_ms,
+        first_retry_after,
+        "stale direct paths should not be repeatedly link-dead demoted every maintenance tick"
     );
 }
 

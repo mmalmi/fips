@@ -105,14 +105,15 @@ impl Node {
         self.remove_active_peer_inner(node_addr, false);
     }
 
-    /// Degrade a dead link while preserving peer/session continuity.
+    /// Degrade a dead direct path while preserving peer/session continuity.
     ///
     /// A link-dead timeout proves that one authenticated transport path has
     /// stopped producing inbound traffic. It does not prove that the remote
-    /// endpoint identity is gone. Keep the authenticated FMP peer around so a
-    /// late authenticated packet can revive the path, and keep the end-to-end
-    /// FSP session so user traffic can move over an existing graph/fallback
-    /// route without a cold re-handshake.
+    /// endpoint identity is gone. Keep the authenticated FMP peer sendable so
+    /// it can still be probed, let a late authenticated packet revive the
+    /// path immediately, and keep the end-to-end FSP session so user traffic
+    /// can move over an existing graph/fallback route without a cold
+    /// re-handshake.
     pub(in crate::node) fn remove_link_dead_peer(&mut self, node_addr: &NodeAddr) {
         self.mark_link_dead_peer_inner(node_addr, true);
     }
@@ -125,7 +126,7 @@ impl Node {
         };
 
         let link_id = peer.link_id();
-        peer.mark_reconnecting();
+        peer.mark_stale();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         peer.clear_connected_udp();
 
@@ -138,7 +139,7 @@ impl Node {
             peer = %peer_name,
             link_id = %link_id,
             preserve_queued_packets,
-            "Peer link marked reconnecting after link-dead timeout"
+            "Peer direct path marked stale after link-dead timeout"
         );
     }
 
