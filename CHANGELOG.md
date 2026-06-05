@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.30] - 2026-06-05
+
+### Fixed
+
+- Active direct-path retries now re-probe the last observed UDP endpoint while
+  fallback mesh/relay traffic stays active, so link-dead liveness timeouts do
+  not strand Nostr-discovered peers on fallback transport.
+- Nostr-only configured peers without static addresses now keep probing their
+  observed UDP path and still send reciprocal direct-refresh requests after a
+  transient liveness failure.
+
 ## [0.3.29] - 2026-06-04
 
 ### Fixed
