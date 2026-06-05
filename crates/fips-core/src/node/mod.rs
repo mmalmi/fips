@@ -83,8 +83,9 @@ fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     let Some(fsp_payload) = plaintext.get(crate::protocol::SESSION_DATAGRAM_HEADER_SIZE..) else {
         return false;
     };
-    FspCommonPrefix::parse(fsp_payload)
-        .is_some_and(|prefix| prefix.phase == FSP_PHASE_ESTABLISHED && !prefix.is_unencrypted())
+    FspCommonPrefix::parse(fsp_payload).is_some_and(|prefix| {
+        prefix.phase == FSP_PHASE_ESTABLISHED && !prefix.is_unencrypted() && !prefix.has_coords()
+    })
 }
 
 /// Half-range of the symmetric jitter applied to per-session rekey timers.
@@ -2600,6 +2601,32 @@ impl Node {
         }
 
         None
+    }
+
+    pub(in crate::node) fn find_transit_next_hop(
+        &mut self,
+        dest_node_addr: &NodeAddr,
+        previous_hop: &NodeAddr,
+    ) -> Option<NodeAddr> {
+        if dest_node_addr == self.node_addr() {
+            return None;
+        }
+
+        if dest_node_addr != previous_hop
+            && self
+                .peers
+                .get(dest_node_addr)
+                .is_some_and(|peer| peer.is_healthy())
+        {
+            return Some(*dest_node_addr);
+        }
+
+        let next_hop_addr = *self.find_next_hop(dest_node_addr)?.node_addr();
+        if &next_hop_addr == previous_hop {
+            self.record_route_failure(*dest_node_addr, next_hop_addr);
+            return None;
+        }
+        Some(next_hop_addr)
     }
 
     fn route_candidate_beats_direct(

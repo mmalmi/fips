@@ -2265,6 +2265,137 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
 }
 
 #[tokio::test]
+async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
+    // A, B, C are all linked. A<->B should establish directly first. When
+    // that direct path goes stale, endpoint data must keep using the
+    // existing end-to-end session over C instead of sticking to the stale
+    // direct link.
+    let edges = vec![(0, 1), (0, 2), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+        node.node.encrypt_workers = Some(crate::node::encrypt_worker::EncryptWorkerPool::spawn(1));
+    }
+
+    let mut alice_endpoint = nodes[0]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("alice endpoint data I/O should attach");
+    let mut bob_endpoint = nodes[1]
+        .node
+        .attach_endpoint_data_io(8)
+        .expect("bob endpoint data I/O should attach");
+
+    let alice_addr = *nodes[0].node.node_addr();
+    let bob_addr = *nodes[1].node.node_addr();
+    let alice_identity = PeerIdentity::from_pubkey_full(nodes[0].node.identity().pubkey_full());
+    let bob_identity = PeerIdentity::from_pubkey_full(nodes[1].node.identity().pubkey_full());
+
+    nodes[0]
+        .node
+        .send_endpoint_data(bob_identity, b"direct-first".to_vec())
+        .await
+        .expect("initial endpoint data should send");
+    drain_to_quiescence(&mut nodes).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
+        .await
+        .expect("initial direct endpoint data should not time out")
+        .expect("initial direct endpoint data should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            payload,
+            ..
+        } => {
+            assert_eq!(source_node_addr, alice_addr);
+            assert_eq!(payload, b"direct-first");
+        }
+    }
+
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&bob_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "alice should keep an established end-to-end session to bob"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&alice_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "bob should keep an established end-to-end session to alice"
+    );
+
+    nodes[0].node.remove_link_dead_peer(&bob_addr);
+    nodes[1].node.remove_link_dead_peer(&alice_addr);
+
+    let charlie_addr = *nodes[2].node.node_addr();
+    nodes[0].node.learn_reverse_route(bob_addr, charlie_addr);
+    nodes[1].node.learn_reverse_route(alice_addr, charlie_addr);
+
+    let alice_next_hop = *nodes[0]
+        .node
+        .find_next_hop(&bob_addr)
+        .expect("alice should have fallback next hop")
+        .node_addr();
+    let bob_next_hop = *nodes[1]
+        .node
+        .find_next_hop(&alice_addr)
+        .expect("bob should have fallback next hop")
+        .node_addr();
+    assert_ne!(alice_next_hop, bob_addr);
+    assert_ne!(bob_next_hop, alice_addr);
+
+    nodes[0]
+        .node
+        .send_endpoint_data(bob_identity, b"alice-fallback".to_vec())
+        .await
+        .expect("alice fallback endpoint data should send");
+    nodes[1]
+        .node
+        .send_endpoint_data(alice_identity, b"bob-fallback".to_vec())
+        .await
+        .expect("bob fallback endpoint data should send");
+    drain_to_quiescence(&mut nodes).await;
+
+    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
+        .await
+        .expect("alice fallback endpoint data should not time out")
+        .expect("alice fallback endpoint data should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            payload,
+            ..
+        } => {
+            assert_eq!(source_node_addr, alice_addr);
+            assert_eq!(payload, b"alice-fallback");
+        }
+    }
+
+    let event = tokio::time::timeout(Duration::from_secs(1), alice_endpoint.event_rx.recv())
+        .await
+        .expect("bob fallback endpoint data should not time out")
+        .expect("bob fallback endpoint data should arrive");
+    match event {
+        NodeEndpointEvent::Data {
+            source_node_addr,
+            payload,
+            ..
+        } => {
+            assert_eq!(source_node_addr, bob_addr);
+            assert_eq!(payload, b"bob-fallback");
+        }
+    }
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_update_peers_races_direct_address_with_existing_graph() {
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;
@@ -2634,6 +2765,85 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         "discovery retry must not keep stale destination coordinates"
     );
 
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
+    let edges = vec![(0, 1), (1, 2)];
+    let mut nodes = run_tree_test(3, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    for node in &mut nodes {
+        node.node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    }
+
+    let fallback_next_hop = *nodes[1].node.node_addr();
+    let dest_addr = *nodes[2].node.node_addr();
+    let dest_pubkey = nodes[2].node.identity().pubkey_full();
+    nodes[0].node.register_identity(dest_addr, dest_pubkey);
+    populate_all_coord_caches(&mut nodes);
+    nodes[0]
+        .node
+        .initiate_session(dest_addr, dest_pubkey)
+        .await
+        .expect("session should initiate over graph route");
+    drain_to_quiescence(&mut nodes).await;
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "fixture should start with an established end-to-end session"
+    );
+    nodes[0].node.coord_cache_mut().remove(&dest_addr);
+
+    let request_id = 5150;
+    let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
+    let proof_data =
+        crate::protocol::LookupResponse::proof_bytes(request_id, &dest_addr, &fresh_coords);
+    let proof = nodes[2].node.identity().sign(&proof_data);
+    let response = crate::protocol::LookupResponse::new(request_id, dest_addr, fresh_coords, proof);
+    let response_payload = &response.encode()[1..];
+    let originated_before = nodes[0].node.stats().forwarding.originated_packets;
+
+    nodes[0]
+        .node
+        .handle_lookup_response(&fallback_next_hop, response_payload)
+        .await;
+
+    assert_eq!(
+        nodes[0]
+            .node
+            .pending_endpoint_data
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        None,
+        "fixture should not rely on queued endpoint payloads for fallback warmup"
+    );
+    assert_eq!(
+        nodes[0]
+            .node
+            .pending_tun_packets
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        None,
+        "fixture should not rely on queued TUN packets for fallback warmup"
+    );
+    assert!(
+        nodes[0].node.stats().forwarding.originated_packets > originated_before,
+        "fresh discovery for an established session should immediately send a small fallback warmup"
+    );
+    assert_eq!(
+        nodes[0]
+            .node
+            .get_session(&dest_addr)
+            .expect("session")
+            .coords_warmup_remaining(),
+        nodes[0].node.config.node.session.coords_warmup_packets,
+        "standalone warmup must not consume the data-plane coordinate warmup budget"
+    );
+
+    drain_to_quiescence(&mut nodes).await;
     cleanup_nodes(&mut nodes).await;
 }
 

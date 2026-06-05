@@ -252,16 +252,32 @@ impl Node {
             // Clean up pending lookup tracking
             self.pending_lookups.remove(&target);
 
+            let has_queued_traffic = self.pending_tun_packets.contains_key(&target)
+                || self.pending_endpoint_data.contains_key(&target);
+            let session_established = self
+                .sessions
+                .get(&target)
+                .is_some_and(|entry| entry.is_established());
+
             // If an established session exists, reset the warmup counter.
-            if let Some(entry) = self.sessions.get_mut(&target)
-                && entry.is_established()
-            {
+            if session_established && let Some(entry) = self.sessions.get_mut(&target) {
                 let n = self.config.node.session.coords_warmup_packets;
                 entry.set_coords_warmup_remaining(n);
                 debug!(
                     dest = %self.peer_display_name(&target),
                     warmup_packets = n,
                     "Reset coords warmup after discovery for existing session"
+                );
+            }
+
+            if session_established
+                && !has_queued_traffic
+                && let Err(e) = self.send_coords_warmup(&target).await
+            {
+                debug!(
+                    dest = %self.peer_display_name(&target),
+                    error = %e,
+                    "Failed to send immediate fallback coords warmup after discovery"
                 );
             }
 
@@ -272,16 +288,10 @@ impl Node {
             // succeed. Established sessions need a flush, not a re-handshake:
             // retry_session_after_discovery intentionally leaves established
             // sessions alone.
-            let has_queued_traffic = self.pending_tun_packets.contains_key(&target)
-                || self.pending_endpoint_data.contains_key(&target);
             let should_warm_session = !has_queued_traffic
                 && self.should_warm_auto_connect_session(&target)
                 && self.graph_session_warmup_budget() > 0;
             if has_queued_traffic || should_warm_session {
-                let session_established = self
-                    .sessions
-                    .get(&target)
-                    .is_some_and(|entry| entry.is_established());
                 let tun_packets = self.pending_tun_packets.get(&target).map_or(0, |p| p.len());
                 let endpoint_payloads = self
                     .pending_endpoint_data

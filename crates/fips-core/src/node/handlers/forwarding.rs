@@ -94,9 +94,11 @@ impl Node {
             payload: datagram_ref.payload.to_vec(),
         };
 
-        // Find next hop toward destination
-        let next_hop_addr = match self.find_next_hop(&datagram.dest_addr) {
-            Some(peer) => *peer.node_addr(),
+        // Find next hop toward destination. Transit forwarding must not send
+        // a non-local datagram back to the hop it arrived from; learned
+        // reverse routes are observations, not loop-free source routes.
+        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, from) {
+            Some(next_hop_addr) => next_hop_addr,
             None => {
                 self.stats_mut()
                     .forwarding

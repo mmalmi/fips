@@ -277,6 +277,90 @@ fn test_reply_learned_prefers_lower_cost_fallback_over_slow_healthy_direct_peer(
     );
 }
 
+#[test]
+fn test_transit_prefers_adjacent_destination_over_learned_route_back_to_previous_hop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    let dest_link = LinkId::new(2);
+    let (dest_conn, dest_id) = make_completed_connection(&mut node, dest_link, transport_id, 1000);
+    let dest_addr = *dest_id.node_addr();
+    node.add_connection(dest_conn).unwrap();
+    node.promote_connection(dest_link, dest_id, 2000).unwrap();
+
+    node.get_peer_mut(&dest_addr)
+        .expect("destination peer")
+        .mmp_mut()
+        .expect("destination mmp")
+        .metrics
+        .srtt
+        .update(90_000);
+    node.get_peer_mut(&previous_hop)
+        .expect("previous-hop peer")
+        .mmp_mut()
+        .expect("previous-hop mmp")
+        .metrics
+        .srtt
+        .update(5_000);
+    node.learn_reverse_route(dest_addr, previous_hop);
+
+    let source_route = node.find_next_hop(&dest_addr).expect("source fallback");
+    assert_eq!(
+        source_route.node_addr(),
+        &previous_hop,
+        "source traffic may prefer a much cheaper learned fallback"
+    );
+
+    let transit_route = node
+        .find_transit_next_hop(&dest_addr, &previous_hop)
+        .expect("adjacent destination route");
+    assert_eq!(
+        transit_route, dest_addr,
+        "a transit node must deliver to its adjacent healthy destination instead of looping back"
+    );
+}
+
+#[test]
+fn test_transit_rejects_learned_route_back_to_previous_hop() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let previous_link = LinkId::new(1);
+    let (previous_conn, previous_id) =
+        make_completed_connection(&mut node, previous_link, transport_id, 1000);
+    let previous_hop = *previous_id.node_addr();
+    node.add_connection(previous_conn).unwrap();
+    node.promote_connection(previous_link, previous_id, 2000)
+        .unwrap();
+
+    let dest_addr = make_node_addr(0xDD);
+    node.learn_reverse_route(dest_addr, previous_hop);
+
+    let source_route = node.find_next_hop(&dest_addr).expect("learned route");
+    assert_eq!(
+        source_route.node_addr(),
+        &previous_hop,
+        "fixture should expose the learned route that would loop on transit"
+    );
+    assert!(
+        node.find_transit_next_hop(&dest_addr, &previous_hop)
+            .is_none(),
+        "transit forwarding must not bounce a packet back to the peer it arrived from"
+    );
+}
+
 // === No route ===
 
 #[test]

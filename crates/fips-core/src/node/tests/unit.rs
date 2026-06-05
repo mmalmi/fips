@@ -4304,6 +4304,15 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
     let datagram = crate::protocol::SessionDatagram::new(src, dst, fsp_payload);
     assert!(fmp_plaintext_is_bulk_session_datagram(&datagram.encode()));
 
+    let coords_payload =
+        crate::node::session_wire::build_fsp_header(8, crate::node::session_wire::FSP_FLAG_CP, 0)
+            .to_vec();
+    let coords_datagram = crate::protocol::SessionDatagram::new(src, dst, coords_payload);
+    assert!(
+        !fmp_plaintext_is_bulk_session_datagram(&coords_datagram.encode()),
+        "coordinate-carrying session packets warm fallback routes and must not be discardable bulk"
+    );
+
     let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
     assert!(!fmp_plaintext_is_bulk_session_datagram(&heartbeat));
 
