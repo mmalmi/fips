@@ -31,6 +31,11 @@ const DECRYPT_FAILURE_THRESHOLD: u32 = 4;
 /// window, treat those first failures as stale drain noise instead of starting
 /// another recovery rekey.
 const DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS: u64 = 30;
+/// After the first authenticated packet on a fresh worker-owned session, a
+/// smaller stale-ciphertext tail can still arrive from packets already queued
+/// against the old epoch/index. Do not let that tail immediately start another
+/// recovery rekey.
+const DECRYPT_FAILURE_POST_AUTH_GRACE_SECS: u64 = 10;
 
 enum DecryptFailureAction {
     None,
@@ -532,13 +537,18 @@ impl Node {
             return;
         };
         let session_age = peer.session_established_at().elapsed();
-        if report.fmp_replay_highest == 0
-            && session_age.as_secs() < DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS
-        {
+        let grace_secs = if report.fmp_replay_highest == 0 {
+            DECRYPT_FAILURE_FRESH_SESSION_GRACE_SECS
+        } else {
+            DECRYPT_FAILURE_POST_AUTH_GRACE_SECS
+        };
+        if session_age.as_secs() < grace_secs {
             trace!(
                 peer = %self.peer_display_name(&report.source_node_addr),
                 counter = report.fmp_counter,
+                replay_highest = report.fmp_replay_highest,
                 session_age_ms = session_age.as_millis(),
+                grace_secs,
                 "Ignoring likely stale FMP AEAD failure during fresh-session drain window"
             );
             return;

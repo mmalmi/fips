@@ -211,7 +211,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
 }
 
 #[tokio::test]
-async fn test_worker_decrypt_failures_count_after_authenticated_counter() {
+async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_drain() {
     const THRESHOLD: u32 = 4;
 
     let mut node = make_node();
@@ -233,9 +233,45 @@ async fn test_worker_decrypt_failures_count_after_authenticated_counter() {
         .await;
     }
 
+    let peer = node
+        .get_peer(&node_addr)
+        .expect("post-auth stale packet drain must not remove peer");
+    assert_eq!(
+        peer.consecutive_decrypt_failures(),
+        0,
+        "fresh worker failures after an authenticated counter should still be ignored briefly"
+    );
+}
+
+#[tokio::test]
+async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
+    const THRESHOLD: u32 = 4;
+
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let node_addr = *identity.node_addr();
+
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2_000).unwrap();
+    node.get_peer_mut(&node_addr)
+        .expect("promoted peer")
+        .set_session_established_at_for_test(Instant::now() - Duration::from_secs(11));
+
+    for counter in 1..=THRESHOLD {
+        node.handle_decrypt_failure_report(&DecryptFailureReport {
+            source_node_addr: node_addr,
+            fmp_counter: counter as u64,
+            fmp_replay_highest: 1,
+        })
+        .await;
+    }
+
     assert!(
         node.get_peer(&node_addr).is_none(),
-        "worker failures must still trigger recovery/removal once the session has authenticated traffic"
+        "worker failures must trigger recovery/removal after the post-auth stale drain grace"
     );
 }
 
