@@ -477,9 +477,27 @@ impl Node {
             .filter(|(_, state)| now_ms >= state.retry_after_ms)
             .map(|(addr, _)| *addr)
             .collect();
-        let (active_due, reconnect_due): (Vec<NodeAddr>, Vec<NodeAddr>) = due
+        let (mut active_due, mut reconnect_due): (Vec<NodeAddr>, Vec<NodeAddr>) = due
             .into_iter()
             .partition(|node_addr| self.peers.contains_key(node_addr));
+        active_due.sort_by_key(|node_addr| {
+            (
+                self.retry_pending
+                    .get(node_addr)
+                    .map(|state| state.retry_after_ms)
+                    .unwrap_or(u64::MAX),
+                *node_addr,
+            )
+        });
+        reconnect_due.sort_by_key(|node_addr| {
+            (
+                self.retry_pending
+                    .get(node_addr)
+                    .map(|state| state.retry_after_ms)
+                    .unwrap_or(u64::MAX),
+                *node_addr,
+            )
+        });
         let reconnect_deferred = reconnect_due
             .len()
             .saturating_sub(MAX_RETRY_CONNECTIONS_PER_TICK);

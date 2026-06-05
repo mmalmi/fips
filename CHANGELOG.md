@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.45] - 2026-06-06
+
+### Fixed
+
+- Active direct-refresh retries are now processed by oldest due time before
+  applying the per-tick cap, preventing one peer from being repeatedly deferred
+  behind other active peers that keep requeueing probes.
+
 ## [0.3.44] - 2026-06-06
 
 ### Fixed
