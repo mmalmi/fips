@@ -1081,6 +1081,7 @@ impl Node {
         // Check for cross-connection
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
+            let existing_path_unusable = !existing_peer.can_send();
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
 
@@ -1089,7 +1090,14 @@ impl Node {
             // and FSP sessions are cryptographically stale, so the freshly
             // authenticated connection must replace them regardless of the
             // tie-breaker direction.
+            //
+            // Likewise, a link-dead path is kept as a reconnecting peer so
+            // higher-level sessions and routes survive. A fresh authenticated
+            // connection is proof of a usable replacement path, so it should
+            // win instead of applying the simultaneous-handshake tie-breaker to
+            // a path we already marked unusable.
             let this_wins = remote_epoch_changed
+                || existing_path_unusable
                 || cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound);
 
             if this_wins {
@@ -1143,6 +1151,7 @@ impl Node {
                 self.peers.insert(peer_node_addr, new_peer);
                 self.peers_by_index
                     .insert((transport_id, our_index.as_u32()), peer_node_addr);
+                self.clear_session_direct_path_degraded(&peer_node_addr);
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.set_discovery_fallback_transit_allowed(
                     peer_node_addr,
@@ -1255,6 +1264,7 @@ impl Node {
             self.peers.insert(peer_node_addr, new_peer);
             self.peers_by_index
                 .insert((transport_id, our_index.as_u32()), peer_node_addr);
+            self.clear_session_direct_path_degraded(&peer_node_addr);
             self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
             self.set_discovery_fallback_transit_allowed(
                 peer_node_addr,

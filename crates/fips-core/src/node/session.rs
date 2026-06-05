@@ -106,6 +106,8 @@ pub(crate) struct SessionEntry {
     is_initiator: bool,
     /// Session-layer MMP state. Initialized on Established transition.
     mmp: Option<MmpSessionState>,
+    /// First-hop peer used by the most recent outbound SessionDatagram.
+    last_outbound_next_hop: Option<NodeAddr>,
 
     // === Traffic Counters ===
     /// Total data packets sent on this session.
@@ -184,6 +186,7 @@ impl SessionEntry {
             coords_warmup_remaining: 0,
             is_initiator,
             mmp: None,
+            last_outbound_next_hop: None,
             packets_sent: 0,
             packets_recv: 0,
             bytes_sent: 0,
@@ -341,6 +344,16 @@ impl SessionEntry {
     /// Initialize session-layer MMP state (called on Established transition).
     pub(crate) fn init_mmp(&mut self, config: &SessionMmpConfig) {
         self.mmp = Some(MmpSessionState::new(config, self.is_initiator));
+    }
+
+    /// Remember which adjacent peer carried recent outbound session traffic.
+    pub(crate) fn record_outbound_next_hop(&mut self, next_hop: NodeAddr) {
+        self.last_outbound_next_hop = Some(next_hop);
+    }
+
+    /// First-hop peer used by recent outbound session traffic, if known.
+    pub(crate) fn last_outbound_next_hop(&self) -> Option<NodeAddr> {
+        self.last_outbound_next_hop
     }
 
     // === Traffic Counters ===

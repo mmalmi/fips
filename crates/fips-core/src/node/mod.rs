@@ -67,6 +67,10 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+const SESSION_DIRECT_DEGRADED_HOLD_MS: u64 = 20_000;
+const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 8;
+const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.20;
+const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.05;
 
 fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     if !plaintext
@@ -532,6 +536,9 @@ pub struct Node {
     coord_cache: CoordCache,
     /// Locally learned reverse-path next-hop hints.
     learned_routes: LearnedRouteTable,
+    /// Destinations whose direct first-hop path is temporarily suspect because
+    /// session-layer MMP observed sustained loss while using that direct path.
+    session_direct_degraded_until_ms: HashMap<NodeAddr, u64>,
     /// Recent discovery requests (dedup + reverse-path forwarding).
     /// Maps request_id → RecentRequest.
     recent_requests: HashMap<u64, RecentRequest>,
@@ -862,6 +869,7 @@ impl Node {
             bloom_state,
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
+            session_direct_degraded_until_ms: HashMap::new(),
             recent_requests: HashMap::new(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -1007,6 +1015,7 @@ impl Node {
             bloom_state,
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
+            session_direct_degraded_until_ms: HashMap::new(),
             recent_requests: HashMap::new(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -2444,6 +2453,8 @@ impl Node {
         if dest_node_addr == self.node_addr() {
             return None;
         }
+        let now_ms = Self::now_ms();
+        let direct_session_degraded = self.session_direct_path_is_degraded(dest_node_addr, now_ms);
 
         // 2. Healthy direct peer. Stale direct links remain usable, but in
         // reply-learned mode they must not hide a live mesh route learned from
@@ -2454,11 +2465,10 @@ impl Node {
             .is_some_and(|peer| peer.can_send());
         if let Some(peer) = self.peers.get(dest_node_addr)
             && peer.is_healthy()
+            && !direct_session_degraded
         {
             return Some(peer);
         }
-
-        let now_ms = Self::now_ms();
 
         let sendable_learned_peers = if self.config.node.routing.mode == RoutingMode::ReplyLearned {
             Some(
@@ -2562,6 +2572,40 @@ impl Node {
         }
 
         None
+    }
+
+    pub(in crate::node) fn session_direct_path_is_degraded(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        match self.session_direct_degraded_until_ms.get(dest).copied() {
+            Some(until_ms) if until_ms > now_ms => true,
+            Some(_) => {
+                self.session_direct_degraded_until_ms.remove(dest);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub(in crate::node) fn mark_session_direct_path_degraded(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        let until_ms = now_ms.saturating_add(SESSION_DIRECT_DEGRADED_HOLD_MS);
+        let entry = self
+            .session_direct_degraded_until_ms
+            .entry(dest)
+            .or_insert(0);
+        let was_degraded = *entry > now_ms;
+        *entry = (*entry).max(until_ms);
+        !was_degraded
+    }
+
+    pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
+        self.session_direct_degraded_until_ms.remove(dest).is_some()
     }
 
     pub(in crate::node) fn learn_reverse_route(

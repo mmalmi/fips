@@ -547,11 +547,7 @@ impl Node {
                     .await
                 {
                     Ok(true) => {
-                        let hs_timeout_ms =
-                            self.config.node.rate_limit.handshake_timeout_secs * 1000;
-                        if let Some(state) = self.retry_pending.get_mut(&node_addr) {
-                            state.retry_after_ms = now_ms + hs_timeout_ms;
-                        }
+                        self.schedule_link_dead_reprobe(node_addr, now_ms);
                         debug!(
                             peer = %self.peer_display_name(&node_addr),
                             "Direct-path retry initiated while preserving active fallback peer"

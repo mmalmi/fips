@@ -47,6 +47,10 @@ pub struct MmpMetrics {
     prev_rr_time: Option<Instant>,
     /// Whether we have a previous ReceiverReport for delta computation.
     has_prev_rr: bool,
+    /// Counter span in the most recent ReceiverReport delta.
+    last_forward_counter_span: u64,
+    /// Loss rate in the most recent ReceiverReport delta.
+    last_forward_loss_rate: Option<f64>,
 
     // --- State for reverse delivery ratio delta computation ---
     /// Previous reverse-side cumulative packets received (our receiver state).
@@ -71,6 +75,8 @@ impl MmpMetrics {
         self.prev_rr_reorder = 0;
         self.prev_rr_time = None;
         self.has_prev_rr = false;
+        self.last_forward_counter_span = 0;
+        self.last_forward_loss_rate = None;
         self.delivery_ratio_forward = 1.0;
         self.prev_reverse_packets = 0;
         self.prev_reverse_highest = 0;
@@ -97,6 +103,8 @@ impl MmpMetrics {
             prev_rr_reorder: 0,
             prev_rr_time: None,
             has_prev_rr: false,
+            last_forward_counter_span: 0,
+            last_forward_loss_rate: None,
             prev_reverse_packets: 0,
             prev_reverse_highest: 0,
             has_prev_reverse: false,
@@ -142,6 +150,8 @@ impl MmpMetrics {
 
         // --- Loss rate from cumulative counters ---
         // Delta: frames the peer should have received vs. actually received
+        self.last_forward_counter_span = 0;
+        self.last_forward_loss_rate = None;
         if self.has_prev_rr {
             let counter_span = rr
                 .highest_counter
@@ -154,6 +164,8 @@ impl MmpMetrics {
                 let delivery = (packets_delta as f64) / (counter_span as f64);
                 self.delivery_ratio_forward = delivery.clamp(0.0, 1.0);
                 let loss_rate = 1.0 - self.delivery_ratio_forward;
+                self.last_forward_counter_span = counter_span;
+                self.last_forward_loss_rate = Some(loss_rate);
                 self.loss_trend.update(loss_rate);
                 self.etx = compute_etx(self.delivery_ratio_forward, self.delivery_ratio_reverse);
                 self.etx_trend.update(self.etx);
@@ -241,6 +253,12 @@ impl MmpMetrics {
         } else {
             None
         }
+    }
+
+    /// Most recent forward-loss sample from a ReceiverReport delta.
+    pub fn last_forward_loss_sample(&self) -> Option<(u64, f64)> {
+        self.last_forward_loss_rate
+            .map(|loss| (self.last_forward_counter_span, loss))
     }
 
     /// Smoothed ETX (long-term EWMA), or `None` if not yet initialized.
@@ -333,6 +351,7 @@ mod tests {
 
         let loss = m.loss_rate();
         assert!((loss - 0.05).abs() < 0.01, "loss={loss}, expected ~0.05");
+        assert_eq!(m.last_forward_loss_sample(), Some((200, loss)));
     }
 
     #[test]

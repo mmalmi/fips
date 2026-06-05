@@ -8,7 +8,7 @@ use crate::node::tests::spanning_tree::{
     TestNode, cleanup_nodes, generate_random_edges, lock_large_network_test,
     process_available_packets, run_tree_test, run_tree_test_with_mtus, verify_tree_convergence,
 };
-use crate::protocol::{SessionAck, SessionDatagram, SessionSetup};
+use crate::protocol::{SessionAck, SessionDatagram, SessionReceiverReport, SessionSetup};
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 
 /// Populate all nodes' coordinate caches with each other's coords.
@@ -2283,6 +2283,103 @@ async fn test_update_peers_races_direct_address_with_existing_graph() {
     );
 
     cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("lossy-direct".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    node.sessions
+        .get_mut(&remote_addr)
+        .expect("session")
+        .record_outbound_next_hop(remote_addr);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "healthy direct should initially hide fallback"
+    );
+
+    let baseline = SessionReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: 0,
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &baseline)
+        .await;
+
+    let lossy = SessionReceiverReport {
+        highest_counter: 120,
+        cumulative_packets_recv: 112,
+        cumulative_bytes_recv: 11_200,
+        timestamp_echo: 0,
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 12,
+        interval_bytes_recv: 1_200,
+    }
+    .encode();
+    node.handle_session_receiver_report(&remote_addr, &lossy)
+        .await;
+
+    assert!(
+        node.session_direct_path_is_degraded(&remote_addr, Node::now_ms()),
+        "session loss over direct should mark only the direct path suspect"
+    );
+    assert!(
+        node.retry_pending.contains_key(&remote_addr),
+        "direct reprobe should be scheduled without removing the session"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "fallback discovery should be started while direct probes continue"
+    );
+    assert!(
+        node.sessions
+            .get(&remote_addr)
+            .is_some_and(|entry| entry.is_established()),
+        "session must remain installed while route preference changes"
+    );
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(fallback_next_hop),
+        "degraded direct should not block learned fallback"
+    );
 }
 
 #[tokio::test]

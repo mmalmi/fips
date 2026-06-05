@@ -22,7 +22,8 @@ use crate::node::wire::{
 };
 use crate::node::{
     Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError,
+    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
@@ -566,7 +567,7 @@ impl Node {
                 self.handle_session_sender_report(src_addr, rest);
             }
             Some(SessionMessageType::ReceiverReport) => {
-                self.handle_session_receiver_report(src_addr, rest);
+                self.handle_session_receiver_report(src_addr, rest).await;
             }
             Some(SessionMessageType::PathMtuNotification) => {
                 self.handle_session_path_mtu_notification(src_addr, rest);
@@ -1335,7 +1336,11 @@ impl Node {
     ///
     /// The peer is telling us about what they received from us. We feed
     /// this to our metrics to compute RTT, loss rate, and trend indicators.
-    fn handle_session_receiver_report(&mut self, src_addr: &NodeAddr, body: &[u8]) {
+    pub(in crate::node) async fn handle_session_receiver_report(
+        &mut self,
+        src_addr: &NodeAddr,
+        body: &[u8],
+    ) {
         let session_rr = match SessionReceiverReport::decode(body) {
             Ok(rr) => rr,
             Err(e) => {
@@ -1349,51 +1354,95 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
-        let entry = match self.sessions.get_mut(src_addr) {
-            Some(e) => e,
-            None => {
-                debug!(src = %peer_name, "SessionReceiverReport for unknown session");
+        let (sample, used_direct_next_hop, srtt_ms) = {
+            let entry = match self.sessions.get_mut(src_addr) {
+                Some(e) => e,
+                None => {
+                    debug!(src = %peer_name, "SessionReceiverReport for unknown session");
+                    return;
+                }
+            };
+
+            let our_timestamp_ms = entry.session_timestamp(now_ms);
+            let last_outbound_next_hop = entry.last_outbound_next_hop();
+
+            let Some(mmp) = entry.mmp_mut() else {
                 return;
+            };
+
+            let now = std::time::Instant::now();
+            mmp.metrics
+                .process_receiver_report(&rr, our_timestamp_ms, now);
+
+            // Feed SRTT back to sender/receiver report interval tuning (session-layer bounds)
+            let srtt_ms = mmp.metrics.srtt_ms();
+            if let Some(srtt_ms) = srtt_ms {
+                let srtt_us = (srtt_ms * 1000.0) as i64;
+                mmp.sender.update_report_interval_with_bounds(
+                    srtt_us,
+                    MIN_SESSION_REPORT_INTERVAL_MS,
+                    MAX_SESSION_REPORT_INTERVAL_MS,
+                );
+                mmp.receiver.update_report_interval_with_bounds(
+                    srtt_us,
+                    MIN_SESSION_REPORT_INTERVAL_MS,
+                    MAX_SESSION_REPORT_INTERVAL_MS,
+                );
+                // Also update PathMtu notification interval from SRTT
+                mmp.path_mtu.update_interval_from_srtt(srtt_ms);
             }
+
+            // Update reverse delivery ratio from our own receiver state, using per-interval deltas.
+            let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+            let peer_highest = mmp.receiver.highest_counter();
+            mmp.metrics
+                .update_reverse_delivery(our_recv_packets, peer_highest);
+
+            (
+                mmp.metrics.last_forward_loss_sample(),
+                last_outbound_next_hop == Some(*src_addr),
+                srtt_ms,
+            )
         };
 
-        let our_timestamp_ms = entry.session_timestamp(now_ms);
-
-        let Some(mmp) = entry.mmp_mut() else {
-            return;
-        };
-
-        let now = std::time::Instant::now();
-        mmp.metrics
-            .process_receiver_report(&rr, our_timestamp_ms, now);
-
-        // Feed SRTT back to sender/receiver report interval tuning (session-layer bounds)
-        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
-            let srtt_us = (srtt_ms * 1000.0) as i64;
-            mmp.sender.update_report_interval_with_bounds(
-                srtt_us,
-                MIN_SESSION_REPORT_INTERVAL_MS,
-                MAX_SESSION_REPORT_INTERVAL_MS,
-            );
-            mmp.receiver.update_report_interval_with_bounds(
-                srtt_us,
-                MIN_SESSION_REPORT_INTERVAL_MS,
-                MAX_SESSION_REPORT_INTERVAL_MS,
-            );
-            // Also update PathMtu notification interval from SRTT
-            mmp.path_mtu.update_interval_from_srtt(srtt_ms);
+        if let Some((span, loss)) = sample
+            && used_direct_next_hop
+            && span >= SESSION_DIRECT_DEGRADED_MIN_SAMPLE
+        {
+            if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
+                && self.peers.get(src_addr).is_some_and(|peer| peer.can_send())
+            {
+                let newly_degraded = self.mark_session_direct_path_degraded(*src_addr, now_ms);
+                if newly_degraded || !self.retry_pending.contains_key(src_addr) {
+                    self.schedule_link_dead_reprobe(*src_addr, now_ms);
+                }
+                debug!(
+                    src = %peer_name,
+                    loss = format_args!("{:.1}%", loss * 100.0),
+                    sample_packets = span,
+                    newly_degraded,
+                    "Session loss marked direct path degraded; fallback routing may carry traffic while direct probes continue"
+                );
+                self.maybe_initiate_link_dead_fallback_lookup(src_addr)
+                    .await;
+            } else if loss <= SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD
+                && self.clear_session_direct_path_degraded(src_addr)
+            {
+                debug!(
+                    src = %peer_name,
+                    loss = format_args!("{:.1}%", loss * 100.0),
+                    sample_packets = span,
+                    "Session loss recovered; direct path eligible for normal routing"
+                );
+            }
         }
-
-        // Update reverse delivery ratio from our own receiver state, using per-interval deltas.
-        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
-        let peer_highest = mmp.receiver.highest_counter();
-        mmp.metrics
-            .update_reverse_delivery(our_recv_packets, peer_highest);
 
         trace!(
             src = %peer_name,
-            rtt_ms = ?mmp.metrics.srtt_ms(),
-            loss = format_args!("{:.1}%", mmp.metrics.loss_rate() * 100.0),
+            rtt_ms = ?srtt_ms,
+            loss = sample
+                .map(|(_, loss)| format!("{:.1}%", loss * 100.0))
+                .unwrap_or_else(|| "n/a".to_string()),
             "Processed SessionReceiverReport"
         );
     }
@@ -2487,6 +2536,7 @@ impl Node {
             .record_originated(link_plaintext_len + crate::noise::TAG_SIZE);
 
         if let Some(entry) = self.sessions.get_mut(dest_addr) {
+            entry.record_outbound_next_hop(next_hop_addr);
             entry.record_sent(send.payload.len());
             if let Some(mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(
@@ -2777,6 +2827,9 @@ impl Node {
         {
             self.record_route_failure(datagram.dest_addr, next_hop_addr);
             return Err(err);
+        }
+        if let Some(entry) = self.sessions.get_mut(&datagram.dest_addr) {
+            entry.record_outbound_next_hop(next_hop_addr);
         }
         self.stats_mut().forwarding.record_originated(encoded.len());
         Ok(())

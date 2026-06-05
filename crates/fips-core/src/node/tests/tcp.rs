@@ -162,8 +162,8 @@ async fn test_tcp_mixed_transport_coexistence() {
 /// TCP connection drop is detected by MMP link-dead timeout.
 ///
 /// Establishes peering, force-closes the TCP connection, then verifies
-/// that `check_link_heartbeats()` detects the dead peer after the
-/// link-dead timeout fires.
+/// that `check_link_heartbeats()` marks the path reconnecting after the
+/// link-dead timeout fires while preserving peer/session continuity.
 #[tokio::test]
 async fn test_tcp_connection_loss_detection() {
     let mut nodes = vec![make_test_node_tcp().await, make_test_node_tcp().await];
@@ -199,10 +199,13 @@ async fn test_tcp_connection_loss_detection() {
     // Trigger heartbeat check (normally done by the tick handler)
     nodes[0].node.check_link_heartbeats().await;
 
-    // Node 0 should have detected node 1 as dead and removed it
+    let peer = nodes[0]
+        .node
+        .get_peer(&addr_1)
+        .expect("link-dead should preserve peer identity");
     assert!(
-        nodes[0].node.get_peer(&addr_1).is_none(),
-        "node 0 should have removed dead peer node 1"
+        !peer.can_send(),
+        "node 0 should mark node 1 path reconnecting after link-dead"
     );
 
     cleanup_nodes(&mut nodes).await;
@@ -210,7 +213,7 @@ async fn test_tcp_connection_loss_detection() {
 
 /// TCP reconnection after link death: connect-on-send re-establishes the link.
 ///
-/// After both peers detect a dead link and remove each other, a fresh
+/// After both peers detect a dead link and mark paths reconnecting, a fresh
 /// handshake triggers TCP connect-on-send to open a new connection.
 /// Verifies that bidirectional peering is restored.
 #[tokio::test]
@@ -244,18 +247,24 @@ async fn test_tcp_reconnection_after_link_death() {
     // Wait for link-dead timeout
     tokio::time::sleep(Duration::from_secs(4)).await;
 
-    // Trigger dead peer removal on both sides
+    // Trigger dead path detection on both sides
     nodes[0].node.check_link_heartbeats().await;
     nodes[1].node.check_link_heartbeats().await;
 
-    // Both should have removed the peer
+    // Both should keep the peer identity while marking the path unusable
     assert!(
-        nodes[0].node.get_peer(&addr_1).is_none(),
-        "node 0 should have removed node 1"
+        nodes[0]
+            .node
+            .get_peer(&addr_1)
+            .is_some_and(|peer| !peer.can_send()),
+        "node 0 should mark node 1 path reconnecting"
     );
     assert!(
-        nodes[1].node.get_peer(&addr_0).is_none(),
-        "node 1 should have removed node 0"
+        nodes[1]
+            .node
+            .get_peer(&addr_0)
+            .is_some_and(|peer| !peer.can_send()),
+        "node 1 should mark node 0 path reconnecting"
     );
 
     // Re-initiate handshake — triggers TCP connect-on-send

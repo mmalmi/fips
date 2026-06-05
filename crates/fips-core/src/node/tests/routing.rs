@@ -71,6 +71,53 @@ fn test_reply_learned_prefers_live_mesh_route_over_stale_direct_peer() {
     );
 }
 
+#[test]
+fn test_reply_learned_prefers_live_mesh_route_over_session_degraded_direct_peer() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let direct_link = LinkId::new(1);
+    let (direct_conn, direct_id) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1000);
+    let dest_addr = *direct_id.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_id, 2000)
+        .unwrap();
+
+    let mesh_link = LinkId::new(2);
+    let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);
+    let mesh_next_hop = *mesh_id.node_addr();
+    node.add_connection(mesh_conn).unwrap();
+    node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
+    node.learn_reverse_route(dest_addr, mesh_next_hop);
+
+    let direct = node.find_next_hop(&dest_addr).expect("direct route");
+    assert_eq!(
+        direct.node_addr(),
+        &dest_addr,
+        "healthy direct should still win before session loss marks it suspect"
+    );
+
+    node.mark_session_direct_path_degraded(dest_addr, Node::now_ms());
+
+    let fallback = node.find_next_hop(&dest_addr).expect("fallback route");
+    assert_eq!(
+        fallback.node_addr(),
+        &mesh_next_hop,
+        "session-degraded direct path must not hide learned fallback"
+    );
+
+    assert!(node.clear_session_direct_path_degraded(&dest_addr));
+    let recovered = node.find_next_hop(&dest_addr).expect("direct route");
+    assert_eq!(
+        recovered.node_addr(),
+        &dest_addr,
+        "clearing degradation should make healthy direct eligible again"
+    );
+}
+
 // === No route ===
 
 #[test]
