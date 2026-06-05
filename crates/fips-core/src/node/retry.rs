@@ -543,7 +543,7 @@ impl Node {
                 }
 
                 match self
-                    .initiate_active_peer_alternative_connection(&peer_config)
+                    .initiate_active_peer_direct_refresh_connection(&peer_config)
                     .await
                 {
                     Ok(true) => {

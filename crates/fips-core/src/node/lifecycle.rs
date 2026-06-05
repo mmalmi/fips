@@ -513,6 +513,23 @@ impl Node {
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<bool, NodeError> {
+        self.initiate_active_peer_alternative_connection_inner(peer_config, false)
+            .await
+    }
+
+    pub(in crate::node) async fn initiate_active_peer_direct_refresh_connection(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+    ) -> Result<bool, NodeError> {
+        self.initiate_active_peer_alternative_connection_inner(peer_config, true)
+            .await
+    }
+
+    async fn initiate_active_peer_alternative_connection_inner(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+        allow_same_path_refresh: bool,
+    ) -> Result<bool, NodeError> {
         let peer_identity =
             PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
                 npub: peer_config.npub.clone(),
@@ -530,8 +547,12 @@ impl Node {
         // wins if both peers try the same upgrade; the important part here is
         // that a stale path does not depend on the remote peer receiving our
         // hint first before either side attempts the better address.
-        self.try_active_peer_alternative_addresses(peer_config, peer_identity)
-            .await
+        self.try_active_peer_alternative_addresses(
+            peer_config,
+            peer_identity,
+            allow_same_path_refresh,
+        )
+        .await
     }
 
     async fn initiate_peer_connection_inner(
@@ -3626,9 +3647,25 @@ impl Node {
         &mut self,
         peer_config: &PeerConfig,
         peer_identity: PeerIdentity,
+        allow_same_path_refresh: bool,
     ) -> Result<bool, NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
-        let candidates = self.peer_address_candidates(peer_config).await;
+        let mut candidates = self.peer_address_candidates(peer_config).await;
+        let same_path_refresh_needed = allow_same_path_refresh
+            && (self.active_peer_needs_same_path_refresh(&peer_node_addr)
+                || self
+                    .peers
+                    .get(&peer_node_addr)
+                    .is_some_and(|peer| !peer.can_send()));
+        if same_path_refresh_needed
+            && let Some(candidate) = self.active_peer_current_udp_candidate(&peer_node_addr)
+            && !candidates.iter().any(|existing| {
+                existing.transport == candidate.transport && existing.addr == candidate.addr
+            })
+        {
+            candidates.push(candidate);
+            Self::sort_peer_address_candidates(&mut candidates);
+        }
         let should_try_nostr =
             self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config);
 
@@ -3644,7 +3681,10 @@ impl Node {
 
         let alternatives: Vec<_> = candidates
             .into_iter()
-            .filter(|addr| !self.active_peer_matches_candidate(&peer_node_addr, addr))
+            .filter(|addr| {
+                same_path_refresh_needed
+                    || !self.active_peer_matches_candidate(&peer_node_addr, addr)
+            })
             .collect();
 
         if alternatives.is_empty() {
@@ -3699,6 +3739,12 @@ impl Node {
             }
         }
 
+        Self::sort_peer_address_candidates(&mut candidates);
+
+        candidates
+    }
+
+    fn sort_peer_address_candidates(candidates: &mut [PeerAddress]) {
         // Stable sort: recently observed candidates win over unstamped static
         // hints, then explicit priority and recency break ties. Static hints
         // remain candidates, but they are not privileged forever after a
@@ -3711,8 +3757,6 @@ impl Node {
             (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
             (None, None) => std::cmp::Ordering::Equal,
         });
-
-        candidates
     }
 
     fn active_peer_matches_any_candidate(
@@ -3808,6 +3852,22 @@ impl Node {
             .saturating_mul(1000)
             .max(1000);
         peer.idle_time(Self::now_ms()) > stale_after_ms
+    }
+
+    fn active_peer_current_udp_candidate(&self, peer_node_addr: &NodeAddr) -> Option<PeerAddress> {
+        let peer = self.peers.get(peer_node_addr)?;
+        let transport_id = peer.transport_id()?;
+        let current_addr = peer.current_addr()?;
+        let transport = self.transports.get(&transport_id)?;
+        if transport.transport_type().name != "udp" {
+            return None;
+        }
+        let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
+
+        Some(
+            PeerAddress::with_priority("udp", socket_addr.to_string(), 240)
+                .with_seen_at_ms(Self::now_ms()),
+        )
     }
 
     pub(in crate::node) fn active_peer_matches_candidate(

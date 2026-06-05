@@ -3288,11 +3288,20 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
     assert_eq!(node.peer_count(), 1);
     assert_eq!(
         node.connection_count(),
-        1,
-        "retry maintenance should race the configured direct path even while fallback remains active"
+        2,
+        "retry maintenance should race the configured direct path and re-probe the old UDP path while fallback remains active"
     );
-    let conn = node.connections.values().next().unwrap();
-    assert_eq!(conn.transport_id(), Some(primary_id));
+    let attempted: std::collections::HashSet<_> = node
+        .connections
+        .values()
+        .filter_map(|conn| {
+            (conn.transport_id() == Some(primary_id))
+                .then(|| conn.source_addr().map(ToString::to_string))
+                .flatten()
+        })
+        .collect();
+    assert!(attempted.contains("127.0.0.1:8"));
+    assert!(attempted.contains("127.0.0.1:9"));
     assert!(
         node.retry_pending
             .get(&peer_node_addr)
@@ -3388,13 +3397,82 @@ async fn active_fallback_static_hint_also_queues_nostr_traversal() {
 
     assert_eq!(
         node.connection_count(),
-        1,
-        "static direct hint should still be raced while fallback remains active"
+        2,
+        "static direct hint and old UDP path should be raced while fallback remains active"
     );
     assert_eq!(
         bootstrap.active_initiator_count_for_test().await,
         1,
         "stale static hints must not suppress Nostr/mesh traversal refresh"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn active_nostr_peer_without_static_addresses_retests_observed_udp_path() {
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    let mut node = Node::new(config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let primary_id = TransportId::new(2);
+    let mut udp = UdpTransport::new(
+        primary_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(primary_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers = vec![peer_config.clone()];
+
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(primary_id, &current_addr);
+    active_peer.mark_reconnecting();
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.nostr_discovery = Some(bootstrap.clone());
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "reconnecting active peers with no static hints should still probe the last observed UDP endpoint"
+    );
+    let conn = node.connections.values().next().unwrap();
+    assert_eq!(conn.transport_id(), Some(primary_id));
+    assert_eq!(conn.source_addr(), Some(&current_addr));
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        1,
+        "direct refresh should also send a Nostr/mesh call-me-maybe request"
     );
 
     for transport in node.transports.values_mut() {
