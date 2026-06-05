@@ -23,7 +23,7 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
 const PACKET_DRAIN_BUDGET: usize = 256;
-const RX_LOOP_MAINTENANCE_TIMEOUT: Duration = Duration::from_millis(500);
+const RX_LOOP_SLOW_MAINTENANCE_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl Node {
     /// Run the receive event loop.
@@ -166,16 +166,7 @@ impl Node {
                             "Drained queued packets before rx-loop maintenance"
                         );
                     }
-                    if tokio::time::timeout(
-                        RX_LOOP_MAINTENANCE_TIMEOUT,
-                        self.run_rx_loop_maintenance_tick(),
-                    ).await.is_err() {
-                        self.mark_rx_loop_maintenance_timeout();
-                        warn!(
-                            timeout_ms = RX_LOOP_MAINTENANCE_TIMEOUT.as_millis() as u64,
-                            "RX loop maintenance timed out; continuing packet processing"
-                        );
-                    }
+                    self.run_rx_loop_maintenance_tick().await;
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     self.handle_tun_outbound(ipv6_packet).await;
@@ -286,35 +277,55 @@ impl Node {
     async fn run_rx_loop_maintenance_tick(&mut self) {
         self.check_timeouts();
         let now_ms = Self::now_ms();
-        // Link liveness must run before slower retry/discovery/report work:
-        // this whole maintenance future is guarded by a watchdog timeout, and
-        // under bulk send pressure a late heartbeat is indistinguishable from a
-        // dead direct path on the remote peer.
+        // Link/session liveness must run before slower retry/discovery work:
+        // under bulk send pressure a late heartbeat or MMP report is
+        // indistinguishable from a dead direct path on the remote peer.
         self.check_link_heartbeats().await;
         self.reload_peer_acl();
-        self.poll_pending_connects().await;
-        self.poll_nostr_discovery().await;
-        self.poll_lan_discovery().await;
-        self.poll_local_instance_discovery().await;
         self.resend_pending_handshakes(now_ms).await;
         self.resend_pending_rekeys(now_ms).await;
         self.resend_pending_session_handshakes(now_ms).await;
         self.resend_pending_session_msg3(now_ms).await;
         self.purge_idle_sessions(now_ms);
         self.purge_learned_routes(now_ms);
-        self.process_pending_retries(now_ms).await;
-        self.check_tree_state().await;
-        self.check_bloom_state().await;
-        self.compute_mesh_size();
-        self.record_stats_history();
         self.check_mmp_reports().await;
         self.check_session_mmp_reports().await;
         self.check_rekey().await;
         self.check_session_rekey().await;
         self.check_pending_lookups(now_ms).await;
+        self.poll_pending_connects().await;
+        self.process_pending_retries(now_ms).await;
         self.poll_transport_discovery().await;
-        self.sample_transport_congestion();
         self.activate_connected_udp_sessions().await;
+        self.sample_transport_congestion();
+
+        if tokio::time::timeout(
+            RX_LOOP_SLOW_MAINTENANCE_TIMEOUT,
+            self.run_rx_loop_slow_maintenance_tick(),
+        )
+        .await
+        .is_err()
+        {
+            self.mark_rx_loop_maintenance_timeout();
+            warn!(
+                timeout_ms = RX_LOOP_SLOW_MAINTENANCE_TIMEOUT.as_millis() as u64,
+                "RX loop slow maintenance timed out; continuing packet processing"
+            );
+        }
+    }
+
+    async fn run_rx_loop_slow_maintenance_tick(&mut self) {
+        // Discovery and graph/stat maintenance can involve relay work or
+        // larger scans. Keep it bounded after direct-path liveness and session
+        // upkeep so a slow Nostr/LAN tick degrades discovery freshness, not
+        // packet flow.
+        self.poll_nostr_discovery().await;
+        self.poll_lan_discovery().await;
+        self.poll_local_instance_discovery().await;
+        self.check_tree_state().await;
+        self.check_bloom_state().await;
+        self.compute_mesh_size();
+        self.record_stats_history();
     }
 
     /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt

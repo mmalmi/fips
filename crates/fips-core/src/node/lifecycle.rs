@@ -1309,10 +1309,6 @@ impl Node {
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
 
-        if let Err(err) = self.refresh_overlay_advert(&bootstrap).await {
-            debug!(error = %err, "Failed to refresh local Nostr overlay advert");
-        }
-
         self.drain_nostr_mesh_signals(&bootstrap).await;
 
         for event in bootstrap.drain_events().await {
@@ -1460,6 +1456,13 @@ impl Node {
             .await;
         self.queue_open_discovery_retries(&bootstrap).await;
         self.queue_active_fallback_direct_retries(&bootstrap);
+
+        // Advert refresh can touch STUN/public-endpoint discovery on some
+        // configs. Drain traversal events and queue direct retries first so a
+        // slow refresh cannot delay path recovery work already waiting on us.
+        if let Err(err) = self.refresh_overlay_advert(&bootstrap).await {
+            debug!(error = %err, "Failed to refresh local Nostr overlay advert");
+        }
     }
 
     async fn drain_nostr_mesh_signals(&mut self, bootstrap: &std::sync::Arc<NostrDiscovery>) {
@@ -3861,12 +3864,29 @@ impl Node {
         peer.idle_time(Self::now_ms()) > stale_after_ms
     }
 
-    fn active_peer_current_udp_candidate(&self, peer_node_addr: &NodeAddr) -> Option<PeerAddress> {
+    pub(in crate::node) fn active_peer_current_udp_candidate(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> Option<PeerAddress> {
         let peer = self.peers.get(peer_node_addr)?;
-        let transport_id = peer.transport_id()?;
         let current_addr = peer.current_addr()?;
-        let transport = self.transports.get(&transport_id)?;
-        if transport.transport_type().name != "udp" {
+        if let Some(transport_id) = peer.transport_id() {
+            if let Some(transport) = self.transports.get(&transport_id) {
+                if transport.transport_type().name != "udp" {
+                    return None;
+                }
+            } else if !self
+                .transports
+                .values()
+                .any(|transport| transport.transport_type().name == "udp")
+            {
+                return None;
+            }
+        } else if !self
+            .transports
+            .values()
+            .any(|transport| transport.transport_type().name == "udp")
+        {
             return None;
         }
         let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;

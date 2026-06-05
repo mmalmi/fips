@@ -167,6 +167,12 @@ struct CachedPublicUdpAddr {
 const PUBLIC_UDP_ADDR_FAILURE_TTL: Duration = Duration::from_secs(60);
 const RELAY_STARTUP_OP_TIMEOUT: Duration = Duration::from_secs(5);
 const ADVERT_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
+const ADVERT_PUBLISH_RETRY_INITIAL: Duration = Duration::from_secs(2);
+const ADVERT_PUBLISH_RETRY_MAX: Duration = Duration::from_secs(30);
+
+fn next_advert_publish_retry_delay(current: Duration) -> Duration {
+    current.saturating_mul(2).min(ADVERT_PUBLISH_RETRY_MAX)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NostrRelayConfig {
@@ -1134,16 +1140,34 @@ impl NostrDiscovery {
         tokio::spawn(async move {
             loop {
                 self.publish_notify.notified().await;
-                match tokio::time::timeout(ADVERT_PUBLISH_TIMEOUT, self.publish_advert()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        warn!(error = %err, "failed to publish traversal advert");
+                let mut retry_delay = ADVERT_PUBLISH_RETRY_INITIAL;
+                loop {
+                    match tokio::time::timeout(ADVERT_PUBLISH_TIMEOUT, self.publish_advert()).await
+                    {
+                        Ok(Ok(())) => break,
+                        Ok(Err(err)) => {
+                            warn!(
+                                error = %err,
+                                retry_after_ms = retry_delay.as_millis() as u64,
+                                "failed to publish traversal advert"
+                            );
+                        }
+                        Err(_) => {
+                            warn!(
+                                timeout_ms = ADVERT_PUBLISH_TIMEOUT.as_millis() as u64,
+                                retry_after_ms = retry_delay.as_millis() as u64,
+                                "Nostr traversal advert publish timed out"
+                            );
+                        }
                     }
-                    Err(_) => {
-                        warn!(
-                            timeout_ms = ADVERT_PUBLISH_TIMEOUT.as_millis() as u64,
-                            "Nostr traversal advert publish timed out"
-                        );
+
+                    tokio::select! {
+                        _ = self.publish_notify.notified() => {
+                            retry_delay = ADVERT_PUBLISH_RETRY_INITIAL;
+                        }
+                        _ = tokio::time::sleep(retry_delay) => {
+                            retry_delay = next_advert_publish_retry_delay(retry_delay);
+                        }
                     }
                 }
             }
@@ -2470,6 +2494,22 @@ mod tests {
         config.open_discovery_max_pending = 5000;
         config.max_concurrent_incoming_offers = 1;
         assert_eq!(event_channel_capacity(&config), 4096);
+    }
+
+    #[test]
+    fn advert_publish_retry_delay_backs_off_to_short_cap() {
+        assert_eq!(
+            next_advert_publish_retry_delay(ADVERT_PUBLISH_RETRY_INITIAL),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            next_advert_publish_retry_delay(Duration::from_secs(16)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            next_advert_publish_retry_delay(Duration::from_secs(30)),
+            ADVERT_PUBLISH_RETRY_MAX
+        );
     }
 
     #[test]

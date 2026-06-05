@@ -4930,6 +4930,57 @@ fn stale_udp_nostr_peer_without_static_addresses_keeps_direct_retry() {
 }
 
 #[test]
+fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).expect("node");
+
+    let live_udp_transport_id = TransportId::new(1);
+    let old_traversal_transport_id = TransportId::new(99);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        live_udp_transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(live_udp_transport_id, TransportHandle::Udp(udp));
+
+    let now_ms = Node::now_ms();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
+    active.set_current_addr(
+        old_traversal_transport_id,
+        &TransportAddr::from_string("203.0.113.24:51820"),
+    );
+    active.mark_stale();
+    node.peers.insert(peer_addr, active);
+
+    let candidate = node
+        .active_peer_current_udp_candidate(&peer_addr)
+        .expect("stale UDP path should remain directly re-probeable");
+    assert_eq!(candidate.transport, "udp");
+    assert_eq!(candidate.addr, "203.0.113.24:51820");
+    assert!(
+        candidate.seen_at_ms.is_some(),
+        "reused current endpoint should be treated as fresh"
+    );
+}
+
+#[test]
 fn fresh_udp_nostr_peer_without_static_addresses_skips_direct_retry() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
