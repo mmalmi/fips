@@ -120,10 +120,16 @@ impl Node {
 
     fn mark_link_dead_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
         let peer_name = self.peer_display_name(node_addr);
-        let Some(peer) = self.peers.get_mut(node_addr) else {
+        if !self.peers.contains_key(node_addr) {
             debug!(peer = %peer_name, "Peer already removed");
             return;
-        };
+        }
+
+        self.mark_session_direct_path_degraded(*node_addr, Self::now_ms());
+        let peer = self
+            .peers
+            .get_mut(node_addr)
+            .expect("peer existence checked before link-dead degradation");
 
         let link_id = peer.link_id();
         peer.mark_stale();

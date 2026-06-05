@@ -505,7 +505,7 @@ impl Node {
         );
     }
 
-    pub(in crate::node) fn recent_endpoint_link_dead_timeout(
+    pub(in crate::node) fn traversal_path_link_dead_timeout(
         &self,
         node_addr: &NodeAddr,
         dead_timeout: Duration,
@@ -516,7 +516,7 @@ impl Node {
                 .map(|id| id.node_addr() == node_addr)
                 .unwrap_or(false)
         })?;
-        if !self.active_peer_uses_recent_endpoint_path(node_addr, peer_config) {
+        if !self.active_peer_uses_traversal_path(node_addr, peer_config) {
             return None;
         }
 
@@ -557,20 +557,13 @@ impl Node {
 
             // Check liveness via MMP receiver last_recv_time.
             // Fall back to session_start for peers that never sent data.
-            let received_authenticated_frame = peer
-                .mmp()
-                .and_then(|mmp| mmp.receiver.last_recv_time())
-                .is_some();
-            let effective_dead_timeout = if received_authenticated_frame {
-                local_send_failure_timeout
-            } else {
-                self.recent_endpoint_link_dead_timeout(
+            let effective_dead_timeout = self
+                .traversal_path_link_dead_timeout(
                     node_addr,
                     local_send_failure_timeout,
                     fast_dead_timeout,
                 )
-                .unwrap_or(local_send_failure_timeout)
-            };
+                .unwrap_or(local_send_failure_timeout);
             let is_dead = peer.is_healthy()
                 && if let Some(mmp) = peer.mmp() {
                     let reference_time = mmp

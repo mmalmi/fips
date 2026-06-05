@@ -2219,11 +2219,28 @@ async fn test_link_dead_preserves_session_and_sends_over_existing_graph() {
         "link-dead direct path must not discard the end-to-end session"
     );
     assert!(
-        !nodes[0]
+        nodes[0]
             .node
             .get_peer(&dest_addr)
             .expect("direct peer should remain tracked")
             .can_send(),
+        "link-dead direct peer should remain probeable"
+    );
+    assert!(
+        !nodes[0]
+            .node
+            .get_peer(&dest_addr)
+            .expect("direct peer should remain tracked")
+            .is_healthy(),
+        "link-dead direct peer should not be treated as a healthy payload path"
+    );
+    let payload_next_hop = nodes[0]
+        .node
+        .find_next_hop(&dest_addr)
+        .expect("graph fallback route");
+    assert_ne!(
+        payload_next_hop.node_addr(),
+        &dest_addr,
         "link-dead direct peer should not hide graph fallback"
     );
 

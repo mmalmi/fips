@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.34] - 2026-06-05
+
+### Fixed
+
+- Traversal/recent UDP paths now use a short liveness window even after they
+  previously carried authenticated traffic, so NAT or hotspot path stalls fall
+  back quickly while direct re-probing continues.
+- Link-dead direct paths now mark payload routing degraded, keeping the stale
+  direct path probeable without hiding an available mesh fallback route.
+
 ## [0.3.33] - 2026-06-05
 
 ### Fixed

@@ -4370,7 +4370,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
     node.config.node.fast_link_dead_timeout_secs = 5;
 
     let recent_path_timeout = node
-        .recent_endpoint_link_dead_timeout(
+        .traversal_path_link_dead_timeout(
             &peer_addr,
             std::time::Duration::from_secs(node.config.node.link_dead_timeout_secs),
             std::time::Duration::from_secs(node.config.node.fast_link_dead_timeout_secs),
@@ -4434,7 +4434,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
 }
 
 #[tokio::test]
-async fn proven_recent_endpoint_path_uses_normal_dead_timeout() {
+async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
@@ -4485,7 +4485,15 @@ async fn proven_recent_endpoint_path_uses_normal_dead_timeout() {
 
     assert!(
         node.peers.contains_key(&peer_addr),
-        "a proven path at 23s silence should survive the 30s normal dead timeout"
+        "link-dead should keep the authenticated peer identity"
+    );
+    assert!(
+        !node.get_peer(&peer_addr).expect("peer").is_healthy(),
+        "a proven traversal/recent path at 23s silence should use the bounded 22s liveness window, not the 30s normal dead timeout"
+    );
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "bounded traversal liveness should schedule direct reprobe"
     );
 }
 
@@ -4595,6 +4603,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
     );
+    node.learn_reverse_route(peer_addr, transit_addr);
 
     node.sessions.insert(
         peer_addr,
@@ -4652,6 +4661,16 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "fallback lookup should start while queued packets are preserved"
+    );
+    assert!(
+        node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
+        "link-dead should mark payload routing away from the suspect direct path"
+    );
+    let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
+    assert_eq!(
+        fallback.node_addr(),
+        &transit_addr,
+        "fallback route should carry payload traffic while direct remains probeable"
     );
 
     let first_retry_after = node
