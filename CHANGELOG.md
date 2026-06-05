@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.44] - 2026-06-06
+
+### Fixed
+
+- Outbound refresh handshakes now match msg2 replies by their globally
+  allocated sender index when the reply arrives through an equivalent UDP
+  transport id, allowing NAT-rewritten gateway paths to promote instead of
+  repeatedly timing out.
+
 ## [0.3.42] - 2026-06-06
 
 ### Fixed

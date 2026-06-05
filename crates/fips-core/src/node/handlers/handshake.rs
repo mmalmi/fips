@@ -622,16 +622,41 @@ impl Node {
             }
         };
 
-        // Look up our pending handshake by our sender_idx (receiver_idx in msg2)
-        let key = (packet.transport_id, header.receiver_idx.as_u32());
-        let link_id = match self.pending_outbound.get(&key) {
-            Some(id) => *id,
+        // Look up our pending handshake by our sender_idx (receiver_idx in msg2).
+        //
+        // The sender index is allocated globally, but older code also keyed
+        // the lookup by the receive-side transport id. That is normally the
+        // same transport we used for msg1, but UDP replies can surface through
+        // an equivalent/adopted transport id after NAT traversal or local
+        // socket changes. In that case the index is still authoritative; only
+        // fall back when it names a single pending outbound handshake.
+        let exact_key = (packet.transport_id, header.receiver_idx.as_u32());
+        let (key, link_id) = match self.pending_outbound.get(&exact_key).copied() {
+            Some(id) => (exact_key, id),
             None => {
-                debug!(
-                    receiver_idx = %header.receiver_idx,
-                    "No pending outbound handshake for index"
-                );
-                return;
+                let mut matches = self
+                    .pending_outbound
+                    .iter()
+                    .filter(|((_, idx), _)| *idx == header.receiver_idx.as_u32());
+                match (matches.next(), matches.next()) {
+                    (Some((fallback_key, id)), None) => {
+                        debug!(
+                            receiver_idx = %header.receiver_idx,
+                            received_transport_id = %packet.transport_id,
+                            pending_transport_id = %fallback_key.0,
+                            "Matched pending outbound handshake by sender index across transport ids"
+                        );
+                        (*fallback_key, *id)
+                    }
+                    _ => {
+                        debug!(
+                            receiver_idx = %header.receiver_idx,
+                            transport_id = %packet.transport_id,
+                            "No pending outbound handshake for index"
+                        );
+                        return;
+                    }
+                }
             }
         };
 

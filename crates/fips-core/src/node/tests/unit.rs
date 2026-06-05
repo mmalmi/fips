@@ -4070,6 +4070,109 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
 }
 
 #[tokio::test]
+async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_changes() {
+    let mut node = make_node();
+    let peer_full = loop {
+        let candidate = Identity::generate();
+        if candidate.node_addr() < node.node_addr() {
+            break candidate;
+        }
+    };
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let old_transport_id = TransportId::new(1);
+    let old_link_id = LinkId::new(10);
+    let old_addr = TransportAddr::from_string("203.0.113.24:51820");
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        old_session,
+        old_our_index,
+        old_their_index,
+        old_transport_id,
+        old_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x11; 8]),
+    );
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers_by_index
+        .insert((old_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            old_transport_id,
+            old_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.addr_to_link
+        .insert((old_transport_id, old_addr.clone()), old_link_id);
+
+    let dial_transport_id = TransportId::new(2);
+    let recv_transport_id = TransportId::new(3);
+    let new_link_id = LinkId::new(11);
+    let gateway_addr = TransportAddr::from_string("192.168.178.91:51830");
+    let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
+    let msg1 = new_conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    new_conn.set_our_index(our_index);
+    new_conn.set_transport_id(dial_transport_id);
+    new_conn.set_source_addr(gateway_addr.clone());
+    node.links.insert(
+        new_link_id,
+        Link::connectionless(
+            new_link_id,
+            dial_transport_id,
+            gateway_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.addr_to_link
+        .insert((dial_transport_id, gateway_addr.clone()), new_link_id);
+    node.connections.insert(new_link_id, new_conn);
+    node.pending_outbound
+        .insert((dial_transport_id, our_index.as_u32()), new_link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), 2_000);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, 2_000)
+        .unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
+    let packet =
+        ReceivedPacket::with_timestamp(recv_transport_id, gateway_addr.clone(), wire_msg2, 2_100);
+
+    node.handle_msg2(packet).await;
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(node.pending_outbound.is_empty());
+    assert!(
+        !node.links.contains_key(&old_link_id),
+        "old public path should be retired after gateway reply completes"
+    );
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), new_link_id);
+    assert_eq!(active.transport_id(), Some(dial_transport_id));
+    assert_eq!(active.current_addr(), Some(&gateway_addr));
+    assert_eq!(active.our_index(), Some(our_index));
+    assert_eq!(active.their_index(), Some(their_index));
+}
+
+#[tokio::test]
 async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::HandshakeState;
