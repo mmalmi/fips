@@ -111,6 +111,16 @@ fn pending_rekey_wins_tiebreak(
         && our_addr < peer_addr
 }
 
+fn duplicate_rekey_responder_ack(existing: &SessionEntry) -> Option<Vec<u8>> {
+    if existing.is_established()
+        && existing.has_rekey_in_progress()
+        && !existing.is_rekey_initiator()
+    {
+        return existing.handshake_payload().map(<[u8]>::to_vec);
+    }
+    None
+}
+
 fn should_start_decrypt_failure_rekey(entry: &SessionEntry, consecutive: u32) -> bool {
     consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
         && entry.is_established()
@@ -342,6 +352,7 @@ impl Node {
             entry.reset_decrypt_failures();
             if entry.handshake_payload().is_some()
                 && entry.pending_new_session().is_none()
+                && !entry.has_rekey_in_progress()
                 && slot == EpochSlot::Current
                 && received_k_bit == entry.current_k_bit()
             {
@@ -744,6 +755,31 @@ impl Node {
                     // simultaneously. Apply tie-breaker — smaller NodeAddr
                     // wins as initiator (same as initial session setup).
                     if rekey_in_progress {
+                        if let Some(payload) = duplicate_rekey_responder_ack(existing) {
+                            debug!(
+                                src = %self.peer_display_name(src_addr),
+                                "Duplicate FSP rekey msg1, resending SessionAck"
+                            );
+                            let my_addr = *self.node_addr();
+                            let mut datagram = SessionDatagram::new(my_addr, *src_addr, payload)
+                                .with_ttl(self.config.node.session.default_ttl);
+                            let sent = match self.send_session_datagram(&mut datagram).await {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to resend rekey SessionAck");
+                                    false
+                                }
+                            };
+                            if sent {
+                                let now_ms = Self::now_ms();
+                                let interval =
+                                    self.config.node.rate_limit.handshake_resend_interval_ms;
+                                if let Some(entry) = self.sessions.get_mut(src_addr) {
+                                    entry.record_resend(now_ms + interval);
+                                }
+                            }
+                            return;
+                        }
                         if self.identity.node_addr() < src_addr {
                             // We win as initiator — drop their msg1.
                             debug!(
@@ -803,8 +839,9 @@ impl Node {
                     let ack = SessionAck::new(our_coords, setup.src_coords).with_handshake(msg2);
                     let ack_payload = ack.encode();
                     let my_addr = *self.node_addr();
-                    let mut datagram = SessionDatagram::new(my_addr, *src_addr, ack_payload)
-                        .with_ttl(self.config.node.session.default_ttl);
+                    let mut datagram =
+                        SessionDatagram::new(my_addr, *src_addr, ack_payload.clone())
+                            .with_ttl(self.config.node.session.default_ttl);
 
                     if let Err(e) = self.send_session_datagram(&mut datagram).await {
                         debug!(error = %e, dest = %self.peer_display_name(src_addr), "Failed to send rekey SessionAck");
@@ -815,6 +852,8 @@ impl Node {
                     let now_ms = Self::now_ms();
                     let entry = self.sessions.get_mut(src_addr).unwrap();
                     entry.set_rekey_state(handshake, false);
+                    let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+                    entry.set_handshake_payload(ack_payload, now_ms + resend_interval);
                     entry.record_peer_rekey(now_ms);
 
                     debug!(
@@ -1199,6 +1238,7 @@ impl Node {
             };
 
             entry.set_pending_session(session);
+            entry.clear_handshake_payload();
             self.sessions.insert(*src_addr, entry);
 
             debug!(
@@ -3146,6 +3186,30 @@ mod tests {
             &node_addr(0x02),
             &entry
         ));
+    }
+
+    #[test]
+    fn duplicate_rekey_responder_ack_only_for_responder_in_progress() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        let ack_payload = vec![0x42, 0x43];
+        let rekey = HandshakeState::new_xk_responder(local.keypair());
+        entry.set_rekey_state(rekey, false);
+        entry.set_handshake_payload(ack_payload.clone(), 2000);
+
+        assert_eq!(
+            duplicate_rekey_responder_ack(&entry),
+            Some(ack_payload),
+            "a rekey responder awaiting msg3 should replay its SessionAck"
+        );
+
+        let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(rekey, true);
+        assert!(
+            duplicate_rekey_responder_ack(&entry).is_none(),
+            "local rekey initiators still use the dual-initiation tiebreak"
+        );
     }
 
     #[test]

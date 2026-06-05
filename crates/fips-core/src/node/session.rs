@@ -656,6 +656,9 @@ impl SessionEntry {
 
     /// Abandon an in-progress rekey.
     pub(crate) fn abandon_rekey(&mut self) {
+        if !self.rekey_initiator {
+            self.clear_handshake_payload();
+        }
         self.rekey_state = None;
         self.pending_new_session = None;
         self.rekey_initiator = false;
