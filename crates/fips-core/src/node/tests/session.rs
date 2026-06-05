@@ -2533,6 +2533,52 @@ async fn test_tun_packet_for_established_session_with_no_route_queues_and_discov
 }
 
 #[tokio::test]
+async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_discovers() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let dest = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    node.register_identity(dest_addr, dest.pubkey_full());
+    insert_established_session(&mut node, &dest);
+    add_direct_peer_for_identity(&mut node, &dest);
+    node.get_peer_mut(&dest_addr)
+        .expect("direct peer")
+        .mark_stale();
+
+    assert!(
+        node.get_peer(&dest_addr).expect("direct peer").can_send(),
+        "stale direct peer should remain available for direct probing"
+    );
+    assert!(
+        node.find_next_hop(&dest_addr).is_none(),
+        "stale direct peer should not be selected for established-session payload"
+    );
+
+    let src_fips = crate::FipsAddress::from_node_addr(node.node_addr());
+    let dst_fips = crate::FipsAddress::from_node_addr(&dest_addr);
+    let ipv6_packet = build_ipv6_packet(&src_fips, &dst_fips, b"tun-stale-direct-probe");
+    let baseline = node.stats().discovery.req_initiated;
+
+    node.handle_tun_outbound(ipv6_packet).await;
+
+    assert_eq!(
+        node.pending_tun_packets
+            .get(&dest_addr)
+            .map(std::collections::VecDeque::len),
+        Some(1),
+        "TUN packet should stay queued while fallback discovery runs"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&dest_addr),
+        "stale direct payload failure must start mesh discovery"
+    );
+    assert_eq!(
+        node.stats().discovery.req_initiated,
+        baseline + 1,
+        "discovery should be initiated exactly once"
+    );
+}
+
+#[tokio::test]
 async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
     let edges = vec![(0, 1), (1, 2)];
     let mut nodes = run_tree_test(3, &edges, false).await;

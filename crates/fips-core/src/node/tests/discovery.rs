@@ -524,6 +524,71 @@ async fn test_reply_learned_forwards_lookup_to_direct_non_tree_target() {
 }
 
 #[tokio::test]
+async fn test_reply_learned_lookup_does_not_stop_at_stale_direct_target() {
+    // Topology: node0 -- node1, with node1 also linked to node2 (the target)
+    // and node3 (a fallback neighbor). A stale direct target should remain
+    // probeable, but it must not be the exclusive route for lookup.
+    let edges = vec![(0, 1), (1, 2), (1, 3)];
+    let mut nodes = run_tree_test(4, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node2_addr = *nodes[2].node.node_addr();
+    let node3_addr = *nodes[3].node.node_addr();
+
+    nodes[1].node.config.node.routing.mode = RoutingMode::ReplyLearned;
+    nodes[1].node.tree_state_mut().remove_peer(&node2_addr);
+    nodes[1].node.tree_state_mut().become_root();
+    nodes[1]
+        .node
+        .get_peer_mut(&node2_addr)
+        .expect("target direct peer")
+        .mark_stale();
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .get(&node2_addr)
+            .is_some_and(|peer| peer.can_send() && !peer.is_healthy()),
+        "target should remain probeable but not healthy"
+    );
+    assert!(
+        nodes[1]
+            .node
+            .peers
+            .get(&node3_addr)
+            .is_some_and(|peer| peer.is_healthy()),
+        "fallback neighbor should be healthy"
+    );
+
+    let origin_coords = TreeCoordinate::from_addrs(vec![node0_addr, node1_addr]).unwrap();
+    let request = LookupRequest::new(4343, node2_addr, node0_addr, origin_coords, 5, 0);
+    let payload = &request.encode()[1..];
+
+    nodes[1]
+        .node
+        .handle_lookup_request(&node0_addr, payload)
+        .await;
+
+    for _ in 0..4 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        process_available_packets(&mut nodes).await;
+    }
+
+    assert!(
+        !nodes[2].node.recent_requests.contains_key(&4343),
+        "stale direct target should not consume lookup as the only route"
+    );
+    assert!(
+        nodes[3].node.recent_requests.contains_key(&4343),
+        "healthy fallback neighbor should still receive the lookup"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
 async fn test_reply_learned_initiates_lookup_to_sendable_non_tree_peer() {
     // A reply-learned origin may have a valid direct peer that is not in its
     // current tree view. Discovery must still ask that peer when no bloom/tree

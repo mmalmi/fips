@@ -385,7 +385,7 @@ impl Node {
             && self
                 .peers
                 .get(&request.target)
-                .is_some_and(|peer| peer.can_send())
+                .is_some_and(|peer| peer.is_healthy())
         {
             let encoded = request.encode();
             match self
@@ -416,7 +416,10 @@ impl Node {
             .peers
             .iter()
             .filter(|(addr, peer)| {
-                **addr != *from && self.is_tree_peer(addr) && peer.may_reach(&request.target)
+                **addr != *from
+                    && self.is_tree_peer(addr)
+                    && peer.is_healthy()
+                    && peer.may_reach(&request.target)
             })
             .map(|(addr, _)| *addr)
             .collect();
@@ -439,7 +442,7 @@ impl Node {
                 .filter(|(addr, peer)| {
                     **addr != *from
                         && **addr != request.origin
-                        && peer.can_send()
+                        && peer.is_healthy()
                         && self.should_use_reply_learned_lookup_fallback_peer(
                             addr,
                             peer,
@@ -456,7 +459,10 @@ impl Node {
                 .peers
                 .iter()
                 .filter(|(addr, peer)| {
-                    **addr != *from && !self.is_tree_peer(addr) && peer.may_reach(&request.target)
+                    **addr != *from
+                        && !self.is_tree_peer(addr)
+                        && peer.is_healthy()
+                        && peer.may_reach(&request.target)
                 })
                 .map(|(addr, _)| *addr)
                 .collect();
@@ -528,7 +534,9 @@ impl Node {
         let mut peer_addrs: Vec<NodeAddr> = self
             .peers
             .iter()
-            .filter(|(addr, peer)| self.is_tree_peer(addr) && peer.may_reach(target))
+            .filter(|(addr, peer)| {
+                self.is_tree_peer(addr) && peer.is_healthy() && peer.may_reach(target)
+            })
             .map(|(addr, _)| *addr)
             .collect();
         let tree_match_count = peer_addrs.len();
@@ -541,7 +549,7 @@ impl Node {
                 .peers
                 .iter()
                 .filter(|(addr, peer)| {
-                    peer.can_send()
+                    peer.is_healthy()
                         && self.should_use_reply_learned_lookup_fallback_peer(addr, peer, target)
                 })
                 .map(|(addr, _)| *addr)
@@ -730,7 +738,7 @@ impl Node {
 
         let has_fallback_peer = self.peers.iter().any(|(addr, peer)| {
             addr != dest
-                && peer.can_send()
+                && peer.is_healthy()
                 && (self.config.node.routing.mode != RoutingMode::ReplyLearned
                     || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
         });

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.37] - 2026-06-05
+
+### Fixed
+
+- Stale direct/FIPS links now remain probe targets but are no longer selected
+  for payload or lookup routing, so fallback discovery can carry traffic after
+  link-dead instead of blackholing packets on the dead UDP path.
+
 ## [0.3.36] - 2026-06-05
 
 ### Fixed

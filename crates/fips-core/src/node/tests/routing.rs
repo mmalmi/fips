@@ -41,6 +41,34 @@ fn test_routing_direct_peer() {
 }
 
 #[test]
+fn test_stale_direct_peer_stays_probeable_but_is_not_payload_route() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let peer_addr = *identity.node_addr();
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, 2000).unwrap();
+    node.get_peer_mut(&peer_addr)
+        .expect("direct peer")
+        .mark_stale();
+
+    assert!(
+        node.get_peer(&peer_addr).expect("direct peer").can_send(),
+        "stale direct links stay sendable for heartbeats/reprobe"
+    );
+    assert!(
+        !node.get_peer(&peer_addr).expect("direct peer").is_healthy(),
+        "stale direct links are not healthy payload routes"
+    );
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "a stale direct link with no fallback route must not blackhole payload"
+    );
+}
+
+#[test]
 fn test_reply_learned_prefers_live_mesh_route_over_stale_direct_peer() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;

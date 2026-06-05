@@ -2458,10 +2458,6 @@ impl Node {
         let now_ms = Self::now_ms();
         let direct_session_degraded = self.session_direct_path_is_degraded(dest_node_addr, now_ms);
 
-        let direct_peer_can_send = self
-            .peers
-            .get(dest_node_addr)
-            .is_some_and(|peer| peer.can_send());
         let healthy_direct_route = self
             .peers
             .get(dest_node_addr)
@@ -2472,7 +2468,7 @@ impl Node {
             if addr == dest_node_addr {
                 direct_payload_eligible
             } else {
-                peer.can_send()
+                peer.is_healthy()
             }
         };
 
@@ -2544,9 +2540,6 @@ impl Node {
             if let Some(direct_addr) = healthy_direct_route {
                 return self.peers.get(&direct_addr);
             }
-            if direct_peer_can_send {
-                return self.peers.get(dest_node_addr);
-            }
             return None;
         };
 
@@ -2606,10 +2599,6 @@ impl Node {
             return self.peers.get(&next_hop_addr);
         }
 
-        if direct_peer_can_send {
-            return self.peers.get(dest_node_addr);
-        }
-
         None
     }
 
@@ -2631,7 +2620,7 @@ impl Node {
         let Some(candidate) = self.peers.get(&candidate_addr) else {
             return false;
         };
-        if !candidate.can_send() {
+        if !candidate.is_healthy() {
             return false;
         }
 
@@ -2658,7 +2647,7 @@ impl Node {
                 if !direct_payload_eligible {
                     continue;
                 }
-            } else if !peer.can_send() {
+            } else if !peer.is_healthy() {
                 continue;
             }
 
