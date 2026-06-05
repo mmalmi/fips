@@ -4921,6 +4921,54 @@ fn fresh_udp_nostr_peer_without_static_addresses_skips_direct_retry() {
 }
 
 #[test]
+fn reconnecting_static_udp_peer_keeps_direct_retry() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.24:51820",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+
+    let transport_id = TransportId::new(1);
+    let (packet_tx, _packet_rx) = packet_channel(64);
+    let udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig::default(),
+        packet_tx,
+    );
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let now_ms = Node::now_ms();
+    let mut active = ActivePeer::new(peer, LinkId::new(7), now_ms);
+    active.set_current_addr(
+        transport_id,
+        &TransportAddr::from_string("203.0.113.24:51820"),
+    );
+    active.mark_reconnecting();
+    node.peers.insert(peer_addr, active);
+
+    assert!(
+        node.active_peer_should_keep_direct_retry(&peer_addr, &peer_config),
+        "a link-dead static UDP path is not fresh enough to suppress direct probing"
+    );
+}
+
+#[test]
 fn show_peers_reports_fallback_active_with_direct_probe_pending() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {

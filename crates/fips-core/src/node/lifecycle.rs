@@ -3774,6 +3774,13 @@ impl Node {
         peer_node_addr: &NodeAddr,
         candidates: &[PeerAddress],
     ) -> bool {
+        if !self
+            .peers
+            .get(peer_node_addr)
+            .is_some_and(|peer| peer.can_send())
+        {
+            return false;
+        }
         if !self.active_peer_matches_any_candidate(peer_node_addr, candidates) {
             return false;
         }
