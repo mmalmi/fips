@@ -1365,13 +1365,7 @@ impl Node {
                                     .request_advert_stale_check(peer_config.npub.clone())
                                     .await;
                             }
-                            self.schedule_retry(node_addr, now_ms);
-                            if self.nostr_cooldown_applies_to_peer_config(&peer_config)
-                                && let Some(cooldown_until_ms) = decision.cooldown_until_ms
-                                && let Some(state) = self.retry_pending.get_mut(&node_addr)
-                            {
-                                state.retry_after_ms = state.retry_after_ms.max(cooldown_until_ms);
-                            }
+                            self.schedule_link_dead_reprobe(node_addr, now_ms);
                         } else {
                             debug!(
                                 npub = %peer_config.npub,

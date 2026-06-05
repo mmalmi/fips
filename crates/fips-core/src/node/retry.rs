@@ -556,7 +556,7 @@ impl Node {
                     }
                     Ok(false) => {
                         if self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
-                            self.schedule_retry(node_addr, now_ms);
+                            self.schedule_link_dead_reprobe(node_addr, now_ms);
                         } else {
                             self.retry_pending.remove(&node_addr);
                         }
@@ -574,7 +574,11 @@ impl Node {
                                 .request_advert_stale_check(peer_config.npub.clone())
                                 .await;
                         }
-                        self.schedule_retry_after_error(node_addr, now_ms, &e);
+                        if e.is_local_route_unavailable() {
+                            self.schedule_local_route_retry(node_addr, now_ms);
+                        } else {
+                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                        }
                     }
                 }
                 continue;

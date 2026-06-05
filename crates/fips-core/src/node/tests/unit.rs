@@ -1243,6 +1243,7 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
     let mut config = Config::new();
     config.node.discovery.nostr.enabled = true;
     let mut node = Node::new(config).unwrap();
+    node.nostr_discovery = Some(Arc::new(NostrDiscovery::new_for_test()));
     let mut addrs = Vec::new();
 
     for _ in 0..6 {
@@ -1281,7 +1282,7 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
         .filter(|addr| {
             node.retry_pending
                 .get(addr)
-                .is_some_and(|state| state.retry_count > 0)
+                .is_some_and(|state| state.retry_after_ms > 1_000)
         })
         .count();
 
@@ -1289,6 +1290,11 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
         processed, 2,
         "active direct refresh retries should be paced as background probes"
     );
+    assert!(addrs.iter().all(|addr| {
+        node.retry_pending
+            .get(addr)
+            .is_some_and(|state| state.retry_count == 0)
+    }));
     assert_eq!(node.retry_pending.len(), 6);
 }
 
@@ -4003,7 +4009,7 @@ async fn poll_nostr_discovery_established_gated_at_capacity() {
 }
 
 #[tokio::test]
-async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
+async fn poll_nostr_discovery_failed_active_peer_keeps_quick_reprobe() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
         npub: peer_identity.npub(),
@@ -4030,18 +4036,31 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_retry_with_backoff() {
     });
     node.nostr_discovery = Some(bootstrap);
 
+    let before_ms = Node::now_ms();
     node.poll_nostr_discovery().await;
+    let after_ms = Node::now_ms();
 
     let state = node
         .retry_pending
         .get(&peer_addr)
         .expect("failed direct upgrade should keep active-peer retry");
-    assert_eq!(state.retry_count, 1);
+    assert_eq!(
+        state.retry_count, 0,
+        "active direct refresh failure must not accumulate peer backoff"
+    );
     assert!(
-        state.retry_after_ms > 0,
-        "failed direct upgrade should back off instead of retrying every tick"
+        state.retry_after_ms >= before_ms + 2_000 && state.retry_after_ms <= after_ms + 8_000,
+        "failed direct upgrade should schedule quick jittered reprobe, got {}",
+        state.retry_after_ms
     );
     assert_eq!(state.peer_config.npub, peer_config.npub);
+    assert!(
+        node.nostr_discovery
+            .as_ref()
+            .and_then(|bootstrap| bootstrap.cooldown_until(&peer_config.npub, after_ms))
+            .is_none(),
+        "active direct refresh failures should not install peer-wide traversal cooldown"
+    );
 }
 
 #[test]
@@ -4777,8 +4796,13 @@ async fn process_pending_retries_allows_active_direct_refresh_at_peer_capacity()
         .get(&peer_addr)
         .expect("active peer retry should remain scheduled after failed initiation");
     assert_eq!(
-        state.retry_count, 1,
-        "active direct refresh should be processed even when peer slots are full"
+        state.retry_count, 0,
+        "active direct refresh should stay on quick reprobe instead of peer backoff"
+    );
+    assert!(
+        (3_000..=9_000).contains(&state.retry_after_ms),
+        "active direct refresh should be quickly rescheduled, got {}",
+        state.retry_after_ms
     );
 }
 
