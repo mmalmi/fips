@@ -105,6 +105,9 @@ impl Node {
             if !self.active_peer_should_keep_direct_retry(&node_addr, pc) {
                 return;
             }
+
+            self.schedule_link_dead_reprobe(node_addr, now_ms);
+            return;
         }
 
         let base_interval_ms = retry_cfg.base_interval_secs * 1000;

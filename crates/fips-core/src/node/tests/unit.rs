@@ -1425,6 +1425,53 @@ fn test_schedule_retry_keeps_connected_bootstrap_peer_refreshable() {
     );
 }
 
+#[test]
+fn test_schedule_retry_active_fallback_uses_quick_direct_reprobe() {
+    let peer_full = Identity::generate();
+    let peer_npub = peer_full.npub();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_npub,
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).unwrap();
+
+    let bootstrap_id = TransportId::new(99);
+    node.bootstrap_transports.insert(bootstrap_id);
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:9"));
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_count = 8;
+    state.retry_after_ms = 120_000;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.schedule_retry(peer_node_addr, 3_000);
+
+    let state = node.retry_pending.get(&peer_node_addr).unwrap();
+    assert_eq!(
+        state.retry_count, 0,
+        "active fallback direct refresh must not inherit peer-level exponential backoff"
+    );
+    assert!(
+        (5_000..=10_000).contains(&state.retry_after_ms),
+        "active fallback direct refresh should use a quick jittered reprobe, got {}",
+        state.retry_after_ms
+    );
+}
+
 #[tokio::test]
 async fn test_try_peer_addresses_skips_connected_peer() {
     let mut node = make_node();
