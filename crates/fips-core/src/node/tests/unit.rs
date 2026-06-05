@@ -2344,7 +2344,7 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
 }
 
 #[tokio::test]
-async fn test_fresh_overlay_candidate_preempts_stale_static_when_budget_tight() {
+async fn test_static_priority_preempts_fresh_overlay_when_budget_tight() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::discovery::nostr::{NostrDiscovery, OverlayEndpointAdvert, OverlayTransportKind};
 
@@ -2428,18 +2428,18 @@ async fn test_fresh_overlay_candidate_preempts_stale_static_when_budget_tight() 
     assert!(
         node.find_link_by_addr(
             transport_id,
-            &TransportAddr::from_string(&fresh_overlay_addr)
+            &TransportAddr::from_string(&stale_static_addr)
         )
         .is_some(),
-        "fresh Nostr/STUN-discovered endpoint should get the first candidate slot"
+        "explicit static priority should get the first candidate slot"
     );
     assert!(
         node.find_link_by_addr(
             transport_id,
-            &TransportAddr::from_string(&stale_static_addr)
+            &TransportAddr::from_string(&fresh_overlay_addr)
         )
         .is_none(),
-        "stale static hint should remain a candidate but not win the only slot"
+        "fresh overlay hint should remain a candidate but not outrank explicit priority"
     );
     assert_eq!(node.connection_count(), 1);
 

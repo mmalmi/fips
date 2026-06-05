@@ -499,9 +499,9 @@ impl Node {
 
     /// Initiate a connection from the retry path. Identical to
     /// [`initiate_peer_connection`] today — both paths fan out across every
-    /// known address (overlay-fresh first, then operator/cache hints) in a
-    /// single pass. The two entry points stay separate so callers can be
-    /// distinguished in tracing.
+    /// known address (explicit priority first, then freshness) in a single
+    /// pass. The two entry points stay separate so callers can be distinguished
+    /// in tracing.
     pub(super) async fn initiate_peer_retry_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,
@@ -3748,17 +3748,21 @@ impl Node {
     }
 
     fn sort_peer_address_candidates(candidates: &mut [PeerAddress]) {
-        // Stable sort: recently observed candidates win over unstamped static
-        // hints, then explicit priority and recency break ties. Static hints
-        // remain candidates, but they are not privileged forever after a
-        // network move; a fresh advert/STUN-observed endpoint gets the first
-        // shot when the race budget is tight.
-        candidates.sort_by(|a, b| match (a.seen_at_ms, b.seen_at_ms) {
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ if a.priority != b.priority => a.priority.cmp(&b.priority),
-            (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
-            (None, None) => std::cmp::Ordering::Equal,
+        // Stable sort: explicit priority is the contract, and freshness only
+        // breaks ties inside one priority tier. Overlay-discovered endpoints
+        // are assigned lower priority than configured/static hints when both
+        // exist, so operator-provided LAN routes keep first shot without
+        // dropping fresh overlay candidates from the race.
+        candidates.sort_by(|a, b| {
+            if a.priority != b.priority {
+                return a.priority.cmp(&b.priority);
+            }
+            match (a.seen_at_ms, b.seen_at_ms) {
+                (Some(a_ts), Some(b_ts)) => b_ts.cmp(&a_ts),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
         });
     }
 
