@@ -223,11 +223,12 @@ impl Node {
             }
         }
 
-        // Established initiators keep the final XK msg3 for a short resend
-        // window. Once the retry budget is exhausted, clear it; the session
-        // remains usable and ordinary decrypt-failure recovery handles later
-        // divergence.
-        let exhausted_final_msg3: Vec<crate::NodeAddr> = self
+        // Established sessions can temporarily retain a session-layer
+        // handshake payload: the initial final msg3, an FSP rekey msg1, or a
+        // responder ack. Once a rekey resend budget is exhausted, abandon that
+        // local rekey so the peer's next msg1 can converge instead of being
+        // tiebreak-dropped forever.
+        let exhausted_established_handshakes: Vec<crate::NodeAddr> = self
             .sessions
             .iter()
             .filter(|(_, entry)| {
@@ -238,14 +239,21 @@ impl Node {
             .map(|(addr, _)| *addr)
             .collect();
 
-        for addr in exhausted_final_msg3 {
+        for addr in exhausted_established_handshakes {
             let name = self.peer_display_name(&addr);
+            let mut abandoned_rekey = false;
             if let Some(entry) = self.sessions.get_mut(&addr) {
-                entry.clear_handshake_payload();
+                if entry.has_rekey_in_progress() {
+                    entry.abandon_rekey();
+                    abandoned_rekey = true;
+                } else {
+                    entry.clear_handshake_payload();
+                }
             }
             debug!(
                 dest = %name,
-                "Final session handshake resend budget exhausted"
+                rekey = abandoned_rekey,
+                "Session handshake resend budget exhausted"
             );
         }
 

@@ -897,6 +897,17 @@ fn drop_queued_packets_for_node(node: &mut TestNode) -> usize {
     dropped
 }
 
+async fn wait_drop_queued_packets_for_node(node: &mut TestNode) -> usize {
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let dropped = drop_queued_packets_for_node(node);
+        if dropped > 0 {
+            return dropped;
+        }
+    }
+    0
+}
+
 #[tokio::test]
 async fn test_established_initiator_resends_final_msg3_until_responder_establishes() {
     let edges = vec![(0, 1)];
@@ -1140,6 +1151,180 @@ async fn test_rekey_initiator_resends_final_msg3_until_responder_has_pending_ses
             .pending_new_session()
             .is_some(),
         "responder should store the pending rekey session after resent msg3"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_rekey_initiator_resends_msg1_when_first_setup_lost() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    nodes[0]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_resend_interval_ms = 5;
+    nodes[0].node.config.node.rate_limit.handshake_max_resends = 3;
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    drain_to_quiescence(&mut nodes).await;
+
+    assert!(
+        nodes[0].node.initiate_session_rekey(&node1_addr).await,
+        "rekey should start"
+    );
+    assert!(
+        nodes[0]
+            .node
+            .get_session(&node1_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "initiator must retain rekey msg1 for resend"
+    );
+
+    let dropped = wait_drop_queued_packets_for_node(&mut nodes[1]).await;
+    assert!(dropped > 0, "fixture should drop the first rekey msg1");
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    nodes[0]
+        .node
+        .resend_pending_session_handshakes(Node::now_ms())
+        .await;
+
+    let count = wait_process_packets_for_node(&mut nodes, 1).await;
+    assert!(count > 0, "resender should deliver replacement rekey msg1");
+    assert!(
+        nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .has_rekey_in_progress(),
+        "responder should process the resent rekey msg1"
+    );
+    assert!(
+        !nodes[1]
+            .node
+            .get_session(&node0_addr)
+            .unwrap()
+            .is_rekey_initiator(),
+        "responder side should not become a competing initiator"
+    );
+
+    let count = wait_process_packets_for_node(&mut nodes, 0).await;
+    assert!(count > 0, "rekey msg2 should reach initiator");
+    let entry = nodes[0].node.get_session(&node1_addr).unwrap();
+    assert!(
+        entry.pending_new_session().is_some(),
+        "initiator should complete XK after resent msg1"
+    );
+    assert!(
+        entry.handshake_payload().is_none(),
+        "rekey msg1 resend payload should clear once msg2 arrives"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
+#[tokio::test]
+async fn test_rekey_msg1_exhaustion_allows_peer_msg1_to_converge() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+    populate_all_coord_caches(&mut nodes);
+
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_pubkey = nodes[1].node.identity().pubkey_full();
+
+    nodes[0]
+        .node
+        .initiate_session(node1_addr, node1_pubkey)
+        .await
+        .expect("initial session should start");
+    drain_to_quiescence(&mut nodes).await;
+
+    let smaller = if nodes[0].node.node_addr() < nodes[1].node.node_addr() {
+        0
+    } else {
+        1
+    };
+    let larger = 1 - smaller;
+    let smaller_addr = *nodes[smaller].node.node_addr();
+    let larger_addr = *nodes[larger].node.node_addr();
+
+    nodes[smaller]
+        .node
+        .config
+        .node
+        .rate_limit
+        .handshake_max_resends = 0;
+    assert!(
+        nodes[smaller]
+            .node
+            .initiate_session_rekey(&larger_addr)
+            .await,
+        "smaller side should start local rekey"
+    );
+    assert!(
+        nodes[smaller]
+            .node
+            .get_session(&larger_addr)
+            .unwrap()
+            .handshake_payload()
+            .is_some(),
+        "local rekey msg1 should be retained before exhaustion"
+    );
+
+    let dropped = wait_drop_queued_packets_for_node(&mut nodes[larger]).await;
+    assert!(dropped > 0, "fixture should drop smaller side's rekey msg1");
+
+    nodes[smaller]
+        .node
+        .resend_pending_session_handshakes(Node::now_ms())
+        .await;
+    let entry = nodes[smaller].node.get_session(&larger_addr).unwrap();
+    assert!(
+        !entry.has_rekey_in_progress(),
+        "exhausted local rekey should be abandoned"
+    );
+    assert!(
+        entry.handshake_payload().is_none(),
+        "abandoning local rekey must clear stale msg1 payload"
+    );
+
+    assert!(
+        nodes[larger]
+            .node
+            .initiate_session_rekey(&smaller_addr)
+            .await,
+        "larger side should be able to start its own fresh rekey"
+    );
+    let count = wait_process_packets_for_node(&mut nodes, smaller).await;
+    assert!(
+        count > 0,
+        "smaller side should process peer msg1 after abandoning stale local rekey"
+    );
+    let entry = nodes[smaller].node.get_session(&larger_addr).unwrap();
+    assert!(
+        entry.has_rekey_in_progress(),
+        "smaller side should now be the rekey responder"
+    );
+    assert!(
+        !entry.is_rekey_initiator(),
+        "stale tiebreak winner must not keep dropping peer msg1"
     );
 
     cleanup_nodes(&mut nodes).await;

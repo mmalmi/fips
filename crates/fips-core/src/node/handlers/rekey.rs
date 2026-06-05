@@ -519,7 +519,7 @@ impl Node {
 
         // Send through the mesh
         let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, setup_payload)
+        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, setup_payload.clone())
             .with_ttl(self.config.node.session.default_ttl);
 
         if let Err(e) = self.send_session_datagram(&mut datagram).await {
@@ -534,6 +534,8 @@ impl Node {
         // Store rekey state on the existing session entry
         if let Some(entry) = self.sessions.get_mut(dest_addr) {
             entry.set_rekey_state(handshake, true);
+            let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+            entry.set_handshake_payload(setup_payload, Self::now_ms() + resend_interval);
             entry.reset_decrypt_failures();
         } else {
             return false;

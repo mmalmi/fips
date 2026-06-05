@@ -1012,6 +1012,7 @@ impl Node {
             let now_ms = Self::now_ms();
             entry.set_pending_session(session);
             entry.set_rekey_completed_ms(now_ms);
+            entry.clear_handshake_payload();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
             entry.set_rekey_msg3_payload(msg3_resend_payload, now_ms + resend_interval);
             self.sessions.insert(*src_addr, entry);
