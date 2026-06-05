@@ -1082,6 +1082,9 @@ impl Node {
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
             let existing_path_unusable = !existing_peer.can_send();
+            let outbound_alternate_path = is_outbound
+                && (existing_peer.transport_id() != Some(transport_id)
+                    || existing_peer.current_addr() != Some(&current_addr));
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
 
@@ -1096,8 +1099,16 @@ impl Node {
             // connection is proof of a usable replacement path, so it should
             // win instead of applying the simultaneous-handshake tie-breaker to
             // a path we already marked unusable.
+            //
+            // A completed outbound handshake on a different transport tuple is
+            // also not a symmetric cross-connection. It is an explicit
+            // alternate-path refresh we initiated after learning a better
+            // candidate; successful authentication is enough proof to promote
+            // it even when the normal NodeAddr tie-breaker would prefer the
+            // old healthy link.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
+                || outbound_alternate_path
                 || cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound);
 
             if this_wins {
