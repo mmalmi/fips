@@ -81,6 +81,12 @@ struct FmpPlaintextTrafficClass {
     drop_on_backpressure: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct EndpointPayloadTrafficClass {
+    bulk_endpoint_data: bool,
+    drop_on_backpressure: bool,
+}
+
 fn classify_fmp_plaintext_traffic(plaintext: &[u8]) -> FmpPlaintextTrafficClass {
     let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
     // At this layer established FSP payloads are already end-to-end encrypted,
@@ -108,30 +114,111 @@ fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     })
 }
 
-fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
+fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
     const IPPROTO_TCP: u8 = 6;
+    const IPPROTO_ICMPV6: u8 = 58;
+
+    match parse_endpoint_payload_ip_proto(payload) {
+        Some((IPPROTO_ICMPV6, _)) => EndpointPayloadTrafficClass::default(),
+        Some((IPPROTO_TCP, offset)) => {
+            let latency_sensitive = endpoint_tcp_payload_is_latency_sensitive(payload, offset);
+            EndpointPayloadTrafficClass {
+                bulk_endpoint_data: !latency_sensitive,
+                drop_on_backpressure: false,
+            }
+        }
+        _ => EndpointPayloadTrafficClass {
+            bulk_endpoint_data: true,
+            drop_on_backpressure: true,
+        },
+    }
+}
+
+fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
+    const TCP_MIN_HEADER_LEN: usize = 20;
+    const TCP_FLAG_FIN: u8 = 0x01;
+    const TCP_FLAG_SYN: u8 = 0x02;
+    const TCP_FLAG_RST: u8 = 0x04;
+    const INTERACTIVE_TCP_PAYLOAD_MAX: usize = 256;
+
+    if payload.len() < tcp_offset + TCP_MIN_HEADER_LEN {
+        return true;
+    }
+
+    let tcp_header_len = usize::from(payload[tcp_offset + 12] >> 4) * 4;
+    if tcp_header_len < TCP_MIN_HEADER_LEN || payload.len() < tcp_offset + tcp_header_len {
+        return true;
+    }
+
+    let flags = payload[tcp_offset + 13];
+    if flags & (TCP_FLAG_FIN | TCP_FLAG_SYN | TCP_FLAG_RST) != 0 {
+        return true;
+    }
+
+    let payload_len = endpoint_ip_payload_len(payload)
+        .and_then(|ip_payload_len| ip_payload_len.checked_sub(tcp_header_len))
+        .unwrap_or_else(|| payload.len().saturating_sub(tcp_offset + tcp_header_len));
+    payload_len <= INTERACTIVE_TCP_PAYLOAD_MAX
+}
+
+fn endpoint_ip_payload_len(payload: &[u8]) -> Option<usize> {
+    const IPV4_MIN_HEADER_LEN: usize = 20;
+    const IPV6_HEADER_LEN: usize = 40;
+
+    let version_ihl = payload.first().copied()?;
+    match version_ihl >> 4 {
+        4 => {
+            if payload.len() < IPV4_MIN_HEADER_LEN {
+                return None;
+            }
+            let header_len = usize::from(version_ihl & 0x0f) * 4;
+            if header_len < IPV4_MIN_HEADER_LEN || payload.len() < header_len {
+                return None;
+            }
+            let total_len = usize::from(u16::from_be_bytes([payload[2], payload[3]]));
+            total_len.checked_sub(header_len)
+        }
+        6 => {
+            if payload.len() < IPV6_HEADER_LEN {
+                return None;
+            }
+            Some(usize::from(u16::from_be_bytes([payload[4], payload[5]])))
+        }
+        _ => None,
+    }
+}
+
+fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
     const IPV4_MIN_HEADER_LEN: usize = 20;
 
     let Some(version_ihl) = payload.first().copied() else {
-        return false;
+        return None;
     };
 
     match version_ihl >> 4 {
         4 => {
             if payload.len() < IPV4_MIN_HEADER_LEN {
-                return false;
+                return None;
             }
             let header_len = usize::from(version_ihl & 0x0f) * 4;
-            header_len >= IPV4_MIN_HEADER_LEN
-                && payload.len() >= header_len
-                && payload[9] == IPPROTO_TCP
+            if header_len >= IPV4_MIN_HEADER_LEN && payload.len() >= header_len {
+                Some((payload[9], header_len))
+            } else {
+                None
+            }
         }
-        6 => ipv6_payload_next_header(payload).is_some_and(|proto| proto == IPPROTO_TCP),
-        _ => false,
+        6 => ipv6_payload_next_header(payload),
+        _ => None,
     }
 }
 
-fn ipv6_payload_next_header(payload: &[u8]) -> Option<u8> {
+#[cfg(test)]
+fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
+    const IPPROTO_TCP: u8 = 6;
+    parse_endpoint_payload_ip_proto(payload).is_some_and(|(proto, _)| proto == IPPROTO_TCP)
+}
+
+fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
     const IPV6_HEADER_LEN: usize = 40;
     const IPV6_FRAGMENT_HEADER_LEN: usize = 8;
 
@@ -176,7 +263,7 @@ fn ipv6_payload_next_header(payload: &[u8]) -> Option<u8> {
         }
     }
 
-    Some(next_header)
+    Some((next_header, offset))
 }
 
 fn ipv6_extension_header_is_skippable(next_header: u8) -> bool {

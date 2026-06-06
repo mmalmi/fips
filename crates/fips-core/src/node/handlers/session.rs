@@ -10,7 +10,7 @@ use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
 #[cfg(unix)]
-use crate::node::endpoint_payload_is_tcp;
+use crate::node::classify_endpoint_payload;
 use crate::node::session::{EndToEndState, EpochSlot, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -2551,11 +2551,13 @@ impl Node {
         }
         let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
-        let bulk_endpoint_data = send.fsp_flags & FSP_FLAG_CP == 0;
+        let endpoint_class = classify_endpoint_payload(send.payload);
+        let bulk_endpoint_data =
+            send.fsp_flags & FSP_FLAG_CP == 0 && endpoint_class.bulk_endpoint_data;
         let drop_on_backpressure = next_hop_addr == *dest_addr
             && !self.session_direct_path_blocks_direct_payload(dest_addr, send.now_ms)
             && bulk_endpoint_data
-            && !endpoint_payload_is_tcp(send.payload);
+            && endpoint_class.drop_on_backpressure;
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
             cipher: fmp_cipher,

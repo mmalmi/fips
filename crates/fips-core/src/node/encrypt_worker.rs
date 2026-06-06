@@ -256,11 +256,9 @@ impl QueuedFmpSendJob {
 /// queue size: a much deeper queue hides a saturated sender from TCP
 /// for tens of milliseconds, inflating RTT/retransmits instead of
 /// pushing back to TUN promptly.
-const WORKER_CHANNEL_CAP: usize = 1024;
+const DEFAULT_WORKER_CHANNEL_CAP: usize = 1024;
 #[cfg(target_os = "macos")]
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
-#[cfg(not(target_os = "macos"))]
-const WORKER_TOTAL_CHANNEL_CAP: usize = WORKER_CHANNEL_CAP * 4;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
 pub(crate) const DEFAULT_SEND_WEIGHT: u8 = 1;
@@ -269,6 +267,17 @@ pub(crate) const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
 const MIN_SEND_WEIGHT: u8 = 1;
 #[cfg(not(target_os = "macos"))]
 const MAX_SEND_WEIGHT: u8 = 4;
+
+fn worker_channel_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_WORKER_CHANNEL_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_WORKER_CHANNEL_CAP)
+            .clamp(1, 32768)
+    })
+}
 
 #[cfg(not(target_os = "macos"))]
 type FairFlowMap =
@@ -857,11 +866,12 @@ impl EncryptWorkerPool {
     /// returned `EncryptWorkerPool` and all clones go away).
     pub fn spawn(n: usize) -> Self {
         let n = n.max(1);
+        let worker_channel_cap = worker_channel_cap();
         let mut senders = Vec::with_capacity(n);
         for i in 0..n {
             #[cfg(target_os = "macos")]
             {
-                let (tx, rx) = mac_worker_channel(WORKER_CHANNEL_CAP);
+                let (tx, rx) = mac_worker_channel(worker_channel_cap);
                 std::thread::Builder::new()
                     .name(format!("fips-encrypt-{i}"))
                     .spawn(move || run_worker_macos(i, rx))
@@ -871,8 +881,8 @@ impl EncryptWorkerPool {
             #[cfg(not(target_os = "macos"))]
             {
                 let (tx, rx) = fair_worker_channel(
-                    WORKER_TOTAL_CHANNEL_CAP,
-                    WORKER_CHANNEL_CAP,
+                    worker_channel_cap.saturating_mul(4).max(1),
+                    worker_channel_cap,
                     WORKER_FAIR_QUANTUM_BYTES,
                 );
                 std::thread::Builder::new()
@@ -2017,7 +2027,7 @@ impl Default for MacSendRatePacer {
             .ok()
             .and_then(|raw| raw.trim().parse::<f64>().ok())
             .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(24.0 * 1024.0);
+            .unwrap_or(256.0 * 1024.0);
         Self {
             bytes_per_sec,
             burst_bytes,
