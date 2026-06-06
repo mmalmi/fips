@@ -6,13 +6,65 @@ node-synthetic = { max-threads = 1 }
 
 # nextest runs each test in a separate process, so the in-process Tokio mutex in
 # `lock_large_network_test()` cannot serialize these synthetic topology tests
-# on CI. They intentionally send one-shot handshakes without production
-# reconnect timers; keep the packet-burst and disconnect-fanout set mutually
-# exclusive so normal node tests still run in parallel.
+# on CI. They intentionally create live localhost UDP topologies with one-shot
+# handshakes rather than production reconnect timers. Keep that harness
+# mutually exclusive while normal node unit tests still run in parallel.
 [[profile.default.overrides]]
-filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::disconnect::test_disconnect_all_reason_codes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
+filter = '''
+test(node::tests::bloom::test_bloom_filter_)
+| test(node::tests::disconnect::test_disconnect_)
+| test(node::tests::discovery::test_discovery_100_nodes)
+| test(node::tests::discovery::test_reply_learned_)
+| test(node::tests::discovery::test_request_dedup_convergent_paths)
+| test(node::tests::discovery::test_request_forwarding_two_node)
+| test(node::tests::discovery::test_request_target_found_generates_response)
+| test(node::tests::discovery::test_request_three_node_chain)
+| test(node::tests::discovery::test_response_path_mtu_)
+| test(node::tests::forwarding::test_ce_relay_through_forwarding)
+| test(node::tests::forwarding::test_forwarding_)
+| test(node::tests::routing::test_routing_)
+| test(node::tests::session::test_direct_established_)
+| test(node::tests::session::test_discovery_)
+| test(node::tests::session::test_endpoint_data_)
+| test(node::tests::session::test_established_)
+| test(node::tests::session::test_graph_)
+| test(node::tests::session::test_link_dead_)
+| test(node::tests::session::test_rekey_)
+| test(node::tests::session::test_session_)
+| test(node::tests::session::test_tun_outbound_)
+| test(node::tests::session::test_update_peers_)
+| test(node::tests::spanning_tree::test_rejects_tree_announce_)
+| test(node::tests::spanning_tree::test_spanning_tree_)
+| test(node::tests::unit::mesh_signal_warms_session_instead_of_dropping_without_established_session)
+'''
 test-group = 'node-synthetic'
 
 [[profile.ci.overrides]]
-filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::disconnect::test_disconnect_all_reason_codes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
+filter = '''
+test(node::tests::bloom::test_bloom_filter_)
+| test(node::tests::disconnect::test_disconnect_)
+| test(node::tests::discovery::test_discovery_100_nodes)
+| test(node::tests::discovery::test_reply_learned_)
+| test(node::tests::discovery::test_request_dedup_convergent_paths)
+| test(node::tests::discovery::test_request_forwarding_two_node)
+| test(node::tests::discovery::test_request_target_found_generates_response)
+| test(node::tests::discovery::test_request_three_node_chain)
+| test(node::tests::discovery::test_response_path_mtu_)
+| test(node::tests::forwarding::test_ce_relay_through_forwarding)
+| test(node::tests::forwarding::test_forwarding_)
+| test(node::tests::routing::test_routing_)
+| test(node::tests::session::test_direct_established_)
+| test(node::tests::session::test_discovery_)
+| test(node::tests::session::test_endpoint_data_)
+| test(node::tests::session::test_established_)
+| test(node::tests::session::test_graph_)
+| test(node::tests::session::test_link_dead_)
+| test(node::tests::session::test_rekey_)
+| test(node::tests::session::test_session_)
+| test(node::tests::session::test_tun_outbound_)
+| test(node::tests::session::test_update_peers_)
+| test(node::tests::spanning_tree::test_rejects_tree_announce_)
+| test(node::tests::spanning_tree::test_spanning_tree_)
+| test(node::tests::unit::mesh_signal_warms_session_instead_of_dropping_without_established_session)
+'''
 test-group = 'node-synthetic'
