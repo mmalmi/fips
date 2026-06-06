@@ -23,7 +23,7 @@ use crate::node::wire::{
 use crate::node::{
     Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
     NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD, endpoint_payload_is_tcp,
 };
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
@@ -2549,9 +2549,11 @@ impl Node {
         }
         let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
+        let bulk_endpoint_data = send.fsp_flags & FSP_FLAG_CP == 0;
         let drop_on_backpressure = next_hop_addr == *dest_addr
-            && !self.session_direct_path_is_degraded(dest_addr, send.now_ms)
-            && send.fsp_flags & FSP_FLAG_CP == 0;
+            && !self.session_direct_path_blocks_direct_payload(dest_addr, send.now_ms)
+            && bulk_endpoint_data
+            && !endpoint_payload_is_tcp(send.payload);
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
             cipher: fmp_cipher,
@@ -2567,6 +2569,7 @@ impl Node {
             dest_addr: socket_addr,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket,
+            bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,
             queued_at: crate::perf_profile::stamp(),

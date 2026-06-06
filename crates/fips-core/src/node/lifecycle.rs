@@ -774,6 +774,85 @@ impl Node {
             .min(MAX_PARALLEL_PATH_CANDIDATES_PER_PEER.saturating_sub(in_flight_for_peer))
     }
 
+    fn reclaim_lower_priority_inflight_candidate_for_peer(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        candidate: &PeerAddress,
+    ) -> bool {
+        const UNKNOWN_PATH_PRIORITY: u16 = u8::MAX as u16 + 1;
+
+        let Some((candidate_transport_id, candidate_addr)) =
+            self.resolve_peer_address_for_match(candidate)
+        else {
+            return false;
+        };
+        let Some(candidate_priority) =
+            self.configured_path_priority(peer_node_addr, candidate_transport_id, &candidate_addr)
+        else {
+            return false;
+        };
+        let candidate_priority = u16::from(candidate_priority);
+
+        let victim = self
+            .connections
+            .iter()
+            .filter_map(|(link_id, conn)| {
+                let identity = conn.expected_identity()?;
+                if identity.node_addr() != peer_node_addr {
+                    return None;
+                }
+                let transport_id = conn.transport_id()?;
+                let remote_addr = conn.source_addr()?;
+                if transport_id == candidate_transport_id && remote_addr == &candidate_addr {
+                    return None;
+                }
+                let priority = self
+                    .configured_path_priority(peer_node_addr, transport_id, remote_addr)
+                    .map(u16::from)
+                    .unwrap_or(UNKNOWN_PATH_PRIORITY);
+                (priority > candidate_priority).then_some((
+                    *link_id,
+                    priority,
+                    conn.started_at(),
+                    transport_id,
+                    remote_addr.clone(),
+                ))
+            })
+            .max_by_key(|(_, priority, started_at, _, _)| {
+                (*priority, std::cmp::Reverse(*started_at))
+            });
+
+        let Some((link_id, victim_priority, _, victim_transport_id, victim_addr)) = victim else {
+            return false;
+        };
+
+        let Some(conn) = self.connections.remove(&link_id) else {
+            return false;
+        };
+        if let Some(idx) = conn.our_index()
+            && let Some(transport_id) = conn.transport_id()
+        {
+            self.pending_outbound.remove(&(transport_id, idx.as_u32()));
+            let _ = self.index_allocator.free(idx);
+        }
+        self.remove_link(&link_id);
+        self.cleanup_bootstrap_transport_if_unused(victim_transport_id);
+
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            candidate_transport_id = %candidate_transport_id,
+            candidate_addr = %candidate_addr,
+            candidate_priority,
+            victim_link_id = %link_id,
+            victim_transport_id = %victim_transport_id,
+            victim_addr = %victim_addr,
+            victim_priority,
+            "Reclaimed lower-priority in-flight candidate slot for configured direct path"
+        );
+
+        true
+    }
+
     fn discovery_connect_budget(&self) -> usize {
         self.outbound_handshake_slots()
             .min(self.outbound_link_slots())
@@ -1125,7 +1204,7 @@ impl Node {
         };
         match send_result {
             Some(send_result) => {
-                self.note_local_send_outcome(&send_result);
+                self.note_local_send_outcome(&peer_node_addr, &send_result);
                 match send_result {
                     Ok(bytes) => {
                         debug!(
@@ -2961,6 +3040,12 @@ impl Node {
                 continue;
             }
 
+            if concrete_budget == 0
+                && self.reclaim_lower_priority_inflight_candidate_for_peer(&peer_node_addr, addr)
+            {
+                concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
+            }
+
             if concrete_budget == 0 {
                 debug!(
                     npub = %peer_config.npub,
@@ -4019,7 +4104,10 @@ impl Node {
             return true;
         }
 
-        if !peer.can_send() || self.session_direct_path_is_degraded(peer_node_addr, now_ms) {
+        let current_path_sendable = peer.can_send();
+        if !current_path_sendable
+            || self.session_direct_path_blocks_direct_payload(peer_node_addr, now_ms)
+        {
             return true;
         }
 

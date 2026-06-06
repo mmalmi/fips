@@ -88,6 +88,81 @@ fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     })
 }
 
+fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
+    const IPPROTO_TCP: u8 = 6;
+    const IPV4_MIN_HEADER_LEN: usize = 20;
+
+    let Some(version_ihl) = payload.first().copied() else {
+        return false;
+    };
+
+    match version_ihl >> 4 {
+        4 => {
+            if payload.len() < IPV4_MIN_HEADER_LEN {
+                return false;
+            }
+            let header_len = usize::from(version_ihl & 0x0f) * 4;
+            header_len >= IPV4_MIN_HEADER_LEN
+                && payload.len() >= header_len
+                && payload[9] == IPPROTO_TCP
+        }
+        6 => ipv6_payload_next_header(payload).is_some_and(|proto| proto == IPPROTO_TCP),
+        _ => false,
+    }
+}
+
+fn ipv6_payload_next_header(payload: &[u8]) -> Option<u8> {
+    const IPV6_HEADER_LEN: usize = 40;
+    const IPV6_FRAGMENT_HEADER_LEN: usize = 8;
+
+    if payload.len() < IPV6_HEADER_LEN || payload[0] >> 4 != 6 {
+        return None;
+    }
+
+    let mut next_header = payload[6];
+    let mut offset = IPV6_HEADER_LEN;
+    let mut extension_count = 0usize;
+    while ipv6_extension_header_is_skippable(next_header) {
+        if next_header == 44 {
+            if payload.len() < offset + IPV6_FRAGMENT_HEADER_LEN {
+                return None;
+            }
+            next_header = payload[offset];
+            offset += IPV6_FRAGMENT_HEADER_LEN;
+        } else if next_header == 51 {
+            if payload.len() < offset + 2 {
+                return None;
+            }
+            let header_len = (usize::from(payload[offset + 1]) + 2) * 4;
+            if payload.len() < offset + header_len {
+                return None;
+            }
+            next_header = payload[offset];
+            offset += header_len;
+        } else {
+            if payload.len() < offset + 2 {
+                return None;
+            }
+            let header_len = (usize::from(payload[offset + 1]) + 1) * 8;
+            if payload.len() < offset + header_len {
+                return None;
+            }
+            next_header = payload[offset];
+            offset += header_len;
+        }
+        extension_count += 1;
+        if extension_count > 8 {
+            return None;
+        }
+    }
+
+    Some(next_header)
+}
+
+fn ipv6_extension_header_is_skippable(next_header: u8) -> bool {
+    matches!(next_header, 0 | 43 | 44 | 51 | 60 | 135)
+}
+
 /// Half-range of the symmetric jitter applied to per-session rekey timers.
 ///
 /// Each FMP/FSP session draws an offset uniformly from
@@ -769,13 +844,12 @@ pub struct Node {
     last_self_warn: Option<std::time::Instant>,
 
     // === Local Outbound Liveness ===
-    /// Set when a `transport.send` returned a local-side io error
+    /// Set per peer when a `transport.send` returned a local-side io error
     /// (`NetworkUnreachable` / `HostUnreachable` / `AddrNotAvailable`),
-    /// cleared on the next successful send. Used by
-    /// `check_link_heartbeats` to compress the dead-timeout to
-    /// `fast_link_dead_timeout_secs` while our outbound is observed
-    /// broken — direct kernel evidence beats waiting on receive-silence.
-    last_local_send_failure_at: Option<std::time::Instant>,
+    /// cleared on the next successful send to that peer. Used by
+    /// `check_link_heartbeats` to compress only that peer's dead-timeout to
+    /// `fast_link_dead_timeout_secs` while its outbound is observed broken.
+    local_send_failure_at_by_peer: HashMap<NodeAddr, std::time::Instant>,
     /// Set when the rx loop could not complete its 1s maintenance work
     /// inside the watchdog timeout. Link-dead detection may be valid during
     /// overload, but traversal cooldown should not punish a path just because
@@ -942,7 +1016,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
-            last_local_send_failure_at: None,
+            local_send_failure_at_by_peer: HashMap::new(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
@@ -1086,7 +1160,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
-            last_local_send_failure_at: None,
+            local_send_failure_at_by_peer: HashMap::new(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
@@ -2209,6 +2283,21 @@ impl Node {
         })
     }
 
+    pub(in crate::node) fn active_peer_uses_configured_static_udp_path(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer_config) = self.configured_peer(peer_addr) else {
+            return false;
+        };
+
+        peer_config.addresses.iter().any(|candidate| {
+            candidate.seen_at_ms.is_none()
+                && candidate.transport.eq_ignore_ascii_case("udp")
+                && self.active_peer_matches_candidate(peer_addr, candidate)
+        })
+    }
+
     pub(crate) fn discovery_fallback_transit_for_promotion(&self, peer_addr: &NodeAddr) -> bool {
         if let Some(retry_state) = self.retry_pending.get(peer_addr) {
             return retry_state.peer_config.discovery_fallback_transit;
@@ -2457,7 +2546,8 @@ impl Node {
             return None;
         }
         let now_ms = Self::now_ms();
-        let direct_session_degraded = self.session_direct_path_is_degraded(dest_node_addr, now_ms);
+        let direct_session_degraded =
+            self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
 
         let healthy_direct_route = self
             .peers
@@ -2715,6 +2805,15 @@ impl Node {
         }
     }
 
+    pub(in crate::node) fn session_direct_path_blocks_direct_payload(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_path_is_degraded(dest, now_ms)
+            && !self.active_peer_uses_configured_static_udp_path(dest)
+    }
+
     pub(in crate::node) fn mark_session_direct_path_degraded(
         &mut self,
         dest: NodeAddr,
@@ -2969,49 +3068,52 @@ impl Node {
             .await
     }
 
-    /// Update the local-outbound-broken signal from a `transport.send`
-    /// outcome. Sets `last_local_send_failure_at` on local-side io
-    /// errors (NetworkUnreachable / HostUnreachable / AddrNotAvailable);
-    /// clears it on success. The reaper consults this in
-    /// `check_link_heartbeats` to switch to `fast_link_dead_timeout_secs`.
+    /// Update one peer's local-outbound-broken signal from a `transport.send`
+    /// outcome. Sets a per-peer timestamp on local-side io errors
+    /// (NetworkUnreachable / HostUnreachable / AddrNotAvailable); clears that
+    /// peer on success. The reaper consults this in `check_link_heartbeats` to
+    /// switch only that peer to `fast_link_dead_timeout_secs`.
     pub(in crate::node) fn note_local_send_outcome(
         &mut self,
+        node_addr: &NodeAddr,
         result: &Result<usize, TransportError>,
     ) {
         match result {
             Ok(_) => {
-                if self.last_local_send_failure_at.is_some() {
-                    self.last_local_send_failure_at = None;
-                }
+                self.local_send_failure_at_by_peer.remove(node_addr);
             }
             Err(error) if error.is_local_route_unavailable() => {
-                self.last_local_send_failure_at = Some(std::time::Instant::now());
+                self.local_send_failure_at_by_peer
+                    .insert(*node_addr, std::time::Instant::now());
             }
             Err(_) => {}
         }
     }
 
-    /// Return the active dead-timeout after considering recent local route
-    /// failures. The fast-dead signal is intentionally short-lived: on the
-    /// UDP worker path a send call can return before the kernel result is
-    /// observed, so a single stale route error must not compress liveness for
-    /// the whole normal dead-timeout window.
-    pub(in crate::node) fn local_send_failure_dead_timeout(
-        &mut self,
+    /// Return the active dead-timeout for one peer after considering recent
+    /// local route failures. The fast-dead signal is intentionally short-lived:
+    /// on the UDP worker path a send call can return before the kernel result
+    /// is observed, so a stale route error must not compress liveness for the
+    /// whole normal dead-timeout window.
+    pub(in crate::node) fn local_send_failure_dead_timeout_for_peer(
+        &self,
+        node_addr: &NodeAddr,
         now: std::time::Instant,
         dead_timeout: std::time::Duration,
         fast_dead_timeout: std::time::Duration,
     ) -> std::time::Duration {
-        match self.last_local_send_failure_at {
+        match self.local_send_failure_at_by_peer.get(node_addr).copied() {
             Some(t) if now.duration_since(t) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW => {
                 fast_dead_timeout.min(dead_timeout)
             }
-            Some(_) => {
-                self.last_local_send_failure_at = None;
-                dead_timeout
-            }
             None => dead_timeout,
+            Some(_) => dead_timeout,
         }
+    }
+
+    pub(in crate::node) fn purge_expired_local_send_failures(&mut self, now: std::time::Instant) {
+        self.local_send_failure_at_by_peer
+            .retain(|_, at| now.duration_since(*at) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW);
     }
 
     pub(in crate::node) fn mark_rx_loop_maintenance_timeout(&mut self) {
@@ -3213,6 +3315,7 @@ impl Node {
                         }
                     }
                     let scheduling_weight = self.send_weight_for_peer(node_addr);
+                    let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
                     workers.dispatch(self::encrypt_worker::FmpSendJob {
                         cipher: cipher_clone,
                         counter: reserved_counter,
@@ -3222,7 +3325,8 @@ impl Node {
                         dest_addr: socket_addr,
                         #[cfg(any(target_os = "linux", target_os = "macos"))]
                         connected_socket,
-                        drop_on_backpressure: fmp_plaintext_is_bulk_session_datagram(plaintext),
+                        bulk_endpoint_data,
+                        drop_on_backpressure: bulk_endpoint_data,
                         scheduling_weight,
                         queued_at: crate::perf_profile::stamp(),
                     });
@@ -3258,7 +3362,7 @@ impl Node {
                 .ok_or(NodeError::TransportNotFound(transport_id))?;
             transport.send(&remote_addr, &wire_packet).await
         };
-        self.note_local_send_outcome(&send_result);
+        self.note_local_send_outcome(node_addr, &send_result);
         let bytes_sent = send_result.map_err(|e| match e {
             TransportError::MtuExceeded { packet_size, mtu } => NodeError::MtuExceeded {
                 node_addr: *node_addr,

@@ -852,7 +852,10 @@ impl Node {
                     .peers
                     .get(&peer_node_addr)
                     .is_some_and(|peer| !peer.can_send())
-                    || self.session_direct_path_is_degraded(&peer_node_addr, packet.timestamp_ms);
+                    || self.session_direct_path_blocks_direct_payload(
+                        &peer_node_addr,
+                        packet.timestamp_ms,
+                    );
                 if !remote_epoch_changed
                     && !existing_path_unusable
                     && !self.alternate_path_priority_allows_replace(
@@ -1278,7 +1281,7 @@ impl Node {
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
             let existing_path_unusable = existing_path_unusable
-                || self.session_direct_path_is_degraded(&peer_node_addr, current_time_ms);
+                || self.session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms);
             let outbound_alternate_path_wins = outbound_alternate_path
                 && self.alternate_path_priority_allows_replace(
                     &peer_node_addr,

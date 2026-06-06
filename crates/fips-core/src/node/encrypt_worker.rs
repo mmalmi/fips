@@ -136,9 +136,12 @@ pub(crate) struct FmpSendJob {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    /// True for tunnel endpoint-data payloads that should use the worker's
+    /// bulk lane instead of the control/liveness reserve.
+    pub bulk_endpoint_data: bool,
     /// Bulk endpoint data may be dropped when the kernel reports UDP
-    /// send-queue exhaustion. Control/rekey frames keep retrying so
-    /// congestion cannot strand the session.
+    /// send-queue exhaustion. Control/rekey frames and TCP tunnel packets keep
+    /// retrying so congestion cannot strand the session or silently drop TCP.
     pub drop_on_backpressure: bool,
     /// Bounded scheduler weight for this send target. `1` is normal
     /// best-effort service; configured peers can get a small boost and
@@ -196,8 +199,14 @@ impl QueuedFmpSendJob {
         self.job.dest_addr
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn drop_on_backpressure(&self) -> bool {
         self.job.drop_on_backpressure
+    }
+
+    #[cfg(target_os = "macos")]
+    fn bulk_endpoint_data(&self) -> bool {
+        self.job.bulk_endpoint_data
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -358,7 +367,7 @@ impl MacWorkerQueueState {
     }
 
     fn push_job(&mut self, job: QueuedFmpSendJob) {
-        if job.drop_on_backpressure() {
+        if job.bulk_endpoint_data() {
             self.bulk_queue.push_back(job);
         } else {
             self.control_queue.push_back(job);
@@ -379,6 +388,7 @@ enum MacWorkerTryPushError {
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Debug)]
 struct MacWorkerPushError;
 
 #[cfg(target_os = "macos")]
@@ -414,7 +424,7 @@ impl MacWorkerSender {
             drop(job);
             return Err(MacWorkerTryPushError::Closed);
         }
-        let cap = if job.drop_on_backpressure() {
+        let cap = if job.bulk_endpoint_data() {
             self.inner.cap
         } else {
             self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
@@ -443,7 +453,7 @@ impl MacWorkerSender {
                 drop(job);
                 return Err(MacWorkerPushError);
             }
-            let cap = if job.drop_on_backpressure() {
+            let cap = if job.bulk_endpoint_data() {
                 self.inner.cap
             } else {
                 self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
@@ -563,14 +573,12 @@ impl FairFlowQueue {
 enum FairReserve {
     Reserved,
     Full,
-    Dropped,
     Closed,
 }
 
 #[cfg(not(target_os = "macos"))]
 enum FairWorkerTryPushError {
     Full(Box<QueuedFmpSendJob>),
-    Dropped,
     Closed,
 }
 
@@ -579,7 +587,6 @@ impl std::fmt::Debug for FairWorkerTryPushError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Full(_) => f.write_str("Full"),
-            Self::Dropped => f.write_str("Dropped"),
             Self::Closed => f.write_str("Closed"),
         }
     }
@@ -615,7 +622,6 @@ fn fair_worker_channel(
 impl FairWorkerSender {
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
         let key = job.flow_key();
-        let drop_on_backpressure = job.drop_on_backpressure();
         let job = if self.tx.len() < self.admission.fast_lane_cap {
             match self.tx.try_send(job) {
                 Ok(()) => return Ok(()),
@@ -629,10 +635,7 @@ impl FairWorkerSender {
             job
         };
 
-        match self
-            .admission
-            .try_reserve(key, job.scheduling_weight(), drop_on_backpressure)
-        {
+        match self.admission.try_reserve(key, job.scheduling_weight()) {
             FairReserve::Reserved => {
                 let mut job = job;
                 job.mark_fair_reserved();
@@ -650,10 +653,6 @@ impl FairWorkerSender {
                 }
             }
             FairReserve::Full => Err(FairWorkerTryPushError::Full(Box::new(job))),
-            FairReserve::Dropped => {
-                drop(job);
-                Err(FairWorkerTryPushError::Dropped)
-            }
             FairReserve::Closed => {
                 drop(job);
                 Err(FairWorkerTryPushError::Closed)
@@ -681,12 +680,7 @@ impl FairWorkerSender {
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmission {
-    fn try_reserve(
-        &self,
-        key: SocketAddr,
-        weight: usize,
-        drop_on_backpressure: bool,
-    ) -> FairReserve {
+    fn try_reserve(&self, key: SocketAddr, weight: usize) -> FairReserve {
         let mut state = self
             .state
             .lock()
@@ -697,11 +691,7 @@ impl FairAdmission {
         if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
             return FairReserve::Reserved;
         }
-        if drop_on_backpressure && !(state.flows.len() == 1 && state.flows.contains_key(&key)) {
-            FairReserve::Dropped
-        } else {
-            FairReserve::Full
-        }
+        FairReserve::Full
     }
 
     fn reserve_blocking(&self, key: SocketAddr, weight: usize) -> Result<(), FairWorkerPushError> {
@@ -905,12 +895,11 @@ impl EncryptWorkerPool {
     /// behave on a single-flow run. Fire-and-forget — the worker
     /// handles send errors itself via stats counters.
     ///
-    /// Uses `try_send` for the common uncontended case, then blocks
-    /// only when the bounded worker channel is full. These jobs carry
-    /// tunneled IP packets, not application UDP datagrams; dropping at
-    /// this internal queue makes TCP-over-TUN collapse with avoidable
-    /// retransmits. Blocking here pushes back toward the TUN reader
-    /// and lets the kernel/app TCP stack pace the flow instead.
+    /// Uses `try_send` for the common uncontended case. Non-droppable
+    /// jobs block when the bounded worker channel is full, pushing
+    /// TCP-over-TUN pressure back toward the TUN reader so the kernel/app
+    /// TCP stack can pace the flow. Droppable bulk keeps the bounded queue
+    /// from stalling liveness work when a lossy sender overwhelms egress.
     pub fn dispatch(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
@@ -963,7 +952,7 @@ impl EncryptWorkerPool {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
                 if job.drop_on_backpressure() {
-                    record_encrypt_worker_bulk_queue_drop(idx);
+                    record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -993,7 +982,7 @@ impl EncryptWorkerPool {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
                 if job.drop_on_backpressure() {
-                    record_encrypt_worker_bulk_queue_drop(idx);
+                    record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -1010,9 +999,6 @@ impl EncryptWorkerPool {
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(FairWorkerTryPushError::Dropped) => {
-                record_encrypt_worker_bulk_queue_drop(idx);
-            }
             Err(FairWorkerTryPushError::Closed) => {
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
@@ -1020,14 +1006,14 @@ impl EncryptWorkerPool {
     }
 }
 
-fn record_encrypt_worker_bulk_queue_drop(worker: usize) {
+fn record_encrypt_worker_backpressure_drop(worker: usize) {
     static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if n < 8 || n.is_multiple_of(10000) {
+    if n < 8 || n.is_multiple_of(100_000) {
         warn!(
-            worker = worker,
+            worker,
             drops = n + 1,
-            "EncryptWorker queue full; dropping bulk data packet"
+            "EncryptWorker channel full; dropping bulk data packet"
         );
     }
 }
@@ -1511,6 +1497,7 @@ fn flush_batch_sync(
             dest_addr,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket,
+            bulk_endpoint_data: _,
             drop_on_backpressure,
             scheduling_weight: _,
             queued_at,
@@ -2304,6 +2291,7 @@ mod unix_tests {
                 dest_addr: recv_addr,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 connected_socket: None,
+                bulk_endpoint_data: true,
                 drop_on_backpressure: true,
                 scheduling_weight: DEFAULT_SEND_WEIGHT,
                 queued_at: None,
@@ -2367,6 +2355,22 @@ mod mac_queue_tests {
         dest_addr: SocketAddr,
         drop_on_backpressure: bool,
     ) -> QueuedFmpSendJob {
+        queued_job_classified(
+            socket,
+            cipher,
+            dest_addr,
+            drop_on_backpressure,
+            drop_on_backpressure,
+        )
+    }
+
+    fn queued_job_classified(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+    ) -> QueuedFmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
@@ -2378,6 +2382,7 @@ mod mac_queue_tests {
             socket,
             dest_addr,
             connected_socket: None,
+            bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
@@ -2432,6 +2437,100 @@ mod mac_queue_tests {
             ));
         });
     }
+
+    #[test]
+    fn mac_worker_keeps_non_droppable_endpoint_data_in_bulk_lane() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = mac_worker_channel(2);
+            let addr: SocketAddr = "127.0.0.1:10013".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    false
+                ))
+                .is_ok()
+            );
+            assert!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    false
+                ))
+                .is_ok()
+            );
+            assert!(matches!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    false
+                )),
+                Err(MacWorkerTryPushError::Full(_))
+            ));
+            assert!(
+                tx.try_push(queued_job_classified(socket, &cipher, addr, false, false))
+                    .is_ok()
+            );
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 3));
+            assert_eq!(batch.len(), 3);
+            assert!(!batch[0].bulk_endpoint_data());
+            assert!(!batch[0].drop_on_backpressure());
+            assert!(batch[1].bulk_endpoint_data());
+            assert!(!batch[1].drop_on_backpressure());
+            assert!(batch[2].bulk_endpoint_data());
+            assert!(!batch[2].drop_on_backpressure());
+        });
+    }
+
+    #[test]
+    fn mac_worker_bulk_push_blocks_until_space_is_available() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = mac_worker_channel(1);
+            let addr: SocketAddr = "127.0.0.1:10012".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job(socket.clone(), &cipher, addr, true))
+                    .is_ok()
+            );
+
+            let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let queued_in_thread = Arc::clone(&queued);
+            let thread_cipher = cipher.clone();
+            let handle = std::thread::spawn(move || {
+                tx.push_blocking(queued_job(socket, &thread_cipher, addr, true))
+                    .expect("bulk push should complete after queue space opens");
+                queued_in_thread.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(
+                !queued.load(std::sync::atomic::Ordering::Acquire),
+                "bulk push should wait while the bulk queue is full"
+            );
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 1));
+            assert_eq!(batch.len(), 1);
+            assert!(batch[0].drop_on_backpressure());
+
+            handle.join().expect("bulk push thread should not panic");
+            assert!(queued.load(std::sync::atomic::Ordering::Acquire));
+
+            batch.clear();
+            assert!(rx.recv_batch(&mut batch, 1));
+            assert_eq!(batch.len(), 1);
+            assert!(batch[0].drop_on_backpressure());
+        });
+    }
 }
 
 #[cfg(all(test, unix, not(target_os = "macos")))]
@@ -2478,6 +2577,7 @@ mod fair_queue_tests {
             dest_addr,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket: None,
+            bulk_endpoint_data: drop_on_backpressure,
             drop_on_backpressure,
             scheduling_weight,
             queued_at: None,
@@ -2529,7 +2629,7 @@ mod fair_queue_tests {
     }
 
     #[test]
-    fn hot_flow_drops_when_others_are_waiting() {
+    fn hot_flow_backpressures_when_others_are_waiting() {
         with_test_socket(|socket, cipher| {
             let (tx, _rx) = fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES);
             let hot: SocketAddr = "127.0.0.1:10003".parse().unwrap();
@@ -2552,7 +2652,7 @@ mod fair_queue_tests {
                 .unwrap();
             assert!(matches!(
                 tx.try_push(queued_job(socket, &cipher, hot, 128, true, 1)),
-                Err(FairWorkerTryPushError::Dropped)
+                Err(FairWorkerTryPushError::Full(_))
             ));
         });
     }
@@ -2632,7 +2732,7 @@ mod fair_queue_tests {
                     true,
                     DEFAULT_SEND_WEIGHT,
                 )),
-                Err(FairWorkerTryPushError::Dropped)
+                Err(FairWorkerTryPushError::Full(_))
             ));
         });
     }
@@ -2874,6 +2974,7 @@ mod tests {
                     dest_addr: dest,
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
                     connected_socket: None,
+                    bulk_endpoint_data: true,
                     drop_on_backpressure: true,
                     scheduling_weight: DEFAULT_SEND_WEIGHT,
                     queued_at: None,

@@ -541,8 +541,7 @@ impl Node {
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
         let dead_timeout = Duration::from_secs(self.config.node.link_dead_timeout_secs);
         let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
-        let local_send_failure_timeout =
-            self.local_send_failure_dead_timeout(now, dead_timeout, fast_dead_timeout);
+        self.purge_expired_local_send_failures(now);
         let defer_dead_peer_removal = self.rx_loop_maintenance_timed_out_recently();
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
 
@@ -557,6 +556,12 @@ impl Node {
 
             // Check liveness via MMP receiver last_recv_time.
             // Fall back to session_start for peers that never sent data.
+            let local_send_failure_timeout = self.local_send_failure_dead_timeout_for_peer(
+                node_addr,
+                now,
+                dead_timeout,
+                fast_dead_timeout,
+            );
             let effective_dead_timeout = self
                 .traversal_path_link_dead_timeout(
                     node_addr,

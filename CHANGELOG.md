@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.49] - 2026-06-06
+
+### Fixed
+
+- TCP endpoint-data packets now backpressure instead of being dropped by the
+  encrypt worker under bulk-send pressure, preventing stalled session
+  initiation and direct endpoint-data delivery regressions in CI.
+- Local route failures now shorten link-dead detection only for the affected
+  peer, so one broken outbound path no longer demotes unrelated direct peers.
+- Configured static UDP paths remain preferred while direct probing continues,
+  and active refresh can reclaim lower-priority in-flight slots for those
+  configured direct paths.
+
 ## [0.3.48] - 2026-06-06
 
 ### Fixed

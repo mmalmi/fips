@@ -3446,6 +3446,99 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
 }
 
 #[tokio::test]
+async fn active_direct_refresh_reclaims_inflight_slot_for_configured_static_path() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let primary_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        primary_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(primary_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:20000");
+    let active_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, active_link_id, 1_000);
+    active_peer.set_current_addr(primary_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+    node.links.insert(
+        active_link_id,
+        Link::connectionless(
+            active_link_id,
+            primary_id,
+            current_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let static_addr = "127.0.0.1:9";
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            static_addr,
+            10,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers = vec![peer_config.clone()];
+
+    for port in [10, 11, 12, 13] {
+        node.initiate_connection(
+            primary_id,
+            TransportAddr::from_string(&format!("127.0.0.1:{port}")),
+            peer_identity,
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        node.connection_count(),
+        4,
+        "test setup should fill the per-peer path-candidate budget"
+    );
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    let static_transport_addr = TransportAddr::from_string(static_addr);
+    assert!(
+        node.find_link_by_addr(primary_id, &static_transport_addr)
+            .is_some(),
+        "a configured static path must be able to reclaim a lower-priority in-flight slot"
+    );
+    assert_eq!(
+        node.connection_count(),
+        4,
+        "refresh should replace one lower-priority candidate instead of exceeding the cap"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn active_fallback_static_hint_also_queues_nostr_traversal() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::node::session::{EndToEndState, SessionEntry};
@@ -4342,7 +4435,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
 }
 
 #[tokio::test]
-async fn authenticated_lower_priority_packet_does_not_rotate_healthy_static_path() {
+async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_path() {
     let local_identity = Identity::generate();
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
@@ -4439,10 +4532,36 @@ async fn authenticated_lower_priority_packet_does_not_rotate_healthy_static_path
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
         active.current_addr(),
-        Some(&public_addr),
-        "degraded selected path should still be allowed to roam to an authenticated alternate"
+        Some(&static_addr),
+        "session degradation alone should not rotate away from an operator-configured static path"
     );
-    assert_eq!(active.idle_time(3_100), 0);
+    assert_eq!(
+        active.idle_time(3_100),
+        2_100,
+        "suppressed lower-priority traffic should still not refresh selected-path liveness"
+    );
+
+    node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
+    node.process_authentic_fmp_plaintext(
+        &peer_node_addr,
+        transport_id,
+        &public_addr,
+        3_200,
+        64,
+        3,
+        false,
+        false,
+        &[0, 0, 0, 0],
+    )
+    .await;
+
+    let active = node.get_peer(&peer_node_addr).expect("peer");
+    assert_eq!(
+        active.current_addr(),
+        Some(&public_addr),
+        "degraded discovered paths should still be allowed to roam to an authenticated alternate"
+    );
+    assert_eq!(active.idle_time(3_200), 0);
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();
@@ -4501,7 +4620,7 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
     let dial_transport_id = TransportId::new(2);
     let recv_transport_id = TransportId::new(3);
     let new_link_id = LinkId::new(11);
-    let gateway_addr = TransportAddr::from_string("192.168.178.91:51830");
+    let gateway_addr = TransportAddr::from_string("198.51.100.91:51830");
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
     let msg1 = new_conn
         .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
@@ -4956,29 +5075,111 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_quick_reprobe() {
 #[test]
 fn local_send_failure_fast_dead_signal_expires_quickly() {
     let mut node = make_node();
+    let peer_addr = make_node_addr(0xA1);
     let now = std::time::Instant::now();
     let dead_timeout = std::time::Duration::from_secs(30);
     let fast_dead_timeout = std::time::Duration::from_secs(5);
 
-    node.last_local_send_failure_at = Some(now);
+    node.local_send_failure_at_by_peer.insert(peer_addr, now);
 
     assert_eq!(
-        node.local_send_failure_dead_timeout(now, dead_timeout, fast_dead_timeout),
+        node.local_send_failure_dead_timeout_for_peer(
+            &peer_addr,
+            now,
+            dead_timeout,
+            fast_dead_timeout
+        ),
         fast_dead_timeout
     );
-    assert!(node.last_local_send_failure_at.is_some());
+    assert!(node.local_send_failure_at_by_peer.contains_key(&peer_addr));
 
+    let later = now + std::time::Duration::from_secs(4);
+    node.purge_expired_local_send_failures(later);
     assert_eq!(
-        node.local_send_failure_dead_timeout(
-            now + std::time::Duration::from_secs(4),
+        node.local_send_failure_dead_timeout_for_peer(
+            &peer_addr,
+            later,
             dead_timeout,
             fast_dead_timeout,
         ),
         dead_timeout
     );
     assert!(
-        node.last_local_send_failure_at.is_none(),
+        !node.local_send_failure_at_by_peer.contains_key(&peer_addr),
         "stale route failures must not keep compressing link-dead timeout"
+    );
+}
+
+#[tokio::test]
+async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_peer() {
+    let local_identity = Identity::generate();
+    let quiet_identity = Identity::generate();
+    let failed_identity = Identity::generate();
+    let quiet_config = crate::config::PeerConfig {
+        npub: quiet_identity.npub(),
+        alias: Some("quiet-lan-peer".to_string()),
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "198.51.100.57:51820",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let quiet_peer = PeerIdentity::from_npub(&quiet_config.npub).expect("quiet peer identity");
+    let quiet_addr = *quiet_peer.node_addr();
+    let failed_peer =
+        PeerIdentity::from_pubkey(failed_identity.pubkey_full().x_only_public_key().0);
+    let failed_addr = *failed_peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(quiet_config);
+    let session = make_test_fmp_session(&local_identity, &quiet_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 2;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut quiet_active = ActivePeer::with_session(
+        quiet_peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("198.51.100.57:51820"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    quiet_active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(6),
+    );
+    node.peers.insert(quiet_addr, quiet_active);
+
+    // Simulate a route-unavailable send to some other peer. The quiet peer
+    // has exceeded the fast timeout, but not the normal link-dead timeout.
+    node.local_send_failure_at_by_peer
+        .insert(failed_addr, std::time::Instant::now());
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.peers.contains_key(&quiet_addr),
+        "a local route failure for {} must not demote unrelated healthy direct peer {}",
+        failed_addr,
+        quiet_addr
+    );
+    assert!(
+        !node.retry_pending.contains_key(&quiet_addr),
+        "unrelated local route failures must not schedule direct reconnect for the quiet peer"
     );
 }
 
@@ -5010,6 +5211,48 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
     assert!(!fmp_plaintext_is_bulk_session_datagram(
         &setup_datagram.encode()
     ));
+}
+
+#[test]
+fn endpoint_payload_tcp_classifier_handles_common_ip_packets() {
+    let mut ipv4_tcp = [0u8; 20];
+    ipv4_tcp[0] = 0x45;
+    ipv4_tcp[9] = 6;
+    assert!(endpoint_payload_is_tcp(&ipv4_tcp));
+
+    let mut ipv4_udp = ipv4_tcp;
+    ipv4_udp[9] = 17;
+    assert!(!endpoint_payload_is_tcp(&ipv4_udp));
+
+    let mut ipv4_tcp_with_options = [0u8; 24];
+    ipv4_tcp_with_options[0] = 0x46;
+    ipv4_tcp_with_options[9] = 6;
+    assert!(endpoint_payload_is_tcp(&ipv4_tcp_with_options));
+
+    let mut ipv6_tcp = [0u8; 40];
+    ipv6_tcp[0] = 0x60;
+    ipv6_tcp[6] = 6;
+    assert!(endpoint_payload_is_tcp(&ipv6_tcp));
+
+    let mut ipv6_udp = ipv6_tcp;
+    ipv6_udp[6] = 17;
+    assert!(!endpoint_payload_is_tcp(&ipv6_udp));
+
+    let mut ipv6_hop_tcp = vec![0u8; 48];
+    ipv6_hop_tcp[0] = 0x60;
+    ipv6_hop_tcp[6] = 0;
+    ipv6_hop_tcp[40] = 6;
+    ipv6_hop_tcp[41] = 0;
+    assert!(endpoint_payload_is_tcp(&ipv6_hop_tcp));
+
+    let mut ipv6_frag_tcp = vec![0u8; 48];
+    ipv6_frag_tcp[0] = 0x60;
+    ipv6_frag_tcp[6] = 44;
+    ipv6_frag_tcp[40] = 6;
+    assert!(endpoint_payload_is_tcp(&ipv6_frag_tcp));
+
+    assert!(!endpoint_payload_is_tcp(&[]));
+    assert!(!endpoint_payload_is_tcp(&[0x60; 8]));
 }
 
 #[tokio::test]
