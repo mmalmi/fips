@@ -337,6 +337,29 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     total
 }
 
+fn edge_peer_state(nodes: &[TestNode], i: usize, j: usize) -> (bool, bool) {
+    let j_addr = *nodes[j].node.node_addr();
+    let i_addr = *nodes[i].node.node_addr();
+    (
+        nodes[i].node.get_peer(&j_addr).is_some(),
+        nodes[j].node.get_peer(&i_addr).is_some(),
+    )
+}
+
+fn missing_edge_handshakes(
+    nodes: &[TestNode],
+    edges: &[(usize, usize)],
+) -> Vec<(usize, usize, bool, bool)> {
+    let mut missing = Vec::new();
+    for &(i, j) in edges {
+        let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
+        if !i_has_j || !j_has_i {
+            missing.push((i, j, i_has_j, j_has_i));
+        }
+    }
+    missing
+}
+
 /// Repair synthetic test edges whose one-shot UDP handshake packet was dropped.
 ///
 /// The large topology tests create 250 links by sending exactly one msg1 per
@@ -352,20 +375,21 @@ async fn repair_missing_edge_handshakes(
 ) -> usize {
     let mut retries = 0;
 
-    for attempt in 0..5 {
-        let mut missing = Vec::new();
-        for &(i, j) in edges {
-            let j_addr = *nodes[j].node.node_addr();
-            let i_addr = *nodes[i].node.node_addr();
-            let i_has_j = nodes[i].node.get_peer(&j_addr).is_some();
-            let j_has_i = nodes[j].node.get_peer(&i_addr).is_some();
-            if !i_has_j || !j_has_i {
-                missing.push((i, j, i_has_j, j_has_i));
-            }
-        }
+    for attempt in 0..12 {
+        let mut missing = missing_edge_handshakes(nodes, edges);
 
         if missing.is_empty() {
             break;
+        }
+
+        if attempt > 0 {
+            let backoff_ms = 25 * (attempt as u64).min(8);
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            let _ = drain_all_packets(nodes, false).await;
+            missing = missing_edge_handshakes(nodes, edges);
+            if missing.is_empty() {
+                break;
+            }
         }
 
         if verbose {
@@ -376,34 +400,21 @@ async fn repair_missing_edge_handshakes(
             );
         }
 
-        for (i, j, i_has_j, j_has_i) in missing {
-            // To repair a one-sided edge, send the handshake toward the side
-            // that is missing the peer. The responder creates the missing
-            // peer entry; sending from the missing side can be rejected by the
-            // already-established peer as a duplicate.
-            if !i_has_j {
-                initiate_handshake(nodes, j, i).await;
-                retries += 1;
-                let _ = drain_all_packets(nodes, false).await;
-            }
+        for (i, j, _, _) in missing {
+            for (from, to) in [(i, j), (j, i)] {
+                let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
+                if i_has_j && j_has_i {
+                    break;
+                }
 
-            let j_addr = *nodes[j].node.node_addr();
-            let i_addr = *nodes[i].node.node_addr();
-            let j_still_missing_i = nodes[j].node.get_peer(&i_addr).is_none();
-            let i_still_missing_j = nodes[i].node.get_peer(&j_addr).is_none();
-
-            if !j_has_i && j_still_missing_i {
-                initiate_handshake(nodes, i, j).await;
-                retries += 1;
-                let _ = drain_all_packets(nodes, false).await;
-            } else if i_still_missing_j {
-                initiate_handshake(nodes, j, i).await;
+                initiate_handshake(nodes, from, to).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
             }
         }
     }
 
+    let _ = drain_all_packets(nodes, false).await;
     retries
 }
 
