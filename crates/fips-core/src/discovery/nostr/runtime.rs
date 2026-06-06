@@ -174,6 +174,15 @@ fn next_advert_publish_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(ADVERT_PUBLISH_RETRY_MAX)
 }
 
+fn signal_answer_timeout(config: &NostrDiscoveryConfig) -> Duration {
+    Duration::from_secs(
+        config
+            .signal_ttl_secs
+            .min(config.attempt_timeout_secs)
+            .max(1),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NostrRelayConfig {
     advert_relays: Vec<String>,
@@ -1480,12 +1489,7 @@ impl NostrDiscovery {
                 .unwrap_or_else(|| BootstrapError::MissingRelays(peer_config.npub.clone())));
         }
 
-        let answer = match tokio::time::timeout(
-            Duration::from_secs(self.config.signal_ttl_secs),
-            rx,
-        )
-        .await
-        {
+        let answer = match tokio::time::timeout(signal_answer_timeout(&self.config), rx).await {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => {
                 let _ = self.pending_answers.lock().await.remove(&offer.nonce);
@@ -2510,6 +2514,23 @@ mod tests {
             next_advert_publish_retry_delay(Duration::from_secs(30)),
             ADVERT_PUBLISH_RETRY_MAX
         );
+    }
+
+    #[test]
+    fn signal_answer_wait_is_bounded_by_attempt_timeout() {
+        let config = NostrDiscoveryConfig {
+            signal_ttl_secs: 120,
+            attempt_timeout_secs: 10,
+            ..Default::default()
+        };
+        assert_eq!(signal_answer_timeout(&config), Duration::from_secs(10));
+
+        let config = NostrDiscoveryConfig {
+            signal_ttl_secs: 5,
+            attempt_timeout_secs: 10,
+            ..Default::default()
+        };
+        assert_eq!(signal_answer_timeout(&config), Duration::from_secs(5));
     }
 
     #[test]

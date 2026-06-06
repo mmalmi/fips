@@ -20,7 +20,7 @@ members = [
 resolver = "2"
 
 [dependencies]
-fips-core = { version = "0.3.46", path = "crates/fips-core", features = ["webrtc-transport"] }
+fips-core = { version = "0.3.47", path = "crates/fips-core", features = ["webrtc-transport"] }
 
 ratatui = "0.30"
 serde_json = "1.0"

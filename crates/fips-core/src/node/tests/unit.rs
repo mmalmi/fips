@@ -2888,6 +2888,32 @@ async fn update_peers_reports_unchanged_for_identical_entry() {
 }
 
 #[tokio::test]
+async fn update_peers_refreshes_stale_retry_config_even_when_peer_is_unchanged() {
+    let mut node = make_node();
+    let npub = npub_for_test();
+    let peer = auto_connect_peer(npub, "127.0.0.1:9");
+    let identity = PeerIdentity::from_npub(&peer.npub).unwrap();
+    let node_addr = *identity.node_addr();
+    node.config.peers = vec![peer.clone()];
+
+    let mut stale_retry = super::super::retry::RetryState::new(auto_connect_peer(
+        peer.npub.clone(),
+        "203.0.113.99:51820",
+    ));
+    stale_retry.retry_after_ms = 123_456;
+    stale_retry.reconnect = true;
+    node.retry_pending.insert(node_addr, stale_retry);
+
+    let outcome = node.update_peers(vec![peer.clone()]).await.unwrap();
+
+    assert_eq!(outcome.added, 0);
+    assert_eq!(outcome.updated, 0);
+    assert_eq!(outcome.unchanged, 1);
+    let retry = node.retry_pending.get(&node_addr).unwrap();
+    assert_eq!(retry.peer_config.addresses, peer.addresses);
+}
+
+#[tokio::test]
 async fn update_peers_redials_existing_auto_peer_with_direct_hint() {
     let mut node = make_node();
     let (packet_tx, packet_rx) = packet_channel(64);

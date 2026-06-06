@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.47] - 2026-06-06
+
+### Fixed
+
+- Peer-list refreshes now update existing retry state even when the peer entry
+  itself is unchanged, preventing stale retry candidates from surviving after
+  static/direct address hints have been refreshed.
+- Nostr traversal initiators now bound the wait for an answer by the traversal
+  attempt timeout instead of the full signal TTL, so stale offers fail and
+  retry in seconds rather than waiting up to the event freshness window.
+
 ## [0.3.46] - 2026-06-06
 
 ### Fixed

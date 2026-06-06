@@ -197,6 +197,9 @@ impl Node {
                     *node_addr,
                     new_pc.discovery_fallback_transit,
                 );
+                if let Some(state) = self.retry_pending.get_mut(node_addr) {
+                    state.peer_config = new_pc.clone();
+                }
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
                     auto_connect_refresh_configs.push(new_pc.clone());
                 }
