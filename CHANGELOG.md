@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.51] - 2026-06-06
+
+### Fixed
+
+- Direct-path payload routing now keeps a healthy low-cost direct peer selected
+  instead of falling through to fallback selection, improving stable LAN path
+  throughput.
+- macOS direct UDP sends are paced by default to avoid bursty utun/Wi-Fi queue
+  stalls during high-throughput idle-daemon traffic.
+- Bloom filter membership checks now reuse the SHA-256 hash pair across all
+  filter probes, reducing per-packet routing overhead.
+
 ## [0.3.50] - 2026-06-06
 
 ### Fixed
