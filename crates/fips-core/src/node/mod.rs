@@ -75,6 +75,24 @@ const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
 const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
 const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FmpPlaintextTrafficClass {
+    bulk_endpoint_data: bool,
+    drop_on_backpressure: bool,
+}
+
+fn classify_fmp_plaintext_traffic(plaintext: &[u8]) -> FmpPlaintextTrafficClass {
+    let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
+    // At this layer established FSP payloads are already end-to-end encrypted,
+    // so a bulk SessionDatagram may still be TCP endpoint traffic. Keep it out
+    // of the control lane, but only the pre-FSP endpoint path may mark known
+    // non-TCP packets as discardable under sender backpressure.
+    FmpPlaintextTrafficClass {
+        bulk_endpoint_data,
+        drop_on_backpressure: false,
+    }
+}
+
 fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     if plaintext
         .first()
@@ -3330,7 +3348,7 @@ impl Node {
                         }
                     }
                     let scheduling_weight = self.send_weight_for_peer(node_addr);
-                    let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
+                    let traffic_class = classify_fmp_plaintext_traffic(plaintext);
                     workers.dispatch(self::encrypt_worker::FmpSendJob {
                         cipher: cipher_clone,
                         counter: reserved_counter,
@@ -3340,8 +3358,8 @@ impl Node {
                         dest_addr: socket_addr,
                         #[cfg(any(target_os = "linux", target_os = "macos"))]
                         connected_socket,
-                        bulk_endpoint_data,
-                        drop_on_backpressure: bulk_endpoint_data,
+                        bulk_endpoint_data: traffic_class.bulk_endpoint_data,
+                        drop_on_backpressure: traffic_class.drop_on_backpressure,
                         scheduling_weight,
                         queued_at: crate::perf_profile::stamp(),
                     });

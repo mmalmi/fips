@@ -5190,6 +5190,12 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
     let fsp_payload = crate::node::session_wire::build_fsp_header(7, 0, 0).to_vec();
     let datagram = crate::protocol::SessionDatagram::new(src, dst, fsp_payload);
     assert!(fmp_plaintext_is_bulk_session_datagram(&datagram.encode()));
+    let traffic = classify_fmp_plaintext_traffic(&datagram.encode());
+    assert!(traffic.bulk_endpoint_data);
+    assert!(
+        !traffic.drop_on_backpressure,
+        "encrypted FSP bulk may carry TCP endpoint data, so the generic FMP path must not drop it"
+    );
 
     let coords_payload =
         crate::node::session_wire::build_fsp_header(8, crate::node::session_wire::FSP_FLAG_CP, 0)
@@ -5197,8 +5203,11 @@ fn fmp_bulk_classifier_detects_established_session_datagrams() {
     let coords_datagram = crate::protocol::SessionDatagram::new(src, dst, coords_payload);
     assert!(
         !fmp_plaintext_is_bulk_session_datagram(&coords_datagram.encode()),
-        "coordinate-carrying session packets warm fallback routes and must not be discardable bulk"
+        "coordinate-carrying session packets warm fallback routes and must stay in the control lane"
     );
+    let traffic = classify_fmp_plaintext_traffic(&coords_datagram.encode());
+    assert!(!traffic.bulk_endpoint_data);
+    assert!(!traffic.drop_on_backpressure);
 
     let heartbeat = [crate::protocol::LinkMessageType::Heartbeat.to_byte()];
     assert!(!fmp_plaintext_is_bulk_session_datagram(&heartbeat));
