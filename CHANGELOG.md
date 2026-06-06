@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.46] - 2026-06-06
+
+### Fixed
+
+- Active outbound path refreshes no longer demote a healthy preferred/static
+  path to a lower-priority alternate that completed a later handshake, keeping
+  configured LAN gateway paths sticky while still allowing upgrades from
+  lower-priority or unusable paths.
+
 ## [0.3.45] - 2026-06-06
 
 ### Fixed

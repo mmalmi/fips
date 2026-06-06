@@ -3937,6 +3937,68 @@ impl Node {
                 .unwrap_or(true)
     }
 
+    fn configured_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        self.configured_peer(peer_node_addr)?
+            .addresses
+            .iter()
+            .filter_map(|candidate| {
+                let (candidate_transport_id, candidate_addr) =
+                    self.resolve_peer_address_for_match(candidate)?;
+                (candidate_transport_id == transport_id && &candidate_addr == remote_addr)
+                    .then_some(candidate.priority)
+            })
+            .min()
+    }
+
+    pub(in crate::node) fn outbound_alternate_path_priority_allows_replace(
+        &self,
+        peer_node_addr: &NodeAddr,
+        candidate_transport_id: TransportId,
+        candidate_addr: &TransportAddr,
+    ) -> bool {
+        const UNKNOWN_PATH_PRIORITY: u16 = u8::MAX as u16 + 1;
+
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return true;
+        };
+        let Some(current_transport_id) = peer.transport_id() else {
+            return true;
+        };
+        let Some(current_addr) = peer.current_addr() else {
+            return true;
+        };
+
+        let current_priority = self
+            .configured_path_priority(peer_node_addr, current_transport_id, current_addr)
+            .map(u16::from)
+            .unwrap_or(UNKNOWN_PATH_PRIORITY);
+        let candidate_priority = self
+            .configured_path_priority(peer_node_addr, candidate_transport_id, candidate_addr)
+            .map(u16::from)
+            .unwrap_or(UNKNOWN_PATH_PRIORITY);
+
+        if candidate_priority <= current_priority {
+            return true;
+        }
+
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            current_transport_id = %current_transport_id,
+            current_addr = %current_addr,
+            current_priority,
+            candidate_transport_id = %candidate_transport_id,
+            candidate_addr = %candidate_addr,
+            candidate_priority,
+            "Suppressing lower-priority outbound alternate path while current path remains healthy"
+        );
+        false
+    }
+
     pub(in crate::node) fn active_peer_uses_recent_endpoint_path(
         &self,
         peer_node_addr: &NodeAddr,

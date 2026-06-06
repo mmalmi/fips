@@ -841,6 +841,40 @@ impl Node {
             });
 
             if outbound_alternate_path {
+                let outbound_remote_epoch = conn.remote_epoch();
+                let remote_epoch_changed = self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                    matches!(
+                        (peer.remote_epoch(), outbound_remote_epoch),
+                        (Some(old), Some(new)) if old != new
+                    )
+                });
+                let existing_path_unusable = self
+                    .peers
+                    .get(&peer_node_addr)
+                    .is_some_and(|peer| !peer.can_send())
+                    || self.session_direct_path_is_degraded(&peer_node_addr, packet.timestamp_ms);
+                if !remote_epoch_changed
+                    && !existing_path_unusable
+                    && !self.outbound_alternate_path_priority_allows_replace(
+                        &peer_node_addr,
+                        outbound_transport_id,
+                        &outbound_addr,
+                    )
+                {
+                    let outbound_our_index = conn.our_index();
+                    self.pending_outbound.remove(&key);
+                    if let Some(idx) = outbound_our_index {
+                        let _ = self.index_allocator.free(idx);
+                    }
+                    if let Some(transport) = self.transports.get(&outbound_transport_id) {
+                        transport.close_connection(&outbound_addr).await;
+                    }
+                    if let Some(link) = self.remove_link(&link_id) {
+                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                    }
+                    return;
+                }
+
                 // This is not a simultaneous connection race: we already had
                 // a usable peer and explicitly dialed a different concrete
                 // transport tuple as a path refresh. A completed authenticated
@@ -849,7 +883,6 @@ impl Node {
                 // the old session.
                 let outbound_our_index = conn.our_index();
                 let outbound_session = conn.take_session();
-                let outbound_remote_epoch = conn.remote_epoch();
 
                 let (outbound_session, outbound_our_index) = match (
                     outbound_session,
@@ -867,12 +900,6 @@ impl Node {
                 };
 
                 let display_name = self.peer_display_name(&peer_node_addr);
-                let remote_epoch_changed = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                    matches!(
-                        (peer.remote_epoch(), outbound_remote_epoch),
-                        (Some(old), Some(new)) if old != new
-                    )
-                });
                 let mut loser_link_id = None;
                 let mut loser_session_index = None;
                 if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
@@ -1250,6 +1277,14 @@ impl Node {
                     || existing_peer.current_addr() != Some(&current_addr));
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
+            let existing_path_unusable = existing_path_unusable
+                || self.session_direct_path_is_degraded(&peer_node_addr, current_time_ms);
+            let outbound_alternate_path_wins = outbound_alternate_path
+                && self.outbound_alternate_path_priority_allows_replace(
+                    &peer_node_addr,
+                    transport_id,
+                    &current_addr,
+                );
 
             // Determine which connection wins. A peer restart (different
             // startup epoch) is not a normal cross-connection: the old link
@@ -1265,14 +1300,16 @@ impl Node {
             //
             // A completed outbound handshake on a different transport tuple is
             // also not a symmetric cross-connection. It is an explicit
-            // alternate-path refresh we initiated after learning a better
-            // candidate; successful authentication is enough proof to promote
-            // it even when the normal NodeAddr tie-breaker would prefer the
-            // old healthy link.
+            // alternate-path refresh we initiated after learning a candidate;
+            // successful authentication is enough proof only when the
+            // candidate is at least as preferred as the current healthy path.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
-                || outbound_alternate_path
-                || cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound);
+                || if outbound_alternate_path {
+                    outbound_alternate_path_wins
+                } else {
+                    cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound)
+                };
 
             if this_wins {
                 // This connection wins, replace the existing peer

@@ -4172,6 +4172,150 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
 }
 
 #[tokio::test]
+async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alternate() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let static_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let lower_priority_addr = TransportAddr::from_string("127.0.0.1:9000");
+    node.config.peers = vec![crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    }];
+
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        old_session,
+        old_our_index,
+        old_their_index,
+        transport_id,
+        static_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x11; 8]),
+    );
+    assert!(old_peer.can_send());
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers_by_index
+        .insert((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            static_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.addr_to_link
+        .insert((transport_id, static_addr.clone()), old_link_id);
+
+    let new_link_id = LinkId::new(11);
+    let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
+    let msg1 = new_conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 2_000)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    new_conn.set_our_index(our_index);
+    new_conn.set_transport_id(transport_id);
+    new_conn.set_source_addr(lower_priority_addr.clone());
+    node.links.insert(
+        new_link_id,
+        Link::connectionless(
+            new_link_id,
+            transport_id,
+            lower_priority_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.addr_to_link
+        .insert((transport_id, lower_priority_addr.clone()), new_link_id);
+    node.connections.insert(new_link_id, new_conn);
+    node.pending_outbound
+        .insert((transport_id, our_index.as_u32()), new_link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), 2_000);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, 2_000)
+        .unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
+    let packet =
+        ReceivedPacket::with_timestamp(transport_id, lower_priority_addr.clone(), wire_msg2, 2_100);
+
+    node.handle_msg2(packet).await;
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(node.pending_outbound.is_empty());
+    assert!(
+        node.links.contains_key(&old_link_id),
+        "healthy preferred static link should remain active"
+    );
+    assert!(
+        !node.links.contains_key(&new_link_id),
+        "lower-priority alternate link should be discarded"
+    );
+    assert_eq!(
+        node.addr_to_link
+            .get(&(transport_id, static_addr.clone()))
+            .copied(),
+        Some(old_link_id)
+    );
+    assert_eq!(
+        node.addr_to_link
+            .get(&(transport_id, lower_priority_addr.clone())),
+        None
+    );
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&static_addr));
+    assert_eq!(active.our_index(), Some(old_our_index));
+    assert_eq!(active.their_index(), Some(old_their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_changes() {
     let mut node = make_node();
     let peer_full = loop {
