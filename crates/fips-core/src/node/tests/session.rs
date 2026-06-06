@@ -852,6 +852,28 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
     }
 }
 
+async fn recv_endpoint_event_while_draining(
+    nodes: &mut [TestNode],
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    timeout: Duration,
+    context: &str,
+) -> NodeEndpointEvent {
+    tokio::time::timeout(timeout, async {
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    return event.unwrap_or_else(|| panic!("{context}: endpoint event channel closed"));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    process_available_packets(nodes).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{context}: endpoint data should not time out"))
+}
+
 async fn process_available_packets_for_node(node: &mut TestNode) -> usize {
     use crate::node::wire::{
         COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
@@ -2300,10 +2322,13 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         .expect("initial endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
 
-    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
-        .await
-        .expect("initial direct endpoint data should not time out")
-        .expect("initial direct endpoint data should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut bob_endpoint.event_rx,
+        Duration::from_secs(10),
+        "initial direct endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_node_addr,
@@ -2362,10 +2387,13 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         .expect("bob fallback endpoint data should send");
     drain_to_quiescence(&mut nodes).await;
 
-    let event = tokio::time::timeout(Duration::from_secs(1), bob_endpoint.event_rx.recv())
-        .await
-        .expect("alice fallback endpoint data should not time out")
-        .expect("alice fallback endpoint data should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut bob_endpoint.event_rx,
+        Duration::from_secs(10),
+        "alice fallback endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_node_addr,
@@ -2377,10 +2405,13 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
         }
     }
 
-    let event = tokio::time::timeout(Duration::from_secs(1), alice_endpoint.event_rx.recv())
-        .await
-        .expect("bob fallback endpoint data should not time out")
-        .expect("bob fallback endpoint data should arrive");
+    let event = recv_endpoint_event_while_draining(
+        &mut nodes,
+        &mut alice_endpoint.event_rx,
+        Duration::from_secs(10),
+        "bob fallback endpoint data",
+    )
+    .await;
     match event {
         NodeEndpointEvent::Data {
             source_node_addr,

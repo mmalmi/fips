@@ -138,6 +138,7 @@ pub(crate) struct FmpSendJob {
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     /// True for tunnel endpoint-data payloads that should use the worker's
     /// bulk lane instead of the control/liveness reserve.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub bulk_endpoint_data: bool,
     /// Bulk endpoint data may be dropped when the kernel reports UDP
     /// send-queue exhaustion. Control/rekey frames and TCP tunnel packets keep

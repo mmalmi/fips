@@ -28,9 +28,11 @@ use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
 use self::routing_error_rate_limit::RoutingErrorRateLimiter;
+#[cfg(unix)]
+use self::wire::ESTABLISHED_HEADER_SIZE;
 use self::wire::{
-    ESTABLISHED_HEADER_SIZE, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted,
-    build_established_header, prepend_inner_header,
+    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
+    prepend_inner_header,
 };
 use crate::bloom::BloomState;
 use crate::cache::CoordCache;
@@ -1217,6 +1219,7 @@ impl Node {
             .collect()
     }
 
+    #[cfg(unix)]
     fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
         self.configured_peer_send_weights
             .get(peer_addr)
@@ -3193,13 +3196,12 @@ impl Node {
         let payload_len = inner_len as u16;
         let header = build_established_header(their_index, counter, flags, payload_len);
 
-        // **UDP send fast path.** The encrypt-worker pool is always
-        // spawned at lifecycle start (workers = num_cpus) in
-        // production, so this branch is taken for every authentic
-        // send on every UDP-transported established session. The
-        // AEAD work + sendmsg syscall run on a dedicated OS thread;
-        // the rx_loop only builds the wire buffer + reserves the
-        // counter inline.
+        // **Unix UDP send fast path.** On Unix, the encrypt-worker pool
+        // is spawned at lifecycle start (workers = num_cpus) in
+        // production, so this branch is taken for every authentic send on
+        // every UDP-transported established session. The AEAD work +
+        // sendmsg syscall run on a dedicated OS thread; the rx_loop only
+        // builds the wire buffer + reserves the counter inline.
         //
         // Other transport kinds (BLE, TCP, sim, ethernet) fall
         // through to the inline encrypt + transport.send path
@@ -3207,10 +3209,14 @@ impl Node {
         // benefits to expose through the worker pool, so the simpler
         // synchronous send is the right shape for them.
         //
-        // The `encrypt_workers.is_some()` check below is true in
-        // production (lifecycle::start spawns the pool); it stays
-        // checked rather than `expect()`-ed because unit tests
-        // construct `Node` without calling `start()`.
+        // Windows intentionally stays on the inline tokio UDP send path:
+        // lifecycle::start does not spawn these raw-fd workers there, and
+        // tests may still set `encrypt_workers` manually.
+        //
+        // The `encrypt_workers.is_some()` check below is true in Unix
+        // production (lifecycle::start spawns the pool); it stays checked
+        // rather than `expect()`-ed because unit tests construct `Node`
+        // without calling `start()`.
         let transport_for_send = self
             .transports
             .get(&transport_id)
@@ -3227,11 +3233,12 @@ impl Node {
                 });
             }
         }
-        let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
-        if let Some(workers) = self.encrypt_workers.as_ref().cloned()
-            && is_udp
-            && let Some(cipher_clone) = session.send_cipher_clone()
+        #[cfg(unix)]
         {
+            let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
+            if let Some(workers) = self.encrypt_workers.as_ref().cloned()
+                && is_udp
+                && let Some(cipher_clone) = session.send_cipher_clone()
             {
                 // Reserve the counter on the session so subsequent
                 // sends don't reuse it. `current_send_counter` only

@@ -265,13 +265,19 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
 
     // Phase 1: Fast drain — process packets as fast as they arrive.
     // This handles handshakes (msg1/msg2) and the first wave of TreeAnnounce.
+    let mut idle_rounds = 0;
     for _round in 0..200 {
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         let count = process_available_packets(nodes).await;
         total += count;
         if count == 0 {
-            break;
+            idle_rounds += 1;
+            if idle_rounds >= 3 {
+                break;
+            }
+        } else {
+            idle_rounds = 0;
         }
     }
 

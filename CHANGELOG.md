@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.50] - 2026-06-06
+
+### Fixed
+
+- CI synthetic UDP topology tests now wait for multiple idle packet polls and
+  serialize the burst-heavy medium tests with the large topology tests,
+  preventing dropped one-shot handshakes under GitHub runner load.
+- Endpoint-data fallback tests now keep draining node packets while waiting for
+  endpoint events, and Windows ignores manually configured Unix encrypt workers
+  so outbound FMP sends keep using the supported tokio UDP path.
+- The macOS-only encrypt-worker bulk-lane marker is now allowed as dead code on
+  non-macOS targets, fixing Linux Clippy with `-D warnings`.
+
 ## [0.3.49] - 2026-06-06
 
 ### Fixed
