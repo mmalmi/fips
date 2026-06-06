@@ -377,8 +377,12 @@ async fn repair_missing_edge_handshakes(
         }
 
         for (i, j, i_has_j, j_has_i) in missing {
+            // To repair a one-sided edge, send the handshake toward the side
+            // that is missing the peer. The responder creates the missing
+            // peer entry; sending from the missing side can be rejected by the
+            // already-established peer as a duplicate.
             if !i_has_j {
-                initiate_handshake(nodes, i, j).await;
+                initiate_handshake(nodes, j, i).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
             }
@@ -389,11 +393,11 @@ async fn repair_missing_edge_handshakes(
             let i_still_missing_j = nodes[i].node.get_peer(&j_addr).is_none();
 
             if !j_has_i && j_still_missing_i {
-                initiate_handshake(nodes, j, i).await;
+                initiate_handshake(nodes, i, j).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
             } else if i_still_missing_j {
-                initiate_handshake(nodes, i, j).await;
+                initiate_handshake(nodes, j, i).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
             }
