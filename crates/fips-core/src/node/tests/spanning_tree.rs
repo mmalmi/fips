@@ -33,7 +33,14 @@ pub(super) async fn make_test_node_with_mtu(mtu: u16) -> TestNode {
     use crate::config::UdpConfig;
     use crate::transport::udp::UdpTransport;
 
-    let mut node = make_node();
+    let mut config = Config::new();
+    config.node.rate_limit.handshake_burst = 1000;
+    config.node.rate_limit.handshake_rate = 1000.0;
+    config.node.rate_limit.handshake_resend_interval_ms = 50;
+    config.node.rate_limit.handshake_resend_backoff = 1.5;
+    config.node.rate_limit.handshake_max_resends = 12;
+    config.node.bloom.update_debounce_ms = 50;
+    let mut node = Node::new(config).unwrap();
     let transport_id = TransportId::new(1);
 
     let udp_config = UdpConfig {
@@ -74,18 +81,27 @@ pub(super) async fn initiate_handshake(nodes: &mut [TestNode], i: usize, j: usiz
     let transport_id = initiator.transport_id;
 
     let link_id = initiator.node.allocate_link_id();
-    let mut conn = PeerConnection::outbound(link_id, peer_identity, 1000);
+    let now_ms = Node::now_ms();
+    let mut conn = PeerConnection::outbound(link_id, peer_identity, now_ms);
 
     let our_index = initiator.node.index_allocator.allocate().unwrap();
     let our_keypair = initiator.node.identity().keypair();
     let noise_msg1 = conn
-        .start_handshake(our_keypair, initiator.node.startup_epoch, 1000)
+        .start_handshake(our_keypair, initiator.node.startup_epoch, now_ms)
         .unwrap();
     conn.set_our_index(our_index);
     conn.set_transport_id(transport_id);
     conn.set_source_addr(responder_addr.clone());
 
     let wire_msg1 = build_msg1(our_index, &noise_msg1);
+    let first_resend_at_ms = now_ms
+        + initiator
+            .node
+            .config
+            .node
+            .rate_limit
+            .handshake_resend_interval_ms;
+    conn.set_handshake_msg1(wire_msg1.clone(), first_resend_at_ms);
 
     let link = Link::connectionless(
         link_id,
@@ -110,6 +126,65 @@ pub(super) async fn initiate_handshake(nodes: &mut [TestNode], i: usize, j: usiz
         .send(&responder_addr, &wire_msg1)
         .await
         .expect("Failed to send msg1");
+}
+
+async fn run_synthetic_node_work(nodes: &mut [TestNode]) {
+    let now_ms = Node::now_ms();
+    for tn in nodes.iter_mut() {
+        tn.node.resend_pending_handshakes(now_ms).await;
+        tn.node.send_pending_tree_announces().await;
+        tn.node.send_pending_filter_announces().await;
+    }
+}
+
+fn has_synthetic_pending_work(nodes: &[TestNode]) -> bool {
+    nodes.iter().any(|tn| {
+        !tn.node.connections.is_empty()
+            || tn.node.peers.iter().any(|(addr, peer)| {
+                peer.has_pending_tree_announce() || tn.node.bloom_state.needs_update(addr)
+            })
+    })
+}
+
+async fn drain_synthetic_packets_until_idle(
+    nodes: &mut [TestNode],
+    max_rounds: usize,
+    sleep_ms: u64,
+) -> usize {
+    let mut total = 0;
+    let mut idle_rounds = 0;
+
+    for _ in 0..max_rounds {
+        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+        run_synthetic_node_work(nodes).await;
+
+        let count = process_available_packets(nodes).await;
+        total += count;
+        if count == 0 {
+            idle_rounds += 1;
+            if idle_rounds >= 3 && !has_synthetic_pending_work(nodes) {
+                break;
+            }
+        } else {
+            idle_rounds = 0;
+        }
+    }
+
+    total
+}
+
+async fn refresh_synthetic_filter_announces(nodes: &mut [TestNode]) -> usize {
+    let mut total = 0;
+
+    for _ in 0..4 {
+        for tn in nodes.iter_mut() {
+            let peers: Vec<NodeAddr> = tn.node.peers.keys().copied().collect();
+            tn.node.bloom_state.mark_all_updates_needed(peers);
+        }
+        total += drain_synthetic_packets_until_idle(nodes, 80, 10).await;
+    }
+
+    total
 }
 
 /// Print a snapshot of each node's tree state.
@@ -268,6 +343,7 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     let mut idle_rounds = 0;
     for _round in 0..200 {
         tokio::time::sleep(Duration::from_millis(10)).await;
+        run_synthetic_node_work(nodes).await;
 
         let count = process_available_packets(nodes).await;
         total += count;
@@ -296,11 +372,8 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
         // Wait for rate limit window (500ms) to fully expire
         tokio::time::sleep(Duration::from_millis(550)).await;
 
-        // Flush pending rate-limited tree and filter announces on all nodes
-        for tn in nodes.iter_mut() {
-            tn.node.send_pending_tree_announces().await;
-            tn.node.send_pending_filter_announces().await;
-        }
+        // Flush pending rate-limited handshakes, tree announces, and filter announces.
+        run_synthetic_node_work(nodes).await;
 
         // Allow flushed packets to arrive
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -314,6 +387,7 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
         // triggered non-rate-limited sends (to different peers)
         for _sub in 0..20 {
             tokio::time::sleep(Duration::from_millis(10)).await;
+            run_synthetic_node_work(nodes).await;
             let count = process_available_packets(nodes).await;
             flush_total += count;
             if count == 0 {
@@ -322,7 +396,7 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
         }
 
         total += flush_total;
-        if flush_total == 0 {
+        if flush_total == 0 && !has_synthetic_pending_work(nodes) {
             break;
         }
 
@@ -343,6 +417,7 @@ async fn drain_initial_handshake_burst(nodes: &mut [TestNode]) -> usize {
 
     for _ in 0..80 {
         tokio::time::sleep(Duration::from_millis(5)).await;
+        run_synthetic_node_work(nodes).await;
 
         let count = process_available_packets(nodes).await;
         total += count;
@@ -751,9 +826,13 @@ pub(super) async fn run_tree_test(
     let total = initial_total + drain_all_packets(&mut nodes, verbose).await;
     assert!(total > 0, "Should have processed at least some packets");
     let repaired = repair_missing_edge_handshakes(&mut nodes, edges, verbose).await;
+    let refreshed = refresh_synthetic_filter_announces(&mut nodes).await;
 
     if verbose {
         eprintln!("\n  Total packets processed: {}", total);
+        if refreshed > 0 {
+            eprintln!("  Synthetic filter refresh packets: {}", refreshed);
+        }
         if repaired > 0 {
             eprintln!("  Synthetic handshake retries: {}", repaired);
             print_tree_snapshot("After synthetic handshake repair", &nodes);
@@ -808,6 +887,7 @@ pub(super) async fn run_tree_test_with_mtus(
     let total = initial_total + drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "Should have processed at least some packets");
     let _ = repair_missing_edge_handshakes(&mut nodes, edges, false).await;
+    let _ = refresh_synthetic_filter_announces(&mut nodes).await;
 
     for &(i, j) in edges {
         let j_addr = *nodes[j].node.node_addr();
