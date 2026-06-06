@@ -543,24 +543,36 @@ async fn repair_missing_edge_handshakes(
             );
         }
 
-        for (i, j, _, _) in missing {
-            for (from, to) in [(i, j), (j, i)] {
+        for (i, j, i_has_j, j_has_i) in missing {
+            let retry_directions: &[(usize, usize)] = match (i_has_j, j_has_i) {
+                (false, false) => &[(i, j), (j, i)],
+                (false, true) => &[(i, j)],
+                (true, false) => &[(j, i)],
+                (true, true) => &[],
+            };
+
+            if !i_has_j {
+                clear_edge_state(nodes, i, j);
+            }
+            if !j_has_i {
+                clear_edge_state(nodes, j, i);
+            }
+            let _ = drain_synthetic_packets_until_idle(nodes, 20, 5).await;
+
+            for &(from, to) in retry_directions {
                 let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
                 if i_has_j && j_has_i {
                     break;
                 }
 
-                clear_edge_state(nodes, i, j);
-                clear_edge_state(nodes, j, i);
-                let _ = drain_synthetic_packets_until_idle(nodes, 20, 5).await;
                 initiate_handshake(nodes, from, to).await;
                 retries += 1;
-                let _ = drain_synthetic_packets_until_idle(nodes, 160, 10).await;
+                let _ = drain_synthetic_packets_until_idle(nodes, 240, 10).await;
             }
         }
     }
 
-    let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
+    let _ = drain_synthetic_packets_until_idle(nodes, 240, 10).await;
 
     let remaining = missing_edge_handshakes(nodes, edges);
     if !remaining.is_empty() {

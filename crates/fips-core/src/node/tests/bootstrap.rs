@@ -47,24 +47,29 @@ async fn test_adopted_udp_traversal_completes_handshake() {
     assert_eq!(result.remote_addr, addr_b);
     assert!(node_a.get_transport(&result.transport_id).is_some());
 
-    tokio::select! {
-        result = node_b.run_rx_loop() => {
-            panic!("node_b rx loop exited unexpectedly: {:?}", result);
-        }
-        _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-    }
-
-    tokio::select! {
-        result = node_a.run_rx_loop() => {
-            panic!("node_a rx loop exited unexpectedly: {:?}", result);
-        }
-        _ = tokio::time::sleep(Duration::from_millis(500)) => {}
-    }
-
     let peer_a_node_addr =
         *PeerIdentity::from_pubkey_full(node_a.identity.pubkey_full()).node_addr();
     let peer_b_node_addr =
         *PeerIdentity::from_pubkey_full(node_b.identity.pubkey_full()).node_addr();
+
+    for _ in 0..30 {
+        let a_ready = node_a
+            .get_peer(&peer_b_node_addr)
+            .is_some_and(|peer| peer.has_session());
+        let b_ready = node_b
+            .get_peer(&peer_a_node_addr)
+            .is_some_and(|peer| peer.has_session());
+        if a_ready && b_ready {
+            break;
+        }
+
+        if let Ok(result) = timeout(Duration::from_millis(50), node_b.run_rx_loop()).await {
+            panic!("node_b rx loop exited unexpectedly: {:?}", result);
+        }
+        if let Ok(result) = timeout(Duration::from_millis(50), node_a.run_rx_loop()).await {
+            panic!("node_a rx loop exited unexpectedly: {:?}", result);
+        }
+    }
 
     assert_eq!(
         node_a.peer_count(),
