@@ -337,6 +337,28 @@ pub(super) async fn drain_all_packets(nodes: &mut [TestNode], verbose: bool) -> 
     total
 }
 
+async fn drain_initial_handshake_burst(nodes: &mut [TestNode]) -> usize {
+    let mut total = 0;
+    let mut idle_rounds = 0;
+
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let count = process_available_packets(nodes).await;
+        total += count;
+        if count == 0 {
+            idle_rounds += 1;
+            if idle_rounds >= 3 {
+                break;
+            }
+        } else {
+            idle_rounds = 0;
+        }
+    }
+
+    total
+}
+
 fn edge_peer_state(nodes: &[TestNode], i: usize, j: usize) -> (bool, bool) {
     let j_addr = *nodes[j].node.node_addr();
     let i_addr = *nodes[i].node.node_addr();
@@ -358,6 +380,73 @@ fn missing_edge_handshakes(
         }
     }
     missing
+}
+
+fn active_link_for_addr(
+    node: &Node,
+    transport_id: TransportId,
+    remote_addr: &TransportAddr,
+) -> Option<LinkId> {
+    node.peers.values().find_map(|peer| {
+        let link_id = peer.link_id();
+        let link = node.links.get(&link_id)?;
+        (link.transport_id() == transport_id && link.remote_addr() == remote_addr)
+            .then_some(link_id)
+    })
+}
+
+fn clear_pending_edge_handshake(nodes: &mut [TestNode], from: usize, to: usize) {
+    let transport_id = nodes[from].transport_id;
+    let remote_addr = nodes[to].addr.clone();
+    let active_link_id = active_link_for_addr(&nodes[from].node, transport_id, &remote_addr);
+
+    let stale_link_ids: Vec<LinkId> = nodes[from]
+        .node
+        .links
+        .iter()
+        .filter_map(|(link_id, link)| {
+            if Some(*link_id) == active_link_id {
+                return None;
+            }
+            (link.transport_id() == transport_id && link.remote_addr() == &remote_addr)
+                .then_some(*link_id)
+        })
+        .collect();
+
+    for link_id in stale_link_ids {
+        if let Some(conn) = nodes[from].node.connections.remove(&link_id)
+            && let Some(idx) = conn.our_index()
+        {
+            nodes[from]
+                .node
+                .pending_outbound
+                .remove(&(transport_id, idx.as_u32()));
+            nodes[from]
+                .node
+                .deregister_session_index((transport_id, idx.as_u32()));
+            let _ = nodes[from].node.index_allocator.free(idx);
+        }
+        nodes[from].node.remove_link(&link_id);
+    }
+
+    if let Some(link_id) = active_link_id {
+        nodes[from]
+            .node
+            .addr_to_link
+            .insert((transport_id, remote_addr.clone()), link_id);
+    } else {
+        nodes[from]
+            .node
+            .addr_to_link
+            .remove(&(transport_id, remote_addr));
+    }
+
+    let live_connection_ids: std::collections::HashSet<LinkId> =
+        nodes[from].node.connections.keys().copied().collect();
+    nodes[from]
+        .node
+        .pending_outbound
+        .retain(|_, link_id| live_connection_ids.contains(link_id));
 }
 
 /// Repair synthetic test edges whose one-shot UDP handshake packet was dropped.
@@ -401,12 +490,16 @@ async fn repair_missing_edge_handshakes(
         }
 
         for (i, j, _, _) in missing {
+            clear_pending_edge_handshake(nodes, i, j);
+            clear_pending_edge_handshake(nodes, j, i);
+
             for (from, to) in [(i, j), (j, i)] {
                 let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
                 if i_has_j && j_has_i {
                     break;
                 }
 
+                clear_pending_edge_handshake(nodes, from, to);
                 initiate_handshake(nodes, from, to).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
@@ -667,13 +760,18 @@ pub(super) async fn run_tree_test(
         }
     }
 
-    // Initiate all handshakes
-    for &(i, j) in edges {
-        initiate_handshake(&mut nodes, i, j).await;
+    // Initiate handshakes in batches so synthetic one-shot UDP sends do not
+    // overwhelm the localhost receive queues on slower CI runners.
+    let mut initial_total = 0;
+    for chunk in edges.chunks(32) {
+        for &(i, j) in chunk {
+            initiate_handshake(&mut nodes, i, j).await;
+        }
+        initial_total += drain_initial_handshake_burst(&mut nodes).await;
     }
 
     // Drain packets until convergence (handles rate-limited announces)
-    let total = drain_all_packets(&mut nodes, verbose).await;
+    let total = initial_total + drain_all_packets(&mut nodes, verbose).await;
     assert!(total > 0, "Should have processed at least some packets");
     let repaired = repair_missing_edge_handshakes(&mut nodes, edges, verbose).await;
 
@@ -722,11 +820,15 @@ pub(super) async fn run_tree_test_with_mtus(
         nodes.push(make_test_node_with_mtu(mtu).await);
     }
 
-    for &(i, j) in edges {
-        initiate_handshake(&mut nodes, i, j).await;
+    let mut initial_total = 0;
+    for chunk in edges.chunks(32) {
+        for &(i, j) in chunk {
+            initiate_handshake(&mut nodes, i, j).await;
+        }
+        initial_total += drain_initial_handshake_burst(&mut nodes).await;
     }
 
-    let total = drain_all_packets(&mut nodes, false).await;
+    let total = initial_total + drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "Should have processed at least some packets");
     let _ = repair_missing_edge_handshakes(&mut nodes, edges, false).await;
 
