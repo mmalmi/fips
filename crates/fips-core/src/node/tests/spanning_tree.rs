@@ -518,7 +518,7 @@ async fn repair_missing_edge_handshakes(
 ) -> usize {
     let mut retries = 0;
 
-    for attempt in 0..12 {
+    for attempt in 0..16 {
         let mut missing = missing_edge_handshakes(nodes, edges);
 
         if missing.is_empty() {
@@ -528,7 +528,7 @@ async fn repair_missing_edge_handshakes(
         if attempt > 0 {
             let backoff_ms = 25 * (attempt as u64).min(8);
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-            let _ = drain_all_packets(nodes, false).await;
+            let _ = drain_synthetic_packets_until_idle(nodes, 80, 10).await;
             missing = missing_edge_handshakes(nodes, edges);
             if missing.is_empty() {
                 break;
@@ -552,14 +552,32 @@ async fn repair_missing_edge_handshakes(
 
                 clear_edge_state(nodes, i, j);
                 clear_edge_state(nodes, j, i);
+                let _ = drain_synthetic_packets_until_idle(nodes, 20, 5).await;
                 initiate_handshake(nodes, from, to).await;
                 retries += 1;
-                let _ = drain_all_packets(nodes, false).await;
+                let _ = drain_synthetic_packets_until_idle(nodes, 160, 10).await;
             }
         }
     }
 
-    let _ = drain_all_packets(nodes, false).await;
+    let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
+
+    let remaining = missing_edge_handshakes(nodes, edges);
+    if !remaining.is_empty() {
+        let examples: Vec<String> = remaining
+            .iter()
+            .take(8)
+            .map(|(i, j, i_has_j, j_has_i)| {
+                format!("{}-{} i_has_j={} j_has_i={}", i, j, i_has_j, j_has_i)
+            })
+            .collect();
+        eprintln!(
+            "  Synthetic handshake repair left {} missing/asymmetric edge(s): {}",
+            remaining.len(),
+            examples.join(", ")
+        );
+    }
+
     retries
 }
 
@@ -815,7 +833,7 @@ pub(super) async fn run_tree_test(
     // Initiate handshakes in batches so synthetic one-shot UDP sends do not
     // overwhelm the localhost receive queues on slower CI runners.
     let mut initial_total = 0;
-    for chunk in edges.chunks(32) {
+    for chunk in edges.chunks(16) {
         for &(i, j) in chunk {
             initiate_handshake(&mut nodes, i, j).await;
         }
@@ -877,7 +895,7 @@ pub(super) async fn run_tree_test_with_mtus(
     }
 
     let mut initial_total = 0;
-    for chunk in edges.chunks(32) {
+    for chunk in edges.chunks(16) {
         for &(i, j) in chunk {
             initiate_handshake(&mut nodes, i, j).await;
         }
