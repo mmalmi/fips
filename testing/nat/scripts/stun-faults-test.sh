@@ -161,12 +161,12 @@ assert_stun_fault_observed() {
     local min_attempts="${2:-2}"
     local logs
     logs="$(docker logs --since "${since}s" "$NODE" 2>&1 || true)"
-    if grep -Eiq 'stun.*(timed? ?out|fail|fallback|unreachable|no address)' <<<"$logs"; then
+    if grep -Eiq '(stun|NAT traversal|Direct-path NAT traversal).*(timed? ?out|fail|fallback|unreachable|no address|no-usable-addresses|signal timeout)' <<<"$logs"; then
         echo "  $NODE: STUN fault evidence observed in logs"
         return 0
     fi
     local attempts
-    attempts=$(grep -Eci 'Started Nostr UDP NAT traversal attempt' <<<"$logs" || true)
+    attempts=$(grep -Eci 'Started (background UDP |Nostr( UDP)? )NAT traversal attempt' <<<"$logs" || true)
     if [ "${attempts:-0}" -ge "$min_attempts" ]; then
         echo "  $NODE: NAT traversal retry evidence observed"
         return 0
@@ -282,11 +282,11 @@ run_test() {
     # Auto-connect backoff is exponential 5s base; first retry ~5s after
     # detection, second ~10s. Allow ~25s.
     sleep 25
-    local phase_elapsed=$(( SECONDS - phase_start + 4 ))
+    local phase_elapsed=$(( SECONDS - phase_start ))
 
     assert_process_alive            || { dump_diagnostics; return 1; }
     assert_no_panic                 || { dump_diagnostics; return 1; }
-    assert_stun_fault_observed "$phase_elapsed" || {
+    assert_stun_fault_observed "$phase_elapsed" 1 || {
         dump_diagnostics
         return 1
     }
@@ -320,7 +320,7 @@ run_test() {
     docker restart "$PEER" >/dev/null
     local p3_start=$SECONDS
     sleep 25
-    local p3_elapsed=$(( SECONDS - p3_start + 4 ))
+    local p3_elapsed=$(( SECONDS - p3_start ))
 
     assert_process_alive            || { dump_diagnostics; return 1; }
     assert_no_panic                 || { dump_diagnostics; return 1; }

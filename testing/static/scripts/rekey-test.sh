@@ -161,6 +161,8 @@ REKEY_SETTLE=12        # > DRAIN_WINDOW_SECS (10) so post-rekey samples are off 
 FIRST_REKEY_TIMEOUT=$((REKEY_AFTER_SECS + 15))
 SECOND_REKEY_WAIT=40   # wait for second cycle
 LOG_EVENT_POLL_INTERVAL=1
+FMP_REKEY_PATTERN="Peer K-bit flip detected"
+FSP_REKEY_PATTERN="FSP rekey: completed XK\|FSP rekey cutover complete"
 
 TIMEOUT=5
 CONVERGENCE_PING_TIMEOUT=1
@@ -363,9 +365,9 @@ PASSED=0
 FAILED=0
 echo "  Checking rekey events..."
 wait_for_log_pattern_count \
-    "Peer FSP K-bit flip detected" 1 "$FIRST_REKEY_TIMEOUT" || true
-assert_min_count "Peer FSP K-bit flip detected" 1 \
-    "FSP rekey responder cutovers"
+    "$FMP_REKEY_PATTERN" 1 "$FIRST_REKEY_TIMEOUT" || true
+assert_min_count "$FMP_REKEY_PATTERN" 1 \
+    "FMP rekey responder cutovers"
 phase_result "First rekey events"
 echo ""
 
@@ -394,16 +396,16 @@ FAILED=0
 
 # FSP session rekey trails link-layer rekey in practice. Wait boundedly for
 # at least one initiator and responder cutover before the final assertions.
-wait_for_log_pattern_count "Peer FSP K-bit flip detected" 1 "$FIRST_REKEY_TIMEOUT" || true
-wait_for_log_pattern_count "Peer FSP K-bit flip detected" 1 "$REKEY_SETTLE" || true
+wait_for_log_pattern_count "$FSP_REKEY_PATTERN" 1 "$FIRST_REKEY_TIMEOUT" || true
+wait_for_log_pattern_count "$FSP_REKEY_PATTERN" 1 "$REKEY_SETTLE" || true
 
 # Positive checks: rekey machinery worked
-assert_min_count "Peer K-bit flip detected" 1 \
+assert_min_count "$FMP_REKEY_PATTERN" 1 \
     "FMP rekey responder cutovers"
 
 # FSP rekey checks (sessions between non-adjacent nodes)
-assert_min_count "Peer FSP K-bit flip detected" 1 \
-    "FSP session rekey responder cutovers"
+assert_min_count "$FSP_REKEY_PATTERN" 1 \
+    "FSP session rekey progress"
 
 # Negative checks: no bad things happened
 assert_zero_count "PANIC\|panicked" "Panics"

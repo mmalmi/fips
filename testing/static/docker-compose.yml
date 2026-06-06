@@ -222,7 +222,7 @@ services:
     container_name: fips-node-a
     hostname: node-a
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey/node-a.yaml:/etc/fips/fips.yaml:ro
@@ -236,7 +236,7 @@ services:
     container_name: fips-node-b
     hostname: node-b
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey/node-b.yaml:/etc/fips/fips.yaml:ro
@@ -250,7 +250,7 @@ services:
     container_name: fips-node-c
     hostname: node-c
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey/node-c.yaml:/etc/fips/fips.yaml:ro
@@ -264,7 +264,7 @@ services:
     container_name: fips-node-d
     hostname: node-d
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey/node-d.yaml:/etc/fips/fips.yaml:ro
@@ -278,7 +278,7 @@ services:
     container_name: fips-node-e
     hostname: node-e
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey/node-e.yaml:/etc/fips/fips.yaml:ro
@@ -297,7 +297,7 @@ services:
     container_name: fips-node-a
     hostname: node-a
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-accept-off/node-a.yaml:/etc/fips/fips.yaml:ro
@@ -311,7 +311,7 @@ services:
     container_name: fips-node-b
     hostname: node-b
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-accept-off/node-b.yaml:/etc/fips/fips.yaml:ro
@@ -325,7 +325,7 @@ services:
     container_name: fips-node-c
     hostname: node-c
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-accept-off/node-c.yaml:/etc/fips/fips.yaml:ro
@@ -339,7 +339,7 @@ services:
     container_name: fips-node-d
     hostname: node-d
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-accept-off/node-d.yaml:/etc/fips/fips.yaml:ro
@@ -353,7 +353,7 @@ services:
     container_name: fips-node-e
     hostname: node-e
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-accept-off/node-e.yaml:/etc/fips/fips.yaml:ro
@@ -377,7 +377,7 @@ services:
     container_name: fips-node-a
     hostname: node-a
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-outbound-only/node-a.yaml:/etc/fips/fips.yaml:ro
@@ -391,7 +391,7 @@ services:
     container_name: fips-node-b
     hostname: node-b
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-outbound-only/node-b.yaml:/etc/fips/fips.yaml:ro
@@ -405,7 +405,7 @@ services:
     container_name: fips-node-c
     hostname: node-c
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-outbound-only/node-c.yaml:/etc/fips/fips.yaml:ro
@@ -419,7 +419,7 @@ services:
     container_name: fips-node-d
     hostname: node-d
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-outbound-only/node-d.yaml:/etc/fips/fips.yaml:ro
@@ -433,7 +433,7 @@ services:
     container_name: fips-node-e
     hostname: node-e
     environment:
-      - RUST_LOG=info,fips::node::handlers::rekey=debug,fips::node::handlers::handshake=debug
+      - RUST_LOG=info,fips_core::node::handlers::rekey=debug,fips_core::node::handlers::session=debug,fips_core::node::handlers::handshake=debug
     volumes:
       - ../docker/resolv.conf:/etc/resolv.conf:ro
       - ./generated-configs/rekey-outbound-only/node-e.yaml:/etc/fips/fips.yaml:ro
