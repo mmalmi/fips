@@ -408,10 +408,25 @@ jobs:
         run: |
           : ${GITHUB_OUTPUT:=/tmp/github_output}
 
-          UPLOAD_RESPONSE=$(nak blossom upload \
-            --server "$BLOSSOM_SERVER" \
-            --sec "$NSEC" \
-            "dist/${{ env.PACKAGE_FILENAME }}" < /dev/null)
+          UPLOAD_RESPONSE=""
+          for attempt in $(seq 1 5); do
+            if UPLOAD_RESPONSE=$(nak blossom upload \
+              --server "$BLOSSOM_SERVER" \
+              --sec "$NSEC" \
+              "dist/${{ env.PACKAGE_FILENAME }}" < /dev/null); then
+              break
+            fi
+
+            rc=$?
+            if [ "$attempt" -eq 5 ]; then
+              echo "Blossom upload failed after $attempt attempts"
+              exit "$rc"
+            fi
+
+            sleep_seconds=$((attempt * 5))
+            echo "Blossom upload attempt $attempt failed; retrying in ${sleep_seconds}s"
+            sleep "$sleep_seconds"
+          done
 
           echo "Upload response:"
           echo "$UPLOAD_RESPONSE"
