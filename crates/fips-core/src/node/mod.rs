@@ -191,9 +191,7 @@ fn endpoint_ip_payload_len(payload: &[u8]) -> Option<usize> {
 fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
     const IPV4_MIN_HEADER_LEN: usize = 20;
 
-    let Some(version_ihl) = payload.first().copied() else {
-        return None;
-    };
+    let version_ihl = payload.first().copied()?;
 
     match version_ihl >> 4 {
         4 => {
