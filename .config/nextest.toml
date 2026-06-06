@@ -7,12 +7,12 @@ node-synthetic = { max-threads = 1 }
 # nextest runs each test in a separate process, so the in-process Tokio mutex in
 # `lock_large_network_test()` cannot serialize these synthetic topology tests
 # on CI. They intentionally send one-shot handshakes without production
-# reconnect timers; keep the packet-burst set mutually exclusive so normal node
-# tests still run in parallel.
+# reconnect timers; keep the packet-burst and disconnect-fanout set mutually
+# exclusive so normal node tests still run in parallel.
 [[profile.default.overrides]]
-filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
+filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::disconnect::test_disconnect_all_reason_codes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
 test-group = 'node-synthetic'
 
 [[profile.ci.overrides]]
-filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
+filter = 'test(node::tests::bloom::test_bloom_filter_10_nodes) | test(node::tests::bloom::test_bloom_filter_convergence_100_nodes) | test(node::tests::disconnect::test_disconnect_all_reason_codes) | test(node::tests::discovery::test_discovery_100_nodes) | test(node::tests::routing::test_routing_reachability_100_nodes) | test(node::tests::routing::test_routing_source_only_coords_100_nodes) | test(node::tests::session::test_discovery_flushes_queued_tun_for_established_session_with_fresh_route) | test(node::tests::session::test_session_100_nodes) | test(node::tests::spanning_tree::test_spanning_tree_convergence_100_nodes)'
 test-group = 'node-synthetic'
