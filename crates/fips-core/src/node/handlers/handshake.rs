@@ -855,7 +855,7 @@ impl Node {
                     || self.session_direct_path_is_degraded(&peer_node_addr, packet.timestamp_ms);
                 if !remote_epoch_changed
                     && !existing_path_unusable
-                    && !self.outbound_alternate_path_priority_allows_replace(
+                    && !self.alternate_path_priority_allows_replace(
                         &peer_node_addr,
                         outbound_transport_id,
                         &outbound_addr,
@@ -1280,7 +1280,7 @@ impl Node {
             let existing_path_unusable = existing_path_unusable
                 || self.session_direct_path_is_degraded(&peer_node_addr, current_time_ms);
             let outbound_alternate_path_wins = outbound_alternate_path
-                && self.outbound_alternate_path_priority_allows_replace(
+                && self.alternate_path_priority_allows_replace(
                     &peer_node_addr,
                     transport_id,
                     &current_addr,

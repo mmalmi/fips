@@ -3958,7 +3958,7 @@ impl Node {
             .min()
     }
 
-    pub(in crate::node) fn outbound_alternate_path_priority_allows_replace(
+    pub(in crate::node) fn alternate_path_priority_allows_replace(
         &self,
         peer_node_addr: &NodeAddr,
         candidate_transport_id: TransportId,
@@ -3997,9 +3997,37 @@ impl Node {
             candidate_transport_id = %candidate_transport_id,
             candidate_addr = %candidate_addr,
             candidate_priority,
-            "Suppressing lower-priority outbound alternate path while current path remains healthy"
+            "Suppressing lower-priority alternate path while current path remains healthy"
         );
         false
+    }
+
+    pub(in crate::node) fn authenticated_packet_path_allows_bookkeeping(
+        &mut self,
+        peer_node_addr: &NodeAddr,
+        candidate_transport_id: TransportId,
+        candidate_addr: &TransportAddr,
+        now_ms: u64,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return true;
+        };
+
+        if peer.transport_id() == Some(candidate_transport_id)
+            && peer.current_addr() == Some(candidate_addr)
+        {
+            return true;
+        }
+
+        if !peer.can_send() || self.session_direct_path_is_degraded(peer_node_addr, now_ms) {
+            return true;
+        }
+
+        self.alternate_path_priority_allows_replace(
+            peer_node_addr,
+            candidate_transport_id,
+            candidate_addr,
+        )
     }
 
     pub(in crate::node) fn active_peer_uses_recent_endpoint_path(

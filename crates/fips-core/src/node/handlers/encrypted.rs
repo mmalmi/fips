@@ -279,16 +279,24 @@ impl Node {
         };
         let now = Instant::now();
         let mut address_changed = false;
+        let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
+            node_addr,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+        );
         if let Some(peer) = self.peers.get_mut(node_addr) {
             peer.reset_decrypt_failures();
-            address_changed = peer.set_current_addr(transport_id, remote_addr);
-            peer.link_stats_mut()
-                .record_recv(packet_len, packet_timestamp_ms);
-            peer.touch(packet_timestamp_ms);
-            if let Some(mmp) = peer.mmp_mut() {
-                mmp.receiver
-                    .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
-                let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
+            if path_bookkeeping_allowed {
+                address_changed = peer.set_current_addr(transport_id, remote_addr);
+                peer.link_stats_mut()
+                    .record_recv(packet_len, packet_timestamp_ms);
+                peer.touch(packet_timestamp_ms);
+                if let Some(mmp) = peer.mmp_mut() {
+                    mmp.receiver
+                        .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
+                    let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
+                }
             }
         }
         // Address rotation invalidates the per-peer connected UDP

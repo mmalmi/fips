@@ -4342,6 +4342,114 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
 }
 
 #[tokio::test]
+async fn authenticated_lower_priority_packet_does_not_rotate_healthy_static_path() {
+    let local_identity = Identity::generate();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let static_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let public_addr = TransportAddr::from_string("203.0.113.9:9000");
+
+    let mut config = Config::new();
+    config.peers = vec![crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:9000", 200),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    }];
+    let session = make_test_fmp_session(&local_identity, &peer_full, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+    let active = ActivePeer::with_session(
+        peer_identity,
+        LinkId::new(10),
+        1_000,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        transport_id,
+        static_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([2; 8]),
+    );
+    assert!(active.can_send());
+    node.peers.insert(peer_node_addr, active);
+
+    node.process_authentic_fmp_plaintext(
+        &peer_node_addr,
+        transport_id,
+        &public_addr,
+        2_000,
+        64,
+        1,
+        false,
+        false,
+        &[0, 0, 0, 0],
+    )
+    .await;
+
+    let active = node.get_peer(&peer_node_addr).expect("peer");
+    assert_eq!(
+        active.current_addr(),
+        Some(&static_addr),
+        "healthy static path should not be rewritten by lower-priority authenticated traffic"
+    );
+    assert_eq!(
+        active.idle_time(2_500),
+        1_500,
+        "suppressed lower-priority traffic should not refresh selected-path liveness"
+    );
+
+    node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
+    node.process_authentic_fmp_plaintext(
+        &peer_node_addr,
+        transport_id,
+        &public_addr,
+        3_100,
+        64,
+        2,
+        false,
+        false,
+        &[0, 0, 0, 0],
+    )
+    .await;
+
+    let active = node.get_peer(&peer_node_addr).expect("peer");
+    assert_eq!(
+        active.current_addr(),
+        Some(&public_addr),
+        "degraded selected path should still be allowed to roam to an authenticated alternate"
+    );
+    assert_eq!(active.idle_time(3_100), 0);
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_changes() {
     let mut node = make_node();
     let peer_full = loop {

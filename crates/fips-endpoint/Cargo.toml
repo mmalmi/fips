@@ -9,4 +9,4 @@ repository = "https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n
 readme = "README.md"
 
 [dependencies]
-fips-core = { version = "0.3.47", path = "../fips-core" }
+fips-core = { version = "0.3.48", path = "../fips-core" }
