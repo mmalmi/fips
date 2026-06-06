@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::protocol::TreeAnnounce;
+use crate::transport::ReceivedPacket;
 use crate::tree::{CoordEntry, ParentDeclaration, TreeCoordinate};
 
 static LARGE_NETWORK_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
@@ -40,6 +41,7 @@ pub(super) async fn make_test_node_with_mtu(mtu: u16) -> TestNode {
     config.node.rate_limit.handshake_resend_backoff = 1.5;
     config.node.rate_limit.handshake_max_resends = 12;
     config.node.bloom.update_debounce_ms = 50;
+    config.node.connected_udp.enabled = false;
     let mut node = Node::new(config).unwrap();
     let transport_id = TransportId::new(1);
 
@@ -70,6 +72,18 @@ pub(super) async fn make_test_node_with_mtu(mtu: u16) -> TestNode {
 /// Sends msg1 over UDP. The drain loop will handle msg1 processing,
 /// msg2 response, and subsequent TreeAnnounce exchange.
 pub(super) async fn initiate_handshake(nodes: &mut [TestNode], i: usize, j: usize) {
+    let wire_msg1 = prepare_outbound_msg1(nodes, i, j);
+    let responder_addr = nodes[j].addr.clone();
+    let transport_id = nodes[i].transport_id;
+
+    let transport = nodes[i].node.transports.get(&transport_id).unwrap();
+    transport
+        .send(&responder_addr, &wire_msg1)
+        .await
+        .expect("Failed to send msg1");
+}
+
+fn prepare_outbound_msg1(nodes: &mut [TestNode], i: usize, j: usize) -> Vec<u8> {
     use crate::node::wire::build_msg1;
 
     // Extract responder info before mutably borrowing initiator
@@ -121,11 +135,44 @@ pub(super) async fn initiate_handshake(nodes: &mut [TestNode], i: usize, j: usiz
         .pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
 
-    let transport = initiator.node.transports.get(&transport_id).unwrap();
-    transport
-        .send(&responder_addr, &wire_msg1)
-        .await
-        .expect("Failed to send msg1");
+    wire_msg1
+}
+
+async fn complete_direct_handshake(nodes: &mut [TestNode], i: usize, j: usize) {
+    let wire_msg1 = prepare_outbound_msg1(nodes, i, j);
+    let initiator_addr = nodes[i].addr.clone();
+    let responder_transport_id = nodes[j].transport_id;
+    let now_ms = Node::now_ms();
+
+    nodes[j]
+        .node
+        .handle_msg1(ReceivedPacket::with_timestamp(
+            responder_transport_id,
+            initiator_addr,
+            wire_msg1,
+            now_ms,
+        ))
+        .await;
+
+    let initiator_node_addr = *nodes[i].node.node_addr();
+    let wire_msg2 = nodes[j]
+        .node
+        .get_peer(&initiator_node_addr)
+        .and_then(|peer| peer.handshake_msg2())
+        .expect("responder should store msg2 for direct synthetic handshake")
+        .to_vec();
+    let responder_addr = nodes[j].addr.clone();
+    let initiator_transport_id = nodes[i].transport_id;
+
+    nodes[i]
+        .node
+        .handle_msg2(ReceivedPacket::with_timestamp(
+            initiator_transport_id,
+            responder_addr,
+            wire_msg2,
+            Node::now_ms(),
+        ))
+        .await;
 }
 
 async fn run_synthetic_node_work(nodes: &mut [TestNode]) {
@@ -173,7 +220,86 @@ async fn drain_synthetic_packets_until_idle(
     total
 }
 
-async fn refresh_synthetic_filter_announces(nodes: &mut [TestNode]) -> usize {
+fn has_edge_filter_from(nodes: &[TestNode], receiver: usize, sender: usize) -> bool {
+    let sender_addr = *nodes[sender].node.node_addr();
+    nodes[receiver]
+        .node
+        .get_peer(&sender_addr)
+        .and_then(|peer| peer.inbound_filter())
+        .is_some_and(|filter| filter.contains(&sender_addr))
+}
+
+fn missing_edge_filters(nodes: &[TestNode], edges: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut missing = Vec::new();
+    for &(i, j) in edges {
+        if !has_edge_filter_from(nodes, i, j) {
+            missing.push((j, i));
+        }
+        if !has_edge_filter_from(nodes, j, i) {
+            missing.push((i, j));
+        }
+    }
+    missing
+}
+
+async fn repair_missing_edge_filters(
+    nodes: &mut [TestNode],
+    edges: &[(usize, usize)],
+    verbose: bool,
+) -> usize {
+    let mut resent = 0;
+
+    for attempt in 0..8 {
+        let missing = missing_edge_filters(nodes, edges);
+        if missing.is_empty() {
+            break;
+        }
+
+        if verbose {
+            eprintln!(
+                "  Repairing {} missing synthetic edge filter direction(s), attempt {}",
+                missing.len(),
+                attempt + 1
+            );
+        }
+
+        for chunk in missing.chunks(16) {
+            for &(sender, receiver) in chunk {
+                let receiver_addr = *nodes[receiver].node.node_addr();
+                nodes[sender]
+                    .node
+                    .bloom_state
+                    .mark_update_needed(receiver_addr);
+                resent += 1;
+            }
+
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
+        }
+    }
+
+    let remaining = missing_edge_filters(nodes, edges);
+    if !remaining.is_empty() {
+        let examples: Vec<String> = remaining
+            .iter()
+            .take(8)
+            .map(|(sender, receiver)| format!("{}->{}", sender, receiver))
+            .collect();
+        eprintln!(
+            "  Synthetic filter repair left {} missing edge direction(s): {}",
+            remaining.len(),
+            examples.join(", ")
+        );
+    }
+
+    resent
+}
+
+async fn refresh_synthetic_filter_announces(
+    nodes: &mut [TestNode],
+    edges: &[(usize, usize)],
+    verbose: bool,
+) -> usize {
     let mut total = 0;
 
     for _ in 0..4 {
@@ -183,6 +309,8 @@ async fn refresh_synthetic_filter_announces(nodes: &mut [TestNode]) -> usize {
         }
         total += drain_synthetic_packets_until_idle(nodes, 80, 10).await;
     }
+
+    total += repair_missing_edge_filters(nodes, edges, verbose).await;
 
     total
 }
@@ -518,7 +646,7 @@ async fn repair_missing_edge_handshakes(
 ) -> usize {
     let mut retries = 0;
 
-    for attempt in 0..24 {
+    for attempt in 0..4 {
         let mut missing = missing_edge_handshakes(nodes, edges);
 
         if missing.is_empty() {
@@ -548,22 +676,24 @@ async fn repair_missing_edge_handshakes(
                 continue;
             }
 
-            // Asymmetric peers can preserve stale cross-connection/link state
-            // on the side that did promote. Rebuild both directions so the
-            // retry starts from one consistent edge state.
-            clear_edge_state(nodes, i, j);
-            clear_edge_state(nodes, j, i);
-            let _ = drain_synthetic_packets_until_idle(nodes, 20, 5).await;
-
             for (from, to) in [(i, j), (j, i)] {
                 let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
                 if i_has_j && j_has_i {
                     break;
                 }
 
-                initiate_handshake(nodes, from, to).await;
+                // Asymmetric peers can preserve stale cross-connection/link
+                // state on the side that did promote. Rebuild both directions
+                // before each one-way retry so the handshake starts from one
+                // consistent edge state instead of layering a cross-connection
+                // on top of a stale half-edge.
+                clear_edge_state(nodes, i, j);
+                clear_edge_state(nodes, j, i);
+                let _ = drain_synthetic_packets_until_idle(nodes, 20, 5).await;
+
+                complete_direct_handshake(nodes, from, to).await;
                 retries += 1;
-                let _ = drain_synthetic_packets_until_idle(nodes, 240, 10).await;
+                let _ = drain_synthetic_packets_until_idle(nodes, 120, 10).await;
             }
         }
     }
@@ -843,7 +973,7 @@ pub(super) async fn run_tree_test(
     let mut initial_total = 0;
     for chunk in edges.chunks(16) {
         for &(i, j) in chunk {
-            initiate_handshake(&mut nodes, i, j).await;
+            complete_direct_handshake(&mut nodes, i, j).await;
         }
         initial_total += drain_initial_handshake_burst(&mut nodes).await;
     }
@@ -852,7 +982,7 @@ pub(super) async fn run_tree_test(
     let total = initial_total + drain_all_packets(&mut nodes, verbose).await;
     assert!(total > 0, "Should have processed at least some packets");
     let repaired = repair_missing_edge_handshakes(&mut nodes, edges, verbose).await;
-    let refreshed = refresh_synthetic_filter_announces(&mut nodes).await;
+    let refreshed = refresh_synthetic_filter_announces(&mut nodes, edges, verbose).await;
 
     if verbose {
         eprintln!("\n  Total packets processed: {}", total);
@@ -905,7 +1035,7 @@ pub(super) async fn run_tree_test_with_mtus(
     let mut initial_total = 0;
     for chunk in edges.chunks(16) {
         for &(i, j) in chunk {
-            initiate_handshake(&mut nodes, i, j).await;
+            complete_direct_handshake(&mut nodes, i, j).await;
         }
         initial_total += drain_initial_handshake_burst(&mut nodes).await;
     }
@@ -913,7 +1043,7 @@ pub(super) async fn run_tree_test_with_mtus(
     let total = initial_total + drain_all_packets(&mut nodes, false).await;
     assert!(total > 0, "Should have processed at least some packets");
     let _ = repair_missing_edge_handshakes(&mut nodes, edges, false).await;
-    let _ = refresh_synthetic_filter_announces(&mut nodes).await;
+    let _ = refresh_synthetic_filter_announces(&mut nodes, edges, false).await;
 
     for &(i, j) in edges {
         let j_addr = *nodes[j].node.node_addr();
