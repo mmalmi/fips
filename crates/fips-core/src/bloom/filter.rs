@@ -69,16 +69,18 @@ impl BloomFilter {
 
     /// Insert a NodeAddr into the filter.
     pub fn insert(&mut self, node_addr: &NodeAddr) {
+        let (h1, h2) = self.hash_pair(node_addr.as_bytes());
         for i in 0..self.hash_count {
-            let bit_index = self.hash(node_addr.as_bytes(), i);
+            let bit_index = self.hash_from_pair(h1, h2, i);
             self.set_bit(bit_index);
         }
     }
 
     /// Insert raw bytes into the filter.
     pub fn insert_bytes(&mut self, data: &[u8]) {
+        let (h1, h2) = self.hash_pair(data);
         for i in 0..self.hash_count {
-            let bit_index = self.hash(data, i);
+            let bit_index = self.hash_from_pair(h1, h2, i);
             self.set_bit(bit_index);
         }
     }
@@ -93,8 +95,9 @@ impl BloomFilter {
 
     /// Check if the filter might contain raw bytes.
     pub fn contains_bytes(&self, data: &[u8]) -> bool {
+        let (h1, h2) = self.hash_pair(data);
         for i in 0..self.hash_count {
-            let bit_index = self.hash(data, i);
+            let bit_index = self.hash_from_pair(h1, h2, i);
             if !self.get_bit(bit_index) {
                 return false;
             }
@@ -199,18 +202,19 @@ impl BloomFilter {
     /// Compute a hash index for the given data and hash function number.
     ///
     /// Uses double hashing: h(x,i) = (h1(x) + i*h2(x)) mod m
-    fn hash(&self, data: &[u8], k: u8) -> usize {
-        // Use first 16 bytes of SHA-256 for h1 and h2
+    fn hash_pair(&self, data: &[u8]) -> (u64, u64) {
         use sha2::{Digest, Sha256};
+
         let mut hasher = Sha256::new();
         hasher.update(data);
         let hash = hasher.finalize();
 
-        // h1 from first 8 bytes
         let h1 = u64::from_le_bytes(hash[0..8].try_into().unwrap());
-        // h2 from next 8 bytes
         let h2 = u64::from_le_bytes(hash[8..16].try_into().unwrap());
+        (h1, h2)
+    }
 
+    fn hash_from_pair(&self, h1: u64, h2: u64, k: u8) -> usize {
         let combined = h1.wrapping_add((k as u64).wrapping_mul(h2));
         (combined as usize) % self.num_bits
     }

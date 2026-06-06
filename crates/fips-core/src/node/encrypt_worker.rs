@@ -57,6 +57,8 @@ use crate::transport::udp::socket::AsyncUdpSocket;
 use crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 #[cfg(target_os = "macos")]
+use std::cell::RefCell;
+#[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
@@ -1745,20 +1747,53 @@ fn flush_batch_sync(
         };
         #[cfg(not(target_os = "macos"))]
         let (fd, connected) = (group.socket.as_raw_fd(), false);
-        for data in &group.wire_packets {
-            if let Err(err) = send_one_with_backpressure(
-                fd,
-                connected,
-                &group.dest_addr,
-                data,
-                &mut backpressure,
-                group.drop_on_backpressure,
-            ) {
-                if group.drop_on_backpressure && is_send_backpressure(&err) {
-                    continue;
+
+        #[cfg(target_os = "macos")]
+        let send_error = MAC_DIRECT_SEND_RATE_PACER.with(|pacer| {
+            let mut rate_pacer = pacer.borrow_mut();
+            for data in &group.wire_packets {
+                rate_pacer.pace(data.len());
+                if let Err(err) = send_one_with_backpressure(
+                    fd,
+                    connected,
+                    &group.dest_addr,
+                    data,
+                    &mut backpressure,
+                    group.drop_on_backpressure,
+                ) {
+                    if group.drop_on_backpressure && is_send_backpressure(&err) {
+                        continue;
+                    }
+                    return Some(err);
                 }
-                return Err(format!("sendto failed: {err}").into());
             }
+            None
+        });
+
+        #[cfg(not(target_os = "macos"))]
+        let send_error = {
+            let mut error = None;
+            for data in &group.wire_packets {
+                if let Err(err) = send_one_with_backpressure(
+                    fd,
+                    connected,
+                    &group.dest_addr,
+                    data,
+                    &mut backpressure,
+                    group.drop_on_backpressure,
+                ) {
+                    if group.drop_on_backpressure && is_send_backpressure(&err) {
+                        continue;
+                    }
+                    error = Some(err);
+                    break;
+                }
+            }
+            error
+        };
+
+        if let Some(err) = send_error {
+            return Err(format!("sendto failed: {err}").into());
         }
     }
     // Windows: encrypt worker pool isn't spawned at all (see
@@ -1965,10 +2000,14 @@ struct MacSendRatePacer {
 #[cfg(target_os = "macos")]
 impl Default for MacSendRatePacer {
     fn default() -> Self {
+        // Default-on for Darwin's direct sender: without sendmmsg/GSO, tight
+        // send bursts can wedge Wi-Fi/utun queues while the daemon is mostly
+        // idle. Keep the rate above typical Tailscale-over-LAN throughput, and
+        // leave FIPS_MACOS_SEND_PACE_MBPS=0 as the lab opt-out.
         let mbps = std::env::var("FIPS_MACOS_SEND_PACE_MBPS")
             .ok()
             .and_then(|raw| raw.trim().parse::<f64>().ok())
-            .unwrap_or(0.0);
+            .unwrap_or(350.0);
         let bytes_per_sec = if mbps.is_finite() && mbps > 0.0 {
             mbps * 1_000_000.0 / 8.0
         } else {
@@ -1978,7 +2017,7 @@ impl Default for MacSendRatePacer {
             .ok()
             .and_then(|raw| raw.trim().parse::<f64>().ok())
             .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(64.0 * 1024.0);
+            .unwrap_or(24.0 * 1024.0);
         Self {
             bytes_per_sec,
             burst_bytes,
@@ -1986,6 +2025,12 @@ impl Default for MacSendRatePacer {
             last: std::time::Instant::now(),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static MAC_DIRECT_SEND_RATE_PACER: RefCell<MacSendRatePacer> =
+        RefCell::new(MacSendRatePacer::default());
 }
 
 #[cfg(target_os = "macos")]
