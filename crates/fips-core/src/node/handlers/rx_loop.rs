@@ -8,11 +8,12 @@ use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
     PHASE_MSG2,
 };
-use crate::node::{Node, NodeError};
+use crate::node::{Node, NodeEndpointCommand, NodeError};
 use crate::transport::ReceivedPacket;
 use crate::transport::TransportHandle;
-use std::time::Duration;
-use tokio::sync::mpsc::UnboundedReceiver;
+use crate::upper::tun::TunOutboundRx;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
 use tracing::{debug, info, trace, warn};
 
 /// How often the raw-packet drain loop yields a slice of work to the
@@ -23,7 +24,20 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
 const PACKET_DRAIN_BUDGET: usize = 256;
-const RX_LOOP_SLOW_MAINTENANCE_TIMEOUT: Duration = Duration::from_millis(100);
+const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
+const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
+const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
+const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
+
+fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
+    let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
+    let ms = raw
+        .trim()
+        .parse::<u64>()
+        .ok()?
+        .min(RX_LOOP_FAULT_MAX_DELAY_MS);
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
 
 impl Node {
     /// Run the receive event loop.
@@ -94,6 +108,7 @@ impl Node {
 
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
+        let mut last_data_activity = None::<Instant>;
 
         // Set up control socket channel
         let (control_tx, mut control_rx) =
@@ -138,52 +153,66 @@ impl Node {
                 Some(event) = decrypt_fallback_rx.recv() => {
                     self.process_decrypt_worker_event(event).await;
                     self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
+                    last_data_activity = Some(Instant::now());
                     self.flush_pending_sends().await;
                 }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
-                            self.drain_packet_rx(
+                            let drained = self.drain_packet_rx(
                                 &mut packet_rx,
                                 &mut decrypt_fallback_rx,
                                 Some(p),
                                 PACKET_DRAIN_BUDGET,
                             ).await;
+                            if drained > 0 {
+                                last_data_activity = Some(Instant::now());
+                            }
                         }
                         None => break, // channel closed
                     }
                 }
                 _ = tick.tick() => {
-                    let drained = self.drain_packet_rx(
+                    let drained_packets = self.drain_packet_rx(
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
                         None,
                         PACKET_DRAIN_BUDGET,
                     ).await;
+                    let drained_tun = self.drain_tun_outbound(
+                        &mut tun_outbound_rx,
+                        None,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let drained_endpoint = self.drain_endpoint_commands(
+                        &mut endpoint_command_rx,
+                        None,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let drained = drained_packets + drained_tun + drained_endpoint;
                     if drained > 0 {
+                        last_data_activity = Some(Instant::now());
                         debug!(
                             drained,
+                            drained_packets,
+                            drained_tun,
+                            drained_endpoint,
                             "Drained queued packets before rx-loop maintenance"
                         );
                     }
-                    self.run_rx_loop_maintenance_tick().await;
+                    let recent_data_activity = last_data_activity
+                        .is_some_and(|t| t.elapsed() <= RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW);
+                    self.run_rx_loop_maintenance_tick(drained > 0 || recent_data_activity).await;
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
-                    self.handle_tun_outbound(ipv6_packet).await;
-                    let mut drained = 0;
-                    while drained < 256 {
-                        match tun_outbound_rx.try_recv() {
-                            Ok(p) => {
-                                self.handle_tun_outbound(p).await;
-                                drained += 1;
-                            }
-                            Err(_) => break,
-                        }
+                    let drained = self.drain_tun_outbound(
+                        &mut tun_outbound_rx,
+                        Some(ipv6_packet),
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        last_data_activity = Some(Instant::now());
                     }
-                    // Flush any trailing batched sends so the last
-                    // packets of a burst don't sit in the per-transport
-                    // sendmmsg buffer waiting for the threshold.
-                    self.flush_pending_sends().await;
                 }
                 Some(identity) = dns_identity_rx.recv() => {
                     debug!(
@@ -193,23 +222,14 @@ impl Node {
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
                 Some(command) = endpoint_command_rx.recv() => {
-                    self.handle_endpoint_data_command(command).await;
-                    // Same drain pattern: when the application is shoving
-                    // tunnel data in via send_oneway, several Send commands
-                    // typically queue up between scheduler hops.
-                    let mut drained = 0;
-                    while drained < 256 {
-                        match endpoint_command_rx.try_recv() {
-                            Ok(c) => {
-                                self.handle_endpoint_data_command(c).await;
-                                drained += 1;
-                            }
-                            Err(_) => break,
-                        }
+                    let drained = self.drain_endpoint_commands(
+                        &mut endpoint_command_rx,
+                        Some(command),
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        last_data_activity = Some(Instant::now());
                     }
-                    // Flush any trailing batched sends from the
-                    // per-transport sendmmsg buffer.
-                    self.flush_pending_sends().await;
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
                     let response = if request.command.starts_with("show_") {
@@ -274,7 +294,63 @@ impl Node {
         drained
     }
 
-    async fn run_rx_loop_maintenance_tick(&mut self) {
+    async fn drain_tun_outbound(
+        &mut self,
+        tun_outbound_rx: &mut TunOutboundRx,
+        first_packet: Option<Vec<u8>>,
+        budget: usize,
+    ) -> usize {
+        let mut drained = 0usize;
+        if let Some(packet) = first_packet {
+            self.handle_tun_outbound(packet).await;
+            drained = 1;
+        }
+
+        while drained < budget {
+            match tun_outbound_rx.try_recv() {
+                Ok(packet) => {
+                    self.handle_tun_outbound(packet).await;
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        if drained > 0 {
+            self.flush_pending_sends().await;
+        }
+        drained
+    }
+
+    async fn drain_endpoint_commands(
+        &mut self,
+        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        first_command: Option<NodeEndpointCommand>,
+        budget: usize,
+    ) -> usize {
+        let mut drained = 0usize;
+        if let Some(command) = first_command {
+            self.handle_endpoint_data_command(command).await;
+            drained = 1;
+        }
+
+        while drained < budget {
+            match endpoint_command_rx.try_recv() {
+                Ok(command) => {
+                    self.handle_endpoint_data_command(command).await;
+                    drained += 1;
+                }
+                Err(_) => break,
+            }
+        }
+
+        if drained > 0 {
+            self.flush_pending_sends().await;
+        }
+        drained
+    }
+
+    async fn run_rx_loop_maintenance_tick(&mut self, data_pressure: bool) {
         self.check_timeouts();
         let now_ms = Self::now_ms();
         // Link/session liveness must run before slower retry/discovery work:
@@ -299,22 +375,29 @@ impl Node {
         self.activate_connected_udp_sessions().await;
         self.sample_transport_congestion();
 
-        if tokio::time::timeout(
-            RX_LOOP_SLOW_MAINTENANCE_TIMEOUT,
-            self.run_rx_loop_slow_maintenance_tick(),
-        )
-        .await
-        .is_err()
+        let slow_timeout = if data_pressure {
+            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT
+        } else {
+            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT
+        };
+
+        if tokio::time::timeout(slow_timeout, self.run_rx_loop_slow_maintenance_tick())
+            .await
+            .is_err()
         {
             self.mark_rx_loop_maintenance_timeout();
             warn!(
-                timeout_ms = RX_LOOP_SLOW_MAINTENANCE_TIMEOUT.as_millis() as u64,
-                "RX loop slow maintenance timed out; continuing packet processing"
+                timeout_ms = slow_timeout.as_millis() as u64,
+                data_pressure, "RX loop slow maintenance timed out; continuing packet processing"
             );
         }
     }
 
     async fn run_rx_loop_slow_maintenance_tick(&mut self) {
+        if let Some(delay) = rx_loop_slow_maintenance_fault_delay() {
+            tokio::time::sleep(delay).await;
+        }
+
         // Discovery and graph/stat maintenance can involve relay work or
         // larger scans. Keep it bounded after direct-path liveness and session
         // upkeep so a slow Nostr/LAN tick degrades discovery freshness, not
