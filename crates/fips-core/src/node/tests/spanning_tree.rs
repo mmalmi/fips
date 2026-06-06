@@ -382,32 +382,18 @@ fn missing_edge_handshakes(
     missing
 }
 
-fn active_link_for_addr(
-    node: &Node,
-    transport_id: TransportId,
-    remote_addr: &TransportAddr,
-) -> Option<LinkId> {
-    node.peers.values().find_map(|peer| {
-        let link_id = peer.link_id();
-        let link = node.links.get(&link_id)?;
-        (link.transport_id() == transport_id && link.remote_addr() == remote_addr)
-            .then_some(link_id)
-    })
-}
-
-fn clear_pending_edge_handshake(nodes: &mut [TestNode], from: usize, to: usize) {
+fn clear_edge_state(nodes: &mut [TestNode], from: usize, to: usize) {
     let transport_id = nodes[from].transport_id;
     let remote_addr = nodes[to].addr.clone();
-    let active_link_id = active_link_for_addr(&nodes[from].node, transport_id, &remote_addr);
+    let remote_node_addr = *nodes[to].node.node_addr();
+
+    nodes[from].node.remove_active_peer(&remote_node_addr);
 
     let stale_link_ids: Vec<LinkId> = nodes[from]
         .node
         .links
         .iter()
         .filter_map(|(link_id, link)| {
-            if Some(*link_id) == active_link_id {
-                return None;
-            }
             (link.transport_id() == transport_id && link.remote_addr() == &remote_addr)
                 .then_some(*link_id)
         })
@@ -429,17 +415,10 @@ fn clear_pending_edge_handshake(nodes: &mut [TestNode], from: usize, to: usize) 
         nodes[from].node.remove_link(&link_id);
     }
 
-    if let Some(link_id) = active_link_id {
-        nodes[from]
-            .node
-            .addr_to_link
-            .insert((transport_id, remote_addr.clone()), link_id);
-    } else {
-        nodes[from]
-            .node
-            .addr_to_link
-            .remove(&(transport_id, remote_addr));
-    }
+    nodes[from]
+        .node
+        .addr_to_link
+        .remove(&(transport_id, remote_addr));
 
     let live_connection_ids: std::collections::HashSet<LinkId> =
         nodes[from].node.connections.keys().copied().collect();
@@ -483,23 +462,21 @@ async fn repair_missing_edge_handshakes(
 
         if verbose {
             eprintln!(
-                "  Repairing {} missing synthetic edge handshake(s), attempt {}",
+                "  Repairing {} missing/asymmetric synthetic edge handshake(s), attempt {}",
                 missing.len(),
                 attempt + 1
             );
         }
 
         for (i, j, _, _) in missing {
-            clear_pending_edge_handshake(nodes, i, j);
-            clear_pending_edge_handshake(nodes, j, i);
-
             for (from, to) in [(i, j), (j, i)] {
                 let (i_has_j, j_has_i) = edge_peer_state(nodes, i, j);
                 if i_has_j && j_has_i {
                     break;
                 }
 
-                clear_pending_edge_handshake(nodes, from, to);
+                clear_edge_state(nodes, i, j);
+                clear_edge_state(nodes, j, i);
                 initiate_handshake(nodes, from, to).await;
                 retries += 1;
                 let _ = drain_all_packets(nodes, false).await;
