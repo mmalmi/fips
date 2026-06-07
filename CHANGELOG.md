@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.54] - 2026-06-07
+
+### Fixed
+
+- The FIPS receive loop now keeps control, heartbeat, and ACK-like endpoint
+  work responsive while bulk tunnel egress is saturated by splitting endpoint
+  commands into priority and bulk lanes and treating a full bulk worker queue
+  as network backpressure instead of blocking the rx loop.
+
 ## [0.3.53] - 2026-06-07
 
 ### Fixed
