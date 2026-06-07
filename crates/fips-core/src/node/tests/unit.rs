@@ -5544,37 +5544,65 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
         packet
     }
 
-    let tcp_ack = classify_endpoint_payload(&ipv6_tcp_packet(0x10, 0));
+    let tcp_ack_packet = ipv6_tcp_packet(0x10, 0);
+    let tcp_ack = classify_endpoint_payload(&tcp_ack_packet);
     assert!(!tcp_ack.bulk_endpoint_data);
     assert!(!tcp_ack.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&tcp_ack_packet),
+        EndpointCommandLane::Priority
+    );
 
-    let tcp_syn = classify_endpoint_payload(&ipv6_tcp_packet(0x02, 0));
+    let tcp_syn_packet = ipv6_tcp_packet(0x02, 0);
+    let tcp_syn = classify_endpoint_payload(&tcp_syn_packet);
     assert!(!tcp_syn.bulk_endpoint_data);
     assert!(!tcp_syn.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&tcp_syn_packet),
+        EndpointCommandLane::Priority
+    );
 
-    let tiny_tcp_data = classify_endpoint_payload(&ipv6_tcp_packet(0x18, 64));
+    let tiny_tcp_data_packet = ipv6_tcp_packet(0x18, 64);
+    let tiny_tcp_data = classify_endpoint_payload(&tiny_tcp_data_packet);
     assert!(!tiny_tcp_data.bulk_endpoint_data);
     assert!(!tiny_tcp_data.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&tiny_tcp_data_packet),
+        EndpointCommandLane::Priority
+    );
 
-    let bulk_tcp_data = classify_endpoint_payload(&ipv6_tcp_packet(0x18, 512));
+    let bulk_tcp_data_packet = ipv6_tcp_packet(0x18, 512);
+    let bulk_tcp_data = classify_endpoint_payload(&bulk_tcp_data_packet);
     assert!(bulk_tcp_data.bulk_endpoint_data);
     assert!(!bulk_tcp_data.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&bulk_tcp_data_packet),
+        EndpointCommandLane::Bulk
+    );
 
-    let mut icmpv6 = vec![0u8; 48];
-    icmpv6[0] = 0x60;
-    icmpv6[4..6].copy_from_slice(&8u16.to_be_bytes());
-    icmpv6[6] = 58;
-    let icmpv6 = classify_endpoint_payload(&icmpv6);
+    let mut icmpv6_packet = vec![0u8; 48];
+    icmpv6_packet[0] = 0x60;
+    icmpv6_packet[4..6].copy_from_slice(&8u16.to_be_bytes());
+    icmpv6_packet[6] = 58;
+    let icmpv6 = classify_endpoint_payload(&icmpv6_packet);
     assert!(!icmpv6.bulk_endpoint_data);
     assert!(!icmpv6.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&icmpv6_packet),
+        EndpointCommandLane::Priority
+    );
 
-    let mut udp = vec![0u8; 48];
-    udp[0] = 0x60;
-    udp[4..6].copy_from_slice(&8u16.to_be_bytes());
-    udp[6] = 17;
-    let udp = classify_endpoint_payload(&udp);
+    let mut udp_packet = vec![0u8; 48];
+    udp_packet[0] = 0x60;
+    udp_packet[4..6].copy_from_slice(&8u16.to_be_bytes());
+    udp_packet[6] = 17;
+    let udp = classify_endpoint_payload(&udp_packet);
     assert!(udp.bulk_endpoint_data);
     assert!(udp.drop_on_backpressure);
+    assert_eq!(
+        endpoint_command_lane_for_payload(&udp_packet),
+        EndpointCommandLane::Bulk
+    );
 }
 
 #[tokio::test]

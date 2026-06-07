@@ -87,6 +87,12 @@ struct EndpointPayloadTrafficClass {
     drop_on_backpressure: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointCommandLane {
+    Priority,
+    Bulk,
+}
+
 fn classify_fmp_plaintext_traffic(plaintext: &[u8]) -> FmpPlaintextTrafficClass {
     let bulk_endpoint_data = fmp_plaintext_is_bulk_session_datagram(plaintext);
     // At this layer established FSP payloads are already end-to-end encrypted,
@@ -131,6 +137,18 @@ fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
             bulk_endpoint_data: true,
             drop_on_backpressure: true,
         },
+    }
+}
+
+pub(crate) fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
+    !classify_endpoint_payload(payload).bulk_endpoint_data
+}
+
+pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointCommandLane {
+    if endpoint_payload_is_latency_sensitive(payload) {
+        EndpointCommandLane::Priority
+    } else {
+        EndpointCommandLane::Bulk
     }
 }
 
@@ -434,6 +452,9 @@ pub struct ExternalPacketIo {
 /// App-owned endpoint data channels for embedding FIPS without a daemon.
 #[derive(Debug)]
 pub(crate) struct EndpointDataIo {
+    /// Send latency-sensitive endpoint data and management commands into the
+    /// node RX loop ahead of queued bulk endpoint data.
+    pub(crate) priority_command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
     /// Send endpoint data commands into the node RX loop.
     ///
     /// Bounded with a generous default so normal sender bursts do not
@@ -811,6 +832,8 @@ pub struct Node {
     /// App-owned packet sink used by embedded/no-TUN integrations.
     external_packet_tx: Option<tokio::sync::mpsc::Sender<NodeDeliveredPacket>>,
     /// Endpoint data command receiver used by embedded/no-daemon integrations.
+    endpoint_priority_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
+    /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
     endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
@@ -1077,6 +1100,7 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
+            endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
             encrypt_workers: None,
@@ -1223,6 +1247,7 @@ impl Node {
             tun_tx: None,
             tun_outbound_rx: None,
             external_packet_tx: None,
+            endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
             encrypt_workers: None,
@@ -3096,16 +3121,20 @@ impl Node {
         }
 
         let command_capacity = endpoint_data_command_capacity(capacity);
+        let (priority_command_tx, priority_command_rx) =
+            tokio::sync::mpsc::channel(command_capacity);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
         // Inbound endpoint-data events use an unbounded channel — see
         // `EndpointDataIo::event_rx` docs for the rationale (kills the
         // per-packet semaphore + the cross-task relay task that used to
         // sit on top of this channel).
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.endpoint_priority_command_rx = Some(priority_command_rx);
         self.endpoint_command_rx = Some(command_rx);
         self.endpoint_event_tx = Some(event_tx.clone());
 
         Ok(EndpointDataIo {
+            priority_command_tx,
             command_tx,
             event_rx,
             event_tx,

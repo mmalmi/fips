@@ -85,6 +85,14 @@ impl Node {
 
         // Take the endpoint-data command receiver, or create a dummy channel
         // when the embedded endpoint API is not in use.
+        let (mut endpoint_priority_command_rx, _endpoint_priority_command_guard) =
+            match self.endpoint_priority_command_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
+                    (rx, Some(tx))
+                }
+            };
         let (mut endpoint_command_rx, _endpoint_command_guard) =
             match self.endpoint_command_rx.take() {
                 Some(rx) => (rx, None),
@@ -179,6 +187,7 @@ impl Node {
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
                         &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
@@ -212,6 +221,7 @@ impl Node {
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
                         &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
@@ -244,9 +254,23 @@ impl Node {
                     );
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
+                Some(command) = endpoint_priority_command_rx.recv() => {
+                    let drained = self.drain_endpoint_commands(
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        Some(command),
+                        None,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        last_data_activity = Some(Instant::now());
+                    }
+                }
                 Some(command) = endpoint_command_rx.recv() => {
                     let drained = self.drain_endpoint_commands(
+                        &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
+                        None,
                         Some(command),
                         PACKET_DRAIN_BUDGET,
                     ).await;
@@ -278,6 +302,7 @@ impl Node {
         packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
         decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
         tun_outbound_rx: &mut TunOutboundRx,
+        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
     ) -> (usize, usize, usize) {
@@ -286,7 +311,13 @@ impl Node {
             .await;
         let drained_tun = self.drain_tun_outbound(tun_outbound_rx, None, budget).await;
         let drained_endpoint = self
-            .drain_endpoint_commands(endpoint_command_rx, None, budget)
+            .drain_endpoint_commands(
+                endpoint_priority_command_rx,
+                endpoint_command_rx,
+                None,
+                None,
+                budget,
+            )
             .await;
         (drained_packets, drained_tun, drained_endpoint)
     }
@@ -365,24 +396,29 @@ impl Node {
 
     async fn drain_endpoint_commands(
         &mut self,
+        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
-        first_command: Option<NodeEndpointCommand>,
+        first_priority_command: Option<NodeEndpointCommand>,
+        first_bulk_command: Option<NodeEndpointCommand>,
         budget: usize,
     ) -> usize {
+        let mut first_bulk_command = first_bulk_command;
         let mut drained = 0usize;
-        if let Some(command) = first_command {
+        if let Some(command) = first_priority_command {
             self.handle_endpoint_data_command(command).await;
             drained = 1;
         }
 
         while drained < budget {
-            match endpoint_command_rx.try_recv() {
-                Ok(command) => {
-                    self.handle_endpoint_data_command(command).await;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
+            let Some(command) = try_recv_endpoint_command(
+                endpoint_priority_command_rx,
+                endpoint_command_rx,
+                &mut first_bulk_command,
+            ) else {
+                break;
+            };
+            self.handle_endpoint_data_command(command).await;
+            drained += 1;
         }
 
         if drained > 0 {
@@ -651,5 +687,49 @@ impl Node {
                 );
             }
         }
+    }
+}
+
+fn try_recv_endpoint_command<T>(
+    priority_rx: &mut Receiver<T>,
+    bulk_rx: &mut Receiver<T>,
+    first_bulk: &mut Option<T>,
+) -> Option<T> {
+    priority_rx
+        .try_recv()
+        .ok()
+        .or_else(|| first_bulk.take())
+        .or_else(|| bulk_rx.try_recv().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_recv_endpoint_command;
+
+    #[tokio::test]
+    async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("priority").await.unwrap();
+        bulk_tx.send("bulk-queued").await.unwrap();
+        let mut selected_bulk = Some("bulk-selected");
+
+        assert_eq!(
+            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("priority")
+        );
+        assert_eq!(
+            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("bulk-selected")
+        );
+        assert_eq!(
+            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("bulk-queued")
+        );
+        assert_eq!(
+            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            None
+        );
     }
 }

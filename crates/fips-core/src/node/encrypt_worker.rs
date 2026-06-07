@@ -139,12 +139,18 @@ pub(crate) struct FmpSendJob {
     pub connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     /// True for tunnel endpoint-data payloads that should use the worker's
-    /// bulk lane instead of the control/liveness reserve.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// bulk lane instead of the control/liveness reserve. If this lane is
+    /// already full, dispatch treats the worker queue as a saturated network
+    /// queue and drops the packet rather than parking the node rx_loop behind
+    /// bulk egress. TCP bulk can recover from that as packet loss; ACKs,
+    /// handshakes, heartbeats, and other latency-sensitive payloads are kept
+    /// out of this lane by the endpoint payload classifier.
     pub bulk_endpoint_data: bool,
     /// Bulk endpoint data may be dropped when the kernel reports UDP
-    /// send-queue exhaustion. Control/rekey frames and TCP tunnel packets keep
-    /// retrying so congestion cannot strand the session or silently drop TCP.
+    /// send-queue exhaustion. This is separate from worker-queue admission:
+    /// this flag remains false for TCP endpoint data so kernel send
+    /// backpressure still retries TCP packets that have already reached a
+    /// worker.
     pub drop_on_backpressure: bool,
     /// Bounded scheduler weight for this send target. `1` is normal
     /// best-effort service; configured peers can get a small boost and
@@ -203,11 +209,6 @@ impl QueuedFmpSendJob {
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn drop_on_backpressure(&self) -> bool {
-        self.job.drop_on_backpressure
-    }
-
-    #[cfg(target_os = "macos")]
     fn bulk_endpoint_data(&self) -> bool {
         self.job.bulk_endpoint_data
     }
@@ -908,11 +909,11 @@ impl EncryptWorkerPool {
     /// behave on a single-flow run. Fire-and-forget — the worker
     /// handles send errors itself via stats counters.
     ///
-    /// Uses `try_send` for the common uncontended case. Non-droppable
-    /// jobs block when the bounded worker channel is full, pushing
-    /// TCP-over-TUN pressure back toward the TUN reader so the kernel/app
-    /// TCP stack can pace the flow. Droppable bulk keeps the bounded queue
-    /// from stalling liveness work when a lossy sender overwhelms egress.
+    /// Uses `try_send` for the common uncontended case. Control/liveness jobs
+    /// may still block if their reserve is exhausted, but a full bulk lane is
+    /// treated like a congested network queue: drop the newly admitted bulk
+    /// packet instead of blocking the node rx_loop that must keep ACKs,
+    /// heartbeats, and route measurements moving.
     pub fn dispatch(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
@@ -964,7 +965,7 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
-                if job.drop_on_backpressure() {
+                if job.bulk_endpoint_data() {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
@@ -994,7 +995,7 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
-                if job.drop_on_backpressure() {
+                if job.bulk_endpoint_data() {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
@@ -2467,9 +2468,9 @@ mod mac_queue_tests {
             let mut batch = Vec::new();
             assert!(rx.recv_batch(&mut batch, 3));
             assert_eq!(batch.len(), 3);
-            assert!(!batch[0].drop_on_backpressure());
-            assert!(batch[1].drop_on_backpressure());
-            assert!(batch[2].drop_on_backpressure());
+            assert!(!batch[0].job.drop_on_backpressure);
+            assert!(batch[1].job.drop_on_backpressure);
+            assert!(batch[2].job.drop_on_backpressure);
         });
     }
 
@@ -2539,11 +2540,57 @@ mod mac_queue_tests {
             assert!(rx.recv_batch(&mut batch, 3));
             assert_eq!(batch.len(), 3);
             assert!(!batch[0].bulk_endpoint_data());
-            assert!(!batch[0].drop_on_backpressure());
+            assert!(!batch[0].job.drop_on_backpressure);
             assert!(batch[1].bulk_endpoint_data());
-            assert!(!batch[1].drop_on_backpressure());
+            assert!(!batch[1].job.drop_on_backpressure);
             assert!(batch[2].bulk_endpoint_data());
-            assert!(!batch[2].drop_on_backpressure());
+            assert!(!batch[2].job.drop_on_backpressure);
+        });
+    }
+
+    #[test]
+    fn mac_dispatch_does_not_block_rx_loop_on_full_bulk_queue() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = mac_worker_channel(1);
+            let addr: SocketAddr = "127.0.0.1:10014".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    false,
+                ))
+                .is_ok(),
+                "initial bulk job should fit"
+            );
+
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(vec![tx].into_boxed_slice()),
+                macos_senders: Arc::new(MacSequencedSendFlows::default()),
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let thread_done = Arc::clone(&done);
+            let job = queued_job_classified(socket, &cipher, addr, true, false);
+            let handle = std::thread::spawn(move || {
+                pool.dispatch_to_worker(0, job);
+                thread_done.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            for _ in 0..20 {
+                if done.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+
+            assert!(
+                done.load(std::sync::atomic::Ordering::Acquire),
+                "full bulk dispatch must not block the rx loop"
+            );
+            handle.join().expect("dispatch thread should finish");
         });
     }
 
@@ -2576,7 +2623,7 @@ mod mac_queue_tests {
             let mut batch = Vec::new();
             assert!(rx.recv_batch(&mut batch, 1));
             assert_eq!(batch.len(), 1);
-            assert!(batch[0].drop_on_backpressure());
+            assert!(batch[0].job.drop_on_backpressure);
 
             handle.join().expect("bulk push thread should not panic");
             assert!(queued.load(std::sync::atomic::Ordering::Acquire));
@@ -2584,7 +2631,7 @@ mod mac_queue_tests {
             batch.clear();
             assert!(rx.recv_batch(&mut batch, 1));
             assert_eq!(batch.len(), 1);
-            assert!(batch[0].drop_on_backpressure());
+            assert!(batch[0].job.drop_on_backpressure);
         });
     }
 }
@@ -2621,6 +2668,26 @@ mod fair_queue_tests {
         drop_on_backpressure: bool,
         scheduling_weight: u8,
     ) -> QueuedFmpSendJob {
+        queued_job_classified(
+            socket,
+            cipher,
+            dest_addr,
+            payload_len,
+            drop_on_backpressure,
+            drop_on_backpressure,
+            scheduling_weight,
+        )
+    }
+
+    fn queued_job_classified(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        payload_len: usize,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+        scheduling_weight: u8,
+    ) -> QueuedFmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
@@ -2633,7 +2700,7 @@ mod fair_queue_tests {
             dest_addr,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket: None,
-            bulk_endpoint_data: drop_on_backpressure,
+            bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,
             queued_at: None,
@@ -2790,6 +2857,53 @@ mod fair_queue_tests {
                 )),
                 Err(FairWorkerTryPushError::Full(_))
             ));
+        });
+    }
+
+    #[test]
+    fn fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(1, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10008".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    128,
+                    true,
+                    false,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .is_ok(),
+                "initial bulk job should fit"
+            );
+
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(vec![tx].into_boxed_slice()),
+            };
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let thread_done = Arc::clone(&done);
+            let job =
+                queued_job_classified(socket, &cipher, addr, 128, true, false, DEFAULT_SEND_WEIGHT);
+            let handle = std::thread::spawn(move || {
+                pool.dispatch_to_worker(0, job);
+                thread_done.store(true, std::sync::atomic::Ordering::Release);
+            });
+
+            for _ in 0..20 {
+                if done.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+
+            assert!(
+                done.load(std::sync::atomic::Ordering::Acquire),
+                "full bulk dispatch must not block the rx loop"
+            );
+            handle.join().expect("dispatch thread should finish");
         });
     }
 }

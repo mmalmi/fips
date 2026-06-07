@@ -5,7 +5,8 @@
 
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
-    NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
+    EndpointCommandLane, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
+    NodeEndpointRelayStatus,
 };
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -253,6 +254,7 @@ impl FipsEndpointBuilder {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let task = spawn_node_task(node, shutdown_rx);
         endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
+        let endpoint_priority_commands = endpoint_data_io.priority_command_tx;
         let endpoint_commands = endpoint_data_io.command_tx;
 
         Ok(FipsEndpoint {
@@ -262,6 +264,7 @@ impl FipsEndpointBuilder {
             discovery_scope: self.discovery_scope,
             outbound_packets: packet_io.outbound_tx,
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
+            endpoint_priority_commands,
             endpoint_commands,
             inbound_endpoint_tx: endpoint_data_io.event_tx,
             inbound_endpoint_rx: Arc::new(Mutex::new(endpoint_data_io.event_rx)),
@@ -384,6 +387,7 @@ pub struct FipsEndpoint {
     discovery_scope: Option<String>,
     outbound_packets: mpsc::Sender<Vec<u8>>,
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
+    endpoint_priority_commands: mpsc::Sender<NodeEndpointCommand>,
     endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
     /// In-process loopback sender — `send()` to our own npub injects an
     /// event into the same queue without going through the wire/encrypt
@@ -469,7 +473,11 @@ impl FipsEndpoint {
         // the per-packet `oneshot::channel()` allocation entirely.
         // The node task's `SendOneway` arm runs the same code path as
         // `Send` but without writing the result into a oneshot.
-        self.endpoint_commands
+        let command_tx = match crate::node::endpoint_command_lane_for_payload(&data) {
+            EndpointCommandLane::Priority => &self.endpoint_priority_commands,
+            EndpointCommandLane::Bulk => &self.endpoint_commands,
+        };
+        command_tx
             .send(NodeEndpointCommand::SendOneway {
                 remote,
                 payload: data,
@@ -553,7 +561,7 @@ impl FipsEndpoint {
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
         let (response_tx, _response_rx) = oneshot::channel();
-        self.endpoint_commands
+        self.endpoint_priority_commands
             .blocking_send(NodeEndpointCommand::Send {
                 remote,
                 payload: data,
@@ -646,7 +654,7 @@ impl FipsEndpoint {
         peers: Vec<crate::config::PeerConfig>,
     ) -> Result<UpdatePeersOutcome, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_commands
+        self.endpoint_priority_commands
             .send(NodeEndpointCommand::UpdatePeers { peers, response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -660,7 +668,7 @@ impl FipsEndpoint {
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_commands
+        self.endpoint_priority_commands
             .send(NodeEndpointCommand::PeerSnapshot { response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -674,7 +682,7 @@ impl FipsEndpoint {
     /// Snapshot live Nostr relay states used by the embedded endpoint.
     pub async fn relay_statuses(&self) -> Result<Vec<FipsEndpointRelayStatus>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_commands
+        self.endpoint_priority_commands
             .send(NodeEndpointCommand::RelaySnapshot { response_tx })
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
@@ -697,7 +705,7 @@ impl FipsEndpoint {
         dm_relays: Vec<String>,
     ) -> Result<(), FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();
-        self.endpoint_commands
+        self.endpoint_priority_commands
             .send(NodeEndpointCommand::UpdateRelays {
                 advert_relays,
                 dm_relays,
