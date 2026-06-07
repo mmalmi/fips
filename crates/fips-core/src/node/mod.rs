@@ -34,7 +34,7 @@ use self::wire::{
     FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, build_encrypted, build_established_header,
     prepend_inner_header,
 };
-use crate::bloom::BloomState;
+use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
 use crate::node::session::SessionEntry;
@@ -1865,40 +1865,36 @@ impl Node {
     /// Compute and cache the estimated mesh size from bloom filters.
     ///
     /// Uses the spanning tree partition: parent's filter covers nodes reachable
-    /// upward, children's filters cover disjoint subtrees downward. The sum
-    /// of estimated entry counts plus one (self) approximates total network size.
+    /// upward, children's filters cover subtrees downward. The OR-union of
+    /// those filters plus self approximates total network size without
+    /// double-counting overlapping filters.
     pub(crate) fn compute_mesh_size(&mut self) {
         let my_addr = *self.tree_state.my_node_addr();
         let parent_id = *self.tree_state.my_declaration().parent_id();
         let is_root = self.tree_state.is_root();
 
         let max_fpr = self.config.node.bloom.max_inbound_fpr;
-        let mut total: f64 = 1.0; // count self
         let mut child_count: u32 = 0;
-        let mut has_data = false;
+        let mut union: Option<BloomFilter> = None;
+
+        let add_to_union = |union: &mut Option<BloomFilter>, filter: &BloomFilter| match union {
+            None => *union = Some(filter.clone()),
+            Some(existing) => {
+                // Size-class mismatch is skipped rather than fatal.
+                let _ = existing.merge(filter);
+            }
+        };
 
         // Parent's filter: nodes reachable upward through the tree.
-        // If any contributing filter is above the FPR cap, we refuse to
-        // estimate rather than substitute a partial/biased aggregate —
-        // Node.estimated_mesh_size is already Option<u64> and consumers
-        // (control socket, fipstop, periodic debug log) handle None.
         if !is_root
             && let Some(parent) = self.peers.get(&parent_id)
             && let Some(filter) = parent.inbound_filter()
         {
-            match filter.estimated_count(max_fpr) {
-                Some(n) => {
-                    total += n;
-                    has_data = true;
-                }
-                None => {
-                    self.estimated_mesh_size = None;
-                    return;
-                }
-            }
+            add_to_union(&mut union, filter);
         }
 
-        // Children's filters: each child's subtree is disjoint
+        // Children's filters: each child's subtree is ideally disjoint; OR is
+        // idempotent when filters overlap.
         for (peer_addr, peer) in &self.peers {
             if peer_addr == &parent_id {
                 continue;
@@ -1908,26 +1904,25 @@ impl Node {
             {
                 child_count += 1;
                 if let Some(filter) = peer.inbound_filter() {
-                    match filter.estimated_count(max_fpr) {
-                        Some(n) => {
-                            total += n;
-                            has_data = true;
-                        }
-                        None => {
-                            self.estimated_mesh_size = None;
-                            return;
-                        }
-                    }
+                    add_to_union(&mut union, filter);
                 }
             }
         }
 
-        if !has_data {
+        let Some(mut union) = union else {
             self.estimated_mesh_size = None;
             return;
-        }
+        };
+        union.insert(&my_addr);
 
-        let size = total.round() as u64;
+        // If the union is saturated or above the FPR cap, refuse to estimate
+        // rather than publish a biased aggregate.
+        let Some(union_estimate) = union.estimated_count(max_fpr) else {
+            self.estimated_mesh_size = None;
+            return;
+        };
+
+        let size = union_estimate.round() as u64;
         self.estimated_mesh_size = Some(size);
 
         // Periodic logging (reuse MMP default interval: 30s)

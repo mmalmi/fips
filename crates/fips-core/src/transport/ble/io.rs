@@ -634,7 +634,10 @@ impl MockBleIo {
     where
         F: Fn(&BleAddr, u16) -> Result<MockBleStream, TransportError> + Send + Sync + 'static,
     {
-        *self.connect_handler.lock().unwrap() = Some(Box::new(handler));
+        *self
+            .connect_handler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Box::new(handler));
     }
 }
 
@@ -647,14 +650,17 @@ impl BleIo for MockBleIo {
         let rx = self
             .accept_rx
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .take()
             .ok_or_else(|| TransportError::NotSupported("acceptor already taken".into()))?;
         Ok(MockBleAcceptor { rx })
     }
 
     async fn connect(&self, addr: &BleAddr, psm: u16) -> Result<Self::Stream, TransportError> {
-        let handler = self.connect_handler.lock().unwrap();
+        let handler = self
+            .connect_handler
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         match handler.as_ref() {
             Some(f) => f(addr, psm),
             None => Err(TransportError::ConnectionRefused),
@@ -673,7 +679,7 @@ impl BleIo for MockBleIo {
         let rx = self
             .scan_rx
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .take()
             .ok_or_else(|| TransportError::NotSupported("scanner already taken".into()))?;
         Ok(MockBleScanner { rx })

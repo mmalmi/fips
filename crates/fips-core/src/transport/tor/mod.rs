@@ -111,6 +111,12 @@ fn parse_tor_addr(addr: &TransportAddr) -> Result<TorAddr, TransportError> {
 // Connection Pool
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Inbound,
+    Outbound,
+}
+
 /// State for a single Tor connection to a peer.
 struct TorConnection {
     /// Write half of the split stream.
@@ -123,6 +129,7 @@ struct TorConnection {
     /// When the connection was established.
     #[allow(dead_code)]
     established_at: Instant,
+    direction: Direction,
 }
 
 /// Shared connection pool.
@@ -521,9 +528,14 @@ impl TorTransport {
         for (addr, conn) in pool.drain() {
             conn.recv_task.abort();
             let _ = conn.recv_task.await;
+            match conn.direction {
+                Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+            }
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
+                direction = ?conn.direction,
                 "Tor connection closed (transport stopping)"
             );
         }
@@ -690,6 +702,10 @@ impl TorTransport {
                 let mut pool = self.pool.lock().await;
                 if let Some(conn) = pool.remove(addr) {
                     conn.recv_task.abort();
+                    match conn.direction {
+                        Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                        Direction::Outbound => self.stats.record_pool_outbound_removed(),
+                    }
                 }
                 Err(TransportError::SendFailed(format!("{}", e)))
             }
@@ -802,6 +818,7 @@ impl TorTransport {
                 pool,
                 mtu,
                 recv_stats,
+                Direction::Outbound,
             )
             .await;
         });
@@ -811,12 +828,14 @@ impl TorTransport {
             recv_task,
             mtu,
             established_at: Instant::now(),
+            direction: Direction::Outbound,
         };
 
         let mut pool = self.pool.lock().await;
         pool.insert(addr.clone(), conn);
 
         self.stats.record_connection_established();
+        self.stats.record_pool_outbound_added();
 
         info!(
             transport_id = %self.transport_id,
@@ -1023,6 +1042,7 @@ impl TorTransport {
                 pool,
                 mtu,
                 recv_stats,
+                Direction::Outbound,
             )
             .await;
         });
@@ -1032,6 +1052,7 @@ impl TorTransport {
             recv_task,
             mtu,
             established_at: Instant::now(),
+            direction: Direction::Outbound,
         };
 
         // Use try_lock since we're in a sync context and the pool
@@ -1039,6 +1060,7 @@ impl TorTransport {
         if let Ok(mut pool) = self.pool.try_lock() {
             pool.insert(addr.clone(), conn);
             self.stats.record_connection_established();
+            self.stats.record_pool_outbound_added();
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
@@ -1060,9 +1082,14 @@ impl TorTransport {
         let mut pool = self.pool.lock().await;
         if let Some(conn) = pool.remove(addr) {
             conn.recv_task.abort();
+            match conn.direction {
+                Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+            }
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
+                direction = ?conn.direction,
                 "Tor connection closed"
             );
         }
@@ -1134,6 +1161,7 @@ async fn tor_receive_loop(
     pool: ConnectionPool,
     mtu: u16,
     stats: Arc<TorStats>,
+    direction: Direction,
 ) {
     debug!(
         transport_id = %transport_id,
@@ -1176,13 +1204,22 @@ async fn tor_receive_loop(
         }
     }
 
-    // Clean up: remove ourselves from the pool
+    // Clean up: remove ourselves from the pool and decrement the matching
+    // direction counter only if this task owned the removed entry.
     let mut pool_guard = pool.lock().await;
-    pool_guard.remove(&remote_addr);
+    let removed = pool_guard.remove(&remote_addr).is_some();
+    drop(pool_guard);
+    if removed {
+        match direction {
+            Direction::Inbound => stats.record_pool_inbound_removed(),
+            Direction::Outbound => stats.record_pool_outbound_removed(),
+        }
+    }
 
     debug!(
         transport_id = %transport_id,
         remote_addr = %remote_addr,
+        direction = ?direction,
         "Tor receive loop stopped"
     );
 }
@@ -1254,12 +1291,9 @@ async fn tor_accept_loop(
             }
         };
 
-        // Check inbound connection limit
-        let current_count = {
-            let pool_guard = pool.lock().await;
-            pool_guard.len()
-        };
-        if current_count >= max_inbound {
+        // Check inbound connection limit. Outbound SOCKS5-connect entries
+        // share the pool but do not consume onion-service inbound budget.
+        if stats.pool_inbound_count() >= max_inbound as u64 {
             stats.record_connection_rejected();
             debug!(
                 transport_id = %transport_id,
@@ -1321,6 +1355,7 @@ async fn tor_accept_loop(
                 recv_pool,
                 mtu,
                 recv_stats,
+                Direction::Inbound,
             )
             .await;
         });
@@ -1330,6 +1365,7 @@ async fn tor_accept_loop(
             recv_task,
             mtu,
             established_at: Instant::now(),
+            direction: Direction::Inbound,
         };
 
         {
@@ -1338,6 +1374,7 @@ async fn tor_accept_loop(
         }
 
         stats.record_connection_accepted();
+        stats.record_pool_inbound_added();
 
         debug!(
             transport_id = %transport_id,
@@ -1717,6 +1754,8 @@ mod tests {
             let pool = tor.pool.lock().await;
             assert_eq!(pool.len(), 1);
         }
+        assert_eq!(tor.stats.snapshot().pool_outbound, 1);
+        assert_eq!(tor.stats.snapshot().pool_inbound, 0);
 
         // Close the connection
         tor.close_connection_async(&target).await;
@@ -1726,6 +1765,7 @@ mod tests {
             let pool = tor.pool.lock().await;
             assert_eq!(pool.len(), 0);
         }
+        assert_eq!(tor.stats.snapshot().pool_outbound, 0);
 
         tor.stop_async().await.unwrap();
         dest.stop_async().await.unwrap();

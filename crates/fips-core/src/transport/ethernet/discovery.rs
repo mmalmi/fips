@@ -121,7 +121,7 @@ impl DiscoveryBuffer {
 
         let addr = TransportAddr::from_bytes(&src_mac);
         let peer = DiscoveredPeer::with_hint(self.transport_id, addr, beacon.pubkey);
-        let mut peers = self.peers.lock().unwrap();
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
         // Deduplicate by MAC address — keep the latest
         peers.retain(|p| p.addr.as_bytes() != src_mac);
         peers.push(peer);
@@ -129,7 +129,7 @@ impl DiscoveryBuffer {
 
     /// Drain all discovered peers since the last call.
     pub fn take(&self) -> Vec<DiscoveredPeer> {
-        let mut peers = self.peers.lock().unwrap();
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *peers)
     }
 }

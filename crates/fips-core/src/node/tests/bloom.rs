@@ -509,6 +509,89 @@ fn compute_mesh_size_skips_parent_under_stale_peer_declaration() {
     );
 }
 
+#[test]
+fn compute_mesh_size_unions_overlapping_filters() {
+    use crate::bloom::BloomFilter;
+    use crate::peer::ActivePeer;
+    use crate::tree::{ParentDeclaration, TreeCoordinate};
+
+    let mut node = make_node();
+    let my_addr = *node.tree_state().my_node_addr();
+
+    let mk = |hi: u8, lo: u8| {
+        let mut bytes = [0u8; 16];
+        bytes[0] = hi;
+        bytes[1] = lo;
+        NodeAddr::from_bytes(bytes)
+    };
+    let shared: Vec<NodeAddr> = (0..6u8).map(|i| mk(0x10, i)).collect();
+    let parent_only: Vec<NodeAddr> = (0..3u8).map(|i| mk(0x20, i)).collect();
+    let child_only: Vec<NodeAddr> = (0..3u8).map(|i| mk(0x30, i)).collect();
+
+    let distinct = shared.len() + parent_only.len() + child_only.len() + 1;
+    let naive_sum = (shared.len() + parent_only.len()) + (shared.len() + child_only.len()) + 1;
+
+    let (parent_identity, parent_addr) = loop {
+        let candidate = make_peer_identity();
+        let addr = *candidate.node_addr();
+        if addr < my_addr {
+            break (candidate, addr);
+        }
+    };
+    let mut parent_peer = ActivePeer::new(parent_identity, LinkId::new(1), 0);
+    let mut parent_filter = BloomFilter::new();
+    for addr in shared.iter().chain(parent_only.iter()) {
+        parent_filter.insert(addr);
+    }
+    parent_peer.update_filter(parent_filter, 1, 0);
+    node.peers.insert(parent_addr, parent_peer);
+
+    let child_identity = make_peer_identity();
+    let child_addr = *child_identity.node_addr();
+    let mut child_peer = ActivePeer::new(child_identity, LinkId::new(2), 0);
+    let mut child_filter = BloomFilter::new();
+    for addr in shared.iter().chain(child_only.iter()) {
+        child_filter.insert(addr);
+    }
+    child_peer.update_filter(child_filter, 1, 0);
+    node.peers.insert(child_addr, child_peer);
+
+    let parent_ancestry = TreeCoordinate::root_with_meta(parent_addr, 1, 1);
+    let child_ancestry = TreeCoordinate::root_with_meta(child_addr, 1, 1);
+    let parent_decl = ParentDeclaration::new(parent_addr, my_addr, 1, 1);
+    let child_decl = ParentDeclaration::new(child_addr, my_addr, 1, 1);
+    node.tree_state_mut()
+        .update_peer(parent_decl, parent_ancestry);
+    node.tree_state_mut()
+        .update_peer(child_decl, child_ancestry);
+    node.tree_state_mut().set_parent(parent_addr, 2, 1);
+    node.tree_state_mut().recompute_coords();
+    assert!(
+        !node.tree_state().is_root(),
+        "test setup broken: node should not be its own root after parent switch"
+    );
+
+    node.compute_mesh_size();
+
+    let estimate =
+        node.estimated_mesh_size()
+            .expect("estimator should produce a value with filter data present") as i64;
+
+    let diff = (estimate - distinct as i64).abs();
+    assert!(
+        diff <= 2,
+        "expected union mesh-size estimate around {} distinct addrs, got {}",
+        distinct,
+        estimate
+    );
+    assert!(
+        estimate < naive_sum as i64,
+        "estimate {} must be below naive sum {} when filters overlap",
+        estimate,
+        naive_sum
+    );
+}
+
 /// 100-node random graph: bloom filter exchange at scale.
 #[tokio::test]
 async fn test_bloom_filter_convergence_100_nodes() {

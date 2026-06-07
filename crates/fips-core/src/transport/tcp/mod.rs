@@ -52,6 +52,12 @@ use tracing::{debug, info, trace, warn};
 // Connection Pool
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Inbound,
+    Outbound,
+}
+
 /// State for a single TCP connection to a peer.
 struct TcpConnection {
     /// Write half of the split stream.
@@ -64,6 +70,7 @@ struct TcpConnection {
     /// When the connection was established.
     #[allow(dead_code)]
     established_at: Instant,
+    direction: Direction,
 }
 
 /// Shared connection pool.
@@ -247,9 +254,14 @@ impl TcpTransport {
         for (addr, conn) in pool.drain() {
             conn.recv_task.abort();
             let _ = conn.recv_task.await;
+            match conn.direction {
+                Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+            }
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
+                direction = ?conn.direction,
                 "TCP connection closed (transport stopping)"
             );
         }
@@ -327,6 +339,10 @@ impl TcpTransport {
                 let mut pool = self.pool.lock().await;
                 if let Some(conn) = pool.remove(addr) {
                     conn.recv_task.abort();
+                    match conn.direction {
+                        Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                        Direction::Outbound => self.stats.record_pool_outbound_removed(),
+                    }
                 }
                 Err(TransportError::SendFailed(format!("{}", e)))
             }
@@ -392,6 +408,7 @@ impl TcpTransport {
                     mtu,
                     stats: recv_stats,
                     first_frame_timeout: None,
+                    direction: Direction::Outbound,
                 },
             )
             .await;
@@ -402,12 +419,14 @@ impl TcpTransport {
             recv_task,
             mtu: mss_mtu,
             established_at: Instant::now(),
+            direction: Direction::Outbound,
         };
 
         let mut pool = self.pool.lock().await;
         pool.insert(addr.clone(), conn);
 
         self.stats.record_connection_established();
+        self.stats.record_pool_outbound_added();
 
         debug!(
             transport_id = %self.transport_id,
@@ -427,9 +446,14 @@ impl TcpTransport {
         let mut pool = self.pool.lock().await;
         if let Some(conn) = pool.remove(addr) {
             conn.recv_task.abort();
+            match conn.direction {
+                Direction::Inbound => self.stats.record_pool_inbound_removed(),
+                Direction::Outbound => self.stats.record_pool_outbound_removed(),
+            }
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
+                direction = ?conn.direction,
                 "TCP connection closed (close_connection)"
             );
         }
@@ -606,6 +630,7 @@ impl TcpTransport {
                     mtu: mss_mtu,
                     stats: recv_stats,
                     first_frame_timeout: None,
+                    direction: Direction::Outbound,
                 },
             )
             .await;
@@ -616,6 +641,7 @@ impl TcpTransport {
             recv_task,
             mtu: mss_mtu,
             established_at: Instant::now(),
+            direction: Direction::Outbound,
         };
 
         // Use try_lock since we're in a sync context and the pool
@@ -623,6 +649,7 @@ impl TcpTransport {
         if let Ok(mut pool) = self.pool.try_lock() {
             pool.insert(addr.clone(), conn);
             self.stats.record_connection_established();
+            self.stats.record_pool_outbound_added();
             debug!(
                 transport_id = %self.transport_id,
                 remote_addr = %addr,
@@ -733,19 +760,17 @@ async fn accept_loop(
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
-                // Check connection limit
-                {
-                    let pool_guard = pool.lock().await;
-                    if pool_guard.len() >= max_inbound {
-                        stats.record_connection_rejected();
-                        warn!(
-                            transport_id = %transport_id,
-                            peer_addr = %peer_addr,
-                            max = max_inbound,
-                            "Rejecting inbound TCP connection (max_inbound_connections reached)"
-                        );
-                        continue;
-                    }
+                // Check inbound connection limit. Outbound connect-on-send
+                // entries share the pool but do not consume inbound budget.
+                if stats.pool_inbound_count() >= max_inbound as u64 {
+                    stats.record_connection_rejected();
+                    warn!(
+                        transport_id = %transport_id,
+                        peer_addr = %peer_addr,
+                        max = max_inbound,
+                        "Rejecting inbound TCP connection (max_inbound_connections reached)"
+                    );
+                    continue;
                 }
 
                 // Configure socket options
@@ -814,6 +839,7 @@ async fn accept_loop(
                             mtu: conn_mtu,
                             stats: recv_stats,
                             first_frame_timeout: first_frame_timeout(first_frame_timeout_ms),
+                            direction: Direction::Inbound,
                         },
                     )
                     .await;
@@ -824,12 +850,14 @@ async fn accept_loop(
                     recv_task,
                     mtu: conn_mtu,
                     established_at: Instant::now(),
+                    direction: Direction::Inbound,
                 };
 
                 let mut pool_guard = pool.lock().await;
                 pool_guard.insert(remote_addr.clone(), conn);
 
                 stats.record_connection_accepted();
+                stats.record_pool_inbound_added();
 
                 debug!(
                     transport_id = %transport_id,
@@ -866,6 +894,7 @@ struct TcpReceiveContext {
     mtu: u16,
     stats: Arc<TcpStats>,
     first_frame_timeout: Option<Duration>,
+    direction: Direction,
 }
 
 async fn tcp_receive_loop(mut reader: tokio::net::tcp::OwnedReadHalf, ctx: TcpReceiveContext) {
@@ -877,6 +906,7 @@ async fn tcp_receive_loop(mut reader: tokio::net::tcp::OwnedReadHalf, ctx: TcpRe
         mtu,
         stats,
         first_frame_timeout,
+        direction,
     } = ctx;
 
     debug!(
@@ -944,13 +974,22 @@ async fn tcp_receive_loop(mut reader: tokio::net::tcp::OwnedReadHalf, ctx: TcpRe
         }
     }
 
-    // Clean up: remove ourselves from the pool
+    // Clean up: remove ourselves from the pool and decrement the matching
+    // direction counter only if this task owned the removed entry.
     let mut pool_guard = pool.lock().await;
-    pool_guard.remove(&remote_addr);
+    let removed = pool_guard.remove(&remote_addr).is_some();
+    drop(pool_guard);
+    if removed {
+        match direction {
+            Direction::Inbound => stats.record_pool_inbound_removed(),
+            Direction::Outbound => stats.record_pool_outbound_removed(),
+        }
+    }
 
     debug!(
         transport_id = %transport_id,
         remote_addr = %remote_addr,
+        direction = ?direction,
         "TCP receive loop stopped"
     );
 }
@@ -1121,6 +1160,14 @@ mod tests {
             mtu: Some(1400),
             ..Default::default()
         }
+    }
+
+    fn build_msg1_frame(fill: u8) -> Vec<u8> {
+        let mut frame = vec![fill; 114];
+        frame[0] = 0x01;
+        frame[1] = 0x00;
+        frame[2..4].copy_from_slice(&110u16.to_le_bytes());
+        frame
     }
 
     async fn unused_loopback_addr(except_port: u16) -> SocketAddr {
@@ -1296,6 +1343,54 @@ mod tests {
         drop(pool);
 
         transport.stop_async().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn outbound_pool_entry_does_not_consume_inbound_budget() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (subject_tx, mut subject_rx) = packet_channel(100);
+        let subject_config = TcpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            max_inbound_connections: Some(1),
+            mtu: Some(1400),
+            ..Default::default()
+        };
+        let mut subject = TcpTransport::new(TransportId::new(1), None, subject_config, subject_tx);
+
+        let (dest_tx, _dest_rx) = packet_channel(100);
+        let mut dest = TcpTransport::new(TransportId::new(2), None, make_config(), dest_tx);
+
+        subject.start_async().await.unwrap();
+        dest.start_async().await.unwrap();
+
+        let dest_addr = dest.local_addr().unwrap();
+        subject
+            .send_async(
+                &TransportAddr::from_string(&dest_addr.to_string()),
+                &build_msg1_frame(0xA1),
+            )
+            .await
+            .unwrap();
+
+        {
+            let pool = subject.pool.lock().await;
+            assert_eq!(pool.len(), 1, "subject should hold one outbound connection");
+        }
+
+        let subject_addr = subject.local_addr().unwrap();
+        let mut inbound = TcpStream::connect(subject_addr).await.unwrap();
+        let inbound_frame = build_msg1_frame(0xB2);
+        inbound.write_all(&inbound_frame).await.unwrap();
+
+        let packet = timeout(Duration::from_secs(1), subject_rx.recv())
+            .await
+            .expect("inbound frame should be admitted despite outbound pool entry")
+            .expect("subject packet channel should stay open");
+        assert_eq!(packet.data, inbound_frame);
+
+        subject.stop_async().await.unwrap();
+        dest.stop_async().await.unwrap();
     }
 
     #[tokio::test]

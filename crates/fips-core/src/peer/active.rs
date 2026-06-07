@@ -194,6 +194,8 @@ pub struct ActivePeer {
     rekey_msg1: Option<Vec<u8>>,
     /// In-progress rekey: next resend timestamp (Unix ms).
     rekey_msg1_next_resend: u64,
+    /// In-progress rekey: number of msg1 retransmissions performed so far.
+    rekey_msg1_resend_count: u32,
 
     // === Connected Peer UDP Socket (Unix fast path) ===
     /// Per-peer `connect()`-ed UDP socket, opened once we have a
@@ -276,6 +278,7 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            rekey_msg1_resend_count: 0,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_udp: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -363,6 +366,7 @@ impl ActivePeer {
             rekey_our_index: None,
             rekey_msg1: None,
             rekey_msg1_next_resend: 0,
+            rekey_msg1_resend_count: 0,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_udp: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -984,6 +988,24 @@ impl ActivePeer {
         self.pending_new_session.as_ref()
     }
 
+    /// Trial-decrypt a peer K-bit flip frame against the pending FMP session.
+    ///
+    /// The peer's K-bit is only a hint that it may have cut over. The
+    /// authenticated decrypt against `pending_new_session` is the real cutover
+    /// signal; failed trials leave the pending replay window untouched.
+    pub(crate) fn trial_decrypt_pending_new_session(
+        &mut self,
+        ciphertext: &[u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Option<Vec<u8>> {
+        self.pending_new_session.as_mut().and_then(|session| {
+            session
+                .decrypt_with_replay_check_and_aad(ciphertext, counter, aad)
+                .ok()
+        })
+    }
+
     /// Whether this node should drive the K-bit cutover for the pending FMP rekey.
     pub fn pending_rekey_initiator(&self) -> bool {
         self.pending_rekey_initiator
@@ -1021,6 +1043,7 @@ impl ActivePeer {
         self.rekey_handshake = None;
         self.rekey_msg1 = None;
         self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
     }
 
     /// Cut over to the pending new session (initiator side).
@@ -1050,6 +1073,7 @@ impl ActivePeer {
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
         self.rekey_in_progress = false;
+        self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
@@ -1089,6 +1113,7 @@ impl ActivePeer {
         self.session_established_at = Instant::now();
         self.session_start = Instant::now();
         self.rekey_in_progress = false;
+        self.rekey_msg1_resend_count = 0;
         self.rekey_jitter_secs = draw_rekey_jitter();
         self.last_heartbeat_sent = None;
         self.reset_replay_suppressed();
@@ -1134,6 +1159,7 @@ impl ActivePeer {
         self.rekey_handshake = None;
         self.rekey_msg1 = None;
         self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
         self.rekey_in_progress = false;
         // Return whichever index needs freeing
         self.rekey_our_index.take().or_else(|| {
@@ -1159,6 +1185,7 @@ impl ActivePeer {
         self.rekey_our_index = Some(our_index);
         self.rekey_msg1 = Some(wire_msg1);
         self.rekey_msg1_next_resend = next_resend_ms;
+        self.rekey_msg1_resend_count = 0;
         self.rekey_in_progress = true;
     }
 
@@ -1191,6 +1218,7 @@ impl ActivePeer {
         // Clear msg1 resend state
         self.rekey_msg1 = None;
         self.rekey_msg1_next_resend = 0;
+        self.rekey_msg1_resend_count = 0;
 
         Ok((session, remote_epoch))
     }
@@ -1207,6 +1235,17 @@ impl ActivePeer {
 
     /// Update next resend timestamp.
     pub fn set_msg1_next_resend(&mut self, next_ms: u64) {
+        self.rekey_msg1_next_resend = next_ms;
+    }
+
+    /// Number of rekey msg1 retransmissions performed so far.
+    pub fn rekey_msg1_resend_count(&self) -> u32 {
+        self.rekey_msg1_resend_count
+    }
+
+    /// Record a rekey msg1 retransmission and schedule the next one.
+    pub fn record_rekey_msg1_resend(&mut self, next_ms: u64) {
+        self.rekey_msg1_resend_count = self.rekey_msg1_resend_count.saturating_add(1);
         self.rekey_msg1_next_resend = next_ms;
     }
 }
@@ -1229,6 +1268,59 @@ mod tests {
 
     fn make_coords(ids: &[u8]) -> TreeCoordinate {
         TreeCoordinate::from_addrs(ids.iter().map(|&v| make_node_addr(v)).collect()).unwrap()
+    }
+
+    fn ik_session_pair() -> (NoiseSession, NoiseSession) {
+        let initiator_id = Identity::generate();
+        let responder_id = Identity::generate();
+        let mut initiator =
+            NoiseHandshakeState::new_initiator(initiator_id.keypair(), responder_id.pubkey_full());
+        let mut responder = NoiseHandshakeState::new_responder(responder_id.keypair());
+        initiator.set_local_epoch([0xA1, 0xB2, 0xC3, 0xD4, 0x11, 0x22, 0x33, 0x44]);
+        responder.set_local_epoch([0xD4, 0xC3, 0xB2, 0xA1, 0x44, 0x33, 0x22, 0x11]);
+
+        let msg1 = initiator.write_message_1().unwrap();
+        responder.read_message_1(&msg1).unwrap();
+        let msg2 = responder.write_message_2().unwrap();
+        initiator.read_message_2(&msg2).unwrap();
+
+        (
+            initiator.into_session().unwrap(),
+            responder.into_session().unwrap(),
+        )
+    }
+
+    fn seal_fmp(
+        sender: &mut NoiseSession,
+        receiver_idx: SessionIndex,
+        plaintext: &[u8],
+        k_bit: bool,
+    ) -> (Vec<u8>, u64, [u8; 16]) {
+        use crate::node::wire::{FLAG_KEY_EPOCH, build_established_header};
+
+        let counter = sender.current_send_counter();
+        let flags = if k_bit { FLAG_KEY_EPOCH } else { 0 };
+        let header = build_established_header(receiver_idx, counter, flags, plaintext.len() as u16);
+        let ciphertext = sender.encrypt_with_aad(plaintext, &header).unwrap();
+        (ciphertext, counter, header)
+    }
+
+    fn peer_with_current(current_recv: NoiseSession) -> ActivePeer {
+        let identity = make_peer_identity();
+        ActivePeer::with_session(
+            identity,
+            LinkId::new(1),
+            1_000,
+            current_recv,
+            SessionIndex::new(1),
+            SessionIndex::new(2),
+            TransportId::new(1),
+            TransportAddr::from_string("hci0/AA:BB:CC:DD:EE:01"),
+            LinkStats::new(),
+            true,
+            &MmpConfig::default(),
+            None,
+        )
     }
 
     #[test]
@@ -1465,5 +1557,74 @@ mod tests {
             mean,
             n
         );
+    }
+
+    #[test]
+    fn fmp_pending_trial_authenticates_then_promotes() {
+        let (_current_sender, current_receiver) = ik_session_pair();
+        let (mut pending_sender, pending_receiver) = ik_session_pair();
+        let mut peer = peer_with_current(current_receiver);
+        let k_before = peer.current_k_bit();
+        peer.set_pending_session(
+            pending_receiver,
+            SessionIndex::new(3),
+            SessionIndex::new(4),
+            false,
+        );
+
+        let (ciphertext, counter, header) = seal_fmp(
+            &mut pending_sender,
+            SessionIndex::new(3),
+            b"new-epoch",
+            !k_before,
+        );
+        let plaintext = peer
+            .trial_decrypt_pending_new_session(&ciphertext, counter, &header)
+            .expect("pending frame must authenticate");
+
+        assert_eq!(plaintext, b"new-epoch");
+        assert!(peer.handle_peer_kbit_flip().is_some());
+        assert!(peer.pending_new_session().is_none());
+        assert_eq!(peer.current_k_bit(), !k_before);
+        assert!(peer.previous_session().is_some());
+    }
+
+    #[test]
+    fn fmp_pending_trial_failure_leaves_pending_replay_intact() {
+        let (_current_sender, current_receiver) = ik_session_pair();
+        let (mut pending_sender, pending_receiver) = ik_session_pair();
+        let (mut stale_sender, _stale_receiver) = ik_session_pair();
+        let mut peer = peer_with_current(current_receiver);
+        let k_before = peer.current_k_bit();
+        peer.set_pending_session(
+            pending_receiver,
+            SessionIndex::new(3),
+            SessionIndex::new(4),
+            false,
+        );
+
+        let (stale_ciphertext, stale_counter, stale_header) =
+            seal_fmp(&mut stale_sender, SessionIndex::new(3), b"stale", !k_before);
+        assert!(
+            peer.trial_decrypt_pending_new_session(&stale_ciphertext, stale_counter, &stale_header)
+                .is_none()
+        );
+        assert!(peer.pending_new_session().is_some());
+        assert_eq!(peer.current_k_bit(), k_before);
+
+        let (pending_ciphertext, pending_counter, pending_header) = seal_fmp(
+            &mut pending_sender,
+            SessionIndex::new(3),
+            b"new-epoch",
+            !k_before,
+        );
+        let plaintext = peer
+            .trial_decrypt_pending_new_session(
+                &pending_ciphertext,
+                pending_counter,
+                &pending_header,
+            )
+            .expect("failed stale trial must not consume pending replay window");
+        assert_eq!(plaintext, b"new-epoch");
     }
 }

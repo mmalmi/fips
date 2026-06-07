@@ -32,6 +32,7 @@ use super::types::{
 };
 use crate::config::{NostrDiscoveryConfig, PeerConfig};
 use crate::discovery::EstablishedTraversal;
+use crate::{NodeAddr, PeerIdentity};
 
 const ADVERT_CACHE_STALE_GRACE_MULTIPLIER: u64 = 2;
 
@@ -69,6 +70,21 @@ fn short_id(id: &str) -> String {
     } else {
         id.to_string()
     }
+}
+
+/// Decide whether an incoming-offer responder session should be suppressed
+/// in favor of our own already-running outbound initiator session.
+///
+/// Dual `auto_connect` peers can otherwise run two traversal sessions in each
+/// direction and adopt mismatched sockets. Keep the session initiated by the
+/// smaller `NodeAddr`, but only when we know there is a co-active outbound
+/// initiator for this same peer. One-sided traversal never suppresses.
+pub(super) fn suppress_responder_for_own_initiator(
+    our_addr: &NodeAddr,
+    peer_addr: &NodeAddr,
+    have_active_initiator: bool,
+) -> bool {
+    have_active_initiator && our_addr < peer_addr
 }
 
 fn endpoint_summary(endpoints: &[OverlayEndpointAdvert]) -> String {
@@ -1854,6 +1870,36 @@ impl NostrDiscovery {
                 "traversal: offer accepted within clock-skew tolerance"
             );
         }
+
+        let have_active_initiator = self.active_initiators.lock().await.contains(&sender_npub);
+        if have_active_initiator {
+            match (
+                PeerIdentity::from_npub(&self.npub),
+                PeerIdentity::from_npub(&sender_npub),
+            ) {
+                (Ok(ours), Ok(theirs)) => {
+                    if suppress_responder_for_own_initiator(
+                        ours.node_addr(),
+                        theirs.node_addr(),
+                        true,
+                    ) {
+                        debug!(
+                            peer = %peer_short,
+                            session = %short_id(&offer.session_id),
+                            "traversal: responder session suppressed, our outbound initiator wins"
+                        );
+                        return Ok(());
+                    }
+                }
+                _ => {
+                    trace!(
+                        peer = %peer_short,
+                        "traversal: could not derive NodeAddr for dual-init election, answering offer"
+                    );
+                }
+            }
+        }
+
         self.mark_session_seen(&offer.session_id).await?;
 
         let base_socket = bind_traversal_udp_socket()?;

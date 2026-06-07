@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.53] - 2026-06-07
+
+### Fixed
+
+- FMP rekey promotion now authenticates packets against the pending session
+  before accepting a K-bit flip, preventing unauthenticated header flips from
+  advancing the receive epoch.
+- FMP msg1 rekey retransmits now respect the handshake resend budget with
+  exponential backoff, while link-dead handling gives active rekeys time to
+  finish before degrading the peer.
+- Nostr traversal now suppresses duplicate responder-side sockets during dual
+  auto-connect election, TCP/Tor inbound limits count accepted inbound sockets
+  only, mesh-size estimates union overlapping Bloom filters, and selected
+  poisoned mutex/logging unwraps no longer panic.
+
 ## [0.3.52] - 2026-06-07
 
 ### Fixed

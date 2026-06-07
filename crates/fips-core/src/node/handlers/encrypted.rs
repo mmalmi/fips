@@ -75,10 +75,11 @@ impl Node {
             }
         };
 
-        // K-bit flip detection: peer has cut over to the new session. This
-        // is rare (only at rekey), so we do it as a separate borrow rather
-        // than baking it into the fast-path block below — keeping the fast
-        // path's `peers.get_mut` straight-line.
+        // K-bit flip detection: peer may have cut over to the new session.
+        // The bit alone is only a hint: authenticate the frame against the
+        // pending session before promotion. The decrypt worker owns the
+        // current FMP recv state in production, so failed pending trials fall
+        // through to the normal worker/inline current-session path.
         let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
         let need_kbit_flip = match self.peers.get(&node_addr) {
             Some(peer) => {
@@ -91,30 +92,72 @@ impl Node {
             }
         };
         if need_kbit_flip {
-            let display_name = self.peer_display_name(&node_addr);
-            info!(
-                peer = %display_name,
-                "Peer K-bit flip detected, promoting new session"
-            );
-            let did_flip = {
-                let peer = self.peers.get_mut(&node_addr).unwrap();
-                peer.handle_peer_kbit_flip().is_some()
+            let ciphertext = &packet.data[header.ciphertext_offset()..];
+            let pending_plaintext = {
+                let Some(peer) = self.peers.get_mut(&node_addr) else {
+                    self.deregister_session_index(key);
+                    return;
+                };
+                peer.trial_decrypt_pending_new_session(
+                    ciphertext,
+                    header.counter,
+                    &header.header_bytes,
+                )
             };
-            // After cutover the *new* FMP session is the one the
-            // decrypt worker must own. Pre-fix: the worker still
-            // had the OLD session's cipher + replay state, so every
-            // post-flip packet missed the worker's HashMap lookup
-            // (cache_key now points at the new index) and either
-            // dropped silently in `handle_job` or, if the worker
-            // had never been registered for this peer at all, fell
-            // through to the in-line legacy path on rx_loop for
-            // the lifetime of the new session. Re-register here so
-            // the worker observes the rekey and the bulk receive
-            // path keeps using it.
-            if did_flip {
-                self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
-                self.register_decrypt_worker_session(&node_addr);
+
+            if let Some(plaintext) = pending_plaintext {
+                let display_name = self.peer_display_name(&node_addr);
+                info!(
+                    peer = %display_name,
+                    "Peer new-epoch frame authenticated, promoting new session"
+                );
+                let did_flip = {
+                    let Some(peer) = self.peers.get_mut(&node_addr) else {
+                        self.deregister_session_index(key);
+                        return;
+                    };
+                    peer.handle_peer_kbit_flip().is_some()
+                };
+                // After cutover the *new* FMP session is the one the
+                // decrypt worker must own. Pre-fix: the worker still
+                // had the OLD session's cipher + replay state, so every
+                // post-flip packet missed the worker's HashMap lookup
+                // (cache_key now points at the new index) and either
+                // dropped silently in `handle_job` or, if the worker
+                // had never been registered for this peer at all, fell
+                // through to the in-line legacy path on rx_loop for
+                // the lifetime of the new session. Re-register here so
+                // the worker observes the rekey and the bulk receive
+                // path keeps using it.
+                if did_flip {
+                    self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
+                    self.register_decrypt_worker_session(&node_addr);
+                }
+                let ce_flag = header.flags & crate::node::wire::FLAG_CE != 0;
+                let sp_flag = header.flags & crate::node::wire::FLAG_SP != 0;
+                self.process_authentic_fmp_plaintext(
+                    &node_addr,
+                    packet.transport_id,
+                    &packet.remote_addr,
+                    packet.timestamp_ms,
+                    packet.data.len(),
+                    header.counter,
+                    ce_flag,
+                    sp_flag,
+                    &plaintext,
+                )
+                .await;
+                return;
             }
+
+            trace!(
+                peer = %self.peer_display_name(&node_addr),
+                counter = header.counter,
+                "Peer K-bit flip did not authenticate against pending session"
+            );
+            // Do not promote. The frame may be stale/mismatched, or it may
+            // still authenticate against the current worker-owned session.
+            // Fall through to the normal decrypt path.
         }
 
         // **Worker dispatch is the production path.** Sessions are

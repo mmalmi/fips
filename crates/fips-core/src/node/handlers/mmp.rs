@@ -541,6 +541,7 @@ impl Node {
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
         let dead_timeout = Duration::from_secs(self.config.node.link_dead_timeout_secs);
         let fast_dead_timeout = Duration::from_secs(self.config.node.fast_link_dead_timeout_secs);
+        let max_rekey_resends = self.config.node.rate_limit.handshake_max_resends;
         self.purge_expired_local_send_failures(now);
         let defer_dead_peer_removal = self.rx_loop_maintenance_timed_out_recently();
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
@@ -569,16 +570,19 @@ impl Node {
                     fast_dead_timeout,
                 )
                 .unwrap_or(local_send_failure_timeout);
-            let is_dead = peer.is_healthy()
-                && if let Some(mmp) = peer.mmp() {
-                    let reference_time = mmp
-                        .receiver
-                        .last_recv_time()
-                        .unwrap_or(peer.session_start());
-                    now.duration_since(reference_time) >= effective_dead_timeout
-                } else {
-                    false
-                };
+            let time_dead = if let Some(mmp) = peer.mmp() {
+                let reference_time = mmp
+                    .receiver
+                    .last_recv_time()
+                    .unwrap_or(peer.session_start());
+                now.duration_since(reference_time) >= effective_dead_timeout
+            } else {
+                false
+            };
+            let rekey_active = peer.rekey_in_progress()
+                && peer.rekey_msg1().is_some()
+                && peer.rekey_msg1_resend_count() < max_rekey_resends;
+            let is_dead = peer.is_healthy() && time_dead && !rekey_active;
             if is_dead {
                 if defer_dead_peer_removal {
                     debug!(

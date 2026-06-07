@@ -1,6 +1,6 @@
 use nostr::prelude::{EventBuilder, JsonUtil, Kind, Tag, TagKind, Timestamp};
 
-use super::runtime::{NostrDiscovery, VerifiedEvent};
+use super::runtime::{NostrDiscovery, VerifiedEvent, suppress_responder_for_own_initiator};
 use super::signal::{
     FreshnessOutcome, build_signal_event, create_traversal_answer, create_traversal_offer,
     estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
@@ -17,6 +17,7 @@ use super::{
     ADVERT_IDENTIFIER, ADVERT_KIND, ADVERT_VERSION, OverlayAdvert, OverlayEndpointAdvert,
     OverlayTransportKind, PunchHint, PunchPacketKind, TraversalAddress,
 };
+use crate::NodeAddr;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NatType {
@@ -38,6 +39,12 @@ fn can_reach(local_nat: NatType, remote_nat: NatType) -> bool {
         return false;
     }
     !(local_nat == NatType::PortRestricted && remote_nat == NatType::PortRestricted)
+}
+
+fn node_addr(first_byte: u8) -> NodeAddr {
+    let mut bytes = [0u8; 16];
+    bytes[0] = first_byte;
+    NodeAddr::from_bytes(bytes)
 }
 
 fn signed_overlay_advert_event(created_at_secs: u64, expiration_secs: Option<u64>) -> nostr::Event {
@@ -83,6 +90,28 @@ fn serializes_direct_overlay_advert_without_nat_metadata() {
     assert!(json.contains("\"endpoints\""));
     assert!(!json.contains("\"signalRelays\""));
     assert!(!json.contains("\"stunServers\""));
+}
+
+#[test]
+fn responder_suppression_election_keeps_smaller_initiator() {
+    let smaller = node_addr(0x01);
+    let larger = node_addr(0x02);
+
+    assert!(suppress_responder_for_own_initiator(
+        &smaller, &larger, true
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &larger, &smaller, true
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &smaller, &larger, false
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &larger, &smaller, false
+    ));
+    assert!(!suppress_responder_for_own_initiator(
+        &smaller, &smaller, true
+    ));
 }
 
 #[test]
