@@ -126,25 +126,62 @@ impl MmpMetrics {
     ) -> bool {
         let had_srtt = self.srtt.initialized();
 
+        if self.has_prev_rr {
+            let counters_regressed = rr.highest_counter < self.prev_rr_highest_counter
+                || rr.cumulative_packets_recv < self.prev_rr_cum_packets
+                || rr.cumulative_bytes_recv < self.prev_rr_cum_bytes
+                || rr.ecn_ce_count < self.prev_rr_ecn_ce
+                || rr.cumulative_reorder_count < self.prev_rr_reorder;
+            let duplicate_counters = rr.highest_counter == self.prev_rr_highest_counter
+                && rr.cumulative_packets_recv == self.prev_rr_cum_packets
+                && rr.cumulative_bytes_recv == self.prev_rr_cum_bytes
+                && rr.ecn_ce_count == self.prev_rr_ecn_ce
+                && rr.cumulative_reorder_count == self.prev_rr_reorder;
+            if counters_regressed || duplicate_counters {
+                trace!(
+                    highest_counter = rr.highest_counter,
+                    prev_highest_counter = self.prev_rr_highest_counter,
+                    cumulative_packets_recv = rr.cumulative_packets_recv,
+                    prev_cumulative_packets_recv = self.prev_rr_cum_packets,
+                    cumulative_bytes_recv = rr.cumulative_bytes_recv,
+                    prev_cumulative_bytes_recv = self.prev_rr_cum_bytes,
+                    "Ignoring stale MMP ReceiverReport"
+                );
+                return false;
+            }
+        }
+
         // --- RTT from timestamp echo ---
         // RTT = now - echoed_timestamp - dwell_time
         if rr.timestamp_echo > 0 {
             let echo_ms = rr.timestamp_echo;
-            let dwell_ms = rr.dwell_time as u32;
-            // Guard against timestamp wrap or bogus values
-            if our_timestamp_ms > echo_ms + dwell_ms {
-                let rtt_ms = our_timestamp_ms - echo_ms - dwell_ms;
-                let rtt_us = (rtt_ms as i64) * 1000;
-                trace!(
-                    our_ts = our_timestamp_ms,
-                    echo = echo_ms,
-                    dwell = dwell_ms,
-                    rtt_ms = rtt_ms,
-                    srtt_ms = self.srtt.srtt_us() as f64 / 1000.0,
-                    "RTT sample from timestamp echo"
-                );
-                self.srtt.update(rtt_us);
-                self.rtt_trend.update(rtt_us as f64);
+            let dwell_ms = u32::from(rr.dwell_time);
+            let rtt_sample_ms = echo_ms
+                .checked_add(dwell_ms)
+                .and_then(|send_done_ms| our_timestamp_ms.checked_sub(send_done_ms));
+
+            match rtt_sample_ms {
+                Some(rtt_ms) if rtt_ms > 0 => {
+                    let rtt_us = (rtt_ms as i64) * 1000;
+                    trace!(
+                        our_ts = our_timestamp_ms,
+                        echo = echo_ms,
+                        dwell = dwell_ms,
+                        rtt_ms = rtt_ms,
+                        srtt_ms = self.srtt.srtt_us() as f64 / 1000.0,
+                        "RTT sample from timestamp echo"
+                    );
+                    self.srtt.update(rtt_us);
+                    self.rtt_trend.update(rtt_us as f64);
+                }
+                _ => {
+                    trace!(
+                        our_ts = our_timestamp_ms,
+                        echo = echo_ms,
+                        dwell = dwell_ms,
+                        "Ignoring invalid MMP RTT sample"
+                    );
+                }
             }
         }
 
@@ -334,6 +371,50 @@ mod tests {
         // RTT = 1050 - 1000 - 5 = 45ms
         let srtt_ms = m.srtt_ms().unwrap();
         assert!((srtt_ms - 45.0).abs() < 1.0, "srtt={srtt_ms}, expected ~45");
+    }
+
+    #[test]
+    fn test_ignores_duplicate_receiver_report_after_valid_sample() {
+        let mut m = MmpMetrics::new();
+        let now = Instant::now();
+
+        let valid_rr = make_rr(10, 10, 5000, 1000, 5, 0);
+        m.process_receiver_report(&valid_rr, 1050, now);
+        let baseline_srtt_ms = m.srtt_ms().unwrap();
+
+        // A duplicate of the same counters arriving later would be a 5s RTT
+        // sample if accepted. It is stale and must not move SRTT.
+        m.process_receiver_report(&valid_rr, 6000, now + Duration::from_secs(5));
+
+        let srtt_ms = m.srtt_ms().unwrap();
+        assert_eq!(srtt_ms, baseline_srtt_ms);
+    }
+
+    #[test]
+    fn test_ignores_out_of_order_receiver_report_after_valid_sample() {
+        let mut m = MmpMetrics::new();
+        let now = Instant::now();
+
+        let valid_rr = make_rr(20, 20, 10000, 1000, 5, 0);
+        m.process_receiver_report(&valid_rr, 1050, now);
+        let baseline_srtt_ms = m.srtt_ms().unwrap();
+
+        let old_rr = make_rr(10, 10, 5000, 1000, 0, 0);
+        m.process_receiver_report(&old_rr, 6000, now + Duration::from_secs(5));
+
+        let srtt_ms = m.srtt_ms().unwrap();
+        assert_eq!(srtt_ms, baseline_srtt_ms);
+    }
+
+    #[test]
+    fn test_ignores_wrapped_rtt_sample() {
+        let mut m = MmpMetrics::new();
+        let now = Instant::now();
+
+        let wrapped_rr = make_rr(10, 10, 5000, u32::MAX - 10, 20, 0);
+        m.process_receiver_report(&wrapped_rr, 15, now);
+
+        assert!(m.srtt_ms().is_none());
     }
 
     #[test]
