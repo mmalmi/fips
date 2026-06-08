@@ -895,6 +895,7 @@ node:
   limits:
     max_peers: 4096
   connected_udp:
+    max_peers: 256
     fd_reserve: 2048
 "#,
         )
@@ -918,6 +919,7 @@ node:
         assert_eq!(loaded, vec![low_priority, high_priority]);
         assert_eq!(config.node.limits.max_peers, 4096);
         assert!(!config.node.connected_udp.enabled);
+        assert_eq!(config.node.connected_udp.max_peers, 256);
         assert_eq!(config.node.connected_udp.fd_reserve, 2048);
         assert_eq!(
             config.node.identity.nsec,

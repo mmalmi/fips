@@ -29,8 +29,11 @@
 //! and is now the default. Operators can configure it through
 //! `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
 //! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
-//! tests. The old macOS-specific `FIPS_MACOS_CONNECTED_UDP=0` is ignored
-//! so stale launchd plists do not disable the now-default fast path.
+//! tests. `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
+//! caps the one-drain-thread-per-peer fast path for large meshes without
+//! disabling wildcard UDP delivery. The old macOS-specific
+//! `FIPS_MACOS_CONNECTED_UDP=0` is ignored so stale launchd plists do not
+//! disable the now-default fast path.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -72,7 +75,14 @@ impl Node {
                 })
                 .collect();
             candidates.sort_by_key(|addr| self.configured_peer(addr).is_none());
+            let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
+            let mut peer_cap_skipped = 0usize;
             for addr in candidates {
+                let installed_count = self.connected_udp_installed_count();
+                if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
+                    peer_cap_skipped = peer_cap_skipped.saturating_add(1);
+                    continue;
+                }
                 if let Err(e) = self.activate_connected_udp_for_peer(&addr).await {
                     static FAILURES: AtomicU64 = AtomicU64::new(0);
                     crate::perf_profile::record_event(
@@ -85,6 +95,18 @@ impl Node {
                         debug!(peer = %addr, error = %e, "connected UDP activation deferred");
                     }
                 }
+            }
+            if peer_cap_skipped > 0 {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::ConnectedUdpPeerCapSkipped,
+                    peer_cap_skipped as u64,
+                );
+                debug!(
+                    skipped = peer_cap_skipped,
+                    installed = self.connected_udp_installed_count(),
+                    max_peers = peer_cap,
+                    "connected UDP peer cap reached; remaining peers stay on wildcard UDP"
+                );
             }
         }
     }
@@ -129,6 +151,13 @@ impl Node {
                 _ => return Ok(()), // not a UDP transport — feature N/A
             };
             let installed_count = self.connected_udp_installed_count();
+            let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
+            if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
+                return Err(format!(
+                    "peer cap exhausted: connected_udp_peers={}, max_peers={}",
+                    installed_count, peer_cap
+                ));
+            }
             let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
             let fd_soft_limit = connected_udp_fd_soft_limit();
             if !connected_udp_fd_budget_allows(installed_count, fd_soft_limit, fd_reserve) {
@@ -269,6 +298,14 @@ fn connected_udp_fd_reserve(config_reserve: usize) -> usize {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_peer_cap(config_max_peers: usize) -> usize {
+    std::env::var("FIPS_CONNECTED_UDP_MAX_PEERS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(config_max_peers)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn connected_udp_fd_soft_limit() -> Option<usize> {
     let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
     let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) };
@@ -297,6 +334,11 @@ fn connected_udp_fd_budget_allows(
         .saturating_add(1)
         .saturating_mul(CONNECTED_UDP_FDS_PER_PEER)
         <= available
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_peer_budget_allows(installed_peers: usize, max_peers: usize) -> bool {
+    max_peers == 0 || installed_peers < max_peers
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -354,6 +396,17 @@ mod tests {
     #[test]
     fn fd_budget_saturates_when_reserve_exceeds_limit() {
         assert!(!connected_udp_fd_budget_allows(0, Some(64), 128));
+    }
+
+    #[test]
+    fn peer_budget_zero_is_unlimited() {
+        assert!(connected_udp_peer_budget_allows(10_000, 0));
+    }
+
+    #[test]
+    fn peer_budget_stops_at_explicit_cap() {
+        assert!(connected_udp_peer_budget_allows(0, 1));
+        assert!(!connected_udp_peer_budget_allows(1, 1));
     }
 
     #[test]

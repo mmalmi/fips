@@ -68,13 +68,23 @@ pub struct ConnectedUdpConfig {
     #[serde(default = "ConnectedUdpConfig::default_enabled")]
     pub enabled: bool,
 
+    /// Maximum peers that may have connected UDP sockets installed
+    /// (`node.connected_udp.max_peers`).
+    ///
+    /// This is an explicit escape hatch for large meshes while connected UDP
+    /// still uses one receive-drain thread per installed peer. Set to `0` to
+    /// disable the explicit cap and rely only on the fd budget and
+    /// `node.limits.max_peers`.
+    #[serde(default = "ConnectedUdpConfig::default_max_peers")]
+    pub max_peers: usize,
+
     /// Number of process file descriptors to leave for non-connected-UDP use
     /// (`node.connected_udp.fd_reserve`).
     ///
     /// This is headroom, not a peer cap. Connected UDP uses three FDs per
     /// installed peer, so the effective fast-path peer budget is roughly
-    /// `(RLIMIT_NOFILE - fd_reserve) / 3`, also bounded by
-    /// `node.limits.max_peers`.
+    /// `(RLIMIT_NOFILE - fd_reserve) / 3`, also bounded by `max_peers` when
+    /// non-zero and by `node.limits.max_peers`.
     #[serde(default = "ConnectedUdpConfig::default_fd_reserve")]
     pub fd_reserve: usize,
 }
@@ -83,6 +93,7 @@ impl Default for ConnectedUdpConfig {
     fn default() -> Self {
         Self {
             enabled: Self::default_enabled(),
+            max_peers: Self::default_max_peers(),
             fd_reserve: Self::default_fd_reserve(),
         }
     }
@@ -91,6 +102,10 @@ impl Default for ConnectedUdpConfig {
 impl ConnectedUdpConfig {
     fn default_enabled() -> bool {
         true
+    }
+
+    fn default_max_peers() -> usize {
+        0
     }
 
     fn default_fd_reserve() -> usize {
@@ -1295,14 +1310,16 @@ mod tests {
     fn test_connected_udp_config_defaults() {
         let c = ConnectedUdpConfig::default();
         assert!(c.enabled);
+        assert_eq!(c.max_peers, 0);
         assert_eq!(c.fd_reserve, 128);
     }
 
     #[test]
     fn test_connected_udp_config_yaml() {
-        let yaml = "enabled: false\nfd_reserve: 4096\n";
+        let yaml = "enabled: false\nmax_peers: 32\nfd_reserve: 4096\n";
         let c: ConnectedUdpConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(!c.enabled);
+        assert_eq!(c.max_peers, 32);
         assert_eq!(c.fd_reserve, 4096);
     }
 

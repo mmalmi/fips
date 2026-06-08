@@ -37,7 +37,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 16;
-const N_EVENTS: usize = 6;
+const N_EVENTS: usize = 7;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -139,6 +139,7 @@ pub enum Event {
     ConnectedUdpInstalled = 3,
     ConnectedUdpActivationFailed = 4,
     UdpSendBackpressureSleep = 5,
+    ConnectedUdpPeerCapSkipped = 6,
 }
 
 impl Event {
@@ -150,6 +151,7 @@ impl Event {
             Event::ConnectedUdpInstalled => "connected_udp_installed",
             Event::ConnectedUdpActivationFailed => "connected_udp_activation_failed",
             Event::UdpSendBackpressureSleep => "udp_send_backpressure_sleep",
+            Event::ConnectedUdpPeerCapSkipped => "connected_udp_peer_cap_skipped",
         }
     }
 }
@@ -162,6 +164,7 @@ fn event_from_index(idx: usize) -> Event {
         3 => Event::ConnectedUdpInstalled,
         4 => Event::ConnectedUdpActivationFailed,
         5 => Event::UdpSendBackpressureSleep,
+        6 => Event::ConnectedUdpPeerCapSkipped,
         _ => unreachable!(),
     }
 }
