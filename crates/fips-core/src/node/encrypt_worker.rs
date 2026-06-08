@@ -2837,6 +2837,64 @@ mod fair_queue_tests {
     }
 
     #[test]
+    fn encrypt_worker_dispatch_preserves_single_flow_worker_and_fifo_order() {
+        with_test_socket(|socket, cipher| {
+            let senders: Vec<_> = (0..4)
+                .map(|_| fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES).0)
+                .collect();
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+            };
+            let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 10009));
+
+            let mut owner = None;
+            for counter in 0..16 {
+                let mut queued = queued_job(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    1500,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                );
+                queued.job.counter = counter;
+                let (idx, queued) = pool.prepare_dispatch(queued.job);
+                assert_eq!(queued.flow_key(), addr);
+                match owner {
+                    Some(owner) => assert_eq!(
+                        idx, owner,
+                        "one TCP-shaped flow must not round-robin across workers"
+                    ),
+                    None => owner = Some(idx),
+                }
+            }
+
+            let (tx, rx) = fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES);
+            for counter in 0..8 {
+                let mut queued = queued_job(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    1500,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                );
+                queued.job.counter = counter;
+                tx.try_push(queued).expect("single-flow job should enqueue");
+            }
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 8));
+            let counters: Vec<_> = batch.iter().map(|job| job.job.counter).collect();
+            assert_eq!(
+                counters,
+                (0..8).collect::<Vec<_>>(),
+                "single-flow queue must preserve FIFO order"
+            );
+        });
+    }
+
+    #[test]
     fn boosted_flow_gets_larger_queue_budget() {
         with_test_socket(|socket, cipher| {
             let (tx, _rx) = fair_worker_channel(12, 2, 2048);
