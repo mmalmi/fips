@@ -14,6 +14,7 @@ GIT_VOLUME="${FIPS_LINUX_TEST_GIT_VOLUME:-fips-dataplane-safety-git}"
 RUSTUP_VOLUME="${FIPS_LINUX_TEST_RUSTUP_VOLUME:-fips-dataplane-safety-rustup}"
 
 DEFAULT_FILTERS=(
+  encrypt_worker_lane_policy_keeps_endpoint_bulk_explicit
   single_flow_full_backpressures_instead_of_dropping
   new_flow_can_enter_when_hot_flow_reaches_per_flow_cap
   hot_flow_backpressures_when_others_are_waiting

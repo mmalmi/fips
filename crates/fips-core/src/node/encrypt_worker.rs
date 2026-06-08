@@ -169,6 +169,20 @@ pub(crate) struct FspSealJob {
     pub plaintext_offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EncryptWorkerLane {
+    Priority,
+    Bulk,
+}
+
+fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWorkerLane {
+    if bulk_endpoint_data {
+        EncryptWorkerLane::Bulk
+    } else {
+        EncryptWorkerLane::Priority
+    }
+}
+
 struct QueuedFmpSendJob {
     job: FmpSendJob,
     #[cfg(not(target_os = "macos"))]
@@ -209,8 +223,8 @@ impl QueuedFmpSendJob {
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    fn bulk_endpoint_data(&self) -> bool {
-        self.job.bulk_endpoint_data
+    fn queue_lane(&self) -> EncryptWorkerLane {
+        encrypt_worker_lane_for_endpoint_data(self.job.bulk_endpoint_data)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -380,10 +394,9 @@ impl MacWorkerQueueState {
     }
 
     fn push_job(&mut self, job: QueuedFmpSendJob) {
-        if job.bulk_endpoint_data() {
-            self.bulk_queue.push_back(job);
-        } else {
-            self.control_queue.push_back(job);
+        match job.queue_lane() {
+            EncryptWorkerLane::Priority => self.control_queue.push_back(job),
+            EncryptWorkerLane::Bulk => self.bulk_queue.push_back(job),
         }
     }
 
@@ -437,10 +450,9 @@ impl MacWorkerSender {
             drop(job);
             return Err(MacWorkerTryPushError::Closed);
         }
-        let cap = if job.bulk_endpoint_data() {
-            self.inner.cap
-        } else {
-            self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
+        let cap = match job.queue_lane() {
+            EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
+            EncryptWorkerLane::Bulk => self.inner.cap,
         };
         if state.len() >= cap {
             return Err(MacWorkerTryPushError::Full(Box::new(job)));
@@ -466,10 +478,9 @@ impl MacWorkerSender {
                 drop(job);
                 return Err(MacWorkerPushError);
             }
-            let cap = if job.bulk_endpoint_data() {
-                self.inner.cap
-            } else {
-                self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP
+            let cap = match job.queue_lane() {
+                EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
+                EncryptWorkerLane::Bulk => self.inner.cap,
             };
             if state.len() < cap {
                 let was_empty = state.is_empty();
@@ -968,7 +979,7 @@ impl EncryptWorkerPool {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::EncryptWorkerQueueFull,
                 );
-                if job.bulk_endpoint_data() {
+                if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
@@ -1001,7 +1012,7 @@ impl EncryptWorkerPool {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::EncryptWorkerQueueFull,
                 );
-                if job.bulk_endpoint_data() {
+                if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
                 }
@@ -2302,6 +2313,18 @@ mod unix_tests {
     }
 
     #[test]
+    fn encrypt_worker_lane_policy_keeps_endpoint_bulk_explicit() {
+        assert_eq!(
+            encrypt_worker_lane_for_endpoint_data(false),
+            EncryptWorkerLane::Priority
+        );
+        assert_eq!(
+            encrypt_worker_lane_for_endpoint_data(true),
+            EncryptWorkerLane::Bulk
+        );
+    }
+
+    #[test]
     fn fsp_preseal_runs_before_outer_fmp_seal() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -2547,11 +2570,11 @@ mod mac_queue_tests {
             let mut batch = Vec::new();
             assert!(rx.recv_batch(&mut batch, 3));
             assert_eq!(batch.len(), 3);
-            assert!(!batch[0].bulk_endpoint_data());
+            assert_eq!(batch[0].queue_lane(), EncryptWorkerLane::Priority);
             assert!(!batch[0].job.drop_on_backpressure);
-            assert!(batch[1].bulk_endpoint_data());
+            assert_eq!(batch[1].queue_lane(), EncryptWorkerLane::Bulk);
             assert!(!batch[1].job.drop_on_backpressure);
-            assert!(batch[2].bulk_endpoint_data());
+            assert_eq!(batch[2].queue_lane(), EncryptWorkerLane::Bulk);
             assert!(!batch[2].job.drop_on_backpressure);
         });
     }
