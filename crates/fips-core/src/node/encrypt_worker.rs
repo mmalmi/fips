@@ -521,6 +521,9 @@ fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWor
 
 struct QueuedFmpSendJob {
     job: FmpSendJob,
+    lane: EncryptWorkerLane,
+    #[cfg(unix)]
+    target_key: SendTargetKey,
     #[cfg(not(target_os = "macos"))]
     fair_reservation: Option<FairAdmissionReservation>,
     #[cfg(target_os = "macos")]
@@ -532,8 +535,14 @@ struct QueuedFmpSendJob {
 impl QueuedFmpSendJob {
     #[allow(dead_code)] // used on non-macOS and by tests; macOS production uses sequenced flows.
     fn direct(job: FmpSendJob) -> Self {
+        let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
+        #[cfg(unix)]
+        let target_key = job.send_target_key();
         Self {
             job,
+            lane,
+            #[cfg(unix)]
+            target_key,
             #[cfg(not(target_os = "macos"))]
             fair_reservation: None,
             #[cfg(target_os = "macos")]
@@ -546,21 +555,31 @@ impl QueuedFmpSendJob {
     #[cfg(target_os = "macos")]
     fn macos_sequenced(job: FmpSendJob, macos_flow: Arc<MacSequencedSendFlow>) -> Self {
         let macos_seq = macos_flow.reserve_seq();
+        let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
+        let target_key = job.send_target_key();
         Self {
             job,
+            lane,
+            target_key,
             macos_flow: Some(macos_flow),
             macos_seq,
         }
     }
 
+    #[cfg(unix)]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn target_key(&self) -> SendTargetKey {
+        self.target_key
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn flow_key(&self) -> SendTargetKey {
-        self.job.send_target_key()
+        self.target_key
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn queue_lane(&self) -> EncryptWorkerLane {
-        encrypt_worker_lane_for_endpoint_data(self.job.bulk_endpoint_data)
+        self.lane
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1380,11 +1399,12 @@ impl EncryptWorkerPool {
         if !macos_ordered_sender_enabled() {
             use std::hash::{Hash, Hasher};
 
-            let key = job.send_target_key();
+            let queued = QueuedFmpSendJob::direct(job);
+            let key = queued.target_key();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             key.hash(&mut h);
             let idx = (h.finish() as usize) % self.senders.len();
-            return (idx, QueuedFmpSendJob::direct(job));
+            return (idx, queued);
         }
 
         // Darwin has no sendmmsg/UDP_GSO equivalent in the standard UDP
@@ -1404,9 +1424,9 @@ impl EncryptWorkerPool {
 
     #[cfg(not(target_os = "macos"))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        let target_key = job.send_target_key();
-        let idx = (send_target_fast_hash(&target_key) as usize) % self.senders.len();
-        (idx, QueuedFmpSendJob::direct(job))
+        let queued = QueuedFmpSendJob::direct(job);
+        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
+        (idx, queued)
     }
 
     #[cfg(target_os = "macos")]
@@ -2042,6 +2062,7 @@ fn flush_batch_sync(
             job,
             macos_flow,
             macos_seq,
+            ..
         } = queued;
         #[cfg(not(target_os = "macos"))]
         let QueuedFmpSendJob { job, .. } = queued;
@@ -3010,6 +3031,75 @@ mod unix_tests {
             encrypt_worker_lane_for_endpoint_data(true),
             EncryptWorkerLane::Bulk
         );
+    }
+
+    #[test]
+    fn queued_fmp_send_job_owns_lane_and_target_key() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let cipher = test_cipher(6);
+            let dest: SocketAddr = "127.0.0.1:10036".parse().unwrap();
+
+            fn make_job(
+                socket: AsyncUdpSocket,
+                cipher: LessSafeKey,
+                dest: SocketAddr,
+                bulk_endpoint_data: bool,
+            ) -> FmpSendJob {
+                let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 32 + 16);
+                wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
+                wire_buf.resize(ESTABLISHED_HEADER_SIZE + 32, 0);
+                FmpSendJob {
+                    cipher,
+                    counter: 7,
+                    wire_buf,
+                    fsp_seal: None,
+                    send_target: SelectedSendTarget::new(
+                        socket,
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        None,
+                        dest,
+                    ),
+                    bulk_endpoint_data,
+                    drop_on_backpressure: bulk_endpoint_data,
+                    scheduling_weight: DEFAULT_SEND_WEIGHT,
+                    queued_at: None,
+                }
+            }
+
+            let priority_target = SelectedSendTarget::new(
+                socket.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let priority_key = priority_target.key();
+            let mut priority_job = make_job(socket.clone(), cipher.clone(), dest, false);
+            priority_job.send_target = priority_target;
+            let priority = QueuedFmpSendJob::direct(priority_job);
+            assert_eq!(priority.queue_lane(), EncryptWorkerLane::Priority);
+            assert_eq!(
+                priority.target_key(),
+                priority_key,
+                "queued worker messages own the selected target key"
+            );
+            #[cfg(not(target_os = "macos"))]
+            assert_eq!(priority.flow_key(), priority_key);
+
+            let bulk = QueuedFmpSendJob::direct(make_job(socket, cipher, dest, true));
+            assert_eq!(bulk.queue_lane(), EncryptWorkerLane::Bulk);
+            assert_eq!(
+                bulk.target_key(),
+                priority_key,
+                "same selected socket and destination keep the same queued key"
+            );
+        });
     }
 
     #[test]

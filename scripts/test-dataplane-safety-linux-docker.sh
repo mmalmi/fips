@@ -16,6 +16,7 @@ RUSTUP_VOLUME="${FIPS_LINUX_TEST_RUSTUP_VOLUME:-fips-dataplane-safety-rustup}"
 DEFAULT_FILTERS=(
   encrypt_worker_lane_policy_keeps_endpoint_bulk_explicit
   encrypt_worker_shard_owns_batch_drain_and_flush_error
+  queued_fmp_send_job_owns_lane_and_target_key
   sealed_send_packet_owns_target_wire_and_drop_policy
   single_flow_full_backpressures_instead_of_dropping
   tight_bulk_cap_limits_single_flow_to_fast_lane_plus_fair_budget
