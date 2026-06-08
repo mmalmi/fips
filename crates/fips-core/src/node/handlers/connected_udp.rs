@@ -67,14 +67,15 @@ impl Node {
 
             // Collect candidate NodeAddrs first so we can iterate
             // without holding the &mut on self.peers across awaits.
-            let mut candidates: Vec<NodeAddr> = self
+            let candidates: Vec<(NodeAddr, bool)> = self
                 .peers
                 .iter()
                 .filter_map(|(addr, peer)| {
-                    connected_udp_activation_candidate(peer).then_some(*addr)
+                    connected_udp_activation_candidate(peer)
+                        .then_some((*addr, self.configured_peer(addr).is_some()))
                 })
                 .collect();
-            candidates.sort_by_key(|addr| self.configured_peer(addr).is_none());
+            let candidates = connected_udp_activation_order(candidates);
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
             let mut installed_count = self.connected_udp_installed_count();
             let mut peer_cap_skipped = 0usize;
@@ -277,6 +278,12 @@ fn connected_udp_activation_candidate(peer: &crate::peer::ActivePeer) -> bool {
         && peer.connected_udp().is_none()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_activation_order(mut candidates: Vec<(NodeAddr, bool)>) -> Vec<NodeAddr> {
+    candidates.sort_by_key(|(addr, is_configured)| (!*is_configured, *addr));
+    candidates.into_iter().map(|(addr, _)| addr).collect()
+}
+
 #[cfg(target_os = "linux")]
 fn connected_udp_enabled(config_enabled: bool) -> bool {
     env_flag("FIPS_CONNECTED_UDP").unwrap_or(config_enabled)
@@ -417,6 +424,38 @@ mod tests {
     fn peer_budget_stops_at_explicit_cap() {
         assert!(connected_udp_peer_budget_allows(0, 1));
         assert!(!connected_udp_peer_budget_allows(1, 1));
+    }
+
+    #[test]
+    fn activation_order_prefers_configured_peers_then_node_addr() {
+        fn addr(last: u8) -> NodeAddr {
+            let mut bytes = [0u8; 16];
+            bytes[15] = last;
+            NodeAddr::from_bytes(bytes)
+        }
+
+        let configured_high = addr(40);
+        let configured_low = addr(10);
+        let discovered_high = addr(30);
+        let discovered_low = addr(20);
+
+        let ordered = connected_udp_activation_order(vec![
+            (discovered_high, false),
+            (configured_high, true),
+            (discovered_low, false),
+            (configured_low, true),
+        ]);
+
+        assert_eq!(
+            ordered,
+            vec![
+                configured_low,
+                configured_high,
+                discovered_low,
+                discovered_high
+            ],
+            "connected-UDP caps must pick stable configured peers before discovered peers"
+        );
     }
 
     #[test]
