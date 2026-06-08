@@ -8,7 +8,7 @@
 use crate::NodeAddr;
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
-use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
+use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
 #[cfg(unix)]
 use crate::node::classify_endpoint_payload;
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
@@ -1427,7 +1427,7 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
-        let (sample, used_direct_next_hop, srtt_ms) = {
+        let (sample, used_direct_next_hop, srtt_ms, route_quality_sample) = {
             let entry = match self.sessions.get_mut(src_addr) {
                 Some(e) => e,
                 None => {
@@ -1471,15 +1471,20 @@ impl Node {
             mmp.metrics
                 .update_reverse_delivery(our_recv_packets, peer_highest);
 
+            let route_quality_sample =
+                session_receiver_report_can_drive_route_quality(mmp.mode(), srtt_ms);
+
             (
                 mmp.metrics.last_forward_loss_sample(),
                 last_outbound_next_hop == Some(*src_addr),
                 srtt_ms,
+                route_quality_sample,
             )
         };
 
         if let Some((span, loss)) = sample
             && used_direct_next_hop
+            && route_quality_sample
             && span >= SESSION_DIRECT_DEGRADED_MIN_SAMPLE
         {
             if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
@@ -1513,6 +1518,7 @@ impl Node {
         trace!(
             src = %peer_name,
             rtt_ms = ?srtt_ms,
+            route_quality_sample,
             loss = sample
                 .map(|(_, loss)| format!("{:.1}%", loss * 100.0))
                 .unwrap_or_else(|| "n/a".to_string()),
@@ -3180,6 +3186,14 @@ impl Node {
                 debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Session retry after discovery failed");
             }
         }
+    }
+}
+
+fn session_receiver_report_can_drive_route_quality(mode: MmpMode, srtt_ms: Option<f64>) -> bool {
+    match mode {
+        MmpMode::Full => srtt_ms.is_some(),
+        MmpMode::Lightweight => true,
+        MmpMode::Minimal => false,
     }
 }
 
