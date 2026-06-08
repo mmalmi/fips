@@ -534,6 +534,8 @@ struct QueuedFmpSendJob {
     #[cfg(unix)]
     target_key: SendTargetKey,
     #[cfg(not(target_os = "macos"))]
+    scheduling_weight: usize,
+    #[cfg(not(target_os = "macos"))]
     fair_reservation: Option<FairAdmissionReservation>,
     #[cfg(target_os = "macos")]
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
@@ -547,11 +549,15 @@ impl QueuedFmpSendJob {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         #[cfg(unix)]
         let target_key = job.send_target_key();
+        #[cfg(not(target_os = "macos"))]
+        let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
         Self {
             job,
             lane,
             #[cfg(unix)]
             target_key,
+            #[cfg(not(target_os = "macos"))]
+            scheduling_weight,
             #[cfg(not(target_os = "macos"))]
             fair_reservation: None,
             #[cfg(target_os = "macos")]
@@ -603,9 +609,7 @@ impl QueuedFmpSendJob {
 
     #[cfg(not(target_os = "macos"))]
     fn scheduling_weight(&self) -> usize {
-        self.job
-            .scheduling_weight
-            .clamp(MIN_SEND_WEIGHT, MAX_SEND_WEIGHT) as usize
+        self.scheduling_weight
     }
 }
 
@@ -650,6 +654,11 @@ pub(crate) const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
 const MIN_SEND_WEIGHT: u8 = 1;
 #[cfg(not(target_os = "macos"))]
 const MAX_SEND_WEIGHT: u8 = 4;
+
+#[cfg(not(target_os = "macos"))]
+fn clamp_send_scheduling_weight(weight: u8) -> usize {
+    weight.clamp(MIN_SEND_WEIGHT, MAX_SEND_WEIGHT) as usize
+}
 
 fn worker_channel_cap() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
@@ -4351,6 +4360,38 @@ mod fair_queue_tests {
             assert_eq!(reservation_a.key(), key_a);
             admission.release(reservation_a);
             admission.release(reservation_b);
+        });
+    }
+
+    #[test]
+    fn queued_fmp_send_job_owns_clamped_scheduling_weight() {
+        with_test_socket(|socket, cipher| {
+            let addr: SocketAddr = "127.0.0.1:10026".parse().unwrap();
+
+            let mut explicit = queued_job(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                EXPLICIT_PEER_SEND_WEIGHT,
+            );
+            assert_eq!(
+                explicit.scheduling_weight(),
+                EXPLICIT_PEER_SEND_WEIGHT as usize
+            );
+            explicit.job.scheduling_weight = MAX_SEND_WEIGHT;
+            assert_eq!(
+                explicit.scheduling_weight(),
+                EXPLICIT_PEER_SEND_WEIGHT as usize,
+                "queued worker messages own the scheduling weight used by admission"
+            );
+
+            let low = queued_job(socket.clone(), &cipher, addr, 128, true, 0);
+            assert_eq!(low.scheduling_weight(), MIN_SEND_WEIGHT as usize);
+
+            let high = queued_job(socket, &cipher, addr, 128, true, u8::MAX);
+            assert_eq!(high.scheduling_weight(), MAX_SEND_WEIGHT as usize);
         });
     }
 

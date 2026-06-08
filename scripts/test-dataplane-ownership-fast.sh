@@ -26,6 +26,7 @@ DEFAULT_LINUX_FILTERS=(
   selected_send_batch_owns_target_fifo_and_drop_policy
   linux_send_batch_attempt_owns_cursor_and_backpressure_policy
   fair_admission_reservation_owns_release_key
+  queued_fmp_send_job_owns_clamped_scheduling_weight
   fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue
 )
 
