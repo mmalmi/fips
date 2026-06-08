@@ -610,27 +610,25 @@ fn record_decrypt_fallback_drop(lane: DecryptWorkerLane) {
 fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<DecryptJob>) {
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
-    // The shard's owned session table. Lives entirely on this OS
-    // thread — never observed by any other thread.
-    let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
+    let mut shard = DecryptWorkerShard::new();
 
     loop {
-        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
         crossbeam_channel::select! {
             recv(priority_rx) -> msg => {
                 match msg {
-                    Ok(msg) => handle_msg(idx, &mut sessions, msg),
+                    Ok(msg) => shard.handle_msg(idx, msg),
                     Err(_) => {
-                        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
                         break;
                     }
                 }
             }
             recv(bulk_rx) -> job => {
                 match job {
-                    Ok(job) => handle_msg(idx, &mut sessions, WorkerMsg::Job(job)),
+                    Ok(job) => shard.handle_msg(idx, WorkerMsg::Job(job)),
                     Err(_) => {
-                        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
                         break;
                     }
                 }
@@ -642,208 +640,243 @@ fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<De
 
 fn drain_worker_queues(
     idx: usize,
-    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
+    shard: &mut DecryptWorkerShard,
     priority_rx: &Receiver<WorkerMsg>,
     bulk_rx: &Receiver<DecryptJob>,
 ) {
     while let Ok(msg) = priority_rx.try_recv() {
-        handle_msg(idx, sessions, msg);
+        shard.handle_msg(idx, msg);
     }
     for _ in 0..DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = priority_rx.try_recv() {
-            handle_msg(idx, sessions, msg);
+            shard.handle_msg(idx, msg);
             continue;
         }
         match bulk_rx.try_recv() {
-            Ok(job) => handle_msg(idx, sessions, WorkerMsg::Job(job)),
+            Ok(job) => shard.handle_msg(idx, WorkerMsg::Job(job)),
             Err(_) => break,
         }
     }
 }
 
-fn handle_msg(
-    idx: usize,
-    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
-    msg: WorkerMsg,
-) {
-    match msg {
-        WorkerMsg::Job(job) => {
-            if let Err(err) = handle_job(sessions, job) {
-                debug!(worker = idx, error = %err, "decrypt worker job failed");
-            }
-        }
-        WorkerMsg::RegisterSession { session_key, state } => {
-            trace!(
-                worker = idx,
-                ?session_key,
-                "DecryptWorker: register session"
-            );
-            sessions.insert(session_key, state);
-        }
-        WorkerMsg::UnregisterSession { session_key } => {
-            trace!(
-                worker = idx,
-                ?session_key,
-                "DecryptWorker: unregister session"
-            );
-            sessions.remove(&session_key);
-        }
-    }
+struct DecryptWorkerShard {
+    // Lives entirely on this OS thread — never observed by any other thread.
+    sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
 }
 
-fn handle_job(
-    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
-    job: DecryptJob,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let DecryptJob {
-        mut packet_data,
-        session_key,
-        _transport_id: transport_id,
-        _remote_addr: remote_addr,
-        timestamp_ms,
-        source_node_addr,
-        fmp_counter,
-        fmp_flags,
-        fmp_header,
-        fmp_ciphertext_offset,
-        fallback_tx,
-    } = job;
-    // Capture the wire packet length BEFORE decrypt mutates the
-    // buffer — it'll be the same number either way (in-place AEAD
-    // open doesn't change Vec::len), but documenting the intent.
-    let packet_len = packet_data.len();
-
-    // Look up the shard-owned session state. If absent (session not
-    // yet registered, or unregistered mid-flight), bounce the raw
-    // packet to rx_loop so it can run its legacy decrypt + populate
-    // the session via RegisterSession on success.
-    let state = match sessions.get_mut(&session_key) {
-        Some(s) => s,
-        None => {
-            // The legacy rx_loop already has the ciphertext bytes
-            // (worker owns `packet_data` here), but it can re-do the
-            // decrypt from scratch since this is the first-packet
-            // path. Bounce by sending the **encrypted** FMP frame
-            // back wrapped in a fallback — rx_loop's
-            // `dispatch_link_message` won't recognise it though, so
-            // we just drop instead. This is a transient state on a
-            // brand-new session; subsequent packets land after
-            // registration.
-            let _ = fallback_tx; // explicitly ignore — drop path
-            let _ = source_node_addr;
-            let _ = packet_data;
-            return Ok(());
+impl DecryptWorkerShard {
+    fn new() -> Self {
+        Self {
+            sessions: HashMap::new(),
         }
-    };
-
-    // === Phase 1: FMP decrypt ===
-    let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
-
-    // Replay-window check before AEAD work to avoid wasting CPU on
-    // replays. **Direct &mut access** — no Arc<Mutex> lock acquire.
-    let fmp_replay_highest = state.fmp_replay.highest();
-    if !state.fmp_replay.check(fmp_counter) {
-        return Ok(()); // replay; drop silently
     }
 
-    let mut nonce_bytes = [0u8; 12];
-    nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
-    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let buf = &mut packet_data[fmp_ciphertext_offset..];
-    let plaintext_len = match state
-        .fmp_cipher
-        .open_in_place(nonce, Aad::from(&fmp_header), buf)
-    {
-        Ok(p) => p.len(),
-        Err(_) => {
-            let _ = fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
-                source_node_addr,
-                fmp_counter,
-                fmp_replay_highest,
-            }));
+    fn handle_msg(&mut self, idx: usize, msg: WorkerMsg) {
+        match msg {
+            WorkerMsg::Job(job) => {
+                if let Err(err) = self.handle_job(job) {
+                    debug!(worker = idx, error = %err, "decrypt worker job failed");
+                }
+            }
+            WorkerMsg::RegisterSession { session_key, state } => {
+                self.register_session(idx, session_key, state);
+            }
+            WorkerMsg::UnregisterSession { session_key } => {
+                self.unregister_session(idx, session_key);
+            }
+        }
+    }
+
+    fn register_session(
+        &mut self,
+        idx: usize,
+        session_key: DecryptSessionKey,
+        state: OwnedSessionState,
+    ) {
+        trace!(
+            worker = idx,
+            ?session_key,
+            "DecryptWorker: register session"
+        );
+        self.sessions.insert(session_key, state);
+    }
+
+    fn unregister_session(&mut self, idx: usize, session_key: DecryptSessionKey) {
+        trace!(
+            worker = idx,
+            ?session_key,
+            "DecryptWorker: unregister session"
+        );
+        self.sessions.remove(&session_key);
+    }
+
+    fn handle_job(
+        &mut self,
+        job: DecryptJob,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let DecryptJob {
+            mut packet_data,
+            session_key,
+            _transport_id: transport_id,
+            _remote_addr: remote_addr,
+            timestamp_ms,
+            source_node_addr,
+            fmp_counter,
+            fmp_flags,
+            fmp_header,
+            fmp_ciphertext_offset,
+            fallback_tx,
+        } = job;
+        // Capture the wire packet length BEFORE decrypt mutates the
+        // buffer — it'll be the same number either way (in-place AEAD
+        // open doesn't change Vec::len), but documenting the intent.
+        let packet_len = packet_data.len();
+
+        // Look up the shard-owned session state. If absent (session not
+        // yet registered, or unregistered mid-flight), bounce the raw
+        // packet to rx_loop so it can run its legacy decrypt + populate
+        // the session via RegisterSession on success.
+        let state = match self.sessions.get_mut(&session_key) {
+            Some(s) => s,
+            None => {
+                // The legacy rx_loop already has the ciphertext bytes
+                // (worker owns `packet_data` here), but it can re-do the
+                // decrypt from scratch since this is the first-packet
+                // path. Bounce by sending the **encrypted** FMP frame
+                // back wrapped in a fallback — rx_loop's
+                // `dispatch_link_message` won't recognise it though, so
+                // we just drop instead. This is a transient state on a
+                // brand-new session; subsequent packets land after
+                // registration.
+                let _ = fallback_tx; // explicitly ignore — drop path
+                let _ = source_node_addr;
+                let _ = packet_data;
+                return Ok(());
+            }
+        };
+
+        // === Phase 1: FMP decrypt ===
+        let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
+
+        // Replay-window check before AEAD work to avoid wasting CPU on
+        // replays. **Direct &mut access** — no Arc<Mutex> lock acquire.
+        let fmp_replay_highest = state.fmp_replay.highest();
+        if !state.fmp_replay.check(fmp_counter) {
+            return Ok(()); // replay; drop silently
+        }
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let plaintext_len = match state
+            .fmp_cipher
+            .open_in_place(nonce, Aad::from(&fmp_header), buf)
+        {
+            Ok(p) => p.len(),
+            Err(_) => {
+                let _ =
+                    fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+                        source_node_addr,
+                        fmp_counter,
+                        fmp_replay_highest,
+                    }));
+                return Ok(());
+            }
+        };
+
+        // FMP decrypt succeeded — accept the counter into the replay window.
+        state.fmp_replay.accept(fmp_counter);
+        drop(_t_fmp);
+
+        // The FMP plaintext lives in packet_data[fmp_ciphertext_offset..
+        // fmp_ciphertext_offset + plaintext_len]. It carries a 4-byte
+        // session-relative timestamp prefix, then the link-layer message.
+        let fmp_plaintext_start = fmp_ciphertext_offset;
+        let fmp_plaintext_end = fmp_ciphertext_offset + plaintext_len;
+        const INNER_TIMESTAMP_LEN: usize = 4;
+        if plaintext_len < INNER_TIMESTAMP_LEN + 1 {
             return Ok(());
         }
-    };
+        let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
+        let link_msg_end = fmp_plaintext_end;
+        let link_msg = &packet_data[link_msg_start..link_msg_end];
 
-    // FMP decrypt succeeded — accept the counter into the replay window.
-    state.fmp_replay.accept(fmp_counter);
-    drop(_t_fmp);
-
-    // The FMP plaintext lives in packet_data[fmp_ciphertext_offset..
-    // fmp_ciphertext_offset + plaintext_len]. It carries a 4-byte
-    // session-relative timestamp prefix, then the link-layer message.
-    let fmp_plaintext_start = fmp_ciphertext_offset;
-    let fmp_plaintext_end = fmp_ciphertext_offset + plaintext_len;
-    const INNER_TIMESTAMP_LEN: usize = 4;
-    if plaintext_len < INNER_TIMESTAMP_LEN + 1 {
-        return Ok(());
+        // === Phase 2: bounce ALL link messages back to rx_loop ===
+        //
+        // **Why no FSP fast path here:** previous design did FSP decrypt
+        // + replay-accept for SessionDatagram (link msg_type 0x00), then
+        // checked the inner FSP msg_type. If it was EndpointData (0x11),
+        // delivered directly to the endpoint event channel. Otherwise
+        // (heartbeats, MMP reports, IPv6-shim, etc.) bounced the
+        // **decrypted-in-place** FMP plaintext back to rx_loop.
+        //
+        // Two problems with that path:
+        //   1. After the shard-owned-sessions refactor (01f6c62), the FSP
+        //      replay window is owned by **this worker thread**. Once we
+        //      `state.fsp_replay.accept(fsp_counter)`, the rx_loop's
+        //      `noise::Session::replay_window` is stale — it still has
+        //      old counters. When rx_loop tries to FSP-decrypt the
+        //      bounced control frame, its legacy path's replay check
+        //      passes (the counter wasn't in its window) but the AEAD
+        //      tag check fails because the FSP bytes in `packet_data`
+        //      were already decrypted in place (now plaintext + 16
+        //      garbage tag bytes).
+        //   2. Even if we didn't accept the worker's replay window for
+        //      non-EndpointData, the in-place mutation of `packet_data`
+        //      means the legacy path can't re-decrypt — the ciphertext
+        //      is gone.
+        //
+        // The bug manifests in benches as link death: heartbeats never
+        // make it through the worker, the link-dead timer fires at 30s,
+        // peer is removed and re-handshakes, repeating forever.
+        //
+        // **Fix:** worker handles only the FMP layer. ALL link messages
+        // (SessionDatagram, heartbeats, control) bounce back to rx_loop
+        // with the FMP plaintext intact. The legacy rx_loop path does
+        // FSP-decrypt as usual. Net cost vs the broken fast path: we
+        // give up the rx_loop bypass for EndpointData, but the worker
+        // still offloads the FMP AEAD (~half the per-packet decrypt
+        // CPU). Correctness over micro-optimisation.
+        //
+        // The DataShard end-state (per the architectural plan) re-
+        // introduces the EndpointData fast path correctly by having the
+        // shard worker also own the rx_loop side for its sessions — at
+        // that point there's no "rx_loop legacy path" for the worker to
+        // conflict with.
+        // Pass the buffer through by ownership + offset/length. No
+        // per-packet allocation; rx_loop slices into `packet_data`.
+        let _ = link_msg; // sanity-check borrow before sending buffer onward
+        let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback {
+            source_node_addr,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            fmp_counter,
+            fmp_flags,
+            packet_data,
+            fmp_plaintext_offset: fmp_plaintext_start,
+            fmp_plaintext_len: plaintext_len,
+        }));
+        // Suppress unused-variable warnings for the (now-removed) FSP
+        // fast path. The `state` lookup is still needed for the FMP
+        // cipher + replay window above.
+        let _ = (link_msg_start, link_msg_end, &state.source_npub);
+        Ok(())
     }
-    let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
-    let link_msg_end = fmp_plaintext_end;
-    let link_msg = &packet_data[link_msg_start..link_msg_end];
 
-    // === Phase 2: bounce ALL link messages back to rx_loop ===
-    //
-    // **Why no FSP fast path here:** previous design did FSP decrypt
-    // + replay-accept for SessionDatagram (link msg_type 0x00), then
-    // checked the inner FSP msg_type. If it was EndpointData (0x11),
-    // delivered directly to the endpoint event channel. Otherwise
-    // (heartbeats, MMP reports, IPv6-shim, etc.) bounced the
-    // **decrypted-in-place** FMP plaintext back to rx_loop.
-    //
-    // Two problems with that path:
-    //   1. After the shard-owned-sessions refactor (01f6c62), the FSP
-    //      replay window is owned by **this worker thread**. Once we
-    //      `state.fsp_replay.accept(fsp_counter)`, the rx_loop's
-    //      `noise::Session::replay_window` is stale — it still has
-    //      old counters. When rx_loop tries to FSP-decrypt the
-    //      bounced control frame, its legacy path's replay check
-    //      passes (the counter wasn't in its window) but the AEAD
-    //      tag check fails because the FSP bytes in `packet_data`
-    //      were already decrypted in place (now plaintext + 16
-    //      garbage tag bytes).
-    //   2. Even if we didn't accept the worker's replay window for
-    //      non-EndpointData, the in-place mutation of `packet_data`
-    //      means the legacy path can't re-decrypt — the ciphertext
-    //      is gone.
-    //
-    // The bug manifests in benches as link death: heartbeats never
-    // make it through the worker, the link-dead timer fires at 30s,
-    // peer is removed and re-handshakes, repeating forever.
-    //
-    // **Fix:** worker handles only the FMP layer. ALL link messages
-    // (SessionDatagram, heartbeats, control) bounce back to rx_loop
-    // with the FMP plaintext intact. The legacy rx_loop path does
-    // FSP-decrypt as usual. Net cost vs the broken fast path: we
-    // give up the rx_loop bypass for EndpointData, but the worker
-    // still offloads the FMP AEAD (~half the per-packet decrypt
-    // CPU). Correctness over micro-optimisation.
-    //
-    // The DataShard end-state (per the architectural plan) re-
-    // introduces the EndpointData fast path correctly by having the
-    // shard worker also own the rx_loop side for its sessions — at
-    // that point there's no "rx_loop legacy path" for the worker to
-    // conflict with.
-    // Pass the buffer through by ownership + offset/length. No
-    // per-packet allocation; rx_loop slices into `packet_data`.
-    let _ = link_msg; // sanity-check borrow before sending buffer onward
-    let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback {
-        source_node_addr,
-        transport_id,
-        remote_addr,
-        timestamp_ms,
-        packet_len,
-        fmp_counter,
-        fmp_flags,
-        packet_data,
-        fmp_plaintext_offset: fmp_plaintext_start,
-        fmp_plaintext_len: plaintext_len,
-    }));
-    // Suppress unused-variable warnings for the (now-removed) FSP
-    // fast path. The `state` lookup is still needed for the FMP
-    // cipher + replay window above.
-    let _ = (link_msg_start, link_msg_end, &state.source_npub);
-    Ok(())
+    #[cfg(test)]
+    fn contains_session(&self, session_key: DecryptSessionKey) -> bool {
+        self.sessions.contains_key(&session_key)
+    }
+
+    #[cfg(test)]
+    fn fmp_replay_highest(&self, session_key: DecryptSessionKey) -> Option<u64> {
+        self.sessions
+            .get(&session_key)
+            .map(|state| state.fmp_replay.highest())
+    }
 }
 
 #[cfg(test)]
@@ -1379,11 +1412,11 @@ mod tests {
             .try_send(bulk_job)
             .expect("bulk decrypt job should enqueue");
 
-        let mut sessions = std::collections::HashMap::new();
-        drain_worker_queues(0, &mut sessions, &priority_rx, &bulk_rx);
+        let mut shard = DecryptWorkerShard::new();
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
 
         assert!(
-            sessions.contains_key(&session_key),
+            shard.contains_session(session_key),
             "priority registration must be applied before queued bulk work"
         );
         match fallback_rx
@@ -1420,12 +1453,12 @@ mod tests {
             .try_send(bulk_job)
             .expect("bulk decrypt job should enqueue");
 
-        let mut sessions =
-            std::collections::HashMap::from([(session_key, test_owned_session_state())]);
-        drain_worker_queues(0, &mut sessions, &priority_rx, &bulk_rx);
+        let mut shard = DecryptWorkerShard::new();
+        shard.register_session(0, session_key, test_owned_session_state());
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
 
         assert!(
-            !sessions.contains_key(&session_key),
+            !shard.contains_session(session_key),
             "priority unregister must remove stale session state before queued bulk work"
         );
         assert!(
@@ -1449,31 +1482,31 @@ mod tests {
         let seal_cipher = test_chacha_key(key_bytes);
         let open_cipher = test_chacha_key(key_bytes);
         let session_key = test_session_key(1, 79);
-        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::from([(
+        let mut shard = DecryptWorkerShard::new();
+        shard.register_session(
+            0,
             session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
                 source_npub: None,
             },
-        )]);
+        );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let counter = 7;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
 
         let (invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
-        handle_job(
-            &mut sessions,
-            decrypt_job_for_test_packet(
+        shard
+            .handle_job(decrypt_job_for_test_packet(
                 invalid_packet,
                 invalid_header,
                 session_key,
                 counter,
                 flags,
                 fallback_tx.clone(),
-            ),
-        )
-        .expect("invalid worker job should be handled");
+            ))
+            .expect("invalid worker job should be handled");
         match fallback_rx
             .priority
             .try_recv()
@@ -1489,24 +1522,22 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid packet must not produce plaintext"),
         }
         assert_eq!(
-            sessions.get(&session_key).unwrap().fmp_replay.highest(),
+            shard.fmp_replay_highest(session_key).unwrap(),
             0,
             "failed AEAD must not consume the worker-owned replay window"
         );
 
         let (valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
-        handle_job(
-            &mut sessions,
-            decrypt_job_for_test_packet(
+        shard
+            .handle_job(decrypt_job_for_test_packet(
                 valid_packet,
                 valid_header,
                 session_key,
                 counter,
                 flags,
                 fallback_tx.clone(),
-            ),
-        )
-        .expect("valid worker job should be handled");
+            ))
+            .expect("valid worker job should be handled");
         assert!(
             matches!(
                 fallback_rx.priority.try_recv().expect("plaintext fallback"),
@@ -1515,24 +1546,22 @@ mod tests {
             "valid packet must bounce plaintext after FMP decrypt"
         );
         assert_eq!(
-            sessions.get(&session_key).unwrap().fmp_replay.highest(),
+            shard.fmp_replay_highest(session_key).unwrap(),
             counter,
             "successful AEAD must advance the worker-owned replay window"
         );
 
         let (replay_packet, replay_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
-        handle_job(
-            &mut sessions,
-            decrypt_job_for_test_packet(
+        shard
+            .handle_job(decrypt_job_for_test_packet(
                 replay_packet,
                 replay_header,
                 session_key,
                 counter,
                 flags,
                 fallback_tx,
-            ),
-        )
-        .expect("replay worker job should be handled");
+            ))
+            .expect("replay worker job should be handled");
         assert!(
             fallback_rx.priority.is_empty(),
             "replayed counter must be dropped before plaintext or failure events"
@@ -1540,6 +1569,34 @@ mod tests {
         assert!(
             fallback_rx.bulk.is_empty(),
             "replayed counter must not reach the bulk fallback lane"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_shard_owns_register_and_unregister_state() {
+        let session_key = test_session_key(2, 80);
+        let mut shard = DecryptWorkerShard::new();
+
+        assert!(
+            !shard.contains_session(session_key),
+            "new shard starts without session state"
+        );
+        shard.handle_msg(
+            0,
+            WorkerMsg::RegisterSession {
+                session_key,
+                state: test_owned_session_state(),
+            },
+        );
+        assert!(
+            shard.contains_session(session_key),
+            "registration must populate shard-owned state"
+        );
+
+        shard.handle_msg(0, WorkerMsg::UnregisterSession { session_key });
+        assert!(
+            !shard.contains_session(session_key),
+            "unregister must remove shard-owned state"
         );
     }
 
@@ -1590,8 +1647,9 @@ mod tests {
 
         // Owning state held by the worker for this session.
         let session_key = test_session_key(1, 99);
-        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
-        sessions.insert(
+        let mut shard = DecryptWorkerShard::new();
+        shard.register_session(
+            0,
             session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
@@ -1616,7 +1674,7 @@ mod tests {
             fallback_tx,
         };
 
-        handle_job(&mut sessions, job).expect("worker job handled");
+        shard.handle_job(job).expect("worker job handled");
 
         let event = fallback_rx.priority.try_recv().expect("fallback delivered");
         let fallback = match event {
@@ -1653,8 +1711,9 @@ mod tests {
         wire.extend_from_slice(&[0u8; 16]); // invalid AEAD tag
 
         let session_key = test_session_key(1, 77);
-        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
-        sessions.insert(
+        let mut shard = DecryptWorkerShard::new();
+        shard.register_session(
+            0,
             session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
@@ -1679,7 +1738,7 @@ mod tests {
             fallback_tx,
         };
 
-        handle_job(&mut sessions, job).expect("worker job handled");
+        shard.handle_job(job).expect("worker job handled");
 
         let event = fallback_rx.priority.try_recv().expect("failure delivered");
         match event {
