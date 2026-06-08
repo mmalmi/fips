@@ -297,6 +297,89 @@ impl SelectedSendBatch {
     }
 }
 
+#[cfg(target_os = "linux")]
+struct LinuxSendBatchAttempt {
+    send_target: SelectedSendTarget,
+    wire_packets: Vec<Vec<u8>>,
+    drop_on_backpressure: bool,
+    backpressure: SendBackpressurePacer,
+    sent: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxSendBatchAttempt {
+    fn from_batch(batch: SelectedSendBatch) -> Self {
+        let (send_target, wire_packets, drop_on_backpressure) = batch.into_parts();
+        Self {
+            send_target,
+            wire_packets,
+            drop_on_backpressure,
+            backpressure: SendBackpressurePacer::default(),
+            sent: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn target_key(&self) -> SendTargetKey {
+        self.send_target.key()
+    }
+
+    fn target_parts(&self) -> (std::os::unix::io::RawFd, bool, SocketAddr) {
+        let (fd, connected) = self.send_target.fd_and_connected();
+        (fd, connected, self.send_target.dest_addr())
+    }
+
+    fn packets(&self) -> &[Vec<u8>] {
+        &self.wire_packets
+    }
+
+    fn remaining_packets(&self) -> &[Vec<u8>] {
+        &self.wire_packets[self.sent..]
+    }
+
+    fn is_complete(&self) -> bool {
+        self.sent >= self.wire_packets.len()
+    }
+
+    fn mark_all_sent(&mut self) {
+        let remaining = self.remaining_packets().len();
+        self.mark_sent(remaining);
+    }
+
+    fn mark_sent(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        debug_assert!(
+            self.sent + n <= self.wire_packets.len(),
+            "sendmmsg reported more packets than remained in the batch"
+        );
+        let n = n.min(self.wire_packets.len().saturating_sub(self.sent));
+        self.sent += n;
+        self.backpressure.record_success();
+        let (_, connected, _) = self.target_parts();
+        record_udp_send_path(connected, n as u64);
+    }
+
+    fn handle_backpressure(&mut self, err: &std::io::Error) -> SendBackpressureDecision {
+        let pacer_requested_drop = self.backpressure.pause(err);
+        self.handle_backpressure_request(pacer_requested_drop, err)
+    }
+
+    fn handle_backpressure_request(
+        &mut self,
+        pacer_requested_drop: bool,
+        err: &std::io::Error,
+    ) -> SendBackpressureDecision {
+        let decision = send_backpressure_decision(pacer_requested_drop, self.drop_on_backpressure);
+        if matches!(decision, SendBackpressureDecision::DropCurrentBulk) && !self.is_complete() {
+            record_udp_send_backpressure_drop(err);
+            self.sent += 1;
+        }
+        decision
+    }
+}
+
 #[cfg(unix)]
 fn push_selected_send_batch(
     groups: &mut Vec<SelectedSendBatch>,
@@ -1848,19 +1931,17 @@ fn flush_batch_sync(
 
     #[cfg(target_os = "linux")]
     for group in groups {
-        let mut backpressure = SendBackpressurePacer::default();
-        let (send_target, wire_packets, drop_on_backpressure) = group.into_parts();
-        let (fd, connected) = send_target.fd_and_connected();
-        let dest_addr = send_target.dest_addr();
+        let mut send_attempt = LinuxSendBatchAttempt::from_batch(group);
+        let (fd, connected, dest_addr) = send_attempt.target_parts();
 
         // Within a group, destination is uniform by construction —
         // GSO needs only the size check now.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
-            && gso_eligible_sizes(&wire_packets)
+            && gso_eligible_sizes(send_attempt.packets())
         {
-            match send_batch_gso(fd, &wire_packets, dest_addr, connected) {
+            match send_batch_gso(fd, send_attempt.packets(), dest_addr, connected) {
                 Ok(()) => {
-                    record_udp_send_path(connected, wire_packets.len() as u64);
+                    send_attempt.mark_all_sent();
                     continue;
                 }
                 Err(err)
@@ -1885,19 +1966,12 @@ fn flush_batch_sync(
             }
         }
 
-        let mut sent = 0usize;
-        while sent < wire_packets.len() {
-            let n = match send_batch_raw(fd, &wire_packets[sent..], dest_addr, connected) {
+        while !send_attempt.is_complete() {
+            let n = match send_batch_raw(fd, send_attempt.remaining_packets(), dest_addr, connected)
+            {
                 Ok(n) => n,
                 Err(err) if is_send_backpressure(&err) => {
-                    match send_backpressure_decision(backpressure.pause(&err), drop_on_backpressure)
-                    {
-                        SendBackpressureDecision::DropCurrentBulk => {
-                            record_udp_send_backpressure_drop(&err);
-                            sent += 1;
-                        }
-                        SendBackpressureDecision::Retry => {}
-                    }
+                    send_attempt.handle_backpressure(&err);
                     continue;
                 }
                 Err(err) => {
@@ -1907,9 +1981,7 @@ fn flush_batch_sync(
             if n == 0 {
                 break;
             }
-            sent += n;
-            backpressure.record_success();
-            record_udp_send_path(connected, n as u64);
+            send_attempt.mark_sent(n);
         }
     }
     #[cfg(all(unix, not(target_os = "linux")))]
@@ -2771,6 +2843,66 @@ mod unix_tests {
             assert_eq!(groups[2].target_key(), key_other_dest);
             assert_eq!(groups[2].wire_packets, vec![vec![4]]);
             assert!(groups[2].drop_on_backpressure);
+        });
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_send_batch_attempt_owns_cursor_and_backpressure_policy() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10031".parse().unwrap();
+
+            let target = SelectedSendTarget::new(
+                socket.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let target_key = target.key();
+            let mut batch = SelectedSendBatch::new(target, vec![1], true);
+            batch.push(vec![2], true);
+
+            let mut attempt = LinuxSendBatchAttempt::from_batch(batch);
+            assert_eq!(attempt.target_key(), target_key);
+            assert_eq!(attempt.remaining_packets(), &[vec![1], vec![2]]);
+            attempt.mark_sent(1);
+            assert_eq!(attempt.remaining_packets(), &[vec![2]]);
+
+            let err = std::io::Error::from_raw_os_error(libc::ENOBUFS);
+            assert_eq!(
+                attempt.handle_backpressure_request(true, &err),
+                SendBackpressureDecision::DropCurrentBulk
+            );
+            assert!(
+                attempt.is_complete(),
+                "droppable backpressure advances exactly one current packet"
+            );
+
+            let target = SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let mut retry_batch = SelectedSendBatch::new(target, vec![3], false);
+            retry_batch.push(vec![4], false);
+            let mut retry_attempt = LinuxSendBatchAttempt::from_batch(retry_batch);
+            assert_eq!(
+                retry_attempt.handle_backpressure_request(true, &err),
+                SendBackpressureDecision::Retry
+            );
+            assert_eq!(
+                retry_attempt.remaining_packets(),
+                &[vec![3], vec![4]],
+                "non-droppable send batches must not advance on a drop request"
+            );
         });
     }
 }
