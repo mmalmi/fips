@@ -88,6 +88,32 @@ struct EndpointPayloadTrafficClass {
     drop_on_backpressure: bool,
 }
 
+#[cfg(unix)]
+struct FmpWorkerSendReservation {
+    counter: u64,
+    header: [u8; ESTABLISHED_HEADER_SIZE],
+    cipher: ring::aead::LessSafeKey,
+}
+
+#[cfg(unix)]
+fn reserve_fmp_worker_send(
+    session: &mut crate::noise::NoiseSession,
+    their_index: crate::utils::index::SessionIndex,
+    flags: u8,
+    payload_len: u16,
+) -> Result<Option<FmpWorkerSendReservation>, crate::noise::NoiseError> {
+    let Some(cipher) = session.send_cipher_clone() else {
+        return Ok(None);
+    };
+    let counter = session.take_send_counter()?;
+    let header = build_established_header(their_index, counter, flags, payload_len);
+    Ok(Some(FmpWorkerSendReservation {
+        counter,
+        header,
+        cipher,
+    }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EndpointCommandLane {
     Priority,
@@ -3329,18 +3355,15 @@ impl Node {
                 reason: "no noise session".into(),
             })?;
 
-        // Build 16-byte outer header upfront. The inner-plaintext
-        // layout is `[ts:4 LE][plaintext...]`, so its length is exactly
-        // `INNER_TS_LEN + plaintext.len()` — no need to build the Vec
-        // just to measure it. The worker path uses this length to size
-        // the wire buffer directly; the legacy path below still
-        // materialises a separate `inner_plaintext` Vec for the inline
-        // encrypt-and-send call.
+        // The inner-plaintext layout is `[ts:4 LE][plaintext...]`, so
+        // its length is exactly `INNER_TS_LEN + plaintext.len()` — no
+        // need to build the Vec just to measure it. The worker path uses
+        // this length to size the wire buffer directly; the legacy path
+        // below still materialises a separate `inner_plaintext` Vec for
+        // the inline encrypt-and-send call.
         const INNER_TS_LEN: usize = 4;
-        let counter = session.current_send_counter();
         let inner_len = INNER_TS_LEN + plaintext.len();
         let payload_len = inner_len as u16;
-        let header = build_established_header(their_index, counter, flags, payload_len);
 
         // **Unix UDP send fast path.** On Unix, the encrypt-worker pool
         // is spawned at lifecycle start (workers = num_cpus) in
@@ -3384,24 +3407,7 @@ impl Node {
             let is_udp = matches!(transport_for_send, TransportHandle::Udp(_));
             if let Some(workers) = self.encrypt_workers.as_ref().cloned()
                 && is_udp
-                && let Some(cipher_clone) = session.send_cipher_clone()
             {
-                // Reserve the counter on the session so subsequent
-                // sends don't reuse it. `current_send_counter` only
-                // peeks; we advance via `take_send_counter`.
-                let reserved_counter =
-                    session
-                        .take_send_counter()
-                        .map_err(|e| NodeError::SendFailed {
-                            node_addr: *node_addr,
-                            reason: format!("counter reservation failed: {}", e),
-                        })?;
-                debug_assert_eq!(reserved_counter, counter);
-                // Re-derive the header with the now-locked-in counter
-                // value (same value, but the call sequence is more
-                // explicit).
-                let header =
-                    build_established_header(their_index, reserved_counter, flags, payload_len);
                 let transport = transport_for_send;
                 // Snapshot the per-peer connected UDP socket before
                 // resolving the fallback address. On the established
@@ -3433,57 +3439,75 @@ impl Node {
                     }
                 };
                 if let Some((socket, socket_addr)) = send_target {
-                    // Build the wire buffer **directly** from
-                    // `plaintext` with a single allocation:
-                    //   `[16 header][4 ts][plaintext...]` with
-                    // +16 trailing capacity for the AEAD tag.
-                    // The worker seals `wire_buf[16..]` in
-                    // place and appends the tag — no second
-                    // alloc, no second memcpy.
-                    //
-                    // Previous design built `inner_plaintext`
-                    // via `prepend_inner_header` (1 alloc + 1
-                    // copy) and then let the worker memcpy
-                    // header + plaintext into a fresh Vec
-                    // (another alloc + copy). At ~100 kpps the
-                    // saved alloc/copy is ~150 MB/sec of memory
-                    // bandwidth on the hot rx_loop + worker.
-                    let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
-                    let mut wire_buf = Vec::with_capacity(wire_capacity);
-                    wire_buf.extend_from_slice(&header);
-                    wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
-                    wire_buf.extend_from_slice(plaintext);
-                    let predicted_bytes = wire_capacity;
-                    // Stats / MMP update inline — predicted size
-                    // is exact for ChaCha20-Poly1305 (tag is
-                    // constant 16 bytes). When `connected_socket` is
-                    // `Some`, the worker sends on it without a
-                    // destination sockaddr — the kernel skips the
-                    // per-packet sockaddr + route + neighbor resolve.
-                    if let Some(peer) = self.peers.get_mut(node_addr) {
-                        peer.link_stats_mut().record_sent(predicted_bytes);
-                        if let Some(mmp) = peer.mmp_mut() {
-                            mmp.sender
-                                .record_sent(reserved_counter, timestamp_ms, predicted_bytes);
+                    // Worker sends reserve their FMP counter only after
+                    // the worker target is known. If the off-task path is
+                    // unavailable, the inline path below remains the sole
+                    // counter owner for this packet.
+                    if let Some(reservation) =
+                        reserve_fmp_worker_send(session, their_index, flags, payload_len).map_err(
+                            |e| NodeError::SendFailed {
+                                node_addr: *node_addr,
+                                reason: format!("counter reservation failed: {}", e),
+                            },
+                        )?
+                    {
+                        let reserved_counter = reservation.counter;
+                        let header = reservation.header;
+                        // Build the wire buffer **directly** from
+                        // `plaintext` with a single allocation:
+                        //   `[16 header][4 ts][plaintext...]` with
+                        // +16 trailing capacity for the AEAD tag.
+                        // The worker seals `wire_buf[16..]` in
+                        // place and appends the tag — no second
+                        // alloc, no second memcpy.
+                        //
+                        // Previous design built `inner_plaintext`
+                        // via `prepend_inner_header` (1 alloc + 1
+                        // copy) and then let the worker memcpy
+                        // header + plaintext into a fresh Vec
+                        // (another alloc + copy). At ~100 kpps the
+                        // saved alloc/copy is ~150 MB/sec of memory
+                        // bandwidth on the hot rx_loop + worker.
+                        let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
+                        let mut wire_buf = Vec::with_capacity(wire_capacity);
+                        wire_buf.extend_from_slice(&header);
+                        wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                        wire_buf.extend_from_slice(plaintext);
+                        let predicted_bytes = wire_capacity;
+                        // Stats / MMP update inline — predicted size
+                        // is exact for ChaCha20-Poly1305 (tag is
+                        // constant 16 bytes). When `connected_socket` is
+                        // `Some`, the worker sends on it without a
+                        // destination sockaddr — the kernel skips the
+                        // per-packet sockaddr + route + neighbor resolve.
+                        if let Some(peer) = self.peers.get_mut(node_addr) {
+                            peer.link_stats_mut().record_sent(predicted_bytes);
+                            if let Some(mmp) = peer.mmp_mut() {
+                                mmp.sender.record_sent(
+                                    reserved_counter,
+                                    timestamp_ms,
+                                    predicted_bytes,
+                                );
+                            }
                         }
+                        let scheduling_weight = self.send_weight_for_peer(node_addr);
+                        let traffic_class = classify_fmp_plaintext_traffic(plaintext);
+                        workers.dispatch(self::encrypt_worker::FmpSendJob {
+                            cipher: reservation.cipher,
+                            counter: reserved_counter,
+                            wire_buf,
+                            fsp_seal: None,
+                            socket,
+                            dest_addr: socket_addr,
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            connected_socket,
+                            bulk_endpoint_data: traffic_class.bulk_endpoint_data,
+                            drop_on_backpressure: traffic_class.drop_on_backpressure,
+                            scheduling_weight,
+                            queued_at: crate::perf_profile::stamp(),
+                        });
+                        return Ok(());
                     }
-                    let scheduling_weight = self.send_weight_for_peer(node_addr);
-                    let traffic_class = classify_fmp_plaintext_traffic(plaintext);
-                    workers.dispatch(self::encrypt_worker::FmpSendJob {
-                        cipher: cipher_clone,
-                        counter: reserved_counter,
-                        wire_buf,
-                        fsp_seal: None,
-                        socket,
-                        dest_addr: socket_addr,
-                        #[cfg(any(target_os = "linux", target_os = "macos"))]
-                        connected_socket,
-                        bulk_endpoint_data: traffic_class.bulk_endpoint_data,
-                        drop_on_backpressure: traffic_class.drop_on_backpressure,
-                        scheduling_weight,
-                        queued_at: crate::perf_profile::stamp(),
-                    });
-                    return Ok(());
                 }
             }
         }
@@ -3493,6 +3517,8 @@ impl Node {
         // above never reaches this point, so the prepend_inner_header
         // alloc is avoided in the fast path.
         let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
+        let counter = session.current_send_counter();
+        let header = build_established_header(their_index, counter, flags, payload_len);
         // Encrypt with AAD binding to the outer header
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
