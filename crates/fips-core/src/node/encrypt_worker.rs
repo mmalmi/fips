@@ -261,6 +261,7 @@ impl FmpSendJob {
 #[cfg(unix)]
 struct SelectedSendBatch {
     send_target: SelectedSendTarget,
+    target_key: SendTargetKey,
     wire_packets: Vec<Vec<u8>>,
     drop_on_backpressure: bool,
 }
@@ -269,18 +270,25 @@ struct SelectedSendBatch {
 impl SelectedSendBatch {
     fn new(
         send_target: SelectedSendTarget,
+        target_key: SendTargetKey,
         wire_packet: Vec<u8>,
         drop_on_backpressure: bool,
     ) -> Self {
+        debug_assert_eq!(
+            send_target.key(),
+            target_key,
+            "selected send batch must keep the queued target key"
+        );
         Self {
             send_target,
+            target_key,
             wire_packets: vec![wire_packet],
             drop_on_backpressure,
         }
     }
 
     fn target_key(&self) -> SendTargetKey {
-        self.send_target.key()
+        self.target_key
     }
 
     fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
@@ -487,10 +495,10 @@ impl DirectSendBatchAttempt {
 fn push_selected_send_batch(
     groups: &mut Vec<SelectedSendBatch>,
     send_target: SelectedSendTarget,
+    target_key: SendTargetKey,
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 ) {
-    let target_key = send_target.key();
     if let Some(group) = groups
         .iter_mut()
         .find(|group| group.target_key() == target_key)
@@ -499,6 +507,7 @@ fn push_selected_send_batch(
     } else {
         groups.push(SelectedSendBatch::new(
             send_target,
+            target_key,
             wire_packet,
             drop_on_backpressure,
         ));
@@ -1886,12 +1895,81 @@ impl EncryptWorkerShard {
 
 struct SealedSendPacket {
     send_target: SelectedSendTarget,
+    #[cfg(unix)]
+    target_key: SendTargetKey,
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 }
 
 impl SealedSendPacket {
+    #[cfg(any(test, not(unix)))]
     fn from_job(job: FmpSendJob) -> Result<Self, SealPacketError> {
+        #[cfg(unix)]
+        let target_key = job.send_target_key();
+        #[cfg(unix)]
+        return Self::from_job_with_target_key(job, target_key);
+
+        #[cfg(not(unix))]
+        return Self::from_job_without_target_key(job);
+    }
+
+    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
+    fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
+        let QueuedFmpSendJob {
+            job, target_key, ..
+        } = queued;
+        Self::from_job_with_target_key(job, target_key)
+    }
+
+    #[cfg(unix)]
+    fn from_job_with_target_key(
+        job: FmpSendJob,
+        target_key: SendTargetKey,
+    ) -> Result<Self, SealPacketError> {
+        Self::from_job_inner(job, target_key)
+    }
+
+    #[cfg(not(unix))]
+    fn from_job_without_target_key(job: FmpSendJob) -> Result<Self, SealPacketError> {
+        Self::from_job_inner(job)
+    }
+
+    #[cfg(unix)]
+    fn from_job_inner(job: FmpSendJob, target_key: SendTargetKey) -> Result<Self, SealPacketError> {
+        let FmpSendJob {
+            cipher,
+            counter,
+            mut wire_buf,
+            fsp_seal,
+            send_target,
+            bulk_endpoint_data: _,
+            drop_on_backpressure,
+            scheduling_weight: _,
+            queued_at,
+        } = job;
+        debug_assert_eq!(
+            send_target.key(),
+            target_key,
+            "sealed packet must keep the queued target key"
+        );
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::FmpWorkerQueueWait,
+            queued_at,
+        );
+
+        Self::seal_wire_packet(cipher, counter, &mut wire_buf, fsp_seal)?;
+
+        Ok(Self {
+            send_target,
+            #[cfg(unix)]
+            target_key,
+            wire_packet: wire_buf,
+            drop_on_backpressure,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn from_job_inner(job: FmpSendJob) -> Result<Self, SealPacketError> {
         let FmpSendJob {
             cipher,
             counter,
@@ -1908,6 +1986,21 @@ impl SealedSendPacket {
             queued_at,
         );
 
+        Self::seal_wire_packet(cipher, counter, &mut wire_buf, fsp_seal)?;
+
+        Ok(Self {
+            send_target,
+            wire_packet: wire_buf,
+            drop_on_backpressure,
+        })
+    }
+
+    fn seal_wire_packet(
+        cipher: LessSafeKey,
+        counter: u64,
+        wire_buf: &mut Vec<u8>,
+        fsp_seal: Option<FspSealJob>,
+    ) -> Result<(), SealPacketError> {
         if let Some(fsp) = fsp_seal {
             if fsp.aad_offset + FSP_HEADER_SIZE > fsp.plaintext_offset
                 || fsp.plaintext_offset > wire_buf.len()
@@ -1930,25 +2023,28 @@ impl SealedSendPacket {
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        // Split-borrow: AAD reads from header bytes [0..16], seal writes
-        // into the plaintext slice [16..]. ring::aead's `seal_in_place_
-        // separate_tag` takes `&mut [u8]` so we can hand it the
-        // post-header slice while AAD references the header slice.
-        // `split_at_mut` is the standard way to do this safely.
+        // Split-borrow: AAD reads from header bytes [0..16], seal writes into
+        // the plaintext slice [16..].
         let (header_slice, plaintext_slice) = wire_buf.split_at_mut(ESTABLISHED_HEADER_SIZE);
         let tag = cipher
             .seal_in_place_separate_tag(nonce, Aad::from(&*header_slice), plaintext_slice)
             .map_err(|_| SealPacketError::FmpSeal)?;
         // wire_buf already has `+16` capacity reserved -> no realloc.
         wire_buf.extend_from_slice(tag.as_ref());
-
-        Ok(Self {
-            send_target,
-            wire_packet: wire_buf,
-            drop_on_backpressure,
-        })
+        Ok(())
     }
 
+    #[cfg(unix)]
+    fn into_parts(self) -> (SelectedSendTarget, SendTargetKey, Vec<u8>, bool) {
+        (
+            self.send_target,
+            self.target_key,
+            self.wire_packet,
+            self.drop_on_backpressure,
+        )
+    }
+
+    #[cfg(not(unix))]
     fn into_parts(self) -> (SelectedSendTarget, Vec<u8>, bool) {
         (
             self.send_target,
@@ -1959,7 +2055,7 @@ impl SealedSendPacket {
 
     #[cfg(all(test, unix))]
     fn target_key(&self) -> SendTargetKey {
-        self.send_target.key()
+        self.target_key
     }
 
     #[cfg(test)]
@@ -2060,14 +2156,23 @@ fn flush_batch_sync(
         #[cfg(target_os = "macos")]
         let QueuedFmpSendJob {
             job,
+            target_key,
             macos_flow,
             macos_seq,
             ..
         } = queued;
-        #[cfg(not(target_os = "macos"))]
-        let QueuedFmpSendJob { job, .. } = queued;
 
-        let sealed = match SealedSendPacket::from_job(job) {
+        #[cfg(target_os = "macos")]
+        let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let sealed_result = SealedSendPacket::from_queued(queued);
+        #[cfg(not(unix))]
+        let sealed_result = {
+            let QueuedFmpSendJob { job, .. } = queued;
+            SealedSendPacket::from_job(job)
+        };
+
+        let sealed = match sealed_result {
             Ok(sealed) => sealed,
             Err(_) => {
                 #[cfg(target_os = "macos")]
@@ -2085,7 +2190,8 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         if let Some(flow) = macos_flow {
-            let (_send_target, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
             push_mac_completion(
                 &mut macos_completions,
                 flow,
@@ -2100,8 +2206,14 @@ fn flush_batch_sync(
 
         #[cfg(unix)]
         {
-            let (send_target, wire_packet, drop_on_backpressure) = sealed.into_parts();
-            push_selected_send_batch(&mut groups, send_target, wire_packet, drop_on_backpressure);
+            let (send_target, target_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            push_selected_send_batch(
+                &mut groups,
+                send_target,
+                target_key,
+                wire_packet,
+                drop_on_backpressure,
+            );
         }
         #[cfg(not(unix))]
         {
@@ -3103,6 +3215,82 @@ mod unix_tests {
     }
 
     #[test]
+    fn queued_target_key_survives_seal_and_batch_grouping() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let cipher = test_cipher(7);
+            let dest: SocketAddr = "127.0.0.1:10037".parse().unwrap();
+            let target = SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let target_key = target.key();
+            let counter = 13;
+            let header = [0x23; ESTABLISHED_HEADER_SIZE];
+            let plaintext = b"queued key survives";
+            let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + plaintext.len() + 16);
+            wire_buf.extend_from_slice(&header);
+            wire_buf.extend_from_slice(plaintext);
+
+            let queued = QueuedFmpSendJob::direct(FmpSendJob {
+                cipher: cipher.clone(),
+                counter,
+                wire_buf,
+                fsp_seal: None,
+                send_target: target,
+                bulk_endpoint_data: true,
+                drop_on_backpressure: true,
+                scheduling_weight: DEFAULT_SEND_WEIGHT,
+                queued_at: None,
+            });
+            assert_eq!(queued.target_key(), target_key);
+
+            let sealed = SealedSendPacket::from_queued(queued).expect("seal packet");
+            assert_eq!(
+                sealed.target_key(),
+                target_key,
+                "sealing must consume the queued message's selected key"
+            );
+            let (send_target, sealed_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            assert_eq!(sealed_key, target_key);
+            assert!(drop_on_backpressure);
+
+            let opened = crate::noise::open(
+                Some(&cipher),
+                counter,
+                &header,
+                &wire_packet[ESTABLISHED_HEADER_SIZE..],
+            )
+            .expect("open sealed packet");
+            assert_eq!(opened, plaintext);
+
+            let mut groups = Vec::new();
+            push_selected_send_batch(
+                &mut groups,
+                send_target,
+                sealed_key,
+                wire_packet,
+                drop_on_backpressure,
+            );
+            assert_eq!(groups.len(), 1);
+            assert_eq!(
+                groups[0].target_key(),
+                target_key,
+                "batch grouping must use the sealed packet's queued key"
+            );
+            assert_eq!(groups[0].wire_packets.len(), 1);
+        });
+    }
+
+    #[test]
     fn fsp_preseal_runs_before_outer_fmp_seal() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -3246,10 +3434,22 @@ mod unix_tests {
             );
 
             let mut groups = Vec::new();
-            push_selected_send_batch(&mut groups, target_a, vec![1], true);
-            push_selected_send_batch(&mut groups, same_target_a, vec![2], false);
-            push_selected_send_batch(&mut groups, same_dest_different_socket, vec![3], true);
-            push_selected_send_batch(&mut groups, same_socket_different_dest, vec![4], true);
+            push_selected_send_batch(&mut groups, target_a, key_a, vec![1], true);
+            push_selected_send_batch(&mut groups, same_target_a, key_a, vec![2], false);
+            push_selected_send_batch(
+                &mut groups,
+                same_dest_different_socket,
+                key_other_socket,
+                vec![3],
+                true,
+            );
+            push_selected_send_batch(
+                &mut groups,
+                same_socket_different_dest,
+                key_other_dest,
+                vec![4],
+                true,
+            );
 
             assert_eq!(groups.len(), 3);
             assert_eq!(groups[0].target_key(), key_a);
@@ -3287,7 +3487,7 @@ mod unix_tests {
                 dest,
             );
             let target_key = target.key();
-            let mut batch = SelectedSendBatch::new(target, vec![1], true);
+            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true);
             batch.push(vec![2], true);
 
             let mut attempt = LinuxSendBatchAttempt::from_batch(batch);
@@ -3312,7 +3512,8 @@ mod unix_tests {
                 None,
                 dest,
             );
-            let mut retry_batch = SelectedSendBatch::new(target, vec![3], false);
+            let retry_target_key = target.key();
+            let mut retry_batch = SelectedSendBatch::new(target, retry_target_key, vec![3], false);
             retry_batch.push(vec![4], false);
             let mut retry_attempt = LinuxSendBatchAttempt::from_batch(retry_batch);
             assert_eq!(
@@ -3585,7 +3786,7 @@ mod mac_queue_tests {
             let dest: SocketAddr = "127.0.0.1:10032".parse().unwrap();
             let target = SelectedSendTarget::new(socket.clone(), None, dest);
             let target_key = target.key();
-            let mut batch = SelectedSendBatch::new(target, vec![1], true);
+            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true);
             batch.push(vec![2], true);
 
             let mut attempt = DirectSendBatchAttempt::from_batch(batch);
@@ -3605,7 +3806,8 @@ mod mac_queue_tests {
             );
 
             let target = SelectedSendTarget::new(socket, None, dest);
-            let mut retry_batch = SelectedSendBatch::new(target, vec![3], false);
+            let retry_target_key = target.key();
+            let mut retry_batch = SelectedSendBatch::new(target, retry_target_key, vec![3], false);
             retry_batch.push(vec![4], false);
             let mut retry_attempt = DirectSendBatchAttempt::from_batch(retry_batch);
             assert_eq!(
