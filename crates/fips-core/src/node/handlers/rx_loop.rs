@@ -387,22 +387,12 @@ impl Node {
         first_packet: Option<Vec<u8>>,
         budget: usize,
     ) -> usize {
-        let mut drained = 0usize;
-        if let Some(packet) = first_packet {
+        let mut drain = TunOutboundDrainCursor::new(first_packet, budget);
+        while let Some(packet) = drain.next(tun_outbound_rx) {
             self.handle_tun_outbound(packet).await;
-            drained = 1;
         }
 
-        while drained < budget {
-            match tun_outbound_rx.try_recv() {
-                Ok(packet) => {
-                    self.handle_tun_outbound(packet).await;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
-        }
-
+        let drained = drain.drained();
         if drained > 0 {
             self.flush_pending_sends().await;
         }
@@ -788,9 +778,42 @@ impl<T> PriorityBulkDrainCursor<T> {
     }
 }
 
+struct TunOutboundDrainCursor<T> {
+    first_packet: Option<T>,
+    remaining: usize,
+    drained: usize,
+}
+
+impl<T> TunOutboundDrainCursor<T> {
+    fn new(first_packet: Option<T>, budget: usize) -> Self {
+        Self {
+            first_packet,
+            remaining: budget,
+            drained: 0,
+        }
+    }
+
+    fn next(&mut self, rx: &mut Receiver<T>) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let packet = self.first_packet.take().or_else(|| rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(packet)
+    }
+
+    fn drained(&self) -> usize {
+        self.drained
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor};
+    use super::{
+        PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, TunOutboundDrainCursor,
+    };
 
     #[tokio::test]
     async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
@@ -893,6 +916,23 @@ mod tests {
         );
         assert_eq!(drain.next(&mut packet_rx), None);
         assert_eq!(packet_rx.try_recv().ok(), Some("queued-3"));
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn tun_outbound_drain_cursor_owns_first_packet_and_budget() {
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(4);
+
+        tun_tx.send("queued-1").await.unwrap();
+        tun_tx.send("queued-2").await.unwrap();
+        tun_tx.send("queued-3").await.unwrap();
+        let mut drain = TunOutboundDrainCursor::new(Some("selected"), 3);
+
+        assert_eq!(drain.next(&mut tun_rx), Some("selected"));
+        assert_eq!(drain.next(&mut tun_rx), Some("queued-1"));
+        assert_eq!(drain.next(&mut tun_rx), Some("queued-2"));
+        assert_eq!(drain.next(&mut tun_rx), None);
+        assert_eq!(tun_rx.try_recv().ok(), Some("queued-3"));
         assert_eq!(drain.drained(), 3);
     }
 }

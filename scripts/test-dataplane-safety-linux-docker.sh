@@ -64,6 +64,7 @@ DEFAULT_FILTERS=(
   fallback_drain_prefers_ready_priority_over_selected_bulk
   packet_drain_cursor_owns_first_packet_budget_and_interleave
   priority_bulk_drain_cursor_owns_selected_head_and_budget
+  tun_outbound_drain_cursor_owns_first_packet_and_budget
   worker_preserves_fmp_flags_through_fallback
   worker_reports_fmp_aead_failure_to_rx_loop
   pending_session_queues_drop_oldest_per_destination
