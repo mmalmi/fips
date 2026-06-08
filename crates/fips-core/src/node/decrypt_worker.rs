@@ -532,17 +532,34 @@ impl DecryptWorkerPool {
         }
     }
 
-    /// Drop a session from its worker (rekey, peer removed). Fire and
-    /// forget — if the worker is gone we don't care.
-    #[allow(dead_code)] // wired up alongside the rekey / peer-removal callers in a follow-up
-    pub fn unregister_session(&self, session_key: DecryptSessionKey) {
+    /// Drop a session from its worker (rekey, peer removed).
+    ///
+    /// Returns `true` iff the unregister control message reached the worker's
+    /// bounded priority lane. A full priority lane is still non-blocking, but
+    /// it records visible pressure instead of silently hiding stale
+    /// worker-owned session state.
+    pub fn unregister_session(&self, session_key: DecryptSessionKey) -> bool {
         if self.senders.is_empty() {
-            return;
+            return false;
         }
         let idx = self.worker_idx_for(session_key);
-        let _ = self.senders[idx]
+        match self.senders[idx]
             .priority
-            .try_send(WorkerMsg::UnregisterSession { session_key });
+            .try_send(WorkerMsg::UnregisterSession { session_key })
+        {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                record_decrypt_worker_priority_drop(idx, "unregister");
+                false
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                debug!(
+                    worker = idx,
+                    "DecryptWorker thread gone; ignoring unregister"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -972,13 +989,14 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_session_key_routes_registration_and_jobs_to_same_worker() {
+    fn decrypt_session_key_routes_registration_jobs_and_unregister_to_same_worker() {
         let (pool, priority_receivers, bulk_receivers) = test_worker_pool(4, 4);
         let session_key = test_session_key(7, 42);
         let owner = pool.worker_idx_for(session_key);
 
         assert!(pool.register_session(session_key, test_owned_session_state()));
         pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        assert!(pool.unregister_session(session_key));
 
         match priority_receivers[owner]
             .try_recv()
@@ -999,6 +1017,19 @@ mod tests {
             WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
             WorkerMsg::RegisterSession { .. } | WorkerMsg::UnregisterSession { .. } => {
                 panic!("expected priority job second")
+            }
+        }
+        match priority_receivers[owner]
+            .try_recv()
+            .expect("unregister should reach same owner")
+        {
+            WorkerMsg::UnregisterSession {
+                session_key: queued_key,
+            } => {
+                assert_eq!(queued_key, session_key);
+            }
+            WorkerMsg::RegisterSession { .. } | WorkerMsg::Job(_) => {
+                panic!("expected unregister third")
             }
         }
 
@@ -1123,6 +1154,22 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_worker_unregister_uses_priority_lane_when_bulk_queue_is_full() {
+        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+        let session_key = test_session_key(1, 78);
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
+        assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
+
+        assert!(pool.unregister_session(session_key));
+        assert_eq!(priority_rx.len(), 1, "unregister should enqueue");
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "unregister should not consume the full bulk lane"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_register_full_returns_false_without_waiting() {
         let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
@@ -1152,6 +1199,38 @@ mod tests {
             priority_rx.len(),
             1,
             "registration should not overflow the bounded priority queue"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_unregister_full_returns_false_without_waiting() {
+        let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
+        let session_key = test_session_key(1, 78);
+        assert!(pool.register_session(session_key, test_owned_session_state()));
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "test priority queue should start full"
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let pool_for_thread = pool.clone();
+        std::thread::spawn(move || {
+            let unregistered = pool_for_thread.unregister_session(session_key);
+            done_tx.send(unregistered).unwrap();
+        });
+
+        let unregistered = done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("full decrypt-worker control queue must not park unregister");
+        assert!(
+            !unregistered,
+            "unregister should report pressure when the priority lane is full"
+        );
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "unregister should not overflow the bounded priority queue"
         );
     }
 
