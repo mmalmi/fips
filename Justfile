@@ -12,6 +12,9 @@ test-sim:
 
 test: test-core test-sim
 
+linux-dataplane-safety:
+    ./scripts/test-dataplane-safety-linux-docker.sh
+
 clippy-core:
     cargo clippy -p fips-core --all-targets
 
