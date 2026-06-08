@@ -11,7 +11,7 @@ use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS};
 #[cfg(unix)]
 use crate::node::classify_endpoint_payload;
-use crate::node::session::{EndToEndState, EpochSlot, SessionEntry};
+use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
     FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2, FSP_PHASE_MSG3, FSP_PORT_HEADER_SIZE,
@@ -375,15 +375,15 @@ impl Node {
             let now_ms = Self::now_ms();
             let (plaintext, slot) = {
                 let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                match entry.fsp_trial_decrypt(
+                match entry.open_fsp_established_frame(
                     ciphertext,
                     header.counter,
                     &header.header_bytes,
                     received_k_bit,
                     now_ms,
                 ) {
-                    Some(result) => result,
-                    None => {
+                    Ok(result) => result,
+                    Err(FspOpenError::NoLiveEpochAccepted) => {
                         if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
                             break 'outcome FspFrameOutcome::StaleEpochDrainFailure {
                                 counter: header.counter,

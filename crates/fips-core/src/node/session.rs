@@ -50,6 +50,13 @@ pub(crate) enum EpochSlot {
     Previous,
 }
 
+/// Why an established FSP frame could not be opened by any live epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FspOpenError {
+    /// Current, pending, and previous epochs all rejected the frame.
+    NoLiveEpochAccepted,
+}
+
 impl EndToEndState {
     /// Check if the session is established and ready for data.
     pub(crate) fn is_established(&self) -> bool {
@@ -546,15 +553,20 @@ impl SessionEntry {
         self.clear_rekey_msg3_payload();
     }
 
-    /// Trial-decrypt an FSP frame against every live key epoch.
-    pub(crate) fn fsp_trial_decrypt(
+    /// Open an established FSP frame against every live key epoch.
+    ///
+    /// This is the receive-side ownership boundary for FSP replay acceptance:
+    /// each epoch checks, decrypts, and accepts its own replay state. Failed
+    /// candidates leave their replay windows untouched; only the epoch that
+    /// authenticates the frame is returned to the session handler.
+    pub(crate) fn open_fsp_established_frame(
         &mut self,
         ciphertext: &[u8],
         counter: u64,
         aad: &[u8],
         received_k_bit: bool,
         now_ms: u64,
-    ) -> Option<(Vec<u8>, EpochSlot)> {
+    ) -> Result<(Vec<u8>, EpochSlot), FspOpenError> {
         let pending_first =
             received_k_bit != self.current_k_bit && self.pending_new_session.is_some();
         let order = if pending_first {
@@ -576,10 +588,10 @@ impl SessionEntry {
                 if slot == EpochSlot::Previous {
                     self.refresh_previous_use(now_ms);
                 }
-                return Some((plaintext, slot));
+                return Ok((plaintext, slot));
             }
         }
-        None
+        Err(FspOpenError::NoLiveEpochAccepted)
     }
 
     /// Store a completed rekey session.
@@ -785,7 +797,7 @@ mod overlapping_epoch_tests {
     }
 
     #[test]
-    fn trial_decrypt_picks_current() {
+    fn open_fsp_established_frame_picks_current() {
         let (mut cur_send, cur_recv) = xk_pair(1, 2);
         let (_p_send, p_recv) = xk_pair(3, 4);
         let (_o_send, o_recv) = xk_pair(5, 6);
@@ -796,7 +808,7 @@ mod overlapping_epoch_tests {
 
         let (ct, counter, hdr) = seal(&mut cur_send, b"steady-state", false);
         let (pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, false, 2_000)
+            .open_fsp_established_frame(&ct, counter, &hdr, false, 2_000)
             .expect("current frame must decrypt");
 
         assert_eq!(pt, b"steady-state");
@@ -806,7 +818,7 @@ mod overlapping_epoch_tests {
     }
 
     #[test]
-    fn trial_decrypt_picks_pending_and_promotes() {
+    fn open_fsp_established_frame_picks_pending_and_promotes() {
         let (_cur_send, cur_recv) = xk_pair(1, 2);
         let (mut p_send, p_recv) = xk_pair(3, 4);
 
@@ -816,7 +828,7 @@ mod overlapping_epoch_tests {
 
         let (ct, counter, hdr) = seal(&mut p_send, b"new-epoch", !k_before);
         let (pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, !k_before, 2_000)
+            .open_fsp_established_frame(&ct, counter, &hdr, !k_before, 2_000)
             .expect("pending frame must decrypt");
         assert_eq!(pt, b"new-epoch");
         assert_eq!(slot, EpochSlot::Pending);
@@ -828,7 +840,7 @@ mod overlapping_epoch_tests {
     }
 
     #[test]
-    fn trial_decrypt_picks_previous_during_drain() {
+    fn open_fsp_established_frame_picks_previous_during_drain() {
         let (mut old_send, old_recv) = xk_pair(1, 2);
         let (_new_send, new_recv) = xk_pair(3, 4);
 
@@ -838,7 +850,7 @@ mod overlapping_epoch_tests {
 
         let (ct, counter, hdr) = seal(&mut old_send, b"old-straggler", !k_after);
         let (pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, !k_after, 3_000)
+            .open_fsp_established_frame(&ct, counter, &hdr, !k_after, 3_000)
             .expect("previous frame must decrypt");
 
         assert_eq!(pt, b"old-straggler");
@@ -848,7 +860,7 @@ mod overlapping_epoch_tests {
     }
 
     #[test]
-    fn trial_decrypt_reordered_old_after_cutover() {
+    fn open_fsp_established_frame_accepts_reordered_old_after_cutover() {
         let (mut cur_send, cur_recv) = xk_pair(1, 2);
         let (mut p_send, p_recv) = xk_pair(3, 4);
 
@@ -858,21 +870,21 @@ mod overlapping_epoch_tests {
 
         let (ct_new, c_new, hdr_new) = seal(&mut p_send, b"after-cutover", !k_before);
         let (_pt, slot) = entry
-            .fsp_trial_decrypt(&ct_new, c_new, &hdr_new, !k_before, 2_000)
+            .open_fsp_established_frame(&ct_new, c_new, &hdr_new, !k_before, 2_000)
             .unwrap();
         assert_eq!(slot, EpochSlot::Pending);
         entry.handle_peer_kbit_flip(2_000);
 
         let (ct_old, c_old, hdr_old) = seal(&mut cur_send, b"reordered-old", k_before);
         let (pt, slot) = entry
-            .fsp_trial_decrypt(&ct_old, c_old, &hdr_old, k_before, 2_500)
+            .open_fsp_established_frame(&ct_old, c_old, &hdr_old, k_before, 2_500)
             .expect("reordered old-epoch frame must still decrypt");
         assert_eq!(pt, b"reordered-old");
         assert_eq!(slot, EpochSlot::Previous);
     }
 
     #[test]
-    fn trial_decrypt_replay_is_per_slot() {
+    fn open_fsp_established_frame_replay_is_per_slot() {
         let (mut cur_send, cur_recv) = xk_pair(1, 2);
         let (mut p_send, p_recv) = xk_pair(3, 4);
 
@@ -882,14 +894,14 @@ mod overlapping_epoch_tests {
 
         let (ct, counter, hdr) = seal(&mut cur_send, b"first", k_before);
         let (_pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, k_before, 2_000)
+            .open_fsp_established_frame(&ct, counter, &hdr, k_before, 2_000)
             .unwrap();
         assert_eq!(slot, EpochSlot::Current);
 
         assert!(
             entry
-                .fsp_trial_decrypt(&ct, counter, &hdr, k_before, 2_100)
-                .is_none(),
+                .open_fsp_established_frame(&ct, counter, &hdr, k_before, 2_100)
+                .is_err(),
             "a genuine replay must be rejected by every slot"
         );
         assert_eq!(entry.pending_highest_counter(), Some(0));
@@ -897,14 +909,14 @@ mod overlapping_epoch_tests {
         let (ct_p, c_p, hdr_p) = seal(&mut p_send, b"pending-c0", !k_before);
         assert_eq!(c_p, 0);
         let (pt, slot) = entry
-            .fsp_trial_decrypt(&ct_p, c_p, &hdr_p, !k_before, 2_200)
+            .open_fsp_established_frame(&ct_p, c_p, &hdr_p, !k_before, 2_200)
             .expect("pending frame must decrypt despite current replay overlap");
         assert_eq!(pt, b"pending-c0");
         assert_eq!(slot, EpochSlot::Pending);
     }
 
     #[test]
-    fn trial_decrypt_failed_slot_leaves_replay_window_intact() {
+    fn open_fsp_established_frame_failed_slot_leaves_replay_window_intact() {
         let (_cur_send, cur_recv) = xk_pair(1, 2);
         let (mut p_send, p_recv) = xk_pair(3, 4);
         let (_o_send, o_recv) = xk_pair(5, 6);
@@ -921,13 +933,60 @@ mod overlapping_epoch_tests {
         assert_eq!(counter, 4);
 
         let (_pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, false, 2_000)
+            .open_fsp_established_frame(&ct, counter, &hdr, false, 2_000)
             .expect("pending frame must decrypt");
         assert_eq!(slot, EpochSlot::Pending);
 
         assert_eq!(entry.current_highest_counter(), Some(0));
         assert_eq!(entry.previous_highest_counter(), Some(0));
         assert_eq!(entry.pending_highest_counter(), Some(4));
+    }
+
+    #[test]
+    fn open_fsp_established_frame_failed_all_epochs_does_not_consume_replay() {
+        let (mut cur_send, cur_recv) = xk_pair(1, 2);
+        let (_p_send, p_recv) = xk_pair(3, 4);
+        let (_o_send, o_recv) = xk_pair(5, 6);
+
+        let mut entry = entry_with_current(cur_recv);
+        let k_bit = entry.current_k_bit();
+        entry.set_pending_session(p_recv);
+        entry.set_previous_session_for_test(o_recv, 1_000);
+
+        for _ in 0..3 {
+            let _ = seal(&mut cur_send, b"warmup", k_bit);
+        }
+        let (ciphertext, counter, header) = seal(&mut cur_send, b"current-after-forgery", k_bit);
+        assert_eq!(counter, 3);
+
+        let mut forged = ciphertext.clone();
+        let last = forged.last_mut().expect("ciphertext has an AEAD tag");
+        *last ^= 0x55;
+
+        assert_eq!(
+            entry.open_fsp_established_frame(&forged, counter, &header, k_bit, 2_000),
+            Err(FspOpenError::NoLiveEpochAccepted),
+            "forged ciphertext must fail without being accepted into any replay window"
+        );
+        assert_eq!(entry.current_highest_counter(), Some(0));
+        assert_eq!(entry.pending_highest_counter(), Some(0));
+        assert_eq!(entry.previous_highest_counter(), Some(0));
+
+        let (plaintext, slot) = entry
+            .open_fsp_established_frame(&ciphertext, counter, &header, k_bit, 2_100)
+            .expect("valid frame must still open after forged failure");
+        assert_eq!(plaintext, b"current-after-forgery");
+        assert_eq!(slot, EpochSlot::Current);
+        assert_eq!(entry.current_highest_counter(), Some(counter));
+        assert_eq!(entry.pending_highest_counter(), Some(0));
+        assert_eq!(entry.previous_highest_counter(), Some(0));
+
+        assert!(
+            entry
+                .open_fsp_established_frame(&ciphertext, counter, &header, k_bit, 2_200)
+                .is_err(),
+            "the valid frame is replay-protected after successful open"
+        );
     }
 
     #[test]
@@ -947,7 +1006,7 @@ mod overlapping_epoch_tests {
         let k_now = entry.current_k_bit();
         let (ct, counter, hdr) = seal(&mut p_send, b"peer-on-new-epoch", k_now);
         let (_pt, slot) = entry
-            .fsp_trial_decrypt(&ct, counter, &hdr, k_now, 2_500)
+            .open_fsp_established_frame(&ct, counter, &hdr, k_now, 2_500)
             .unwrap();
         assert_eq!(slot, EpochSlot::Current);
         assert!(entry.rekey_msg3_payload().is_some() && entry.pending_new_session().is_none());
@@ -996,8 +1055,8 @@ mod overlapping_epoch_tests {
 
         let (ct_new, c_new, hdr_new) = seal(&mut new_b, b"new-from-a", true);
         assert!(
-            b.fsp_trial_decrypt(&ct_new, c_new, &hdr_new, true, 2_100)
-                .is_none(),
+            b.open_fsp_established_frame(&ct_new, c_new, &hdr_new, true, 2_100)
+                .is_err(),
             "responder without msg3 drops the new-epoch frame cleanly"
         );
 
@@ -1006,7 +1065,7 @@ mod overlapping_epoch_tests {
             seal(b_old, b"old-from-b", false)
         };
         let (pt, slot) = a
-            .fsp_trial_decrypt(&ct_old, c_old, &hdr_old, false, 2_200)
+            .open_fsp_established_frame(&ct_old, c_old, &hdr_old, false, 2_200)
             .expect("initiator must still decrypt the responder's old-epoch frame");
         assert_eq!(pt, b"old-from-b");
         assert_eq!(slot, EpochSlot::Previous);
@@ -1015,7 +1074,7 @@ mod overlapping_epoch_tests {
         b.set_pending_session(new_a2);
         let (ct_new2, c_new2, hdr_new2) = seal(&mut new_b2, b"new-from-a-2", true);
         let (pt, slot) = b
-            .fsp_trial_decrypt(&ct_new2, c_new2, &hdr_new2, true, 2_300)
+            .open_fsp_established_frame(&ct_new2, c_new2, &hdr_new2, true, 2_300)
             .expect("responder must decrypt new-epoch frame once pending is installed");
         assert_eq!(pt, b"new-from-a-2");
         assert_eq!(slot, EpochSlot::Pending);
@@ -1037,7 +1096,7 @@ mod overlapping_epoch_tests {
         for &t in &[5_000u64, 15_000, 25_000] {
             let (ct, counter, hdr) = seal(&mut old_send, b"still-old-epoch", k_old);
             let (_pt, slot) = entry
-                .fsp_trial_decrypt(&ct, counter, &hdr, k_old, t)
+                .open_fsp_established_frame(&ct, counter, &hdr, k_old, t)
                 .expect("old-epoch frame must still decrypt while peer uses it");
             assert_eq!(slot, EpochSlot::Previous);
             assert!(
