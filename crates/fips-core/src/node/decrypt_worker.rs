@@ -846,6 +846,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn decrypt_worker_drain_registers_priority_before_bulk_jobs() {
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
+        let cache_key = (TransportId::new(1), 77u32);
+        priority_tx
+            .try_send(WorkerMsg::RegisterSession {
+                cache_key,
+                state: test_owned_session_state(),
+            })
+            .expect("priority registration should enqueue");
+
+        let (fallback_tx, mut fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let mut bulk_job = dummy_bulk_decrypt_job(cache_key);
+        bulk_job.fallback_tx = fallback_tx;
+        bulk_tx
+            .try_send(bulk_job)
+            .expect("bulk decrypt job should enqueue");
+
+        let mut sessions = std::collections::HashMap::new();
+        drain_worker_queues(0, &mut sessions, &priority_rx, &bulk_rx);
+
+        assert!(
+            sessions.contains_key(&cache_key),
+            "priority registration must be applied before queued bulk work"
+        );
+        match fallback_rx
+            .try_recv()
+            .expect("bulk job should run after registration")
+        {
+            DecryptWorkerEvent::DecryptFailure(report) => {
+                assert_eq!(report.fmp_counter, 1);
+            }
+            DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
+        }
+        assert!(
+            priority_rx.is_empty(),
+            "priority queue should be fully drained before bulk"
+        );
+        assert!(bulk_rx.is_empty(), "bulk queue should be drained");
+    }
+
     /// `DecryptJob.fmp_flags` must survive the worker bounce as
     /// `DecryptFallback.fmp_flags`. Pre-fix the worker hardcoded
     /// `fmp_flags: 0`, dropping CE / SP on every packet handled by
