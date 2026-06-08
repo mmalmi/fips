@@ -423,25 +423,13 @@ impl Node {
         first_bulk_command: Option<NodeEndpointCommand>,
         budget: usize,
     ) -> usize {
-        let mut first_bulk_command = first_bulk_command;
-        let mut drained = 0usize;
-        if let Some(command) = first_priority_command {
+        let mut drain =
+            PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
+        while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
             self.handle_endpoint_data_command(command).await;
-            drained = 1;
         }
 
-        while drained < budget {
-            let Some(command) = try_recv_endpoint_command(
-                endpoint_priority_command_rx,
-                endpoint_command_rx,
-                &mut first_bulk_command,
-            ) else {
-                break;
-            };
-            self.handle_endpoint_data_command(command).await;
-            drained += 1;
-        }
-
+        let drained = drain.drained();
         if drained > 0 {
             self.flush_pending_sends().await;
         }
@@ -577,22 +565,12 @@ impl Node {
         first_bulk_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
-        let mut first_bulk_event = first_bulk_event;
-        let mut drained = 0;
-        if let Some(event) = first_priority_event {
+        let mut drain =
+            PriorityBulkDrainCursor::new(first_priority_event, first_bulk_event, budget);
+        while let Some(event) = drain.next(&mut rx.priority, &mut rx.bulk) {
             self.process_decrypt_worker_event(event).await;
-            drained = 1;
         }
-        while drained < budget {
-            let Some(event) =
-                try_recv_priority_then_bulk(&mut rx.priority, &mut rx.bulk, &mut first_bulk_event)
-            else {
-                break;
-            };
-            self.process_decrypt_worker_event(event).await;
-            drained += 1;
-        }
-        drained
+        drain.drained()
     }
 
     /// Flush any pending batched sends across all transports. Today
@@ -718,29 +696,51 @@ impl Node {
     }
 }
 
-fn try_recv_endpoint_command<T>(
-    priority_rx: &mut Receiver<T>,
-    bulk_rx: &mut Receiver<T>,
-    first_bulk: &mut Option<T>,
-) -> Option<T> {
-    try_recv_priority_then_bulk(priority_rx, bulk_rx, first_bulk)
+struct PriorityBulkDrainCursor<T> {
+    first_priority: Option<T>,
+    first_bulk: Option<T>,
+    remaining: usize,
+    drained: usize,
 }
 
-fn try_recv_priority_then_bulk<T>(
-    priority_rx: &mut Receiver<T>,
-    bulk_rx: &mut Receiver<T>,
-    first_bulk: &mut Option<T>,
-) -> Option<T> {
-    priority_rx
-        .try_recv()
-        .ok()
-        .or_else(|| first_bulk.take())
-        .or_else(|| bulk_rx.try_recv().ok())
+impl<T> PriorityBulkDrainCursor<T> {
+    fn new(first_priority: Option<T>, first_bulk: Option<T>, budget: usize) -> Self {
+        Self {
+            first_priority,
+            first_bulk,
+            remaining: budget,
+            drained: 0,
+        }
+    }
+
+    fn next(&mut self, priority_rx: &mut Receiver<T>, bulk_rx: &mut Receiver<T>) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let item = if let Some(item) = self.first_priority.take() {
+            Some(item)
+        } else {
+            priority_rx
+                .try_recv()
+                .ok()
+                .or_else(|| self.first_bulk.take())
+                .or_else(|| bulk_rx.try_recv().ok())
+        }?;
+
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    fn drained(&self) -> usize {
+        self.drained
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{try_recv_endpoint_command, try_recv_priority_then_bulk};
+    use super::PriorityBulkDrainCursor;
 
     #[tokio::test]
     async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
@@ -749,24 +749,19 @@ mod tests {
 
         priority_tx.send("priority").await.unwrap();
         bulk_tx.send("bulk-queued").await.unwrap();
-        let mut selected_bulk = Some("bulk-selected");
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 4);
 
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), Some("priority"));
         assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            Some("priority")
-        );
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            drain.next(&mut priority_rx, &mut bulk_rx),
             Some("bulk-selected")
         );
         assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            drain.next(&mut priority_rx, &mut bulk_rx),
             Some("bulk-queued")
         );
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            None
-        );
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(drain.drained(), 3);
     }
 
     #[tokio::test]
@@ -776,23 +771,48 @@ mod tests {
 
         priority_tx.send("priority-fallback").await.unwrap();
         bulk_tx.send("queued-bulk-fallback").await.unwrap();
-        let mut selected_bulk = Some("selected-bulk-fallback");
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk-fallback"), 4);
 
         assert_eq!(
-            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            drain.next(&mut priority_rx, &mut bulk_rx),
             Some("priority-fallback")
         );
         assert_eq!(
-            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            drain.next(&mut priority_rx, &mut bulk_rx),
             Some("selected-bulk-fallback")
         );
         assert_eq!(
-            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            drain.next(&mut priority_rx, &mut bulk_rx),
             Some("queued-bulk-fallback")
         );
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_cursor_owns_selected_head_and_budget() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("queued-priority").await.unwrap();
+        bulk_tx.send("queued-bulk").await.unwrap();
+        let mut drain =
+            PriorityBulkDrainCursor::new(Some("selected-priority"), Some("selected-bulk"), 3);
+
         assert_eq!(
-            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            None
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("selected-priority")
         );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("queued-priority")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("selected-bulk")
+        );
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+        assert_eq!(drain.drained(), 3);
     }
 }
