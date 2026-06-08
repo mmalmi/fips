@@ -5606,6 +5606,29 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
     );
 }
 
+#[test]
+fn endpoint_payload_traffic_classifier_prioritizes_ipv4_icmp_ping() {
+    let mut icmpv4_packet = vec![0u8; 28];
+    icmpv4_packet[0] = 0x45;
+    icmpv4_packet[2..4].copy_from_slice(&28u16.to_be_bytes());
+    icmpv4_packet[9] = 1;
+    icmpv4_packet[20] = 8;
+
+    let icmpv4 = classify_endpoint_payload(&icmpv4_packet);
+    assert!(
+        !icmpv4.bulk_endpoint_data,
+        "IPv4 tunnel ping must use the reserved lane"
+    );
+    assert!(
+        !icmpv4.drop_on_backpressure,
+        "IPv4 tunnel ping is the interactive canary and must not be bulk-dropped"
+    );
+    assert_eq!(
+        endpoint_command_lane_for_payload(&icmpv4_packet),
+        EndpointCommandLane::Priority
+    );
+}
+
 #[tokio::test]
 async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
     let peer_identity = Identity::generate();

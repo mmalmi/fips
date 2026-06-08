@@ -122,10 +122,12 @@ fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
 }
 
 fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
+    const IPPROTO_ICMP: u8 = 1;
     const IPPROTO_TCP: u8 = 6;
     const IPPROTO_ICMPV6: u8 = 58;
 
     match parse_endpoint_payload_ip_proto(payload) {
+        Some((IPPROTO_ICMP, _)) => EndpointPayloadTrafficClass::default(),
         Some((IPPROTO_ICMPV6, _)) => EndpointPayloadTrafficClass::default(),
         Some((IPPROTO_TCP, offset)) => {
             let latency_sensitive = endpoint_tcp_payload_is_latency_sensitive(payload, offset);

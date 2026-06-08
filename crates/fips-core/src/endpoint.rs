@@ -806,6 +806,15 @@ mod tests {
         packet
     }
 
+    fn ipv4_icmp_echo_packet() -> Vec<u8> {
+        let mut packet = vec![0u8; 28];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&28u16.to_be_bytes());
+        packet[9] = 1;
+        packet[20] = 8;
+        packet
+    }
+
     #[test]
     fn endpoint_command_tx_helper_classifies_priority_and_bulk_payloads() {
         let (priority_tx, _priority_rx) = mpsc::channel(1);
@@ -814,6 +823,12 @@ mod tests {
         let tcp_ack = ipv6_tcp_packet(0x10, 0);
         assert!(std::ptr::eq(
             endpoint_command_tx_for_payload(&tcp_ack, &priority_tx, &bulk_tx),
+            &priority_tx,
+        ));
+
+        let icmpv4_ping = ipv4_icmp_echo_packet();
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_payload(&icmpv4_ping, &priority_tx, &bulk_tx),
             &priority_tx,
         ));
 
