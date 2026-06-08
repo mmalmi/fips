@@ -76,23 +76,32 @@ impl Node {
                 .collect();
             candidates.sort_by_key(|addr| self.configured_peer(addr).is_none());
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
+            let mut installed_count = self.connected_udp_installed_count();
             let mut peer_cap_skipped = 0usize;
             for addr in candidates {
-                let installed_count = self.connected_udp_installed_count();
                 if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
                     peer_cap_skipped = peer_cap_skipped.saturating_add(1);
                     continue;
                 }
-                if let Err(e) = self.activate_connected_udp_for_peer(&addr).await {
-                    static FAILURES: AtomicU64 = AtomicU64::new(0);
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::ConnectedUdpActivationFailed,
-                    );
-                    let n = FAILURES.fetch_add(1, Relaxed);
-                    if n < 8 || n.is_multiple_of(1000) {
-                        warn!(peer = %addr, error = %e, failures = n + 1, "connected UDP activation deferred");
-                    } else {
-                        debug!(peer = %addr, error = %e, "connected UDP activation deferred");
+                match self
+                    .activate_connected_udp_for_peer(&addr, installed_count)
+                    .await
+                {
+                    Ok(true) => {
+                        installed_count = installed_count.saturating_add(1);
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        static FAILURES: AtomicU64 = AtomicU64::new(0);
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::ConnectedUdpActivationFailed,
+                        );
+                        let n = FAILURES.fetch_add(1, Relaxed);
+                        if n < 8 || n.is_multiple_of(1000) {
+                            warn!(peer = %addr, error = %e, failures = n + 1, "connected UDP activation deferred");
+                        } else {
+                            debug!(peer = %addr, error = %e, "connected UDP activation deferred");
+                        }
                     }
                 }
             }
@@ -103,7 +112,7 @@ impl Node {
                 );
                 debug!(
                     skipped = peer_cap_skipped,
-                    installed = self.connected_udp_installed_count(),
+                    installed = installed_count,
                     max_peers = peer_cap,
                     "connected UDP peer cap reached; remaining peers stay on wildcard UDP"
                 );
@@ -120,20 +129,21 @@ impl Node {
     async fn activate_connected_udp_for_peer(
         &mut self,
         node_addr: &NodeAddr,
-    ) -> Result<(), String> {
+        installed_count: usize,
+    ) -> Result<bool, String> {
         // Read-only pass: figure out which transport + remote addr we need.
         let (transport_id, peer_transport_addr) = {
             let Some(peer) = self.peers.get(node_addr) else {
-                return Ok(());
+                return Ok(false);
             };
             if !connected_udp_activation_candidate(peer) {
-                return Ok(());
+                return Ok(false);
             }
             let Some(tid) = peer.transport_id() else {
-                return Ok(());
+                return Ok(false);
             };
             let Some(addr) = peer.current_addr().cloned() else {
-                return Ok(());
+                return Ok(false);
             };
             (tid, addr)
         };
@@ -144,13 +154,12 @@ impl Node {
         // calls hit the cache.
         let (peer_socket_addr, local_addr, recv_buf, send_buf, packet_tx) = {
             let Some(transport) = self.transports.get(&transport_id) else {
-                return Ok(());
+                return Ok(false);
             };
             let udp = match transport {
                 TransportHandle::Udp(u) => u,
-                _ => return Ok(()), // not a UDP transport — feature N/A
+                _ => return Ok(false), // not a UDP transport — feature N/A
             };
-            let installed_count = self.connected_udp_installed_count();
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
             if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
                 return Err(format!(
@@ -213,7 +222,7 @@ impl Node {
                 // Drop the new socket + drain so we don't leak.
                 drop(drain);
                 drop(socket);
-                return Ok(());
+                return Ok(false);
             }
             peer.set_connected_udp(socket, drain);
             crate::perf_profile::record_event(crate::perf_profile::Event::ConnectedUdpInstalled);
@@ -222,12 +231,13 @@ impl Node {
                 peer_addr = %peer_socket_addr,
                 "connected UDP socket installed"
             );
+            return Ok(true);
         } else {
             // Peer disappeared between read-only pass and now.
             drop(drain);
             drop(socket);
         }
-        Ok(())
+        Ok(false)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
