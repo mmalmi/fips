@@ -2619,10 +2619,12 @@ impl Node {
                 aad_offset: wire.fsp_aad_offset,
                 plaintext_offset: wire.fsp_plaintext_offset,
             }),
-            socket,
-            dest_addr: socket_addr,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket,
+            send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                connected_socket,
+                socket_addr,
+            ),
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,

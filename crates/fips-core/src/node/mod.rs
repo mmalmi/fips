@@ -3497,10 +3497,12 @@ impl Node {
                             counter: reserved_counter,
                             wire_buf,
                             fsp_seal: None,
-                            socket,
-                            dest_addr: socket_addr,
-                            #[cfg(any(target_os = "linux", target_os = "macos"))]
-                            connected_socket,
+                            send_target: self::encrypt_worker::SelectedSendTarget::new(
+                                socket,
+                                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                                connected_socket,
+                                socket_addr,
+                            ),
                             bulk_endpoint_data: traffic_class.bulk_endpoint_data,
                             drop_on_backpressure: traffic_class.drop_on_backpressure,
                             scheduling_weight,

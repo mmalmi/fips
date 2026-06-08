@@ -115,29 +115,10 @@ pub(crate) struct FmpSendJob {
     /// appends the FSP tag, then seals the full FMP plaintext. This keeps both
     /// AEADs off the rx_loop while preserving FSP/FMP wire format.
     pub fsp_seal: Option<FspSealJob>,
-    /// AsyncUdpSocket clone (internally `Arc<AsyncFd<UdpRawSocket>>`,
-    /// so the clone is just a refcount bump). Used as the **fallback**
-    /// send fd when no per-peer connected socket is available — i.e.
-    /// the wildcard listen socket. Kernel serialises concurrent
-    /// `sendto` calls so multiple workers sharing this handle is safe.
-    pub socket: AsyncUdpSocket,
-    /// Destination kernel `SocketAddr` — resolved on rx_loop side so
-    /// the worker can skip the per-packet DNS / address parse. Used
-    /// when sending via the listen socket (msg_name field of mmsghdr).
-    /// Ignored when `connected_socket` is `Some` (the kernel knows
-    /// the destination already).
-    pub dest_addr: SocketAddr,
-    /// **Unix connected-UDP fast path:** when set, the worker sends
-    /// on this socket's fd without a destination sockaddr instead of
-    /// the wildcard listen socket. The kernel skips per-packet
-    /// sockaddr handling, route lookup, and neighbor resolution
-    /// because they're cached from the `connect()` call. The `Arc`
-    /// keeps the kernel fd alive for the lifetime of this job; once
-    /// the job completes and the worker drops it, only the peer's
-    /// strong ref remains.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub connected_socket:
-        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    /// Kernel send target selected by the rx_loop. Worker dispatch, fair
+    /// admission, macOS flow selection, and flush grouping all consume this
+    /// same value instead of rebuilding target identity independently.
+    pub send_target: SelectedSendTarget,
     /// True for tunnel endpoint-data payloads that should use the worker's
     /// bulk lane instead of the control/liveness reserve. If this lane is
     /// already full, dispatch treats the worker queue as a saturated network
@@ -167,6 +148,80 @@ pub(crate) struct FspSealJob {
     pub counter: u64,
     pub aad_offset: usize,
     pub plaintext_offset: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct SelectedSendTarget {
+    /// AsyncUdpSocket clone (internally `Arc<AsyncFd<UdpRawSocket>>`,
+    /// so the clone is just a refcount bump). Used as the **fallback**
+    /// send fd when no per-peer connected socket is available — i.e.
+    /// the wildcard listen socket. Kernel serialises concurrent
+    /// `sendto` calls so multiple workers sharing this handle is safe.
+    socket: AsyncUdpSocket,
+    /// **Unix connected-UDP fast path:** when set, the worker sends
+    /// on this socket's fd without a destination sockaddr instead of
+    /// the wildcard listen socket. The kernel skips per-packet
+    /// sockaddr handling, route lookup, and neighbor resolution
+    /// because they're cached from the `connect()` call. The `Arc`
+    /// keeps the kernel fd alive for the lifetime of this target; once
+    /// the job completes and the worker drops it, only the peer's
+    /// strong ref remains.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    connected_socket:
+        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    /// Destination kernel `SocketAddr` — resolved on rx_loop side so
+    /// the worker can skip the per-packet DNS / address parse. Used
+    /// when sending via the listen socket (msg_name field of mmsghdr).
+    /// Ignored when `connected_socket` is `Some` (the kernel knows
+    /// the destination already).
+    dest_addr: SocketAddr,
+    #[cfg(unix)]
+    key: SendTargetKey,
+}
+
+impl SelectedSendTarget {
+    pub(crate) fn new(
+        socket: AsyncUdpSocket,
+        #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
+            std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+        >,
+        dest_addr: SocketAddr,
+    ) -> Self {
+        #[cfg(unix)]
+        let key = SendTargetKey::from_parts(
+            &socket,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket.as_ref(),
+            dest_addr,
+        );
+        Self {
+            socket,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket,
+            dest_addr,
+            #[cfg(unix)]
+            key,
+        }
+    }
+
+    #[cfg(unix)]
+    fn key(&self) -> SendTargetKey {
+        self.key
+    }
+
+    #[cfg(unix)]
+    fn dest_addr(&self) -> SocketAddr {
+        self.dest_addr
+    }
+
+    #[cfg(unix)]
+    fn fd_and_connected(&self) -> (RawFd, bool) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(socket) = self.connected_socket.as_ref() {
+            return (socket.as_raw_fd(), true);
+        }
+        (self.socket.as_raw_fd(), false)
+    }
 }
 
 #[cfg(unix)]
@@ -199,12 +254,7 @@ impl SendTargetKey {
 impl FmpSendJob {
     #[cfg(unix)]
     fn send_target_key(&self) -> SendTargetKey {
-        SendTargetKey::from_parts(
-            &self.socket,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            self.connected_socket.as_ref(),
-            self.dest_addr,
-        )
+        self.send_target.key()
     }
 }
 
@@ -1188,13 +1238,7 @@ impl MacSequencedSendFlows {
             return Arc::clone(flow);
         }
 
-        let flow = MacSequencedSendFlow::spawn(
-            key,
-            job.socket.clone(),
-            job.connected_socket.clone(),
-            job.dest_addr,
-            now_ms,
-        );
+        let flow = MacSequencedSendFlow::spawn(key, job.send_target.clone(), now_ms);
         flows.insert(key, Arc::clone(&flow));
         flow
     }
@@ -1313,10 +1357,7 @@ fn mac_now_ms() -> u64 {
 #[cfg(target_os = "macos")]
 struct MacSequencedSendFlow {
     key: MacSendFlowKey,
-    socket: AsyncUdpSocket,
-    connected_socket:
-        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
-    dest_addr: SocketAddr,
+    send_target: SelectedSendTarget,
     next_seq: std::sync::atomic::AtomicU64,
     last_used_ms: std::sync::atomic::AtomicU64,
     state: Mutex<MacSendFlowState>,
@@ -1349,20 +1390,10 @@ enum MacSendItem {
 
 #[cfg(target_os = "macos")]
 impl MacSequencedSendFlow {
-    fn spawn(
-        key: MacSendFlowKey,
-        socket: AsyncUdpSocket,
-        connected_socket: Option<
-            std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
-        >,
-        dest_addr: SocketAddr,
-        now_ms: u64,
-    ) -> Arc<Self> {
+    fn spawn(key: MacSendFlowKey, send_target: SelectedSendTarget, now_ms: u64) -> Arc<Self> {
         let flow = Arc::new(Self {
             key,
-            socket,
-            connected_socket,
-            dest_addr,
+            send_target,
             next_seq: std::sync::atomic::AtomicU64::new(0),
             last_used_ms: std::sync::atomic::AtomicU64::new(now_ms),
             state: Mutex::new(MacSendFlowState::default()),
@@ -1440,13 +1471,10 @@ impl MacSequencedSendFlow {
         trace!(
             socket_fd = self.key.socket_fd,
             connected_fd = ?self.key.connected_fd,
-            dest = %self.dest_addr,
+            dest = %self.send_target.dest_addr(),
             "macOS ordered UDP sender starting"
         );
-        let (fd, connected) = match self.connected_socket.as_ref() {
-            Some(socket) => (socket.as_raw_fd(), true),
-            None => (self.socket.as_raw_fd(), false),
-        };
+        let (fd, connected) = self.send_target.fd_and_connected();
         let mut backpressure = SendBackpressurePacer::default();
         let mut rate_pacer = MacSendRatePacer::default();
 
@@ -1480,7 +1508,7 @@ impl MacSequencedSendFlow {
                     if let Err(err) = send_one_with_backpressure(
                         fd,
                         connected,
-                        &self.dest_addr,
+                        &self.send_target.dest_addr(),
                         &packet,
                         &mut backpressure,
                         drop_on_backpressure,
@@ -1488,7 +1516,7 @@ impl MacSequencedSendFlow {
                         debug!(
                             socket_fd = self.key.socket_fd,
                             connected_fd = ?self.key.connected_fd,
-                            dest = %self.dest_addr,
+                            dest = %self.send_target.dest_addr(),
                             error = %err,
                             "macOS ordered UDP send failed"
                         );
@@ -1603,12 +1631,7 @@ fn flush_batch_sync(
     // the bursty peer's tail packets flush first.
     #[cfg(unix)]
     struct EncryptedGroup {
-        target_key: SendTargetKey,
-        socket: AsyncUdpSocket,
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        connected_socket:
-            Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
-        dest_addr: SocketAddr,
+        send_target: SelectedSendTarget,
         wire_packets: Vec<Vec<u8>>,
         drop_on_backpressure: bool,
     }
@@ -1632,10 +1655,7 @@ fn flush_batch_sync(
             counter,
             mut wire_buf,
             fsp_seal,
-            socket,
-            dest_addr,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket,
+            send_target,
             bulk_endpoint_data: _,
             drop_on_backpressure,
             scheduling_weight: _,
@@ -1730,28 +1750,20 @@ fn flush_batch_sync(
 
         #[cfg(unix)]
         {
-            // Compare by kernel send target, not `AsyncUdpSocket` / Arc
-            // identity: jobs routinely carry separately cloned handles to the
-            // same fd, while connected sockets change the actual peer target.
-            let target_key = SendTargetKey::from_parts(
-                &socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                connected_socket.as_ref(),
-                dest_addr,
-            );
+            // Compare by the selected kernel send target carried by the job,
+            // not `AsyncUdpSocket` / Arc identity: jobs routinely carry
+            // separately cloned handles to the same fd, while connected
+            // sockets change the actual peer target.
+            let target_key = send_target.key();
             let matched = groups
                 .iter_mut()
-                .position(|group| group.target_key == target_key);
+                .position(|group| group.send_target.key() == target_key);
             if let Some(idx) = matched {
                 groups[idx].wire_packets.push(wire_buf);
                 groups[idx].drop_on_backpressure &= drop_on_backpressure;
             } else {
                 groups.push(EncryptedGroup {
-                    target_key,
-                    socket,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    connected_socket,
-                    dest_addr,
+                    send_target,
                     wire_packets: vec![wire_buf],
                     drop_on_backpressure,
                 });
@@ -1762,7 +1774,7 @@ fn flush_batch_sync(
             // Windows: encrypt worker pool isn't spawned (see
             // lifecycle.rs); this function is unreachable. Drop
             // values explicitly so the compiler sees them as used.
-            let _ = (socket, dest_addr, wire_buf, drop_on_backpressure);
+            let _ = (send_target, wire_buf, drop_on_backpressure);
         }
     }
 
@@ -1800,17 +1812,12 @@ fn flush_batch_sync(
     for group in groups {
         let mut backpressure = SendBackpressurePacer::default();
         let EncryptedGroup {
-            target_key: _,
-            socket,
-            connected_socket,
-            dest_addr,
+            send_target,
             wire_packets,
             drop_on_backpressure,
         } = group;
-        let (fd, connected) = match connected_socket.as_ref() {
-            Some(s) => (s.as_raw_fd(), true),
-            None => (socket.as_raw_fd(), false),
-        };
+        let (fd, connected) = send_target.fd_and_connected();
+        let dest_addr = send_target.dest_addr();
 
         // Within a group, destination is uniform by construction —
         // GSO needs only the size check now.
@@ -1874,13 +1881,8 @@ fn flush_batch_sync(
     #[cfg(all(unix, not(target_os = "linux")))]
     for group in groups {
         let mut backpressure = SendBackpressurePacer::default();
-        #[cfg(target_os = "macos")]
-        let (fd, connected) = match group.connected_socket.as_ref() {
-            Some(s) => (s.as_raw_fd(), true),
-            None => (group.socket.as_raw_fd(), false),
-        };
-        #[cfg(not(target_os = "macos"))]
-        let (fd, connected) = (group.socket.as_raw_fd(), false);
+        let (fd, connected) = group.send_target.fd_and_connected();
+        let dest_addr = group.send_target.dest_addr();
 
         #[cfg(target_os = "macos")]
         let send_error = MAC_DIRECT_SEND_RATE_PACER.with(|pacer| {
@@ -1890,7 +1892,7 @@ fn flush_batch_sync(
                 if let Err(err) = send_one_with_backpressure(
                     fd,
                     connected,
-                    &group.dest_addr,
+                    &dest_addr,
                     data,
                     &mut backpressure,
                     group.drop_on_backpressure,
@@ -1911,7 +1913,7 @@ fn flush_batch_sync(
                 if let Err(err) = send_one_with_backpressure(
                     fd,
                     connected,
-                    &group.dest_addr,
+                    &dest_addr,
                     data,
                     &mut backpressure,
                     group.drop_on_backpressure,
@@ -2623,10 +2625,12 @@ mod unix_tests {
                     aad_offset: fsp_aad_offset,
                     plaintext_offset: fsp_plaintext_offset,
                 }),
-                socket: send_sock,
-                dest_addr: recv_addr,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                connected_socket: None,
+                send_target: SelectedSendTarget::new(
+                    send_sock,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    None,
+                    recv_addr,
+                ),
                 bulk_endpoint_data: true,
                 drop_on_backpressure: true,
                 scheduling_weight: DEFAULT_SEND_WEIGHT,
@@ -2715,9 +2719,7 @@ mod mac_queue_tests {
             counter: 0,
             wire_buf,
             fsp_seal: None,
-            socket,
-            dest_addr,
-            connected_socket: None,
+            send_target: SelectedSendTarget::new(socket, None, dest_addr),
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
@@ -2975,10 +2977,12 @@ mod fair_queue_tests {
             counter: 0,
             wire_buf,
             fsp_seal: None,
-            socket,
-            dest_addr,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket: None,
+            send_target: SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_addr,
+            ),
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,
@@ -3390,6 +3394,88 @@ mod fair_queue_tests {
     }
 
     #[test]
+    fn selected_send_target_key_drives_dispatch_and_admission() {
+        with_test_socket(|socket_a, cipher| {
+            let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open second send socket");
+            let socket_b = raw_b.into_async().expect("into_async second socket");
+            let dest: SocketAddr = "127.0.0.1:10027".parse().unwrap();
+
+            let senders: Vec<_> = (0..4)
+                .map(|_| fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES).0)
+                .collect();
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+            };
+
+            let queued_a = queued_job(
+                socket_a.clone(),
+                &cipher,
+                dest,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            );
+            let key_a = queued_a.flow_key();
+            let expected_idx_a = (send_target_fast_hash(&key_a) as usize) % pool.senders.len();
+            let (idx_a, queued_a) = pool.prepare_dispatch(queued_a.job);
+            assert_eq!(idx_a, expected_idx_a);
+            assert_eq!(
+                queued_a.flow_key(),
+                key_a,
+                "dispatch must carry the selected target key, not rebuild it differently"
+            );
+
+            let queued_b = queued_job(
+                socket_b.clone(),
+                &cipher,
+                dest,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            );
+            let key_b = queued_b.flow_key();
+            assert_ne!(
+                key_a, key_b,
+                "same sockaddr on a different send fd is a different selected target"
+            );
+
+            let (tx, _rx) = fair_worker_channel(4, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let warmup: SocketAddr = "127.0.0.1:10028".parse().unwrap();
+            for _ in 0..2 {
+                tx.try_push(queued_job(
+                    socket_a.clone(),
+                    &cipher,
+                    warmup,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("warmup bulk should enter fast lane");
+            }
+
+            tx.try_push(queued_a)
+                .expect("first selected target should reserve its budget");
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket_a,
+                        &cipher,
+                        dest,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "same selected target should hit the per-target admission cap"
+            );
+            tx.try_push(queued_b)
+                .expect("different selected target should get its own budget");
+        });
+    }
+
+    #[test]
     fn boosted_flow_gets_larger_queue_budget() {
         with_test_socket(|socket, cipher| {
             let (tx, _rx) = fair_worker_channel(12, 2, 2048);
@@ -3724,10 +3810,12 @@ mod tests {
                     counter,
                     wire_buf,
                     fsp_seal: None,
-                    socket,
-                    dest_addr: dest,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    connected_socket: None,
+                    send_target: SelectedSendTarget::new(
+                        socket,
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        None,
+                        dest,
+                    ),
                     bulk_endpoint_data: true,
                     drop_on_backpressure: true,
                     scheduling_weight: DEFAULT_SEND_WEIGHT,
