@@ -197,9 +197,14 @@ impl SendTargetKey {
 }
 
 impl FmpSendJob {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn send_target_key(&self) -> SendTargetKey {
-        SendTargetKey::from_parts(&self.socket, self.connected_socket.as_ref(), self.dest_addr)
+        SendTargetKey::from_parts(
+            &self.socket,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            self.connected_socket.as_ref(),
+            self.dest_addr,
+        )
     }
 }
 
@@ -252,8 +257,8 @@ impl QueuedFmpSendJob {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn flow_key(&self) -> SocketAddr {
-        self.job.dest_addr
+    fn flow_key(&self) -> SendTargetKey {
+        self.job.send_target_key()
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -280,22 +285,22 @@ impl QueuedFmpSendJob {
 }
 
 /// Handle to the encrypt worker pool. Dispatches jobs **hash-by-
-/// destination** across N worker tasks via per-worker bounded queues.
+/// send-target** across N worker tasks via per-worker bounded queues.
 /// The bounded queue keeps bulk tunnel packets from growing without
 /// bound when encryption/sending falls behind. Control traffic must not
 /// sit behind that bulk backlog: blocking the rx_loop on a full send
 /// queue also blocks decrypt-fallback/liveness processing, which can
 /// turn a busy tunnel into a false link-dead removal.
 ///
-/// **Ordering: hash-by-destination, not round-robin.** Round-robin
+/// **Ordering: hash-by-send-target, not round-robin.** Round-robin
 /// across N workers causes UDP packet reordering on the wire, which
 /// the receiving TCP layer reacts to with dup-ACK-triggered
 /// fast-retransmits — measured in bench: 2 workers on a single-flow
 /// TCP run dropped throughput 1308 → 1069 Mbps and pushed Retr count
-/// from 0 to 8058. Hashing on the destination kernel `SocketAddr`
-/// keeps all packets for one flow on one worker, preserving the FIFO
-/// order TCP expects. Multi-peer / multi-flow benches still get the
-/// parallelism since different destinations hash to different workers.
+/// from 0 to 8058. Hashing on the exact kernel send target keeps all
+/// packets for one flow on one worker, preserving the FIFO order TCP
+/// expects. Multi-peer / multi-flow benches still get the parallelism
+/// since different send targets hash to different workers.
 ///
 /// macOS defaults to the same hash-by-send-target shape unless explicitly
 /// opted into the ordered sender. Live Wi-Fi sender tests showed the
@@ -330,20 +335,20 @@ fn worker_channel_cap() -> usize {
 
 #[cfg(not(target_os = "macos"))]
 type FairFlowMap =
-    HashMap<SocketAddr, FairFlowQueue, std::hash::BuildHasherDefault<SocketAddrFastHasher>>;
+    HashMap<SendTargetKey, FairFlowQueue, std::hash::BuildHasherDefault<SendTargetFastHasher>>;
 
 #[cfg(not(target_os = "macos"))]
-struct SocketAddrFastHasher(u64);
+struct SendTargetFastHasher(u64);
 
 #[cfg(not(target_os = "macos"))]
-impl Default for SocketAddrFastHasher {
+impl Default for SendTargetFastHasher {
     fn default() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-impl std::hash::Hasher for SocketAddrFastHasher {
+impl std::hash::Hasher for SendTargetFastHasher {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -382,11 +387,11 @@ impl std::hash::Hasher for SocketAddrFastHasher {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn socket_addr_fast_hash(addr: &SocketAddr) -> u64 {
+fn send_target_fast_hash(target: &SendTargetKey) -> u64 {
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = SocketAddrFastHasher::default();
-    addr.hash(&mut hasher);
+    let mut hasher = SendTargetFastHasher::default();
+    target.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -738,7 +743,7 @@ impl FairWorkerSender {
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmission {
-    fn try_reserve(&self, key: SocketAddr, weight: usize) -> FairReserve {
+    fn try_reserve(&self, key: SendTargetKey, weight: usize) -> FairReserve {
         let mut state = self
             .state
             .lock()
@@ -752,7 +757,11 @@ impl FairAdmission {
         FairReserve::Full
     }
 
-    fn reserve_blocking(&self, key: SocketAddr, weight: usize) -> Result<(), FairWorkerPushError> {
+    fn reserve_blocking(
+        &self,
+        key: SendTargetKey,
+        weight: usize,
+    ) -> Result<(), FairWorkerPushError> {
         let mut state = self
             .state
             .lock()
@@ -773,7 +782,7 @@ impl FairAdmission {
         }
     }
 
-    fn release(&self, key: SocketAddr) {
+    fn release(&self, key: SendTargetKey) {
         let mut state = self
             .state
             .lock()
@@ -806,7 +815,7 @@ impl FairAdmission {
         state: &mut FairAdmissionState,
         total_cap: usize,
         per_flow_cap: usize,
-        key: SocketAddr,
+        key: SendTargetKey,
         weight: usize,
     ) -> bool {
         if state.total_len >= total_cap {
@@ -891,11 +900,11 @@ type WorkerSender = FairWorkerSender;
 /// OS thread cuts the dispatch round-trip to the platform minimum —
 /// same pattern boringtun uses for its main loop.
 ///
-/// **Ordering: hash-by-destination** so single-flow TCP keeps its
+/// **Ordering: hash-by-send-target** so single-flow TCP keeps its
 /// FIFO ordering (round-robin caused 8000 retransmits in an earlier
 /// experiment — see the git log for the 56e0ca8 fix). Multi-peer /
 /// multi-flow benches still get parallelism since different
-/// destinations hash to different workers.
+/// send targets hash to different workers.
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
@@ -907,7 +916,7 @@ pub(crate) struct EncryptWorkerPool {
 
 impl EncryptWorkerPool {
     /// Spawn `n` worker **OS threads** and return a handle that
-    /// dispatches jobs hash-by-destination to them. The workers exit
+    /// dispatches jobs hash-by-send-target to them. The workers exit
     /// when all senders for their channel are dropped (i.e. when the
     /// returned `EncryptWorkerPool` and all clones go away).
     pub fn spawn(n: usize) -> Self {
@@ -947,10 +956,10 @@ impl EncryptWorkerPool {
         }
     }
 
-    /// Dispatch a job to the worker that owns its destination flow.
-    /// The hash is over `dest_addr` so every packet for one peer's
-    /// kernel `SocketAddr` lands on the same worker and stays in
-    /// order — required for TCP's fast-retransmit logic above to
+    /// Dispatch a job to the worker that owns its send-target flow.
+    /// The hash is over `(socket fd, connected fd, dest_addr)` so every
+    /// packet for one exact kernel send target lands on the same worker and
+    /// stays in order — required for TCP's fast-retransmit logic above to
     /// behave on a single-flow run. Fire-and-forget — the worker
     /// handles send errors itself via stats counters.
     ///
@@ -997,7 +1006,8 @@ impl EncryptWorkerPool {
 
     #[cfg(not(target_os = "macos"))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        let idx = (socket_addr_fast_hash(&job.dest_addr) as usize) % self.senders.len();
+        let target_key = job.send_target_key();
+        let idx = (send_target_fast_hash(&target_key) as usize) % self.senders.len();
         (idx, QueuedFmpSendJob::direct(job))
     }
 
@@ -1476,11 +1486,11 @@ fn run_worker_macos(idx: usize, rx: MacWorkerReceiver) {
 /// nonblocking UDP fd with a retry-on-EAGAIN loop; no tokio reactor.
 ///
 /// **Why grouping is required:** `EncryptWorkerPool::dispatch` hashes
-/// `job.dest_addr` modulo the worker count to pick a worker — this
-/// pins one peer's flow to one worker (FIFO order preserved for
-/// TCP), but it does NOT mean every job in a worker's drained batch
-/// shares a target. Two different peers can hash to the same
-/// worker. The previous implementation cloned `batch[0].socket` /
+/// the exact send target modulo the worker count to pick a worker — this
+/// pins one peer's flow to one worker (FIFO order preserved for TCP), but
+/// it does NOT mean every job in a worker's drained batch shares a target.
+/// Two different peers can hash to the same worker. The previous
+/// implementation cloned `batch[0].socket` /
 /// `batch[0].connected_socket` and used them for the entire batch,
 /// silently misdirecting packets:
 ///
@@ -2788,7 +2798,7 @@ mod fair_queue_tests {
 
             let mut batch = Vec::new();
             assert!(rx.recv_batch(&mut batch, 4));
-            let dests: Vec<_> = batch.iter().map(QueuedFmpSendJob::flow_key).collect();
+            let dests: Vec<_> = batch.iter().map(|job| job.flow_key().dest_addr).collect();
             assert_eq!(dests.len(), 3);
             assert_eq!(dests.iter().filter(|addr| **addr == hot).count(), 2);
             assert_eq!(dests.iter().filter(|addr| **addr == quiet).count(), 1);
@@ -2845,7 +2855,7 @@ mod fair_queue_tests {
             let mut batch = Vec::new();
             assert!(rx.recv_batch(&mut batch, 8));
             assert_eq!(batch.len(), 8);
-            assert!(batch.iter().all(|job| job.flow_key() == addr));
+            assert!(batch.iter().all(|job| job.flow_key().dest_addr == addr));
         });
     }
 
@@ -2872,7 +2882,7 @@ mod fair_queue_tests {
                 );
                 queued.job.counter = counter;
                 let (idx, queued) = pool.prepare_dispatch(queued.job);
-                assert_eq!(queued.flow_key(), addr);
+                assert_eq!(queued.flow_key().dest_addr, addr);
                 match owner {
                     Some(owner) => assert_eq!(
                         idx, owner,
@@ -2904,6 +2914,65 @@ mod fair_queue_tests {
                 (0..8).collect::<Vec<_>>(),
                 "single-flow queue must preserve FIFO order"
             );
+        });
+    }
+
+    #[test]
+    fn fair_admission_keys_pressure_by_exact_send_target() {
+        with_test_socket(|socket_a, cipher| {
+            let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open second send socket");
+            let socket_b = raw_b.into_async().expect("into_async second socket");
+            assert_ne!(
+                socket_a.as_raw_fd(),
+                socket_b.as_raw_fd(),
+                "test requires two distinct send fds"
+            );
+
+            let (tx, _rx) = fair_worker_channel(4, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let warmup: SocketAddr = "127.0.0.1:10020".parse().unwrap();
+            let shared_dest: SocketAddr = "127.0.0.1:10021".parse().unwrap();
+
+            // Fill the direct fast lane first so the next sends exercise
+            // fair-admission keys instead of bypassing admission.
+            tx.try_push(queued_job(
+                socket_a.clone(),
+                &cipher,
+                warmup,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .unwrap();
+            tx.try_push(queued_job(
+                socket_a.clone(),
+                &cipher,
+                warmup,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .unwrap();
+
+            tx.try_push(queued_job(
+                socket_a.clone(),
+                &cipher,
+                shared_dest,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("first send target should reserve its per-target budget");
+
+            tx.try_push(queued_job(
+                socket_b,
+                &cipher,
+                shared_dest,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("different fd to the same dest is a different send target");
         });
     }
 
