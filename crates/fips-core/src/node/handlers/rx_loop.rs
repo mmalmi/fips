@@ -163,14 +163,22 @@ impl Node {
                 // TCP machinery a fair chance to see its ACKs and
                 // keep cwnd growing.
                 Some(event) = decrypt_fallback_rx.priority.recv() => {
-                    self.process_decrypt_worker_event(event).await;
-                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
+                    self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        Some(event),
+                        None,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
                     last_data_activity = Some(Instant::now());
                     self.flush_pending_sends().await;
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    self.process_decrypt_worker_event(event).await;
-                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
+                    self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        None,
+                        Some(event),
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
                     last_data_activity = Some(Instant::now());
                     self.flush_pending_sends().await;
                 }
@@ -350,8 +358,13 @@ impl Node {
         // turn even under sustained load.
         while drained < budget {
             if drained > 0 && drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
-                self.drain_decrypt_fallback(decrypt_fallback_rx, FALLBACK_INTERLEAVE_BUDGET)
-                    .await;
+                self.drain_decrypt_fallback(
+                    decrypt_fallback_rx,
+                    None,
+                    None,
+                    FALLBACK_INTERLEAVE_BUDGET,
+                )
+                .await;
             }
             match packet_rx.try_recv() {
                 Ok(packet) => {
@@ -365,7 +378,7 @@ impl Node {
         if drained > 0 {
             // One trailing fallback drain so the last bounced packets of the
             // burst aren't held up by the post-burst send flush.
-            self.drain_decrypt_fallback(decrypt_fallback_rx, PACKET_DRAIN_BUDGET)
+            self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, PACKET_DRAIN_BUDGET)
                 .await;
             // Flush any batched sends triggered by inbound packets (e.g.
             // forwarded SessionDatagrams, MMP reports, tree announces).
@@ -560,26 +573,24 @@ impl Node {
     async fn drain_decrypt_fallback(
         &mut self,
         rx: &mut DecryptWorkerFallbackReceivers,
+        first_priority_event: Option<DecryptWorkerEvent>,
+        first_bulk_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
+        let mut first_bulk_event = first_bulk_event;
         let mut drained = 0;
+        if let Some(event) = first_priority_event {
+            self.process_decrypt_worker_event(event).await;
+            drained = 1;
+        }
         while drained < budget {
-            match rx.priority.try_recv() {
-                Ok(event) => {
-                    self.process_decrypt_worker_event(event).await;
-                    drained += 1;
-                    continue;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
-            }
-            match rx.bulk.try_recv() {
-                Ok(event) => {
-                    self.process_decrypt_worker_event(event).await;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
+            let Some(event) =
+                try_recv_priority_then_bulk(&mut rx.priority, &mut rx.bulk, &mut first_bulk_event)
+            else {
+                break;
+            };
+            self.process_decrypt_worker_event(event).await;
+            drained += 1;
         }
         drained
     }
@@ -712,6 +723,14 @@ fn try_recv_endpoint_command<T>(
     bulk_rx: &mut Receiver<T>,
     first_bulk: &mut Option<T>,
 ) -> Option<T> {
+    try_recv_priority_then_bulk(priority_rx, bulk_rx, first_bulk)
+}
+
+fn try_recv_priority_then_bulk<T>(
+    priority_rx: &mut Receiver<T>,
+    bulk_rx: &mut Receiver<T>,
+    first_bulk: &mut Option<T>,
+) -> Option<T> {
     priority_rx
         .try_recv()
         .ok()
@@ -721,7 +740,7 @@ fn try_recv_endpoint_command<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::try_recv_endpoint_command;
+    use super::{try_recv_endpoint_command, try_recv_priority_then_bulk};
 
     #[tokio::test]
     async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
@@ -746,6 +765,33 @@ mod tests {
         );
         assert_eq!(
             try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("priority-fallback").await.unwrap();
+        bulk_tx.send("queued-bulk-fallback").await.unwrap();
+        let mut selected_bulk = Some("selected-bulk-fallback");
+
+        assert_eq!(
+            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("priority-fallback")
+        );
+        assert_eq!(
+            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("selected-bulk-fallback")
+        );
+        assert_eq!(
+            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
+            Some("queued-bulk-fallback")
+        );
+        assert_eq!(
+            try_recv_priority_then_bulk(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
             None
         );
     }
