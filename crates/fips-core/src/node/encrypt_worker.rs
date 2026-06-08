@@ -1771,7 +1771,7 @@ fn flush_batch_sync(
             connected_socket,
             dest_addr,
             wire_packets,
-            drop_on_backpressure: _,
+            drop_on_backpressure,
         } = group;
         let (fd, connected) = match connected_socket.as_ref() {
             Some(s) => (s.as_raw_fd(), true),
@@ -1815,7 +1815,14 @@ fn flush_batch_sync(
             let n = match send_batch_raw(fd, &wire_packets[sent..], dest_addr, connected) {
                 Ok(n) => n,
                 Err(err) if is_send_backpressure(&err) => {
-                    backpressure.pause(&err);
+                    match send_backpressure_decision(backpressure.pause(&err), drop_on_backpressure)
+                    {
+                        SendBackpressureDecision::DropCurrentBulk => {
+                            record_udp_send_backpressure_drop(&err);
+                            sent += 1;
+                        }
+                        SendBackpressureDecision::Retry => {}
+                    }
                     continue;
                 }
                 Err(err) => {
@@ -1951,6 +1958,23 @@ enum SendBackpressureAction {
     Yield,
     Sleep,
     DropBulk,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SendBackpressureDecision {
+    Retry,
+    DropCurrentBulk,
+}
+
+fn send_backpressure_decision(
+    pacer_requested_drop: bool,
+    drop_on_backpressure: bool,
+) -> SendBackpressureDecision {
+    if pacer_requested_drop && drop_on_backpressure {
+        SendBackpressureDecision::DropCurrentBulk
+    } else {
+        SendBackpressureDecision::Retry
+    }
 }
 
 impl SendBackpressurePacer {
@@ -2139,6 +2163,22 @@ mod send_backpressure_tests {
     }
 
     #[test]
+    fn send_backpressure_drop_decision_requires_packet_policy() {
+        assert_eq!(
+            send_backpressure_decision(true, true),
+            SendBackpressureDecision::DropCurrentBulk
+        );
+        assert_eq!(
+            send_backpressure_decision(true, false),
+            SendBackpressureDecision::Retry
+        );
+        assert_eq!(
+            send_backpressure_decision(false, true),
+            SendBackpressureDecision::Retry
+        );
+    }
+
+    #[test]
     fn send_backpressure_pacer_sleep_does_not_reset_drop_budget() {
         let mut pacer = SendBackpressurePacer::default();
 
@@ -2178,7 +2218,7 @@ mod send_backpressure_tests {
     }
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(unix)]
 fn record_udp_send_backpressure_drop(err: &std::io::Error) {
     crate::perf_profile::record_event(crate::perf_profile::Event::UdpSendBulkDropped);
     static SEND_BACKPRESSURE_DROP_COUNT: std::sync::atomic::AtomicU64 =
@@ -3669,9 +3709,12 @@ fn send_one_with_backpressure(
                 return Ok(());
             }
             Err(err) if is_send_backpressure(&err) => {
-                if backpressure.pause(&err) && drop_on_backpressure {
-                    record_udp_send_backpressure_drop(&err);
-                    return Err(err);
+                match send_backpressure_decision(backpressure.pause(&err), drop_on_backpressure) {
+                    SendBackpressureDecision::DropCurrentBulk => {
+                        record_udp_send_backpressure_drop(&err);
+                        return Err(err);
+                    }
+                    SendBackpressureDecision::Retry => {}
                 }
             }
             Err(err) => return Err(err),
