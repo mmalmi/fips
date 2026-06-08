@@ -1821,6 +1821,49 @@ fn push_mac_completion(
     }
 }
 
+struct EncryptWorkerShard {
+    idx: usize,
+    batch: Vec<QueuedFmpSendJob>,
+    max_batch: usize,
+}
+
+impl EncryptWorkerShard {
+    fn new(idx: usize, max_batch: usize) -> Self {
+        Self {
+            idx,
+            batch: Vec::with_capacity(max_batch),
+            max_batch,
+        }
+    }
+
+    fn drain_and_flush_once<R, F>(&mut self, recv_batch: R, flush_batch: F) -> bool
+    where
+        R: FnOnce(&mut Vec<QueuedFmpSendJob>, usize) -> bool,
+        F: FnOnce(
+            &mut Vec<QueuedFmpSendJob>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
+    {
+        debug_assert!(self.batch.is_empty());
+        if !recv_batch(&mut self.batch, self.max_batch) {
+            return false;
+        }
+        if let Err(err) = flush_batch(&mut self.batch) {
+            debug!(
+                worker = self.idx,
+                error = %err,
+                "FMP encrypt worker batch flush failed"
+            );
+            self.batch.clear();
+        }
+        true
+    }
+
+    #[cfg(test)]
+    fn batch_len(&self) -> usize {
+        self.batch.len()
+    }
+}
+
 /// Sync OS-thread worker loop. Blocks on the bounded fair queue,
 /// drains follow-on packets into a fixed-size local batch, then issues
 /// one `sendmmsg(2)` per drain cycle.
@@ -1829,14 +1872,9 @@ fn run_worker(idx: usize, rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
     const BATCH_SIZE: usize = 32;
-    let mut batch: Vec<QueuedFmpSendJob> = Vec::with_capacity(BATCH_SIZE);
+    let mut shard = EncryptWorkerShard::new(idx, BATCH_SIZE);
 
-    while rx.recv_batch(&mut batch, BATCH_SIZE) {
-        if let Err(err) = flush_batch_sync(&mut batch) {
-            debug!(worker = idx, error = %err, "FMP encrypt worker batch flush failed");
-            batch.clear();
-        }
-    }
+    while shard.drain_and_flush_once(|batch, max| rx.recv_batch(batch, max), flush_batch_sync) {}
     trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
@@ -1845,14 +1883,9 @@ fn run_worker_macos(idx: usize, rx: MacWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
     let batch_size = macos_worker_batch_size();
-    let mut batch: Vec<QueuedFmpSendJob> = Vec::with_capacity(batch_size);
+    let mut shard = EncryptWorkerShard::new(idx, batch_size);
 
-    while rx.recv_batch(&mut batch, batch_size) {
-        if let Err(err) = flush_batch_sync(&mut batch) {
-            debug!(worker = idx, error = %err, "FMP encrypt worker batch flush failed");
-            batch.clear();
-        }
-    }
+    while shard.drain_and_flush_once(|batch, max| rx.recv_batch(batch, max), flush_batch_sync) {}
     trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
@@ -2771,6 +2804,86 @@ mod unix_tests {
         let unbound =
             UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).expect("build key");
         LessSafeKey::new(unbound)
+    }
+
+    fn queued_test_job(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        payload_len: usize,
+    ) -> QueuedFmpSendJob {
+        let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
+        wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
+        wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
+        QueuedFmpSendJob::direct(FmpSendJob {
+            cipher: cipher.clone(),
+            counter: 0,
+            wire_buf,
+            fsp_seal: None,
+            send_target: SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_addr,
+            ),
+            bulk_endpoint_data: true,
+            drop_on_backpressure: true,
+            scheduling_weight: DEFAULT_SEND_WEIGHT,
+            queued_at: None,
+        })
+    }
+
+    #[test]
+    fn encrypt_worker_shard_owns_batch_drain_and_flush_error() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let cipher = test_cipher(3);
+            let dest: SocketAddr = "127.0.0.1:10034".parse().unwrap();
+            let mut shard = EncryptWorkerShard::new(7, 2);
+            let mut recv_max = 0;
+            let mut flush_count = 0;
+
+            assert!(shard.drain_and_flush_once(
+                |batch, max| {
+                    recv_max = max;
+                    assert!(batch.is_empty());
+                    batch.push(queued_test_job(socket.clone(), &cipher, dest, 32));
+                    batch.push(queued_test_job(socket.clone(), &cipher, dest, 48));
+                    true
+                },
+                |batch| {
+                    flush_count += 1;
+                    assert_eq!(batch.len(), 2);
+                    Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "forced flush failure",
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>)
+                },
+            ));
+            assert_eq!(recv_max, 2);
+            assert_eq!(flush_count, 1);
+            assert_eq!(
+                shard.batch_len(),
+                0,
+                "the shard owns and clears the local batch after flush failure"
+            );
+
+            assert!(!shard.drain_and_flush_once(
+                |batch, max| {
+                    assert_eq!(max, 2);
+                    assert!(batch.is_empty());
+                    false
+                },
+                |_batch| panic!("flush must not run when receive returns closed"),
+            ));
+        });
     }
 
     #[test]
