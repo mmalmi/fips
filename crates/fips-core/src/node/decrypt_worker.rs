@@ -334,6 +334,10 @@ pub(crate) struct DecryptFallback {
     /// MMP's 30-second link-dead timer fires even though packets
     /// are arriving fine.
     pub packet_len: usize,
+    /// Fallback queue lane selected when the worker creates this completion
+    /// event. The fallback sender consumes this queued value instead of
+    /// deriving queue policy later from mutable metadata.
+    lane: DecryptWorkerLane,
     pub fmp_counter: u64,
     pub fmp_flags: u8,
     /// Original received wire buffer, mutated in place by the FMP
@@ -356,6 +360,41 @@ pub(crate) struct DecryptFallback {
     pub packet_data: Vec<u8>,
     pub fmp_plaintext_offset: usize,
     pub fmp_plaintext_len: usize,
+}
+
+impl DecryptFallback {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        source_node_addr: NodeAddr,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        fmp_flags: u8,
+        packet_data: Vec<u8>,
+        fmp_plaintext_offset: usize,
+        fmp_plaintext_len: usize,
+    ) -> Self {
+        let lane = decrypt_worker_packet_lane(packet_len);
+        Self {
+            source_node_addr,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            lane,
+            fmp_counter,
+            fmp_flags,
+            packet_data,
+            fmp_plaintext_offset,
+            fmp_plaintext_len,
+        }
+    }
+
+    fn lane(&self) -> DecryptWorkerLane {
+        self.lane
+    }
 }
 
 /// Report from the decrypt worker when a registered FMP session fails
@@ -437,7 +476,7 @@ impl DecryptWorkerFallbackSender {
 
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
-        DecryptWorkerEvent::Plaintext(fallback) => decrypt_worker_packet_lane(fallback.packet_len),
+        DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
     }
 }
@@ -920,7 +959,7 @@ impl DecryptWorkerShard {
         // Pass the buffer through by ownership + offset/length. No
         // per-packet allocation; rx_loop slices into `packet_data`.
         let _ = link_msg; // sanity-check borrow before sending buffer onward
-        let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback {
+        let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback::new(
             source_node_addr,
             transport_id,
             remote_addr,
@@ -929,9 +968,9 @@ impl DecryptWorkerShard {
             fmp_counter,
             fmp_flags,
             packet_data,
-            fmp_plaintext_offset: fmp_plaintext_start,
-            fmp_plaintext_len: plaintext_len,
-        }));
+            fmp_plaintext_start,
+            plaintext_len,
+        )));
         // Suppress unused-variable warnings for the (now-removed) FSP
         // fast path. The `state` lookup is still needed for the FMP
         // cipher + replay window above.
@@ -1083,18 +1122,18 @@ mod tests {
     }
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
-        DecryptWorkerEvent::Plaintext(DecryptFallback {
-            source_node_addr: crate::NodeAddr::from_bytes([1u8; 16]),
-            transport_id: TransportId::new(1),
-            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            timestamp_ms: 1_000,
+        DecryptWorkerEvent::Plaintext(DecryptFallback::new(
+            crate::NodeAddr::from_bytes([1u8; 16]),
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
             packet_len,
-            fmp_counter: 1,
-            fmp_flags: 0,
-            packet_data: vec![0; packet_len.max(1)],
-            fmp_plaintext_offset: 0,
-            fmp_plaintext_len: 1,
-        })
+            1,
+            0,
+            vec![0; packet_len.max(1)],
+            0,
+            1,
+        ))
     }
 
     fn dummy_failure_event() -> DecryptWorkerEvent {
@@ -1269,6 +1308,29 @@ mod tests {
         let bulk =
             dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
         assert_eq!(decrypt_job_lane(&bulk), DecryptWorkerLane::Bulk);
+    }
+
+    #[test]
+    fn decrypt_fallback_event_owns_lane_selected_at_construction() {
+        let mut priority = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+
+        assert_eq!(
+            decrypt_worker_event_lane(&priority),
+            DecryptWorkerLane::Priority
+        );
+        let DecryptWorkerEvent::Plaintext(fallback) = &mut priority else {
+            panic!("dummy plaintext event should be plaintext");
+        };
+        fallback.packet_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1024;
+        fallback.packet_data.resize(fallback.packet_len, 0);
+        assert_eq!(
+            decrypt_worker_event_lane(&priority),
+            DecryptWorkerLane::Priority,
+            "queued fallback events must keep the lane chosen before enqueue"
+        );
+
+        let bulk = dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        assert_eq!(decrypt_worker_event_lane(&bulk), DecryptWorkerLane::Bulk);
     }
 
     #[test]
