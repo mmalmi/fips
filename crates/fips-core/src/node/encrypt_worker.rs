@@ -522,7 +522,7 @@ fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWor
 struct QueuedFmpSendJob {
     job: FmpSendJob,
     #[cfg(not(target_os = "macos"))]
-    fair_reserved: bool,
+    fair_reservation: Option<FairAdmissionReservation>,
     #[cfg(target_os = "macos")]
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
@@ -535,7 +535,7 @@ impl QueuedFmpSendJob {
         Self {
             job,
             #[cfg(not(target_os = "macos"))]
-            fair_reserved: false,
+            fair_reservation: None,
             #[cfg(target_os = "macos")]
             macos_flow: None,
             #[cfg(target_os = "macos")]
@@ -564,13 +564,13 @@ impl QueuedFmpSendJob {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn mark_fair_reserved(&mut self) {
-        self.fair_reserved = true;
+    fn mark_fair_reserved(&mut self, reservation: FairAdmissionReservation) {
+        self.fair_reservation = Some(reservation);
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn fair_reserved(&self) -> bool {
-        self.fair_reserved
+    fn take_fair_reservation(&mut self) -> Option<FairAdmissionReservation> {
+        self.fair_reservation.take()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -948,8 +948,24 @@ impl FairFlowQueue {
 }
 
 #[cfg(not(target_os = "macos"))]
+struct FairAdmissionReservation {
+    key: SendTargetKey,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairAdmissionReservation {
+    fn new(key: SendTargetKey) -> Self {
+        Self { key }
+    }
+
+    fn key(&self) -> SendTargetKey {
+        self.key
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 enum FairReserve {
-    Reserved,
+    Reserved(FairAdmissionReservation),
     Full,
     Closed,
 }
@@ -1052,17 +1068,21 @@ impl FairWorkerSender {
 
         let key = job.flow_key();
         match self.admission.try_reserve(key, job.scheduling_weight()) {
-            FairReserve::Reserved => {
+            FairReserve::Reserved(reservation) => {
                 let mut job = job;
-                job.mark_fair_reserved();
+                job.mark_fair_reserved(reservation);
                 match self.bulk_tx.try_send(job) {
                     Ok(()) => Ok(()),
-                    Err(TrySendError::Full(job)) => {
-                        self.admission.release(key);
+                    Err(TrySendError::Full(mut job)) => {
+                        if let Some(reservation) = job.take_fair_reservation() {
+                            self.admission.release(reservation);
+                        }
                         Err(FairWorkerTryPushError::Full(Box::new(job)))
                     }
-                    Err(TrySendError::Disconnected(job)) => {
-                        self.admission.release(key);
+                    Err(TrySendError::Disconnected(mut job)) => {
+                        if let Some(reservation) = job.take_fair_reservation() {
+                            self.admission.release(reservation);
+                        }
                         drop(job);
                         Err(FairWorkerTryPushError::Closed)
                     }
@@ -1086,14 +1106,19 @@ impl FairWorkerSender {
         }
         let key = job.flow_key();
         let weight = job.scheduling_weight();
-        if self.admission.reserve_blocking(key, weight).is_err() {
-            drop(job);
-            return Err(FairWorkerPushError);
-        }
+        let reservation = match self.admission.reserve_blocking(key, weight) {
+            Ok(reservation) => reservation,
+            Err(err) => {
+                drop(job);
+                return Err(err);
+            }
+        };
         let mut job = job;
-        job.mark_fair_reserved();
-        if let Err(SendError(job)) = self.bulk_tx.send(job) {
-            self.admission.release(key);
+        job.mark_fair_reserved(reservation);
+        if let Err(SendError(mut job)) = self.bulk_tx.send(job) {
+            if let Some(reservation) = job.take_fair_reservation() {
+                self.admission.release(reservation);
+            }
             drop(job);
             return Err(FairWorkerPushError);
         }
@@ -1112,7 +1137,7 @@ impl FairAdmission {
             return FairReserve::Closed;
         }
         if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
-            return FairReserve::Reserved;
+            return FairReserve::Reserved(FairAdmissionReservation::new(key));
         }
         FairReserve::Full
     }
@@ -1121,7 +1146,7 @@ impl FairAdmission {
         &self,
         key: SendTargetKey,
         weight: usize,
-    ) -> Result<(), FairWorkerPushError> {
+    ) -> Result<FairAdmissionReservation, FairWorkerPushError> {
         let mut state = self
             .state
             .lock()
@@ -1131,7 +1156,7 @@ impl FairAdmission {
                 return Err(FairWorkerPushError);
             }
             if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
-                return Ok(());
+                return Ok(FairAdmissionReservation::new(key));
             }
             state.full_waiters += 1;
             state = self
@@ -1142,7 +1167,8 @@ impl FairAdmission {
         }
     }
 
-    fn release(&self, key: SendTargetKey) {
+    fn release(&self, reservation: FairAdmissionReservation) {
+        let key = reservation.key();
         let mut state = self
             .state
             .lock()
@@ -1248,9 +1274,9 @@ impl FairWorkerReceiver {
         }
     }
 
-    fn push_received(&self, batch: &mut Vec<QueuedFmpSendJob>, job: QueuedFmpSendJob) {
-        if job.fair_reserved() {
-            self.admission.release(job.flow_key());
+    fn push_received(&self, batch: &mut Vec<QueuedFmpSendJob>, mut job: QueuedFmpSendJob) {
+        if let Some(reservation) = job.take_fair_reservation() {
+            self.admission.release(reservation);
         }
         batch.push(job);
     }
@@ -3751,6 +3777,61 @@ mod fair_queue_tests {
                 DEFAULT_SEND_WEIGHT,
             ))
             .expect("different fd to the same dest is a different send target");
+        });
+    }
+
+    #[test]
+    fn fair_admission_reservation_owns_release_key() {
+        with_test_socket(|socket_a, cipher| {
+            let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open second send socket");
+            let socket_b = raw_b.into_async().expect("into_async second socket");
+            let dest: SocketAddr = "127.0.0.1:10033".parse().unwrap();
+            let key_a =
+                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+            let key_b =
+                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+            assert_ne!(
+                key_a, key_b,
+                "same destination on different sockets must have different reservations"
+            );
+
+            let admission = FairAdmission {
+                state: Mutex::new(FairAdmissionState::default()),
+                not_full: Condvar::new(),
+                total_cap: 2,
+                per_flow_cap: 1,
+                fast_lane_cap: 1,
+            };
+            let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("first key should reserve"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            assert_eq!(reservation_a.key(), key_a);
+            assert!(
+                matches!(
+                    admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize),
+                    FairReserve::Full
+                ),
+                "per-flow cap should block a second reservation for the same key"
+            );
+            let reservation_b = match admission.try_reserve(key_b, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("different key should reserve independently"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            assert_eq!(reservation_b.key(), key_b);
+
+            admission.release(reservation_a);
+            let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("released key should reserve again"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            assert_eq!(reservation_a.key(), key_a);
+            admission.release(reservation_a);
+            admission.release(reservation_b);
         });
     }
 
