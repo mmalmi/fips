@@ -48,7 +48,9 @@ use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{
+    Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
+};
 use tracing::{debug, trace, warn};
 
 // `endpoint_event_tx` used to ride on every `DecryptJob` so the worker
@@ -67,6 +69,8 @@ use crate::noise::ReplayWindow;
 
 const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
+const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 64;
 
@@ -100,6 +104,25 @@ fn priority_channel_cap() -> usize {
         priority_cap.as_deref(),
         None,
         DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP,
+    )
+}
+
+fn fallback_bulk_channel_cap() -> usize {
+    let bulk_cap = std::env::var("FIPS_DECRYPT_FALLBACK_CHANNEL_CAP").ok();
+    let shared_cap = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
+    parse_channel_cap(
+        bulk_cap.as_deref(),
+        shared_cap.as_deref(),
+        DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP,
+    )
+}
+
+fn fallback_priority_channel_cap() -> usize {
+    let priority_cap = std::env::var("FIPS_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP").ok();
+    parse_channel_cap(
+        priority_cap.as_deref(),
+        None,
+        DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP,
     )
 }
 
@@ -179,7 +202,7 @@ pub(crate) struct DecryptJob {
     /// The rx_loop drains this in a select! arm and runs the legacy
     /// dispatch (handshakes, MMP reports, routing errors, IPv6-shim →
     /// TUN). Keeps the slow paths working unchanged.
-    pub fallback_tx: UnboundedSender<DecryptWorkerEvent>,
+    pub fallback_tx: DecryptWorkerFallbackSender,
 }
 
 /// Result of a successful FMP decrypt + replay accept, when the
@@ -241,6 +264,74 @@ pub(crate) struct DecryptFailureReport {
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     DecryptFailure(DecryptFailureReport),
+}
+
+#[derive(Clone)]
+pub(crate) struct DecryptWorkerFallbackSender {
+    priority: TokioSender<DecryptWorkerEvent>,
+    bulk: TokioSender<DecryptWorkerEvent>,
+}
+
+pub(crate) struct DecryptWorkerFallbackReceivers {
+    pub(crate) priority: TokioReceiver<DecryptWorkerEvent>,
+    pub(crate) bulk: TokioReceiver<DecryptWorkerEvent>,
+}
+
+pub(crate) fn decrypt_worker_fallback_channels()
+-> (DecryptWorkerFallbackSender, DecryptWorkerFallbackReceivers) {
+    decrypt_worker_fallback_channels_with_caps(
+        fallback_priority_channel_cap(),
+        fallback_bulk_channel_cap(),
+    )
+}
+
+fn decrypt_worker_fallback_channels_with_caps(
+    priority_cap: usize,
+    bulk_cap: usize,
+) -> (DecryptWorkerFallbackSender, DecryptWorkerFallbackReceivers) {
+    let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
+    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
+    (
+        DecryptWorkerFallbackSender {
+            priority: priority_tx,
+            bulk: bulk_tx,
+        },
+        DecryptWorkerFallbackReceivers {
+            priority: priority_rx,
+            bulk: bulk_rx,
+        },
+    )
+}
+
+impl DecryptWorkerFallbackSender {
+    fn send(&self, event: DecryptWorkerEvent) -> bool {
+        let lane = decrypt_worker_event_lane(&event);
+        let result = match lane {
+            DecryptWorkerLane::Priority => self.priority.try_send(event),
+            DecryptWorkerLane::Bulk => self.bulk.try_send(event),
+        };
+        match result {
+            Ok(()) => true,
+            Err(TokioTrySendError::Full(_)) => {
+                record_decrypt_fallback_drop(lane);
+                false
+            }
+            Err(TokioTrySendError::Closed(_)) => {
+                debug!(
+                    ?lane,
+                    "decrypt fallback receiver gone; dropping worker event"
+                );
+                false
+            }
+        }
+    }
+}
+
+fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
+    match event {
+        DecryptWorkerEvent::Plaintext(fallback) => decrypt_worker_packet_lane(fallback.packet_len),
+        DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
+    }
 }
 
 /// Messages travelling through the per-worker crossbeam channel.
@@ -449,6 +540,23 @@ fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
             kind,
             drops = n + 1,
             "DecryptWorker priority channel full; dropping inbound item"
+        );
+    }
+}
+
+fn record_decrypt_fallback_drop(lane: DecryptWorkerLane) {
+    let event = match lane {
+        DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptFallbackPriorityDropped,
+        DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFallbackBulkDropped,
+    };
+    crate::perf_profile::record_event(event);
+    static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 8 || n.is_multiple_of(10000) {
+        warn!(
+            ?lane,
+            drops = n + 1,
+            "DecryptWorker fallback channel full; dropping worker event"
         );
     }
 }
@@ -747,8 +855,7 @@ mod tests {
 
     fn dummy_decrypt_job_with_len(cache_key: (TransportId, u32), packet_len: usize) -> DecryptJob {
         let packet_len = packet_len.max(crate::node::wire::ESTABLISHED_HEADER_SIZE + 16);
-        let (fallback_tx, _fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         DecryptJob {
             packet_data: vec![0; packet_len],
             cache_key,
@@ -770,6 +877,79 @@ mod tests {
 
     fn dummy_priority_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
         dummy_decrypt_job_with_len(cache_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+    }
+
+    fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
+        DecryptWorkerEvent::Plaintext(DecryptFallback {
+            source_node_addr: crate::NodeAddr::from_bytes([1u8; 16]),
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            timestamp_ms: 1_000,
+            packet_len,
+            fmp_counter: 1,
+            fmp_flags: 0,
+            packet_data: vec![0; packet_len.max(1)],
+            fmp_plaintext_offset: 0,
+            fmp_plaintext_len: 1,
+        })
+    }
+
+    fn dummy_failure_event() -> DecryptWorkerEvent {
+        DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+            source_node_addr: crate::NodeAddr::from_bytes([2u8; 16]),
+            fmp_counter: 2,
+            fmp_replay_highest: 1,
+        })
+    }
+
+    #[test]
+    fn decrypt_worker_fallback_event_classifier_uses_priority_and_bulk_lanes() {
+        assert_eq!(
+            decrypt_worker_event_lane(&dummy_plaintext_event(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
+            )),
+            DecryptWorkerLane::Priority
+        );
+        assert_eq!(
+            decrypt_worker_event_lane(&dummy_plaintext_event(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+            )),
+            DecryptWorkerLane::Bulk
+        );
+        assert_eq!(
+            decrypt_worker_event_lane(&dummy_failure_event()),
+            DecryptWorkerLane::Priority
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_fallback_bulk_full_does_not_starve_priority_events() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+
+        assert!(fallback_tx.send(dummy_plaintext_event(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+        )));
+        assert!(
+            !fallback_tx.send(dummy_plaintext_event(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+            )),
+            "second bulk fallback should be dropped at the bounded bulk lane"
+        );
+        assert!(
+            fallback_tx.send(dummy_failure_event()),
+            "priority fallback should still fit its reserved lane"
+        );
+
+        assert_eq!(fallback_rx.bulk.len(), 1);
+        assert_eq!(fallback_rx.priority.len(), 1);
+        assert!(matches!(
+            fallback_rx.priority.try_recv().expect("priority event"),
+            DecryptWorkerEvent::DecryptFailure(_)
+        ));
+        assert!(matches!(
+            fallback_rx.bulk.try_recv().expect("bulk event"),
+            DecryptWorkerEvent::Plaintext(_)
+        ));
     }
 
     #[test]
@@ -873,8 +1053,7 @@ mod tests {
             })
             .expect("priority registration should enqueue");
 
-        let (fallback_tx, mut fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut bulk_job = dummy_bulk_decrypt_job(cache_key);
         bulk_job.fallback_tx = fallback_tx;
         bulk_tx
@@ -889,6 +1068,7 @@ mod tests {
             "priority registration must be applied before queued bulk work"
         );
         match fallback_rx
+            .priority
             .try_recv()
             .expect("bulk job should run after registration")
         {
@@ -961,8 +1141,7 @@ mod tests {
             },
         );
 
-        let (fallback_tx, mut fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 
         let job = DecryptJob {
             packet_data: wire,
@@ -980,7 +1159,7 @@ mod tests {
 
         handle_job(&mut sessions, job).expect("worker job handled");
 
-        let event = fallback_rx.try_recv().expect("fallback delivered");
+        let event = fallback_rx.priority.try_recv().expect("fallback delivered");
         let fallback = match event {
             DecryptWorkerEvent::Plaintext(fallback) => fallback,
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
@@ -1025,8 +1204,7 @@ mod tests {
             },
         );
 
-        let (fallback_tx, mut fallback_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let source_node_addr = crate::NodeAddr::from_bytes([9u8; 16]);
         let job = DecryptJob {
             packet_data: wire,
@@ -1044,7 +1222,7 @@ mod tests {
 
         handle_job(&mut sessions, job).expect("worker job handled");
 
-        let event = fallback_rx.try_recv().expect("failure delivered");
+        let event = fallback_rx.priority.try_recv().expect("failure delivered");
         match event {
             DecryptWorkerEvent::DecryptFailure(report) => {
                 assert_eq!(report.source_node_addr, source_node_addr);

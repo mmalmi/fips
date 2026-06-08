@@ -3,7 +3,9 @@
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
 use crate::discovery::is_punch_packet;
-use crate::node::decrypt_worker::{DecryptFailureReport, DecryptFallback, DecryptWorkerEvent};
+use crate::node::decrypt_worker::{
+    DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
+};
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
     PHASE_MSG2,
@@ -109,7 +111,7 @@ impl Node {
             match self.decrypt_fallback_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx, rx) = crate::node::decrypt_worker::decrypt_worker_fallback_channels();
                     (rx, Some(tx))
                 }
             };
@@ -160,7 +162,13 @@ impl Node {
                 // tunnel. Promoting fallback gives the kernel-side
                 // TCP machinery a fair chance to see its ACKs and
                 // keep cwnd growing.
-                Some(event) = decrypt_fallback_rx.recv() => {
+                Some(event) = decrypt_fallback_rx.priority.recv() => {
+                    self.process_decrypt_worker_event(event).await;
+                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
+                    last_data_activity = Some(Instant::now());
+                    self.flush_pending_sends().await;
+                }
+                Some(event) = decrypt_fallback_rx.bulk.recv() => {
                     self.process_decrypt_worker_event(event).await;
                     self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
                     last_data_activity = Some(Instant::now());
@@ -300,7 +308,7 @@ impl Node {
     async fn drain_rx_loop_data_queues(
         &mut self,
         packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
-        decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -325,7 +333,7 @@ impl Node {
     async fn drain_packet_rx(
         &mut self,
         packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
-        decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
         first_packet: Option<ReceivedPacket>,
         budget: usize,
     ) -> usize {
@@ -551,12 +559,21 @@ impl Node {
     /// plaintexts can't accumulate behind a 256-packet inbound burst.
     async fn drain_decrypt_fallback(
         &mut self,
-        rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        rx: &mut DecryptWorkerFallbackReceivers,
         budget: usize,
     ) -> usize {
         let mut drained = 0;
         while drained < budget {
-            match rx.try_recv() {
+            match rx.priority.try_recv() {
+                Ok(event) => {
+                    self.process_decrypt_worker_event(event).await;
+                    drained += 1;
+                    continue;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+            }
+            match rx.bulk.try_recv() {
                 Ok(event) => {
                     self.process_decrypt_worker_event(event).await;
                     drained += 1;

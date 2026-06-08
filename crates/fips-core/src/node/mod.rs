@@ -857,10 +857,10 @@ pub struct Node {
     decrypt_registered_sessions: std::collections::HashSet<(TransportId, u32)>,
     /// Fallback channel: decrypt worker bounces non-fast-path packets
     /// (anything that's not bulk EndpointData) back here for rx_loop
-    /// to handle via the legacy path. Drained by a new rx_loop arm.
-    decrypt_fallback_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<decrypt_worker::DecryptWorkerEvent>>,
-    decrypt_fallback_tx: tokio::sync::mpsc::UnboundedSender<decrypt_worker::DecryptWorkerEvent>,
+    /// to handle via the legacy path. Drained by rx_loop with a bounded
+    /// priority lane ahead of bounded bulk plaintext fallbacks.
+    decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
+    decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     /// TUN reader thread handle.
     tun_reader_handle: Option<JoinHandle<()>>,
     /// TUN writer thread handle.
@@ -1009,7 +1009,8 @@ impl Node {
         let node_addr = *identity.node_addr();
         let is_leaf_only = config.is_leaf_only();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            decrypt_worker::decrypt_worker_fallback_channels();
         let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
@@ -1163,7 +1164,8 @@ impl Node {
         config.validate()?;
         let node_addr = *identity.node_addr();
 
-        let (decrypt_fallback_tx, decrypt_fallback_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (decrypt_fallback_tx, decrypt_fallback_rx) =
+            decrypt_worker::decrypt_worker_fallback_channels();
         let decrypt_fallback_rx = Some(decrypt_fallback_rx);
 
         let mut startup_epoch = [0u8; 8];
