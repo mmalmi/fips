@@ -29,6 +29,7 @@ DEFAULT_FILTERS=(
   test_session_receiver_loss_degrades_direct_and_uses_fallback
   test_ignores_duplicate_receiver_report_after_valid_sample
   test_ignores_out_of_order_receiver_report_after_valid_sample
+  test_parent_reeval_ignores_unmeasured_peer_costs
   connected_udp
 )
 
