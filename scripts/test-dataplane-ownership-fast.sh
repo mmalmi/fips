@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Fast tiered validation for pure FIPS dataplane ownership/type-boundary changes.
+#
+# This is intentionally smaller than the full deterministic Linux runner and
+# much smaller than nvpn perf/matrix/soak gates. Use it when a change should not
+# alter queueing, routing, connected-UDP, maintenance timing, or send policy.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RUN_DOCKER=1
+RUN_RELEASE_CHECK=1
+
+DEFAULT_LOCAL_FILTERS=(
+  queued_fmp_send_job_owns_lane_and_target_key
+  queued_target_key_survives_seal_and_batch_grouping
+  sealed_send_packet_owns_target_wire_and_drop_policy
+  selected_send_batch_owns_target_fifo_and_drop_policy
+  mac_queue_tests
+)
+
+DEFAULT_LINUX_FILTERS=(
+  encrypt_worker_shard_owns_batch_drain_and_flush_error
+  queued_fmp_send_job_owns_lane_and_target_key
+  queued_target_key_survives_seal_and_batch_grouping
+  sealed_send_packet_owns_target_wire_and_drop_policy
+  selected_send_batch_owns_target_fifo_and_drop_policy
+  linux_send_batch_attempt_owns_cursor_and_backpressure_policy
+  fair_admission_reservation_owns_release_key
+  fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue
+)
+
+LOCAL_FILTERS=()
+LINUX_FILTERS=()
+POSITIONAL_FILTERS=()
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/test-dataplane-ownership-fast.sh [options] [filter ...]
+
+Fast validation tier for pure dataplane ownership/type-boundary changes.
+
+Options:
+  --skip-docker           Do not run the focused Linux Docker slice.
+  --skip-release-check    Do not run cargo check -p fips-core --release.
+  --local-filter FILTER   Add a local cargo test filter.
+  --linux-filter FILTER   Add a Linux Docker cargo test filter.
+  -h, --help              Show this help.
+
+If positional filters are provided, they replace both default filter lists.
+USAGE
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --skip-docker)
+      RUN_DOCKER=0
+      shift
+      ;;
+    --skip-release-check)
+      RUN_RELEASE_CHECK=0
+      shift
+      ;;
+    --local-filter)
+      [[ "$#" -ge 2 ]] || {
+        echo "error: --local-filter requires a value" >&2
+        exit 2
+      }
+      LOCAL_FILTERS+=("$2")
+      shift 2
+      ;;
+    --linux-filter)
+      [[ "$#" -ge 2 ]] || {
+        echo "error: --linux-filter requires a value" >&2
+        exit 2
+      }
+      LINUX_FILTERS+=("$2")
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ "$#" -gt 0 ]]; do
+        POSITIONAL_FILTERS+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      echo "error: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      POSITIONAL_FILTERS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ "${#POSITIONAL_FILTERS[@]}" -gt 0 ]]; then
+  LOCAL_FILTERS=("${POSITIONAL_FILTERS[@]}")
+  LINUX_FILTERS=("${POSITIONAL_FILTERS[@]}")
+else
+  if [[ "${#LOCAL_FILTERS[@]}" -eq 0 ]]; then
+    LOCAL_FILTERS=("${DEFAULT_LOCAL_FILTERS[@]}")
+  fi
+  if [[ "${#LINUX_FILTERS[@]}" -eq 0 ]]; then
+    LINUX_FILTERS=("${DEFAULT_LINUX_FILTERS[@]}")
+  fi
+fi
+
+cd "$ROOT_DIR"
+
+echo "--- cargo fmt --check ---"
+cargo fmt --check
+
+for filter in "${LOCAL_FILTERS[@]}"; do
+  echo "--- cargo test -p fips-core ${filter} ---"
+  cargo test -p fips-core "$filter" -- --nocapture
+done
+
+if [[ "$RUN_RELEASE_CHECK" -eq 1 ]]; then
+  echo "--- cargo check -p fips-core --release ---"
+  cargo check -p fips-core --release
+fi
+
+if [[ "$RUN_DOCKER" -eq 1 ]]; then
+  echo "--- focused Linux Docker ownership slice ---"
+  ./scripts/test-dataplane-safety-linux-docker.sh "${LINUX_FILTERS[@]}"
+fi
