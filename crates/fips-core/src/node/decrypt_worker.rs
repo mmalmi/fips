@@ -1277,6 +1277,46 @@ mod tests {
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
     }
 
+    #[test]
+    fn decrypt_worker_drain_unregisters_priority_before_bulk_jobs() {
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
+        let session_key = test_session_key(1, 78);
+
+        priority_tx
+            .try_send(WorkerMsg::UnregisterSession { session_key })
+            .expect("priority unregister should enqueue");
+
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let mut bulk_job = dummy_bulk_decrypt_job(session_key);
+        bulk_job.fallback_tx = fallback_tx;
+        bulk_tx
+            .try_send(bulk_job)
+            .expect("bulk decrypt job should enqueue");
+
+        let mut sessions =
+            std::collections::HashMap::from([(session_key, test_owned_session_state())]);
+        drain_worker_queues(0, &mut sessions, &priority_rx, &bulk_rx);
+
+        assert!(
+            !sessions.contains_key(&session_key),
+            "priority unregister must remove stale session state before queued bulk work"
+        );
+        assert!(
+            fallback_rx.priority.is_empty(),
+            "bulk job for unregistered session must not use stale state and emit AEAD failure"
+        );
+        assert!(
+            fallback_rx.bulk.is_empty(),
+            "bulk job for unregistered session must not produce plaintext"
+        );
+        assert!(
+            priority_rx.is_empty(),
+            "priority queue should be fully drained before bulk"
+        );
+        assert!(bulk_rx.is_empty(), "bulk queue should be drained");
+    }
+
     /// `DecryptJob.fmp_flags` must survive the worker bounce as
     /// `DecryptFallback.fmp_flags`. Pre-fix the worker hardcoded
     /// `fmp_flags: 0`, dropping CE / SP on every packet handled by
