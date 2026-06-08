@@ -17,6 +17,7 @@ DEFAULT_LOCAL_FILTERS=(
   queued_target_key_survives_seal_and_batch_grouping
   sealed_send_packet_owns_target_wire_and_drop_policy
   selected_send_batch_owns_target_fifo_and_drop_policy
+  mac_completion_group_owns_flow_key_and_fifo_items
   mac_queue_tests
 )
 

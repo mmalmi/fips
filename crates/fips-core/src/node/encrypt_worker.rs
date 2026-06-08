@@ -1686,6 +1686,7 @@ struct MacSendFlowState {
 
 #[cfg(target_os = "macos")]
 struct MacCompletionGroup {
+    flow_key: MacSendFlowKey,
     flow: Arc<MacSequencedSendFlow>,
     items: Vec<(u64, MacSendItem)>,
 }
@@ -1697,6 +1698,39 @@ enum MacSendItem {
         drop_on_backpressure: bool,
     },
     Skip,
+}
+
+#[cfg(target_os = "macos")]
+impl MacCompletionGroup {
+    fn new(flow: Arc<MacSequencedSendFlow>, seq: u64, item: MacSendItem) -> Self {
+        let flow_key = flow.key;
+        Self {
+            flow_key,
+            flow,
+            items: vec![(seq, item)],
+        }
+    }
+
+    #[cfg(test)]
+    fn target_key(&self) -> MacSendFlowKey {
+        self.flow_key
+    }
+
+    fn push(&mut self, flow: &Arc<MacSequencedSendFlow>, seq: u64, item: MacSendItem) {
+        debug_assert_eq!(
+            self.flow_key, flow.key,
+            "macOS completion group must keep the queued flow key"
+        );
+        debug_assert!(
+            Arc::ptr_eq(&self.flow, flow),
+            "macOS completion group must not merge a different flow owner"
+        );
+        self.items.push((seq, item));
+    }
+
+    fn complete(self) {
+        self.flow.complete_many(self.items);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1850,12 +1884,9 @@ fn push_mac_completion(
         .iter_mut()
         .find(|group| Arc::ptr_eq(&group.flow, &flow))
     {
-        group.items.push((seq, item));
+        group.push(&flow, seq, item);
     } else {
-        groups.push(MacCompletionGroup {
-            flow,
-            items: vec![(seq, item)],
-        });
+        groups.push(MacCompletionGroup::new(flow, seq, item));
     }
 }
 
@@ -2235,7 +2266,7 @@ fn flush_batch_sync(
 
     #[cfg(target_os = "macos")]
     for group in macos_completions {
-        group.flow.complete_many(group.items);
+        group.complete();
     }
 
     drop(_t); // close the encrypt timer before we open the send timer
@@ -3600,6 +3631,23 @@ mod mac_queue_tests {
         })
     }
 
+    fn test_mac_send_flow(
+        socket: AsyncUdpSocket,
+        dest_addr: SocketAddr,
+    ) -> Arc<MacSequencedSendFlow> {
+        let send_target = SelectedSendTarget::new(socket, None, dest_addr);
+        let key = send_target.key();
+        Arc::new(MacSequencedSendFlow {
+            key,
+            send_target,
+            next_seq: std::sync::atomic::AtomicU64::new(0),
+            last_used_ms: std::sync::atomic::AtomicU64::new(0),
+            state: Mutex::new(MacSendFlowState::default()),
+            ready_cv: Condvar::new(),
+            space_cv: Condvar::new(),
+        })
+    }
+
     #[test]
     fn mac_worker_prioritizes_control_when_bulk_queue_is_full() {
         with_test_socket(|socket, cipher| {
@@ -3625,6 +3673,66 @@ mod mac_queue_tests {
             assert!(!batch[0].job.drop_on_backpressure);
             assert!(batch[1].job.drop_on_backpressure);
             assert!(batch[2].job.drop_on_backpressure);
+        });
+    }
+
+    #[test]
+    fn mac_completion_group_owns_flow_key_and_fifo_items() {
+        with_test_socket(|socket, _cipher| {
+            let flow_a = test_mac_send_flow(socket.clone(), "127.0.0.1:10033".parse().unwrap());
+            let flow_b = test_mac_send_flow(socket, "127.0.0.1:10034".parse().unwrap());
+            let key_a = flow_a.key;
+            let key_b = flow_b.key;
+            assert_ne!(key_a, key_b);
+
+            let mut groups = Vec::new();
+            push_mac_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                7,
+                MacSendItem::Packet {
+                    packet: vec![1],
+                    drop_on_backpressure: true,
+                },
+            );
+            push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
+            push_mac_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                8,
+                MacSendItem::Packet {
+                    packet: vec![2],
+                    drop_on_backpressure: false,
+                },
+            );
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].target_key(), key_a);
+            assert_eq!(groups[1].target_key(), key_b);
+            assert_eq!(groups[0].items.len(), 2);
+            assert_eq!(groups[0].items[0].0, 7);
+            assert_eq!(groups[0].items[1].0, 8);
+            match &groups[0].items[0].1 {
+                MacSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                } => {
+                    assert_eq!(packet.as_slice(), &[1]);
+                    assert!(*drop_on_backpressure);
+                }
+                MacSendItem::Skip => panic!("expected first flow item to be a packet"),
+            }
+            match &groups[0].items[1].1 {
+                MacSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                } => {
+                    assert_eq!(packet.as_slice(), &[2]);
+                    assert!(!*drop_on_backpressure);
+                }
+                MacSendItem::Skip => panic!("expected second flow item to be a packet"),
+            }
+            assert!(matches!(groups[1].items[0].1, MacSendItem::Skip));
         });
     }
 
