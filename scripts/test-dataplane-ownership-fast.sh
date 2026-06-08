@@ -13,6 +13,7 @@ RUN_RELEASE_CHECK=1
 DEFAULT_LOCAL_FILTERS=(
   decrypt_job_owns_lane_selected_at_construction
   decrypt_fallback_event_owns_lane_selected_at_construction
+  packet_drain_cursor_owns_first_packet_budget_and_interleave
   priority_bulk_drain_cursor_owns_selected_head_and_budget
   queued_fmp_send_job_owns_lane_and_target_key
   queued_target_key_survives_seal_and_batch_grouping
@@ -25,6 +26,7 @@ DEFAULT_LOCAL_FILTERS=(
 DEFAULT_LINUX_FILTERS=(
   decrypt_job_owns_lane_selected_at_construction
   decrypt_fallback_event_owns_lane_selected_at_construction
+  packet_drain_cursor_owns_first_packet_budget_and_interleave
   priority_bulk_drain_cursor_owns_selected_head_and_budget
   encrypt_worker_shard_owns_batch_drain_and_flush_error
   queued_fmp_send_job_owns_lane_and_target_key

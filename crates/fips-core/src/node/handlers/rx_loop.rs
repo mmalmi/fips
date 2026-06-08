@@ -345,36 +345,30 @@ impl Node {
         first_packet: Option<ReceivedPacket>,
         budget: usize,
     ) -> usize {
-        let mut drained = 0usize;
-        if let Some(packet) = first_packet {
-            self.process_packet(packet).await;
-            drained = 1;
-        }
-
         // Drain remaining ready inbound packets in a tight loop before
         // yielding back to select! Every yield is a scheduler hop, and at
         // line rate transports typically have several packets available per
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
-        while drained < budget {
-            if drained > 0 && drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
-                self.drain_decrypt_fallback(
-                    decrypt_fallback_rx,
-                    None,
-                    None,
-                    FALLBACK_INTERLEAVE_BUDGET,
-                )
-                .await;
-            }
-            match packet_rx.try_recv() {
-                Ok(packet) => {
+        let mut drain = PacketDrainCursor::new(first_packet, budget, FALLBACK_INTERLEAVE_EVERY);
+        while let Some(action) = drain.next(packet_rx) {
+            match action {
+                PacketDrainAction::Packet(packet) => {
                     self.process_packet(packet).await;
-                    drained += 1;
                 }
-                Err(_) => break,
+                PacketDrainAction::InterleaveFallback => {
+                    self.drain_decrypt_fallback(
+                        decrypt_fallback_rx,
+                        None,
+                        None,
+                        FALLBACK_INTERLEAVE_BUDGET,
+                    )
+                    .await;
+                }
             }
         }
 
+        let drained = drain.drained();
         if drained > 0 {
             // One trailing fallback drain so the last bounced packets of the
             // burst aren't held up by the post-burst send flush.
@@ -696,6 +690,62 @@ impl Node {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PacketDrainAction<T> {
+    Packet(T),
+    InterleaveFallback,
+}
+
+struct PacketDrainCursor<T> {
+    first_packet: Option<T>,
+    remaining: usize,
+    drained: usize,
+    interleave_every: usize,
+    last_interleave_at: usize,
+}
+
+impl<T> PacketDrainCursor<T> {
+    fn new(first_packet: Option<T>, budget: usize, interleave_every: usize) -> Self {
+        Self {
+            first_packet,
+            remaining: budget,
+            drained: 0,
+            interleave_every,
+            last_interleave_at: 0,
+        }
+    }
+
+    fn next(&mut self, packet_rx: &mut UnboundedReceiver<T>) -> Option<PacketDrainAction<T>> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        if self.interleave_due() {
+            self.last_interleave_at = self.drained;
+            return Some(PacketDrainAction::InterleaveFallback);
+        }
+
+        let packet = self
+            .first_packet
+            .take()
+            .or_else(|| packet_rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(PacketDrainAction::Packet(packet))
+    }
+
+    fn drained(&self) -> usize {
+        self.drained
+    }
+
+    fn interleave_due(&self) -> bool {
+        self.drained > 0
+            && self.interleave_every > 0
+            && self.drained.is_multiple_of(self.interleave_every)
+            && self.last_interleave_at != self.drained
+    }
+}
+
 struct PriorityBulkDrainCursor<T> {
     first_priority: Option<T>,
     first_bulk: Option<T>,
@@ -740,7 +790,7 @@ impl<T> PriorityBulkDrainCursor<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::PriorityBulkDrainCursor;
+    use super::{PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor};
 
     #[tokio::test]
     async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
@@ -813,6 +863,36 @@ mod tests {
         );
         assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
         assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(Some("selected"), 3, 2);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("selected"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(packet_rx.try_recv().ok(), Some("queued-3"));
         assert_eq!(drain.drained(), 3);
     }
 }
