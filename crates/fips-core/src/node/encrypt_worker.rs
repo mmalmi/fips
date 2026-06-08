@@ -684,7 +684,6 @@ fn fair_worker_channel(
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerSender {
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
-        let key = job.flow_key();
         let job = if self.tx.len() < self.admission.fast_lane_cap {
             match self.tx.try_send(job) {
                 Ok(()) => return Ok(()),
@@ -698,6 +697,18 @@ impl FairWorkerSender {
             job
         };
 
+        if job.queue_lane() == EncryptWorkerLane::Priority {
+            return match self.tx.try_send(job) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
+                Err(TrySendError::Disconnected(job)) => {
+                    drop(job);
+                    Err(FairWorkerTryPushError::Closed)
+                }
+            };
+        }
+
+        let key = job.flow_key();
         match self.admission.try_reserve(key, job.scheduling_weight()) {
             FairReserve::Reserved => {
                 let mut job = job;
@@ -724,6 +735,13 @@ impl FairWorkerSender {
     }
 
     fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
+        if job.queue_lane() == EncryptWorkerLane::Priority {
+            if let Err(SendError(job)) = self.tx.send(job) {
+                drop(job);
+                return Err(FairWorkerPushError);
+            }
+            return Ok(());
+        }
         let key = job.flow_key();
         let weight = job.scheduling_weight();
         if self.admission.reserve_blocking(key, weight).is_err() {
@@ -2831,6 +2849,76 @@ mod fair_queue_tests {
                 tx.try_push(queued_job(socket, &cipher, hot, 128, true, 1)),
                 Err(FairWorkerTryPushError::Full(_))
             ));
+        });
+    }
+
+    #[test]
+    fn priority_flow_enters_when_bulk_flow_reaches_per_flow_cap() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let warmup: SocketAddr = "127.0.0.1:10022".parse().unwrap();
+            let hot: SocketAddr = "127.0.0.1:10023".parse().unwrap();
+
+            // Fill the direct fast lane first, so the hot-flow jobs below use
+            // fair admission and actually consume the per-flow bulk budget.
+            for _ in 0..4 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    warmup,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("warmup bulk should enter fast lane");
+            }
+
+            for _ in 0..2 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    hot,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("hot bulk should consume fair per-flow budget");
+            }
+
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket.clone(),
+                        &cipher,
+                        hot,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "bulk should be capped for the hot flow"
+            );
+
+            tx.try_push(queued_job_classified(
+                socket,
+                &cipher,
+                hot,
+                64,
+                false,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("priority job must bypass bulk per-flow pressure");
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 8));
+            assert_eq!(batch.len(), 7);
+            assert!(
+                batch.iter().any(|job| job.flow_key().dest_addr == hot
+                    && job.queue_lane() == EncryptWorkerLane::Priority),
+                "priority job should be present despite the capped bulk flow"
+            );
         });
     }
 
