@@ -259,6 +259,12 @@ impl DecryptWorkerPool {
         match self.senders[idx].try_send(WorkerMsg::Job(job)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptWorkerQueueFull,
+                );
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptWorkerBulkDropped,
+                );
                 static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
                 let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
                 if n < 8 || n.is_multiple_of(10000) {
@@ -307,6 +313,12 @@ impl DecryptWorkerPool {
         match self.senders[idx].try_send(WorkerMsg::RegisterSession { cache_key, state }) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptWorkerQueueFull,
+                );
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptWorkerRegisterFull,
+                );
                 warn!(
                     worker = idx,
                     "DecryptWorker channel full at session registration; will retry on next packet"
@@ -539,7 +551,100 @@ fn handle_job(
 mod tests {
     use super::*;
     use crate::noise::ReplayWindow;
+    use crossbeam_channel::bounded;
     use ring::aead::{LessSafeKey, UnboundKey};
+    use std::time::Duration;
+
+    fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>) {
+        let (tx, rx) = bounded::<WorkerMsg>(1);
+        (
+            DecryptWorkerPool {
+                senders: std::sync::Arc::from(vec![tx].into_boxed_slice()),
+            },
+            rx,
+        )
+    }
+
+    fn test_owned_session_state() -> OwnedSessionState {
+        let key_bytes = [7u8; 32];
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        OwnedSessionState {
+            fmp_cipher: LessSafeKey::new(unbound),
+            fmp_replay: ReplayWindow::new(),
+            source_npub: None,
+        }
+    }
+
+    fn dummy_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
+        let (fallback_tx, _fallback_rx) =
+            tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
+        DecryptJob {
+            packet_data: vec![0; crate::node::wire::ESTABLISHED_HEADER_SIZE + 16],
+            cache_key,
+            _transport_id: cache_key.0,
+            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            timestamp_ms: 1_000,
+            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
+            fmp_counter: 1,
+            fmp_flags: 0,
+            fmp_header: [0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
+            fmp_ciphertext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fallback_tx,
+        }
+    }
+
+    #[test]
+    fn decrypt_worker_full_queue_drops_bulk_without_waiting() {
+        let (pool, rx) = one_slot_worker_pool();
+        let cache_key = (TransportId::new(1), 99u32);
+        pool.dispatch_job(dummy_decrypt_job(cache_key));
+        assert_eq!(rx.len(), 1, "test queue should start full");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let pool_for_thread = pool.clone();
+        std::thread::spawn(move || {
+            pool_for_thread.dispatch_job(dummy_decrypt_job(cache_key));
+            done_tx.send(()).unwrap();
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("full decrypt-worker bulk queue must not park dispatch");
+        assert_eq!(
+            rx.len(),
+            1,
+            "bulk packet should be dropped rather than queued past the bound"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_register_full_returns_false_without_waiting() {
+        let (pool, rx) = one_slot_worker_pool();
+        let cache_key = (TransportId::new(1), 77u32);
+        pool.dispatch_job(dummy_decrypt_job(cache_key));
+        assert_eq!(rx.len(), 1, "test queue should start full");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let pool_for_thread = pool.clone();
+        std::thread::spawn(move || {
+            let registered =
+                pool_for_thread.register_session(cache_key, test_owned_session_state());
+            done_tx.send(registered).unwrap();
+        });
+
+        let registered = done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("full decrypt-worker control queue must not park registration");
+        assert!(
+            !registered,
+            "registration should report pressure so caller retries later"
+        );
+        assert_eq!(
+            rx.len(),
+            1,
+            "registration should not overflow the bounded worker queue"
+        );
+    }
 
     /// `DecryptJob.fmp_flags` must survive the worker bounce as
     /// `DecryptFallback.fmp_flags`. Pre-fix the worker hardcoded
