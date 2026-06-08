@@ -8,7 +8,7 @@
 //! window and the recv-side ciphers for every session it owns.
 //!
 //! Dispatch is **deterministic by session key**: rx_loop computes
-//! `worker_idx = hash(cache_key) % N` and routes both
+//! `worker_idx = hash(session_key) % N` and routes both
 //! `RegisterSession` control messages and per-packet `Job` messages
 //! through the same hash, so a session always lands on the same shard.
 //!
@@ -78,6 +78,37 @@ const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 64;
 enum DecryptWorkerLane {
     Priority,
     Bulk,
+}
+
+/// Stable owner key for decrypt-worker shard state.
+///
+/// The rx loop still looks up peers by the raw `(transport_id,
+/// receiver_idx)` tuple, but once a packet crosses into the worker pool this
+/// named key is the contract: registration, packet jobs, and unregister all
+/// hash the same value so one FMP recv session has one shard owner.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct DecryptSessionKey {
+    transport_id: TransportId,
+    receiver_idx: u32,
+}
+
+impl DecryptSessionKey {
+    pub(crate) fn new(transport_id: TransportId, receiver_idx: u32) -> Self {
+        Self {
+            transport_id,
+            receiver_idx,
+        }
+    }
+
+    pub(crate) fn transport_id(self) -> TransportId {
+        self.transport_id
+    }
+}
+
+impl From<(TransportId, u32)> for DecryptSessionKey {
+    fn from((transport_id, receiver_idx): (TransportId, u32)) -> Self {
+        Self::new(transport_id, receiver_idx)
+    }
 }
 
 fn parse_channel_cap(primary: Option<&str>, fallback: Option<&str>, default: usize) -> usize {
@@ -160,7 +191,7 @@ pub(crate) struct OwnedSessionState {
 
 /// Pre-cooked decrypt + dispatch job. Built on rx_loop after parsing
 /// the FMP header; the worker pulls its session state from its own
-/// local HashMap (keyed by `cache_key`) instead of receiving a
+/// local HashMap (keyed by `session_key`) instead of receiving a
 /// `WorkerSessionState` clone per packet.
 pub(crate) struct DecryptJob {
     /// The raw packet bytes (incl. the 16-byte FMP outer header).
@@ -170,7 +201,7 @@ pub(crate) struct DecryptJob {
     /// Lookup key into the worker's owned session HashMap. Mirrors the
     /// `peers_by_index` key on the Node side: `(transport_id,
     /// receiver_idx)`.
-    pub cache_key: (TransportId, u32),
+    pub session_key: DecryptSessionKey,
     /// Source kernel transport. Forwarded into the bounced
     /// `DecryptFallback` so rx_loop can update per-peer last-seen +
     /// link stats (otherwise the MMP link-dead timer fires at 30s
@@ -347,17 +378,17 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
 pub(crate) enum WorkerMsg {
     Job(DecryptJob),
     RegisterSession {
-        cache_key: (TransportId, u32),
+        session_key: DecryptSessionKey,
         state: OwnedSessionState,
     },
     UnregisterSession {
-        cache_key: (TransportId, u32),
+        session_key: DecryptSessionKey,
     },
 }
 
 /// Handle to the decrypt worker pool. Shard-style: each worker is one
 /// OS thread that owns its sessions outright. Dispatch is
-/// deterministic on `cache_key` so a session always reaches the same
+/// deterministic on `session_key` so a session always reaches the same
 /// shard.
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerPool {
@@ -395,10 +426,10 @@ impl DecryptWorkerPool {
     /// Stable hash from session key → worker index. Same hash is used
     /// for session registration and per-packet dispatch so packets and
     /// registration arrive at the same shard.
-    fn worker_idx_for(&self, cache_key: (TransportId, u32)) -> usize {
+    fn worker_idx_for(&self, session_key: DecryptSessionKey) -> usize {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        cache_key.hash(&mut h);
+        session_key.hash(&mut h);
         (h.finish() as usize) % self.senders.len()
     }
 
@@ -410,7 +441,7 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return;
         }
-        let idx = self.worker_idx_for(job.cache_key);
+        let idx = self.worker_idx_for(job.session_key);
         match decrypt_job_lane(&job) {
             DecryptWorkerLane::Priority => self.dispatch_priority_job(idx, job),
             DecryptWorkerLane::Bulk => self.dispatch_bulk_job(idx, job),
@@ -466,16 +497,16 @@ impl DecryptWorkerPool {
     #[must_use = "registration may have failed under queue pressure; caller must gate its own session-registered flag on the returned bool"]
     pub fn register_session(
         &self,
-        cache_key: (TransportId, u32),
+        session_key: DecryptSessionKey,
         state: OwnedSessionState,
     ) -> bool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for(cache_key);
+        let idx = self.worker_idx_for(session_key);
         match self.senders[idx]
             .priority
-            .try_send(WorkerMsg::RegisterSession { cache_key, state })
+            .try_send(WorkerMsg::RegisterSession { session_key, state })
         {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
@@ -504,14 +535,14 @@ impl DecryptWorkerPool {
     /// Drop a session from its worker (rekey, peer removed). Fire and
     /// forget — if the worker is gone we don't care.
     #[allow(dead_code)] // wired up alongside the rekey / peer-removal callers in a follow-up
-    pub fn unregister_session(&self, cache_key: (TransportId, u32)) {
+    pub fn unregister_session(&self, session_key: DecryptSessionKey) {
         if self.senders.is_empty() {
             return;
         }
-        let idx = self.worker_idx_for(cache_key);
+        let idx = self.worker_idx_for(session_key);
         let _ = self.senders[idx]
             .priority
-            .try_send(WorkerMsg::UnregisterSession { cache_key });
+            .try_send(WorkerMsg::UnregisterSession { session_key });
     }
 }
 
@@ -566,7 +597,7 @@ fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<De
 
     // The shard's owned session table. Lives entirely on this OS
     // thread — never observed by any other thread.
-    let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
+    let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
 
     loop {
         drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
@@ -596,7 +627,7 @@ fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<De
 
 fn drain_worker_queues(
     idx: usize,
-    sessions: &mut HashMap<(TransportId, u32), OwnedSessionState>,
+    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
     priority_rx: &Receiver<WorkerMsg>,
     bulk_rx: &Receiver<DecryptJob>,
 ) {
@@ -617,7 +648,7 @@ fn drain_worker_queues(
 
 fn handle_msg(
     idx: usize,
-    sessions: &mut HashMap<(TransportId, u32), OwnedSessionState>,
+    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
     msg: WorkerMsg,
 ) {
     match msg {
@@ -626,28 +657,32 @@ fn handle_msg(
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
             }
         }
-        WorkerMsg::RegisterSession { cache_key, state } => {
-            trace!(worker = idx, ?cache_key, "DecryptWorker: register session");
-            sessions.insert(cache_key, state);
-        }
-        WorkerMsg::UnregisterSession { cache_key } => {
+        WorkerMsg::RegisterSession { session_key, state } => {
             trace!(
                 worker = idx,
-                ?cache_key,
+                ?session_key,
+                "DecryptWorker: register session"
+            );
+            sessions.insert(session_key, state);
+        }
+        WorkerMsg::UnregisterSession { session_key } => {
+            trace!(
+                worker = idx,
+                ?session_key,
                 "DecryptWorker: unregister session"
             );
-            sessions.remove(&cache_key);
+            sessions.remove(&session_key);
         }
     }
 }
 
 fn handle_job(
-    sessions: &mut HashMap<(TransportId, u32), OwnedSessionState>,
+    sessions: &mut HashMap<DecryptSessionKey, OwnedSessionState>,
     job: DecryptJob,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let DecryptJob {
         mut packet_data,
-        cache_key,
+        session_key,
         _transport_id: transport_id,
         _remote_addr: remote_addr,
         timestamp_ms,
@@ -667,7 +702,7 @@ fn handle_job(
     // yet registered, or unregistered mid-flight), bounce the raw
     // packet to rx_loop so it can run its legacy decrypt + populate
     // the session via RegisterSession on success.
-    let state = match sessions.get_mut(&cache_key) {
+    let state = match sessions.get_mut(&session_key) {
         Some(s) => s,
         None => {
             // The legacy rx_loop already has the ciphertext bytes
@@ -843,6 +878,36 @@ mod tests {
         )
     }
 
+    fn test_worker_pool(
+        worker_count: usize,
+        cap: usize,
+    ) -> (
+        DecryptWorkerPool,
+        Vec<Receiver<WorkerMsg>>,
+        Vec<Receiver<DecryptJob>>,
+    ) {
+        let mut senders = Vec::with_capacity(worker_count);
+        let mut priority_receivers = Vec::with_capacity(worker_count);
+        let mut bulk_receivers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
+            let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(cap);
+            senders.push(DecryptWorkerSender {
+                priority: priority_tx,
+                bulk: bulk_tx,
+            });
+            priority_receivers.push(priority_rx);
+            bulk_receivers.push(bulk_rx);
+        }
+        (
+            DecryptWorkerPool {
+                senders: std::sync::Arc::from(senders.into_boxed_slice()),
+            },
+            priority_receivers,
+            bulk_receivers,
+        )
+    }
+
     fn test_owned_session_state() -> OwnedSessionState {
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
@@ -853,13 +918,17 @@ mod tests {
         }
     }
 
-    fn dummy_decrypt_job_with_len(cache_key: (TransportId, u32), packet_len: usize) -> DecryptJob {
+    fn test_session_key(transport_id: u32, receiver_idx: u32) -> DecryptSessionKey {
+        DecryptSessionKey::new(TransportId::new(transport_id), receiver_idx)
+    }
+
+    fn dummy_decrypt_job_with_len(session_key: DecryptSessionKey, packet_len: usize) -> DecryptJob {
         let packet_len = packet_len.max(crate::node::wire::ESTABLISHED_HEADER_SIZE + 16);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         DecryptJob {
             packet_data: vec![0; packet_len],
-            cache_key,
-            _transport_id: cache_key.0,
+            session_key,
+            _transport_id: session_key.transport_id(),
             _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             timestamp_ms: 1_000,
             source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
@@ -871,12 +940,12 @@ mod tests {
         }
     }
 
-    fn dummy_bulk_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
-        dummy_decrypt_job_with_len(cache_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
+    fn dummy_bulk_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
+        dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
     }
 
-    fn dummy_priority_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
-        dummy_decrypt_job_with_len(cache_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+    fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
+        dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
     }
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
@@ -900,6 +969,51 @@ mod tests {
             fmp_counter: 2,
             fmp_replay_highest: 1,
         })
+    }
+
+    #[test]
+    fn decrypt_session_key_routes_registration_and_jobs_to_same_worker() {
+        let (pool, priority_receivers, bulk_receivers) = test_worker_pool(4, 4);
+        let session_key = test_session_key(7, 42);
+        let owner = pool.worker_idx_for(session_key);
+
+        assert!(pool.register_session(session_key, test_owned_session_state()));
+        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+
+        match priority_receivers[owner]
+            .try_recv()
+            .expect("registration should reach owner")
+        {
+            WorkerMsg::RegisterSession {
+                session_key: queued_key,
+                ..
+            } => assert_eq!(queued_key, session_key),
+            WorkerMsg::Job(_) | WorkerMsg::UnregisterSession { .. } => {
+                panic!("expected registration first")
+            }
+        }
+        match priority_receivers[owner]
+            .try_recv()
+            .expect("priority packet should reach same owner")
+        {
+            WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
+            WorkerMsg::RegisterSession { .. } | WorkerMsg::UnregisterSession { .. } => {
+                panic!("expected priority job second")
+            }
+        }
+
+        for (idx, rx) in priority_receivers.iter().enumerate() {
+            if idx != owner {
+                assert!(
+                    rx.is_empty(),
+                    "other worker {idx} must not receive this session key"
+                );
+            }
+        }
+        assert!(
+            bulk_receivers.iter().all(Receiver::is_empty),
+            "priority session-key dispatch must not consume bulk lanes"
+        );
     }
 
     #[test]
@@ -955,14 +1069,14 @@ mod tests {
     #[test]
     fn decrypt_worker_full_queue_drops_bulk_without_waiting() {
         let (pool, _priority_rx, bulk_rx) = one_slot_worker_pool();
-        let cache_key = (TransportId::new(1), 99u32);
-        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        let session_key = test_session_key(1, 99);
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let pool_for_thread = pool.clone();
         std::thread::spawn(move || {
-            pool_for_thread.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+            pool_for_thread.dispatch_job(dummy_bulk_decrypt_job(session_key));
             done_tx.send(()).unwrap();
         });
 
@@ -979,11 +1093,11 @@ mod tests {
     #[test]
     fn decrypt_worker_priority_packet_uses_priority_lane_when_bulk_queue_is_full() {
         let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
-        let cache_key = (TransportId::new(1), 99u32);
-        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        let session_key = test_session_key(1, 99);
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
-        pool.dispatch_job(dummy_priority_decrypt_job(cache_key));
+        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
         assert_eq!(priority_rx.len(), 1, "priority packet should enqueue");
         assert_eq!(
             bulk_rx.len(),
@@ -995,11 +1109,11 @@ mod tests {
     #[test]
     fn decrypt_worker_register_uses_priority_lane_when_bulk_queue_is_full() {
         let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
-        let cache_key = (TransportId::new(1), 77u32);
-        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        let session_key = test_session_key(1, 77);
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
-        assert!(pool.register_session(cache_key, test_owned_session_state()));
+        assert!(pool.register_session(session_key, test_owned_session_state()));
         assert_eq!(priority_rx.len(), 1, "registration should enqueue");
         assert_eq!(
             bulk_rx.len(),
@@ -1011,8 +1125,8 @@ mod tests {
     #[test]
     fn decrypt_worker_register_full_returns_false_without_waiting() {
         let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
-        let cache_key = (TransportId::new(1), 77u32);
-        assert!(pool.register_session(cache_key, test_owned_session_state()));
+        let session_key = test_session_key(1, 77);
+        assert!(pool.register_session(session_key, test_owned_session_state()));
         assert_eq!(
             priority_rx.len(),
             1,
@@ -1023,7 +1137,7 @@ mod tests {
         let pool_for_thread = pool.clone();
         std::thread::spawn(move || {
             let registered =
-                pool_for_thread.register_session(cache_key, test_owned_session_state());
+                pool_for_thread.register_session(session_key, test_owned_session_state());
             done_tx.send(registered).unwrap();
         });
 
@@ -1045,16 +1159,16 @@ mod tests {
     fn decrypt_worker_drain_registers_priority_before_bulk_jobs() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
-        let cache_key = (TransportId::new(1), 77u32);
+        let session_key = test_session_key(1, 77);
         priority_tx
             .try_send(WorkerMsg::RegisterSession {
-                cache_key,
+                session_key,
                 state: test_owned_session_state(),
             })
             .expect("priority registration should enqueue");
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        let mut bulk_job = dummy_bulk_decrypt_job(cache_key);
+        let mut bulk_job = dummy_bulk_decrypt_job(session_key);
         bulk_job.fallback_tx = fallback_tx;
         bulk_tx
             .try_send(bulk_job)
@@ -1064,7 +1178,7 @@ mod tests {
         drain_worker_queues(0, &mut sessions, &priority_rx, &bulk_rx);
 
         assert!(
-            sessions.contains_key(&cache_key),
+            sessions.contains_key(&session_key),
             "priority registration must be applied before queued bulk work"
         );
         match fallback_rx
@@ -1130,10 +1244,10 @@ mod tests {
         wire.extend_from_slice(tag.as_ref());
 
         // Owning state held by the worker for this session.
-        let cache_key = (TransportId::new(1), 99u32);
-        let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
+        let session_key = test_session_key(1, 99);
+        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
         sessions.insert(
-            cache_key,
+            session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
@@ -1145,7 +1259,7 @@ mod tests {
 
         let job = DecryptJob {
             packet_data: wire,
-            cache_key,
+            session_key,
             _transport_id: TransportId::new(1),
             _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             timestamp_ms: 1_000,
@@ -1193,10 +1307,10 @@ mod tests {
         wire.push(0xAB);
         wire.extend_from_slice(&[0u8; 16]); // invalid AEAD tag
 
-        let cache_key = (TransportId::new(1), 77u32);
-        let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
+        let session_key = test_session_key(1, 77);
+        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::new();
         sessions.insert(
-            cache_key,
+            session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
@@ -1208,7 +1322,7 @@ mod tests {
         let source_node_addr = crate::NodeAddr::from_bytes([9u8; 16]);
         let job = DecryptJob {
             packet_data: wire,
-            cache_key,
+            session_key,
             _transport_id: TransportId::new(1),
             _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             timestamp_ms: 1_000,

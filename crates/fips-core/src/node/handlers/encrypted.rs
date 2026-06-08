@@ -16,7 +16,7 @@
 //! effects under the shard architecture.
 
 use crate::node::Node;
-use crate::node::decrypt_worker::DecryptFailureReport;
+use crate::node::decrypt_worker::{DecryptFailureReport, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
@@ -179,7 +179,7 @@ impl Node {
         // production `self.decrypt_workers` is always `Some` (spawned
         // at lifecycle start with `num_cpus` workers), so this branch
         // is taken and the legacy block below never runs.
-        let cache_key = (packet.transport_id, header.receiver_idx.as_u32());
+        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
         // **Worker is the production decrypt path.** The previous
         // version of this gate also required `endpoint_event_tx` to
         // be `Some`, but that field is only populated when a caller
@@ -194,11 +194,11 @@ impl Node {
         // worker pool exists, and this session has been handed off
         // to it.
         if let Some(workers) = self.decrypt_workers.as_ref().cloned()
-            && self.decrypt_registered_sessions.contains(&cache_key)
+            && self.decrypt_registered_sessions.contains(&session_key)
         {
             let job = super::super::decrypt_worker::DecryptJob {
                 packet_data: packet.data,
-                cache_key,
+                session_key,
                 _transport_id: packet.transport_id,
                 _remote_addr: packet.remote_addr,
                 timestamp_ms: packet.timestamp_ms,
@@ -382,7 +382,7 @@ impl Node {
         let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
             return;
         };
-        let (cache_key, state) = {
+        let (session_key, state) = {
             let Some(peer) = self.peers.get(node_addr) else {
                 return;
             };
@@ -392,11 +392,11 @@ impl Node {
             let Some(our_index) = peer.our_index() else {
                 return;
             };
-            let cache_key = (transport_id, our_index.as_u32());
+            let session_key = DecryptSessionKey::new(transport_id, our_index.as_u32());
             let Some(state) = self.build_owned_session_state(node_addr) else {
                 return;
             };
-            (cache_key, state)
+            (session_key, state)
         };
         // **Only mark as registered if the worker actually accepted
         // the registration message.** When the per-worker channel is
@@ -411,8 +411,8 @@ impl Node {
         // means we keep using the legacy in-line decrypt path
         // until a later `register_decrypt_worker_session` succeeds
         // (the FSP-established / rekey callers retry naturally).
-        if workers.register_session(cache_key, state) {
-            self.decrypt_registered_sessions.insert(cache_key);
+        if workers.register_session(session_key, state) {
+            self.decrypt_registered_sessions.insert(session_key);
         }
     }
 

@@ -673,8 +673,9 @@ fn test_promote_registers_decrypt_worker() {
     let peer = node.get_peer(&node_addr).unwrap();
     let our_index = peer.our_index().unwrap();
     assert!(
-        node.decrypt_registered_sessions
-            .contains(&(transport_id, our_index.as_u32())),
+        node.decrypt_registered_sessions.contains(
+            &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32())
+        ),
         "decrypt_registered_sessions must contain the new session after promote"
     );
 }
@@ -996,9 +997,9 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
         "peer must still be present after rekey-drain deregistration"
     );
     assert!(
-        !node
-            .decrypt_registered_sessions
-            .contains(&(transport_id, index_old)),
+        !node.decrypt_registered_sessions.contains(
+            &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, index_old)
+        ),
         "old session must be evicted from decrypt_registered_sessions"
     );
 }

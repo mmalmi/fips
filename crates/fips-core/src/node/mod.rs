@@ -24,6 +24,7 @@ mod tests;
 mod tree;
 pub(crate) mod wire;
 
+use self::decrypt_worker::DecryptSessionKey;
 use self::discovery_rate_limit::{DiscoveryBackoff, DiscoveryForwardRateLimiter};
 use self::rate_limit::HandshakeRateLimiter;
 use self::routing::{LearnedRouteTable, LearnedRouteTableSnapshot};
@@ -854,7 +855,7 @@ pub struct Node {
     /// `Arc<RwLock<HashMap>>` of cipher / replay state anymore, only
     /// this set tracks **whether** the worker has been told about a
     /// given session.
-    decrypt_registered_sessions: std::collections::HashSet<(TransportId, u32)>,
+    decrypt_registered_sessions: std::collections::HashSet<DecryptSessionKey>,
     /// Fallback channel: decrypt worker bounces non-fast-path packets
     /// (anything that's not bulk EndpointData) back here for rx_loop
     /// to handle via the legacy path. Drained by rx_loop with a bounded
@@ -1699,10 +1700,11 @@ impl Node {
         // also tears down the peer's connected UDP socket.
         let owning_peer = self.peers_by_index.get(&cache_key).copied();
         self.peers_by_index.remove(&cache_key);
-        if self.decrypt_registered_sessions.remove(&cache_key)
+        let session_key = DecryptSessionKey::from(cache_key);
+        if self.decrypt_registered_sessions.remove(&session_key)
             && let Some(workers) = self.decrypt_workers.as_ref()
         {
-            workers.unregister_session(cache_key);
+            workers.unregister_session(session_key);
         }
         // Tear down the per-peer connected UDP socket *only* if no
         // other peers_by_index entry still resolves to this peer.
