@@ -164,7 +164,7 @@ fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
 }
 
 fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
-    decrypt_worker_packet_lane(job.packet_data.len())
+    job.lane()
 }
 
 /// Owning recv-side state for one established FMP session. Lives
@@ -235,6 +235,9 @@ pub(crate) struct DecryptJob {
     /// Mutated in place during AEAD open — must reach the worker
     /// with the full ciphertext + tag intact.
     pub packet_data: Vec<u8>,
+    /// Lane selected when rx_loop builds the worker message. Dispatch consumes
+    /// this queued value instead of recalculating lane policy later.
+    lane: DecryptWorkerLane,
     /// Lookup key into the worker's owned session HashMap. Mirrors the
     /// `peers_by_index` key on the Node side: `(transport_id,
     /// receiver_idx)`.
@@ -271,6 +274,43 @@ pub(crate) struct DecryptJob {
     /// dispatch (handshakes, MMP reports, routing errors, IPv6-shim →
     /// TUN). Keeps the slow paths working unchanged.
     pub fallback_tx: DecryptWorkerFallbackSender,
+}
+
+impl DecryptJob {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        packet_data: Vec<u8>,
+        session_key: DecryptSessionKey,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        timestamp_ms: u64,
+        source_node_addr: NodeAddr,
+        fmp_counter: u64,
+        fmp_flags: u8,
+        fmp_header: [u8; 16],
+        fmp_ciphertext_offset: usize,
+        fallback_tx: DecryptWorkerFallbackSender,
+    ) -> Self {
+        let lane = decrypt_worker_packet_lane(packet_data.len());
+        Self {
+            packet_data,
+            lane,
+            session_key,
+            _transport_id: transport_id,
+            _remote_addr: remote_addr,
+            timestamp_ms,
+            source_node_addr,
+            fmp_counter,
+            fmp_flags,
+            fmp_header,
+            fmp_ciphertext_offset,
+            fallback_tx,
+        }
+    }
+
+    fn lane(&self) -> DecryptWorkerLane {
+        self.lane
+    }
 }
 
 /// Result of a successful FMP decrypt + replay accept, when the
@@ -755,6 +795,7 @@ impl DecryptWorkerShard {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let DecryptJob {
             mut packet_data,
+            lane: _,
             session_key,
             _transport_id: transport_id,
             _remote_addr: remote_addr,
@@ -1018,19 +1059,19 @@ mod tests {
     fn dummy_decrypt_job_with_len(session_key: DecryptSessionKey, packet_len: usize) -> DecryptJob {
         let packet_len = packet_len.max(crate::node::wire::ESTABLISHED_HEADER_SIZE + 16);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        DecryptJob {
-            packet_data: vec![0; packet_len],
+        DecryptJob::new(
+            vec![0; packet_len],
             session_key,
-            _transport_id: session_key.transport_id,
-            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            timestamp_ms: 1_000,
-            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
-            fmp_counter: 1,
-            fmp_flags: 0,
-            fmp_header: [0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
-            fmp_ciphertext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            session_key.transport_id,
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
+            crate::NodeAddr::from_bytes([0u8; 16]),
+            1,
+            0,
+            [0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
-        }
+        )
     }
 
     fn dummy_bulk_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
@@ -1115,19 +1156,19 @@ mod tests {
         fmp_flags: u8,
         fallback_tx: DecryptWorkerFallbackSender,
     ) -> DecryptJob {
-        DecryptJob {
+        DecryptJob::new(
             packet_data,
             session_key,
-            _transport_id: TransportId::new(1),
-            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            timestamp_ms: 1_000,
-            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
+            crate::NodeAddr::from_bytes([0u8; 16]),
             fmp_counter,
             fmp_flags,
-            fmp_header: header,
-            fmp_ciphertext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            header,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
-        }
+        )
     }
 
     #[test]
@@ -1207,6 +1248,27 @@ mod tests {
             decrypt_worker_event_lane(&dummy_failure_event()),
             DecryptWorkerLane::Priority
         );
+    }
+
+    #[test]
+    fn decrypt_job_owns_lane_selected_at_construction() {
+        let session_key = test_session_key(1, 55);
+        let mut priority =
+            dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+
+        assert_eq!(decrypt_job_lane(&priority), DecryptWorkerLane::Priority);
+        priority
+            .packet_data
+            .resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1024, 0);
+        assert_eq!(
+            decrypt_job_lane(&priority),
+            DecryptWorkerLane::Priority,
+            "queued decrypt jobs must keep the lane chosen before dispatch"
+        );
+
+        let bulk =
+            dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        assert_eq!(decrypt_job_lane(&bulk), DecryptWorkerLane::Bulk);
     }
 
     #[test]
@@ -1760,19 +1822,19 @@ mod tests {
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 
-        let job = DecryptJob {
-            packet_data: wire,
+        let job = DecryptJob::new(
+            wire,
             session_key,
-            _transport_id: TransportId::new(1),
-            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            timestamp_ms: 1_000,
-            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
-            fmp_counter: counter,
-            fmp_flags: flags_byte,
-            fmp_header: header,
-            fmp_ciphertext_offset: HDR,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
+            crate::NodeAddr::from_bytes([0u8; 16]),
+            counter,
+            flags_byte,
+            header,
+            HDR,
             fallback_tx,
-        };
+        );
 
         shard.handle_job(job).expect("worker job handled");
 
@@ -1824,19 +1886,19 @@ mod tests {
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let source_node_addr = crate::NodeAddr::from_bytes([9u8; 16]);
-        let job = DecryptJob {
-            packet_data: wire,
+        let job = DecryptJob::new(
+            wire,
             session_key,
-            _transport_id: TransportId::new(1),
-            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            timestamp_ms: 1_000,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
             source_node_addr,
-            fmp_counter: counter,
-            fmp_flags: 0,
-            fmp_header: header,
-            fmp_ciphertext_offset: HDR,
+            counter,
+            0,
+            header,
+            HDR,
             fallback_tx,
-        };
+        );
 
         shard.handle_job(job).expect("worker job handled");
 

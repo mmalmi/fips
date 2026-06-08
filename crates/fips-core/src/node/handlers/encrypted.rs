@@ -196,19 +196,19 @@ impl Node {
         if let Some(workers) = self.decrypt_workers.as_ref().cloned()
             && self.decrypt_registered_sessions.contains(&session_key)
         {
-            let job = super::super::decrypt_worker::DecryptJob {
-                packet_data: packet.data,
+            let job = super::super::decrypt_worker::DecryptJob::new(
+                packet.data,
                 session_key,
-                _transport_id: packet.transport_id,
-                _remote_addr: packet.remote_addr,
-                timestamp_ms: packet.timestamp_ms,
-                source_node_addr: node_addr,
-                fmp_counter: header.counter,
-                fmp_flags: header.flags,
-                fmp_header: header.header_bytes,
-                fmp_ciphertext_offset: header.ciphertext_offset(),
-                fallback_tx: self.decrypt_fallback_tx.clone(),
-            };
+                packet.transport_id,
+                packet.remote_addr,
+                packet.timestamp_ms,
+                node_addr,
+                header.counter,
+                header.flags,
+                header.header_bytes,
+                header.ciphertext_offset(),
+                self.decrypt_fallback_tx.clone(),
+            );
             workers.dispatch_job(job);
             return;
         }
