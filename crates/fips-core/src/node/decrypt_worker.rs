@@ -70,6 +70,12 @@ const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 64;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DecryptWorkerLane {
+    Priority,
+    Bulk,
+}
+
 fn parse_channel_cap(primary: Option<&str>, fallback: Option<&str>, default: usize) -> usize {
     primary
         .and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -97,8 +103,16 @@ fn priority_channel_cap() -> usize {
     )
 }
 
-fn priority_shaped_packet(len: usize) -> bool {
-    len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
+fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
+    if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
+        DecryptWorkerLane::Priority
+    } else {
+        DecryptWorkerLane::Bulk
+    }
+}
+
+fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
+    decrypt_worker_packet_lane(job.packet_data.len())
 }
 
 /// Owning recv-side state for one established FMP session. Lives
@@ -306,10 +320,9 @@ impl DecryptWorkerPool {
             return;
         }
         let idx = self.worker_idx_for(job.cache_key);
-        if priority_shaped_packet(job.packet_data.len()) {
-            self.dispatch_priority_job(idx, job);
-        } else {
-            self.dispatch_bulk_job(idx, job);
+        match decrypt_job_lane(&job) {
+            DecryptWorkerLane::Priority => self.dispatch_priority_job(idx, job),
+            DecryptWorkerLane::Bulk => self.dispatch_bulk_job(idx, job),
         }
     }
 
@@ -694,12 +707,14 @@ mod tests {
 
     #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
-        assert!(priority_shaped_packet(
-            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
-        ));
-        assert!(!priority_shaped_packet(
-            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
-        ));
+        assert_eq!(
+            decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
+            DecryptWorkerLane::Priority
+        );
+        assert_eq!(
+            decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
+            DecryptWorkerLane::Bulk
+        );
     }
 
     fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>, Receiver<DecryptJob>) {
