@@ -60,7 +60,21 @@ use tracing::{debug, trace, warn};
 
 use crate::noise::ReplayWindow;
 
-const WORKER_CHANNEL_CAP: usize = 32768;
+const DEFAULT_DECRYPT_WORKER_CHANNEL_CAP: usize = 32768;
+
+fn parse_worker_channel_cap(primary: Option<&str>, fallback: Option<&str>) -> usize {
+    primary
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .or_else(|| fallback.and_then(|raw| raw.trim().parse::<usize>().ok()))
+        .unwrap_or(DEFAULT_DECRYPT_WORKER_CHANNEL_CAP)
+        .clamp(1, DEFAULT_DECRYPT_WORKER_CHANNEL_CAP)
+}
+
+fn worker_channel_cap() -> usize {
+    let decrypt_cap = std::env::var("FIPS_DECRYPT_WORKER_CHANNEL_CAP").ok();
+    let shared_cap = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
+    parse_worker_channel_cap(decrypt_cap.as_deref(), shared_cap.as_deref())
+}
 
 /// Owning recv-side state for one established FMP session. Lives
 /// **inside the worker thread that owns this session** — never
@@ -223,9 +237,10 @@ pub(crate) struct DecryptWorkerPool {
 impl DecryptWorkerPool {
     pub fn spawn(n: usize) -> Self {
         let n = n.max(1);
+        let worker_channel_cap = worker_channel_cap();
         let mut senders = Vec::with_capacity(n);
         for i in 0..n {
-            let (tx, rx) = bounded::<WorkerMsg>(WORKER_CHANNEL_CAP);
+            let (tx, rx) = bounded::<WorkerMsg>(worker_channel_cap);
             std::thread::Builder::new()
                 .name(format!("fips-decrypt-{i}"))
                 .spawn(move || run_worker(i, rx))
@@ -554,6 +569,18 @@ mod tests {
     use crossbeam_channel::bounded;
     use ring::aead::{LessSafeKey, UnboundKey};
     use std::time::Duration;
+
+    #[test]
+    fn decrypt_worker_channel_cap_prefers_specific_then_shared_value() {
+        assert_eq!(parse_worker_channel_cap(Some("4"), Some("8")), 4);
+        assert_eq!(parse_worker_channel_cap(None, Some("8")), 8);
+        assert_eq!(parse_worker_channel_cap(Some("bad"), Some("9")), 9);
+        assert_eq!(parse_worker_channel_cap(Some("0"), None), 1);
+        assert_eq!(
+            parse_worker_channel_cap(Some("999999"), None),
+            DEFAULT_DECRYPT_WORKER_CHANNEL_CAP
+        );
+    }
 
     fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>) {
         let (tx, rx) = bounded::<WorkerMsg>(1);
