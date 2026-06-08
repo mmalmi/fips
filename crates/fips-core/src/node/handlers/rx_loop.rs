@@ -216,17 +216,21 @@ impl Node {
                             "Drained queued packets before rx-loop maintenance"
                         );
                     }
-                    let data_pressure = maintenance_state.data_pressure(
+                    let maintenance_plan = maintenance_state.plan_maintenance(
                         drained,
                         Instant::now(),
                         RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW,
+                        RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+                        RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
                     );
 
                     let slow_timed_out = self.run_rx_loop_maintenance_tick(
-                        data_pressure,
-                        maintenance_state.skip_slow_maintenance(data_pressure),
+                        maintenance_plan,
                     ).await;
-                    maintenance_state.record_maintenance_result(data_pressure, slow_timed_out);
+                    maintenance_state.record_maintenance_result(
+                        maintenance_plan.data_pressure(),
+                        slow_timed_out,
+                    );
 
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
@@ -414,11 +418,7 @@ impl Node {
         drained
     }
 
-    async fn run_rx_loop_maintenance_tick(
-        &mut self,
-        data_pressure: bool,
-        skip_slow_maintenance: bool,
-    ) -> bool {
+    async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
         self.check_timeouts();
         let now_ms = Self::now_ms();
         // Link/session liveness must run before slower retry/discovery work:
@@ -443,14 +443,8 @@ impl Node {
         self.activate_connected_udp_sessions().await;
         self.sample_transport_congestion();
 
-        if skip_slow_maintenance {
+        let Some(slow_timeout) = plan.slow_timeout() else {
             return false;
-        }
-
-        let slow_timeout = if data_pressure {
-            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT
-        } else {
-            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT
         };
 
         if tokio::time::timeout(slow_timeout, self.run_rx_loop_slow_maintenance_tick())
@@ -460,7 +454,8 @@ impl Node {
             self.mark_rx_loop_maintenance_timeout();
             warn!(
                 timeout_ms = slow_timeout.as_millis() as u64,
-                data_pressure, "RX loop slow maintenance timed out; continuing packet processing"
+                data_pressure = plan.data_pressure(),
+                "RX loop slow maintenance timed out; continuing packet processing"
             );
             return true;
         }
@@ -733,6 +728,23 @@ impl RxLoopMaintenanceState {
         data_pressure && self.slow_maintenance_timed_out_under_data
     }
 
+    fn plan_maintenance(
+        &self,
+        drained: RxLoopDataDrainStats,
+        now: Instant,
+        activity_window: Duration,
+        idle_timeout: Duration,
+        busy_timeout: Duration,
+    ) -> RxLoopMaintenancePlan {
+        let data_pressure = self.data_pressure(drained, now, activity_window);
+        RxLoopMaintenancePlan::new(
+            data_pressure,
+            self.skip_slow_maintenance(data_pressure),
+            idle_timeout,
+            busy_timeout,
+        )
+    }
+
     fn record_maintenance_result(&mut self, data_pressure: bool, slow_timed_out: bool) {
         if !data_pressure {
             self.slow_maintenance_timed_out_under_data = false;
@@ -744,6 +756,42 @@ impl RxLoopMaintenanceState {
     fn recent_data_activity(&self, now: Instant, activity_window: Duration) -> bool {
         self.last_data_activity
             .is_some_and(|last| now.saturating_duration_since(last) <= activity_window)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RxLoopMaintenancePlan {
+    data_pressure: bool,
+    slow_timeout: Option<Duration>,
+}
+
+impl RxLoopMaintenancePlan {
+    fn new(
+        data_pressure: bool,
+        skip_slow_maintenance: bool,
+        idle_timeout: Duration,
+        busy_timeout: Duration,
+    ) -> Self {
+        let slow_timeout = if data_pressure && skip_slow_maintenance {
+            None
+        } else if data_pressure {
+            Some(busy_timeout)
+        } else {
+            Some(idle_timeout)
+        };
+
+        Self {
+            data_pressure,
+            slow_timeout,
+        }
+    }
+
+    fn data_pressure(&self) -> bool {
+        self.data_pressure
+    }
+
+    fn slow_timeout(&self) -> Option<Duration> {
+        self.slow_timeout
     }
 }
 
@@ -874,7 +922,7 @@ impl<T> TunOutboundDrainCursor<T> {
 mod tests {
     use super::{
         PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats,
-        RxLoopMaintenanceState, TunOutboundDrainCursor,
+        RxLoopMaintenancePlan, RxLoopMaintenanceState, TunOutboundDrainCursor,
     };
     use std::time::{Duration, Instant};
 
@@ -918,6 +966,61 @@ mod tests {
 
         state.record_maintenance_result(false, true);
         assert!(!state.skip_slow_maintenance(true));
+    }
+
+    #[test]
+    fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
+        let start = Instant::now();
+        let window = Duration::from_secs(2);
+        let idle_timeout = Duration::from_millis(100);
+        let busy_timeout = Duration::from_millis(10);
+        let empty = RxLoopDataDrainStats::default();
+        let drained = RxLoopDataDrainStats::new(1, 0, 0);
+        let mut state = RxLoopMaintenanceState::default();
+
+        let idle = state.plan_maintenance(empty, start, window, idle_timeout, busy_timeout);
+        assert_eq!(
+            idle,
+            RxLoopMaintenancePlan::new(false, false, idle_timeout, busy_timeout)
+        );
+        assert_eq!(
+            RxLoopMaintenancePlan::new(false, true, idle_timeout, busy_timeout).slow_timeout(),
+            Some(idle_timeout)
+        );
+        assert!(!idle.data_pressure());
+        assert_eq!(idle.slow_timeout(), Some(idle_timeout));
+
+        state.record_data_activity(start);
+        let recent_busy = state.plan_maintenance(
+            empty,
+            start + Duration::from_secs(1),
+            window,
+            idle_timeout,
+            busy_timeout,
+        );
+        assert!(recent_busy.data_pressure());
+        assert_eq!(recent_busy.slow_timeout(), Some(busy_timeout));
+
+        state.record_maintenance_result(true, true);
+        let skipped_busy = state.plan_maintenance(
+            drained,
+            start + Duration::from_secs(1),
+            window,
+            idle_timeout,
+            busy_timeout,
+        );
+        assert!(skipped_busy.data_pressure());
+        assert_eq!(skipped_busy.slow_timeout(), None);
+
+        let expired_idle = state.plan_maintenance(
+            empty,
+            start + Duration::from_secs(3),
+            window,
+            idle_timeout,
+            busy_timeout,
+        );
+        assert!(!expired_idle.data_pressure());
+        assert_eq!(expired_idle.slow_timeout(), Some(idle_timeout));
     }
 
     #[tokio::test]
