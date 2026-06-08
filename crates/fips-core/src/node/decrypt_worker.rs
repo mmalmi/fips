@@ -12,17 +12,22 @@
 //! `RegisterSession` control messages and per-packet `Job` messages
 //! through the same hash, so a session always lands on the same shard.
 //!
-//! Three message types travel through the per-worker `crossbeam_channel`:
+//! Worker messages travel through two bounded per-worker lanes:
 //!
 //! - **`RegisterSession`** — sent once on the first successful legacy
 //!   decrypt for a session. Hands the worker an owned snapshot of the
-//!   recv cipher + replay window for both FMP and FSP layers.
-//! - **`Job`** — per-packet bulk decrypt + deliver. The worker looks
-//!   up the session in its local HashMap; if absent (registration
-//!   hasn't arrived yet, or session was unregistered), the packet is
-//!   bounced back to rx_loop via the fallback channel.
+//!   recv cipher + replay window for the FMP layer. It uses the
+//!   priority lane.
+//! - **`Job`** — per-packet FMP decrypt + bounce. Large packets use
+//!   the bulk lane; small control-shaped packets use the priority lane
+//!   so heartbeats/MMP/rekey-sized traffic is not trapped behind a
+//!   full bulk queue. The worker looks up the session in its local
+//!   HashMap; if absent (registration hasn't arrived yet, or session
+//!   was unregistered), the packet is dropped and retried by later
+//!   traffic.
 //! - **`UnregisterSession`** — sent on rekey / peer drop so the worker
-//!   releases the owned cipher + replay state.
+//!   releases the owned cipher + replay state. It uses the priority
+//!   lane.
 //!
 //! Only the **bulk-data** path (FMP DataPacket → FSP EndpointData) is
 //! handled by the worker. Anything else (handshakes, MMP reports,
@@ -60,20 +65,40 @@ use tracing::{debug, trace, warn};
 
 use crate::noise::ReplayWindow;
 
-const DEFAULT_DECRYPT_WORKER_CHANNEL_CAP: usize = 32768;
+const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
+const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
+const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 64;
 
-fn parse_worker_channel_cap(primary: Option<&str>, fallback: Option<&str>) -> usize {
+fn parse_channel_cap(primary: Option<&str>, fallback: Option<&str>, default: usize) -> usize {
     primary
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .or_else(|| fallback.and_then(|raw| raw.trim().parse::<usize>().ok()))
-        .unwrap_or(DEFAULT_DECRYPT_WORKER_CHANNEL_CAP)
-        .clamp(1, DEFAULT_DECRYPT_WORKER_CHANNEL_CAP)
+        .unwrap_or(default)
+        .clamp(1, default)
 }
 
-fn worker_channel_cap() -> usize {
+fn bulk_channel_cap() -> usize {
     let decrypt_cap = std::env::var("FIPS_DECRYPT_WORKER_CHANNEL_CAP").ok();
     let shared_cap = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
-    parse_worker_channel_cap(decrypt_cap.as_deref(), shared_cap.as_deref())
+    parse_channel_cap(
+        decrypt_cap.as_deref(),
+        shared_cap.as_deref(),
+        DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP,
+    )
+}
+
+fn priority_channel_cap() -> usize {
+    let priority_cap = std::env::var("FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
+    parse_channel_cap(
+        priority_cap.as_deref(),
+        None,
+        DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP,
+    )
+}
+
+fn priority_shaped_packet(len: usize) -> bool {
+    len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
 }
 
 /// Owning recv-side state for one established FMP session. Lives
@@ -231,21 +256,31 @@ pub(crate) enum WorkerMsg {
 /// shard.
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerPool {
-    senders: Arc<[Sender<WorkerMsg>]>,
+    senders: Arc<[DecryptWorkerSender]>,
+}
+
+struct DecryptWorkerSender {
+    priority: Sender<WorkerMsg>,
+    bulk: Sender<DecryptJob>,
 }
 
 impl DecryptWorkerPool {
     pub fn spawn(n: usize) -> Self {
         let n = n.max(1);
-        let worker_channel_cap = worker_channel_cap();
+        let bulk_channel_cap = bulk_channel_cap();
+        let priority_channel_cap = priority_channel_cap();
         let mut senders = Vec::with_capacity(n);
         for i in 0..n {
-            let (tx, rx) = bounded::<WorkerMsg>(worker_channel_cap);
+            let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
+            let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(bulk_channel_cap);
             std::thread::Builder::new()
                 .name(format!("fips-decrypt-{i}"))
-                .spawn(move || run_worker(i, rx))
+                .spawn(move || run_worker(i, priority_rx, bulk_rx))
                 .expect("failed to spawn fips-decrypt OS thread");
-            senders.push(tx);
+            senders.push(DecryptWorkerSender {
+                priority: priority_tx,
+                bulk: bulk_tx,
+            });
         }
         Self {
             senders: senders.into(),
@@ -271,27 +306,36 @@ impl DecryptWorkerPool {
             return;
         }
         let idx = self.worker_idx_for(job.cache_key);
-        match self.senders[idx].try_send(WorkerMsg::Job(job)) {
+        if priority_shaped_packet(job.packet_data.len()) {
+            self.dispatch_priority_job(idx, job);
+        } else {
+            self.dispatch_bulk_job(idx, job);
+        }
+    }
+
+    fn dispatch_priority_job(&self, idx: usize, job: DecryptJob) {
+        match self.senders[idx].priority.try_send(WorkerMsg::Job(job)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerQueueFull,
-                );
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerBulkDropped,
-                );
-                static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
-                let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
-                if n < 8 || n.is_multiple_of(10000) {
-                    warn!(
-                        worker = idx,
-                        drops = n + 1,
-                        "DecryptWorker channel full; dropping inbound packet"
-                    );
-                }
+                record_decrypt_worker_priority_drop(idx, "packet");
             }
             Err(TrySendError::Disconnected(_)) => {
-                debug!(worker = idx, "DecryptWorker thread gone; dropping job");
+                debug!(
+                    worker = idx,
+                    "DecryptWorker thread gone; dropping priority job"
+                );
+            }
+        }
+    }
+
+    fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
+        match self.senders[idx].bulk.try_send(job) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                record_decrypt_worker_bulk_drop(idx);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
             }
         }
     }
@@ -325,7 +369,10 @@ impl DecryptWorkerPool {
             return false;
         }
         let idx = self.worker_idx_for(cache_key);
-        match self.senders[idx].try_send(WorkerMsg::RegisterSession { cache_key, state }) {
+        match self.senders[idx]
+            .priority
+            .try_send(WorkerMsg::RegisterSession { cache_key, state })
+        {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 crate::perf_profile::record_event(
@@ -358,27 +405,93 @@ impl DecryptWorkerPool {
             return;
         }
         let idx = self.worker_idx_for(cache_key);
-        let _ = self.senders[idx].try_send(WorkerMsg::UnregisterSession { cache_key });
+        let _ = self.senders[idx]
+            .priority
+            .try_send(WorkerMsg::UnregisterSession { cache_key });
     }
 }
 
-fn run_worker(idx: usize, rx: Receiver<WorkerMsg>) {
+fn record_decrypt_worker_bulk_drop(worker: usize) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerBulkDropped);
+    static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 8 || n.is_multiple_of(10000) {
+        warn!(
+            worker,
+            drops = n + 1,
+            "DecryptWorker bulk channel full; dropping inbound packet"
+        );
+    }
+}
+
+fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerPriorityDropped);
+    static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 8 || n.is_multiple_of(10000) {
+        warn!(
+            worker,
+            kind,
+            drops = n + 1,
+            "DecryptWorker priority channel full; dropping inbound item"
+        );
+    }
+}
+
+fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<DecryptJob>) {
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
     // The shard's owned session table. Lives entirely on this OS
     // thread — never observed by any other thread.
     let mut sessions: HashMap<(TransportId, u32), OwnedSessionState> = HashMap::new();
 
-    while let Ok(msg) = rx.recv() {
-        handle_msg(idx, &mut sessions, msg);
-        // Drain follow-ons before parking again. Keeps the thread
-        // on-core for a burst (typical recvmmsg batch is 5–30 packets
-        // delivered very close together).
-        while let Ok(m) = rx.try_recv() {
-            handle_msg(idx, &mut sessions, m);
+    loop {
+        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+        crossbeam_channel::select! {
+            recv(priority_rx) -> msg => {
+                match msg {
+                    Ok(msg) => handle_msg(idx, &mut sessions, msg),
+                    Err(_) => {
+                        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+                        break;
+                    }
+                }
+            }
+            recv(bulk_rx) -> job => {
+                match job {
+                    Ok(job) => handle_msg(idx, &mut sessions, WorkerMsg::Job(job)),
+                    Err(_) => {
+                        drain_worker_queues(idx, &mut sessions, &priority_rx, &bulk_rx);
+                        break;
+                    }
+                }
+            }
         }
     }
     trace!(worker = idx, "FMP+FSP decrypt worker thread exiting");
+}
+
+fn drain_worker_queues(
+    idx: usize,
+    sessions: &mut HashMap<(TransportId, u32), OwnedSessionState>,
+    priority_rx: &Receiver<WorkerMsg>,
+    bulk_rx: &Receiver<DecryptJob>,
+) {
+    while let Ok(msg) = priority_rx.try_recv() {
+        handle_msg(idx, sessions, msg);
+    }
+    for _ in 0..DECRYPT_WORKER_BULK_BURST_BUDGET {
+        if let Ok(msg) = priority_rx.try_recv() {
+            handle_msg(idx, sessions, msg);
+            continue;
+        }
+        match bulk_rx.try_recv() {
+            Ok(job) => handle_msg(idx, sessions, WorkerMsg::Job(job)),
+            Err(_) => break,
+        }
+    }
 }
 
 fn handle_msg(
@@ -572,23 +685,38 @@ mod tests {
 
     #[test]
     fn decrypt_worker_channel_cap_prefers_specific_then_shared_value() {
-        assert_eq!(parse_worker_channel_cap(Some("4"), Some("8")), 4);
-        assert_eq!(parse_worker_channel_cap(None, Some("8")), 8);
-        assert_eq!(parse_worker_channel_cap(Some("bad"), Some("9")), 9);
-        assert_eq!(parse_worker_channel_cap(Some("0"), None), 1);
-        assert_eq!(
-            parse_worker_channel_cap(Some("999999"), None),
-            DEFAULT_DECRYPT_WORKER_CHANNEL_CAP
-        );
+        assert_eq!(parse_channel_cap(Some("4"), Some("8"), 1024), 4);
+        assert_eq!(parse_channel_cap(None, Some("8"), 1024), 8);
+        assert_eq!(parse_channel_cap(Some("bad"), Some("9"), 1024), 9);
+        assert_eq!(parse_channel_cap(Some("0"), None, 1024), 1);
+        assert_eq!(parse_channel_cap(Some("999999"), None, 1024), 1024);
     }
 
-    fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>) {
-        let (tx, rx) = bounded::<WorkerMsg>(1);
+    #[test]
+    fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
+        assert!(priority_shaped_packet(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
+        ));
+        assert!(!priority_shaped_packet(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+        ));
+    }
+
+    fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>, Receiver<DecryptJob>) {
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
         (
             DecryptWorkerPool {
-                senders: std::sync::Arc::from(vec![tx].into_boxed_slice()),
+                senders: std::sync::Arc::from(
+                    vec![DecryptWorkerSender {
+                        priority: priority_tx,
+                        bulk: bulk_tx,
+                    }]
+                    .into_boxed_slice(),
+                ),
             },
-            rx,
+            priority_rx,
+            bulk_rx,
         )
     }
 
@@ -602,11 +730,12 @@ mod tests {
         }
     }
 
-    fn dummy_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
+    fn dummy_decrypt_job_with_len(cache_key: (TransportId, u32), packet_len: usize) -> DecryptJob {
+        let packet_len = packet_len.max(crate::node::wire::ESTABLISHED_HEADER_SIZE + 16);
         let (fallback_tx, _fallback_rx) =
             tokio::sync::mpsc::unbounded_channel::<DecryptWorkerEvent>();
         DecryptJob {
-            packet_data: vec![0; crate::node::wire::ESTABLISHED_HEADER_SIZE + 16],
+            packet_data: vec![0; packet_len],
             cache_key,
             _transport_id: cache_key.0,
             _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
@@ -620,17 +749,25 @@ mod tests {
         }
     }
 
+    fn dummy_bulk_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
+        dummy_decrypt_job_with_len(cache_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
+    }
+
+    fn dummy_priority_decrypt_job(cache_key: (TransportId, u32)) -> DecryptJob {
+        dummy_decrypt_job_with_len(cache_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+    }
+
     #[test]
     fn decrypt_worker_full_queue_drops_bulk_without_waiting() {
-        let (pool, rx) = one_slot_worker_pool();
+        let (pool, _priority_rx, bulk_rx) = one_slot_worker_pool();
         let cache_key = (TransportId::new(1), 99u32);
-        pool.dispatch_job(dummy_decrypt_job(cache_key));
-        assert_eq!(rx.len(), 1, "test queue should start full");
+        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let pool_for_thread = pool.clone();
         std::thread::spawn(move || {
-            pool_for_thread.dispatch_job(dummy_decrypt_job(cache_key));
+            pool_for_thread.dispatch_job(dummy_bulk_decrypt_job(cache_key));
             done_tx.send(()).unwrap();
         });
 
@@ -638,18 +775,54 @@ mod tests {
             .recv_timeout(Duration::from_millis(250))
             .expect("full decrypt-worker bulk queue must not park dispatch");
         assert_eq!(
-            rx.len(),
+            bulk_rx.len(),
             1,
             "bulk packet should be dropped rather than queued past the bound"
         );
     }
 
     #[test]
-    fn decrypt_worker_register_full_returns_false_without_waiting() {
-        let (pool, rx) = one_slot_worker_pool();
+    fn decrypt_worker_priority_packet_uses_priority_lane_when_bulk_queue_is_full() {
+        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+        let cache_key = (TransportId::new(1), 99u32);
+        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
+
+        pool.dispatch_job(dummy_priority_decrypt_job(cache_key));
+        assert_eq!(priority_rx.len(), 1, "priority packet should enqueue");
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "priority packet should not overflow or consume the bulk lane"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_register_uses_priority_lane_when_bulk_queue_is_full() {
+        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
         let cache_key = (TransportId::new(1), 77u32);
-        pool.dispatch_job(dummy_decrypt_job(cache_key));
-        assert_eq!(rx.len(), 1, "test queue should start full");
+        pool.dispatch_job(dummy_bulk_decrypt_job(cache_key));
+        assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
+
+        assert!(pool.register_session(cache_key, test_owned_session_state()));
+        assert_eq!(priority_rx.len(), 1, "registration should enqueue");
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "registration should not consume the full bulk lane"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_register_full_returns_false_without_waiting() {
+        let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
+        let cache_key = (TransportId::new(1), 77u32);
+        assert!(pool.register_session(cache_key, test_owned_session_state()));
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "test priority queue should start full"
+        );
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let pool_for_thread = pool.clone();
@@ -667,9 +840,9 @@ mod tests {
             "registration should report pressure so caller retries later"
         );
         assert_eq!(
-            rx.len(),
+            priority_rx.len(),
             1,
-            "registration should not overflow the bounded worker queue"
+            "registration should not overflow the bounded priority queue"
         );
     }
 
