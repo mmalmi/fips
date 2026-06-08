@@ -1864,6 +1864,102 @@ impl EncryptWorkerShard {
     }
 }
 
+struct SealedSendPacket {
+    send_target: SelectedSendTarget,
+    wire_packet: Vec<u8>,
+    drop_on_backpressure: bool,
+}
+
+impl SealedSendPacket {
+    fn from_job(job: FmpSendJob) -> Result<Self, SealPacketError> {
+        let FmpSendJob {
+            cipher,
+            counter,
+            mut wire_buf,
+            fsp_seal,
+            send_target,
+            bulk_endpoint_data: _,
+            drop_on_backpressure,
+            scheduling_weight: _,
+            queued_at,
+        } = job;
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::FmpWorkerQueueWait,
+            queued_at,
+        );
+
+        if let Some(fsp) = fsp_seal {
+            if fsp.aad_offset + FSP_HEADER_SIZE > fsp.plaintext_offset
+                || fsp.plaintext_offset > wire_buf.len()
+            {
+                return Err(SealPacketError::InvalidFspLayout);
+            }
+
+            let mut nonce_bytes = [0u8; 12];
+            nonce_bytes[4..12].copy_from_slice(&fsp.counter.to_le_bytes());
+            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+            let (prefix, plaintext_slice) = wire_buf.split_at_mut(fsp.plaintext_offset);
+            let aad = &prefix[fsp.aad_offset..fsp.aad_offset + FSP_HEADER_SIZE];
+            let tag = fsp
+                .cipher
+                .seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext_slice)
+                .map_err(|_| SealPacketError::FspSeal)?;
+            wire_buf.extend_from_slice(tag.as_ref());
+        }
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        // Split-borrow: AAD reads from header bytes [0..16], seal writes
+        // into the plaintext slice [16..]. ring::aead's `seal_in_place_
+        // separate_tag` takes `&mut [u8]` so we can hand it the
+        // post-header slice while AAD references the header slice.
+        // `split_at_mut` is the standard way to do this safely.
+        let (header_slice, plaintext_slice) = wire_buf.split_at_mut(ESTABLISHED_HEADER_SIZE);
+        let tag = cipher
+            .seal_in_place_separate_tag(nonce, Aad::from(&*header_slice), plaintext_slice)
+            .map_err(|_| SealPacketError::FmpSeal)?;
+        // wire_buf already has `+16` capacity reserved -> no realloc.
+        wire_buf.extend_from_slice(tag.as_ref());
+
+        Ok(Self {
+            send_target,
+            wire_packet: wire_buf,
+            drop_on_backpressure,
+        })
+    }
+
+    fn into_parts(self) -> (SelectedSendTarget, Vec<u8>, bool) {
+        (
+            self.send_target,
+            self.wire_packet,
+            self.drop_on_backpressure,
+        )
+    }
+
+    #[cfg(all(test, unix))]
+    fn target_key(&self) -> SendTargetKey {
+        self.send_target.key()
+    }
+
+    #[cfg(test)]
+    fn wire_packet(&self) -> &[u8] {
+        &self.wire_packet
+    }
+
+    #[cfg(test)]
+    fn drop_on_backpressure(&self) -> bool {
+        self.drop_on_backpressure
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SealPacketError {
+    InvalidFspLayout,
+    FspSeal,
+    FmpSeal,
+}
+
 /// Sync OS-thread worker loop. Blocks on the bounded fair queue,
 /// drains follow-on packets into a fixed-size local batch, then issues
 /// one `sendmmsg(2)` per drain cycle.
@@ -1950,25 +2046,9 @@ fn flush_batch_sync(
         #[cfg(not(target_os = "macos"))]
         let QueuedFmpSendJob { job, .. } = queued;
 
-        let FmpSendJob {
-            cipher,
-            counter,
-            mut wire_buf,
-            fsp_seal,
-            send_target,
-            bulk_endpoint_data: _,
-            drop_on_backpressure,
-            scheduling_weight: _,
-            queued_at,
-        } = job;
-        crate::perf_profile::record_since(
-            crate::perf_profile::Stage::FmpWorkerQueueWait,
-            queued_at,
-        );
-        if let Some(fsp) = fsp_seal {
-            if fsp.aad_offset + FSP_HEADER_SIZE > fsp.plaintext_offset
-                || fsp.plaintext_offset > wire_buf.len()
-            {
+        let sealed = match SealedSendPacket::from_job(job) {
+            Ok(sealed) => sealed,
+            Err(_) => {
                 #[cfg(target_os = "macos")]
                 if let Some(flow) = macos_flow.as_ref() {
                     push_mac_completion(
@@ -1980,68 +2060,17 @@ fn flush_batch_sync(
                 }
                 continue;
             }
-
-            let mut nonce_bytes = [0u8; 12];
-            nonce_bytes[4..12].copy_from_slice(&fsp.counter.to_le_bytes());
-            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-            let (prefix, plaintext_slice) = wire_buf.split_at_mut(fsp.plaintext_offset);
-            let aad = &prefix[fsp.aad_offset..fsp.aad_offset + FSP_HEADER_SIZE];
-            let tag =
-                match fsp
-                    .cipher
-                    .seal_in_place_separate_tag(nonce, Aad::from(aad), plaintext_slice)
-                {
-                    Ok(tag) => tag,
-                    Err(_) => {
-                        #[cfg(target_os = "macos")]
-                        if let Some(flow) = macos_flow.as_ref() {
-                            push_mac_completion(
-                                &mut macos_completions,
-                                Arc::clone(flow),
-                                macos_seq,
-                                MacSendItem::Skip,
-                            );
-                        }
-                        continue;
-                    }
-                };
-            wire_buf.extend_from_slice(tag.as_ref());
-        }
-
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        // Split-borrow: AAD reads from header bytes [0..16], seal writes
-        // into the plaintext slice [16..]. ring::aead's `seal_in_place_
-        // separate_tag` takes `&mut [u8]` so we can hand it the
-        // post-header slice while AAD references the header slice.
-        // `split_at_mut` is the standard way to do this safely.
-        let (header_slice, plaintext_slice) = wire_buf.split_at_mut(ESTABLISHED_HEADER_SIZE);
-        let tag = match cipher.seal_in_place_separate_tag(
-            nonce,
-            Aad::from(&*header_slice),
-            plaintext_slice,
-        ) {
-            Ok(tag) => tag,
-            Err(_) => {
-                #[cfg(target_os = "macos")]
-                if let Some(flow) = macos_flow {
-                    push_mac_completion(&mut macos_completions, flow, macos_seq, MacSendItem::Skip);
-                }
-                continue;
-            }
         };
-        // wire_buf already has `+16` capacity reserved → no realloc.
-        wire_buf.extend_from_slice(tag.as_ref());
 
         #[cfg(target_os = "macos")]
         if let Some(flow) = macos_flow {
+            let (_send_target, wire_packet, drop_on_backpressure) = sealed.into_parts();
             push_mac_completion(
                 &mut macos_completions,
                 flow,
                 macos_seq,
                 MacSendItem::Packet {
-                    packet: wire_buf,
+                    packet: wire_packet,
                     drop_on_backpressure,
                 },
             );
@@ -2050,14 +2079,15 @@ fn flush_batch_sync(
 
         #[cfg(unix)]
         {
-            push_selected_send_batch(&mut groups, send_target, wire_buf, drop_on_backpressure);
+            let (send_target, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            push_selected_send_batch(&mut groups, send_target, wire_packet, drop_on_backpressure);
         }
         #[cfg(not(unix))]
         {
             // Windows: encrypt worker pool isn't spawned (see
             // lifecycle.rs); this function is unreachable. Drop
             // values explicitly so the compiler sees them as used.
-            let _ = (send_target, wire_buf, drop_on_backpressure);
+            let _ = sealed;
         }
     }
 
@@ -2883,6 +2913,90 @@ mod unix_tests {
                 },
                 |_batch| panic!("flush must not run when receive returns closed"),
             ));
+        });
+    }
+
+    #[test]
+    fn sealed_send_packet_owns_target_wire_and_drop_policy() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let cipher = test_cipher(4);
+            let counter = 44;
+            let dest: SocketAddr = "127.0.0.1:10035".parse().unwrap();
+            let target = SelectedSendTarget::new(
+                socket.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let target_key = target.key();
+            let header = [0x42; ESTABLISHED_HEADER_SIZE];
+            let plaintext = b"sealed owner packet";
+            let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + plaintext.len() + 16);
+            wire_buf.extend_from_slice(&header);
+            wire_buf.extend_from_slice(plaintext);
+
+            let sealed = SealedSendPacket::from_job(FmpSendJob {
+                cipher: cipher.clone(),
+                counter,
+                wire_buf,
+                fsp_seal: None,
+                send_target: target,
+                bulk_endpoint_data: true,
+                drop_on_backpressure: false,
+                scheduling_weight: DEFAULT_SEND_WEIGHT,
+                queued_at: None,
+            })
+            .expect("seal packet");
+
+            assert_eq!(sealed.target_key(), target_key);
+            assert!(
+                !sealed.drop_on_backpressure(),
+                "the sealed packet owns the original drop policy"
+            );
+            assert_eq!(
+                sealed.wire_packet().len(),
+                ESTABLISHED_HEADER_SIZE + plaintext.len() + crate::noise::TAG_SIZE
+            );
+            assert_eq!(&sealed.wire_packet()[..ESTABLISHED_HEADER_SIZE], &header);
+            let opened = crate::noise::open(
+                Some(&cipher),
+                counter,
+                &header,
+                &sealed.wire_packet()[ESTABLISHED_HEADER_SIZE..],
+            )
+            .expect("open sealed packet");
+            assert_eq!(opened, plaintext);
+
+            let invalid_target = SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let invalid = SealedSendPacket::from_job(FmpSendJob {
+                cipher,
+                counter: counter + 1,
+                wire_buf: vec![0; ESTABLISHED_HEADER_SIZE + 8],
+                fsp_seal: Some(FspSealJob {
+                    cipher: test_cipher(5),
+                    counter: 1,
+                    aad_offset: ESTABLISHED_HEADER_SIZE,
+                    plaintext_offset: ESTABLISHED_HEADER_SIZE,
+                }),
+                send_target: invalid_target,
+                bulk_endpoint_data: true,
+                drop_on_backpressure: true,
+                scheduling_weight: DEFAULT_SEND_WEIGHT,
+                queued_at: None,
+            });
+            assert!(matches!(invalid, Err(SealPacketError::InvalidFspLayout)));
         });
     }
 
