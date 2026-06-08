@@ -988,6 +988,72 @@ mod tests {
         })
     }
 
+    fn test_chacha_key(key_bytes: [u8; 32]) -> LessSafeKey {
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        LessSafeKey::new(unbound)
+    }
+
+    fn sealed_fmp_test_packet(
+        cipher: &LessSafeKey,
+        counter: u64,
+        flags: u8,
+    ) -> (Vec<u8>, [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]) {
+        const HDR: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+        let mut header = [0u8; HDR];
+        header[1] = flags;
+        let mut wire = Vec::with_capacity(HDR + 4 + 1 + 16);
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&[0u8; 4]);
+        wire.push(0xAB);
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        let nonce = ring::aead::Nonce::assume_unique_for_key(nonce_bytes);
+        let (hdr_slice, payload_slice) = wire.split_at_mut(HDR);
+        let tag = cipher
+            .seal_in_place_separate_tag(nonce, ring::aead::Aad::from(&*hdr_slice), payload_slice)
+            .unwrap();
+        wire.extend_from_slice(tag.as_ref());
+        (wire, header)
+    }
+
+    fn invalid_fmp_test_packet(
+        flags: u8,
+    ) -> (Vec<u8>, [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]) {
+        const HDR: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+        let mut header = [0u8; HDR];
+        header[1] = flags;
+        let mut wire = Vec::with_capacity(HDR + 4 + 1 + 16);
+        wire.extend_from_slice(&header);
+        wire.extend_from_slice(&[0u8; 4]);
+        wire.push(0xAB);
+        wire.extend_from_slice(&[0u8; 16]);
+        (wire, header)
+    }
+
+    fn decrypt_job_for_test_packet(
+        packet_data: Vec<u8>,
+        header: [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
+        session_key: DecryptSessionKey,
+        fmp_counter: u64,
+        fmp_flags: u8,
+        fallback_tx: DecryptWorkerFallbackSender,
+    ) -> DecryptJob {
+        DecryptJob {
+            packet_data,
+            session_key,
+            _transport_id: TransportId::new(1),
+            _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            timestamp_ms: 1_000,
+            source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
+            fmp_counter,
+            fmp_flags,
+            fmp_header: header,
+            fmp_ciphertext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fallback_tx,
+        }
+    }
+
     #[test]
     fn decrypt_session_key_routes_registration_jobs_and_unregister_to_same_worker() {
         let (pool, priority_receivers, bulk_receivers) = test_worker_pool(4, 4);
@@ -1315,6 +1381,106 @@ mod tests {
             "priority queue should be fully drained before bulk"
         );
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
+    }
+
+    #[test]
+    fn decrypt_worker_accepts_fmp_replay_only_after_aead_success() {
+        let key_bytes = [3u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let session_key = test_session_key(1, 79);
+        let mut sessions: HashMap<DecryptSessionKey, OwnedSessionState> = HashMap::from([(
+            session_key,
+            OwnedSessionState {
+                fmp_cipher: open_cipher,
+                fmp_replay: ReplayWindow::new(),
+                source_npub: None,
+            },
+        )]);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let counter = 7;
+        let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
+
+        let (invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
+        handle_job(
+            &mut sessions,
+            decrypt_job_for_test_packet(
+                invalid_packet,
+                invalid_header,
+                session_key,
+                counter,
+                flags,
+                fallback_tx.clone(),
+            ),
+        )
+        .expect("invalid worker job should be handled");
+        match fallback_rx
+            .priority
+            .try_recv()
+            .expect("AEAD failure report")
+        {
+            DecryptWorkerEvent::DecryptFailure(report) => {
+                assert_eq!(report.fmp_counter, counter);
+                assert_eq!(
+                    report.fmp_replay_highest, 0,
+                    "failed AEAD must report the old replay high-water mark"
+                );
+            }
+            DecryptWorkerEvent::Plaintext(_) => panic!("invalid packet must not produce plaintext"),
+        }
+        assert_eq!(
+            sessions.get(&session_key).unwrap().fmp_replay.highest(),
+            0,
+            "failed AEAD must not consume the worker-owned replay window"
+        );
+
+        let (valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        handle_job(
+            &mut sessions,
+            decrypt_job_for_test_packet(
+                valid_packet,
+                valid_header,
+                session_key,
+                counter,
+                flags,
+                fallback_tx.clone(),
+            ),
+        )
+        .expect("valid worker job should be handled");
+        assert!(
+            matches!(
+                fallback_rx.priority.try_recv().expect("plaintext fallback"),
+                DecryptWorkerEvent::Plaintext(_)
+            ),
+            "valid packet must bounce plaintext after FMP decrypt"
+        );
+        assert_eq!(
+            sessions.get(&session_key).unwrap().fmp_replay.highest(),
+            counter,
+            "successful AEAD must advance the worker-owned replay window"
+        );
+
+        let (replay_packet, replay_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        handle_job(
+            &mut sessions,
+            decrypt_job_for_test_packet(
+                replay_packet,
+                replay_header,
+                session_key,
+                counter,
+                flags,
+                fallback_tx,
+            ),
+        )
+        .expect("replay worker job should be handled");
+        assert!(
+            fallback_rx.priority.is_empty(),
+            "replayed counter must be dropped before plaintext or failure events"
+        );
+        assert!(
+            fallback_rx.bulk.is_empty(),
+            "replayed counter must not reach the bulk fallback lane"
+        );
     }
 
     /// `DecryptJob.fmp_flags` must survive the worker bounce as
