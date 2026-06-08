@@ -20,6 +20,7 @@ DEFAULT_FILTERS=(
   hot_flow_backpressures_when_others_are_waiting
   send_backpressure
   pipelined_endpoint_wire_uses_reserved_counters_and_offsets
+  test_pipelined_send_counter_reservation_is_single_owner
   priority_flow_enters_when_bulk_flow_reaches_per_flow_cap
   fair_admission_keys_pressure_by_exact_send_target
   encrypt_worker_dispatch_preserves_single_flow_worker_and_fifo_order
