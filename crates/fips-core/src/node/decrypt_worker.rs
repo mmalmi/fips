@@ -99,10 +99,6 @@ impl DecryptSessionKey {
             receiver_idx,
         }
     }
-
-    pub(crate) fn transport_id(self) -> TransportId {
-        self.transport_id
-    }
 }
 
 impl From<(TransportId, u32)> for DecryptSessionKey {
@@ -140,12 +136,14 @@ fn priority_channel_cap() -> usize {
 
 fn fallback_bulk_channel_cap() -> usize {
     let bulk_cap = std::env::var("FIPS_DECRYPT_FALLBACK_CHANNEL_CAP").ok();
-    let shared_cap = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
-    parse_channel_cap(
-        bulk_cap.as_deref(),
-        shared_cap.as_deref(),
-        DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP,
-    )
+    fallback_bulk_channel_cap_from_raw(bulk_cap.as_deref())
+}
+
+fn fallback_bulk_channel_cap_from_raw(bulk_cap: Option<&str>) -> usize {
+    // Keep the worker input pressure knob from shrinking the worker->rx-loop
+    // return lane. Tests can still force this lane small with the explicit
+    // fallback cap.
+    parse_channel_cap(bulk_cap, None, DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP)
 }
 
 fn fallback_priority_channel_cap() -> usize {
@@ -866,6 +864,19 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_fallback_bulk_cap_ignores_shared_worker_cap() {
+        assert_eq!(
+            parse_channel_cap(None, Some("4"), DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
+            4
+        );
+        assert_eq!(
+            fallback_bulk_channel_cap_from_raw(None),
+            DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP
+        );
+        assert_eq!(fallback_bulk_channel_cap_from_raw(Some("4")), 4);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -945,7 +956,7 @@ mod tests {
         DecryptJob {
             packet_data: vec![0; packet_len],
             session_key,
-            _transport_id: session_key.transport_id(),
+            _transport_id: session_key.transport_id,
             _remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             timestamp_ms: 1_000,
             source_node_addr: crate::NodeAddr::from_bytes([0u8; 16]),
