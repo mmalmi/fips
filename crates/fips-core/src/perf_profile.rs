@@ -37,7 +37,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 16;
-const N_EVENTS: usize = 16;
+const N_EVENTS: usize = 20;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -149,6 +149,10 @@ pub enum Event {
     DecryptWorkerPriorityDropped = 13,
     DecryptFallbackBulkDropped = 14,
     DecryptFallbackPriorityDropped = 15,
+    PendingTunDestinationDropped = 16,
+    PendingTunPacketDropped = 17,
+    PendingEndpointDestinationDropped = 18,
+    PendingEndpointPacketDropped = 19,
 }
 
 impl Event {
@@ -170,6 +174,10 @@ impl Event {
             Event::DecryptWorkerPriorityDropped => "decrypt_worker_priority_dropped",
             Event::DecryptFallbackBulkDropped => "decrypt_fallback_bulk_dropped",
             Event::DecryptFallbackPriorityDropped => "decrypt_fallback_priority_dropped",
+            Event::PendingTunDestinationDropped => "pending_tun_destination_dropped",
+            Event::PendingTunPacketDropped => "pending_tun_packet_dropped",
+            Event::PendingEndpointDestinationDropped => "pending_endpoint_destination_dropped",
+            Event::PendingEndpointPacketDropped => "pending_endpoint_packet_dropped",
         }
     }
 }
@@ -192,6 +200,10 @@ fn event_from_index(idx: usize) -> Event {
         13 => Event::DecryptWorkerPriorityDropped,
         14 => Event::DecryptFallbackBulkDropped,
         15 => Event::DecryptFallbackPriorityDropped,
+        16 => Event::PendingTunDestinationDropped,
+        17 => Event::PendingTunPacketDropped,
+        18 => Event::PendingEndpointDestinationDropped,
+        19 => Event::PendingEndpointPacketDropped,
         _ => unreachable!(),
     }
 }

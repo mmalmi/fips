@@ -3031,12 +3031,16 @@ impl Node {
         if !self.pending_tun_packets.contains_key(&dest_addr)
             && self.pending_tun_packets.len() >= max_dests
         {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PendingTunDestinationDropped,
+            );
             return;
         }
 
         let queue = self.pending_tun_packets.entry(dest_addr).or_default();
         if queue.len() >= self.config.node.session.pending_packets_per_dest {
             queue.pop_front(); // Drop oldest
+            crate::perf_profile::record_event(crate::perf_profile::Event::PendingTunPacketDropped);
         }
         queue.push_back(packet);
     }
@@ -3047,12 +3051,18 @@ impl Node {
         if !self.pending_endpoint_data.contains_key(&dest_addr)
             && self.pending_endpoint_data.len() >= max_dests
         {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PendingEndpointDestinationDropped,
+            );
             return;
         }
 
         let queue = self.pending_endpoint_data.entry(dest_addr).or_default();
         if queue.len() >= self.config.node.session.pending_packets_per_dest {
             queue.pop_front();
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::PendingEndpointPacketDropped,
+            );
         }
         queue.push_back(payload);
     }
@@ -3118,6 +3128,81 @@ impl Node {
                 debug!(dest = %self.peer_display_name(&dest_addr), error = %e, "Session retry after discovery failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pending_queue_tests {
+    use crate::config::Config;
+    use crate::node::{Node, NodeAddr};
+
+    fn make_node() -> Node {
+        Node::new(Config::new()).unwrap()
+    }
+
+    fn make_node_addr(val: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = val;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    #[test]
+    fn pending_session_queues_drop_oldest_per_destination() {
+        let mut node = make_node();
+        node.config.node.session.pending_packets_per_dest = 2;
+
+        let tun_dest = make_node_addr(0x41);
+        node.queue_pending_packet(tun_dest, vec![1]);
+        node.queue_pending_packet(tun_dest, vec![2]);
+        node.queue_pending_packet(tun_dest, vec![3]);
+        let tun_packets: Vec<Vec<u8>> = node
+            .pending_tun_packets
+            .get(&tun_dest)
+            .expect("tun queue")
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(tun_packets, vec![vec![2], vec![3]]);
+
+        let endpoint_dest = make_node_addr(0x42);
+        node.queue_pending_endpoint_data(endpoint_dest, vec![4]);
+        node.queue_pending_endpoint_data(endpoint_dest, vec![5]);
+        node.queue_pending_endpoint_data(endpoint_dest, vec![6]);
+        let endpoint_payloads: Vec<Vec<u8>> = node
+            .pending_endpoint_data
+            .get(&endpoint_dest)
+            .expect("endpoint queue")
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(endpoint_payloads, vec![vec![5], vec![6]]);
+    }
+
+    #[test]
+    fn pending_session_queues_reject_new_destinations_at_cap() {
+        let mut node = make_node();
+        node.config.node.session.pending_max_destinations = 1;
+
+        let accepted_tun_dest = make_node_addr(0x51);
+        let rejected_tun_dest = make_node_addr(0x52);
+        node.queue_pending_packet(accepted_tun_dest, vec![1]);
+        node.queue_pending_packet(rejected_tun_dest, vec![2]);
+        assert!(node.pending_tun_packets.contains_key(&accepted_tun_dest));
+        assert!(!node.pending_tun_packets.contains_key(&rejected_tun_dest));
+
+        let accepted_endpoint_dest = make_node_addr(0x61);
+        let rejected_endpoint_dest = make_node_addr(0x62);
+        node.queue_pending_endpoint_data(accepted_endpoint_dest, vec![3]);
+        node.queue_pending_endpoint_data(rejected_endpoint_dest, vec![4]);
+        assert!(
+            node.pending_endpoint_data
+                .contains_key(&accepted_endpoint_dest)
+        );
+        assert!(
+            !node
+                .pending_endpoint_data
+                .contains_key(&rejected_endpoint_dest)
+        );
     }
 }
 
