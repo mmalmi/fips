@@ -1923,10 +1923,43 @@ struct SendBackpressurePacer {
     full_since_sleep: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SendBackpressureAction {
+    Yield,
+    Sleep,
+    DropBulk,
+}
+
 impl SendBackpressurePacer {
     fn record_success(&mut self) {
         self.consecutive_full = 0;
         self.full_since_sleep = 0;
+    }
+
+    fn next_action(
+        &mut self,
+        would_block: bool,
+        sleep_after: u32,
+        drop_after: u32,
+    ) -> SendBackpressureAction {
+        if would_block {
+            self.record_success();
+            return SendBackpressureAction::Yield;
+        }
+
+        self.consecutive_full = self.consecutive_full.saturating_add(1);
+        self.full_since_sleep = self.full_since_sleep.saturating_add(1);
+        if drop_after > 0 && self.consecutive_full >= drop_after {
+            self.record_success();
+            return SendBackpressureAction::DropBulk;
+        }
+
+        if sleep_after > 0 && self.full_since_sleep >= sleep_after {
+            self.full_since_sleep = 0;
+            return SendBackpressureAction::Sleep;
+        }
+
+        SendBackpressureAction::Yield
     }
 
     /// Returns true when a bulk-data caller should drop the current
@@ -1934,8 +1967,12 @@ impl SendBackpressurePacer {
     fn pause(&mut self, err: &std::io::Error) -> bool {
         crate::perf_profile::record_event(crate::perf_profile::Event::UdpSendBackpressure);
         if err.kind() == std::io::ErrorKind::WouldBlock {
-            self.consecutive_full = 0;
-            self.full_since_sleep = 0;
+            let action = self.next_action(
+                true,
+                send_backpressure_sleep_after(),
+                send_backpressure_drop_after(),
+            );
+            debug_assert_eq!(action, SendBackpressureAction::Yield);
             std::thread::yield_now();
             return false;
         }
@@ -1951,24 +1988,21 @@ impl SendBackpressurePacer {
             );
         }
 
-        self.consecutive_full = self.consecutive_full.saturating_add(1);
-        self.full_since_sleep = self.full_since_sleep.saturating_add(1);
-        let drop_after = send_backpressure_drop_after();
-        if drop_after > 0 && self.consecutive_full >= drop_after {
-            self.consecutive_full = 0;
-            self.full_since_sleep = 0;
-            return true;
-        }
-
-        let sleep_after = send_backpressure_sleep_after();
-        if sleep_after > 0 && self.full_since_sleep >= sleep_after {
-            self.full_since_sleep = 0;
-            crate::perf_profile::record_event(crate::perf_profile::Event::UdpSendBackpressureSleep);
-            std::thread::sleep(std::time::Duration::from_micros(
-                send_backpressure_sleep_micros(),
-            ));
-        } else {
-            std::thread::yield_now();
+        match self.next_action(
+            false,
+            send_backpressure_sleep_after(),
+            send_backpressure_drop_after(),
+        ) {
+            SendBackpressureAction::DropBulk => return true,
+            SendBackpressureAction::Sleep => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::UdpSendBackpressureSleep,
+                );
+                std::thread::sleep(std::time::Duration::from_micros(
+                    send_backpressure_sleep_micros(),
+                ));
+            }
+            SendBackpressureAction::Yield => std::thread::yield_now(),
         }
         false
     }
@@ -2043,6 +2077,82 @@ fn default_send_backpressure_drop_after() -> u32 {
 #[cfg(not(target_os = "macos"))]
 fn default_send_backpressure_drop_after() -> u32 {
     0
+}
+
+#[cfg(test)]
+mod send_backpressure_tests {
+    use super::*;
+
+    #[test]
+    fn send_backpressure_pacer_wouldblock_yields_and_resets() {
+        let mut pacer = SendBackpressurePacer {
+            consecutive_full: 7,
+            full_since_sleep: 3,
+        };
+
+        assert_eq!(pacer.next_action(true, 1, 1), SendBackpressureAction::Yield);
+        assert_eq!(pacer.consecutive_full, 0);
+        assert_eq!(pacer.full_since_sleep, 0);
+    }
+
+    #[test]
+    fn send_backpressure_pacer_drops_bulk_after_explicit_budget() {
+        let mut pacer = SendBackpressurePacer::default();
+
+        assert_eq!(
+            pacer.next_action(false, 0, 2),
+            SendBackpressureAction::Yield
+        );
+        assert_eq!(pacer.consecutive_full, 1);
+        assert_eq!(
+            pacer.next_action(false, 0, 2),
+            SendBackpressureAction::DropBulk
+        );
+        assert_eq!(
+            pacer.consecutive_full, 0,
+            "drop decision should reset the consecutive pressure budget"
+        );
+        assert_eq!(pacer.full_since_sleep, 0);
+    }
+
+    #[test]
+    fn send_backpressure_pacer_sleep_does_not_reset_drop_budget() {
+        let mut pacer = SendBackpressurePacer::default();
+
+        assert_eq!(
+            pacer.next_action(false, 2, 3),
+            SendBackpressureAction::Yield
+        );
+        assert_eq!(
+            pacer.next_action(false, 2, 3),
+            SendBackpressureAction::Sleep
+        );
+        assert_eq!(
+            pacer.consecutive_full, 2,
+            "sleep throttles retry rate without hiding sustained pressure"
+        );
+        assert_eq!(
+            pacer.next_action(false, 2, 3),
+            SendBackpressureAction::DropBulk
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn send_backpressure_classifier_covers_socket_buffer_errors() {
+        assert!(is_send_backpressure(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
+        assert!(is_send_backpressure(&std::io::Error::from_raw_os_error(
+            libc::ENOBUFS
+        )));
+        assert!(is_send_backpressure(&std::io::Error::from_raw_os_error(
+            libc::ENOMEM
+        )));
+        assert!(!is_send_backpressure(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
