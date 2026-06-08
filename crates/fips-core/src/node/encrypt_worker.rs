@@ -591,13 +591,15 @@ impl MacWorkerReceiver {
 
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerSender {
-    tx: Sender<QueuedFmpSendJob>,
+    priority_tx: Sender<QueuedFmpSendJob>,
+    bulk_tx: Sender<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
 }
 
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerReceiver {
-    rx: Receiver<QueuedFmpSendJob>,
+    priority_rx: Receiver<QueuedFmpSendJob>,
+    bulk_rx: Receiver<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
 }
 
@@ -664,7 +666,11 @@ fn fair_worker_channel(
     per_flow_cap: usize,
     _quantum_bytes: usize,
 ) -> (FairWorkerSender, FairWorkerReceiver) {
-    let (tx, rx) = bounded(total_cap);
+    let total_cap = total_cap.max(1);
+    let per_flow_cap = per_flow_cap.max(1);
+    let priority_cap = per_flow_cap.saturating_mul(2).min(total_cap).max(1);
+    let (priority_tx, priority_rx) = bounded(priority_cap);
+    let (bulk_tx, bulk_rx) = bounded(total_cap);
     let admission = Arc::new(FairAdmission {
         state: Mutex::new(FairAdmissionState::default()),
         not_full: Condvar::new(),
@@ -674,18 +680,34 @@ fn fair_worker_channel(
     });
     (
         FairWorkerSender {
-            tx,
+            priority_tx,
+            bulk_tx,
             admission: Arc::clone(&admission),
         },
-        FairWorkerReceiver { rx, admission },
+        FairWorkerReceiver {
+            priority_rx,
+            bulk_rx,
+            admission,
+        },
     )
 }
 
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerSender {
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
-        let job = if self.tx.len() < self.admission.fast_lane_cap {
-            match self.tx.try_send(job) {
+        if job.queue_lane() == EncryptWorkerLane::Priority {
+            return match self.priority_tx.try_send(job) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
+                Err(TrySendError::Disconnected(job)) => {
+                    drop(job);
+                    Err(FairWorkerTryPushError::Closed)
+                }
+            };
+        }
+
+        let job = if self.bulk_tx.len() < self.admission.fast_lane_cap {
+            match self.bulk_tx.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(job)) => job,
                 Err(TrySendError::Disconnected(job)) => {
@@ -697,23 +719,12 @@ impl FairWorkerSender {
             job
         };
 
-        if job.queue_lane() == EncryptWorkerLane::Priority {
-            return match self.tx.try_send(job) {
-                Ok(()) => Ok(()),
-                Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
-                Err(TrySendError::Disconnected(job)) => {
-                    drop(job);
-                    Err(FairWorkerTryPushError::Closed)
-                }
-            };
-        }
-
         let key = job.flow_key();
         match self.admission.try_reserve(key, job.scheduling_weight()) {
             FairReserve::Reserved => {
                 let mut job = job;
                 job.mark_fair_reserved();
-                match self.tx.try_send(job) {
+                match self.bulk_tx.try_send(job) {
                     Ok(()) => Ok(()),
                     Err(TrySendError::Full(job)) => {
                         self.admission.release(key);
@@ -736,7 +747,7 @@ impl FairWorkerSender {
 
     fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
         if job.queue_lane() == EncryptWorkerLane::Priority {
-            if let Err(SendError(job)) = self.tx.send(job) {
+            if let Err(SendError(job)) = self.priority_tx.send(job) {
                 drop(job);
                 return Err(FairWorkerPushError);
             }
@@ -750,7 +761,7 @@ impl FairWorkerSender {
         }
         let mut job = job;
         job.mark_fair_reserved();
-        if let Err(SendError(job)) = self.tx.send(job) {
+        if let Err(SendError(job)) = self.bulk_tx.send(job) {
             self.admission.release(key);
             drop(job);
             return Err(FairWorkerPushError);
@@ -879,26 +890,38 @@ impl Drop for FairWorkerSender {
 impl FairWorkerReceiver {
     fn recv_batch(&self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
         debug_assert!(batch.is_empty());
-        let first = match self.rx.recv() {
-            Ok(job) => job,
-            Err(_) => return false,
+        let Some(first) = self.recv_next_blocking() else {
+            return false;
         };
-        if first.fair_reserved() {
-            self.admission.release(first.flow_key());
-        }
-        batch.push(first);
+        self.push_received(batch, first);
         while batch.len() < max {
-            match self.rx.try_recv() {
-                Ok(job) => {
-                    if job.fair_reserved() {
-                        self.admission.release(job.flow_key());
-                    }
-                    batch.push(job);
-                }
+            if let Ok(job) = self.priority_rx.try_recv() {
+                self.push_received(batch, job);
+                continue;
+            }
+            match self.bulk_rx.try_recv() {
+                Ok(job) => self.push_received(batch, job),
                 Err(_) => break,
             }
         }
         true
+    }
+
+    fn recv_next_blocking(&self) -> Option<QueuedFmpSendJob> {
+        if let Ok(job) = self.priority_rx.try_recv() {
+            return Some(job);
+        }
+        crossbeam_channel::select! {
+            recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.bulk_rx.recv().ok()),
+            recv(self.bulk_rx) -> msg => msg.ok().or_else(|| self.priority_rx.recv().ok()),
+        }
+    }
+
+    fn push_received(&self, batch: &mut Vec<QueuedFmpSendJob>, job: QueuedFmpSendJob) {
+        if job.fair_reserved() {
+            self.admission.release(job.flow_key());
+        }
+        batch.push(job);
     }
 }
 
@@ -3028,6 +3051,48 @@ mod fair_queue_tests {
                 batch.iter().any(|job| job.flow_key().dest_addr == hot
                     && job.queue_lane() == EncryptWorkerLane::Priority),
                 "priority job should be present despite the capped bulk flow"
+            );
+        });
+    }
+
+    #[test]
+    fn priority_flow_enters_when_bulk_worker_queue_is_full() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10024".parse().unwrap();
+
+            for _ in 0..2 {
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    128,
+                    true,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("bulk jobs should fill the bounded bulk queue");
+            }
+
+            tx.try_push(queued_job_classified(
+                socket,
+                &cipher,
+                addr,
+                64,
+                false,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("priority job must keep its reserve when bulk is full");
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 3));
+            assert_eq!(batch.len(), 3);
+            assert_eq!(batch[0].queue_lane(), EncryptWorkerLane::Priority);
+            assert!(
+                batch[1..]
+                    .iter()
+                    .all(|job| job.queue_lane() == EncryptWorkerLane::Bulk)
             );
         });
     }
