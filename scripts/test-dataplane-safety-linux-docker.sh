@@ -42,6 +42,7 @@ DEFAULT_FILTERS=(
   test_ignores_duplicate_receiver_report_after_valid_sample
   test_ignores_out_of_order_receiver_report_after_valid_sample
   test_parent_reeval_ignores_unmeasured_peer_costs
+  test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt
   connected_udp
 )
 

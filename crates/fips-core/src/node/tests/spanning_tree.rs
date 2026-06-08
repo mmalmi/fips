@@ -5,6 +5,7 @@
 //! reused by bloom filter tests.
 
 use super::*;
+use crate::mmp::ReceiverReport;
 use crate::protocol::TreeAnnounce;
 use crate::transport::ReceivedPacket;
 use crate::tree::{CoordEntry, ParentDeclaration, TreeCoordinate};
@@ -1273,5 +1274,126 @@ async fn test_parent_reeval_ignores_unmeasured_peer_costs() {
         node.stats().tree.parent_switches,
         switches_before,
         "ignored unmeasured candidates must not be counted as parent switches"
+    );
+}
+
+#[tokio::test]
+async fn test_parent_reeval_ignores_fresh_bogus_metrics_without_valid_rtt() {
+    let mut config = Config::new();
+    config.node.tree.hold_down_secs = 0;
+    config.node.tree.parent_hysteresis = 0.0;
+    config.node.tree.reeval_interval_secs = 1;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let (current_conn, current_id) =
+        make_completed_connection(&mut node, LinkId::new(1), transport_id, 1_000);
+    let current_parent = *current_id.node_addr();
+    node.add_connection(current_conn).unwrap();
+    node.promote_connection(LinkId::new(1), current_id, 2_000)
+        .unwrap();
+
+    let (candidate_conn, candidate_id) =
+        make_completed_connection(&mut node, LinkId::new(2), transport_id, 1_000);
+    let bogus_candidate = *candidate_id.node_addr();
+    node.add_connection(candidate_conn).unwrap();
+    node.promote_connection(LinkId::new(2), candidate_id, 2_000)
+        .unwrap();
+
+    let root = make_node_addr(0);
+    let intermediate = make_node_addr(1);
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(current_parent, intermediate, 1, 1_000),
+        TreeCoordinate::from_addrs(vec![current_parent, intermediate, root]).unwrap(),
+    );
+    node.tree_state_mut().update_peer(
+        ParentDeclaration::new(bogus_candidate, root, 1, 1_000),
+        TreeCoordinate::from_addrs(vec![bogus_candidate, root]).unwrap(),
+    );
+    node.tree_state_mut().set_parent(current_parent, 2, 1_000);
+    node.tree_state_mut().recompute_coords();
+
+    node.get_peer_mut(&current_parent)
+        .expect("current parent peer")
+        .mmp_mut()
+        .expect("current parent mmp")
+        .metrics
+        .srtt
+        .update(10_000);
+
+    let parent_before = *node.tree_state().my_declaration().parent_id();
+    let switches_before = node.stats().tree.parent_switches;
+
+    let counter_baseline = ReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: u32::MAX - 10,
+        dwell_time: 20,
+        max_burst_loss: u16::MAX,
+        mean_burst_loss: u16::MAX,
+        jitter: u32::MAX,
+        ecn_ce_count: 0,
+        owd_trend: i32::MAX,
+        burst_loss_count: u32::MAX,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_receiver_report(&bogus_candidate, &counter_baseline[1..])
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    let fresh_bogus_delta = ReceiverReport {
+        highest_counter: 300,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: u64::MAX,
+        timestamp_echo: u32::MAX - 10,
+        dwell_time: 20,
+        max_burst_loss: u16::MAX,
+        mean_burst_loss: u16::MAX,
+        jitter: u32::MAX,
+        ecn_ce_count: u32::MAX,
+        owd_trend: i32::MIN,
+        burst_loss_count: u32::MAX,
+        cumulative_reorder_count: u32::MAX,
+        interval_packets_recv: 0,
+        interval_bytes_recv: u32::MAX,
+    }
+    .encode();
+    node.handle_receiver_report(&bogus_candidate, &fresh_bogus_delta[1..])
+        .await;
+
+    {
+        let candidate = node.get_peer(&bogus_candidate).expect("candidate peer");
+        let metrics = &candidate.mmp().expect("candidate mmp").metrics;
+        assert!(
+            !candidate.has_srtt(),
+            "invalid RTT samples must not make the candidate parent-eligible"
+        );
+        assert_eq!(
+            metrics.last_forward_loss_sample(),
+            Some((200, 1.0)),
+            "fixture should exercise a fresh severe-loss sample rather than a stale report"
+        );
+        assert!(
+            metrics.goodput_bps() > 0.0,
+            "fixture should exercise a fresh goodput sample rather than a stale report"
+        );
+    }
+
+    node.check_tree_state().await;
+
+    assert_eq!(
+        node.tree_state().my_declaration().parent_id(),
+        &parent_before,
+        "fresh bogus metrics without valid RTT must not switch parent choice"
+    );
+    assert_eq!(
+        node.stats().tree.parent_switches,
+        switches_before,
+        "fresh bogus metrics without valid RTT must not count as a parent switch"
     );
 }
