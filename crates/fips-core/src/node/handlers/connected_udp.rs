@@ -79,10 +79,17 @@ impl Node {
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
             let mut installed_count = self.connected_udp_installed_count();
             let mut peer_cap_skipped = 0usize;
-            for addr in candidates {
+            let total_candidates = candidates.len();
+            for (idx, addr) in candidates.into_iter().enumerate() {
                 if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
-                    peer_cap_skipped = peer_cap_skipped.saturating_add(1);
-                    continue;
+                    let candidates_waiting = total_candidates.saturating_sub(idx);
+                    peer_cap_skipped =
+                        peer_cap_skipped.saturating_add(connected_udp_peer_cap_skipped_candidates(
+                            installed_count,
+                            peer_cap,
+                            candidates_waiting,
+                        ));
+                    break;
                 }
                 match self
                     .activate_connected_udp_for_peer(&addr, installed_count)
@@ -358,6 +365,19 @@ fn connected_udp_peer_budget_allows(installed_peers: usize, max_peers: usize) ->
     max_peers == 0 || installed_peers < max_peers
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_peer_cap_skipped_candidates(
+    installed_peers: usize,
+    max_peers: usize,
+    candidates_waiting: usize,
+) -> usize {
+    if connected_udp_peer_budget_allows(installed_peers, max_peers) {
+        0
+    } else {
+        candidates_waiting
+    }
+}
+
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
@@ -424,6 +444,25 @@ mod tests {
     fn peer_budget_stops_at_explicit_cap() {
         assert!(connected_udp_peer_budget_allows(0, 1));
         assert!(!connected_udp_peer_budget_allows(1, 1));
+    }
+
+    #[test]
+    fn peer_cap_skip_count_is_zero_while_budget_remains() {
+        assert_eq!(connected_udp_peer_cap_skipped_candidates(0, 2, 50), 0);
+        assert_eq!(
+            connected_udp_peer_cap_skipped_candidates(10_000, 0, 50),
+            0,
+            "max_peers=0 keeps the explicit peer cap disabled"
+        );
+    }
+
+    #[test]
+    fn peer_cap_skip_count_covers_current_and_remaining_candidates() {
+        assert_eq!(
+            connected_udp_peer_cap_skipped_candidates(2, 2, 37),
+            37,
+            "large-mesh cap exhaustion should report the whole skipped tail once"
+        );
     }
 
     #[test]
