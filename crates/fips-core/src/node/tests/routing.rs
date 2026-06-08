@@ -195,6 +195,70 @@ fn test_reply_learned_keeps_configured_static_direct_peer_despite_session_degrad
 }
 
 #[test]
+fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallback() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let direct_link = LinkId::new(1);
+    let (direct_conn, direct_id) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1000);
+    let dest_addr = *direct_id.node_addr();
+    let dest_npub = direct_id.npub();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_id, 2000)
+        .unwrap();
+    node.config.peers.push(crate::config::PeerConfig::new(
+        dest_npub,
+        "udp",
+        "127.0.0.1:5000",
+    ));
+
+    let mesh_link = LinkId::new(2);
+    let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);
+    let mesh_next_hop = *mesh_id.node_addr();
+    node.add_connection(mesh_conn).unwrap();
+    node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
+
+    node.get_peer_mut(&dest_addr)
+        .expect("direct peer")
+        .mmp_mut()
+        .expect("direct mmp")
+        .metrics
+        .srtt
+        .update(90_000);
+    node.get_peer_mut(&mesh_next_hop)
+        .expect("fallback peer")
+        .mmp_mut()
+        .expect("fallback mmp")
+        .metrics
+        .srtt
+        .update(5_000);
+    node.learn_reverse_route(dest_addr, mesh_next_hop);
+
+    {
+        let direct = node.get_peer(&dest_addr).expect("direct peer");
+        let fallback = node.get_peer(&mesh_next_hop).expect("fallback peer");
+        assert!(
+            direct.is_healthy() && node.active_peer_uses_configured_static_udp_path(&dest_addr),
+            "fixture should model a healthy operator-configured direct UDP path"
+        );
+        assert!(
+            fallback.link_cost() < direct.link_cost(),
+            "fixture should make the learned fallback look cheaper than direct"
+        );
+    }
+
+    let route = node.find_next_hop(&dest_addr).expect("direct route");
+    assert_eq!(
+        route.node_addr(),
+        &dest_addr,
+        "a healthy operator-configured static UDP path must not silently move payload onto a learned fallback"
+    );
+}
+
+#[test]
 fn test_tree_routing_skips_session_degraded_direct_peer_for_payload() {
     let transport_id = TransportId::new(1);
 
