@@ -19,6 +19,7 @@ DEFAULT_FILTERS=(
   new_flow_can_enter_when_hot_flow_reaches_per_flow_cap
   hot_flow_backpressures_when_others_are_waiting
   send_backpressure
+  pipelined_endpoint_wire_uses_reserved_counters_and_offsets
   priority_flow_enters_when_bulk_flow_reaches_per_flow_cap
   fair_admission_keys_pressure_by_exact_send_target
   encrypt_worker_dispatch_preserves_single_flow_worker_and_fifo_order
