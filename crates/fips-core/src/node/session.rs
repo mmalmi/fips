@@ -11,8 +11,12 @@ use crate::NodeAddr;
 use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
+#[cfg(unix)]
+use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
 use crate::noise::{HandshakeState, NoiseSession};
 use rand::RngExt;
+#[cfg(unix)]
+use ring::aead::LessSafeKey;
 use secp256k1::PublicKey;
 
 fn draw_rekey_jitter() -> i64 {
@@ -55,6 +59,14 @@ pub(crate) enum EpochSlot {
 pub(crate) enum FspOpenError {
     /// Current, pending, and previous epochs all rejected the frame.
     NoLiveEpochAccepted,
+}
+
+/// Reserved FSP send state for off-task worker encryption.
+#[cfg(unix)]
+pub(crate) struct FspSendReservation {
+    pub(crate) counter: u64,
+    pub(crate) header: [u8; FSP_HEADER_SIZE],
+    pub(crate) cipher: LessSafeKey,
 }
 
 impl EndToEndState {
@@ -489,6 +501,32 @@ impl SessionEntry {
             Some(EndToEndState::Established(s)) => s.current_send_counter(),
             _ => 0,
         }
+    }
+
+    /// Reserve FSP send state for worker-side encryption.
+    ///
+    /// The session entry owns the send counter sequence. Worker paths receive a
+    /// clone of the AEAD key plus the already-reserved counter/header pair, so
+    /// worker encryption cannot advance or rebuild session-owned sequencing.
+    #[cfg(unix)]
+    pub(crate) fn reserve_fsp_worker_send(
+        &mut self,
+        flags: u8,
+        payload_len: u16,
+    ) -> Result<Option<FspSendReservation>, crate::noise::NoiseError> {
+        let Some(session) = self.current_noise_session_mut() else {
+            return Ok(None);
+        };
+        let Some(cipher) = session.send_cipher_clone() else {
+            return Ok(None);
+        };
+        let counter = session.take_send_counter()?;
+        let header = build_fsp_header(counter, flags, payload_len);
+        Ok(Some(FspSendReservation {
+            counter,
+            header,
+            cipher,
+        }))
     }
 
     /// When the FSP rekey handshake completed (initiator sent msg3).
@@ -986,6 +1024,68 @@ mod overlapping_epoch_tests {
                 .open_fsp_established_frame(&ciphertext, counter, &header, k_bit, 2_200)
                 .is_err(),
             "the valid frame is replay-protected after successful open"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reserve_fsp_worker_send_owns_counter_header_and_cipher() {
+        use ring::aead::Aad;
+
+        let (send_session, mut recv_session) = xk_pair(1, 2);
+        let mut entry = entry_with_current(send_session);
+        let flags = FSP_FLAG_K;
+        let plaintext = b"worker-sealed-fsp-frame";
+
+        let reservation = entry
+            .reserve_fsp_worker_send(flags, plaintext.len() as u16)
+            .expect("counter reservation should succeed")
+            .expect("established session should expose a send cipher");
+
+        assert_eq!(reservation.counter, 0);
+        assert_eq!(
+            entry.send_counter(),
+            1,
+            "reservation is the only session mutation before worker dispatch"
+        );
+        assert_eq!(
+            reservation.header,
+            build_fsp_header(reservation.counter, flags, plaintext.len() as u16)
+        );
+
+        let mut ciphertext = plaintext.to_vec();
+        reservation
+            .cipher
+            .seal_in_place_append_tag(
+                crate::noise::CipherState::counter_to_nonce(reservation.counter),
+                Aad::from(&reservation.header),
+                &mut ciphertext,
+            )
+            .expect("worker-style FSP seal should succeed");
+        assert_eq!(
+            entry.send_counter(),
+            1,
+            "worker cipher use must not mutate the owning session"
+        );
+        assert_eq!(
+            recv_session
+                .decrypt_with_replay_check_and_aad(
+                    &ciphertext,
+                    reservation.counter,
+                    &reservation.header,
+                )
+                .expect("receiver should accept worker-sealed FSP frame"),
+            plaintext
+        );
+
+        let next = entry
+            .reserve_fsp_worker_send(flags, plaintext.len() as u16)
+            .expect("second counter reservation should succeed")
+            .expect("established session should still expose a send cipher");
+        assert_eq!(next.counter, 1);
+        assert_eq!(
+            next.header,
+            build_fsp_header(next.counter, flags, plaintext.len() as u16)
         );
     }
 

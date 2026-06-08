@@ -119,8 +119,7 @@ struct PipelinedEndpointWireArgs<'a> {
     path_mtu: u16,
     default_ttl: u8,
     their_index: crate::utils::index::SessionIndex,
-    fsp_counter: u64,
-    fsp_flags: u8,
+    fsp_header: [u8; FSP_HEADER_SIZE],
     fmp_counter: u64,
     fmp_flags: u8,
     timestamp_ms: u32,
@@ -128,11 +127,6 @@ struct PipelinedEndpointWireArgs<'a> {
 
 #[cfg(unix)]
 fn build_pipelined_endpoint_wire(args: PipelinedEndpointWireArgs<'_>) -> PipelinedEndpointWire {
-    let fsp_header = build_fsp_header(
-        args.fsp_counter,
-        args.fsp_flags,
-        args.inner_plaintext.len() as u16,
-    );
     let coords_size = match (args.my_coords, args.dest_coords) {
         (Some(src), Some(dst)) => coords_wire_size(src) + coords_wire_size(dst),
         _ => 0,
@@ -157,7 +151,7 @@ fn build_pipelined_endpoint_wire(args: PipelinedEndpointWireArgs<'_>) -> Pipelin
     wire_buf.extend_from_slice(args.source_addr.as_bytes());
     wire_buf.extend_from_slice(args.dest_addr.as_bytes());
     let fsp_aad_offset = wire_buf.len();
-    wire_buf.extend_from_slice(&fsp_header);
+    wire_buf.extend_from_slice(&args.fsp_header);
     if let (Some(src), Some(dst)) = (args.my_coords, args.dest_coords) {
         encode_coords(src, &mut wire_buf);
         encode_coords(dst, &mut wire_buf);
@@ -2517,7 +2511,7 @@ impl Node {
             return Ok(false);
         };
 
-        let (fsp_counter, fsp_cipher) = {
+        let fsp_reservation = {
             let entry = self
                 .sessions
                 .get_mut(dest_addr)
@@ -2528,25 +2522,23 @@ impl Node {
             if let Some(mmp) = entry.mmp_mut() {
                 mmp.path_mtu.seed_source_mtu(path_mtu);
             }
-            let session = match entry.state_mut() {
-                EndToEndState::Established(s) => s,
-                _ => {
-                    return Err(NodeError::SendFailed {
-                        node_addr: *dest_addr,
-                        reason: "session not established".into(),
-                    });
-                }
-            };
-            let Some(fsp_cipher) = session.send_cipher_clone() else {
-                return Ok(false);
-            };
-            let counter = session
-                .take_send_counter()
+            if !entry.is_established() {
+                return Err(NodeError::SendFailed {
+                    node_addr: *dest_addr,
+                    reason: "session not established".into(),
+                });
+            }
+            let payload_len = send.inner_plaintext.len() as u16;
+            let Some(reservation) = entry
+                .reserve_fsp_worker_send(send.fsp_flags, payload_len)
                 .map_err(|e| NodeError::SendFailed {
                     node_addr: *dest_addr,
                     reason: format!("session counter reservation failed: {}", e),
-                })?;
-            (counter, fsp_cipher)
+                })?
+            else {
+                return Ok(false);
+            };
+            reservation
         };
 
         let fmp_counter = {
@@ -2577,8 +2569,7 @@ impl Node {
             path_mtu,
             default_ttl: self.config.node.session.default_ttl,
             their_index,
-            fsp_counter,
-            fsp_flags: send.fsp_flags,
+            fsp_header: fsp_reservation.header,
             fmp_counter,
             fmp_flags,
             timestamp_ms,
@@ -2601,7 +2592,7 @@ impl Node {
             entry.record_sent(send.payload.len());
             if let Some(mmp) = entry.mmp_mut() {
                 mmp.sender.record_sent(
-                    fsp_counter,
+                    fsp_reservation.counter,
                     send.timestamp,
                     send.inner_plaintext.len() + crate::noise::TAG_SIZE,
                 );
@@ -2623,8 +2614,8 @@ impl Node {
             counter: fmp_counter,
             wire_buf: wire.wire_buf,
             fsp_seal: Some(crate::node::encrypt_worker::FspSealJob {
-                cipher: fsp_cipher,
-                counter: fsp_counter,
+                cipher: fsp_reservation.cipher,
+                counter: fsp_reservation.counter,
                 aad_offset: wire.fsp_aad_offset,
                 plaintext_offset: wire.fsp_plaintext_offset,
             }),
@@ -3380,6 +3371,7 @@ mod tests {
         let fmp_counter = 0x1112_1314_1516_1718;
         let fmp_flags = FLAG_SP | FLAG_KEY_EPOCH;
         let fsp_flags = FSP_FLAG_CP | FSP_FLAG_K;
+        let fsp_header = build_fsp_header(fsp_counter, fsp_flags, inner_plaintext.len() as u16);
         let their_index = SessionIndex::new(0xA0B0_C0D0);
         let path_mtu = 1234;
         let default_ttl = 9;
@@ -3394,8 +3386,7 @@ mod tests {
             path_mtu,
             default_ttl,
             their_index,
-            fsp_counter,
-            fsp_flags,
+            fsp_header,
             fmp_counter,
             fmp_flags,
             timestamp_ms,
