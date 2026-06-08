@@ -965,6 +965,9 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::EncryptWorkerQueueFull,
+                );
                 if job.bulk_endpoint_data() {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
@@ -995,6 +998,9 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::EncryptWorkerQueueFull,
+                );
                 if job.bulk_endpoint_data() {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
@@ -1021,6 +1027,7 @@ impl EncryptWorkerPool {
 }
 
 fn record_encrypt_worker_backpressure_drop(worker: usize) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::EncryptWorkerBulkDropped);
     static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n < 8 || n.is_multiple_of(100_000) {
@@ -1988,6 +1995,7 @@ fn default_send_backpressure_drop_after() -> u32 {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn record_udp_send_backpressure_drop(err: &std::io::Error) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::UdpSendBulkDropped);
     static SEND_BACKPRESSURE_DROP_COUNT: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
     let n = SEND_BACKPRESSURE_DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
