@@ -311,6 +311,10 @@ impl QueuedFmpSendJob {
 /// for tens of milliseconds, inflating RTT/retransmits instead of
 /// pushing back to TUN promptly.
 const DEFAULT_WORKER_CHANNEL_CAP: usize = 1024;
+// Keep the control/ACK-shaped reserve independent from synthetic bulk-pressure
+// tests that deliberately shrink `FIPS_WORKER_CHANNEL_CAP`.
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 #[cfg(target_os = "macos")]
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
@@ -325,12 +329,24 @@ const MAX_SEND_WEIGHT: u8 = 4;
 fn worker_channel_cap() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("FIPS_WORKER_CHANNEL_CAP")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(DEFAULT_WORKER_CHANNEL_CAP)
-            .clamp(1, 32768)
+        let raw = std::env::var("FIPS_WORKER_CHANNEL_CAP").ok();
+        parse_worker_channel_cap(raw.as_deref(), DEFAULT_WORKER_CHANNEL_CAP)
     })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn worker_priority_channel_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        let raw = std::env::var("FIPS_ENCRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
+        parse_worker_channel_cap(raw.as_deref(), DEFAULT_WORKER_PRIORITY_CHANNEL_CAP)
+    })
+}
+
+fn parse_worker_channel_cap(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, 32768)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -664,11 +680,26 @@ struct FairWorkerPushError;
 fn fair_worker_channel(
     total_cap: usize,
     per_flow_cap: usize,
+    quantum_bytes: usize,
+) -> (FairWorkerSender, FairWorkerReceiver) {
+    fair_worker_channel_with_priority_cap(
+        total_cap,
+        per_flow_cap,
+        worker_priority_channel_cap(),
+        quantum_bytes,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fair_worker_channel_with_priority_cap(
+    total_cap: usize,
+    per_flow_cap: usize,
+    priority_cap: usize,
     _quantum_bytes: usize,
 ) -> (FairWorkerSender, FairWorkerReceiver) {
     let total_cap = total_cap.max(1);
     let per_flow_cap = per_flow_cap.max(1);
-    let priority_cap = per_flow_cap.saturating_mul(2).min(total_cap).max(1);
+    let priority_cap = priority_cap.max(1);
     let (priority_tx, priority_rx) = bounded(priority_cap);
     let (bulk_tx, bulk_rx) = bounded(total_cap);
     let admission = Arc::new(FairAdmission {
@@ -3133,6 +3164,51 @@ mod fair_queue_tests {
                 batch[1..]
                     .iter()
                     .all(|job| job.queue_lane() == EncryptWorkerLane::Bulk)
+            );
+        });
+    }
+
+    #[test]
+    fn priority_reserve_does_not_shrink_with_tight_bulk_channel_cap() {
+        with_test_socket(|socket, cipher| {
+            let (tx, rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10025".parse().unwrap();
+
+            for _ in 0..2 {
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    128,
+                    true,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("bulk jobs should fill the bounded bulk queue");
+            }
+
+            for _ in 0..3 {
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    64,
+                    false,
+                    false,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("priority reserve must not be derived from the tight bulk cap");
+            }
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 5));
+            assert_eq!(batch.len(), 5);
+            assert_eq!(
+                batch
+                    .iter()
+                    .filter(|job| job.queue_lane() == EncryptWorkerLane::Priority)
+                    .count(),
+                3
             );
         });
     }
