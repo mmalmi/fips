@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run the deterministic FIPS dataplane safety tests inside a Linux container.
 #
-# Useful from macOS mini: local `cargo test` exercises Darwin cfg paths, while
-# this covers Linux-only fair-worker queue behavior without needing a separate
-# host checkout.
+# Useful from local macOS hosts: local `cargo test` exercises Darwin cfg paths,
+# while this covers Linux-only fair-worker queue behavior without needing a
+# separate host checkout.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,6 +29,7 @@ DEFAULT_FILTERS=(
   worker_reports_fmp_aead_failure_to_rx_loop
   endpoint_payload_traffic_classifier_prioritizes_control_sized_packets
   test_stale_session_receiver_reports_do_not_change_route_choice
+  test_stale_mmp_receiver_reports_do_not_change_route_choice
   test_session_receiver_loss_degrades_direct_and_uses_fallback
   test_ignores_duplicate_receiver_report_after_valid_sample
   test_ignores_out_of_order_receiver_report_after_valid_sample

@@ -6,6 +6,7 @@
 use super::*;
 use crate::bloom::BloomFilter;
 use crate::config::RoutingMode;
+use crate::mmp::ReceiverReport;
 use crate::tree::{ParentDeclaration, TreeCoordinate};
 use spanning_tree::{
     TestNode, cleanup_nodes, drain_all_packets, generate_random_edges, initiate_handshake,
@@ -321,6 +322,142 @@ fn test_reply_learned_prefers_lower_cost_fallback_over_slow_healthy_direct_peer(
         fallback.node_addr(),
         &mesh_next_hop,
         "a much cheaper fallback route should beat a slow but healthy direct NAT path"
+    );
+}
+
+#[tokio::test]
+async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    let mut node = Node::new(config).unwrap();
+    let transport_id = TransportId::new(1);
+
+    let direct_link = LinkId::new(1);
+    let (direct_conn, direct_id) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1000);
+    let dest_addr = *direct_id.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_id, 2000)
+        .unwrap();
+
+    let mesh_link = LinkId::new(2);
+    let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);
+    let mesh_next_hop = *mesh_id.node_addr();
+    node.add_connection(mesh_conn).unwrap();
+    node.promote_connection(mesh_link, mesh_id, 2000).unwrap();
+    node.learn_reverse_route(dest_addr, mesh_next_hop);
+
+    let baseline = ReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: 0,
+        dwell_time: 0,
+        max_burst_loss: 0,
+        mean_burst_loss: 0,
+        jitter: 0,
+        ecn_ce_count: 0,
+        owd_trend: 0,
+        burst_loss_count: 0,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_receiver_report(&dest_addr, &baseline[1..])
+        .await;
+
+    assert_eq!(
+        node.find_next_hop(&dest_addr).map(|peer| *peer.node_addr()),
+        Some(dest_addr),
+        "healthy direct should initially hide learned fallback"
+    );
+    assert_eq!(
+        node.get_peer(&dest_addr)
+            .expect("direct peer")
+            .mmp()
+            .expect("direct mmp")
+            .metrics
+            .srtt_ms(),
+        None,
+        "counter-only baseline must not install a route-changing RTT"
+    );
+    let switches_before = node.stats().tree.parent_switches;
+
+    // If accepted, this duplicate report's stale echo would inflate direct
+    // link cost enough for the learned fallback to win.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    let duplicate_with_bogus_rtt = ReceiverReport {
+        highest_counter: 100,
+        cumulative_packets_recv: 100,
+        cumulative_bytes_recv: 10_000,
+        timestamp_echo: 1,
+        dwell_time: 0,
+        max_burst_loss: u16::MAX,
+        mean_burst_loss: u16::MAX,
+        jitter: u32::MAX,
+        ecn_ce_count: 0,
+        owd_trend: i32::MAX,
+        burst_loss_count: u32::MAX,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: 0,
+        interval_bytes_recv: 0,
+    }
+    .encode();
+    node.handle_receiver_report(&dest_addr, &duplicate_with_bogus_rtt[1..])
+        .await;
+
+    let regressed_with_bogus_goodput = ReceiverReport {
+        highest_counter: 90,
+        cumulative_packets_recv: 90,
+        cumulative_bytes_recv: u64::MAX,
+        timestamp_echo: 1,
+        dwell_time: 0,
+        max_burst_loss: u16::MAX,
+        mean_burst_loss: u16::MAX,
+        jitter: u32::MAX,
+        ecn_ce_count: 0,
+        owd_trend: i32::MIN,
+        burst_loss_count: u32::MAX,
+        cumulative_reorder_count: 0,
+        interval_packets_recv: u32::MAX,
+        interval_bytes_recv: u32::MAX,
+    }
+    .encode();
+    node.handle_receiver_report(&dest_addr, &regressed_with_bogus_goodput[1..])
+        .await;
+
+    assert_eq!(
+        node.find_next_hop(&dest_addr).map(|peer| *peer.node_addr()),
+        Some(dest_addr),
+        "bogus stale MMP metrics must not move payload routing to fallback"
+    );
+    assert_eq!(
+        node.stats().tree.parent_switches,
+        switches_before,
+        "ignored stale MMP metrics must not trigger parent reevaluation"
+    );
+
+    let direct = node.get_peer(&dest_addr).expect("direct peer");
+    let direct_mmp = direct.mmp().expect("direct mmp");
+    assert_eq!(
+        direct_mmp.metrics.srtt_ms(),
+        None,
+        "ignored stale reports must not install an RTT sample"
+    );
+    assert_eq!(
+        direct_mmp.metrics.last_forward_loss_sample(),
+        None,
+        "ignored stale reports must not leave a loss sample behind"
+    );
+    assert_eq!(
+        direct_mmp.metrics.goodput_bps(),
+        0.0,
+        "ignored stale reports must not update goodput"
+    );
+    assert!(
+        (direct.link_cost() - 1.0).abs() < f64::EPSILON,
+        "ignored stale reports must leave default direct link cost unchanged"
     );
 }
 
