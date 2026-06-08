@@ -1164,6 +1164,55 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_worker_fallback_priority_full_returns_false_without_waiting() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+
+        assert!(fallback_tx.send(dummy_failure_event()));
+        assert_eq!(
+            fallback_rx.priority.len(),
+            1,
+            "test priority fallback lane should start full"
+        );
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let tx_for_thread = fallback_tx.clone();
+        std::thread::spawn(move || {
+            done_tx
+                .send(tx_for_thread.send(dummy_failure_event()))
+                .unwrap();
+        });
+
+        let sent = done_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("full fallback priority lane must not park decrypt worker");
+        assert!(
+            !sent,
+            "priority fallback sender should report pressure when the lane is full"
+        );
+        assert_eq!(
+            fallback_rx.priority.len(),
+            1,
+            "priority fallback lane must stay bounded"
+        );
+
+        assert!(
+            fallback_tx.send(dummy_plaintext_event(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+            )),
+            "full priority fallback lane must not consume bulk fallback capacity"
+        );
+        assert_eq!(fallback_rx.bulk.len(), 1);
+        assert!(matches!(
+            fallback_rx.priority.try_recv().expect("priority event"),
+            DecryptWorkerEvent::DecryptFailure(_)
+        ));
+        assert!(matches!(
+            fallback_rx.bulk.try_recv().expect("bulk event"),
+            DecryptWorkerEvent::Plaintext(_)
+        ));
+    }
+
+    #[test]
     fn decrypt_worker_full_queue_drops_bulk_without_waiting() {
         let (pool, _priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 99);
