@@ -119,8 +119,7 @@ impl Node {
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_data_activity = None::<Instant>;
-        let mut slow_maintenance_timed_out_under_data = false;
+        let mut maintenance_state = RxLoopMaintenanceState::default();
 
         // Set up control socket channel
         let (control_tx, mut control_rx) =
@@ -169,7 +168,7 @@ impl Node {
                         None,
                         PACKET_DRAIN_BUDGET,
                     ).await;
-                    last_data_activity = Some(Instant::now());
+                    maintenance_state.record_data_activity(Instant::now());
                     self.flush_pending_sends().await;
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
@@ -179,7 +178,7 @@ impl Node {
                         Some(event),
                         PACKET_DRAIN_BUDGET,
                     ).await;
-                    last_data_activity = Some(Instant::now());
+                    maintenance_state.record_data_activity(Instant::now());
                     self.flush_pending_sends().await;
                 }
                 packet = packet_rx.recv() => {
@@ -192,7 +191,7 @@ impl Node {
                                 PACKET_DRAIN_BUDGET,
                             ).await;
                             if drained > 0 {
-                                last_data_activity = Some(Instant::now());
+                                maintenance_state.record_data_activity(Instant::now());
                             }
                         }
                         None => break, // channel closed
@@ -208,7 +207,7 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained.has_drained() {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                         debug!(
                             drained = drained.total(),
                             drained_packets = drained.packets,
@@ -217,20 +216,17 @@ impl Node {
                             "Drained queued packets before rx-loop maintenance"
                         );
                     }
-                    let recent_data_activity = last_data_activity
-                        .is_some_and(|t| t.elapsed() <= RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW);
-                    let data_pressure = drained.data_pressure(recent_data_activity);
-                    if !data_pressure {
-                        slow_maintenance_timed_out_under_data = false;
-                    }
+                    let data_pressure = maintenance_state.data_pressure(
+                        drained,
+                        Instant::now(),
+                        RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW,
+                    );
 
                     let slow_timed_out = self.run_rx_loop_maintenance_tick(
                         data_pressure,
-                        data_pressure && slow_maintenance_timed_out_under_data,
+                        maintenance_state.skip_slow_maintenance(data_pressure),
                     ).await;
-                    if slow_timed_out && data_pressure {
-                        slow_maintenance_timed_out_under_data = true;
-                    }
+                    maintenance_state.record_maintenance_result(data_pressure, slow_timed_out);
 
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
@@ -241,7 +237,7 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if post_drained.has_drained() {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                         debug!(
                             drained = post_drained.total(),
                             drained_packets = post_drained.packets,
@@ -258,7 +254,7 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some(identity) = dns_identity_rx.recv() => {
@@ -277,7 +273,7 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some(command) = endpoint_command_rx.recv() => {
@@ -289,7 +285,7 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
@@ -713,6 +709,44 @@ impl RxLoopDataDrainStats {
     }
 }
 
+#[derive(Debug, Default)]
+struct RxLoopMaintenanceState {
+    last_data_activity: Option<Instant>,
+    slow_maintenance_timed_out_under_data: bool,
+}
+
+impl RxLoopMaintenanceState {
+    fn record_data_activity(&mut self, now: Instant) {
+        self.last_data_activity = Some(now);
+    }
+
+    fn data_pressure(
+        &self,
+        drained: RxLoopDataDrainStats,
+        now: Instant,
+        activity_window: Duration,
+    ) -> bool {
+        drained.data_pressure(self.recent_data_activity(now, activity_window))
+    }
+
+    fn skip_slow_maintenance(&self, data_pressure: bool) -> bool {
+        data_pressure && self.slow_maintenance_timed_out_under_data
+    }
+
+    fn record_maintenance_result(&mut self, data_pressure: bool, slow_timed_out: bool) {
+        if !data_pressure {
+            self.slow_maintenance_timed_out_under_data = false;
+        } else if slow_timed_out {
+            self.slow_maintenance_timed_out_under_data = true;
+        }
+    }
+
+    fn recent_data_activity(&self, now: Instant, activity_window: Duration) -> bool {
+        self.last_data_activity
+            .is_some_and(|last| now.saturating_duration_since(last) <= activity_window)
+    }
+}
+
 struct PacketDrainCursor<T> {
     first_packet: Option<T>,
     remaining: usize,
@@ -840,8 +874,9 @@ impl<T> TunOutboundDrainCursor<T> {
 mod tests {
     use super::{
         PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats,
-        TunOutboundDrainCursor,
+        RxLoopMaintenanceState, TunOutboundDrainCursor,
     };
+    use std::time::{Duration, Instant};
 
     #[test]
     fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
@@ -856,6 +891,33 @@ mod tests {
         assert!(drained.has_drained());
         assert!(drained.data_pressure(false));
         assert!(drained.data_pressure(true));
+    }
+
+    #[test]
+    fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
+        let start = Instant::now();
+        let window = Duration::from_secs(2);
+        let empty = RxLoopDataDrainStats::default();
+        let drained = RxLoopDataDrainStats::new(1, 0, 0);
+        let mut state = RxLoopMaintenanceState::default();
+
+        assert!(!state.data_pressure(empty, start, window));
+        assert!(!state.skip_slow_maintenance(false));
+
+        state.record_data_activity(start);
+        assert!(state.data_pressure(empty, start + Duration::from_secs(1), window));
+        assert!(!state.data_pressure(empty, start + Duration::from_secs(3), window));
+        assert!(state.data_pressure(drained, start + Duration::from_secs(3), window));
+
+        state.record_maintenance_result(true, true);
+        assert!(state.skip_slow_maintenance(true));
+        assert!(!state.skip_slow_maintenance(false));
+
+        state.record_maintenance_result(true, false);
+        assert!(state.skip_slow_maintenance(true));
+
+        state.record_maintenance_result(false, true);
+        assert!(!state.skip_slow_maintenance(true));
     }
 
     #[tokio::test]
