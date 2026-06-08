@@ -187,6 +187,45 @@ pub(crate) struct OwnedSessionState {
     pub source_npub: Option<String>,
 }
 
+#[derive(Debug)]
+struct FmpOpenOutcome {
+    plaintext_len: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FmpOpenError {
+    Replay,
+    Aead { fmp_replay_highest: u64 },
+}
+
+impl OwnedSessionState {
+    fn open_fmp_in_place(
+        &mut self,
+        packet_data: &mut [u8],
+        fmp_ciphertext_offset: usize,
+        fmp_counter: u64,
+        fmp_header: &[u8; 16],
+    ) -> Result<FmpOpenOutcome, FmpOpenError> {
+        let fmp_replay_highest = self.fmp_replay.highest();
+        if !self.fmp_replay.check(fmp_counter) {
+            return Err(FmpOpenError::Replay);
+        }
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let plaintext_len = self
+            .fmp_cipher
+            .open_in_place(nonce, Aad::from(fmp_header), buf)
+            .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?
+            .len();
+
+        self.fmp_replay.accept(fmp_counter);
+        Ok(FmpOpenOutcome { plaintext_len })
+    }
+}
+
 /// Pre-cooked decrypt + dispatch job. Built on rx_loop after parsing
 /// the FMP header; the worker pulls its session state from its own
 /// local HashMap (keyed by `session_key`) instead of receiving a
@@ -758,23 +797,19 @@ impl DecryptWorkerShard {
         // === Phase 1: FMP decrypt ===
         let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
 
-        // Replay-window check before AEAD work to avoid wasting CPU on
-        // replays. **Direct &mut access** — no Arc<Mutex> lock acquire.
-        let fmp_replay_highest = state.fmp_replay.highest();
-        if !state.fmp_replay.check(fmp_counter) {
-            return Ok(()); // replay; drop silently
-        }
-
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let buf = &mut packet_data[fmp_ciphertext_offset..];
-        let plaintext_len = match state
-            .fmp_cipher
-            .open_in_place(nonce, Aad::from(&fmp_header), buf)
-        {
-            Ok(p) => p.len(),
-            Err(_) => {
+        // **Direct &mut access** to shard-owned cipher + replay state — no
+        // Arc<Mutex> lock acquire and no split-brain replay owner. Replays are
+        // dropped before AEAD work; successful AEAD is the only path that
+        // accepts the counter into the replay window.
+        let plaintext_len = match state.open_fmp_in_place(
+            &mut packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            &fmp_header,
+        ) {
+            Ok(outcome) => outcome.plaintext_len,
+            Err(FmpOpenError::Replay) => return Ok(()),
+            Err(FmpOpenError::Aead { fmp_replay_highest }) => {
                 let _ =
                     fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                         source_node_addr,
@@ -784,9 +819,6 @@ impl DecryptWorkerShard {
                 return Ok(());
             }
         };
-
-        // FMP decrypt succeeded — accept the counter into the replay window.
-        state.fmp_replay.accept(fmp_counter);
         drop(_t_fmp);
 
         // The FMP plaintext lives in packet_data[fmp_ciphertext_offset..
@@ -1569,6 +1601,74 @@ mod tests {
         assert!(
             fallback_rx.bulk.is_empty(),
             "replayed counter must not reach the bulk fallback lane"
+        );
+    }
+
+    #[test]
+    fn owned_session_state_open_fmp_owns_replay_acceptance() {
+        let key_bytes = [4u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let counter = 9;
+        let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
+        let mut state = OwnedSessionState {
+            fmp_cipher: open_cipher,
+            fmp_replay: ReplayWindow::new(),
+            source_npub: None,
+        };
+
+        let (mut invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
+        let err = state
+            .open_fmp_in_place(
+                &mut invalid_packet,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                &invalid_header,
+            )
+            .expect_err("invalid AEAD must not open");
+        assert_eq!(
+            err,
+            FmpOpenError::Aead {
+                fmp_replay_highest: 0
+            }
+        );
+        assert_eq!(
+            state.fmp_replay.highest(),
+            0,
+            "failed AEAD must not advance the owned replay window"
+        );
+
+        let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        let outcome = state
+            .open_fmp_in_place(
+                &mut valid_packet,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                &valid_header,
+            )
+            .expect("valid AEAD must open");
+        assert_eq!(outcome.plaintext_len, 5);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            counter,
+            "successful AEAD must accept the counter in the same owner"
+        );
+
+        let (mut replay_packet, replay_header) =
+            sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        let err = state
+            .open_fmp_in_place(
+                &mut replay_packet,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                &replay_header,
+            )
+            .expect_err("replayed counter must be rejected before AEAD");
+        assert_eq!(err, FmpOpenError::Replay);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            counter,
+            "replay rejection must leave the owned replay window unchanged"
         );
     }
 
