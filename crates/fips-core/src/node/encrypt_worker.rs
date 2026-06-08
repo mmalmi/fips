@@ -707,7 +707,10 @@ fn fair_worker_channel_with_priority_cap(
         not_full: Condvar::new(),
         total_cap,
         per_flow_cap,
-        fast_lane_cap: per_flow_cap.saturating_mul(2).min(total_cap),
+        // Let a freshly idle worker accept one per-flow burst without taking
+        // the fairness mutex, but do not allow the fast path to hide more
+        // backlog than the fair per-flow budget itself.
+        fast_lane_cap: per_flow_cap.min(total_cap),
     });
     (
         FairWorkerSender {
@@ -3005,6 +3008,41 @@ mod fair_queue_tests {
     }
 
     #[test]
+    fn tight_bulk_cap_limits_single_flow_to_fast_lane_plus_fair_budget() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(16, 4, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10026".parse().unwrap();
+
+            for _ in 0..8 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("one flow should get one fast burst plus its fair budget");
+            }
+
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket,
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "tight caps must not hide a third per-flow burst before reporting pressure"
+            );
+        });
+    }
+
+    #[test]
     fn new_flow_can_enter_when_hot_flow_reaches_per_flow_cap() {
         with_test_socket(|socket, cipher| {
             let (tx, rx) = fair_worker_channel(4, 2, WORKER_FAIR_QUANTUM_BYTES);
@@ -3045,10 +3083,6 @@ mod fair_queue_tests {
             tx.try_push(queued_job(socket.clone(), &cipher, quiet, 128, true, 1))
                 .unwrap();
 
-            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
-                .unwrap();
-            tx.try_push(queued_job(socket.clone(), &cipher, hot, 128, true, 1))
-                .unwrap();
             assert!(matches!(
                 tx.try_push(queued_job(socket, &cipher, hot, 128, true, 1)),
                 Err(FairWorkerTryPushError::Full(_))
@@ -3063,8 +3097,8 @@ mod fair_queue_tests {
             let warmup: SocketAddr = "127.0.0.1:10022".parse().unwrap();
             let hot: SocketAddr = "127.0.0.1:10023".parse().unwrap();
 
-            // Fill the direct fast lane first, so the hot-flow jobs below use
-            // fair admission and actually consume the per-flow bulk budget.
+            // Fill enough bulk slots first so the hot-flow jobs below use fair
+            // admission and actually consume the per-flow bulk budget.
             for _ in 0..4 {
                 tx.try_push(queued_job(
                     socket.clone(),
@@ -3312,7 +3346,7 @@ mod fair_queue_tests {
             let warmup: SocketAddr = "127.0.0.1:10020".parse().unwrap();
             let shared_dest: SocketAddr = "127.0.0.1:10021".parse().unwrap();
 
-            // Fill the direct fast lane first so the next sends exercise
+            // Fill enough bulk slots first so the next sends exercise
             // fair-admission keys instead of bypassing admission.
             tx.try_push(queued_job(
                 socket_a.clone(),
@@ -3362,7 +3396,7 @@ mod fair_queue_tests {
             let boosted: SocketAddr = "127.0.0.1:10006".parse().unwrap();
             let normal: SocketAddr = "127.0.0.1:10007".parse().unwrap();
 
-            for _ in 0..8 {
+            for _ in 0..6 {
                 tx.try_push(queued_job(
                     socket.clone(),
                     &cipher,
