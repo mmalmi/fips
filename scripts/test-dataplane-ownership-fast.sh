@@ -13,6 +13,7 @@ RUN_RELEASE_CHECK=1
 DEFAULT_LOCAL_FILTERS=(
   decrypt_job_owns_lane_selected_at_construction
   decrypt_fallback_event_owns_lane_selected_at_construction
+  rx_loop_data_drain_stats_owns_counts_total_and_pressure
   packet_drain_cursor_owns_first_packet_budget_and_interleave
   priority_bulk_drain_cursor_owns_selected_head_and_budget
   tun_outbound_drain_cursor_owns_first_packet_and_budget
@@ -27,6 +28,7 @@ DEFAULT_LOCAL_FILTERS=(
 DEFAULT_LINUX_FILTERS=(
   decrypt_job_owns_lane_selected_at_construction
   decrypt_fallback_event_owns_lane_selected_at_construction
+  rx_loop_data_drain_stats_owns_counts_total_and_pressure
   packet_drain_cursor_owns_first_packet_budget_and_interleave
   priority_bulk_drain_cursor_owns_selected_head_and_budget
   tun_outbound_drain_cursor_owns_first_packet_and_budget

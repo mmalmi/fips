@@ -199,7 +199,7 @@ impl Node {
                     }
                 }
                 _ = tick.tick() => {
-                    let (drained_packets, drained_tun, drained_endpoint) = self.drain_rx_loop_data_queues(
+                    let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
                         &mut tun_outbound_rx,
@@ -207,20 +207,19 @@ impl Node {
                         &mut endpoint_command_rx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
-                    let drained = drained_packets + drained_tun + drained_endpoint;
-                    if drained > 0 {
+                    if drained.has_drained() {
                         last_data_activity = Some(Instant::now());
                         debug!(
-                            drained,
-                            drained_packets,
-                            drained_tun,
-                            drained_endpoint,
+                            drained = drained.total(),
+                            drained_packets = drained.packets,
+                            drained_tun = drained.tun,
+                            drained_endpoint = drained.endpoint,
                             "Drained queued packets before rx-loop maintenance"
                         );
                     }
                     let recent_data_activity = last_data_activity
                         .is_some_and(|t| t.elapsed() <= RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW);
-                    let data_pressure = drained > 0 || recent_data_activity;
+                    let data_pressure = drained.data_pressure(recent_data_activity);
                     if !data_pressure {
                         slow_maintenance_timed_out_under_data = false;
                     }
@@ -233,7 +232,7 @@ impl Node {
                         slow_maintenance_timed_out_under_data = true;
                     }
 
-                    let (post_drained_packets, post_drained_tun, post_drained_endpoint) = self.drain_rx_loop_data_queues(
+                    let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
                         &mut tun_outbound_rx,
@@ -241,14 +240,13 @@ impl Node {
                         &mut endpoint_command_rx,
                         PACKET_DRAIN_BUDGET,
                     ).await;
-                    let post_drained = post_drained_packets + post_drained_tun + post_drained_endpoint;
-                    if post_drained > 0 {
+                    if post_drained.has_drained() {
                         last_data_activity = Some(Instant::now());
                         debug!(
-                            drained = post_drained,
-                            drained_packets = post_drained_packets,
-                            drained_tun = post_drained_tun,
-                            drained_endpoint = post_drained_endpoint,
+                            drained = post_drained.total(),
+                            drained_packets = post_drained.packets,
+                            drained_tun = post_drained.tun,
+                            drained_endpoint = post_drained.endpoint,
                             "Drained queued packets after rx-loop maintenance"
                         );
                     }
@@ -321,7 +319,7 @@ impl Node {
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
-    ) -> (usize, usize, usize) {
+    ) -> RxLoopDataDrainStats {
         let drained_packets = self
             .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, budget)
             .await;
@@ -335,7 +333,7 @@ impl Node {
                 budget,
             )
             .await;
-        (drained_packets, drained_tun, drained_endpoint)
+        RxLoopDataDrainStats::new(drained_packets, drained_tun, drained_endpoint)
     }
 
     async fn drain_packet_rx(
@@ -686,6 +684,35 @@ enum PacketDrainAction<T> {
     InterleaveFallback,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RxLoopDataDrainStats {
+    packets: usize,
+    tun: usize,
+    endpoint: usize,
+}
+
+impl RxLoopDataDrainStats {
+    fn new(packets: usize, tun: usize, endpoint: usize) -> Self {
+        Self {
+            packets,
+            tun,
+            endpoint,
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.packets + self.tun + self.endpoint
+    }
+
+    fn has_drained(&self) -> bool {
+        self.total() > 0
+    }
+
+    fn data_pressure(&self, recent_data_activity: bool) -> bool {
+        self.has_drained() || recent_data_activity
+    }
+}
+
 struct PacketDrainCursor<T> {
     first_packet: Option<T>,
     remaining: usize,
@@ -812,8 +839,24 @@ impl<T> TunOutboundDrainCursor<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, TunOutboundDrainCursor,
+        PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats,
+        TunOutboundDrainCursor,
     };
+
+    #[test]
+    fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
+        let empty = RxLoopDataDrainStats::default();
+        assert_eq!(empty.total(), 0);
+        assert!(!empty.has_drained());
+        assert!(!empty.data_pressure(false));
+        assert!(empty.data_pressure(true));
+
+        let drained = RxLoopDataDrainStats::new(2, 3, 5);
+        assert_eq!(drained.total(), 10);
+        assert!(drained.has_drained());
+        assert!(drained.data_pressure(false));
+        assert!(drained.data_pressure(true));
+    }
 
     #[tokio::test]
     async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
