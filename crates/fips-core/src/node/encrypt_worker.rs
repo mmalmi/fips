@@ -258,6 +258,67 @@ impl FmpSendJob {
     }
 }
 
+#[cfg(unix)]
+struct SelectedSendBatch {
+    send_target: SelectedSendTarget,
+    wire_packets: Vec<Vec<u8>>,
+    drop_on_backpressure: bool,
+}
+
+#[cfg(unix)]
+impl SelectedSendBatch {
+    fn new(
+        send_target: SelectedSendTarget,
+        wire_packet: Vec<u8>,
+        drop_on_backpressure: bool,
+    ) -> Self {
+        Self {
+            send_target,
+            wire_packets: vec![wire_packet],
+            drop_on_backpressure,
+        }
+    }
+
+    fn target_key(&self) -> SendTargetKey {
+        self.send_target.key()
+    }
+
+    fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
+        self.wire_packets.push(wire_packet);
+        self.drop_on_backpressure &= drop_on_backpressure;
+    }
+
+    fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool) {
+        (
+            self.send_target,
+            self.wire_packets,
+            self.drop_on_backpressure,
+        )
+    }
+}
+
+#[cfg(unix)]
+fn push_selected_send_batch(
+    groups: &mut Vec<SelectedSendBatch>,
+    send_target: SelectedSendTarget,
+    wire_packet: Vec<u8>,
+    drop_on_backpressure: bool,
+) {
+    let target_key = send_target.key();
+    if let Some(group) = groups
+        .iter_mut()
+        .find(|group| group.target_key() == target_key)
+    {
+        group.push(wire_packet, drop_on_backpressure);
+    } else {
+        groups.push(SelectedSendBatch::new(
+            send_target,
+            wire_packet,
+            drop_on_backpressure,
+        ));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EncryptWorkerLane {
     Priority,
@@ -1630,13 +1691,7 @@ fn flush_batch_sync(
     // hashing for that range and keeps insertion order stable, so
     // the bursty peer's tail packets flush first.
     #[cfg(unix)]
-    struct EncryptedGroup {
-        send_target: SelectedSendTarget,
-        wire_packets: Vec<Vec<u8>>,
-        drop_on_backpressure: bool,
-    }
-    #[cfg(unix)]
-    let mut groups: Vec<EncryptedGroup> = Vec::with_capacity(1);
+    let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
     #[cfg(target_os = "macos")]
     let mut macos_completions: Vec<MacCompletionGroup> = Vec::with_capacity(1);
 
@@ -1750,24 +1805,7 @@ fn flush_batch_sync(
 
         #[cfg(unix)]
         {
-            // Compare by the selected kernel send target carried by the job,
-            // not `AsyncUdpSocket` / Arc identity: jobs routinely carry
-            // separately cloned handles to the same fd, while connected
-            // sockets change the actual peer target.
-            let target_key = send_target.key();
-            let matched = groups
-                .iter_mut()
-                .position(|group| group.send_target.key() == target_key);
-            if let Some(idx) = matched {
-                groups[idx].wire_packets.push(wire_buf);
-                groups[idx].drop_on_backpressure &= drop_on_backpressure;
-            } else {
-                groups.push(EncryptedGroup {
-                    send_target,
-                    wire_packets: vec![wire_buf],
-                    drop_on_backpressure,
-                });
-            }
+            push_selected_send_batch(&mut groups, send_target, wire_buf, drop_on_backpressure);
         }
         #[cfg(not(unix))]
         {
@@ -1811,11 +1849,7 @@ fn flush_batch_sync(
     #[cfg(target_os = "linux")]
     for group in groups {
         let mut backpressure = SendBackpressurePacer::default();
-        let EncryptedGroup {
-            send_target,
-            wire_packets,
-            drop_on_backpressure,
-        } = group;
+        let (send_target, wire_packets, drop_on_backpressure) = group.into_parts();
         let (fd, connected) = send_target.fd_and_connected();
         let dest_addr = send_target.dest_addr();
 
@@ -1881,13 +1915,14 @@ fn flush_batch_sync(
     #[cfg(all(unix, not(target_os = "linux")))]
     for group in groups {
         let mut backpressure = SendBackpressurePacer::default();
-        let (fd, connected) = group.send_target.fd_and_connected();
-        let dest_addr = group.send_target.dest_addr();
+        let (send_target, wire_packets, drop_on_backpressure) = group.into_parts();
+        let (fd, connected) = send_target.fd_and_connected();
+        let dest_addr = send_target.dest_addr();
 
         #[cfg(target_os = "macos")]
         let send_error = MAC_DIRECT_SEND_RATE_PACER.with(|pacer| {
             let mut rate_pacer = pacer.borrow_mut();
-            for data in &group.wire_packets {
+            for data in &wire_packets {
                 rate_pacer.pace(data.len());
                 if let Err(err) = send_one_with_backpressure(
                     fd,
@@ -1895,9 +1930,9 @@ fn flush_batch_sync(
                     &dest_addr,
                     data,
                     &mut backpressure,
-                    group.drop_on_backpressure,
+                    drop_on_backpressure,
                 ) {
-                    if group.drop_on_backpressure && is_send_backpressure(&err) {
+                    if drop_on_backpressure && is_send_backpressure(&err) {
                         continue;
                     }
                     return Some(err);
@@ -1909,16 +1944,16 @@ fn flush_batch_sync(
         #[cfg(not(target_os = "macos"))]
         let send_error = {
             let mut error = None;
-            for data in &group.wire_packets {
+            for data in &wire_packets {
                 if let Err(err) = send_one_with_backpressure(
                     fd,
                     connected,
                     &dest_addr,
                     data,
                     &mut backpressure,
-                    group.drop_on_backpressure,
+                    drop_on_backpressure,
                 ) {
-                    if group.drop_on_backpressure && is_send_backpressure(&err) {
+                    if drop_on_backpressure && is_send_backpressure(&err) {
                         continue;
                     }
                     error = Some(err);
@@ -2661,6 +2696,81 @@ mod unix_tests {
             )
             .expect("inner open");
             assert_eq!(inner_plaintext, fsp_plaintext);
+        });
+    }
+
+    #[test]
+    fn selected_send_batch_owns_target_fifo_and_drop_policy() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw_a = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket a");
+            let socket_a = raw_a.into_async().expect("into_async a");
+            let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket b");
+            let socket_b = raw_b.into_async().expect("into_async b");
+            let dest_a: SocketAddr = "127.0.0.1:10029".parse().unwrap();
+            let dest_b: SocketAddr = "127.0.0.1:10030".parse().unwrap();
+
+            let target_a = SelectedSendTarget::new(
+                socket_a.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_a,
+            );
+            let same_target_a = SelectedSendTarget::new(
+                socket_a.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_a,
+            );
+            let same_dest_different_socket = SelectedSendTarget::new(
+                socket_b,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_a,
+            );
+            let same_socket_different_dest = SelectedSendTarget::new(
+                socket_a,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_b,
+            );
+
+            let key_a = target_a.key();
+            let key_other_socket = same_dest_different_socket.key();
+            let key_other_dest = same_socket_different_dest.key();
+            assert_ne!(
+                key_a, key_other_socket,
+                "same sockaddr on a different socket is a different send batch"
+            );
+            assert_ne!(
+                key_a, key_other_dest,
+                "same socket to a different sockaddr is a different send batch"
+            );
+
+            let mut groups = Vec::new();
+            push_selected_send_batch(&mut groups, target_a, vec![1], true);
+            push_selected_send_batch(&mut groups, same_target_a, vec![2], false);
+            push_selected_send_batch(&mut groups, same_dest_different_socket, vec![3], true);
+            push_selected_send_batch(&mut groups, same_socket_different_dest, vec![4], true);
+
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[0].target_key(), key_a);
+            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![2]]);
+            assert!(
+                !groups[0].drop_on_backpressure,
+                "one non-droppable packet makes the whole target batch retry"
+            );
+            assert_eq!(groups[1].target_key(), key_other_socket);
+            assert_eq!(groups[1].wire_packets, vec![vec![3]]);
+            assert!(groups[1].drop_on_backpressure);
+            assert_eq!(groups[2].target_key(), key_other_dest);
+            assert_eq!(groups[2].wire_packets, vec![vec![4]]);
+            assert!(groups[2].drop_on_backpressure);
         });
     }
 }
