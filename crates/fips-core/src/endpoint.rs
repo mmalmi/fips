@@ -473,10 +473,11 @@ impl FipsEndpoint {
         // the per-packet `oneshot::channel()` allocation entirely.
         // The node task's `SendOneway` arm runs the same code path as
         // `Send` but without writing the result into a oneshot.
-        let command_tx = match crate::node::endpoint_command_lane_for_payload(&data) {
-            EndpointCommandLane::Priority => &self.endpoint_priority_commands,
-            EndpointCommandLane::Bulk => &self.endpoint_commands,
-        };
+        let command_tx = endpoint_command_tx_for_payload(
+            &data,
+            &self.endpoint_priority_commands,
+            &self.endpoint_commands,
+        );
         command_tx
             .send(NodeEndpointCommand::SendOneway {
                 remote,
@@ -561,14 +562,18 @@ impl FipsEndpoint {
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
         let (response_tx, _response_rx) = oneshot::channel();
-        self.endpoint_priority_commands
-            .blocking_send(NodeEndpointCommand::Send {
-                remote,
-                payload: data,
-                queued_at: crate::perf_profile::stamp(),
-                response_tx,
-            })
-            .map_err(|_| FipsEndpointError::Closed)?;
+        endpoint_command_tx_for_payload(
+            &data,
+            &self.endpoint_priority_commands,
+            &self.endpoint_commands,
+        )
+        .blocking_send(NodeEndpointCommand::Send {
+            remote,
+            payload: data,
+            queued_at: crate::perf_profile::stamp(),
+            response_tx,
+        })
+        .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
 
@@ -746,6 +751,17 @@ impl FipsEndpoint {
     }
 }
 
+fn endpoint_command_tx_for_payload<'a>(
+    payload: &[u8],
+    priority_tx: &'a mpsc::Sender<NodeEndpointCommand>,
+    bulk_tx: &'a mpsc::Sender<NodeEndpointCommand>,
+) -> &'a mpsc::Sender<NodeEndpointCommand> {
+    match crate::node::endpoint_command_lane_for_payload(payload) {
+        EndpointCommandLane::Priority => priority_tx,
+        EndpointCommandLane::Bulk => bulk_tx,
+    }
+}
+
 impl From<NodeEndpointPeer> for FipsEndpointPeer {
     fn from(peer: NodeEndpointPeer) -> Self {
         Self {
@@ -778,6 +794,35 @@ impl From<NodeEndpointRelayStatus> for FipsEndpointRelayStatus {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = vec![0u8; 40 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[40 + 12] = 5 << 4;
+        packet[40 + 13] = flags;
+        packet
+    }
+
+    #[test]
+    fn endpoint_command_tx_helper_classifies_priority_and_bulk_payloads() {
+        let (priority_tx, _priority_rx) = mpsc::channel(1);
+        let (bulk_tx, _bulk_rx) = mpsc::channel(1);
+
+        let tcp_ack = ipv6_tcp_packet(0x10, 0);
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_payload(&tcp_ack, &priority_tx, &bulk_tx),
+            &priority_tx,
+        ));
+
+        let bulk_tcp_data = ipv6_tcp_packet(0x18, 512);
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_payload(&bulk_tcp_data, &priority_tx, &bulk_tx),
+            &bulk_tx,
+        ));
+    }
 
     #[tokio::test]
     async fn endpoint_starts_without_system_tun() {
