@@ -876,8 +876,8 @@ impl Node {
                 "Discovery lookup timed out, destination unreachable"
             );
             if let Some(packets) = queued {
-                for pkt in &packets {
-                    self.send_icmpv6_dest_unreachable(pkt);
+                for pkt in packets.into_packets() {
+                    self.send_icmpv6_dest_unreachable(&pkt);
                 }
             }
         }

@@ -3095,11 +3095,11 @@ impl Node {
         }
 
         let queue = self.pending_tun_packets.entry(dest_addr).or_default();
-        if queue.len() >= self.config.node.session.pending_packets_per_dest {
-            queue.pop_front(); // Drop oldest
+        let admission =
+            queue.push_bounded(packet, self.config.node.session.pending_packets_per_dest);
+        if admission.dropped_oldest() {
             crate::perf_profile::record_event(crate::perf_profile::Event::PendingTunPacketDropped);
         }
-        queue.push_back(packet);
     }
 
     /// Queue endpoint data while waiting for session establishment.
@@ -3137,7 +3137,7 @@ impl Node {
     /// Flush pending packets for a destination whose session just reached Established.
     pub(in crate::node) async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
         if let Some(packets) = self.pending_tun_packets.remove(dest_addr) {
-            for packet in packets {
+            for packet in packets.into_packets() {
                 if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
                     break;
@@ -3265,6 +3265,17 @@ mod pending_queue_tests {
             .map(|payload| payload.as_slice().to_vec())
             .collect();
         assert_eq!(payloads, vec![vec![2], vec![3]]);
+    }
+
+    #[test]
+    fn pending_tun_packet_queue_owns_drop_oldest_policy() {
+        let mut queue = crate::node::PendingTunPacketQueue::default();
+        assert!(!queue.push_bounded(vec![1], 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2], 2).dropped_oldest());
+        assert!(queue.push_bounded(vec![3], 2).dropped_oldest());
+
+        let packets: Vec<Vec<u8>> = queue.iter().cloned().collect();
+        assert_eq!(packets, vec![vec![2], vec![3]]);
     }
 
     #[test]

@@ -310,6 +310,52 @@ impl PendingEndpointDataQueue {
     }
 }
 
+/// Admission result for a bounded pending TUN packet queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingTunPacketQueueAdmission {
+    dropped_oldest: bool,
+}
+
+impl PendingTunPacketQueueAdmission {
+    pub(crate) fn dropped_oldest(&self) -> bool {
+        self.dropped_oldest
+    }
+}
+
+/// Per-destination TUN packets waiting for session establishment.
+#[derive(Debug, Default)]
+pub(crate) struct PendingTunPacketQueue {
+    packets: VecDeque<Vec<u8>>,
+}
+
+impl PendingTunPacketQueue {
+    pub(crate) fn push_bounded(
+        &mut self,
+        packet: Vec<u8>,
+        capacity: usize,
+    ) -> PendingTunPacketQueueAdmission {
+        let dropped_oldest = self.packets.len() >= capacity;
+        if dropped_oldest {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(packet);
+        PendingTunPacketQueueAdmission { dropped_oldest }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    pub(crate) fn into_packets(self) -> VecDeque<Vec<u8>> {
+        self.packets
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Vec<u8>> {
+        self.packets.iter()
+    }
+}
+
 fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
     const TCP_MIN_HEADER_LEN: usize = 20;
     const TCP_FLAG_FIN: u8 = 0x01;
@@ -1006,7 +1052,7 @@ pub struct Node {
     // === Pending TUN Packets ===
     /// Packets queued while waiting for session establishment.
     /// Keyed by destination NodeAddr, bounded per-dest and total.
-    pending_tun_packets: HashMap<NodeAddr, VecDeque<Vec<u8>>>,
+    pending_tun_packets: HashMap<NodeAddr, PendingTunPacketQueue>,
     /// Endpoint data payloads queued while waiting for session establishment.
     pending_endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
     // === Pending Discovery Lookups ===

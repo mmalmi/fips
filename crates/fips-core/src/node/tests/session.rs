@@ -2888,7 +2888,7 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
     assert_eq!(
         node.pending_tun_packets
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued until the pending session recovers"
     );
@@ -2925,7 +2925,7 @@ async fn test_tun_packet_for_established_session_with_no_route_queues_and_discov
     assert_eq!(
         node.pending_tun_packets
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued while fallback discovery repairs the route"
     );
@@ -2971,7 +2971,7 @@ async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_di
     assert_eq!(
         node.pending_tun_packets
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued while fallback discovery runs"
     );
@@ -3105,7 +3105,7 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
             .node
             .pending_tun_packets
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         None,
         "fixture should not rely on queued TUN packets for fallback warmup"
     );
@@ -3165,7 +3165,7 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
         .pending_tun_packets
         .entry(dest_addr)
         .or_default()
-        .push_back(ipv6_packet.clone());
+        .push_bounded(ipv6_packet.clone(), usize::MAX);
 
     let request_id = 4242;
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
@@ -3487,8 +3487,8 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
     node.sessions.insert(remote_addr, entry);
 
     // Insert some pending packets for this destination
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(vec![1, 2, 3]);
+    let mut queue = crate::node::PendingTunPacketQueue::default();
+    queue.push_bounded(vec![1, 2, 3], usize::MAX);
     node.pending_tun_packets.insert(remote_addr, queue);
     assert!(node.pending_tun_packets.contains_key(&remote_addr));
 

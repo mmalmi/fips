@@ -1999,8 +1999,8 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     // dst = target's IPv6 representation (not strictly required, just non-multicast)
     let target_ipv6 = crate::FipsAddress::from_node_addr(&target_addr).to_ipv6();
     ipv6_pkt[24..40].copy_from_slice(&target_ipv6.octets());
-    let mut queue = std::collections::VecDeque::new();
-    queue.push_back(ipv6_pkt);
+    let mut queue = crate::node::PendingTunPacketQueue::default();
+    queue.push_bounded(ipv6_pkt, usize::MAX);
     node.pending_tun_packets.insert(target_addr, queue);
 
     // Inject a PendingLookup directly: attempt=1, last_sent_ms=0. This
