@@ -3614,6 +3614,19 @@ impl Node {
     }
 
     #[cfg(unix)]
+    async fn execute_peer_runtime_endpoint_send(
+        &mut self,
+        send: PipelinedEndpointSend<'_>,
+        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
+    ) -> Result<bool, PipelinedEndpointPeerRuntimeSendRequestError> {
+        let source_addr = *self.node_addr();
+        let default_ttl = self.config.node.session.default_ttl;
+        PipelinedEndpointPeerRuntimeSendRequest::new(source_addr, send, default_ttl)
+            .execute(self, workers)
+            .await
+    }
+
+    #[cfg(unix)]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,
         send: PipelinedEndpointSend<'_>,
@@ -3622,13 +3635,8 @@ impl Node {
             return Ok(false);
         };
 
-        let peer_runtime_send = PipelinedEndpointPeerRuntimeSendRequest::new(
-            *self.node_addr(),
-            send,
-            self.config.node.session.default_ttl,
-        );
-        let sent = peer_runtime_send
-            .execute(self, &workers)
+        let sent = self
+            .execute_peer_runtime_endpoint_send(send, &workers)
             .await
             .map_err(Self::map_pipelined_endpoint_peer_runtime_send_request_error)?;
 
@@ -5569,6 +5577,179 @@ mod tests {
             link_stats_after.bytes_sent,
             link_stats_before.bytes_sent + expected_fmp_wire_capacity as u64,
             "send request commit should record FMP wire capacity against the peer link"
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_packets,
+            originated_before + 1
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_bytes,
+            originated_bytes_before + expected_originated_bytes as u64
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn peer_runtime_endpoint_send_facade_owns_route_dispatch_and_commit() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{
+            LinkId, TransportAddr, TransportHandle, TransportId, packet_channel,
+        };
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(0x56);
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let mut config = crate::config::Config::new();
+        config.node.session.default_ttl = 13;
+        config.peers.push(crate::config::PeerConfig::new(
+            peer.npub(),
+            "udp",
+            "127.0.0.1:1",
+        ));
+        let mut node = Node::with_identity(local, config).expect("node");
+
+        assert!(
+            node.sessions
+                .insert(dest_addr, established_entry(&node.identity, &peer))
+                .is_none()
+        );
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            crate::transport::LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        node.peers
+            .insert_with_current_session_index(dest_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+        assert!(
+            node.transports
+                .insert(transport_id, TransportHandle::Udp(udp))
+                .is_none()
+        );
+
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+        let fsp_before = node
+            .sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .send_counter();
+        let fmp_before = node
+            .peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists")
+            .current_send_counter();
+        let session_traffic_before = node
+            .sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .traffic_counters();
+        let link_stats_before = node
+            .peers
+            .get(&dest_addr)
+            .expect("active peer exists")
+            .link_stats()
+            .clone();
+        let originated_before = node.stats().forwarding.originated_packets;
+        let originated_bytes_before = node.stats().forwarding.originated_bytes;
+        let link_plaintext_len =
+            SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + inner_plaintext.len();
+        let expected_originated_bytes = link_plaintext_len + crate::noise::TAG_SIZE;
+        let expected_fmp_wire_capacity =
+            ESTABLISHED_HEADER_SIZE + 4 + link_plaintext_len + crate::noise::TAG_SIZE * 2;
+
+        let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
+        let sent = node
+            .execute_peer_runtime_endpoint_send(send, &workers)
+            .await
+            .expect("peer runtime endpoint facade should route, reserve, and commit");
+
+        assert!(sent, "established direct peer should dispatch");
+        assert_eq!(
+            node.sessions
+                .get(&dest_addr)
+                .expect("session still exists")
+                .send_counter(),
+            fsp_before + 1,
+            "peer runtime facade should reserve exactly one FSP counter"
+        );
+        assert_eq!(
+            node.peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists")
+                .current_send_counter(),
+            fmp_before + 1,
+            "peer runtime facade should reserve exactly one FMP counter"
+        );
+        let session = node.sessions.get(&dest_addr).expect("session still exists");
+        assert_eq!(
+            session.traffic_counters().0,
+            session_traffic_before.0 + 1,
+            "peer runtime facade should record FSP data packet bookkeeping"
+        );
+        assert_eq!(
+            session.traffic_counters().2,
+            session_traffic_before.2 + payload.len() as u64,
+            "peer runtime facade should record endpoint payload bytes"
+        );
+        assert_eq!(
+            session.last_outbound_next_hop(),
+            Some(dest_addr),
+            "peer runtime facade should record outbound next hop"
+        );
+        let link_stats_after = node
+            .peers
+            .get(&dest_addr)
+            .expect("active peer still exists")
+            .link_stats();
+        assert_eq!(
+            link_stats_after.packets_sent,
+            link_stats_before.packets_sent + 1
+        );
+        assert_eq!(
+            link_stats_after.bytes_sent,
+            link_stats_before.bytes_sent + expected_fmp_wire_capacity as u64,
+            "peer runtime facade should record FMP wire capacity against the peer link"
         );
         assert_eq!(
             node.stats().forwarding.originated_packets,
