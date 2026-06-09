@@ -1911,6 +1911,26 @@ async fn test_open_discovery_sweep_expedites_configured_peer_retry() {
 // Per-Attempt Timeout State Machine — IF-3-A
 // ============================================================================
 
+#[test]
+fn pending_discovery_lookup_queue_owns_dedup_and_capacity() {
+    let mut lookups = crate::node::handlers::discovery::PendingDiscoveryLookups::default();
+    let first = NodeAddr::from_bytes([1u8; 16]);
+    let second = NodeAddr::from_bytes([2u8; 16]);
+
+    assert!(lookups.admission_for(&first, 1).accepted());
+    assert!(lookups.insert_new(first, 123).is_none());
+    assert_eq!(lookups.len(), 1);
+    assert_eq!(
+        lookups.get(&first).map(|lookup| lookup.initiated_ms),
+        Some(123)
+    );
+
+    assert!(lookups.admission_for(&first, 1).deduplicated());
+    assert!(lookups.admission_for(&second, 1).queue_full());
+    assert!(lookups.remove(&first).is_some());
+    assert!(lookups.admission_for(&second, 1).accepted());
+}
+
 /// Pin the per-attempt timeout sequence in `check_pending_lookups`.
 ///
 /// Drives the state machine deterministically through the default

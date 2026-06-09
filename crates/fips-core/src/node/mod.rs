@@ -1197,9 +1197,8 @@ pub struct Node {
     /// TUN packets and endpoint payloads queued while waiting for session establishment.
     pending_session_traffic: PendingSessionTrafficQueues,
     // === Pending Discovery Lookups ===
-    /// Tracks in-flight discovery lookups. Maps target NodeAddr to the
-    /// initiation timestamp (Unix ms). Prevents duplicate flood queries.
-    pending_lookups: HashMap<NodeAddr, handlers::discovery::PendingLookup>,
+    /// Tracks in-flight discovery lookups and owns dedupe/cap admission.
+    pending_lookups: handlers::discovery::PendingDiscoveryLookups,
 
     // === Resource Limits ===
     /// Maximum connections (0 = unlimited).
@@ -1489,7 +1488,7 @@ impl Node {
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
-            pending_lookups: HashMap::new(),
+            pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),
             max_connections,
             max_peers,
             max_links,
@@ -1636,7 +1635,7 @@ impl Node {
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
-            pending_lookups: HashMap::new(),
+            pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),
             max_connections,
             max_peers,
             max_links,
