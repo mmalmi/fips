@@ -310,6 +310,53 @@ async fn test_response_coord_substitution_detected() {
 // Unit Tests — RecentRequest Expiry
 // ============================================================================
 
+#[test]
+fn recent_discovery_requests_own_reverse_path_dedup_capacity_and_expiry() {
+    let mut requests = crate::node::RecentDiscoveryRequests::default();
+    let first_peer = make_node_addr(0xA1);
+    let second_peer = make_node_addr(0xA2);
+
+    assert!(requests.record_request(7, first_peer, 100, 1).accepted());
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests.get(&7).map(|entry| entry.from_peer),
+        Some(first_peer)
+    );
+
+    assert!(
+        requests
+            .record_request(7, second_peer, 101, 1)
+            .deduplicated()
+    );
+    assert_eq!(
+        requests.get(&7).map(|entry| entry.from_peer),
+        Some(first_peer)
+    );
+
+    assert!(requests.record_request(8, second_peer, 102, 1).cache_full());
+    assert!(!requests.contains_key(&8));
+
+    assert_eq!(
+        requests.claim_response_forward(7),
+        crate::node::RecentResponseForward::Forward {
+            from_peer: first_peer
+        }
+    );
+    assert_eq!(
+        requests.claim_response_forward(7),
+        crate::node::RecentResponseForward::AlreadyForwarded
+    );
+    assert_eq!(
+        requests.claim_response_forward(99),
+        crate::node::RecentResponseForward::Missing
+    );
+
+    requests.insert(9, RecentRequest::new(second_peer, 101));
+    requests.purge_expired(10_101, 10_000);
+    assert!(!requests.contains_key(&7));
+    assert!(requests.contains_key(&9));
+}
+
 #[tokio::test]
 async fn test_recent_request_expiry() {
     let mut node = make_node();

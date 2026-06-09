@@ -6,7 +6,7 @@
 //! safety bounds.
 
 use crate::config::RoutingMode;
-use crate::node::{Node, RecentRequest};
+use crate::node::{Node, RecentResponseForward};
 use crate::protocol::{LookupRequest, LookupResponse};
 use crate::transport::{TransportAddr, TransportId};
 use crate::{NodeAddr, NodeError, PeerIdentity};
@@ -44,7 +44,13 @@ impl Node {
         // Dedup: drop if we've already seen this request_id.
         // Also serves as loop protection — tree routing is loop-free,
         // but request_id dedup catches edge cases during tree restructuring.
-        if self.recent_requests.contains_key(&request.request_id) {
+        let admission = self.recent_requests.record_request(
+            request.request_id,
+            *from,
+            now_ms,
+            MAX_RECENT_DISCOVERY_REQUESTS,
+        );
+        if admission.deduplicated() {
             self.stats_mut().discovery.req_duplicate += 1;
             debug!(
                 request_id = request.request_id,
@@ -54,7 +60,7 @@ impl Node {
             return;
         }
 
-        if self.recent_requests.len() >= MAX_RECENT_DISCOVERY_REQUESTS {
+        if admission.cache_full() {
             debug!(
                 request_id = request.request_id,
                 from = %self.peer_display_name(from),
@@ -64,10 +70,9 @@ impl Node {
             );
             return;
         }
-
-        // Record for reverse-path forwarding and dedup
-        self.recent_requests
-            .insert(request.request_id, RecentRequest::new(*from, now_ms));
+        if !admission.accepted() {
+            return;
+        }
 
         // Are we the target?
         if request.target == *self.node_addr() {
@@ -135,10 +140,35 @@ impl Node {
         let now_ms = Self::now_ms();
 
         // Check if we forwarded this request (transit node) or originated it
-        if let Some(recent) = self.recent_requests.get_mut(&response.request_id) {
-            // Already forwarded a response for this request — drop to
-            // prevent response routing loops.
-            if recent.response_forwarded {
+        match self
+            .recent_requests
+            .claim_response_forward(response.request_id)
+        {
+            RecentResponseForward::Forward { from_peer } => {
+                // Transit node: reverse-path forward
+                self.stats_mut().discovery.resp_forwarded += 1;
+
+                // Apply path_mtu min() from the outgoing link's transport MTU
+                self.apply_outgoing_link_mtu_to_response(&mut response, &from_peer);
+
+                debug!(
+                    request_id = response.request_id,
+                    target = %self.peer_display_name(&response.target),
+                    next_hop = %self.peer_display_name(&from_peer),
+                    path_mtu = response.path_mtu,
+                    "Reverse-path forwarding LookupResponse"
+                );
+
+                let encoded = response.encode();
+                if let Err(e) = self.send_encrypted_link_message(&from_peer, &encoded).await {
+                    debug!(
+                        next_hop = %self.peer_display_name(&from_peer),
+                        error = %e,
+                        "Failed to forward LookupResponse"
+                    );
+                }
+            }
+            RecentResponseForward::AlreadyForwarded => {
                 debug!(
                     request_id = response.request_id,
                     target = %self.peer_display_name(&response.target),
@@ -146,171 +176,154 @@ impl Node {
                 );
                 return;
             }
-            recent.response_forwarded = true;
+            RecentResponseForward::Missing => {
+                // We originated this request — verify proof before caching
+                let target = response.target;
+                let path_mtu = response.path_mtu;
 
-            // Transit node: reverse-path forward
-            let from_peer = recent.from_peer;
-            self.stats_mut().discovery.resp_forwarded += 1;
+                // Look up the target's public key from identity_cache
+                let mut prefix = [0u8; 15];
+                prefix.copy_from_slice(&target.as_bytes()[0..15]);
+                let target_pubkey = match self.lookup_by_fips_prefix(&prefix) {
+                    Some((_addr, pubkey)) => pubkey,
+                    None => {
+                        self.stats_mut().discovery.resp_identity_miss += 1;
+                        warn!(
+                            request_id = response.request_id,
+                            target = %self.peer_display_name(&target),
+                            "identity_cache miss for lookup target, cannot verify proof"
+                        );
+                        return;
+                    }
+                };
 
-            // Apply path_mtu min() from the outgoing link's transport MTU
-            self.apply_outgoing_link_mtu_to_response(&mut response, &from_peer);
-
-            debug!(
-                request_id = response.request_id,
-                target = %self.peer_display_name(&response.target),
-                next_hop = %self.peer_display_name(&from_peer),
-                path_mtu = response.path_mtu,
-                "Reverse-path forwarding LookupResponse"
-            );
-
-            let encoded = response.encode();
-            if let Err(e) = self.send_encrypted_link_message(&from_peer, &encoded).await {
-                debug!(
-                    next_hop = %self.peer_display_name(&from_peer),
-                    error = %e,
-                    "Failed to forward LookupResponse"
+                // Verify the proof signature
+                let (xonly, _parity) = target_pubkey.x_only_public_key();
+                let peer_id = PeerIdentity::from_pubkey(xonly);
+                let proof_data = LookupResponse::proof_bytes(
+                    response.request_id,
+                    &target,
+                    &response.target_coords,
                 );
-            }
-        } else {
-            // We originated this request — verify proof before caching
-            let target = response.target;
-            let path_mtu = response.path_mtu;
-
-            // Look up the target's public key from identity_cache
-            let mut prefix = [0u8; 15];
-            prefix.copy_from_slice(&target.as_bytes()[0..15]);
-            let target_pubkey = match self.lookup_by_fips_prefix(&prefix) {
-                Some((_addr, pubkey)) => pubkey,
-                None => {
-                    self.stats_mut().discovery.resp_identity_miss += 1;
+                if !peer_id.verify(&proof_data, &response.proof) {
+                    self.stats_mut().discovery.resp_proof_failed += 1;
                     warn!(
                         request_id = response.request_id,
                         target = %self.peer_display_name(&target),
-                        "identity_cache miss for lookup target, cannot verify proof"
+                        "LookupResponse proof verification failed, discarding"
                     );
                     return;
                 }
-            };
 
-            // Verify the proof signature
-            let (xonly, _parity) = target_pubkey.x_only_public_key();
-            let peer_id = PeerIdentity::from_pubkey(xonly);
-            let proof_data =
-                LookupResponse::proof_bytes(response.request_id, &target, &response.target_coords);
-            if !peer_id.verify(&proof_data, &response.proof) {
-                self.stats_mut().discovery.resp_proof_failed += 1;
-                warn!(
+                self.stats_mut().discovery.resp_accepted += 1;
+
+                // Clear backoff on success — target is reachable
+                self.discovery_backoff.record_success(&target);
+
+                info!(
                     request_id = response.request_id,
                     target = %self.peer_display_name(&target),
-                    "LookupResponse proof verification failed, discarding"
+                    depth = response.target_coords.depth(),
+                    path_mtu = path_mtu,
+                    "Discovery succeeded, proof verified, route cached"
                 );
-                return;
-            }
 
-            self.stats_mut().discovery.resp_accepted += 1;
+                self.coord_cache.insert_with_path_mtu(
+                    target,
+                    response.target_coords,
+                    now_ms,
+                    path_mtu,
+                );
+                self.learn_reverse_route(target, *from);
 
-            // Clear backoff on success — target is reachable
-            self.discovery_backoff.record_success(&target);
+                // Mirror path_mtu into the FipsAddress-keyed read-only lookup
+                // map used by the TUN reader/writer at TCP MSS clamp time.
+                let fips_addr = crate::FipsAddress::from_node_addr(&target);
+                match self.path_mtu_lookup.write() {
+                    Ok(mut map) => {
+                        let prior = map.insert(fips_addr, path_mtu);
+                        debug!(
+                            target = %self.peer_display_name(&target),
+                            fips_addr = %fips_addr,
+                            path_mtu = path_mtu,
+                            prior = ?prior,
+                            map_len = map.len(),
+                            "Wrote path_mtu_lookup from discovery LookupResponse"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            target = %self.peer_display_name(&target),
+                            fips_addr = %fips_addr,
+                            path_mtu = path_mtu,
+                            error = %e,
+                            "path_mtu_lookup write lock poisoned; clamp will not see this update"
+                        );
+                    }
+                }
 
-            info!(
-                request_id = response.request_id,
-                target = %self.peer_display_name(&target),
-                depth = response.target_coords.depth(),
-                path_mtu = path_mtu,
-                "Discovery succeeded, proof verified, route cached"
-            );
+                // Clean up pending lookup tracking
+                self.pending_lookups.remove(&target);
 
-            self.coord_cache
-                .insert_with_path_mtu(target, response.target_coords, now_ms, path_mtu);
-            self.learn_reverse_route(target, *from);
+                let has_queued_traffic = self.pending_session_traffic.has_traffic_for(&target);
+                let session_established = self
+                    .sessions
+                    .get(&target)
+                    .is_some_and(|entry| entry.is_established());
 
-            // Mirror path_mtu into the FipsAddress-keyed read-only lookup
-            // map used by the TUN reader/writer at TCP MSS clamp time.
-            let fips_addr = crate::FipsAddress::from_node_addr(&target);
-            match self.path_mtu_lookup.write() {
-                Ok(mut map) => {
-                    let prior = map.insert(fips_addr, path_mtu);
+                // If an established session exists, reset the warmup counter.
+                if session_established && let Some(entry) = self.sessions.get_mut(&target) {
+                    let n = self.config.node.session.coords_warmup_packets;
+                    entry.set_coords_warmup_remaining(n);
                     debug!(
-                        target = %self.peer_display_name(&target),
-                        fips_addr = %fips_addr,
-                        path_mtu = path_mtu,
-                        prior = ?prior,
-                        map_len = map.len(),
-                        "Wrote path_mtu_lookup from discovery LookupResponse"
+                        dest = %self.peer_display_name(&target),
+                        warmup_packets = n,
+                        "Reset coords warmup after discovery for existing session"
                     );
                 }
-                Err(e) => {
-                    warn!(
-                        target = %self.peer_display_name(&target),
-                        fips_addr = %fips_addr,
-                        path_mtu = path_mtu,
+
+                if session_established
+                    && !has_queued_traffic
+                    && let Err(e) = self.send_coords_warmup(&target).await
+                {
+                    debug!(
+                        dest = %self.peer_display_name(&target),
                         error = %e,
-                        "path_mtu_lookup write lock poisoned; clamp will not see this update"
+                        "Failed to send immediate fallback coords warmup after discovery"
                     );
                 }
-            }
 
-            // Clean up pending lookup tracking
-            self.pending_lookups.remove(&target);
-
-            let has_queued_traffic = self.pending_session_traffic.has_traffic_for(&target);
-            let session_established = self
-                .sessions
-                .get(&target)
-                .is_some_and(|entry| entry.is_established());
-
-            // If an established session exists, reset the warmup counter.
-            if session_established && let Some(entry) = self.sessions.get_mut(&target) {
-                let n = self.config.node.session.coords_warmup_packets;
-                entry.set_coords_warmup_remaining(n);
-                debug!(
-                    dest = %self.peer_display_name(&target),
-                    warmup_packets = n,
-                    "Reset coords warmup after discovery for existing session"
-                );
-            }
-
-            if session_established
-                && !has_queued_traffic
-                && let Err(e) = self.send_coords_warmup(&target).await
-            {
-                debug!(
-                    dest = %self.peer_display_name(&target),
-                    error = %e,
-                    "Failed to send immediate fallback coords warmup after discovery"
-                );
-            }
-
-            // If we have queued application traffic for this target, or the
-            // target is a configured auto-connect peer we are proactively
-            // warming, retry session initiation or flush the existing session.
-            // The coord_cache now has coords, so find_next_hop() should
-            // succeed. Established sessions need a flush, not a re-handshake:
-            // retry_session_after_discovery intentionally leaves established
-            // sessions alone.
-            let should_warm_session = !has_queued_traffic
-                && self.should_warm_auto_connect_session(&target)
-                && self.graph_session_warmup_budget() > 0;
-            if has_queued_traffic || should_warm_session {
-                let tun_packets = self
-                    .pending_session_traffic
-                    .tun_packets_for(&target)
-                    .map_or(0, |p| p.len());
-                let endpoint_payloads = self
-                    .pending_session_traffic
-                    .endpoint_data_for(&target)
-                    .map_or(0, |p| p.len());
-                debug!(
-                    dest = %self.peer_display_name(&target),
-                    queued_tun_packets = tun_packets,
-                    queued_endpoint_payloads = endpoint_payloads,
-                    proactive_warm = should_warm_session,
-                    "Retrying session after discovery"
-                );
-                if has_queued_traffic && session_established {
-                    self.flush_pending_packets(&target).await;
-                } else {
-                    self.retry_session_after_discovery(target).await;
+                // If we have queued application traffic for this target, or the
+                // target is a configured auto-connect peer we are proactively
+                // warming, retry session initiation or flush the existing session.
+                // The coord_cache now has coords, so find_next_hop() should
+                // succeed. Established sessions need a flush, not a re-handshake:
+                // retry_session_after_discovery intentionally leaves established
+                // sessions alone.
+                let should_warm_session = !has_queued_traffic
+                    && self.should_warm_auto_connect_session(&target)
+                    && self.graph_session_warmup_budget() > 0;
+                if has_queued_traffic || should_warm_session {
+                    let tun_packets = self
+                        .pending_session_traffic
+                        .tun_packets_for(&target)
+                        .map_or(0, |p| p.len());
+                    let endpoint_payloads = self
+                        .pending_session_traffic
+                        .endpoint_data_for(&target)
+                        .map_or(0, |p| p.len());
+                    debug!(
+                        dest = %self.peer_display_name(&target),
+                        queued_tun_packets = tun_packets,
+                        queued_endpoint_payloads = endpoint_payloads,
+                        proactive_warm = should_warm_session,
+                        "Retrying session after discovery"
+                    );
+                    if has_queued_traffic && session_established {
+                        self.flush_pending_packets(&target).await;
+                    } else {
+                        self.retry_session_after_discovery(target).await;
+                    }
                 }
             }
         }
@@ -900,7 +913,7 @@ impl Node {
     fn purge_expired_requests(&mut self, current_time_ms: u64) {
         let expiry_ms = self.config.node.discovery.recent_expiry_secs * 1000;
         self.recent_requests
-            .retain(|_, entry| !entry.is_expired(current_time_ms, expiry_ms));
+            .purge_expired(current_time_ms, expiry_ms);
     }
 
     /// Min-fold our outgoing-link MTU into a LookupResponse's `path_mtu`.

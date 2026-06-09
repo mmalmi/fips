@@ -1064,6 +1064,128 @@ impl RecentRequest {
     }
 }
 
+/// Admission result for recent discovery request tracking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecentDiscoveryRequestAdmission {
+    accepted: bool,
+    deduplicated: bool,
+    cache_full: bool,
+}
+
+impl RecentDiscoveryRequestAdmission {
+    pub(crate) fn accepted(&self) -> bool {
+        self.accepted
+    }
+
+    pub(crate) fn deduplicated(&self) -> bool {
+        self.deduplicated
+    }
+
+    pub(crate) fn cache_full(&self) -> bool {
+        self.cache_full
+    }
+}
+
+/// Reverse-path forwarding decision for a LookupResponse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecentResponseForward {
+    Missing,
+    AlreadyForwarded,
+    Forward { from_peer: NodeAddr },
+}
+
+/// Recent discovery requests used for dedup and reverse-path forwarding.
+#[derive(Debug, Default)]
+pub(crate) struct RecentDiscoveryRequests {
+    entries: HashMap<u64, RecentRequest>,
+}
+
+impl RecentDiscoveryRequests {
+    pub(crate) fn record_request(
+        &mut self,
+        request_id: u64,
+        from_peer: NodeAddr,
+        now_ms: u64,
+        max_entries: usize,
+    ) -> RecentDiscoveryRequestAdmission {
+        if self.entries.contains_key(&request_id) {
+            return RecentDiscoveryRequestAdmission {
+                accepted: false,
+                deduplicated: true,
+                cache_full: false,
+            };
+        }
+
+        if self.entries.len() >= max_entries {
+            return RecentDiscoveryRequestAdmission {
+                accepted: false,
+                deduplicated: false,
+                cache_full: true,
+            };
+        }
+
+        self.entries
+            .insert(request_id, RecentRequest::new(from_peer, now_ms));
+        RecentDiscoveryRequestAdmission {
+            accepted: true,
+            deduplicated: false,
+            cache_full: false,
+        }
+    }
+
+    pub(crate) fn claim_response_forward(&mut self, request_id: u64) -> RecentResponseForward {
+        let Some(recent) = self.entries.get_mut(&request_id) else {
+            return RecentResponseForward::Missing;
+        };
+
+        if recent.response_forwarded {
+            return RecentResponseForward::AlreadyForwarded;
+        }
+
+        recent.response_forwarded = true;
+        RecentResponseForward::Forward {
+            from_peer: recent.from_peer,
+        }
+    }
+
+    pub(crate) fn purge_expired(&mut self, current_time_ms: u64, expiry_ms: u64) {
+        self.entries
+            .retain(|_, entry| !entry.is_expired(current_time_ms, expiry_ms));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert(
+        &mut self,
+        request_id: u64,
+        request: RecentRequest,
+    ) -> Option<RecentRequest> {
+        self.entries.insert(request_id, request)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, request_id: &u64) -> bool {
+        self.entries.contains_key(request_id)
+    }
+
+    pub(crate) fn get(&self, request_id: &u64) -> Option<&RecentRequest> {
+        self.entries.get(request_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn values(&self) -> impl Iterator<Item = &RecentRequest> {
+        self.entries.values()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 /// Key for addr_to_link reverse lookup.
 type AddrKey = (TransportId, TransportAddr);
 
@@ -1147,9 +1269,8 @@ pub struct Node {
     /// Destinations whose direct first-hop path is temporarily suspect because
     /// session-layer MMP observed sustained loss while using that direct path.
     session_direct_degraded_until_ms: HashMap<NodeAddr, u64>,
-    /// Recent discovery requests (dedup + reverse-path forwarding).
-    /// Maps request_id → RecentRequest.
-    recent_requests: HashMap<u64, RecentRequest>,
+    /// Recent discovery requests for dedup and reverse-path forwarding.
+    recent_requests: RecentDiscoveryRequests,
     /// Per-destination path MTU lookup, keyed by FipsAddress (mirrors
     /// `coord_cache.entries[*].path_mtu`). Sync read-only access from
     /// the TUN reader/writer threads at TCP MSS clamp time so the
@@ -1476,7 +1597,7 @@ impl Node {
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
             session_direct_degraded_until_ms: HashMap::new(),
-            recent_requests: HashMap::new(),
+            recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
             links: HashMap::new(),
@@ -1623,7 +1744,7 @@ impl Node {
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
             session_direct_degraded_until_ms: HashMap::new(),
-            recent_requests: HashMap::new(),
+            recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
             links: HashMap::new(),
