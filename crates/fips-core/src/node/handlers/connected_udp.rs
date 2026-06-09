@@ -67,17 +67,12 @@ impl Node {
 
             // Collect candidate NodeAddrs first so we can iterate
             // without holding the &mut on self.peers across awaits.
-            let candidates: Vec<(NodeAddr, bool)> = self
+            let plan = self
                 .peers
-                .iter()
-                .filter_map(|(addr, peer)| {
-                    connected_udp_activation_candidate(peer)
-                        .then_some((*addr, self.configured_peer(addr).is_some()))
-                })
-                .collect();
-            let candidates = connected_udp_activation_order(candidates);
+                .connected_udp_activation_plan(&self.configured_peer_send_weights);
+            let candidates = plan.candidates;
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
-            let mut installed_count = self.connected_udp_installed_count();
+            let mut installed_count = plan.installed_count;
             let mut peer_cap_skipped = 0usize;
             let total_candidates = candidates.len();
             for (idx, addr) in candidates.into_iter().enumerate() {
@@ -144,7 +139,7 @@ impl Node {
             let Some(peer) = self.peers.get(node_addr) else {
                 return Ok(false);
             };
-            if !connected_udp_activation_candidate(peer) {
+            if !crate::node::PeerLifecycleRegistry::connected_udp_activation_candidate(peer) {
                 return Ok(false);
             }
             let Some(tid) = peer.transport_id() else {
@@ -225,7 +220,7 @@ impl Node {
 
         // Install on the peer, idempotent re-check.
         if let Some(peer) = self.peers.get_mut(node_addr) {
-            if !connected_udp_activation_candidate(peer) {
+            if !crate::node::PeerLifecycleRegistry::connected_udp_activation_candidate(peer) {
                 // Lost the race — somebody else activated us first.
                 // Drop the new socket + drain so we don't leak.
                 drop(drain);
@@ -248,14 +243,6 @@ impl Node {
         Ok(false)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn connected_udp_installed_count(&self) -> usize {
-        self.peers
-            .values()
-            .filter(|peer| peer.connected_udp().is_some())
-            .count()
-    }
-
     /// Clear the per-peer connected UDP socket + drain for a peer.
     /// Called on peer disconnect / removal. The drain thread exits
     /// via self-pipe; the kernel fd closes when the last `Arc`
@@ -274,21 +261,6 @@ impl Node {
     /// call us unconditionally.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, _node_addr: &NodeAddr) {}
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_activation_candidate(peer: &crate::peer::ActivePeer) -> bool {
-    peer.is_healthy()
-        && peer.noise_session().is_some()
-        && peer.transport_id().is_some()
-        && peer.current_addr().is_some()
-        && peer.connected_udp().is_none()
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_activation_order(mut candidates: Vec<(NodeAddr, bool)>) -> Vec<NodeAddr> {
-    candidates.sort_by_key(|(addr, is_configured)| (!*is_configured, *addr));
-    candidates.into_iter().map(|(addr, _)| addr).collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -381,43 +353,6 @@ fn connected_udp_peer_cap_skipped_candidates(
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
-    use crate::noise::HandshakeState;
-    use crate::peer::ActivePeer;
-    use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
-    use crate::utils::index::SessionIndex;
-    use crate::{Identity, PeerIdentity};
-
-    fn make_noise_session(local: &Identity, peer: &Identity) -> crate::noise::NoiseSession {
-        let mut initiator = HandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
-        let mut responder = HandshakeState::new_responder(peer.keypair());
-        initiator.set_local_epoch([1; 8]);
-        responder.set_local_epoch([2; 8]);
-        let msg1 = initiator.write_message_1().unwrap();
-        responder.read_message_1(&msg1).unwrap();
-        let msg2 = responder.write_message_2().unwrap();
-        initiator.read_message_2(&msg2).unwrap();
-        initiator.into_session().unwrap()
-    }
-
-    fn make_established_udp_peer() -> ActivePeer {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        ActivePeer::with_session(
-            peer_identity,
-            LinkId::new(7),
-            1_000,
-            make_noise_session(&local, &peer),
-            SessionIndex::new(11),
-            SessionIndex::new(12),
-            TransportId::new(1),
-            TransportAddr::from_string("127.0.0.1:2121"),
-            LinkStats::new(),
-            true,
-            &crate::mmp::MmpConfig::default(),
-            Some([2; 8]),
-        )
-    }
 
     #[test]
     fn fd_budget_reserves_headroom_for_other_sockets() {
@@ -462,54 +397,6 @@ mod tests {
             connected_udp_peer_cap_skipped_candidates(2, 2, 37),
             37,
             "large-mesh cap exhaustion should report the whole skipped tail once"
-        );
-    }
-
-    #[test]
-    fn activation_order_prefers_configured_peers_then_node_addr() {
-        fn addr(last: u8) -> NodeAddr {
-            let mut bytes = [0u8; 16];
-            bytes[15] = last;
-            NodeAddr::from_bytes(bytes)
-        }
-
-        let configured_high = addr(40);
-        let configured_low = addr(10);
-        let discovered_high = addr(30);
-        let discovered_low = addr(20);
-
-        let ordered = connected_udp_activation_order(vec![
-            (discovered_high, false),
-            (configured_high, true),
-            (discovered_low, false),
-            (configured_low, true),
-        ]);
-
-        assert_eq!(
-            ordered,
-            vec![
-                configured_low,
-                configured_high,
-                discovered_low,
-                discovered_high
-            ],
-            "connected-UDP caps must pick stable configured peers before discovered peers"
-        );
-    }
-
-    #[test]
-    fn stale_peer_is_not_connected_udp_activation_candidate() {
-        let mut peer = make_established_udp_peer();
-        assert!(
-            connected_udp_activation_candidate(&peer),
-            "healthy established UDP peer should get the connected-UDP fast path"
-        );
-
-        peer.mark_stale();
-
-        assert!(
-            !connected_udp_activation_candidate(&peer),
-            "link-dead paths stay probeable but must not regain a trusted connected-UDP payload socket"
         );
     }
 }

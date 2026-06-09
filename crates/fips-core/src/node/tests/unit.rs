@@ -2108,6 +2108,122 @@ fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
+    let node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let configured_full = Identity::generate();
+    let configured_identity = PeerIdentity::from_pubkey_full(configured_full.pubkey_full());
+    let configured_addr = *configured_identity.node_addr();
+
+    let discovered_full = Identity::generate();
+    let discovered_identity = PeerIdentity::from_pubkey_full(discovered_full.pubkey_full());
+    let discovered_addr = *discovered_identity.node_addr();
+
+    let stale_full = Identity::generate();
+    let stale_identity = PeerIdentity::from_pubkey_full(stale_full.pubkey_full());
+    let stale_addr = *stale_identity.node_addr();
+
+    let installed_full = Identity::generate();
+    let installed_identity = PeerIdentity::from_pubkey_full(installed_full.pubkey_full());
+    let installed_addr = *installed_identity.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        configured_full.npub(),
+        "udp",
+        "127.0.0.1:1",
+    ));
+    let configured_peers = ConfiguredPeerSendWeights::from_config(&config);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    registry.insert_with_current_session_index(
+        discovered_addr,
+        make_active_test_peer(
+            &node,
+            &discovered_full,
+            discovered_identity,
+            transport_id,
+            LinkId::new(20),
+            TransportAddr::from_string("connected-udp-discovered"),
+            SessionIndex::new(20),
+            SessionIndex::new(30),
+        ),
+    );
+    registry.insert_with_current_session_index(
+        configured_addr,
+        make_active_test_peer(
+            &node,
+            &configured_full,
+            configured_identity,
+            transport_id,
+            LinkId::new(10),
+            TransportAddr::from_string("connected-udp-configured"),
+            SessionIndex::new(10),
+            SessionIndex::new(11),
+        ),
+    );
+
+    let mut stale_peer = make_active_test_peer(
+        &node,
+        &stale_full,
+        stale_identity,
+        transport_id,
+        LinkId::new(30),
+        TransportAddr::from_string("connected-udp-stale"),
+        SessionIndex::new(40),
+        SessionIndex::new(41),
+    );
+    stale_peer.mark_stale();
+    registry.insert_with_current_session_index(stale_addr, stale_peer);
+
+    let mut installed_peer = make_active_test_peer(
+        &node,
+        &installed_full,
+        installed_identity,
+        transport_id,
+        LinkId::new(40),
+        TransportAddr::from_string("connected-udp-installed"),
+        SessionIndex::new(50),
+        SessionIndex::new(51),
+    );
+    let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
+    let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
+    let socket = std::sync::Arc::new(
+        crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
+            "127.0.0.1:0".parse().unwrap(),
+            peer_socket_addr,
+            1 << 20,
+            1 << 20,
+        )
+        .expect("connected peer socket"),
+    );
+    let (packet_tx, _packet_rx) = packet_channel(16);
+    let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
+        socket.clone(),
+        transport_id,
+        peer_socket_addr,
+        packet_tx,
+    )
+    .expect("connected peer drain");
+    installed_peer.set_connected_udp(socket, drain);
+    registry.insert_with_current_session_index(installed_addr, installed_peer);
+
+    let plan = registry.connected_udp_activation_plan(&configured_peers);
+
+    assert_eq!(
+        plan.installed_count, 1,
+        "lifecycle owner should count already-installed connected UDP peers"
+    );
+    assert_eq!(
+        plan.candidates,
+        vec![configured_addr, discovered_addr],
+        "configured peers should be activated before discovered peers, while stale and already-connected peers are skipped"
+    );
+}
+
 #[test]
 fn peer_lifecycle_registry_owns_link_dead_direct_path_degradation() {
     let node = make_node();

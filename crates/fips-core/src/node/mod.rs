@@ -1768,6 +1768,12 @@ pub(in crate::node) struct FmpSendBookkeeping {
     pub(in crate::node) mmp_recorded: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::node) struct ConnectedUdpActivationPlan {
+    pub(in crate::node) candidates: Vec<NodeAddr>,
+    pub(in crate::node) installed_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct LinkDeadDirectPathDegradation {
     pub(in crate::node) link_id: LinkId,
@@ -1993,6 +1999,21 @@ impl PeerLifecycleRegistry {
         push_index(PeerSessionIndexKind::Pending, peer.pending_our_index());
         push_index(PeerSessionIndexKind::Previous, peer.previous_our_index());
         indices
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::node) fn connected_udp_activation_candidate(peer: &ActivePeer) -> bool {
+        peer.is_healthy()
+            && peer.noise_session().is_some()
+            && peer.transport_id().is_some()
+            && peer.current_addr().is_some()
+            && peer.connected_udp().is_none()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn connected_udp_activation_order(mut candidates: Vec<(NodeAddr, bool)>) -> Vec<NodeAddr> {
+        candidates.sort_by_key(|(addr, is_configured)| (!*is_configured, *addr));
+        candidates.into_iter().map(|(addr, _)| addr).collect()
     }
 
     pub(in crate::node) fn insert_connection(
@@ -2273,6 +2294,32 @@ impl PeerLifecycleRegistry {
             result.mmp_recorded = true;
         }
         Some(result)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::node) fn connected_udp_activation_plan(
+        &self,
+        configured_peers: &ConfiguredPeerSendWeights,
+    ) -> ConnectedUdpActivationPlan {
+        let candidates = self
+            .active
+            .iter()
+            .filter_map(|(addr, peer)| {
+                Self::connected_udp_activation_candidate(peer)
+                    .then_some((*addr, configured_peers.contains(addr)))
+            })
+            .collect();
+        let candidates = Self::connected_udp_activation_order(candidates);
+        let installed_count = self
+            .active
+            .values()
+            .filter(|peer| peer.connected_udp().is_some())
+            .count();
+
+        ConnectedUdpActivationPlan {
+            candidates,
+            installed_count,
+        }
     }
 
     pub(in crate::node) fn mark_link_dead_direct_path(
@@ -2658,6 +2705,10 @@ impl ConfiguredPeerSendWeights {
             .get(peer_addr)
             .copied()
             .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
+    }
+
+    pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
+        self.entries.contains_key(peer_addr)
     }
 
     #[cfg(test)]
