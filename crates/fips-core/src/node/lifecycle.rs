@@ -4307,9 +4307,8 @@ impl Node {
             transport_id,
             crate::transport::TransportHandle::Udp(transport),
         );
-        self.bootstrap_transports.insert(transport_id);
-        self.bootstrap_transport_npubs
-            .insert(transport_id, traversal.peer_npub.clone());
+        self.bootstrap_transports
+            .register(transport_id, traversal.peer_npub.clone());
 
         let remote_addr = TransportAddr::from_string(&traversal.remote_addr.to_string());
         if let Err(err) = self
@@ -4317,7 +4316,6 @@ impl Node {
             .await
         {
             self.bootstrap_transports.remove(&transport_id);
-            self.bootstrap_transport_npubs.remove(&transport_id);
             if let Some(mut handle) = self.transports.remove(&transport_id) {
                 let _ = handle.stop().await;
             }

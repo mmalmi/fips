@@ -626,15 +626,12 @@ impl Node {
                 matches!(prefix.phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
             if looks_like_fmp_phase
                 && self.bootstrap_transports.contains(&packet.transport_id)
-                && let Some(npub) = self
-                    .bootstrap_transport_npubs
-                    .get(&packet.transport_id)
-                    .cloned()
+                && let Some(npub) = self.bootstrap_transports.peer_npub(&packet.transport_id)
                 && let Some(handle) = self.nostr_discovery_handle()
             {
                 let now_ms = Self::now_ms();
                 let cooldown_secs = handle.protocol_mismatch_cooldown_secs();
-                if handle.record_protocol_mismatch(&npub, now_ms) {
+                if handle.record_protocol_mismatch(npub, now_ms) {
                     warn!(
                         peer_npub = %npub,
                         transport_id = %packet.transport_id,

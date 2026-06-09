@@ -458,7 +458,7 @@ async fn test_transport_discovery_avoids_bootstrap_udp_transport() {
         node.transports
             .insert(transport_id, TransportHandle::Udp(udp));
     }
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     let candidate = node
         .transport_discovery_candidate(
@@ -504,7 +504,7 @@ async fn test_udp_transport_picker_ignores_bootstrap_transports() {
             .insert(transport_id, TransportHandle::Udp(udp));
     }
 
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     assert_eq!(node.find_transport_for_type("udp"), Some(primary_id));
 
@@ -797,6 +797,34 @@ fn discovery_fallback_transit_owns_target_exception_block_and_bootstrap_policy()
     assert!(
         transit.allows_lookup_fallback_peer(&peer, &target, None, |_| false),
         "peers without a transport id should not be treated as bootstrap"
+    );
+}
+
+#[test]
+fn bootstrap_transports_own_membership_peer_npub_and_cleanup() {
+    let transport = TransportId::new(7);
+    let other_transport = TransportId::new(8);
+    let mut bootstrap = BootstrapTransports::default();
+
+    bootstrap.register(transport, "npub-one".to_string());
+    assert!(bootstrap.contains(&transport));
+    assert_eq!(bootstrap.peer_npub(&transport), Some("npub-one"));
+    assert_eq!(bootstrap.peer_npub(&other_transport), None);
+
+    bootstrap.register(transport, "npub-two".to_string());
+    assert!(bootstrap.contains(&transport));
+    assert_eq!(
+        bootstrap.peer_npub(&transport),
+        Some("npub-two"),
+        "re-registering a transport must update the peer npub in the same owner"
+    );
+
+    bootstrap.remove(&transport);
+    assert!(!bootstrap.contains(&transport));
+    assert_eq!(
+        bootstrap.peer_npub(&transport),
+        None,
+        "removing bootstrap membership must also drop the peer npub"
     );
 }
 
@@ -1827,7 +1855,7 @@ fn test_schedule_retry_keeps_connected_bootstrap_peer_refreshable() {
     let mut node = Node::new(config).unwrap();
 
     let bootstrap_id = TransportId::new(99);
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
     let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
     active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:9"));
     node.peers.insert(peer_node_addr, active_peer);
@@ -1862,7 +1890,7 @@ fn test_schedule_retry_active_fallback_uses_quick_direct_reprobe() {
     let mut node = Node::new(config).unwrap();
 
     let bootstrap_id = TransportId::new(99);
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
     let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
     active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:9"));
     node.peers.insert(peer_node_addr, active_peer);
@@ -2018,9 +2046,8 @@ async fn process_packet_ignores_punch_and_non_fmp_noise_for_bootstrap_cooldown()
     let peer_npub = peer.npub();
 
     node.nostr_discovery = Some(bootstrap.clone());
-    node.bootstrap_transports.insert(transport_id);
-    node.bootstrap_transport_npubs
-        .insert(transport_id, peer_npub.clone());
+    node.bootstrap_transports
+        .register(transport_id, peer_npub.clone());
 
     let remote = crate::transport::TransportAddr::from_string("127.0.0.1:9");
     let mut punch = vec![0u8; 24];
@@ -2429,7 +2456,7 @@ fn test_promote_clears_retry_pending() {
 fn test_promote_keeps_retry_pending_for_bootstrap_path() {
     let mut node = make_node();
     let bootstrap_id = TransportId::new(1);
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     let link_id = LinkId::new(1);
     let (conn, identity) = make_completed_connection(&mut node, link_id, bootstrap_id, 1000);
@@ -3758,7 +3785,7 @@ async fn update_peers_races_primary_path_when_active_peer_uses_bootstrap_transpo
         node.transports
             .insert(transport_id, TransportHandle::Udp(udp));
     }
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
     let peer_node_addr = *peer_identity.node_addr();
@@ -3811,7 +3838,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
         node.transports
             .insert(transport_id, TransportHandle::Udp(udp));
     }
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
     let peer_node_addr = *peer_identity.node_addr();
@@ -3996,7 +4023,7 @@ async fn active_fallback_static_hint_also_queues_nostr_traversal() {
         node.transports
             .insert(transport_id, TransportHandle::Udp(udp));
     }
-    node.bootstrap_transports.insert(bootstrap_id);
+    node.bootstrap_transports.mark(bootstrap_id);
 
     let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
     active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("127.0.0.1:8"));
@@ -6625,7 +6652,7 @@ fn show_peers_reports_fallback_active_with_direct_probe_pending() {
     let mut node = Node::new(config).expect("node");
 
     let bootstrap_transport = TransportId::new(77);
-    node.bootstrap_transports.insert(bootstrap_transport);
+    node.bootstrap_transports.mark(bootstrap_transport);
     let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
     active.set_current_addr(
         bootstrap_transport,

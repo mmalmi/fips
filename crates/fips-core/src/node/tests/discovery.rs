@@ -784,10 +784,7 @@ async fn test_reply_learned_origin_fanout_skips_bootstrap_transit_peer() {
             bootstrap_transport,
             &crate::transport::TransportAddr::from_string("bootstrap/node3"),
         );
-    nodes[0]
-        .node
-        .bootstrap_transports
-        .insert(bootstrap_transport);
+    nodes[0].node.bootstrap_transports.mark(bootstrap_transport);
     assert!(
         nodes[0]
             .node
@@ -986,10 +983,7 @@ async fn test_reply_learned_forward_fanout_skips_bootstrap_transit_peer() {
             bootstrap_transport,
             &crate::transport::TransportAddr::from_string("bootstrap/node3"),
         );
-    nodes[1]
-        .node
-        .bootstrap_transports
-        .insert(bootstrap_transport);
+    nodes[1].node.bootstrap_transports.mark(bootstrap_transport);
     assert!(
         nodes[1]
             .node

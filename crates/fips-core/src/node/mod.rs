@@ -209,6 +209,37 @@ impl DiscoveryFallbackTransit {
     }
 }
 
+#[derive(Debug, Default)]
+pub(in crate::node) struct BootstrapTransports {
+    transport_ids: HashSet<TransportId>,
+    peer_npubs: HashMap<TransportId, String>,
+}
+
+impl BootstrapTransports {
+    pub(in crate::node) fn register(&mut self, transport_id: TransportId, peer_npub: String) {
+        self.transport_ids.insert(transport_id);
+        self.peer_npubs.insert(transport_id, peer_npub);
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn mark(&mut self, transport_id: TransportId) {
+        self.transport_ids.insert(transport_id);
+    }
+
+    pub(in crate::node) fn remove(&mut self, transport_id: &TransportId) {
+        self.transport_ids.remove(transport_id);
+        self.peer_npubs.remove(transport_id);
+    }
+
+    pub(in crate::node) fn contains(&self, transport_id: &TransportId) -> bool {
+        self.transport_ids.contains(transport_id)
+    }
+
+    pub(in crate::node) fn peer_npub(&self, transport_id: &TransportId) -> Option<&str> {
+        self.peer_npubs.get(transport_id).map(String::as_str)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FmpPlaintextTrafficClass {
     bulk_endpoint_data: bool,
@@ -1592,15 +1623,9 @@ pub struct Node {
     /// after the first sweep fires (under `policy: open`); thereafter
     /// only the per-tick `queue_open_discovery_retries` continues.
     startup_open_discovery_sweep_done: bool,
-    /// Per-peer UDP transports adopted from NAT traversal handoff.
-    bootstrap_transports: HashSet<TransportId>,
-    /// Originating peer npub (bech32) for each adopted bootstrap
-    /// transport, captured at `adopt_established_traversal` time.
-    /// Populated alongside `bootstrap_transports`; cleared in
-    /// `cleanup_bootstrap_transport_if_unused`. Used by the rx loop to
-    /// route fatal-protocol-mismatch observations back to the
-    /// Nostr-discovery `failure_state` for long cooldown application.
-    bootstrap_transport_npubs: HashMap<TransportId, String>,
+    /// Per-peer UDP transports adopted from NAT traversal handoff plus the
+    /// originating peer npub for protocol-mismatch cooldown bookkeeping.
+    bootstrap_transports: BootstrapTransports,
     /// Peers that should not be used as reply-learned fallback transit for
     /// other destinations. Direct lookups to the peer are still permitted.
     discovery_fallback_transit: DiscoveryFallbackTransit,
@@ -1792,8 +1817,7 @@ impl Node {
             last_local_instance_publish_ms: None,
             last_local_instance_scan_ms: None,
             startup_open_discovery_sweep_done: false,
-            bootstrap_transports: HashSet::new(),
-            bootstrap_transport_npubs: HashMap::new(),
+            bootstrap_transports: BootstrapTransports::default(),
             discovery_fallback_transit: DiscoveryFallbackTransit::default(),
             last_parent_reeval: None,
             last_congestion_log: None,
@@ -1937,8 +1961,7 @@ impl Node {
             last_local_instance_publish_ms: None,
             last_local_instance_scan_ms: None,
             startup_open_discovery_sweep_done: false,
-            bootstrap_transports: HashSet::new(),
-            bootstrap_transport_npubs: HashMap::new(),
+            bootstrap_transports: BootstrapTransports::default(),
             discovery_fallback_transit: DiscoveryFallbackTransit::default(),
             last_parent_reeval: None,
             last_congestion_log: None,
@@ -2941,7 +2964,6 @@ impl Node {
         );
 
         self.bootstrap_transports.remove(&transport_id);
-        self.bootstrap_transport_npubs.remove(&transport_id);
         self.transport_drops.remove(&transport_id);
         self.transports.remove(&transport_id);
     }
