@@ -1794,6 +1794,39 @@ pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) payload_len: u16,
 }
 
+pub(in crate::node) struct PeerRuntimeSendSnapshot {
+    node_addr: NodeAddr,
+    fmp_prepared: FmpSendPreparation,
+    fmp_worker_send_available: bool,
+}
+
+impl PeerRuntimeSendSnapshot {
+    pub(in crate::node) fn new(
+        node_addr: NodeAddr,
+        fmp_prepared: FmpSendPreparation,
+        fmp_worker_send_available: bool,
+    ) -> Self {
+        Self {
+            node_addr,
+            fmp_prepared,
+            fmp_worker_send_available,
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn node_addr(&self) -> NodeAddr {
+        self.node_addr
+    }
+
+    pub(in crate::node) fn fmp_prepared(&self) -> &FmpSendPreparation {
+        &self.fmp_prepared
+    }
+
+    pub(in crate::node) fn fmp_worker_send_available(&self) -> bool {
+        self.fmp_worker_send_available
+    }
+}
+
 pub(in crate::node) struct PreparedFmpInlineSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
@@ -2373,6 +2406,14 @@ impl PeerLifecycleRegistry {
             .active
             .get(node_addr)
             .ok_or(FmpSendPreparationError::MissingPeer)?;
+        Self::fmp_send_preparation_from_peer(peer, ce_flag, payload_len)
+    }
+
+    fn fmp_send_preparation_from_peer(
+        peer: &ActivePeer,
+        ce_flag: bool,
+        payload_len: u16,
+    ) -> Result<FmpSendPreparation, FmpSendPreparationError> {
         let their_index = peer
             .their_index()
             .ok_or(FmpSendPreparationError::MissingTheirIndex)?;
@@ -2410,18 +2451,25 @@ impl PeerLifecycleRegistry {
     }
 
     #[cfg(unix)]
-    pub(in crate::node) fn fmp_worker_send_available(
+    pub(in crate::node) fn prepare_peer_runtime_send_snapshot(
         &self,
         node_addr: &NodeAddr,
-    ) -> Result<bool, FmpSendPreparationError> {
+        ce_flag: bool,
+        payload_len: u16,
+    ) -> Result<PeerRuntimeSendSnapshot, FmpSendPreparationError> {
         let peer = self
             .active
             .get(node_addr)
             .ok_or(FmpSendPreparationError::MissingPeer)?;
-        let session = peer
+        let fmp_prepared = Self::fmp_send_preparation_from_peer(peer, ce_flag, payload_len)?;
+        let fmp_worker_send_available = peer
             .noise_session()
-            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
-        Ok(session.has_send_cipher())
+            .is_some_and(|session| session.has_send_cipher());
+        Ok(PeerRuntimeSendSnapshot::new(
+            *node_addr,
+            fmp_prepared,
+            fmp_worker_send_available,
+        ))
     }
 
     #[cfg(unix)]
@@ -2455,6 +2503,14 @@ impl PeerLifecycleRegistry {
                 predicted_bytes,
             }
         }))
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send(
+        &mut self,
+        snapshot: &PeerRuntimeSendSnapshot,
+    ) -> Result<Option<PreparedFmpWorkerReservation>, FmpSendPreparationError> {
+        self.reserve_prepared_fmp_worker_send(&snapshot.node_addr, snapshot.fmp_prepared())
     }
 
     #[cfg(unix)]

@@ -192,7 +192,7 @@ struct PipelinedEndpointSendPlan<'a> {
 struct PipelinedEndpointRuntimeSendPlan<'a> {
     route_plan: PipelinedEndpointRoutePlan,
     send_plan: PipelinedEndpointSendPlan<'a>,
-    fmp_prepared: crate::node::FmpSendPreparation,
+    peer_snapshot: crate::node::PeerRuntimeSendSnapshot,
 }
 
 #[cfg(unix)]
@@ -476,9 +476,10 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     fn from_parts(
         route_plan: PipelinedEndpointRoutePlan,
         send_plan: PipelinedEndpointSendPlan<'a>,
-        fmp_prepared: crate::node::FmpSendPreparation,
+        peer_snapshot: crate::node::PeerRuntimeSendSnapshot,
     ) -> Result<Self, PipelinedEndpointRuntimeSendPlanError> {
         let plan_payload_len = send_plan.fmp_payload_len();
+        let fmp_prepared = peer_snapshot.fmp_prepared();
         if fmp_prepared.payload_len != plan_payload_len {
             return Err(PipelinedEndpointRuntimeSendPlanError::FmpPayloadMismatch {
                 prepared_payload_len: fmp_prepared.payload_len,
@@ -489,7 +490,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         Ok(Self {
             route_plan,
             send_plan,
-            fmp_prepared,
+            peer_snapshot,
         })
     }
 
@@ -507,7 +508,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     }
 
     fn transport_id(&self) -> crate::transport::TransportId {
-        self.fmp_prepared.transport_id
+        self.peer_snapshot.fmp_prepared().transport_id
     }
 
     #[cfg(test)]
@@ -520,14 +521,22 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     }
 
     fn fmp_prepared(&self) -> &crate::node::FmpSendPreparation {
-        &self.fmp_prepared
+        self.peer_snapshot.fmp_prepared()
+    }
+
+    fn peer_snapshot(&self) -> &crate::node::PeerRuntimeSendSnapshot {
+        &self.peer_snapshot
+    }
+
+    fn fmp_worker_send_available(&self) -> bool {
+        self.peer_snapshot.fmp_worker_send_available()
     }
 
     async fn resolve_send_target(
         &self,
         udp: &crate::transport::udp::UdpTransport,
     ) -> Option<PipelinedEndpointSendTarget> {
-        PipelinedEndpointSendTarget::resolve(udp, &self.fmp_prepared).await
+        PipelinedEndpointSendTarget::resolve(udp, self.fmp_prepared()).await
     }
 
     fn into_prepared_worker_send(
@@ -539,11 +548,12 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     ) -> PipelinedEndpointPreparedSend {
         let Self {
             send_plan,
-            fmp_prepared,
+            peer_snapshot,
             ..
         } = self;
+        let fmp_prepared = peer_snapshot.fmp_prepared();
         send_plan.into_prepared_worker_send(
-            &fmp_prepared,
+            fmp_prepared,
             fmp_reservation,
             fsp_reservation,
             send_target,
@@ -3103,16 +3113,16 @@ impl Node {
                 PipelinedEndpointRuntimeSendPlanError::SendPlan(error),
             )
         })?;
-        let fmp_prepared = self
+        let peer_snapshot = self
             .peers
-            .prepare_fmp_send(
+            .prepare_peer_runtime_send_snapshot(
                 &route_plan.next_hop_addr,
                 false,
                 send_plan.fmp_payload_len(),
             )
             .map_err(|e| Self::map_fmp_send_preparation_error(route_plan.next_hop_addr, e))?;
 
-        PipelinedEndpointRuntimeSendPlan::from_parts(route_plan, send_plan, fmp_prepared).map_err(
+        PipelinedEndpointRuntimeSendPlan::from_parts(route_plan, send_plan, peer_snapshot).map_err(
             |error| {
                 Self::map_pipelined_endpoint_runtime_send_plan_error(
                     *send.dest_addr,
@@ -3143,11 +3153,7 @@ impl Node {
             return Ok(None);
         };
 
-        if !self
-            .peers
-            .fmp_worker_send_available(&next_hop_addr)
-            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?
-        {
+        if !runtime_plan.fmp_worker_send_available() {
             return Ok(None);
         }
 
@@ -3161,7 +3167,7 @@ impl Node {
 
         let Some(fmp_reservation) = self
             .peers
-            .reserve_prepared_fmp_worker_send(&next_hop_addr, runtime_plan.fmp_prepared())
+            .reserve_peer_runtime_fmp_worker_send(runtime_plan.peer_snapshot())
             .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?
         else {
             return Ok(None);
@@ -4521,7 +4527,11 @@ mod tests {
             payload_len: fmp_payload_len - 1,
         };
 
-        let runtime = PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, prepared)
+        let snapshot = crate::node::PeerRuntimeSendSnapshot::new(next_hop_addr, prepared, true);
+        let bad_snapshot =
+            crate::node::PeerRuntimeSendSnapshot::new(next_hop_addr, bad_prepared, true);
+
+        let runtime = PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, snapshot)
             .expect("matching route/send/FMP preparation should form runtime plan");
 
         assert_eq!(runtime.source_addr(), source_addr);
@@ -4545,7 +4555,7 @@ mod tests {
 
         let (route, plan) = runtime.into_parts_for_test();
         assert!(matches!(
-            PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, bad_prepared),
+            PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, bad_snapshot),
             Err(PipelinedEndpointRuntimeSendPlanError::FmpPayloadMismatch {
                 prepared_payload_len,
                 plan_payload_len,
@@ -4615,7 +4625,8 @@ mod tests {
             flags: FLAG_SP,
             payload_len: plan.fmp_payload_len(),
         };
-        let runtime = PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, fmp_prepared)
+        let snapshot = crate::node::PeerRuntimeSendSnapshot::new(next_hop_addr, fmp_prepared, true);
+        let runtime = PipelinedEndpointRuntimeSendPlan::from_parts(route, plan, snapshot)
             .expect("matching route/send/FMP preparation should form runtime plan");
 
         let send_target = runtime

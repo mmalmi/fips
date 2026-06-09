@@ -2313,10 +2313,11 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
     let pipelined_prepared = registry
         .prepare_fmp_send(&peer_addr, false, pipelined_payload_len)
         .expect("lifecycle owner should prepare pipelined FMP metadata");
+    let pipelined_snapshot = registry
+        .prepare_peer_runtime_send_snapshot(&peer_addr, false, pipelined_payload_len)
+        .expect("peer runtime owner should prepare pipelined FMP metadata with availability");
     assert!(
-        registry
-            .fmp_worker_send_available(&peer_addr)
-            .expect("lifecycle owner should expose worker send availability"),
+        pipelined_snapshot.fmp_worker_send_available(),
         "pipelined path should check FMP worker-cipher availability before reserving FSP"
     );
     assert_eq!(
@@ -7394,6 +7395,91 @@ fn local_send_failure_fast_dead_signal_expires_quickly() {
     assert!(
         !node.local_send_failures.contains_key(&peer_addr),
         "stale route failures must not keep compressing link-dead timeout"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn peer_runtime_send_snapshot_owns_fmp_metadata_and_worker_availability() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(7);
+    let link_id = LinkId::new(9);
+    let remote_addr = TransportAddr::from_string("peer-runtime-send-snapshot");
+    let our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+    let sender = make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        sender,
+        our_index,
+        their_index,
+        transport_id,
+        remote_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x02; 8]),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let payload_len = 96;
+    let snapshot = registry
+        .prepare_peer_runtime_send_snapshot(&peer_addr, true, payload_len)
+        .expect("peer runtime owner should prepare one send snapshot");
+
+    assert_eq!(snapshot.node_addr(), peer_addr);
+    assert_eq!(snapshot.fmp_prepared().transport_id, transport_id);
+    assert_eq!(snapshot.fmp_prepared().remote_addr, remote_addr);
+    assert_eq!(snapshot.fmp_prepared().their_index, their_index);
+    assert_eq!(snapshot.fmp_prepared().payload_len, payload_len);
+    assert_eq!(snapshot.fmp_prepared().flags & FLAG_CE, FLAG_CE);
+    assert!(
+        snapshot.fmp_worker_send_available(),
+        "snapshot should carry worker-send availability from the same peer read"
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        0,
+        "snapshot preparation must not consume a Noise send counter"
+    );
+
+    let reservation = registry
+        .reserve_peer_runtime_fmp_worker_send(&snapshot)
+        .expect("peer runtime snapshot should reserve the FMP worker send")
+        .expect("established FMP peer should expose a worker cipher");
+    assert_eq!(reservation.counter, 0);
+    assert_eq!(
+        reservation.header,
+        build_established_header(
+            their_index,
+            reservation.counter,
+            snapshot.fmp_prepared().flags,
+            payload_len,
+        )
+    );
+    assert_eq!(
+        reservation.predicted_bytes,
+        ESTABLISHED_HEADER_SIZE + payload_len as usize + crate::noise::TAG_SIZE,
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        1,
+        "snapshot reservation should consume exactly one FMP counter"
     );
 }
 
