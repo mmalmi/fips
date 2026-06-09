@@ -130,6 +130,41 @@ impl LocalSendFailures {
     }
 }
 
+#[derive(Debug, Default)]
+pub(in crate::node) struct SessionDirectDegradation {
+    degraded_until_ms: HashMap<NodeAddr, u64>,
+}
+
+impl SessionDirectDegradation {
+    pub(in crate::node) fn is_degraded(&mut self, dest: &NodeAddr, now_ms: u64) -> bool {
+        match self.degraded_until_ms.get(dest).copied() {
+            Some(until_ms) if until_ms > now_ms => true,
+            Some(_) => {
+                self.degraded_until_ms.remove(dest);
+                false
+            }
+            None => false,
+        }
+    }
+
+    pub(in crate::node) fn mark_degraded(
+        &mut self,
+        dest: NodeAddr,
+        now_ms: u64,
+        hold_ms: u64,
+    ) -> bool {
+        let until_ms = now_ms.saturating_add(hold_ms);
+        let entry = self.degraded_until_ms.entry(dest).or_insert(0);
+        let was_degraded = *entry > now_ms;
+        *entry = (*entry).max(until_ms);
+        !was_degraded
+    }
+
+    pub(in crate::node) fn clear(&mut self, dest: &NodeAddr) -> bool {
+        self.degraded_until_ms.remove(dest).is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FmpPlaintextTrafficClass {
     bulk_endpoint_data: bool,
@@ -1322,7 +1357,7 @@ pub struct Node {
     learned_routes: LearnedRouteTable,
     /// Destinations whose direct first-hop path is temporarily suspect because
     /// session-layer MMP observed sustained loss while using that direct path.
-    session_direct_degraded_until_ms: HashMap<NodeAddr, u64>,
+    session_direct_degradation: SessionDirectDegradation,
     /// Recent discovery requests for dedup and reverse-path forwarding.
     recent_requests: RecentDiscoveryRequests,
     /// Per-destination path MTU lookup, keyed by FipsAddress (mirrors
@@ -1650,7 +1685,7 @@ impl Node {
             bloom_state,
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
-            session_direct_degraded_until_ms: HashMap::new(),
+            session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -1797,7 +1832,7 @@ impl Node {
             bloom_state,
             coord_cache,
             learned_routes: LearnedRouteTable::default(),
-            session_direct_degraded_until_ms: HashMap::new(),
+            session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: HashMap::new(),
@@ -3511,14 +3546,7 @@ impl Node {
         dest: &NodeAddr,
         now_ms: u64,
     ) -> bool {
-        match self.session_direct_degraded_until_ms.get(dest).copied() {
-            Some(until_ms) if until_ms > now_ms => true,
-            Some(_) => {
-                self.session_direct_degraded_until_ms.remove(dest);
-                false
-            }
-            None => false,
-        }
+        self.session_direct_degradation.is_degraded(dest, now_ms)
     }
 
     pub(in crate::node) fn session_direct_path_blocks_direct_payload(
@@ -3535,18 +3563,12 @@ impl Node {
         dest: NodeAddr,
         now_ms: u64,
     ) -> bool {
-        let until_ms = now_ms.saturating_add(SESSION_DIRECT_DEGRADED_HOLD_MS);
-        let entry = self
-            .session_direct_degraded_until_ms
-            .entry(dest)
-            .or_insert(0);
-        let was_degraded = *entry > now_ms;
-        *entry = (*entry).max(until_ms);
-        !was_degraded
+        self.session_direct_degradation
+            .mark_degraded(dest, now_ms, SESSION_DIRECT_DEGRADED_HOLD_MS)
     }
 
     pub(in crate::node) fn clear_session_direct_path_degraded(&mut self, dest: &NodeAddr) -> bool {
-        self.session_direct_degraded_until_ms.remove(dest).is_some()
+        self.session_direct_degradation.clear(dest)
     }
 
     pub(in crate::node) fn learn_reverse_route(

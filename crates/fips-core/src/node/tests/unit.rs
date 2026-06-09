@@ -5532,6 +5532,38 @@ fn local_send_failures_own_peer_scoped_fast_dead_clear_and_expiry() {
     assert!(!failures.contains_key(&failed_peer));
 }
 
+#[test]
+fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
+    let dest = make_node_addr(0xB1);
+    let other = make_node_addr(0xB2);
+    let hold_ms = 20_000;
+    let mut degradation = SessionDirectDegradation::default();
+
+    assert!(degradation.mark_degraded(dest, 1_000, hold_ms));
+    assert!(degradation.is_degraded(&dest, 20_999));
+    assert!(
+        !degradation.mark_degraded(dest, 2_000, hold_ms),
+        "marking an already-degraded direct path should extend the hold without reporting a new transition"
+    );
+    assert!(degradation.is_degraded(&dest, 21_999));
+    assert!(
+        !degradation.is_degraded(&other, 21_999),
+        "direct degradation must remain scoped to the destination that produced bad session evidence"
+    );
+    assert!(
+        !degradation.is_degraded(&dest, 22_000),
+        "the owner must expire and remove stale degradation holds"
+    );
+    assert!(
+        !degradation.clear(&dest),
+        "expired degradation state should already be removed"
+    );
+
+    assert!(degradation.mark_degraded(dest, 30_000, hold_ms));
+    assert!(degradation.clear(&dest));
+    assert!(!degradation.is_degraded(&dest, 30_000));
+}
+
 #[tokio::test]
 async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_peer() {
     let local_identity = Identity::generate();
