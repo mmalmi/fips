@@ -1782,6 +1782,18 @@ pub(in crate::node) enum FmpSendPreparationError {
     EncryptionFailed,
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum PeerRuntimeRouteDecisionError {
+    NoRoute {
+        dest_addr: NodeAddr,
+    },
+    FmpPreparation {
+        next_hop_addr: NodeAddr,
+        error: FmpSendPreparationError,
+    },
+}
+
 pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) their_index: SessionIndex,
     pub(in crate::node) transport_id: TransportId,
@@ -1804,6 +1816,14 @@ pub(in crate::node) struct PeerRuntimeRouteSnapshot {
     timestamp_ms: u32,
     base_flags: u8,
     fmp_worker_send_available: bool,
+}
+
+#[cfg(unix)]
+pub(in crate::node) struct PeerRuntimeRouteDecision {
+    next_hop_addr: NodeAddr,
+    peer_snapshot: PeerRuntimeRouteSnapshot,
+    scheduling_weight: u8,
+    direct_path_blocks_direct_payload: bool,
 }
 
 impl PeerRuntimeRouteSnapshot {
@@ -1874,6 +1894,59 @@ impl PeerRuntimeRouteSnapshot {
                 payload_len,
             },
             self.fmp_worker_send_available,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl PeerRuntimeRouteDecision {
+    pub(in crate::node) fn new(
+        next_hop_addr: NodeAddr,
+        peer_snapshot: PeerRuntimeRouteSnapshot,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+    ) -> Self {
+        debug_assert_eq!(next_hop_addr, peer_snapshot.node_addr());
+        Self {
+            next_hop_addr,
+            peer_snapshot,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn next_hop_addr(&self) -> NodeAddr {
+        self.next_hop_addr
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn peer_snapshot(&self) -> &PeerRuntimeRouteSnapshot {
+        &self.peer_snapshot
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn scheduling_weight(&self) -> u8 {
+        self.scheduling_weight
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn direct_path_blocks_direct_payload(&self) -> bool {
+        self.direct_path_blocks_direct_payload
+    }
+
+    pub(in crate::node) fn into_parts(self) -> (PeerRuntimeRouteSnapshot, u8, bool) {
+        let Self {
+            next_hop_addr,
+            peer_snapshot,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        } = self;
+        debug_assert_eq!(next_hop_addr, peer_snapshot.node_addr());
+        (
+            peer_snapshot,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
         )
     }
 }
@@ -3833,6 +3906,38 @@ impl Node {
     #[cfg(unix)]
     fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
         self.configured_peer_send_weights.weight_for(peer_addr)
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn resolve_peer_runtime_route_decision(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+    ) -> Result<PeerRuntimeRouteDecision, PeerRuntimeRouteDecisionError> {
+        let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
+        else {
+            return Err(PeerRuntimeRouteDecisionError::NoRoute {
+                dest_addr: *dest_addr,
+            });
+        };
+
+        let peer_snapshot = self
+            .peers
+            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
+            .map_err(|error| PeerRuntimeRouteDecisionError::FmpPreparation {
+                next_hop_addr,
+                error,
+            })?;
+        let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
+        let direct_path_blocks_direct_payload = next_hop_addr == *dest_addr
+            && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms);
+
+        Ok(PeerRuntimeRouteDecision::new(
+            next_hop_addr,
+            peer_snapshot,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        ))
     }
 
     /// Create transport instances from configuration.

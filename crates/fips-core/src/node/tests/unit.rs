@@ -7586,6 +7586,62 @@ fn peer_runtime_route_snapshot_owns_path_seed_and_send_snapshot_inputs() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn peer_runtime_route_decision_owns_next_hop_snapshot_weight_and_policy() {
+    let local = Identity::generate();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(21);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:20202");
+    let mut config = crate::config::Config::new();
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_full.npub(),
+        "udp",
+        "127.0.0.1:20202",
+    ));
+    let mut node = Node::with_identity(local, config).expect("node");
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        LinkId::new(22),
+        remote_addr.clone(),
+        SessionIndex::new(23),
+        SessionIndex::new(24),
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, active_peer);
+
+    let decision = node
+        .resolve_peer_runtime_route_decision(&peer_addr, 0x0102_0304)
+        .expect("peer runtime route decision should resolve configured active peer");
+
+    assert_eq!(decision.next_hop_addr(), peer_addr);
+    assert_eq!(
+        decision.scheduling_weight(),
+        crate::node::encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
+        "route decision should carry configured-peer send weight"
+    );
+    assert!(
+        !decision.direct_path_blocks_direct_payload(),
+        "configured static UDP direct peer should keep direct payload eligible"
+    );
+    let snapshot = decision.peer_snapshot();
+    assert_eq!(snapshot.node_addr(), peer_addr);
+    assert_eq!(snapshot.transport_id(), transport_id);
+    assert_eq!(snapshot.remote_addr(), &remote_addr);
+
+    let missing_dest = make_node_addr(0xE1);
+    assert!(matches!(
+        node.resolve_peer_runtime_route_decision(&missing_dest, 0x0102_0304),
+        Err(PeerRuntimeRouteDecisionError::NoRoute { dest_addr })
+            if dest_addr == missing_dest
+    ));
+}
+
 #[test]
 fn local_send_failures_own_peer_scoped_fast_dead_clear_and_expiry() {
     let failed_peer = make_node_addr(0xA1);

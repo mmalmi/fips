@@ -489,6 +489,22 @@ impl PipelinedEndpointPeerRuntimeRoute {
         }
     }
 
+    fn from_decision(
+        source_addr: NodeAddr,
+        default_ttl: u8,
+        decision: crate::node::PeerRuntimeRouteDecision,
+    ) -> Self {
+        let (peer_snapshot, scheduling_weight, direct_path_blocks_direct_payload) =
+            decision.into_parts();
+        Self::new(
+            source_addr,
+            peer_snapshot,
+            default_ttl,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        )
+    }
+
     fn next_hop_addr(&self) -> NodeAddr {
         self.peer_snapshot.node_addr()
     }
@@ -559,33 +575,32 @@ impl PipelinedEndpointPeerRuntimeRouteRequest {
         node: &mut Node,
     ) -> Result<PipelinedEndpointPeerRuntimeRoute, PipelinedEndpointPeerRuntimeRouteRequestError>
     {
-        let Some(next_hop_addr) = node
-            .find_next_hop(&self.dest_addr)
-            .map(|peer| *peer.node_addr())
-        else {
-            return Err(PipelinedEndpointPeerRuntimeRouteRequestError::NoRoute {
-                dest_addr: self.dest_addr,
-            });
-        };
+        let decision = node
+            .resolve_peer_runtime_route_decision(&self.dest_addr, self.now_ms)
+            .map_err(Self::map_route_decision_error)?;
 
-        let peer_snapshot = node
-            .peers
-            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
-            .map_err(
-                |error| PipelinedEndpointPeerRuntimeRouteRequestError::FmpPreparation {
-                    next_hop_addr,
-                    error,
-                },
-            )?;
-
-        Ok(PipelinedEndpointPeerRuntimeRoute::new(
+        Ok(PipelinedEndpointPeerRuntimeRoute::from_decision(
             self.source_addr,
-            peer_snapshot,
             self.default_ttl,
-            node.send_weight_for_peer(&next_hop_addr),
-            next_hop_addr == self.dest_addr
-                && node.session_direct_path_blocks_direct_payload(&self.dest_addr, self.now_ms),
+            decision,
         ))
+    }
+
+    fn map_route_decision_error(
+        error: crate::node::PeerRuntimeRouteDecisionError,
+    ) -> PipelinedEndpointPeerRuntimeRouteRequestError {
+        match error {
+            crate::node::PeerRuntimeRouteDecisionError::NoRoute { dest_addr } => {
+                PipelinedEndpointPeerRuntimeRouteRequestError::NoRoute { dest_addr }
+            }
+            crate::node::PeerRuntimeRouteDecisionError::FmpPreparation {
+                next_hop_addr,
+                error,
+            } => PipelinedEndpointPeerRuntimeRouteRequestError::FmpPreparation {
+                next_hop_addr,
+                error,
+            },
+        }
     }
 }
 
