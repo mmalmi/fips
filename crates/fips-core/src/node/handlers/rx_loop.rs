@@ -408,7 +408,9 @@ impl Node {
         let mut drain =
             PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
         while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
+            let drain_cost = command.drain_cost();
             self.handle_endpoint_data_command(command).await;
+            drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
         let drained = drain.drained();
@@ -882,6 +884,11 @@ impl<T> PriorityBulkDrainCursor<T> {
     fn drained(&self) -> usize {
         self.drained
     }
+
+    fn charge_extra(&mut self, extra: usize) {
+        self.remaining = self.remaining.saturating_sub(extra);
+        self.drained = self.drained.saturating_add(extra);
+    }
 }
 
 struct TunOutboundDrainCursor<T> {
@@ -1092,6 +1099,25 @@ mod tests {
         assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
         assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
         assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("queued-priority").await.unwrap();
+        bulk_tx.send("queued-bulk").await.unwrap();
+        let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk"), 4);
+
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut bulk_rx),
+            Some("queued-priority")
+        );
+        drain.charge_extra(3);
+        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+        assert_eq!(drain.drained(), 4);
     }
 
     #[tokio::test]

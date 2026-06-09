@@ -5,8 +5,8 @@
 
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
-    EndpointCommandLane, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
-    NodeEndpointRelayStatus,
+    EndpointCommandLane, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
+    NodeEndpointPeer, NodeEndpointRelayStatus,
 };
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -16,6 +16,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
+
+const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
 
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
@@ -508,6 +510,71 @@ impl FipsEndpoint {
         Ok(())
     }
 
+    /// Send a burst of application-owned endpoint payloads to one resolved peer.
+    ///
+    /// The endpoint still classifies each payload as priority or bulk, but it
+    /// enqueues bounded lane batches instead of one command per packet.
+    /// This is the dataplane fast path for callers that already route and batch
+    /// packets by peer.
+    pub async fn send_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        if *remote.node_addr() == self.node_addr {
+            for payload in payloads {
+                self.send_loopback(payload)?;
+            }
+            return Ok(());
+        }
+
+        let queued_at = crate::perf_profile::stamp();
+        let mut priority_commands = Vec::new();
+        let mut bulk_commands = Vec::new();
+
+        for payload in payloads {
+            let command = EndpointSendCommand::new(remote, payload, queued_at);
+            match command.lane() {
+                EndpointCommandLane::Priority => priority_commands.push(command),
+                EndpointCommandLane::Bulk => bulk_commands.push(command),
+            }
+        }
+
+        self.send_endpoint_command_batch(priority_commands, EndpointCommandLane::Priority)
+            .await?;
+        self.send_endpoint_command_batch(bulk_commands, EndpointCommandLane::Bulk)
+            .await?;
+        Ok(())
+    }
+
+    async fn send_endpoint_command_batch(
+        &self,
+        mut commands: Vec<EndpointSendCommand>,
+        lane: EndpointCommandLane,
+    ) -> Result<(), FipsEndpointError> {
+        while !commands.is_empty() {
+            let tail = if commands.len() > ENDPOINT_SEND_BATCH_COMMAND_MAX {
+                commands.split_off(ENDPOINT_SEND_BATCH_COMMAND_MAX)
+            } else {
+                Vec::new()
+            };
+            let batch = std::mem::replace(&mut commands, tail);
+            let Some(command) = NodeEndpointCommand::send_batch_oneway(batch, lane) else {
+                continue;
+            };
+            let command_tx = endpoint_command_tx_for_command(
+                &command,
+                &self.endpoint_priority_commands,
+                &self.endpoint_commands,
+            );
+            command_tx
+                .send(command)
+                .await
+                .map_err(|_| FipsEndpointError::Closed)?;
+        }
+        Ok(())
+    }
+
     fn resolve_peer_identity(&self, remote_npub: &str) -> Result<PeerIdentity, FipsEndpointError> {
         // Fast path: cached identity (PeerIdentity is Copy after eager
         // pubkey_full precompute landed in b1e92af, so dereference is free).
@@ -892,6 +959,21 @@ mod tests {
             endpoint_command_tx_for_command(&bulk_command, &priority_tx, &bulk_tx),
             &bulk_tx,
         ));
+
+        let batch_command = NodeEndpointCommand::send_batch_oneway(
+            vec![crate::node::EndpointSendCommand::new(
+                remote,
+                ipv6_tcp_packet(0x18, 512),
+                None,
+            )],
+            EndpointCommandLane::Bulk,
+        )
+        .expect("non-empty batch command");
+        assert_eq!(batch_command.lane(), EndpointCommandLane::Bulk);
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_command(&batch_command, &priority_tx, &bulk_tx),
+            &bulk_tx,
+        ));
     }
 
     #[test]
@@ -996,6 +1078,38 @@ mod tests {
         assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
         assert_eq!(message.source_npub(), endpoint.npub());
         assert_eq!(message.data, b"ping");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn send_batch_to_peer_loopback_endpoint_data_roundtrips() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_batch_to_peer(local, vec![b"ping".to_vec(), b"pong".to_vec()])
+            .await
+            .expect("loopback batch send should succeed");
+
+        let first = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
+            .await
+            .expect("first recv should not time out")
+            .expect("first message should arrive");
+        let second = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
+            .await
+            .expect("second recv should not time out")
+            .expect("second message should arrive");
+        assert_eq!(*first.source_node_addr(), *endpoint.node_addr());
+        assert_eq!(first.source_npub(), endpoint.npub());
+        assert_eq!(first.data, b"ping");
+        assert_eq!(*second.source_node_addr(), *endpoint.node_addr());
+        assert_eq!(second.source_npub(), endpoint.npub());
+        assert_eq!(second.data, b"pong");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }

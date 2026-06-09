@@ -3357,6 +3357,11 @@ impl Node {
                 // `send_endpoint_data` so they're not silent.
                 let _ = self.handle_endpoint_send_command(command).await;
             }
+            NodeEndpointCommand::SendBatchOneway { commands, .. } => {
+                for command in commands {
+                    let _ = self.handle_endpoint_send_command(command).await;
+                }
+            }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
                 let _ = response_tx.send(result);

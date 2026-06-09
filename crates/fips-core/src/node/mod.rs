@@ -1149,6 +1149,13 @@ pub(crate) enum NodeEndpointCommand {
     /// result. Saves one oneshot::channel() allocation per outbound
     /// packet on the application's send hot path.
     SendOneway { command: EndpointSendCommand },
+    /// Fire-and-forget batch of endpoint payloads that already share the same
+    /// command lane. This keeps bursty embedded dataplanes from paying one
+    /// mpsc send/wake per packet while preserving the priority/bulk split.
+    SendBatchOneway {
+        commands: Vec<EndpointSendCommand>,
+        lane: EndpointCommandLane,
+    },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
@@ -1223,13 +1230,37 @@ impl NodeEndpointCommand {
         }
     }
 
+    pub(crate) fn send_batch_oneway(
+        commands: Vec<EndpointSendCommand>,
+        lane: EndpointCommandLane,
+    ) -> Option<Self> {
+        if commands.is_empty() {
+            return None;
+        }
+        debug_assert!(commands.iter().all(|command| command.lane() == lane));
+        Some(Self::SendBatchOneway { commands, lane })
+    }
+
     pub(crate) fn lane(&self) -> EndpointCommandLane {
         match self {
             Self::Send { command, .. } | Self::SendOneway { command } => command.lane(),
+            Self::SendBatchOneway { lane, .. } => *lane,
             Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. } => EndpointCommandLane::Priority,
+        }
+    }
+
+    pub(crate) fn drain_cost(&self) -> usize {
+        match self {
+            Self::SendBatchOneway { commands, .. } => commands.len().max(1),
+            Self::Send { .. }
+            | Self::SendOneway { .. }
+            | Self::PeerSnapshot { .. }
+            | Self::RelaySnapshot { .. }
+            | Self::UpdateRelays { .. }
+            | Self::UpdatePeers { .. } => 1,
         }
     }
 }
