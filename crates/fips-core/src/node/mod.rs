@@ -56,7 +56,7 @@ use crate::tree::TreeState;
 use crate::upper::hosts::HostMap;
 use crate::upper::icmp_rate_limit::IcmpRateLimiter;
 use crate::upper::tun::{TunError, TunOutboundRx, TunState, TunTx};
-use crate::utils::index::IndexAllocator;
+use crate::utils::index::{IndexAllocator, SessionIndex};
 use crate::{
     Config, ConfigError, FipsAddress, Identity, IdentityError, LinkMessageType, NodeAddr,
     PeerIdentity, encode_npub,
@@ -1705,6 +1705,27 @@ pub(in crate::node) struct RemovedSessionIndex {
     pub(in crate::node) owner_has_remaining_index: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum PeerSessionIndexKind {
+    Current,
+    Rekey,
+    Pending,
+    Previous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct PeerSessionIndex {
+    pub(in crate::node) kind: PeerSessionIndexKind,
+    pub(in crate::node) key: (TransportId, u32),
+    pub(in crate::node) index: SessionIndex,
+}
+
+#[derive(Debug)]
+pub(in crate::node) struct RemovedActivePeer {
+    pub(in crate::node) peer: ActivePeer,
+    pub(in crate::node) session_indices: Vec<PeerSessionIndex>,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -1887,6 +1908,33 @@ pub(in crate::node) struct PeerLifecycleRegistry {
 }
 
 impl PeerLifecycleRegistry {
+    fn active_peer_session_indices(peer: &ActivePeer) -> Vec<PeerSessionIndex> {
+        let Some(transport_id) = peer.transport_id() else {
+            return Vec::new();
+        };
+
+        let mut indices = Vec::with_capacity(4);
+        let mut push_index = |kind: PeerSessionIndexKind, index: Option<SessionIndex>| {
+            let Some(index) = index else {
+                return;
+            };
+            let key = (transport_id, index.as_u32());
+            if indices
+                .iter()
+                .any(|existing: &PeerSessionIndex| existing.key == key)
+            {
+                return;
+            }
+            indices.push(PeerSessionIndex { kind, key, index });
+        };
+
+        push_index(PeerSessionIndexKind::Current, peer.our_index());
+        push_index(PeerSessionIndexKind::Rekey, peer.rekey_our_index());
+        push_index(PeerSessionIndexKind::Pending, peer.pending_our_index());
+        push_index(PeerSessionIndexKind::Previous, peer.previous_our_index());
+        indices
+    }
+
     pub(in crate::node) fn insert_connection(
         &mut self,
         link_id: LinkId,
@@ -1951,6 +1999,18 @@ impl PeerLifecycleRegistry {
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
         self.active.remove(node_addr)
+    }
+
+    pub(in crate::node) fn remove_with_session_indices(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> Option<RemovedActivePeer> {
+        let peer = self.active.remove(node_addr)?;
+        let session_indices = Self::active_peer_session_indices(&peer);
+        Some(RemovedActivePeer {
+            peer,
+            session_indices,
+        })
     }
 
     pub(in crate::node) fn get(&self, node_addr: &NodeAddr) -> Option<&ActivePeer> {

@@ -1566,6 +1566,68 @@ fn peer_lifecycle_registry_owns_session_index_removal_and_remaining_owner_state(
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_active_peer_teardown_session_indices() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("teardown-peer");
+    let current_our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+    let rekey_our_index = SessionIndex::new(11);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        remote_addr,
+        current_our_index,
+        their_index,
+    );
+    arm_test_fmp_rekey(&mut active_peer, rekey_our_index);
+
+    assert!(registry.insert(peer_addr, active_peer).is_none());
+    assert_eq!(
+        registry.insert_session_index((transport_id, current_our_index.as_u32()), peer_addr),
+        None
+    );
+    assert_eq!(
+        registry.insert_session_index((transport_id, rekey_our_index.as_u32()), peer_addr),
+        None
+    );
+
+    let removed = registry
+        .remove_with_session_indices(&peer_addr)
+        .expect("active peer teardown should return the removed peer plus session indices");
+    assert_eq!(removed.peer.node_addr(), &peer_addr);
+    assert_eq!(
+        removed.session_indices,
+        vec![
+            PeerSessionIndex {
+                kind: PeerSessionIndexKind::Current,
+                key: (transport_id, current_our_index.as_u32()),
+                index: current_our_index,
+            },
+            PeerSessionIndex {
+                kind: PeerSessionIndexKind::Rekey,
+                key: (transport_id, rekey_our_index.as_u32()),
+                index: rekey_our_index,
+            },
+        ],
+        "peer lifecycle teardown must own which active-peer session indices need deregister/free"
+    );
+    assert!(
+        registry.get(&peer_addr).is_none(),
+        "teardown removal must remove active peer storage"
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_connection_and_active_peer_storage() {
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());

@@ -1,7 +1,7 @@
 //! Link message dispatch and peer removal.
 
 use crate::NodeAddr;
-use crate::node::Node;
+use crate::node::{Node, PeerSessionIndexKind};
 use tracing::{debug, info, trace};
 
 impl Node {
@@ -149,13 +149,14 @@ impl Node {
     }
 
     fn remove_active_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
-        let peer = match self.peers.remove(node_addr) {
-            Some(p) => p,
+        let removed_peer = match self.peers.remove_with_session_indices(node_addr) {
+            Some(removed) => removed,
             None => {
                 debug!(peer = %self.peer_display_name(node_addr), "Peer already removed");
                 return;
             }
         };
+        let peer = removed_peer.peer;
 
         // Log suppressed replay detection summary before teardown
         let suppressed = peer.replay_suppressed_count();
@@ -201,24 +202,12 @@ impl Node {
         let transport_id = peer.transport_id();
 
         // Free session indices (current, rekey, pending, previous)
-        if let Some(tid) = transport_id {
-            if let Some(idx) = peer.our_index() {
-                self.deregister_session_index((tid, idx.as_u32()));
-                let _ = self.index_allocator.free(idx);
+        for session_index in removed_peer.session_indices {
+            if session_index.kind == PeerSessionIndexKind::Rekey {
+                self.pending_outbound.remove(&session_index.key);
             }
-            if let Some(idx) = peer.rekey_our_index() {
-                self.pending_outbound.remove(&(tid, idx.as_u32()));
-                self.deregister_session_index((tid, idx.as_u32()));
-                let _ = self.index_allocator.free(idx);
-            }
-            if let Some(idx) = peer.pending_our_index() {
-                self.deregister_session_index((tid, idx.as_u32()));
-                let _ = self.index_allocator.free(idx);
-            }
-            if let Some(idx) = peer.previous_our_index() {
-                self.deregister_session_index((tid, idx.as_u32()));
-                let _ = self.index_allocator.free(idx);
-            }
+            self.deregister_session_index(session_index.key);
+            let _ = self.index_allocator.free(session_index.index);
         }
 
         // Remove link and address mapping
