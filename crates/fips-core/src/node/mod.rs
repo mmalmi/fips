@@ -1869,6 +1869,7 @@ pub(in crate::node) enum PeerRuntimeRouteDecisionError {
     },
 }
 
+#[derive(Clone)]
 pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) their_index: SessionIndex,
     pub(in crate::node) transport_id: TransportId,
@@ -1881,6 +1882,7 @@ pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) payload_len: u16,
 }
 
+#[derive(Clone)]
 pub(in crate::node) struct PeerRuntimeRouteSnapshot {
     node_addr: NodeAddr,
     their_index: SessionIndex,

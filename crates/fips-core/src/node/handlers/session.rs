@@ -99,6 +99,17 @@ struct PipelinedEndpointSend<'a> {
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
 }
 
+struct PreparedEndpointSessionData<'a> {
+    dest_addr: &'a NodeAddr,
+    payload: &'a EndpointDataPayload,
+    now_ms: u64,
+    timestamp: u32,
+    fsp_flags: u8,
+    inner_plaintext: Vec<u8>,
+    my_coords: Option<crate::tree::TreeCoordinate>,
+    dest_coords: Option<crate::tree::TreeCoordinate>,
+}
+
 #[cfg(unix)]
 struct PipelinedEndpointWire {
     wire_buf: Vec<u8>,
@@ -367,6 +378,35 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
         .checked_add(link_plaintext_len)?
         .checked_add(crate::noise::TAG_SIZE)?;
     u16::try_from(payload_len).ok()
+}
+
+impl<'a> PreparedEndpointSessionData<'a> {
+    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
+        PipelinedEndpointSend {
+            dest_addr: self.dest_addr,
+            payload: self.payload,
+            now_ms: self.now_ms,
+            timestamp: self.timestamp,
+            fsp_flags: self.fsp_flags,
+            inner_plaintext: &self.inner_plaintext,
+            my_coords: self.my_coords.as_ref(),
+            dest_coords: self.dest_coords.as_ref(),
+        }
+    }
+
+    fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
+        SessionFspSendPlan::new(
+            *self.dest_addr,
+            self.timestamp,
+            self.fsp_flags,
+            &self.inner_plaintext,
+            self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
+            SessionFspSendBookkeeping::Data {
+                payload_len: self.payload.len(),
+                now_ms: self.now_ms,
+            },
+        )
+    }
 }
 
 impl<'a> SessionFspSendPlan<'a> {
@@ -741,6 +781,23 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
+    fn runtime_send_plan<'a>(
+        &self,
+        send: &PipelinedEndpointSend<'a>,
+        transport: &crate::transport::TransportHandle,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        let route_plan = self.route_plan(transport);
+        let send_plan = route_plan
+            .build_send_plan(send)
+            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
+        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            route_plan,
+            send_plan,
+            self.peer_snapshot.clone(),
+        )
+    }
+
+    #[cfg(test)]
     fn into_runtime_send_plan<'a>(
         self,
         send: &PipelinedEndpointSend<'a>,
@@ -1198,6 +1255,41 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         }
     }
 
+    async fn resolve_dispatch_with_route(
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+        send: PipelinedEndpointSend<'a>,
+        transports: &std::collections::HashMap<
+            crate::transport::TransportId,
+            crate::transport::TransportHandle,
+        >,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<
+        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
+        PipelinedEndpointPeerRuntimeSendError,
+    > {
+        let dest_addr = *send.dest_addr;
+        let next_hop_addr = runtime_route.next_hop_addr();
+        let transport_id = runtime_route.transport_id();
+        let transport = transports.get(&transport_id).ok_or(
+            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
+                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
+            ),
+        )?;
+        let runtime_plan = runtime_route
+            .runtime_send_plan(&send, transport)
+            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
+                dest_addr,
+                next_hop_addr,
+                error,
+            })?;
+
+        PipelinedEndpointRuntimeSend::new(runtime_plan)
+            .resolve_dispatch_with_transport(transport, sessions, peers)
+            .await
+            .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
+    }
+
     async fn resolve_dispatch(
         self,
         transports: &std::collections::HashMap<
@@ -1210,27 +1302,14 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
         PipelinedEndpointPeerRuntimeSendError,
     > {
-        let dest_addr = *self.send.dest_addr;
-        let next_hop_addr = self.runtime_route.next_hop_addr();
-        let transport_id = self.runtime_route.transport_id();
-        let transport = transports.get(&transport_id).ok_or(
-            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
-                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
-            ),
-        )?;
-        let runtime_plan = self
-            .runtime_route
-            .into_runtime_send_plan(&self.send, transport)
-            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
-                dest_addr,
-                next_hop_addr,
-                error,
-            })?;
-
-        PipelinedEndpointRuntimeSend::new(runtime_plan)
-            .resolve_dispatch_with_transport(transport, sessions, peers)
-            .await
-            .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
+        Self::resolve_dispatch_with_route(
+            &self.runtime_route,
+            self.send,
+            transports,
+            sessions,
+            peers,
+        )
+        .await
     }
 }
 
@@ -3479,6 +3558,34 @@ impl Node {
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
 
+        #[cfg(unix)]
+        if self.encrypt_workers.is_some()
+            && self
+                .sessions
+                .get(&dest_addr)
+                .is_some_and(|entry| entry.is_established())
+        {
+            self.handle_established_endpoint_send_batch(
+                dest_addr,
+                dest_pubkey,
+                payloads,
+                queued_at,
+            )
+            .await;
+            return;
+        }
+
+        self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads, queued_at)
+            .await;
+    }
+
+    async fn handle_endpoint_send_batch_slow_path(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<std::time::Instant>,
+    ) {
         for payload in payloads {
             crate::perf_profile::record_since(
                 crate::perf_profile::Stage::EndpointCommandWait,
@@ -3488,6 +3595,66 @@ impl Node {
             let _ = self
                 .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
                 .await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn handle_established_endpoint_send_batch(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<std::time::Instant>,
+    ) {
+        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
+            Ok(route) => route,
+            Err(_) => {
+                self.handle_endpoint_send_batch_slow_path(
+                    dest_addr,
+                    dest_pubkey,
+                    payloads,
+                    queued_at,
+                )
+                .await;
+                return;
+            }
+        };
+
+        let mut use_reused_route = true;
+
+        for payload in payloads {
+            crate::perf_profile::record_since(
+                crate::perf_profile::Stage::EndpointCommandWait,
+                queued_at,
+            );
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
+
+            if !use_reused_route {
+                let _ = self
+                    .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
+                    .await;
+                continue;
+            }
+
+            match self
+                .send_session_endpoint_data_with_route(&dest_addr, &payload, &route)
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
+                    debug!(
+                        dest = %self.peer_display_name(&dest_addr),
+                        error = %error,
+                        "Established endpoint-data session lost route during batch send; queueing payload and probing fallback"
+                    );
+                    self.queue_pending_endpoint_data(dest_addr, payload);
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                    use_reused_route = false;
+                }
+                Err(_) => {
+                    use_reused_route = false;
+                }
+            }
         }
     }
 
@@ -3580,6 +3747,17 @@ impl Node {
         dest_addr: &NodeAddr,
         payload: &EndpointDataPayload,
     ) -> Result<(), NodeError> {
+        let prepared = self
+            .prepare_session_endpoint_data(dest_addr, payload)
+            .await?;
+        self.send_prepared_session_endpoint_data(prepared).await
+    }
+
+    async fn prepare_session_endpoint_data<'a>(
+        &mut self,
+        dest_addr: &'a NodeAddr,
+        payload: &'a EndpointDataPayload,
+    ) -> Result<PreparedEndpointSessionData<'a>, NodeError> {
         if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -3640,35 +3818,63 @@ impl Node {
             flags |= FSP_FLAG_K;
         }
 
+        Ok(PreparedEndpointSessionData {
+            dest_addr,
+            payload,
+            now_ms,
+            timestamp,
+            fsp_flags: flags,
+            inner_plaintext,
+            my_coords,
+            dest_coords,
+        })
+    }
+
+    async fn send_prepared_session_endpoint_data(
+        &mut self,
+        prepared: PreparedEndpointSessionData<'_>,
+    ) -> Result<(), NodeError> {
         if self
-            .try_send_session_endpoint_data_pipelined(PipelinedEndpointSend {
-                dest_addr,
-                payload,
-                now_ms,
-                timestamp,
-                fsp_flags: flags,
-                inner_plaintext: &inner_plaintext,
-                my_coords: my_coords.as_ref(),
-                dest_coords: dest_coords.as_ref(),
-            })
+            .try_send_session_endpoint_data_pipelined(prepared.pipelined())
             .await?
         {
             return Ok(());
         }
 
-        let coords = my_coords.as_ref().zip(dest_coords.as_ref());
-        self.send_session_fsp_plan(SessionFspSendPlan::new(
-            *dest_addr,
-            timestamp,
-            flags,
-            &inner_plaintext,
-            coords,
-            SessionFspSendBookkeeping::Data {
-                payload_len: payload.len(),
-                now_ms,
-            },
-        ))
-        .await
+        self.send_session_fsp_plan(prepared.fallback_plan()).await
+    }
+
+    #[cfg(unix)]
+    async fn send_prepared_session_endpoint_data_with_route(
+        &mut self,
+        prepared: PreparedEndpointSessionData<'_>,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+    ) -> Result<(), NodeError> {
+        if self
+            .try_send_session_endpoint_data_pipelined_with_route(
+                prepared.pipelined(),
+                runtime_route,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        self.send_session_fsp_plan(prepared.fallback_plan()).await
+    }
+
+    #[cfg(unix)]
+    async fn send_session_endpoint_data_with_route(
+        &mut self,
+        dest_addr: &NodeAddr,
+        payload: &EndpointDataPayload,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+    ) -> Result<(), NodeError> {
+        let prepared = self
+            .prepare_session_endpoint_data(dest_addr, payload)
+            .await?;
+        self.send_prepared_session_endpoint_data_with_route(prepared, runtime_route)
+            .await
     }
 
     #[cfg(unix)]
@@ -3808,6 +4014,41 @@ impl Node {
     }
 
     #[cfg(unix)]
+    fn resolve_peer_runtime_endpoint_route(
+        &mut self,
+        dest_addr: NodeAddr,
+        now_ms: u64,
+    ) -> Result<PipelinedEndpointPeerRuntimeRoute, PipelinedEndpointPeerRuntimeRouteRequestError>
+    {
+        let source_addr = *self.node_addr();
+        let default_ttl = self.config.node.session.default_ttl;
+        PipelinedEndpointPeerRuntimeRouteRequest::new(source_addr, dest_addr, now_ms, default_ttl)
+            .resolve(self)
+    }
+
+    #[cfg(unix)]
+    async fn execute_peer_runtime_endpoint_send_with_route(
+        &mut self,
+        send: PipelinedEndpointSend<'_>,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
+    ) -> Result<bool, PipelinedEndpointPeerRuntimeSendError> {
+        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
+            runtime_route,
+            send,
+            &self.transports,
+            &mut self.sessions,
+            &mut self.peers,
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        dispatch.commit(self, workers);
+        Ok(true)
+    }
+
+    #[cfg(unix)]
     async fn try_send_session_endpoint_data_pipelined(
         &mut self,
         send: PipelinedEndpointSend<'_>,
@@ -3820,6 +4061,24 @@ impl Node {
             .execute_peer_runtime_endpoint_send(send, &workers)
             .await
             .map_err(Self::map_pipelined_endpoint_peer_runtime_send_request_error)?;
+
+        Ok(sent)
+    }
+
+    #[cfg(unix)]
+    async fn try_send_session_endpoint_data_pipelined_with_route(
+        &mut self,
+        send: PipelinedEndpointSend<'_>,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+    ) -> Result<bool, NodeError> {
+        let Some(workers) = self.encrypt_workers.as_ref().cloned() else {
+            return Ok(false);
+        };
+
+        let sent = self
+            .execute_peer_runtime_endpoint_send_with_route(send, runtime_route, &workers)
+            .await
+            .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?;
 
         Ok(sent)
     }
@@ -5936,6 +6195,174 @@ mod tests {
         assert_eq!(
             node.stats().forwarding.originated_bytes,
             originated_bytes_before + expected_originated_bytes as u64
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn peer_runtime_endpoint_send_reuses_resolved_route_for_multiple_payloads() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{
+            LinkId, TransportAddr, TransportHandle, TransportId, packet_channel,
+        };
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(0x56);
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let mut config = crate::config::Config::new();
+        config.node.session.default_ttl = 13;
+        config.peers.push(crate::config::PeerConfig::new(
+            peer.npub(),
+            "udp",
+            "127.0.0.1:1",
+        ));
+        let mut node = Node::with_identity(local, config).expect("node");
+
+        assert!(
+            node.sessions
+                .insert(dest_addr, established_entry(&node.identity, &peer))
+                .is_none()
+        );
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            crate::transport::LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        node.peers
+            .insert_with_current_session_index(dest_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+        assert!(
+            node.transports
+                .insert(transport_id, TransportHandle::Udp(udp))
+                .is_none()
+        );
+
+        let route = node
+            .resolve_peer_runtime_endpoint_route(dest_addr, Node::now_ms())
+            .expect("established direct peer should resolve once for a batch");
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let fsp_before = node
+            .sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .send_counter();
+        let fmp_before = node
+            .peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists")
+            .current_send_counter();
+        let session_traffic_before = node
+            .sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .traffic_counters();
+        let link_stats_before = node
+            .peers
+            .get(&dest_addr)
+            .expect("active peer exists")
+            .link_stats()
+            .clone();
+        let originated_before = node.stats().forwarding.originated_packets;
+        let originated_bytes_before = node.stats().forwarding.originated_bytes;
+        let link_plaintext_len =
+            SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + inner_plaintext.len();
+        let expected_originated_bytes = link_plaintext_len + crate::noise::TAG_SIZE;
+        let expected_fmp_wire_capacity =
+            ESTABLISHED_HEADER_SIZE + 4 + link_plaintext_len + crate::noise::TAG_SIZE * 2;
+
+        let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
+        for offset in 0..2 {
+            let send = PipelinedEndpointSend {
+                dest_addr: &dest_addr,
+                payload: &payload,
+                now_ms: 0x1122_3344 + offset,
+                timestamp: 0x5566_7788 + offset as u32,
+                fsp_flags: 0,
+                inner_plaintext: &inner_plaintext,
+                my_coords: None,
+                dest_coords: None,
+            };
+            let sent = node
+                .execute_peer_runtime_endpoint_send_with_route(send, &route, &workers)
+                .await
+                .expect("reused endpoint route should dispatch");
+            assert!(sent, "reused route should dispatch packet {offset}");
+        }
+
+        assert_eq!(
+            node.sessions
+                .get(&dest_addr)
+                .expect("session still exists")
+                .send_counter(),
+            fsp_before + 2,
+            "reused route should still reserve one FSP counter per payload"
+        );
+        assert_eq!(
+            node.peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists")
+                .current_send_counter(),
+            fmp_before + 2,
+            "reused route should still reserve one FMP counter per payload"
+        );
+        let session = node.sessions.get(&dest_addr).expect("session still exists");
+        assert_eq!(session.traffic_counters().0, session_traffic_before.0 + 2);
+        assert_eq!(
+            session.traffic_counters().2,
+            session_traffic_before.2 + (payload.len() as u64 * 2)
+        );
+        assert_eq!(session.last_outbound_next_hop(), Some(dest_addr));
+        let link_stats_after = node
+            .peers
+            .get(&dest_addr)
+            .expect("active peer still exists")
+            .link_stats();
+        assert_eq!(
+            link_stats_after.packets_sent,
+            link_stats_before.packets_sent + 2
+        );
+        assert_eq!(
+            link_stats_after.bytes_sent,
+            link_stats_before.bytes_sent + expected_fmp_wire_capacity as u64 * 2
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_packets,
+            originated_before + 2
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_bytes,
+            originated_bytes_before + expected_originated_bytes as u64 * 2
         );
     }
 
