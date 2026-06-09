@@ -456,19 +456,28 @@ impl FipsEndpoint {
         let remote_npub = remote_npub.into();
         let data = data.into();
         if remote_npub == self.npub {
-            self.inbound_endpoint_tx
-                .send(NodeEndpointEvent::Data {
-                    source_node_addr: self.node_addr,
-                    source_npub: Some(self.npub.clone()),
-                    payload: data,
-                    queued_at: crate::perf_profile::stamp(),
-                })
-                .map_err(|_| FipsEndpointError::Closed)?;
-            return Ok(());
+            return self.send_loopback(data);
         }
 
         let remote = self.resolve_peer_identity(&remote_npub)?;
+        self.send_to_peer(remote, data).await
+    }
 
+    /// Send application-owned endpoint data to a resolved remote identity.
+    ///
+    /// This is the fast path for applications that already validate and cache
+    /// peer identities in their own routing table. It avoids per-packet npub
+    /// allocation, endpoint cache lookup, and `PeerIdentity::from_npub` parsing
+    /// while preserving the same owned-payload command semantics as [`Self::send`].
+    pub async fn send_to_peer(
+        &self,
+        remote: PeerIdentity,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let data = data.into();
+        if *remote.node_addr() == self.node_addr {
+            return self.send_loopback(data);
+        }
         // Fire-and-forget: caller already drops the result, so skip
         // the per-packet `oneshot::channel()` allocation entirely.
         // The node task's `SendOneway` arm runs the same code path as
@@ -506,6 +515,17 @@ impl FipsEndpoint {
             cache.entry(remote_npub.to_string()).or_insert(remote);
         }
         Ok(remote)
+    }
+
+    fn send_loopback(&self, data: Vec<u8>) -> Result<(), FipsEndpointError> {
+        self.inbound_endpoint_tx
+            .send(NodeEndpointEvent::Data {
+                source_node_addr: self.node_addr,
+                source_npub: Some(self.npub.clone()),
+                payload: data,
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .map_err(|_| FipsEndpointError::Closed)
     }
 
     /// Receive the next source-attributed endpoint data message.
@@ -547,17 +567,25 @@ impl FipsEndpoint {
         let remote_npub = remote_npub.into();
         let data = data.into();
         if remote_npub == self.npub {
-            self.inbound_endpoint_tx
-                .send(NodeEndpointEvent::Data {
-                    source_node_addr: self.node_addr,
-                    source_npub: Some(self.npub.clone()),
-                    payload: data,
-                    queued_at: crate::perf_profile::stamp(),
-                })
-                .map_err(|_| FipsEndpointError::Closed)?;
-            return Ok(());
+            return self.send_loopback(data);
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
+        self.blocking_send_to_peer(remote, data)
+    }
+
+    /// Synchronous blocking send to a resolved remote identity.
+    ///
+    /// This mirrors [`Self::send_to_peer`] for callers that already own a
+    /// `PeerIdentity` but need to use the blocking endpoint command path.
+    pub fn blocking_send_to_peer(
+        &self,
+        remote: PeerIdentity,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let data = data.into();
+        if *remote.node_addr() == self.node_addr {
+            return self.send_loopback(data);
+        }
         let (response_tx, _response_rx) = oneshot::channel();
         let command =
             NodeEndpointCommand::send(remote, data, crate::perf_profile::stamp(), response_tx);
@@ -938,6 +966,53 @@ mod tests {
         assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
         assert_eq!(message.data, b"ping");
         assert!(endpoint.discovery_scope().is_none());
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn send_to_peer_loopback_endpoint_data_roundtrips() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_to_peer(local, b"ping".to_vec())
+            .await
+            .expect("loopback send should succeed");
+        let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
+            .await
+            .expect("recv should not time out")
+            .expect("message should arrive");
+        assert_eq!(message.source_node_addr, *endpoint.node_addr());
+        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(message.data, b"ping");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn blocking_send_to_peer_loopback_endpoint_data_roundtrips() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .blocking_send_to_peer(local, b"ping".to_vec())
+            .expect("loopback send should succeed");
+        let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
+            .await
+            .expect("recv should not time out")
+            .expect("message should arrive");
+        assert_eq!(message.source_node_addr, *endpoint.node_addr());
+        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(message.data, b"ping");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
