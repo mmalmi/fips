@@ -18,6 +18,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
+const ENDPOINT_RECV_BATCH_MAX: usize = 64;
 
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
@@ -615,16 +616,30 @@ impl FipsEndpoint {
     /// between, no extra cross-task hop per packet.
     pub async fn recv(&self) -> Option<FipsEndpointMessage> {
         let event = self.inbound_endpoint_rx.lock().await.recv().await?;
-        let NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_peer,
-            data: payload,
-        })
+        Some(endpoint_event_to_message(event))
+    }
+
+    /// Receive one endpoint message, then drain currently queued follow-ons.
+    ///
+    /// This is the receive-side counterpart to [`Self::send_batch_to_peer`]:
+    /// callers still get individual source-attributed messages, but a hot
+    /// dataplane consumer can amortize the endpoint receiver lock and task wake
+    /// across a bounded burst.
+    pub async fn recv_batch(&self, max: usize) -> Option<Vec<FipsEndpointMessage>> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut rx = self.inbound_endpoint_rx.lock().await;
+        let first = rx.recv().await?;
+        let mut messages = Vec::with_capacity(max);
+        messages.push(endpoint_event_to_message(first));
+
+        while messages.len() < max {
+            let Ok(event) = rx.try_recv() else {
+                break;
+            };
+            messages.push(endpoint_event_to_message(event));
+        }
+
+        Some(messages)
     }
 
     /// Synchronous blocking send — parks the calling **OS thread** on
@@ -694,16 +709,7 @@ impl FipsEndpoint {
     pub fn blocking_recv(&self) -> Option<FipsEndpointMessage> {
         let mut rx = self.inbound_endpoint_rx.blocking_lock();
         let event = rx.blocking_recv()?;
-        let NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_peer,
-            data: payload,
-        })
+        Some(endpoint_event_to_message(event))
     }
 
     /// Non-blocking receive — returns the next ready endpoint message
@@ -728,16 +734,7 @@ impl FipsEndpoint {
     pub fn try_recv(&self) -> Option<FipsEndpointMessage> {
         let mut rx = self.inbound_endpoint_rx.try_lock().ok()?;
         let event = rx.try_recv().ok()?;
-        let NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_peer,
-            data: payload,
-        })
+        Some(endpoint_event_to_message(event))
     }
 
     /// Replace the runtime peer list. Newly added auto-connect peers get
@@ -854,6 +851,19 @@ fn endpoint_command_tx_for_command<'a>(
     match command.lane() {
         EndpointCommandLane::Priority => priority_tx,
         EndpointCommandLane::Bulk => bulk_tx,
+    }
+}
+
+fn endpoint_event_to_message(event: NodeEndpointEvent) -> FipsEndpointMessage {
+    let NodeEndpointEvent::Data {
+        source_peer,
+        payload,
+        queued_at,
+    } = event;
+    crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
+    FipsEndpointMessage {
+        source_peer,
+        data: payload,
     }
 }
 
@@ -1110,6 +1120,45 @@ mod tests {
         assert_eq!(*second.source_node_addr(), *endpoint.node_addr());
         assert_eq!(second.source_npub(), endpoint.npub());
         assert_eq!(second.data, b"pong");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn recv_batch_drains_ready_loopback_endpoint_data() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_batch_to_peer(
+                local,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+            )
+            .await
+            .expect("loopback batch send should succeed");
+
+        let messages = tokio::time::timeout(Duration::from_secs(1), endpoint.recv_batch(2))
+            .await
+            .expect("recv batch should not time out")
+            .expect("messages should arrive");
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages
+                .iter()
+                .all(|message| *message.source_node_addr() == *endpoint.node_addr())
+        );
+        assert_eq!(messages[0].data, b"first");
+        assert_eq!(messages[1].data, b"second");
+
+        let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
+            .await
+            .expect("recv should not time out")
+            .expect("message should arrive");
+        assert_eq!(message.data, b"third");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
