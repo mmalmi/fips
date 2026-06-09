@@ -175,10 +175,30 @@ struct PipelinedEndpointPeerRuntimeRoute {
 }
 
 #[cfg(unix)]
+struct PipelinedEndpointPeerRuntimeRouteRequest {
+    source_addr: NodeAddr,
+    dest_addr: NodeAddr,
+    now_ms: u64,
+    default_ttl: u8,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PipelinedEndpointSendPlanError {
     FmpPayloadTooLarge,
     FspPayloadTooLarge,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelinedEndpointPeerRuntimeRouteRequestError {
+    NoRoute {
+        dest_addr: NodeAddr,
+    },
+    FmpPreparation {
+        next_hop_addr: NodeAddr,
+        error: crate::node::FmpSendPreparationError,
+    },
 }
 
 #[cfg(unix)]
@@ -465,8 +485,18 @@ impl PipelinedEndpointPeerRuntimeRoute {
     }
 
     #[cfg(test)]
+    fn default_ttl(&self) -> u8 {
+        self.default_ttl
+    }
+
+    #[cfg(test)]
     fn scheduling_weight(&self) -> u8 {
         self.scheduling_weight
+    }
+
+    #[cfg(test)]
+    fn direct_path_blocks_direct_payload(&self) -> bool {
+        self.direct_path_blocks_direct_payload
     }
 
     fn route_plan(
@@ -497,6 +527,52 @@ impl PipelinedEndpointPeerRuntimeRoute {
             send_plan,
             self.peer_snapshot,
         )
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointPeerRuntimeRouteRequest {
+    fn new(source_addr: NodeAddr, dest_addr: NodeAddr, now_ms: u64, default_ttl: u8) -> Self {
+        Self {
+            source_addr,
+            dest_addr,
+            now_ms,
+            default_ttl,
+        }
+    }
+
+    fn resolve(
+        self,
+        node: &mut Node,
+    ) -> Result<PipelinedEndpointPeerRuntimeRoute, PipelinedEndpointPeerRuntimeRouteRequestError>
+    {
+        let Some(next_hop_addr) = node
+            .find_next_hop(&self.dest_addr)
+            .map(|peer| *peer.node_addr())
+        else {
+            return Err(PipelinedEndpointPeerRuntimeRouteRequestError::NoRoute {
+                dest_addr: self.dest_addr,
+            });
+        };
+
+        let peer_snapshot = node
+            .peers
+            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
+            .map_err(
+                |error| PipelinedEndpointPeerRuntimeRouteRequestError::FmpPreparation {
+                    next_hop_addr,
+                    error,
+                },
+            )?;
+
+        Ok(PipelinedEndpointPeerRuntimeRoute::new(
+            self.source_addr,
+            peer_snapshot,
+            self.default_ttl,
+            node.send_weight_for_peer(&next_hop_addr),
+            next_hop_addr == self.dest_addr
+                && node.session_direct_path_blocks_direct_payload(&self.dest_addr, self.now_ms),
+        ))
     }
 }
 
@@ -3383,6 +3459,24 @@ impl Node {
     }
 
     #[cfg(unix)]
+    fn map_pipelined_endpoint_peer_runtime_route_request_error(
+        error: PipelinedEndpointPeerRuntimeRouteRequestError,
+    ) -> NodeError {
+        match error {
+            PipelinedEndpointPeerRuntimeRouteRequestError::NoRoute { dest_addr } => {
+                NodeError::SendFailed {
+                    node_addr: dest_addr,
+                    reason: "no route to destination".into(),
+                }
+            }
+            PipelinedEndpointPeerRuntimeRouteRequestError::FmpPreparation {
+                next_hop_addr,
+                error,
+            } => Self::map_fmp_send_preparation_error(next_hop_addr, error),
+        }
+    }
+
+    #[cfg(unix)]
     fn map_pipelined_endpoint_runtime_send_attempt_error(
         error: PipelinedEndpointRuntimeSendAttemptError,
     ) -> NodeError {
@@ -3432,50 +3526,18 @@ impl Node {
     }
 
     #[cfg(unix)]
-    fn prepare_pipelined_endpoint_peer_runtime_route_snapshot(
-        &mut self,
-        dest_addr: &NodeAddr,
-    ) -> Result<crate::node::PeerRuntimeRouteSnapshot, NodeError> {
-        let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
-        else {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no route to destination".into(),
-            });
-        };
-
-        self.peers
-            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
-            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))
-    }
-
-    #[cfg(unix)]
-    fn prepare_pipelined_endpoint_peer_runtime_route(
-        &mut self,
-        dest_addr: &NodeAddr,
-        now_ms: u64,
-    ) -> Result<PipelinedEndpointPeerRuntimeRoute, NodeError> {
-        let peer_snapshot =
-            self.prepare_pipelined_endpoint_peer_runtime_route_snapshot(dest_addr)?;
-        let next_hop_addr = peer_snapshot.node_addr();
-
-        Ok(PipelinedEndpointPeerRuntimeRoute::new(
-            *self.node_addr(),
-            peer_snapshot,
-            self.config.node.session.default_ttl,
-            self.send_weight_for_peer(&next_hop_addr),
-            next_hop_addr == *dest_addr
-                && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms),
-        ))
-    }
-
-    #[cfg(unix)]
     fn prepare_pipelined_endpoint_peer_runtime_send<'a>(
         &mut self,
         send: PipelinedEndpointSend<'a>,
     ) -> Result<PipelinedEndpointPeerRuntimeSend<'a>, NodeError> {
-        let peer_runtime_route =
-            self.prepare_pipelined_endpoint_peer_runtime_route(send.dest_addr, send.now_ms)?;
+        let peer_runtime_route = PipelinedEndpointPeerRuntimeRouteRequest::new(
+            *self.node_addr(),
+            *send.dest_addr,
+            send.now_ms,
+            self.config.node.session.default_ttl,
+        )
+        .resolve(self)
+        .map_err(Self::map_pipelined_endpoint_peer_runtime_route_request_error)?;
         Ok(PipelinedEndpointPeerRuntimeSend::new(
             peer_runtime_route,
             send,
@@ -5043,6 +5105,82 @@ mod tests {
             !degraded_runtime.drop_on_backpressure(),
             "blocked direct payload routes must not silently use bulk-drop policy"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipelined_endpoint_peer_runtime_route_request_owns_next_hop_snapshot_and_policy() {
+        use crate::PeerIdentity;
+        use crate::node::encrypt_worker;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let transport_id = TransportId::new(0x55);
+        let mut config = crate::config::Config::new();
+        config.node.session.default_ttl = 13;
+        config.peers.push(crate::config::PeerConfig::new(
+            peer.npub(),
+            "udp",
+            "127.0.0.1:1",
+        ));
+        let mut node = Node::with_identity(local, config).expect("node");
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:9"),
+            crate::transport::LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        node.peers
+            .insert_with_current_session_index(dest_addr, active_peer);
+
+        let request = PipelinedEndpointPeerRuntimeRouteRequest::new(
+            *node.node_addr(),
+            dest_addr,
+            Node::now_ms(),
+            node.config.node.session.default_ttl,
+        );
+        let runtime_route = request
+            .resolve(&mut node)
+            .expect("route request should resolve configured active peer");
+
+        assert_eq!(runtime_route.next_hop_addr(), dest_addr);
+        assert_eq!(runtime_route.transport_id(), transport_id);
+        assert_eq!(
+            runtime_route.scheduling_weight(),
+            encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
+            "route request should capture configured-peer scheduling weight"
+        );
+        assert_eq!(runtime_route.default_ttl(), 13);
+        assert!(
+            !runtime_route.direct_path_blocks_direct_payload(),
+            "healthy direct route should keep the explicit bulk-drop policy available"
+        );
+
+        let missing_dest = node_addr(0x99);
+        assert!(matches!(
+            PipelinedEndpointPeerRuntimeRouteRequest::new(
+                *node.node_addr(),
+                missing_dest,
+                Node::now_ms(),
+                node.config.node.session.default_ttl,
+            )
+            .resolve(&mut node),
+            Err(PipelinedEndpointPeerRuntimeRouteRequestError::NoRoute { dest_addr })
+                if dest_addr == missing_dest
+        ));
     }
 
     #[cfg(unix)]
