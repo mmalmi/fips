@@ -1699,6 +1699,12 @@ pub(in crate::node) struct SessionIndexRegistry {
     entries: HashMap<(TransportId, u32), NodeAddr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct RemovedSessionIndex {
+    pub(in crate::node) owner: NodeAddr,
+    pub(in crate::node) owner_has_remaining_index: bool,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -1708,8 +1714,21 @@ impl SessionIndexRegistry {
         self.entries.insert(key, node_addr)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn remove(&mut self, key: &(TransportId, u32)) -> Option<NodeAddr> {
         self.entries.remove(key)
+    }
+
+    pub(in crate::node) fn remove_with_owner_state(
+        &mut self,
+        key: &(TransportId, u32),
+    ) -> Option<RemovedSessionIndex> {
+        let owner = self.entries.remove(key)?;
+        let owner_has_remaining_index = self.peer_has_any_index(&owner);
+        Some(RemovedSessionIndex {
+            owner,
+            owner_has_remaining_index,
+        })
     }
 
     pub(in crate::node) fn lookup(&self, key: (TransportId, u32)) -> Option<NodeAddr> {
@@ -1808,11 +1827,19 @@ impl ActivePeerRegistry {
         self.by_session_index.insert(key, node_addr)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn remove_session_index(
         &mut self,
         key: &(TransportId, u32),
     ) -> Option<NodeAddr> {
         self.by_session_index.remove(key)
+    }
+
+    pub(in crate::node) fn remove_session_index_with_owner_state(
+        &mut self,
+        key: &(TransportId, u32),
+    ) -> Option<RemovedSessionIndex> {
+        self.by_session_index.remove_with_owner_state(key)
     }
 
     pub(in crate::node) fn lookup_session_index(
@@ -1822,6 +1849,7 @@ impl ActivePeerRegistry {
         self.by_session_index.lookup(key)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn peer_has_any_session_index(&self, node_addr: &NodeAddr) -> bool {
         self.by_session_index.peer_has_any_index(node_addr)
     }
@@ -1976,6 +2004,7 @@ impl PeerLifecycleRegistry {
         self.active.insert_session_index(key, node_addr)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn remove_session_index(
         &mut self,
         key: &(TransportId, u32),
@@ -1983,15 +2012,18 @@ impl PeerLifecycleRegistry {
         self.active.remove_session_index(key)
     }
 
+    pub(in crate::node) fn remove_session_index_with_owner_state(
+        &mut self,
+        key: &(TransportId, u32),
+    ) -> Option<RemovedSessionIndex> {
+        self.active.remove_session_index_with_owner_state(key)
+    }
+
     pub(in crate::node) fn lookup_session_index(
         &self,
         key: (TransportId, u32),
     ) -> Option<NodeAddr> {
         self.active.lookup_session_index(key)
-    }
-
-    pub(in crate::node) fn peer_has_any_session_index(&self, node_addr: &NodeAddr) -> bool {
-        self.active.peer_has_any_session_index(node_addr)
     }
 
     #[cfg(test)]
@@ -3181,17 +3213,17 @@ impl Node {
     /// from the registered-sessions tracking set and tells the
     /// assigned shard worker to drop its `OwnedSessionState` entry.
     ///
-    /// Use this instead of a bare `self.peers.remove_session_index(&key)`
-    /// at every session-lifecycle teardown site (rekey cross-connection
-    /// swap, peer disconnect, dispatch session-rotation) so the worker
-    /// doesn't keep stale ciphers / replay windows around. The
+    /// Use this instead of a bare session-index removal at every
+    /// session-lifecycle teardown site (rekey cross-connection swap, peer
+    /// disconnect, dispatch session-rotation) so the peer index, connected UDP
+    /// state, and decrypt-worker state remain coherent. The
     /// follow-up `RegisterSession` for the NEW key (if any) will then
     /// install the fresh state on the same shard.
     pub(in crate::node) fn deregister_session_index(&mut self, cache_key: (TransportId, u32)) {
-        // Find the peer that owns this index BEFORE removing it from
-        // the index map, so we can decide whether the deregistration
-        // also tears down the peer's connected UDP socket.
-        let owning_peer = self.peers.remove_session_index(&cache_key);
+        // Remove the index and ask the peer registry for the remaining-owner
+        // state in one step. Rekey drain depends on seeing the NEW index that
+        // was already installed for the same peer.
+        let removed_index = self.peers.remove_session_index_with_owner_state(&cache_key);
         let session_key = DecryptSessionKey::from(cache_key);
         if self
             .sessions
@@ -3210,10 +3242,9 @@ impl Node {
         // fall-through in encrypted.rs, disconnect handler) call
         // here when this is the peer's last index, so the connected
         // socket goes away with the peer.
-        if let Some(peer_addr) = owning_peer {
-            let peer_has_other_index = self.peers.peer_has_any_session_index(&peer_addr);
-            if !peer_has_other_index {
-                self.clear_connected_udp_for_peer(&peer_addr);
+        if let Some(removed_index) = removed_index {
+            if !removed_index.owner_has_remaining_index {
+                self.clear_connected_udp_for_peer(&removed_index.owner);
             }
         }
     }

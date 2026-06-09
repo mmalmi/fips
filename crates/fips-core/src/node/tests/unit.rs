@@ -1514,6 +1514,58 @@ fn active_peer_registry_owns_storage_session_index_and_stale_safe_cleanup() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_session_index_removal_and_remaining_owner_state() {
+    let transport_id = TransportId::new(1);
+    let current_key = (transport_id, 10);
+    let pending_key = (transport_id, 11);
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let stale_peer_full = Identity::generate();
+    let stale_peer_identity = PeerIdentity::from_pubkey_full(stale_peer_full.pubkey_full());
+    let stale_peer_addr = *stale_peer_identity.node_addr();
+
+    let mut registry = PeerLifecycleRegistry::default();
+    assert!(
+        registry
+            .insert(
+                peer_addr,
+                ActivePeer::new(peer_identity, LinkId::new(10), 1_000),
+            )
+            .is_none()
+    );
+    assert_eq!(registry.insert_session_index(current_key, peer_addr), None);
+    assert_eq!(registry.insert_session_index(pending_key, peer_addr), None);
+
+    let removed_current = registry
+        .remove_session_index_with_owner_state(&current_key)
+        .expect("old index should be owned by the active peer");
+    assert_eq!(removed_current.owner, peer_addr);
+    assert!(
+        removed_current.owner_has_remaining_index,
+        "removing the old index during rekey drain must atomically see the new index"
+    );
+
+    assert_eq!(
+        registry.insert_session_index(pending_key, stale_peer_addr),
+        Some(peer_addr),
+        "repairing a stale owner should still report the replaced peer"
+    );
+
+    let removed_pending = registry
+        .remove_session_index_with_owner_state(&pending_key)
+        .expect("pending index should be owned by the stale peer after replacement");
+    assert_eq!(removed_pending.owner, stale_peer_addr);
+    assert!(
+        !removed_pending.owner_has_remaining_index,
+        "last-index removal should atomically report no remaining peer index"
+    );
+    assert!(registry.session_index_is_empty());
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_connection_and_active_peer_storage() {
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
