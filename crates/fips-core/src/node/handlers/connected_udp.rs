@@ -38,6 +38,8 @@
 use crate::NodeAddr;
 use crate::node::Node;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::node::{ConnectedUdpClearResult, ConnectedUdpInstallResult};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::TransportHandle;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -218,29 +220,28 @@ impl Node {
         )
         .map_err(|e| format!("PeerRecvDrain::spawn: {e}"))?;
 
-        // Install on the peer, idempotent re-check.
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            if !crate::node::PeerLifecycleRegistry::connected_udp_activation_candidate(peer) {
-                // Lost the race — somebody else activated us first.
-                // Drop the new socket + drain so we don't leak.
-                drop(drain);
-                drop(socket);
-                return Ok(false);
+        // Install on the peer through the lifecycle owner, which re-checks
+        // eligibility so stale activation races cannot replace a valid pair.
+        let peer = self.peer_display_name(node_addr);
+        match self
+            .peers
+            .install_connected_udp_if_eligible(node_addr, socket, drain)
+        {
+            ConnectedUdpInstallResult::Installed => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::ConnectedUdpInstalled,
+                );
+                info!(
+                    peer = %peer,
+                    peer_addr = %peer_socket_addr,
+                    "connected UDP socket installed"
+                );
+                Ok(true)
             }
-            peer.set_connected_udp(socket, drain);
-            crate::perf_profile::record_event(crate::perf_profile::Event::ConnectedUdpInstalled);
-            info!(
-                peer = %self.peer_display_name(node_addr),
-                peer_addr = %peer_socket_addr,
-                "connected UDP socket installed"
-            );
-            return Ok(true);
-        } else {
-            // Peer disappeared between read-only pass and now.
-            drop(drain);
-            drop(socket);
+            ConnectedUdpInstallResult::MissingPeer | ConnectedUdpInstallResult::NotEligible => {
+                Ok(false)
+            }
         }
-        Ok(false)
     }
 
     /// Clear the per-peer connected UDP socket + drain for a peer.
@@ -249,10 +250,7 @@ impl Node {
     /// drops.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, node_addr: &NodeAddr) {
-        if let Some(peer) = self.peers.get_mut(node_addr)
-            && peer.connected_udp().is_some()
-        {
-            peer.clear_connected_udp();
+        if self.peers.clear_connected_udp_for_peer(node_addr) == ConnectedUdpClearResult::Cleared {
             debug!(peer = %self.peer_display_name(node_addr), "connected UDP socket cleared");
         }
     }

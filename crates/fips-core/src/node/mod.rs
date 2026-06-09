@@ -1774,6 +1774,22 @@ pub(in crate::node) struct ConnectedUdpActivationPlan {
     pub(in crate::node) installed_count: usize,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum ConnectedUdpInstallResult {
+    MissingPeer,
+    NotEligible,
+    Installed,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum ConnectedUdpClearResult {
+    MissingPeer,
+    AlreadyClear,
+    Cleared,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct LinkDeadDirectPathDegradation {
     pub(in crate::node) link_id: LinkId,
@@ -2320,6 +2336,38 @@ impl PeerLifecycleRegistry {
             candidates,
             installed_count,
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::node) fn install_connected_udp_if_eligible(
+        &mut self,
+        node_addr: &NodeAddr,
+        socket: std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+        drain: crate::transport::udp::peer_drain::PeerRecvDrain,
+    ) -> ConnectedUdpInstallResult {
+        let Some(peer) = self.active.get_mut(node_addr) else {
+            return ConnectedUdpInstallResult::MissingPeer;
+        };
+        if !Self::connected_udp_activation_candidate(peer) {
+            return ConnectedUdpInstallResult::NotEligible;
+        }
+        peer.set_connected_udp(socket, drain);
+        ConnectedUdpInstallResult::Installed
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::node) fn clear_connected_udp_for_peer(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> ConnectedUdpClearResult {
+        let Some(peer) = self.active.get_mut(node_addr) else {
+            return ConnectedUdpClearResult::MissingPeer;
+        };
+        if peer.connected_udp().is_none() {
+            return ConnectedUdpClearResult::AlreadyClear;
+        }
+        peer.clear_connected_udp();
+        ConnectedUdpClearResult::Cleared
     }
 
     pub(in crate::node) fn mark_link_dead_direct_path(

@@ -88,6 +88,35 @@ fn arm_test_fmp_rekey(peer: &mut ActivePeer, rekey_our_index: SessionIndex) {
     peer.set_rekey_state(handshake, rekey_our_index, vec![0xAB; 64], 0);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn make_test_connected_udp_pair(
+    transport_id: TransportId,
+) -> (
+    Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+    crate::transport::udp::peer_drain::PeerRecvDrain,
+) {
+    let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
+    let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
+    let socket = Arc::new(
+        crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
+            "127.0.0.1:0".parse().unwrap(),
+            peer_socket_addr,
+            1 << 20,
+            1 << 20,
+        )
+        .expect("connected peer socket"),
+    );
+    let (packet_tx, _packet_rx) = packet_channel(16);
+    let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
+        socket.clone(),
+        transport_id,
+        peer_socket_addr,
+        packet_tx,
+    )
+    .expect("connected peer drain");
+    (socket, drain)
+}
+
 #[cfg(unix)]
 #[test]
 fn fmp_worker_send_reservation_owns_counter_header_and_cipher() {
@@ -2189,25 +2218,7 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
         SessionIndex::new(50),
         SessionIndex::new(51),
     );
-    let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
-    let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
-    let socket = std::sync::Arc::new(
-        crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
-            "127.0.0.1:0".parse().unwrap(),
-            peer_socket_addr,
-            1 << 20,
-            1 << 20,
-        )
-        .expect("connected peer socket"),
-    );
-    let (packet_tx, _packet_rx) = packet_channel(16);
-    let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
-        socket.clone(),
-        transport_id,
-        peer_socket_addr,
-        packet_tx,
-    )
-    .expect("connected peer drain");
+    let (socket, drain) = make_test_connected_udp_pair(transport_id);
     installed_peer.set_connected_udp(socket, drain);
     registry.insert_with_current_session_index(installed_addr, installed_peer);
 
@@ -2221,6 +2232,77 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
         plan.candidates,
         vec![configured_addr, discovered_addr],
         "configured peers should be activated before discovered peers, while stale and already-connected peers are skipped"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn peer_lifecycle_registry_owns_connected_udp_install_and_clear() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        LinkId::new(10),
+        TransportAddr::from_string("connected-udp-install"),
+        SessionIndex::new(10),
+        SessionIndex::new(11),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let (socket, drain) = make_test_connected_udp_pair(transport_id);
+    let installed = registry.install_connected_udp_if_eligible(&peer_addr, socket, drain);
+
+    assert_eq!(
+        installed,
+        ConnectedUdpInstallResult::Installed,
+        "lifecycle owner should install connected UDP only after eligibility recheck"
+    );
+    assert!(
+        registry
+            .get(&peer_addr)
+            .expect("active peer")
+            .connected_udp()
+            .is_some(),
+        "connected UDP socket should be visible through the active peer after lifecycle install"
+    );
+
+    let (second_socket, second_drain) = make_test_connected_udp_pair(transport_id);
+    assert_eq!(
+        registry.install_connected_udp_if_eligible(&peer_addr, second_socket, second_drain),
+        ConnectedUdpInstallResult::NotEligible,
+        "already-installed connected UDP peers must not get a replacement from the activation race path"
+    );
+
+    assert_eq!(
+        registry.clear_connected_udp_for_peer(&peer_addr),
+        ConnectedUdpClearResult::Cleared,
+        "lifecycle owner should clear an installed connected UDP socket/drain pair"
+    );
+    assert!(
+        registry
+            .get(&peer_addr)
+            .expect("active peer")
+            .connected_udp()
+            .is_none(),
+        "connected UDP socket should be gone after lifecycle clear"
+    );
+    assert_eq!(
+        registry.clear_connected_udp_for_peer(&peer_addr),
+        ConnectedUdpClearResult::AlreadyClear,
+        "clearing an already-clear peer should be idempotent"
+    );
+    assert_eq!(
+        registry.clear_connected_udp_for_peer(&NodeAddr::from_bytes([0x42; 16])),
+        ConnectedUdpClearResult::MissingPeer,
+        "clear should report when the peer lifecycle owner has no active peer"
     );
 }
 
@@ -2251,25 +2333,7 @@ fn peer_lifecycle_registry_owns_link_dead_direct_path_degradation() {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
-        let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
-        let socket = std::sync::Arc::new(
-            crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
-                "127.0.0.1:0".parse().unwrap(),
-                peer_socket_addr,
-                1 << 20,
-                1 << 20,
-            )
-            .expect("connected peer socket"),
-        );
-        let (packet_tx, _packet_rx) = packet_channel(16);
-        let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
-            socket.clone(),
-            transport_id,
-            peer_socket_addr,
-            packet_tx,
-        )
-        .expect("connected peer drain");
+        let (socket, drain) = make_test_connected_udp_pair(transport_id);
         active_peer.set_connected_udp(socket, drain);
         assert!(
             active_peer.connected_udp().is_some(),
