@@ -1479,6 +1479,52 @@ impl RecentDiscoveryRequests {
 /// Key for addr_to_link reverse lookup.
 type AddrKey = (TransportId, TransportAddr);
 
+/// Reverse index from `(transport, remote address)` to active/pending link.
+#[derive(Debug, Default)]
+pub(in crate::node) struct LinkAddressIndex {
+    entries: HashMap<AddrKey, LinkId>,
+}
+
+impl LinkAddressIndex {
+    pub(in crate::node) fn insert(&mut self, key: AddrKey, link_id: LinkId) -> Option<LinkId> {
+        self.entries.insert(key, link_id)
+    }
+
+    pub(in crate::node) fn remove(&mut self, key: &AddrKey) -> Option<LinkId> {
+        self.entries.remove(key)
+    }
+
+    pub(in crate::node) fn remove_if_points_to(&mut self, key: &AddrKey, link_id: &LinkId) -> bool {
+        if self.entries.get(key) == Some(link_id) {
+            self.entries.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(in crate::node) fn lookup(
+        &self,
+        transport_id: TransportId,
+        addr: &TransportAddr,
+    ) -> Option<LinkId> {
+        self.entries.get(&(transport_id, addr.clone())).copied()
+    }
+
+    pub(in crate::node) fn get(&self, key: &AddrKey) -> Option<&LinkId> {
+        self.entries.get(key)
+    }
+
+    pub(in crate::node) fn contains_key(&self, key: &AddrKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Per-transport kernel drop tracking for congestion detection.
 ///
 /// Sampled every tick (1s). The `dropping` flag indicates whether new
@@ -1802,7 +1848,7 @@ pub struct Node {
     /// Active links.
     links: HashMap<LinkId, Link>,
     /// Reverse lookup: (transport_id, remote_addr) -> link_id.
-    addr_to_link: HashMap<AddrKey, LinkId>,
+    addr_to_link: LinkAddressIndex,
 
     // === Packet Channel ===
     /// Packet sender for transports.
@@ -2111,7 +2157,7 @@ impl Node {
             transports: HashMap::new(),
             transport_drops: TransportDropTracker::default(),
             links: HashMap::new(),
-            addr_to_link: HashMap::new(),
+            addr_to_link: LinkAddressIndex::default(),
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
@@ -2257,7 +2303,7 @@ impl Node {
             transports: HashMap::new(),
             transport_drops: TransportDropTracker::default(),
             links: HashMap::new(),
-            addr_to_link: HashMap::new(),
+            addr_to_link: LinkAddressIndex::default(),
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
@@ -3241,9 +3287,7 @@ impl Node {
         transport_id: TransportId,
         addr: &TransportAddr,
     ) -> Option<LinkId> {
-        self.addr_to_link
-            .get(&(transport_id, addr.clone()))
-            .copied()
+        self.addr_to_link.lookup(transport_id, addr)
     }
 
     /// Remove a link.
@@ -3253,11 +3297,8 @@ impl Node {
     /// entry for the same address.
     pub fn remove_link(&mut self, link_id: &LinkId) -> Option<Link> {
         if let Some(link) = self.links.remove(link_id) {
-            // Clean up reverse lookup only if it still maps to this link
             let key = (link.transport_id(), link.remote_addr().clone());
-            if self.addr_to_link.get(&key) == Some(link_id) {
-                self.addr_to_link.remove(&key);
-            }
+            self.addr_to_link.remove_if_points_to(&key, link_id);
             Some(link)
         } else {
             None

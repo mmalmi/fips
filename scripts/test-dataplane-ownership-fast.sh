@@ -9,6 +9,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_DOCKER=1
 RUN_RELEASE_CHECK=1
+BATCH_DEFAULTS=1
 
 DEFAULT_LOCAL_FILTERS=(
   decrypt_job_owns_lane_selected_at_construction
@@ -32,6 +33,7 @@ DEFAULT_LOCAL_FILTERS=(
   bootstrap_transports_own_membership_peer_npub_and_cleanup
   transport_drop_tracker_owns_rising_edge_state_and_cleanup
   pending_outbound_handshakes_own_msg2_index_matching_and_cleanup
+  link_address_index_owns_lookup_replace_and_stale_safe_remove
   session_index_registry_owns_lookup_replace_remove_and_peer_membership
   decrypt_session_registrations_own_worker_acceptance_and_unregister_gate
   identity_cache_owns_prefix_validation_lru_touch_and_lookup_views
@@ -70,6 +72,7 @@ DEFAULT_LINUX_FILTERS=(
   bootstrap_transports_own_membership_peer_npub_and_cleanup
   transport_drop_tracker_owns_rising_edge_state_and_cleanup
   pending_outbound_handshakes_own_msg2_index_matching_and_cleanup
+  link_address_index_owns_lookup_replace_and_stale_safe_remove
   session_index_registry_owns_lookup_replace_remove_and_peer_membership
   decrypt_session_registrations_own_worker_acceptance_and_unregister_gate
   identity_cache_owns_prefix_validation_lru_touch_and_lookup_views
@@ -102,6 +105,7 @@ Fast validation tier for pure dataplane ownership/type-boundary changes.
 Options:
   --skip-docker           Do not run the focused Linux Docker slice.
   --skip-release-check    Do not run cargo check -p fips-core --release.
+  --no-batch-defaults     Run every default filter separately.
   --local-filter FILTER   Add a local cargo test filter.
   --linux-filter FILTER   Add a Linux Docker cargo test filter.
   -h, --help              Show this help.
@@ -118,6 +122,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --skip-release-check)
       RUN_RELEASE_CHECK=0
+      shift
+      ;;
+    --no-batch-defaults)
+      BATCH_DEFAULTS=0
       shift
       ;;
     --local-filter)
@@ -164,14 +172,26 @@ if [[ "${#POSITIONAL_FILTERS[@]}" -gt 0 ]]; then
   LINUX_FILTERS=("${POSITIONAL_FILTERS[@]}")
 else
   if [[ "${#LOCAL_FILTERS[@]}" -eq 0 ]]; then
-    LOCAL_FILTERS=("${DEFAULT_LOCAL_FILTERS[@]}")
+    if [[ "$BATCH_DEFAULTS" -eq 1 ]]; then
+      LOCAL_FILTERS=("_own" "mac_queue_tests")
+    else
+      LOCAL_FILTERS=("${DEFAULT_LOCAL_FILTERS[@]}")
+    fi
   fi
   if [[ "${#LINUX_FILTERS[@]}" -eq 0 ]]; then
-    LINUX_FILTERS=("${DEFAULT_LINUX_FILTERS[@]}")
+    if [[ "$BATCH_DEFAULTS" -eq 1 ]]; then
+      LINUX_FILTERS=("_own" "fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue")
+    else
+      LINUX_FILTERS=("${DEFAULT_LINUX_FILTERS[@]}")
+    fi
   fi
 fi
 
 cd "$ROOT_DIR"
+
+if [[ "$BATCH_DEFAULTS" -eq 1 && "${#POSITIONAL_FILTERS[@]}" -eq 0 ]]; then
+  echo "--- batching default ownership filters via broad cargo test patterns ---"
+fi
 
 echo "--- cargo fmt --check ---"
 cargo fmt --check

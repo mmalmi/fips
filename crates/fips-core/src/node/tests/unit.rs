@@ -1505,6 +1505,35 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     );
 }
 
+#[test]
+fn link_address_index_owns_lookup_replace_and_stale_safe_remove() {
+    let transport_id = TransportId::new(1);
+    let addr = TransportAddr::from_string("127.0.0.1:7000");
+    let key = (transport_id, addr.clone());
+    let first_link = LinkId::new(10);
+    let winning_link = LinkId::new(11);
+
+    let mut index = LinkAddressIndex::default();
+
+    assert_eq!(index.insert(key.clone(), first_link), None);
+    assert_eq!(index.lookup(transport_id, &addr), Some(first_link));
+
+    assert_eq!(
+        index.insert(key.clone(), winning_link),
+        Some(first_link),
+        "replacement must report the stale owner for cross-connection cleanup"
+    );
+    assert!(
+        !index.remove_if_points_to(&key, &first_link),
+        "stale loser cleanup must not delete a newer winner's route entry"
+    );
+    assert_eq!(index.lookup(transport_id, &addr), Some(winning_link));
+
+    assert!(index.remove_if_points_to(&key, &winning_link));
+    assert_eq!(index.lookup(transport_id, &addr), None);
+    assert!(index.is_empty());
+}
+
 #[tokio::test]
 async fn test_node_rx_loop_requires_start() {
     let mut node = make_node();
