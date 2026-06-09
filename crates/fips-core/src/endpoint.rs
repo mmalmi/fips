@@ -871,8 +871,24 @@ mod tests {
 
         let (owned_remote, owned_payload, owned_queued_at) = command.into_parts();
         assert_eq!(owned_remote, remote);
-        assert_eq!(owned_payload, payload);
+        assert_eq!(owned_payload.as_slice(), payload.as_slice());
+        assert_eq!(owned_payload.lane(), EndpointCommandLane::Bulk);
         assert_eq!(owned_queued_at, queued_at);
+    }
+
+    #[test]
+    fn endpoint_data_payload_owns_drop_policy_selected_at_construction() {
+        let tcp_ack = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x10, 0));
+        assert_eq!(tcp_ack.lane(), EndpointCommandLane::Priority);
+        assert!(!tcp_ack.drop_on_backpressure());
+
+        let tcp_bulk = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
+        assert_eq!(tcp_bulk.lane(), EndpointCommandLane::Bulk);
+        assert!(!tcp_bulk.drop_on_backpressure());
+
+        let opaque_bulk = crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]);
+        assert_eq!(opaque_bulk.lane(), EndpointCommandLane::Bulk);
+        assert!(opaque_bulk.drop_on_backpressure());
     }
 
     #[tokio::test]

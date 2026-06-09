@@ -9,8 +9,6 @@ use crate::NodeAddr;
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
-#[cfg(unix)]
-use crate::node::classify_endpoint_payload;
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -23,8 +21,8 @@ use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
 use crate::node::{
-    EndpointSendCommand, Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
-    NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    EndpointDataPayload, EndpointSendCommand, Node, NodeEndpointCommand, NodeEndpointEvent,
+    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
     SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
@@ -89,7 +87,7 @@ enum FspFrameOutcome {
 #[cfg_attr(not(unix), allow(dead_code))]
 struct PipelinedEndpointSend<'a> {
     dest_addr: &'a NodeAddr,
-    payload: &'a [u8],
+    payload: &'a EndpointDataPayload,
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
@@ -2187,13 +2185,23 @@ impl Node {
             queued_at,
         );
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-        self.send_endpoint_data(remote, payload).await
+        self.send_endpoint_data_payload(remote, payload).await
     }
 
-    pub(in crate::node) async fn send_endpoint_data(
+    #[cfg(test)]
+    pub(crate) async fn send_endpoint_data(
         &mut self,
         remote: crate::PeerIdentity,
         payload: Vec<u8>,
+    ) -> Result<(), NodeError> {
+        self.send_endpoint_data_payload(remote, EndpointDataPayload::new(payload))
+            .await
+    }
+
+    async fn send_endpoint_data_payload(
+        &mut self,
+        remote: crate::PeerIdentity,
+        payload: EndpointDataPayload,
     ) -> Result<(), NodeError> {
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
@@ -2206,7 +2214,7 @@ impl Node {
         &mut self,
         dest_addr: NodeAddr,
         dest_pubkey: Option<PublicKey>,
-        payload: Vec<u8>,
+        payload: EndpointDataPayload,
     ) -> Result<(), NodeError> {
         if let Some(entry) = self.sessions.get(&dest_addr) {
             if entry.is_established() {
@@ -2274,7 +2282,7 @@ impl Node {
     async fn send_session_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
-        payload: &[u8],
+        payload: &EndpointDataPayload,
     ) -> Result<(), NodeError> {
         if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
@@ -2304,7 +2312,8 @@ impl Node {
 
         let msg_type = SessionMessageType::EndpointData.to_byte();
         let inner_flags = FspInnerFlags { spin_bit }.to_byte();
-        let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
+        let inner_plaintext =
+            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload.as_slice());
 
         let (include_coords, my_coords, dest_coords) = if wants_coords {
             let src = self.tree_state.my_coords().clone();
@@ -2602,13 +2611,12 @@ impl Node {
         }
         let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
-        let endpoint_class = classify_endpoint_payload(send.payload);
         let bulk_endpoint_data =
-            send.fsp_flags & FSP_FLAG_CP == 0 && endpoint_class.bulk_endpoint_data;
+            send.fsp_flags & FSP_FLAG_CP == 0 && send.payload.bulk_endpoint_data();
         let drop_on_backpressure = next_hop_addr == *dest_addr
             && !self.session_direct_path_blocks_direct_payload(dest_addr, send.now_ms)
             && bulk_endpoint_data
-            && endpoint_class.drop_on_backpressure;
+            && send.payload.drop_on_backpressure();
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
             cipher: fmp_cipher,
@@ -3099,7 +3107,11 @@ impl Node {
     }
 
     /// Queue endpoint data while waiting for session establishment.
-    fn queue_pending_endpoint_data(&mut self, dest_addr: NodeAddr, payload: Vec<u8>) {
+    fn queue_pending_endpoint_data(
+        &mut self,
+        dest_addr: NodeAddr,
+        payload: impl Into<EndpointDataPayload>,
+    ) {
         let max_dests = self.config.node.session.pending_max_destinations;
         if !self.pending_endpoint_data.contains_key(&dest_addr)
             && self.pending_endpoint_data.len() >= max_dests
@@ -3117,7 +3129,7 @@ impl Node {
                 crate::perf_profile::Event::PendingEndpointPacketDropped,
             );
         }
-        queue.push_back(payload);
+        queue.push_back(payload.into());
     }
 
     /// Flush pending packets for a destination whose session just reached Established.
@@ -3234,7 +3246,7 @@ mod pending_queue_tests {
             .get(&endpoint_dest)
             .expect("endpoint queue")
             .iter()
-            .cloned()
+            .map(|payload| payload.as_slice().to_vec())
             .collect();
         assert_eq!(endpoint_payloads, vec![vec![5], vec![6]]);
     }

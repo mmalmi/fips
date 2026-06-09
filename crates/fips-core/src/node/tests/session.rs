@@ -3013,7 +3013,7 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .pending_endpoint_data
         .entry(dest_addr)
         .or_default()
-        .push_back(b"queued".to_vec());
+        .push_back(crate::node::EndpointDataPayload::new(b"queued".to_vec()));
 
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     nodes[0]

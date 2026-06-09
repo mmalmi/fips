@@ -169,15 +169,64 @@ fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
     !classify_endpoint_payload(payload).bulk_endpoint_data
 }
 
+#[cfg(test)]
 pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointCommandLane {
     if endpoint_payload_is_latency_sensitive(payload) {
         EndpointCommandLane::Priority
     } else {
         EndpointCommandLane::Bulk
+    }
+}
+
+/// Endpoint payload bytes plus the traffic policy selected at app ingress.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EndpointDataPayload {
+    bytes: Vec<u8>,
+    traffic_class: EndpointPayloadTrafficClass,
+}
+
+impl EndpointDataPayload {
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        let traffic_class = classify_endpoint_payload(&bytes);
+        Self {
+            bytes,
+            traffic_class,
+        }
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        if self.traffic_class.bulk_endpoint_data {
+            EndpointCommandLane::Bulk
+        } else {
+            EndpointCommandLane::Priority
+        }
+    }
+
+    pub(crate) fn bulk_endpoint_data(&self) -> bool {
+        self.traffic_class.bulk_endpoint_data
+    }
+
+    pub(crate) fn drop_on_backpressure(&self) -> bool {
+        self.traffic_class.drop_on_backpressure
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl From<Vec<u8>> for EndpointDataPayload {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
     }
 }
 
@@ -565,8 +614,7 @@ pub(crate) enum NodeEndpointCommand {
 #[derive(Debug)]
 pub(crate) struct EndpointSendCommand {
     remote: PeerIdentity,
-    payload: Vec<u8>,
-    lane: EndpointCommandLane,
+    payload: EndpointDataPayload,
     queued_at: Option<std::time::Instant>,
 }
 
@@ -576,20 +624,24 @@ impl EndpointSendCommand {
         payload: Vec<u8>,
         queued_at: Option<std::time::Instant>,
     ) -> Self {
-        let lane = endpoint_command_lane_for_payload(&payload);
         Self {
             remote,
-            payload,
-            lane,
+            payload: EndpointDataPayload::new(payload),
             queued_at,
         }
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
-        self.lane
+        self.payload.lane()
     }
 
-    pub(crate) fn into_parts(self) -> (PeerIdentity, Vec<u8>, Option<std::time::Instant>) {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PeerIdentity,
+        EndpointDataPayload,
+        Option<std::time::Instant>,
+    ) {
         (self.remote, self.payload, self.queued_at)
     }
 }
@@ -884,7 +936,7 @@ pub struct Node {
     /// Keyed by destination NodeAddr, bounded per-dest and total.
     pending_tun_packets: HashMap<NodeAddr, VecDeque<Vec<u8>>>,
     /// Endpoint data payloads queued while waiting for session establishment.
-    pending_endpoint_data: HashMap<NodeAddr, VecDeque<Vec<u8>>>,
+    pending_endpoint_data: HashMap<NodeAddr, VecDeque<EndpointDataPayload>>,
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups. Maps target NodeAddr to the
     /// initiation timestamp (Unix ms). Prevents duplicate flood queries.
