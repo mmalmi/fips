@@ -120,21 +120,15 @@ impl Node {
 
     fn mark_link_dead_peer_inner(&mut self, node_addr: &NodeAddr, preserve_queued_packets: bool) {
         let peer_name = self.peer_display_name(node_addr);
-        if !self.peers.contains_key(node_addr) {
-            debug!(peer = %peer_name, "Peer already removed");
-            return;
-        }
+        let degraded = match self.peers.mark_link_dead_direct_path(node_addr) {
+            Some(degraded) => degraded,
+            None => {
+                debug!(peer = %peer_name, "Peer already removed");
+                return;
+            }
+        };
 
         self.mark_session_direct_path_degraded(*node_addr, Self::now_ms());
-        let peer = self
-            .peers
-            .get_mut(node_addr)
-            .expect("peer existence checked before link-dead degradation");
-
-        let link_id = peer.link_id();
-        peer.mark_stale();
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        peer.clear_connected_udp();
 
         if !preserve_queued_packets {
             self.pending_session_traffic.remove_destination(node_addr);
@@ -142,8 +136,9 @@ impl Node {
 
         info!(
             peer = %peer_name,
-            link_id = %link_id,
+            link_id = %degraded.link_id,
             preserve_queued_packets,
+            connected_udp_cleared = degraded.connected_udp_cleared,
             "Peer direct path marked stale after link-dead timeout"
         );
     }

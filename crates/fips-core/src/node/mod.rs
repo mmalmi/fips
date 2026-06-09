@@ -1754,6 +1754,12 @@ pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
     pub(in crate::node) spin_rtt: Option<std::time::Duration>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct LinkDeadDirectPathDegradation {
+    pub(in crate::node) link_id: LinkId,
+    pub(in crate::node) connected_udp_cleared: bool,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -2196,6 +2202,32 @@ impl PeerLifecycleRegistry {
         }
 
         Some(result)
+    }
+
+    pub(in crate::node) fn mark_link_dead_direct_path(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> Option<LinkDeadDirectPathDegradation> {
+        let peer = self.active.get_mut(node_addr)?;
+        let link_id = peer.link_id();
+        peer.mark_stale();
+        let connected_udp_cleared = {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let had_connected_udp = peer.connected_udp().is_some();
+                peer.clear_connected_udp();
+                had_connected_udp
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                false
+            }
+        };
+
+        Some(LinkDeadDirectPathDegradation {
+            link_id,
+            connected_udp_cleared,
+        })
     }
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {

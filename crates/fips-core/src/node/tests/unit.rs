@@ -1919,6 +1919,98 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_link_dead_direct_path_degradation() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("link-dead-peer");
+    let current_our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        remote_addr,
+        current_our_index,
+        their_index,
+    );
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
+        let peer_socket_addr = peer_udp.local_addr().expect("peer udp local addr");
+        let socket = std::sync::Arc::new(
+            crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                peer_socket_addr,
+                1 << 20,
+                1 << 20,
+            )
+            .expect("connected peer socket"),
+        );
+        let (packet_tx, _packet_rx) = packet_channel(16);
+        let drain = crate::transport::udp::peer_drain::PeerRecvDrain::spawn(
+            socket.clone(),
+            transport_id,
+            peer_socket_addr,
+            packet_tx,
+        )
+        .expect("connected peer drain");
+        active_peer.set_connected_udp(socket, drain);
+        assert!(
+            active_peer.connected_udp().is_some(),
+            "fixture should start with connected UDP installed"
+        );
+    }
+
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let degraded = registry
+        .mark_link_dead_direct_path(&peer_addr)
+        .expect("link-dead degradation should find active peer");
+
+    assert_eq!(
+        degraded.link_id, link_id,
+        "lifecycle owner should return the degraded link for logging and cleanup"
+    );
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        degraded.connected_udp_cleared,
+        "link-dead degradation should clear connected UDP through the lifecycle owner"
+    );
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("link-dead degradation must keep active peer storage");
+    assert!(
+        peer.can_send(),
+        "stale direct paths remain probeable instead of becoming disconnected"
+    );
+    assert!(
+        !peer.is_healthy(),
+        "link-dead direct paths should no longer be healthy for payload routing"
+    );
+    assert_eq!(
+        peer.link_id(),
+        link_id,
+        "link-dead degradation should not swap peer link identity"
+    );
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        peer.connected_udp().is_none(),
+        "connected UDP socket/drain pair must not outlive stale direct-path evidence"
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_active_peer_teardown_session_indices() {
     let node = make_node();
     let peer_full = Identity::generate();
