@@ -3119,13 +3119,15 @@ impl Node {
         }
 
         let queue = self.pending_endpoint_data.entry(dest_addr).or_default();
-        if queue.len() >= self.config.node.session.pending_packets_per_dest {
-            queue.pop_front();
+        let admission = queue.push_bounded(
+            payload.into(),
+            self.config.node.session.pending_packets_per_dest,
+        );
+        if admission.dropped_oldest() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointPacketDropped,
             );
         }
-        queue.push_back(payload.into());
     }
 
     fn queue_pending_endpoint_send(&mut self, send: EndpointDataSend) {
@@ -3144,7 +3146,7 @@ impl Node {
         }
 
         if let Some(payloads) = self.pending_endpoint_data.remove(dest_addr) {
-            for payload in payloads {
+            for payload in payloads.into_payloads() {
                 if let Err(e) = self.send_session_endpoint_data(dest_addr, &payload).await {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
                     break;
@@ -3249,6 +3251,20 @@ mod pending_queue_tests {
             .map(|payload| payload.as_slice().to_vec())
             .collect();
         assert_eq!(endpoint_payloads, vec![vec![5], vec![6]]);
+    }
+
+    #[test]
+    fn pending_endpoint_data_queue_owns_drop_oldest_policy() {
+        let mut queue = crate::node::PendingEndpointDataQueue::default();
+        assert!(!queue.push_bounded(vec![1].into(), 2).dropped_oldest());
+        assert!(!queue.push_bounded(vec![2].into(), 2).dropped_oldest());
+        assert!(queue.push_bounded(vec![3].into(), 2).dropped_oldest());
+
+        let payloads: Vec<Vec<u8>> = queue
+            .iter()
+            .map(|payload| payload.as_slice().to_vec())
+            .collect();
+        assert_eq!(payloads, vec![vec![2], vec![3]]);
     }
 
     #[test]

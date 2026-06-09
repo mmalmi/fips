@@ -6036,10 +6036,13 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     );
     node.pending_tun_packets
         .insert(peer_addr, std::collections::VecDeque::from([vec![1, 2, 3]]));
-    node.pending_endpoint_data.insert(
-        peer_addr,
-        std::collections::VecDeque::from([crate::node::EndpointDataPayload::new(vec![4, 5, 6])]),
+    let mut endpoint_payloads = crate::node::PendingEndpointDataQueue::default();
+    endpoint_payloads.push_bounded(
+        crate::node::EndpointDataPayload::new(vec![4, 5, 6]),
+        usize::MAX,
     );
+    node.pending_endpoint_data
+        .insert(peer_addr, endpoint_payloads);
 
     node.check_link_heartbeats().await;
 
@@ -6071,7 +6074,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     assert_eq!(
         node.pending_endpoint_data
             .get(&peer_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "queued endpoint data should survive direct link teardown"
     );

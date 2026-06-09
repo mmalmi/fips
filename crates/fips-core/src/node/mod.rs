@@ -264,6 +264,52 @@ impl EndpointDataSend {
     }
 }
 
+/// Admission result for a bounded pending endpoint-data queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingEndpointDataQueueAdmission {
+    dropped_oldest: bool,
+}
+
+impl PendingEndpointDataQueueAdmission {
+    pub(crate) fn dropped_oldest(&self) -> bool {
+        self.dropped_oldest
+    }
+}
+
+/// Per-destination endpoint payloads waiting for session establishment.
+#[derive(Debug, Default)]
+pub(crate) struct PendingEndpointDataQueue {
+    payloads: VecDeque<EndpointDataPayload>,
+}
+
+impl PendingEndpointDataQueue {
+    pub(crate) fn push_bounded(
+        &mut self,
+        payload: EndpointDataPayload,
+        capacity: usize,
+    ) -> PendingEndpointDataQueueAdmission {
+        let dropped_oldest = self.payloads.len() >= capacity;
+        if dropped_oldest {
+            self.payloads.pop_front();
+        }
+        self.payloads.push_back(payload);
+        PendingEndpointDataQueueAdmission { dropped_oldest }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.payloads.len()
+    }
+
+    pub(crate) fn into_payloads(self) -> VecDeque<EndpointDataPayload> {
+        self.payloads
+    }
+
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &EndpointDataPayload> {
+        self.payloads.iter()
+    }
+}
+
 fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
     const TCP_MIN_HEADER_LEN: usize = 20;
     const TCP_FLAG_FIN: u8 = 0x01;
@@ -962,7 +1008,7 @@ pub struct Node {
     /// Keyed by destination NodeAddr, bounded per-dest and total.
     pending_tun_packets: HashMap<NodeAddr, VecDeque<Vec<u8>>>,
     /// Endpoint data payloads queued while waiting for session establishment.
-    pending_endpoint_data: HashMap<NodeAddr, VecDeque<EndpointDataPayload>>,
+    pending_endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups. Maps target NodeAddr to the
     /// initiation timestamp (Unix ms). Prevents duplicate flood queries.

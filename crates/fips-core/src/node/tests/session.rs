@@ -2040,7 +2040,7 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
     assert_eq!(
         node.pending_endpoint_data
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "endpoint payload should stay queued until the pending session recovers"
     );
@@ -2076,7 +2076,7 @@ async fn test_endpoint_data_for_established_session_with_no_route_queues_and_dis
     assert_eq!(
         node.pending_endpoint_data
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         Some(1),
         "endpoint payload should stay queued while fallback discovery repairs the route"
     );
@@ -3013,7 +3013,10 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .pending_endpoint_data
         .entry(dest_addr)
         .or_default()
-        .push_back(crate::node::EndpointDataPayload::new(b"queued".to_vec()));
+        .push_bounded(
+            crate::node::EndpointDataPayload::new(b"queued".to_vec()),
+            usize::MAX,
+        );
 
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     nodes[0]
@@ -3093,7 +3096,7 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
             .node
             .pending_endpoint_data
             .get(&dest_addr)
-            .map(std::collections::VecDeque::len),
+            .map(|queue| queue.len()),
         None,
         "fixture should not rely on queued endpoint payloads for fallback warmup"
     );
