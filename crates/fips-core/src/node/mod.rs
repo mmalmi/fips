@@ -1634,6 +1634,42 @@ impl DecryptSessionRegistrations {
     }
 }
 
+/// Send-scheduling policy derived from the configured peer roster.
+#[derive(Debug, Default)]
+pub(in crate::node) struct ConfiguredPeerSendWeights {
+    entries: HashMap<NodeAddr, u8>,
+}
+
+impl ConfiguredPeerSendWeights {
+    pub(in crate::node) fn from_config(config: &Config) -> Self {
+        let entries = config
+            .peers()
+            .iter()
+            .filter_map(|peer| {
+                PeerIdentity::from_npub(&peer.npub).ok().map(|identity| {
+                    (
+                        *identity.node_addr(),
+                        encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
+                    )
+                })
+            })
+            .collect();
+        Self { entries }
+    }
+
+    pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
+        self.entries
+            .get(peer_addr)
+            .copied()
+            .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 /// Pending outbound FMP handshakes keyed by `(transport_id, our_index)`.
 #[derive(Debug, Default)]
 pub(in crate::node) struct PendingOutboundHandshakes {
@@ -1986,7 +2022,7 @@ pub struct Node {
     peer_aliases: HashMap<NodeAddr, String>,
     /// Scheduler weight for explicitly configured peers. Built when config
     /// changes so the packet hot path only does a NodeAddr hash lookup.
-    configured_peer_send_weights: HashMap<NodeAddr, u8>,
+    configured_peer_send_weights: ConfiguredPeerSendWeights,
 
     /// Reloadable peer ACL state from standard allow/deny files.
     peer_acl: acl::PeerAclReloader,
@@ -2057,7 +2093,7 @@ impl Node {
         let forward_min_interval_secs = config.node.discovery.forward_min_interval_secs;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
-        let configured_peer_send_weights = Self::configured_peer_send_weights(&config);
+        let configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&config);
 
         Ok(Self {
             identity,
@@ -2203,7 +2239,7 @@ impl Node {
         let coords_response_interval_ms = config.node.session.coords_response_interval_ms;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
-        let configured_peer_send_weights = Self::configured_peer_send_weights(&config);
+        let configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&config);
 
         Ok(Self {
             identity,
@@ -2326,27 +2362,9 @@ impl Node {
         (Arc::new(host_map), peer_acl)
     }
 
-    fn configured_peer_send_weights(config: &Config) -> HashMap<NodeAddr, u8> {
-        config
-            .peers()
-            .iter()
-            .filter_map(|peer| {
-                PeerIdentity::from_npub(&peer.npub).ok().map(|identity| {
-                    (
-                        *identity.node_addr(),
-                        encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
-                    )
-                })
-            })
-            .collect()
-    }
-
     #[cfg(unix)]
     fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
-        self.configured_peer_send_weights
-            .get(peer_addr)
-            .copied()
-            .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
+        self.configured_peer_send_weights.weight_for(peer_addr)
     }
 
     /// Create transport instances from configuration.

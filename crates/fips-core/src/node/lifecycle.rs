@@ -1,6 +1,6 @@
 //! Node lifecycle management: start, stop, and peer connection initiation.
 
-use super::{Node, NodeError, NodeState};
+use super::{ConfiguredPeerSendWeights, Node, NodeError, NodeState};
 use crate::config::{ConnectPolicy, NostrDiscoveryPolicy, PeerAddress, PeerConfig};
 use crate::discovery::nostr::{
     ADVERT_IDENTIFIER, ADVERT_VERSION, BootstrapEvent, MeshTraversalSignal, NostrDiscovery,
@@ -219,7 +219,7 @@ impl Node {
             .iter()
             .filter_map(|addr| new_by_addr.get(addr).cloned())
             .collect();
-        self.configured_peer_send_weights = Self::configured_peer_send_weights(&self.config);
+        self.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&self.config);
 
         for peer_config in added_configs {
             outcome.added += 1;
