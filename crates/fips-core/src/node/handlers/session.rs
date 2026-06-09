@@ -176,6 +176,10 @@ enum PipelinedEndpointSendPlanError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PipelinedEndpointRuntimeSendPlanError {
     SendPlan(PipelinedEndpointSendPlanError),
+    RoutePeerMismatch {
+        route_next_hop: NodeAddr,
+        peer_snapshot_addr: NodeAddr,
+    },
     FmpPayloadMismatch {
         prepared_payload_len: u16,
         plan_payload_len: u16,
@@ -473,6 +477,24 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
 
 #[cfg(unix)]
 impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
+    fn from_peer_route_snapshot(
+        route_plan: PipelinedEndpointRoutePlan,
+        send_plan: PipelinedEndpointSendPlan<'a>,
+        peer_route_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+    ) -> Result<Self, PipelinedEndpointRuntimeSendPlanError> {
+        let peer_snapshot_addr = peer_route_snapshot.node_addr();
+        if route_plan.next_hop_addr != peer_snapshot_addr {
+            return Err(PipelinedEndpointRuntimeSendPlanError::RoutePeerMismatch {
+                route_next_hop: route_plan.next_hop_addr,
+                peer_snapshot_addr,
+            });
+        }
+
+        let peer_snapshot =
+            peer_route_snapshot.prepare_send_snapshot(false, send_plan.fmp_payload_len());
+        Self::from_parts(route_plan, send_plan, peer_snapshot)
+    }
+
     fn from_parts(
         route_plan: PipelinedEndpointRoutePlan,
         send_plan: PipelinedEndpointSendPlan<'a>,
@@ -3050,6 +3072,16 @@ impl Node {
                 node_addr: dest_addr,
                 reason: "endpoint FSP payload too large".into(),
             },
+            PipelinedEndpointRuntimeSendPlanError::RoutePeerMismatch {
+                route_next_hop,
+                peer_snapshot_addr,
+            } => NodeError::SendFailed {
+                node_addr: next_hop_addr,
+                reason: format!(
+                    "pipelined route peer mismatch: route {} peer snapshot {}",
+                    route_next_hop, peer_snapshot_addr
+                ),
+            },
             PipelinedEndpointRuntimeSendPlanError::FmpPayloadMismatch {
                 prepared_payload_len,
                 plan_payload_len,
@@ -3121,18 +3153,18 @@ impl Node {
                 PipelinedEndpointRuntimeSendPlanError::SendPlan(error),
             )
         })?;
-        let peer_snapshot =
-            peer_route_snapshot.prepare_send_snapshot(false, send_plan.fmp_payload_len());
-
-        PipelinedEndpointRuntimeSendPlan::from_parts(route_plan, send_plan, peer_snapshot).map_err(
-            |error| {
-                Self::map_pipelined_endpoint_runtime_send_plan_error(
-                    *send.dest_addr,
-                    route_plan.next_hop_addr,
-                    error,
-                )
-            },
+        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            route_plan,
+            send_plan,
+            peer_route_snapshot,
         )
+        .map_err(|error| {
+            Self::map_pipelined_endpoint_runtime_send_plan_error(
+                *send.dest_addr,
+                route_plan.next_hop_addr,
+                error,
+            )
+        })
     }
 
     #[cfg(unix)]
@@ -4563,6 +4595,89 @@ mod tests {
                 plan_payload_len,
             }) if prepared_payload_len == fmp_payload_len - 1
                 && plan_payload_len == fmp_payload_len
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipelined_endpoint_runtime_send_plan_owns_peer_route_snapshot_handoff() {
+        use crate::node::wire::FLAG_SP;
+        use crate::transport::{TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let source_addr = node_addr(0x10);
+        let dest_addr = node_addr(0x20);
+        let next_hop_addr = node_addr(0x30);
+        let other_next_hop_addr = node_addr(0x31);
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: FSP_FLAG_K,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+        let route = PipelinedEndpointRoutePlan::new(source_addr, next_hop_addr, 1234, 9, 7, false);
+        let plan = route
+            .build_send_plan(&send)
+            .expect("route plan should build send plan");
+        let fmp_payload_len = plan.fmp_payload_len();
+        let transport_id = TransportId::new(0x55);
+        let remote_addr = TransportAddr::from_string("127.0.0.1:9");
+        let route_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            next_hop_addr,
+            SessionIndex::new(0xA0B0_C0D0),
+            transport_id,
+            remote_addr.clone(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            FLAG_SP,
+            true,
+        );
+
+        let runtime =
+            PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(route, plan, route_snapshot)
+                .expect("route snapshot should form runtime plan for the same next hop");
+
+        assert_eq!(runtime.next_hop_addr(), next_hop_addr);
+        assert_eq!(runtime.transport_id(), transport_id);
+        assert_eq!(runtime.fmp_payload_len(), fmp_payload_len);
+        assert_eq!(runtime.fmp_prepared().remote_addr, remote_addr);
+        assert_eq!(runtime.fmp_prepared().flags, FLAG_SP);
+        assert_eq!(runtime.fmp_prepared().timestamp_ms, 0x0102_0304);
+        assert!(
+            runtime.fmp_worker_send_available(),
+            "runtime plan should carry worker availability derived from route snapshot"
+        );
+
+        let (route, plan) = runtime.into_parts_for_test();
+        let mismatched_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            other_next_hop_addr,
+            SessionIndex::new(0xA0B0_C0D0),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:10"),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            FLAG_SP,
+            true,
+        );
+        assert!(matches!(
+            PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+                route,
+                plan,
+                mismatched_snapshot,
+            ),
+            Err(PipelinedEndpointRuntimeSendPlanError::RoutePeerMismatch {
+                route_next_hop,
+                peer_snapshot_addr,
+            }) if route_next_hop == next_hop_addr
+                && peer_snapshot_addr == other_next_hop_addr
         ));
     }
 
