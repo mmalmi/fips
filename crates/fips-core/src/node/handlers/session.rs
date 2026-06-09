@@ -166,6 +166,16 @@ struct PipelinedEndpointRoutePlan {
 }
 
 #[cfg(unix)]
+struct PipelinedEndpointPeerRuntimeRoute {
+    source_addr: NodeAddr,
+    peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+    path_mtu: u16,
+    default_ttl: u8,
+    scheduling_weight: u8,
+    direct_path_blocks_direct_payload: bool,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PipelinedEndpointSendPlanError {
     FmpPayloadTooLarge,
@@ -382,6 +392,67 @@ impl PipelinedEndpointRoutePlan {
 }
 
 #[cfg(unix)]
+impl PipelinedEndpointPeerRuntimeRoute {
+    fn new(
+        source_addr: NodeAddr,
+        peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+        path_mtu: u16,
+        default_ttl: u8,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+    ) -> Self {
+        Self {
+            source_addr,
+            peer_snapshot,
+            path_mtu,
+            default_ttl,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        }
+    }
+
+    fn next_hop_addr(&self) -> NodeAddr {
+        self.peer_snapshot.node_addr()
+    }
+
+    #[cfg(test)]
+    fn path_mtu(&self) -> u16 {
+        self.path_mtu
+    }
+
+    #[cfg(test)]
+    fn scheduling_weight(&self) -> u8 {
+        self.scheduling_weight
+    }
+
+    fn route_plan(&self) -> PipelinedEndpointRoutePlan {
+        PipelinedEndpointRoutePlan::new(
+            self.source_addr,
+            self.peer_snapshot.node_addr(),
+            self.path_mtu,
+            self.default_ttl,
+            self.scheduling_weight,
+            self.direct_path_blocks_direct_payload,
+        )
+    }
+
+    fn into_runtime_send_plan<'a>(
+        self,
+        send: &PipelinedEndpointSend<'a>,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        let route_plan = self.route_plan();
+        let send_plan = route_plan
+            .build_send_plan(send)
+            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
+        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            route_plan,
+            send_plan,
+            self.peer_snapshot,
+        )
+    }
+}
+
+#[cfg(unix)]
 impl<'a> PipelinedEndpointSendPlan<'a> {
     fn new(
         source_addr: &NodeAddr,
@@ -540,6 +611,16 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
 
     fn fsp_reservation_input(&self) -> crate::node::FspWorkerSendReservationInput {
         self.send_plan.fsp_reservation_input()
+    }
+
+    #[cfg(test)]
+    fn drop_on_backpressure(&self) -> bool {
+        self.send_plan.dispatch_plan.drop_on_backpressure
+    }
+
+    #[cfg(test)]
+    fn scheduling_weight(&self) -> u8 {
+        self.send_plan.dispatch_plan.scheduling_weight
     }
 
     fn fmp_prepared(&self) -> &crate::node::FmpSendPreparation {
@@ -3114,27 +3195,28 @@ impl Node {
     }
 
     #[cfg(unix)]
-    fn pipelined_endpoint_route_plan(
+    fn prepare_pipelined_endpoint_peer_runtime_route(
         &mut self,
         dest_addr: &NodeAddr,
         now_ms: u64,
-        peer_snapshot: &crate::node::PeerRuntimeRouteSnapshot,
-    ) -> PipelinedEndpointRoutePlan {
+    ) -> Result<PipelinedEndpointPeerRuntimeRoute, NodeError> {
+        let peer_snapshot =
+            self.prepare_pipelined_endpoint_peer_runtime_route_snapshot(dest_addr)?;
         let next_hop_addr = peer_snapshot.node_addr();
         let mut path_mtu = u16::MAX;
         if let Some(transport) = self.transports.get(&peer_snapshot.transport_id()) {
             path_mtu = path_mtu.min(peer_snapshot.path_mtu(transport));
         }
 
-        PipelinedEndpointRoutePlan::new(
+        Ok(PipelinedEndpointPeerRuntimeRoute::new(
             *self.node_addr(),
-            next_hop_addr,
+            peer_snapshot,
             path_mtu,
             self.config.node.session.default_ttl,
             self.send_weight_for_peer(&next_hop_addr),
             next_hop_addr == *dest_addr
                 && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms),
-        )
+        ))
     }
 
     #[cfg(unix)]
@@ -3142,29 +3224,18 @@ impl Node {
         &mut self,
         send: &PipelinedEndpointSend<'a>,
     ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, NodeError> {
-        let peer_route_snapshot =
-            self.prepare_pipelined_endpoint_peer_runtime_route_snapshot(send.dest_addr)?;
-        let route_plan =
-            self.pipelined_endpoint_route_plan(send.dest_addr, send.now_ms, &peer_route_snapshot);
-        let send_plan = route_plan.build_send_plan(send).map_err(|error| {
-            Self::map_pipelined_endpoint_runtime_send_plan_error(
-                *send.dest_addr,
-                route_plan.next_hop_addr,
-                PipelinedEndpointRuntimeSendPlanError::SendPlan(error),
-            )
-        })?;
-        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
-            route_plan,
-            send_plan,
-            peer_route_snapshot,
-        )
-        .map_err(|error| {
-            Self::map_pipelined_endpoint_runtime_send_plan_error(
-                *send.dest_addr,
-                route_plan.next_hop_addr,
-                error,
-            )
-        })
+        let peer_runtime_route =
+            self.prepare_pipelined_endpoint_peer_runtime_route(send.dest_addr, send.now_ms)?;
+        let next_hop_addr = peer_runtime_route.next_hop_addr();
+        peer_runtime_route
+            .into_runtime_send_plan(send)
+            .map_err(|error| {
+                Self::map_pipelined_endpoint_runtime_send_plan_error(
+                    *send.dest_addr,
+                    next_hop_addr,
+                    error,
+                )
+            })
     }
 
     #[cfg(unix)]
@@ -4679,6 +4750,97 @@ mod tests {
             }) if route_next_hop == next_hop_addr
                 && peer_snapshot_addr == other_next_hop_addr
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipelined_endpoint_peer_runtime_route_owns_snapshot_route_policy_and_send_plan() {
+        use crate::node::wire::FLAG_SP;
+        use crate::transport::{TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let source_addr = node_addr(0x10);
+        let dest_addr = node_addr(0x20);
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let transport_id = TransportId::new(0x55);
+        let route_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            dest_addr,
+            SessionIndex::new(0xA0B0_C0D0),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:9"),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            FLAG_SP,
+            true,
+        );
+        let runtime_route =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false);
+        assert_eq!(runtime_route.next_hop_addr(), dest_addr);
+        assert_eq!(runtime_route.path_mtu(), 1234);
+        assert_eq!(runtime_route.scheduling_weight(), 7);
+
+        let runtime = runtime_route
+            .into_runtime_send_plan(&send)
+            .expect("peer runtime route owner should build the runtime send plan");
+
+        assert_eq!(runtime.source_addr(), source_addr);
+        assert_eq!(runtime.dest_addr(), dest_addr);
+        assert_eq!(runtime.next_hop_addr(), dest_addr);
+        assert_eq!(runtime.transport_id(), transport_id);
+        assert_eq!(runtime.fmp_prepared().flags, FLAG_SP);
+        assert!(runtime.fmp_worker_send_available());
+        assert_eq!(
+            runtime.fsp_reservation_input(),
+            crate::node::FspWorkerSendReservationInput {
+                flags: 0,
+                payload_len: inner_plaintext.len() as u16,
+                path_mtu: 1234,
+            }
+        );
+        assert!(
+            runtime.drop_on_backpressure(),
+            "direct bulk endpoint traffic should keep explicit bulk-drop policy"
+        );
+        assert_eq!(runtime.scheduling_weight(), 7);
+
+        let degraded_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            dest_addr,
+            SessionIndex::new(0xA0B0_C0D0),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:9"),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            FLAG_SP,
+            true,
+        );
+        let degraded_runtime = PipelinedEndpointPeerRuntimeRoute::new(
+            source_addr,
+            degraded_snapshot,
+            1234,
+            9,
+            7,
+            true,
+        )
+        .into_runtime_send_plan(&send)
+        .expect("degraded direct route should still build runtime send plan");
+        assert!(
+            !degraded_runtime.drop_on_backpressure(),
+            "blocked direct payload routes must not silently use bulk-drop policy"
+        );
     }
 
     #[cfg(unix)]
