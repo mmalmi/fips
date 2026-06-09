@@ -63,7 +63,7 @@ impl Node {
 
         // O(1) session lookup by our receiver index
         let key = (packet.transport_id, header.receiver_idx.as_u32());
-        let node_addr = match self.peers_by_index.lookup(key) {
+        let node_addr = match self.peers.lookup_session_index(key) {
             Some(id) => id,
             None => {
                 trace!(

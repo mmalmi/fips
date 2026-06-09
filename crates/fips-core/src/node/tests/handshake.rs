@@ -117,9 +117,9 @@ async fn test_two_node_handshake_udp() {
     let our_index_b = peer_a_on_b.our_index().expect("B should have our_index");
     assert!(
         node_b
-            .peers_by_index
-            .contains_key(&(transport_id_b, our_index_b.as_u32())),
-        "Node B peers_by_index should be populated"
+            .peers
+            .contains_session_index(&(transport_id_b, our_index_b.as_u32())),
+        "Node B active peer registry session-index dispatch should be populated"
     );
 
     // === Phase 3: Node A receives msg2, completes handshake, promotes ===
@@ -151,9 +151,9 @@ async fn test_two_node_handshake_udp() {
     );
     assert!(
         node_a
-            .peers_by_index
-            .contains_key(&(transport_id_a, our_index_a.as_u32())),
-        "Node A peers_by_index should be populated"
+            .peers
+            .contains_session_index(&(transport_id_a, our_index_a.as_u32())),
+        "Node A active peer registry session-index dispatch should be populated"
     );
 
     // === Phase 4: Encrypted frame A → B ===
@@ -368,9 +368,9 @@ async fn test_run_rx_loop_handshake() {
     );
     assert!(
         node_b
-            .peers_by_index
-            .contains_key(&(transport_id_b, our_index_b.as_u32())),
-        "Node B peers_by_index should be populated"
+            .peers
+            .contains_session_index(&(transport_id_b, our_index_b.as_u32())),
+        "Node B active peer registry session-index dispatch should be populated"
     );
 
     // === Phase 3: Run Node A's rx loop (processes msg2) ===
@@ -411,9 +411,9 @@ async fn test_run_rx_loop_handshake() {
     );
     assert!(
         node_a
-            .peers_by_index
-            .contains_key(&(transport_id_a, our_index_a.as_u32())),
-        "Node A peers_by_index should be populated"
+            .peers
+            .contains_session_index(&(transport_id_a, our_index_a.as_u32())),
+        "Node A active peer registry session-index dispatch should be populated"
     );
 
     // Clean up transports

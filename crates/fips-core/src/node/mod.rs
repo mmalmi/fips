@@ -1736,6 +1736,116 @@ impl SessionIndexRegistry {
     }
 }
 
+/// Active peer storage plus receiver-index dispatch.
+#[derive(Debug, Default)]
+pub(in crate::node) struct ActivePeerRegistry {
+    peers: HashMap<NodeAddr, ActivePeer>,
+    by_session_index: SessionIndexRegistry,
+}
+
+impl ActivePeerRegistry {
+    pub(in crate::node) fn insert(
+        &mut self,
+        node_addr: NodeAddr,
+        peer: ActivePeer,
+    ) -> Option<ActivePeer> {
+        debug_assert_eq!(&node_addr, peer.node_addr());
+        self.peers.insert(node_addr, peer)
+    }
+
+    pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
+        self.peers.remove(node_addr)
+    }
+
+    pub(in crate::node) fn get(&self, node_addr: &NodeAddr) -> Option<&ActivePeer> {
+        self.peers.get(node_addr)
+    }
+
+    pub(in crate::node) fn get_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
+        self.peers.get_mut(node_addr)
+    }
+
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.peers.contains_key(node_addr)
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.peers.len()
+    }
+
+    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &ActivePeer> {
+        self.peers.values()
+    }
+
+    pub(in crate::node) fn values_mut(&mut self) -> impl Iterator<Item = &mut ActivePeer> {
+        self.peers.values_mut()
+    }
+
+    pub(in crate::node) fn keys(&self) -> impl Iterator<Item = &NodeAddr> {
+        self.peers.keys()
+    }
+
+    pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&NodeAddr, &ActivePeer)> {
+        self.peers.iter()
+    }
+
+    pub(in crate::node) fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&NodeAddr, &mut ActivePeer)> {
+        self.peers.iter_mut()
+    }
+
+    pub(in crate::node) fn insert_session_index(
+        &mut self,
+        key: (TransportId, u32),
+        node_addr: NodeAddr,
+    ) -> Option<NodeAddr> {
+        self.by_session_index.insert(key, node_addr)
+    }
+
+    pub(in crate::node) fn remove_session_index(
+        &mut self,
+        key: &(TransportId, u32),
+    ) -> Option<NodeAddr> {
+        self.by_session_index.remove(key)
+    }
+
+    pub(in crate::node) fn lookup_session_index(
+        &self,
+        key: (TransportId, u32),
+    ) -> Option<NodeAddr> {
+        self.by_session_index.lookup(key)
+    }
+
+    pub(in crate::node) fn peer_has_any_session_index(&self, node_addr: &NodeAddr) -> bool {
+        self.by_session_index.peer_has_any_index(node_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn get_session_index(&self, key: &(TransportId, u32)) -> Option<&NodeAddr> {
+        self.by_session_index.get(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_session_index(&self, key: &(TransportId, u32)) -> bool {
+        self.by_session_index.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn session_index_is_empty(&self) -> bool {
+        self.by_session_index.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a ActivePeerRegistry {
+    type Item = (&'a NodeAddr, &'a ActivePeer);
+    type IntoIter = std::collections::hash_map::Iter<'a, NodeAddr, ActivePeer>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.peers.iter()
+    }
+}
+
 /// Rx-loop mirror of sessions accepted by decrypt-worker shards.
 #[derive(Debug, Default)]
 pub(in crate::node) struct DecryptSessionRegistrations {
@@ -1952,9 +2062,8 @@ pub struct Node {
     connections: HashMap<LinkId, PeerConnection>,
 
     // === Peers (Active Phase) ===
-    /// Authenticated peers.
-    /// Indexed by NodeAddr (verified identity).
-    peers: HashMap<NodeAddr, ActivePeer>,
+    /// Authenticated peers plus active receiver-index dispatch.
+    peers: ActivePeerRegistry,
 
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
@@ -2053,9 +2162,6 @@ pub struct Node {
     // === Index-Based Session Dispatch ===
     /// Allocator for session indices.
     index_allocator: IndexAllocator,
-    /// O(1) lookup: (transport_id, our_index) → NodeAddr.
-    /// This maps our session index to the peer that uses it.
-    peers_by_index: SessionIndexRegistry,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: PendingOutboundHandshakes,
@@ -2250,7 +2356,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
-            peers: HashMap::new(),
+            peers: ActivePeerRegistry::default(),
             sessions: HashMap::new(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
@@ -2282,7 +2388,6 @@ impl Node {
             dns_identity_rx: None,
             dns_task: None,
             index_allocator: IndexAllocator::new(),
-            peers_by_index: SessionIndexRegistry::default(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -2395,7 +2500,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
-            peers: HashMap::new(),
+            peers: ActivePeerRegistry::default(),
             sessions: HashMap::new(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
@@ -2427,7 +2532,6 @@ impl Node {
             dns_identity_rx: None,
             dns_task: None,
             index_allocator: IndexAllocator::new(),
-            peers_by_index: SessionIndexRegistry::default(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -2826,12 +2930,12 @@ impl Node {
         addr.short_hex()
     }
 
-    /// Tear down a `peers_by_index` entry **and** keep the shard-owned
+    /// Tear down a receiver-index entry **and** keep the shard-owned
     /// decrypt-worker state coherent: removes the same `cache_key`
     /// from the registered-sessions tracking set and tells the
     /// assigned shard worker to drop its `OwnedSessionState` entry.
     ///
-    /// Use this instead of a bare `self.peers_by_index.remove(&key)`
+    /// Use this instead of a bare `self.peers.remove_session_index(&key)`
     /// at every session-lifecycle teardown site (rekey cross-connection
     /// swap, peer disconnect, dispatch session-rotation) so the worker
     /// doesn't keep stale ciphers / replay windows around. The
@@ -2841,7 +2945,7 @@ impl Node {
         // Find the peer that owns this index BEFORE removing it from
         // the index map, so we can decide whether the deregistration
         // also tears down the peer's connected UDP socket.
-        let owning_peer = self.peers_by_index.remove(&cache_key);
+        let owning_peer = self.peers.remove_session_index(&cache_key);
         let session_key = DecryptSessionKey::from(cache_key);
         if self
             .decrypt_registered_sessions
@@ -2851,7 +2955,7 @@ impl Node {
             workers.unregister_session(session_key);
         }
         // Tear down the per-peer connected UDP socket *only* if no
-        // other peers_by_index entry still resolves to this peer.
+        // other receiver-index entry still resolves to this peer.
         // Rekey drain calls into this helper with the OLD session
         // index while the NEW index is already installed and points
         // at the same peer — there the connect()-ed 5-tuple is
@@ -2861,7 +2965,7 @@ impl Node {
         // here when this is the peer's last index, so the connected
         // socket goes away with the peer.
         if let Some(peer_addr) = owning_peer {
-            let peer_has_other_index = self.peers_by_index.peer_has_any_index(&peer_addr);
+            let peer_has_other_index = self.peers.peer_has_any_session_index(&peer_addr);
             if !peer_has_other_index {
                 self.clear_connected_udp_for_peer(&peer_addr);
             }
@@ -2902,7 +3006,7 @@ impl Node {
         };
 
         let cache_key = (transport_id, our_index.as_u32());
-        match self.peers_by_index.lookup(cache_key) {
+        match self.peers.lookup_session_index(cache_key) {
             Some(existing) if existing == *node_addr => true,
             Some(existing) => {
                 warn!(
@@ -2913,7 +3017,7 @@ impl Node {
                     context,
                     "Repairing current session index with stale owner"
                 );
-                self.peers_by_index.insert(cache_key, *node_addr);
+                self.peers.insert_session_index(cache_key, *node_addr);
                 true
             }
             None => {
@@ -2924,7 +3028,7 @@ impl Node {
                     context,
                     "Repairing missing current session index"
                 );
-                self.peers_by_index.insert(cache_key, *node_addr);
+                self.peers.insert_session_index(cache_key, *node_addr);
                 true
             }
         }

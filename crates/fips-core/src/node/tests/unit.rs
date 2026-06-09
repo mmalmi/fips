@@ -705,10 +705,11 @@ fn test_node_promote_connection() {
         "Promoted peer should have their_index"
     );
 
-    // Verify peers_by_index is populated
+    // Verify active peer registry session-index dispatch is populated
     let our_index = peer.our_index().unwrap();
     assert_eq!(
-        node.peers_by_index.get(&(transport_id, our_index.as_u32())),
+        node.peers
+            .get_session_index(&(transport_id, our_index.as_u32())),
         Some(&node_addr)
     );
 }
@@ -893,10 +894,10 @@ async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
     );
 
     node.peers.insert(peer_node_addr, active_peer);
-    node.peers_by_index
-        .insert((transport_id, old_our_index.as_u32()), peer_node_addr);
-    node.peers_by_index
-        .insert((transport_id, pending_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
 
     node.check_rekey().await;
 
@@ -954,10 +955,10 @@ async fn fmp_kbit_flip_requires_pending_authentication_before_promotion() {
     );
 
     node.peers.insert(peer_node_addr, active_peer);
-    node.peers_by_index
-        .insert((transport_id, old_our_index.as_u32()), peer_node_addr);
-    node.peers_by_index
-        .insert((transport_id, pending_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
 
     let packet_data = seal_test_fmp_packet(
         &mut stale_sender,
@@ -1121,7 +1122,7 @@ async fn link_dead_heartbeat_suppressed_while_fmp_rekey_has_budget() {
 /// peer's NEW index keeps the connect()-ed 5-tuple". Pre-fix this
 /// helper unconditionally cleared connected UDP, which would close
 /// the per-peer kernel socket on every rekey on Linux. Validate
-/// that when the peer still has another index in `peers_by_index`,
+/// that when the peer still has another session-index entry in the active peer registry,
 /// the connected UDP socket is preserved.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1144,15 +1145,15 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
 
     // Pre-register a "new" index for the peer (as happens during a
     // rekey: msg1 receive pre-registers the new our_index in
-    // peers_by_index while the old index stays around until drain
+    // active peer registry session-index dispatch while the old index stays around until drain
     // completes).
     let index_new: u32 = 9999;
-    node.peers_by_index
-        .insert((transport_id, index_new), node_addr);
+    node.peers
+        .insert_session_index((transport_id, index_new), node_addr);
 
     // Deregister the OLD index. This is the rekey-drain pattern.
     // The peer is still present, the NEW index is still in
-    // peers_by_index, so the per-peer connected UDP socket
+    // active peer registry session-index dispatch, so the per-peer connected UDP socket
     // (if any was installed) must NOT be torn down. The test
     // doesn't install a real ConnectedPeerSocket; instead it
     // checks the peer is still in `node.peers` and has a peer-
@@ -1160,11 +1161,14 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
     node.deregister_session_index((transport_id, index_old));
 
     assert!(
-        !node.peers_by_index.contains_key(&(transport_id, index_old)),
+        !node
+            .peers
+            .contains_session_index(&(transport_id, index_old)),
         "old index must be evicted"
     );
     assert!(
-        node.peers_by_index.contains_key(&(transport_id, index_new)),
+        node.peers
+            .contains_session_index(&(transport_id, index_new)),
         "new index must survive the deregister"
     );
     assert!(
@@ -1199,11 +1203,12 @@ fn test_node_cross_connection_resolution() {
     // The integration test will cover the real cross-connection path with
     // two actual nodes. Here we verify promotion works correctly.
 
-    // Verify first promotion populated peers_by_index
+    // Verify first promotion populated active peer registry session-index dispatch
     let peer = node.get_peer(&node_addr).unwrap();
     let our_idx = peer.our_index().unwrap();
     assert_eq!(
-        node.peers_by_index.get(&(transport_id, our_idx.as_u32())),
+        node.peers
+            .get_session_index(&(transport_id, our_idx.as_u32())),
         Some(&node_addr)
     );
 
@@ -1382,7 +1387,7 @@ fn pending_outbound_handshakes_own_msg2_index_matching_and_cleanup() {
 }
 
 #[test]
-fn test_node_peers_by_index_tracking() {
+fn test_node_active_peer_registry_tracking() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
     let node_addr = make_node_addr(42);
@@ -1390,19 +1395,22 @@ fn test_node_peers_by_index_tracking() {
     // Allocate an index
     let index = node.index_allocator.allocate().unwrap();
 
-    // Track in peers_by_index
-    node.peers_by_index
-        .insert((transport_id, index.as_u32()), node_addr);
+    // Track in active peer registry session-index dispatch
+    node.peers
+        .insert_session_index((transport_id, index.as_u32()), node_addr);
 
     // Verify lookup
-    let found = node.peers_by_index.get(&(transport_id, index.as_u32()));
+    let found = node
+        .peers
+        .get_session_index(&(transport_id, index.as_u32()));
     assert_eq!(found, Some(&node_addr));
 
     // Clean up
-    node.peers_by_index.remove(&(transport_id, index.as_u32()));
+    node.peers
+        .remove_session_index(&(transport_id, index.as_u32()));
     let _ = node.index_allocator.free(index);
 
-    assert!(node.peers_by_index.is_empty());
+    assert!(node.peers.session_index_is_empty());
 }
 
 #[test]
@@ -1437,6 +1445,67 @@ fn session_index_registry_owns_lookup_replace_remove_and_peer_membership() {
     assert_eq!(registry.remove(&pending_key), Some(stale_peer_addr));
     assert!(!registry.peer_has_any_index(&stale_peer_addr));
     assert!(registry.is_empty());
+}
+
+#[test]
+fn active_peer_registry_owns_storage_session_index_and_stale_safe_cleanup() {
+    let transport_id = TransportId::new(1);
+    let current_key = (transport_id, 10);
+    let pending_key = (transport_id, 11);
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let stale_peer_full = Identity::generate();
+    let stale_peer_identity = PeerIdentity::from_pubkey_full(stale_peer_full.pubkey_full());
+    let stale_peer_addr = *stale_peer_identity.node_addr();
+
+    let mut registry = ActivePeerRegistry::default();
+    assert!(
+        registry
+            .insert(
+                peer_addr,
+                ActivePeer::new(peer_identity, LinkId::new(10), 1_000),
+            )
+            .is_none()
+    );
+    assert!(registry.contains_key(&peer_addr));
+
+    assert_eq!(registry.insert_session_index(current_key, peer_addr), None);
+    assert_eq!(registry.insert_session_index(pending_key, peer_addr), None);
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+    assert!(registry.peer_has_any_session_index(&peer_addr));
+
+    assert_eq!(registry.remove_session_index(&current_key), Some(peer_addr));
+    assert!(
+        registry.peer_has_any_session_index(&peer_addr),
+        "removing an old index during rekey drain must see the peer's new index"
+    );
+
+    assert_eq!(
+        registry.insert_session_index(pending_key, stale_peer_addr),
+        Some(peer_addr),
+        "a repaired session index must report the stale previous owner"
+    );
+    assert_eq!(
+        registry.lookup_session_index(pending_key),
+        Some(stale_peer_addr)
+    );
+    assert!(!registry.peer_has_any_session_index(&peer_addr));
+
+    let removed = registry
+        .remove(&peer_addr)
+        .expect("peer storage should live in the same owner");
+    assert_eq!(removed.node_addr(), &peer_addr);
+    assert!(!registry.contains_key(&peer_addr));
+
+    assert_eq!(
+        registry.remove_session_index(&pending_key),
+        Some(stale_peer_addr)
+    );
+    assert!(!registry.peer_has_any_session_index(&stale_peer_addr));
+    assert!(registry.session_index_is_empty());
 }
 
 #[test]
@@ -4555,8 +4624,8 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
     assert_eq!(active.our_index(), Some(our_index));
     assert_eq!(active.their_index(), Some(their_index));
     assert_eq!(
-        node.peers_by_index
-            .get(&(new_transport_id, our_index.as_u32()))
+        node.peers
+            .get_session_index(&(new_transport_id, our_index.as_u32()))
             .copied(),
         Some(peer_node_addr)
     );
@@ -4716,8 +4785,8 @@ async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lo
     );
     old_peer.mark_reconnecting();
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers_by_index
-        .insert((old_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((old_transport_id, old_our_index.as_u32()), peer_node_addr);
 
     let new_transport_id = TransportId::new(2);
     let new_link_id = LinkId::new(11);
@@ -4792,8 +4861,8 @@ async fn fresh_outbound_alternate_path_replaces_healthy_peer_even_if_tie_breaker
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers_by_index
-        .insert((old_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((old_transport_id, old_our_index.as_u32()), peer_node_addr);
 
     let new_transport_id = TransportId::new(2);
     let new_link_id = LinkId::new(11);
@@ -4868,8 +4937,8 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers_by_index
-        .insert((old_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((old_transport_id, old_our_index.as_u32()), peer_node_addr);
     node.links.insert(
         old_link_id,
         Link::connectionless(
@@ -4949,8 +5018,8 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
     assert_eq!(active.our_index(), Some(our_index));
     assert_eq!(active.their_index(), Some(their_index));
     assert_eq!(
-        node.peers_by_index
-            .get(&(new_transport_id, our_index.as_u32()))
+        node.peers
+            .get_session_index(&(new_transport_id, our_index.as_u32()))
             .copied(),
         Some(peer_node_addr)
     );
@@ -5016,8 +5085,8 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
     );
     assert!(old_peer.can_send());
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers_by_index
-        .insert((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
     node.links.insert(
         old_link_id,
         Link::connectionless(
@@ -5268,8 +5337,8 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
         Some([0x11; 8]),
     );
     node.peers.insert(peer_node_addr, old_peer);
-    node.peers_by_index
-        .insert((old_transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((old_transport_id, old_our_index.as_u32()), peer_node_addr);
     node.links.insert(
         old_link_id,
         Link::connectionless(

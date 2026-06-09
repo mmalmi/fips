@@ -168,7 +168,7 @@ pub struct ActivePeer {
     current_k_bit: bool,
     /// Previous session kept alive during drain window after cutover.
     previous_session: Option<NoiseSession>,
-    /// Previous session's our_index (for peers_by_index cleanup on drain expiry).
+    /// Previous session's our_index (for registry cleanup on drain expiry).
     previous_our_index: Option<SessionIndex>,
     /// When the drain window started (None = no drain in progress).
     drain_started: Option<Instant>,
@@ -518,7 +518,7 @@ impl ActivePeer {
     /// session — the outbound handshake that pairs with the peer's inbound.
     /// This replaces the entire session so both nodes use matching keys.
     ///
-    /// Returns the old our_index so the caller can update peers_by_index.
+    /// Returns the old our_index so the caller can update session-index dispatch.
     /// Also resets the replay suppression counter since the session changed.
     pub fn replace_session(
         &mut self,
@@ -1049,7 +1049,7 @@ impl ActivePeer {
     /// Cut over to the pending new session (initiator side).
     ///
     /// Moves current session to previous (for drain), promotes pending to current,
-    /// flips the K-bit. Returns the old our_index that should remain in peers_by_index
+    /// flips the K-bit. Returns the old our_index that should remain in dispatch
     /// during the drain window.
     pub fn cutover_to_new_session(&mut self) -> Option<SessionIndex> {
         let new_session = self.pending_new_session.take()?;
@@ -1143,7 +1143,7 @@ impl ActivePeer {
     /// Complete the drain: drop previous session and free its index.
     ///
     /// Returns the previous our_index so the caller can remove it from
-    /// peers_by_index and free it from the IndexAllocator.
+    /// the registry and free it from the IndexAllocator.
     pub fn complete_drain(&mut self) -> Option<SessionIndex> {
         self.previous_session = None;
         self.drain_started = None;

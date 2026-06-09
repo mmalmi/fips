@@ -239,8 +239,8 @@ pub(crate) struct DecryptJob {
     /// this queued value instead of recalculating lane policy later.
     lane: DecryptWorkerLane,
     /// Lookup key into the worker's owned session HashMap. Mirrors the
-    /// `peers_by_index` key on the Node side: `(transport_id,
-    /// receiver_idx)`.
+    /// active peer registry session-index key on the Node side:
+    /// `(transport_id, receiver_idx)`.
     pub session_key: DecryptSessionKey,
     /// Source kernel transport. Forwarded into the bounced
     /// `DecryptFallback` so rx_loop can update per-peer last-seen +
@@ -250,7 +250,8 @@ pub(crate) struct DecryptJob {
     pub _transport_id: TransportId,
     pub _remote_addr: TransportAddr,
     pub timestamp_ms: u64,
-    /// Source NodeAddr (looked up via `peers_by_index` on rx_loop).
+    /// Source NodeAddr (looked up via active peer registry session-index
+    /// dispatch on rx_loop).
     /// Needed to attach to the bounced `DecryptFallback` so rx_loop
     /// can dispatch its legacy link-message handler.
     pub source_node_addr: NodeAddr,

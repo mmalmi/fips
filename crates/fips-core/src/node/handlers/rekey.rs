@@ -132,7 +132,7 @@ impl Node {
                 None
             };
             // Drop the old session index through `deregister_session_
-            // index` rather than `peers_by_index.remove` directly so
+            // index` rather than registry removal directly so
             // the decrypt worker also evicts the old session's owned
             // cipher + replay state. Pre-fix the worker held onto
             // the old entry forever, wasting a HashMap slot per

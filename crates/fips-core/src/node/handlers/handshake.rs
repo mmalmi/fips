@@ -382,8 +382,8 @@ impl Node {
                             peer.record_peer_rekey();
                         }
 
-                        // Register new index in peers_by_index
-                        self.peers_by_index.insert(
+                        // Register new index in active peer registry session-index dispatch
+                        self.peers.insert_session_index(
                             (packet.transport_id, our_new_index.as_u32()),
                             peer_node_addr,
                         );
@@ -687,8 +687,10 @@ impl Node {
                             peer.set_pending_session(session, our_index, header.sender_idx, true);
 
                             if let Some(transport_id) = peer.transport_id() {
-                                self.peers_by_index
-                                    .insert((transport_id, our_index.as_u32()), peer_node_addr);
+                                self.peers.insert_session_index(
+                                    (transport_id, our_index.as_u32()),
+                                    peer_node_addr,
+                                );
                             }
 
                             if remote_epoch_changed {
@@ -938,7 +940,7 @@ impl Node {
                     outbound_transport_id,
                     &outbound_addr,
                 );
-                self.peers_by_index.insert(
+                self.peers.insert_session_index(
                     (outbound_transport_id, outbound_our_index.as_u32()),
                     peer_node_addr,
                 );
@@ -1059,7 +1061,7 @@ impl Node {
                 if let Some(old_key) = loser_session_index {
                     self.deregister_session_index(old_key);
                 }
-                self.peers_by_index.insert(
+                self.peers.insert_session_index(
                     (outbound_transport_id, outbound_our_index.as_u32()),
                     peer_node_addr,
                 );
@@ -1315,7 +1317,7 @@ impl Node {
                 let old_peer = self.peers.remove(&peer_node_addr).unwrap();
                 let loser_link_id = old_peer.link_id();
 
-                // Clean up old peer's index from peers_by_index
+                // Clean up old peer's index from active peer registry session-index dispatch
                 if let (Some(old_tid), Some(old_idx)) =
                     (old_peer.transport_id(), old_peer.our_index())
                 {
@@ -1359,8 +1361,8 @@ impl Node {
                 );
 
                 self.peers.insert(peer_node_addr, new_peer);
-                self.peers_by_index
-                    .insert((transport_id, our_index.as_u32()), peer_node_addr);
+                self.peers
+                    .insert_session_index((transport_id, our_index.as_u32()), peer_node_addr);
                 self.clear_session_direct_path_degraded(&peer_node_addr);
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.set_discovery_fallback_transit_allowed(
@@ -1472,8 +1474,8 @@ impl Node {
             }
 
             self.peers.insert(peer_node_addr, new_peer);
-            self.peers_by_index
-                .insert((transport_id, our_index.as_u32()), peer_node_addr);
+            self.peers
+                .insert_session_index((transport_id, our_index.as_u32()), peer_node_addr);
             self.clear_session_direct_path_degraded(&peer_node_addr);
             self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
             self.set_discovery_fallback_transit_allowed(
