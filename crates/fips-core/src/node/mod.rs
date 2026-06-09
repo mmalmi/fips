@@ -1738,6 +1738,14 @@ pub(in crate::node) struct InsertedActivePeer {
     pub(in crate::node) current_session_index: Option<RegisteredPeerSessionIndex>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct ReplacedActivePeerCurrentSession {
+    pub(in crate::node) old_link_id: LinkId,
+    pub(in crate::node) old_session_index: Option<PeerSessionIndex>,
+    pub(in crate::node) new_session_index: RegisteredPeerSessionIndex,
+    pub(in crate::node) replay_suppressed_count: u32,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -2042,6 +2050,61 @@ impl PeerLifecycleRegistry {
             previous_peer,
             current_session_index,
         }
+    }
+
+    pub(in crate::node) fn replace_current_session_and_path(
+        &mut self,
+        node_addr: &NodeAddr,
+        new_session: crate::noise::NoiseSession,
+        new_our_index: SessionIndex,
+        new_their_index: SessionIndex,
+        new_link_id: LinkId,
+        new_transport_id: TransportId,
+        new_addr: &TransportAddr,
+        new_remote_epoch: Option<[u8; 8]>,
+        connected_at_ms: u64,
+    ) -> Option<ReplacedActivePeerCurrentSession> {
+        let new_session_index = PeerSessionIndex {
+            kind: PeerSessionIndexKind::Current,
+            key: (new_transport_id, new_our_index.as_u32()),
+            index: new_our_index,
+        };
+        let (old_link_id, old_session_index, replay_suppressed_count) = {
+            let peer = self.active.get_mut(node_addr)?;
+            let previous_current_index = Self::active_peer_current_session_index(peer);
+            let old_link_id = peer.link_id();
+            let replay_suppressed_count = peer.replay_suppressed_count();
+            let replaced_our_index =
+                peer.replace_session(new_session, new_our_index, new_their_index);
+            debug_assert_eq!(
+                previous_current_index.map(|old| old.index),
+                replaced_our_index
+            );
+            peer.set_link_id(new_link_id);
+            peer.set_current_addr(new_transport_id, new_addr);
+            if new_remote_epoch.is_some() {
+                peer.set_remote_epoch(new_remote_epoch);
+            }
+            peer.mark_connected(connected_at_ms);
+            (
+                old_link_id,
+                previous_current_index.filter(|old| old.key != new_session_index.key),
+                replay_suppressed_count,
+            )
+        };
+
+        let previous_owner = self
+            .active
+            .insert_session_index(new_session_index.key, *node_addr);
+        Some(ReplacedActivePeerCurrentSession {
+            old_link_id,
+            old_session_index,
+            new_session_index: RegisteredPeerSessionIndex {
+                session_index: new_session_index,
+                previous_owner,
+            },
+            replay_suppressed_count,
+        })
     }
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
@@ -3453,6 +3516,33 @@ impl Node {
                     "Inserted active peer without a current session index"
                 );
             }
+        }
+    }
+
+    pub(in crate::node) fn log_active_peer_session_replacement_result(
+        &self,
+        node_addr: &NodeAddr,
+        replacement: &ReplacedActivePeerCurrentSession,
+        context: &'static str,
+    ) {
+        if replacement.replay_suppressed_count > 0 {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                count = replacement.replay_suppressed_count,
+                context,
+                "Suppressed replay detections during link transition"
+            );
+        }
+
+        if let Some(previous_owner) = replacement.new_session_index.previous_owner {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                previous_owner = %self.peer_display_name(&previous_owner),
+                transport_id = %replacement.new_session_index.session_index.key.0,
+                our_index = %replacement.new_session_index.session_index.index,
+                context,
+                "Replaced current session-index owner during session replacement"
+            );
         }
     }
 

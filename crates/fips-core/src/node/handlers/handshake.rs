@@ -900,50 +900,41 @@ impl Node {
                 };
 
                 let display_name = self.peer_display_name(&peer_node_addr);
-                let mut loser_link_id = None;
-                let mut loser_session_index = None;
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                    let suppressed = peer.replay_suppressed_count();
-                    loser_link_id = Some(peer.link_id());
-                    loser_session_index = peer
-                        .transport_id()
-                        .zip(peer.our_index().map(|idx| idx.as_u32()));
-                    let old_our_index = peer.replace_session(
-                        outbound_session,
-                        outbound_our_index,
-                        header.sender_idx,
-                    );
-                    peer.set_link_id(link_id);
-                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
-                    if outbound_remote_epoch.is_some() {
-                        peer.set_remote_epoch(outbound_remote_epoch);
+                let replacement = match self.peers.replace_current_session_and_path(
+                    &peer_node_addr,
+                    outbound_session,
+                    outbound_our_index,
+                    header.sender_idx,
+                    link_id,
+                    outbound_transport_id,
+                    &outbound_addr,
+                    outbound_remote_epoch,
+                    packet.timestamp_ms,
+                ) {
+                    Some(replacement) => replacement,
+                    None => {
+                        warn!(peer = %display_name, "Active peer missing during outbound alternate-path promotion");
+                        self.pending_outbound.remove(&key);
+                        if let Some(link) = self.remove_link(&link_id) {
+                            self.cleanup_bootstrap_transport_if_unused(link.transport_id());
+                        }
+                        return;
                     }
-                    peer.mark_connected(packet.timestamp_ms);
+                };
+                self.log_active_peer_session_replacement_result(
+                    &peer_node_addr,
+                    &replacement,
+                    "outbound_alternate_path_refresh",
+                );
 
-                    if let Some(old_idx) = old_our_index {
-                        let _ = self.index_allocator.free(old_idx);
-                    }
-
-                    if suppressed > 0 {
-                        debug!(
-                            peer = %display_name,
-                            count = suppressed,
-                            "Suppressed replay detections during link transition"
-                        );
-                    }
-                }
-
-                if let Some(old_key) = loser_session_index {
-                    self.deregister_session_index(old_key);
+                if let Some(old_index) = replacement.old_session_index {
+                    self.deregister_session_index(old_index.key);
+                    let _ = self.index_allocator.free(old_index.index);
                 }
                 self.seed_path_mtu_for_link_peer(
                     &peer_node_addr,
                     outbound_transport_id,
                     &outbound_addr,
-                );
-                self.peers.insert_session_index(
-                    (outbound_transport_id, outbound_our_index.as_u32()),
-                    peer_node_addr,
                 );
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
@@ -966,17 +957,16 @@ impl Node {
                 }
 
                 self.pending_outbound.remove(&key);
-                if let Some(loser_link_id) = loser_link_id {
-                    if let Some(loser_link) = self.links.get(&loser_link_id) {
-                        let loser_tid = loser_link.transport_id();
-                        let loser_addr = loser_link.remote_addr().clone();
-                        if let Some(transport) = self.transports.get(&loser_tid) {
-                            transport.close_connection(&loser_addr).await;
-                        }
+                let loser_link_id = replacement.old_link_id;
+                if let Some(loser_link) = self.links.get(&loser_link_id) {
+                    let loser_tid = loser_link.transport_id();
+                    let loser_addr = loser_link.remote_addr().clone();
+                    if let Some(transport) = self.transports.get(&loser_tid) {
+                        transport.close_connection(&loser_addr).await;
                     }
-                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
-                    }
+                }
+                if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                    self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
                 }
 
                 debug!(
@@ -1018,70 +1008,57 @@ impl Node {
                     }
                 };
 
-                let mut loser_link_id = None;
-                let mut loser_session_index = None;
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                    let suppressed = peer.replay_suppressed_count();
-                    loser_link_id = Some(peer.link_id());
-                    loser_session_index = peer
-                        .transport_id()
-                        .zip(peer.our_index().map(|idx| idx.as_u32()));
-                    let old_our_index = peer.replace_session(
-                        outbound_session,
-                        outbound_our_index,
-                        header.sender_idx,
-                    );
-                    peer.set_link_id(link_id);
-                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
-                    peer.mark_connected(packet.timestamp_ms);
-
-                    if let Some(old_idx) = old_our_index {
-                        let _ = self.index_allocator.free(old_idx);
+                let replacement = match self.peers.replace_current_session_and_path(
+                    &peer_node_addr,
+                    outbound_session,
+                    outbound_our_index,
+                    header.sender_idx,
+                    link_id,
+                    outbound_transport_id,
+                    &outbound_addr,
+                    None,
+                    packet.timestamp_ms,
+                ) {
+                    Some(replacement) => replacement,
+                    None => {
+                        warn!(peer = %self.peer_display_name(&peer_node_addr), "Active peer missing during outbound cross-connection swap");
+                        self.pending_outbound.remove(&key);
+                        return;
                     }
-
-                    if suppressed > 0 {
-                        debug!(
-                            peer = %self.peer_display_name(&peer_node_addr),
-                            count = suppressed,
-                            "Suppressed replay detections during link transition"
-                        );
-                    }
-
-                    debug!(
-                        peer = %self.peer_display_name(&peer_node_addr),
-                        new_our_index = %outbound_our_index,
-                        new_their_index = %header.sender_idx,
-                        transport_id = %outbound_transport_id,
-                        remote_addr = %outbound_addr,
-                        "Cross-connection: swapped to outbound session (our outbound wins)"
-                    );
-                    // Re-register with the decrypt worker under the new
-                    // cache_key (the old inbound index was deregistered
-                    // above via deregister_session_index).
-                }
-                if let Some(old_key) = loser_session_index {
-                    self.deregister_session_index(old_key);
-                }
-                self.peers.insert_session_index(
-                    (outbound_transport_id, outbound_our_index.as_u32()),
-                    peer_node_addr,
+                };
+                self.log_active_peer_session_replacement_result(
+                    &peer_node_addr,
+                    &replacement,
+                    "outbound_cross_connection_swap",
                 );
+                if let Some(old_index) = replacement.old_session_index {
+                    self.deregister_session_index(old_index.key);
+                    let _ = self.index_allocator.free(old_index.index);
+                }
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
                 self.register_decrypt_worker_session(&peer_node_addr);
 
+                debug!(
+                    peer = %self.peer_display_name(&peer_node_addr),
+                    new_our_index = %outbound_our_index,
+                    new_their_index = %header.sender_idx,
+                    transport_id = %outbound_transport_id,
+                    remote_addr = %outbound_addr,
+                    "Cross-connection: swapped to outbound session (our outbound wins)"
+                );
+
                 self.pending_outbound.remove(&key);
-                if let Some(loser_link_id) = loser_link_id {
-                    if let Some(loser_link) = self.links.get(&loser_link_id) {
-                        let loser_tid = loser_link.transport_id();
-                        let loser_addr = loser_link.remote_addr().clone();
-                        if let Some(transport) = self.transports.get(&loser_tid) {
-                            transport.close_connection(&loser_addr).await;
-                        }
+                let loser_link_id = replacement.old_link_id;
+                if let Some(loser_link) = self.links.get(&loser_link_id) {
+                    let loser_tid = loser_link.transport_id();
+                    let loser_addr = loser_link.remote_addr().clone();
+                    if let Some(transport) = self.transports.get(&loser_tid) {
+                        transport.close_connection(&loser_addr).await;
                     }
-                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
-                    }
+                }
+                if let Some(loser_link) = self.remove_link(&loser_link_id) {
+                    self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
                 }
             } else {
                 // We're the larger node. Keep our inbound session (it pairs
