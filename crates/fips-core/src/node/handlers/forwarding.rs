@@ -407,7 +407,7 @@ impl Node {
             }
         }
         // Local transport congestion (kernel drops)
-        self.transport_drops.values().any(|s| s.dropping)
+        self.transport_drops.any_dropping()
     }
 
     /// Sample transport congestion indicators.
@@ -419,14 +419,8 @@ impl Node {
         let mut new_drop_events = Vec::new();
         for (&tid, transport) in &self.transports {
             let congestion = transport.congestion();
-            let state = self.transport_drops.entry(tid).or_default();
-            if let Some(current) = congestion.recv_drops {
-                let new_drops = current > state.prev_drops;
-                if new_drops && !state.dropping {
-                    new_drop_events.push(tid);
-                }
-                state.dropping = new_drops;
-                state.prev_drops = current;
+            if self.transport_drops.sample(tid, congestion.recv_drops) {
+                new_drop_events.push(tid);
             }
         }
         for tid in new_drop_events {

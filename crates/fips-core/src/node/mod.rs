@@ -1365,6 +1365,54 @@ struct TransportDropState {
     dropping: bool,
 }
 
+#[derive(Debug, Default)]
+pub(in crate::node) struct TransportDropTracker {
+    states: HashMap<TransportId, TransportDropState>,
+}
+
+impl TransportDropTracker {
+    pub(in crate::node) fn any_dropping(&self) -> bool {
+        self.states.values().any(|state| state.dropping)
+    }
+
+    pub(in crate::node) fn sample(
+        &mut self,
+        transport_id: TransportId,
+        recv_drops: Option<u64>,
+    ) -> bool {
+        let state = self.states.entry(transport_id).or_default();
+        let Some(current) = recv_drops else {
+            return false;
+        };
+
+        let new_drops = current > state.prev_drops;
+        let rising_edge = new_drops && !state.dropping;
+        state.dropping = new_drops;
+        state.prev_drops = current;
+        rising_edge
+    }
+
+    pub(in crate::node) fn remove(&mut self, transport_id: &TransportId) {
+        self.states.remove(transport_id);
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn set_for_test(
+        &mut self,
+        transport_id: TransportId,
+        prev_drops: u64,
+        dropping: bool,
+    ) {
+        self.states.insert(
+            transport_id,
+            TransportDropState {
+                prev_drops,
+                dropping,
+            },
+        );
+    }
+}
+
 /// State for a link waiting for transport-level connection establishment.
 ///
 /// For connection-oriented transports (TCP, Tor), the transport connect runs
@@ -1446,7 +1494,7 @@ pub struct Node {
     /// Active transports (owned by Node).
     transports: HashMap<TransportId, TransportHandle>,
     /// Per-transport kernel drop tracking for congestion detection.
-    transport_drops: HashMap<TransportId, TransportDropState>,
+    transport_drops: TransportDropTracker,
     /// Active links.
     links: HashMap<LinkId, Link>,
     /// Reverse lookup: (transport_id, remote_addr) -> link_id.
@@ -1757,7 +1805,7 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
-            transport_drops: HashMap::new(),
+            transport_drops: TransportDropTracker::default(),
             links: HashMap::new(),
             addr_to_link: HashMap::new(),
             packet_tx: None,
@@ -1903,7 +1951,7 @@ impl Node {
             session_direct_degradation: SessionDirectDegradation::default(),
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
-            transport_drops: HashMap::new(),
+            transport_drops: TransportDropTracker::default(),
             links: HashMap::new(),
             addr_to_link: HashMap::new(),
             packet_tx: None,

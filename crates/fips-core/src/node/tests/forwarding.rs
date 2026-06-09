@@ -590,7 +590,6 @@ async fn test_forwarding_with_cache_warming_enables_routing() {
 // ECN Tests
 // ============================================================================
 
-use crate::node::TransportDropState;
 use crate::node::handlers::session::mark_ipv6_ecn_ce;
 use crate::transport::TransportId;
 
@@ -739,20 +738,41 @@ fn test_detect_congestion_with_transport_drops() {
 
     // Simulate transport kernel drops
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 100,
-            dropping: true,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 100, true);
 
     // Now detect_congestion should return true (local transport congestion)
     assert!(node.detect_congestion(&fake_addr));
 
     // Clear the dropping flag — should return false again
-    node.transport_drops.get_mut(&tid).unwrap().dropping = false;
+    node.transport_drops.set_for_test(tid, 100, false);
     assert!(!node.detect_congestion(&fake_addr));
+}
+
+#[test]
+fn transport_drop_tracker_owns_rising_edge_state_and_cleanup() {
+    let tid = TransportId::new(1);
+    let other_tid = TransportId::new(2);
+    let mut drops = TransportDropTracker::default();
+
+    assert!(!drops.any_dropping());
+    assert!(
+        drops.sample(tid, Some(10)),
+        "first observed drops should be a rising edge"
+    );
+    assert!(drops.any_dropping());
+    assert!(
+        !drops.sample(tid, Some(12)),
+        "continued dropping should stay observable without duplicating rising-edge events"
+    );
+    assert!(drops.any_dropping());
+    assert!(!drops.sample(tid, Some(12)));
+    assert!(!drops.any_dropping());
+
+    assert!(drops.sample(tid, Some(13)));
+    drops.sample(other_tid, None);
+    assert!(drops.any_dropping());
+    drops.remove(&tid);
+    assert!(!drops.any_dropping());
 }
 
 #[test]
@@ -762,13 +782,7 @@ fn test_detect_congestion_disabled_ecn() {
 
     // Even with transport drops, disabled ECN should return false
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 50,
-            dropping: true,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 50, true);
 
     let fake_addr = NodeAddr::from_bytes([1; 16]);
     assert!(!node.detect_congestion(&fake_addr));
@@ -780,16 +794,10 @@ fn test_sample_transport_congestion() {
 
     // Insert a transport drop state with a baseline
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 0,
-            dropping: false,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 0, false);
 
     // No transports registered — sample_transport_congestion is a no-op
     // (transport_drops entry stays unchanged)
     node.sample_transport_congestion();
-    assert!(!node.transport_drops[&tid].dropping);
+    assert!(!node.transport_drops.any_dropping());
 }
