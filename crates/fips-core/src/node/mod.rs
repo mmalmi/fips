@@ -165,6 +165,50 @@ impl SessionDirectDegradation {
     }
 }
 
+#[derive(Debug, Default)]
+pub(in crate::node) struct DiscoveryFallbackTransit {
+    blocked_peers: HashSet<NodeAddr>,
+}
+
+impl DiscoveryFallbackTransit {
+    pub(in crate::node) fn set_allowed(&mut self, peer_addr: NodeAddr, allowed: bool) {
+        if allowed {
+            self.blocked_peers.remove(&peer_addr);
+        } else {
+            self.blocked_peers.insert(peer_addr);
+        }
+    }
+
+    pub(in crate::node) fn allows_lookup_fallback_peer<F>(
+        &self,
+        peer_addr: &NodeAddr,
+        target: &NodeAddr,
+        transport_id: Option<TransportId>,
+        mut is_bootstrap_transport: F,
+    ) -> bool
+    where
+        F: FnMut(TransportId) -> bool,
+    {
+        if peer_addr == target {
+            return true;
+        }
+
+        if self.blocked_peers.contains(peer_addr) {
+            return false;
+        }
+
+        match transport_id {
+            Some(transport_id) => !is_bootstrap_transport(transport_id),
+            None => true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_blocked(&self, peer_addr: &NodeAddr) -> bool {
+        self.blocked_peers.contains(peer_addr)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FmpPlaintextTrafficClass {
     bulk_endpoint_data: bool,
@@ -1559,7 +1603,7 @@ pub struct Node {
     bootstrap_transport_npubs: HashMap<TransportId, String>,
     /// Peers that should not be used as reply-learned fallback transit for
     /// other destinations. Direct lookups to the peer are still permitted.
-    discovery_fallback_transit_blocked_peers: HashSet<NodeAddr>,
+    discovery_fallback_transit: DiscoveryFallbackTransit,
 
     // === Periodic Parent Re-evaluation ===
     /// Timestamp of last periodic parent re-evaluation (for pacing).
@@ -1750,7 +1794,7 @@ impl Node {
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),
-            discovery_fallback_transit_blocked_peers: HashSet::new(),
+            discovery_fallback_transit: DiscoveryFallbackTransit::default(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -1895,7 +1939,7 @@ impl Node {
             startup_open_discovery_sweep_done: false,
             bootstrap_transports: HashSet::new(),
             bootstrap_transport_npubs: HashMap::new(),
-            discovery_fallback_transit_blocked_peers: HashSet::new(),
+            discovery_fallback_transit: DiscoveryFallbackTransit::default(),
             last_parent_reeval: None,
             last_congestion_log: None,
             estimated_mesh_size: None,
@@ -2996,13 +3040,8 @@ impl Node {
         peer_addr: NodeAddr,
         allowed: bool,
     ) {
-        if allowed {
-            self.discovery_fallback_transit_blocked_peers
-                .remove(&peer_addr);
-        } else {
-            self.discovery_fallback_transit_blocked_peers
-                .insert(peer_addr);
-        }
+        self.discovery_fallback_transit
+            .set_allowed(peer_addr, allowed);
     }
 
     pub(crate) fn configured_discovery_fallback_transit(

@@ -735,8 +735,7 @@ fn test_promote_open_discovery_retry_blocks_fallback_transit() {
     node.promote_connection(link_id, identity, 2000).unwrap();
 
     assert!(
-        node.discovery_fallback_transit_blocked_peers
-            .contains(&node_addr),
+        node.discovery_fallback_transit.is_blocked(&node_addr),
         "open-discovery retry peers should not become ambient lookup transit"
     );
 }
@@ -754,9 +753,50 @@ fn test_promote_nonconfigured_open_discovery_peer_blocks_fallback_transit() {
     node.promote_connection(link_id, identity, 2000).unwrap();
 
     assert!(
-        node.discovery_fallback_transit_blocked_peers
-            .contains(&node_addr),
+        node.discovery_fallback_transit.is_blocked(&node_addr),
         "nonconfigured peers accepted under open discovery should not be fallback transit"
+    );
+}
+
+#[test]
+fn discovery_fallback_transit_owns_target_exception_block_and_bootstrap_policy() {
+    let peer = make_node_addr(0xD1);
+    let target = make_node_addr(0xD2);
+    let bootstrap_transport = TransportId::new(7);
+    let normal_transport = TransportId::new(8);
+    let mut transit = DiscoveryFallbackTransit::default();
+
+    assert!(
+        transit.allows_lookup_fallback_peer(&peer, &target, Some(normal_transport), |_| false),
+        "ordinary sendable peers should be eligible fallback transit"
+    );
+
+    transit.set_allowed(peer, false);
+    assert!(
+        !transit.allows_lookup_fallback_peer(&peer, &target, Some(normal_transport), |_| false),
+        "explicitly blocked peers must not become ambient lookup transit"
+    );
+    assert!(
+        transit.allows_lookup_fallback_peer(&peer, &peer, Some(normal_transport), |_| false),
+        "direct lookups to the target peer must remain allowed even when ambient transit is blocked"
+    );
+
+    transit.set_allowed(peer, true);
+    assert!(
+        !transit.allows_lookup_fallback_peer(&peer, &target, Some(bootstrap_transport), |id| {
+            id == bootstrap_transport
+        }),
+        "bootstrap transports should not be used as ambient fallback transit"
+    );
+    assert!(
+        transit.allows_lookup_fallback_peer(&peer, &target, Some(normal_transport), |id| {
+            id == bootstrap_transport
+        }),
+        "unblocked non-bootstrap peers should be eligible again"
+    );
+    assert!(
+        transit.allows_lookup_fallback_peer(&peer, &target, None, |_| false),
+        "peers without a transport id should not be treated as bootstrap"
     );
 }
 

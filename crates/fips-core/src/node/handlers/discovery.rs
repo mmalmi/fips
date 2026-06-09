@@ -624,21 +624,12 @@ impl Node {
         peer: &crate::peer::ActivePeer,
         target: &NodeAddr,
     ) -> bool {
-        if peer_addr == target {
-            return true;
-        }
-
-        if self
-            .discovery_fallback_transit_blocked_peers
-            .contains(peer_addr)
-        {
-            return false;
-        }
-
-        match peer.transport_id() {
-            Some(transport_id) => !self.bootstrap_transports.contains(&transport_id),
-            None => true,
-        }
+        self.discovery_fallback_transit.allows_lookup_fallback_peer(
+            peer_addr,
+            target,
+            peer.transport_id(),
+            |transport_id| self.bootstrap_transports.contains(&transport_id),
+        )
     }
 
     fn should_use_reply_learned_lookup_fallback_for_origin_target(
