@@ -2067,6 +2067,7 @@ impl Node {
             NodeEndpointCommand::Send {
                 remote,
                 payload,
+                lane: _,
                 queued_at,
                 response_tx,
             } => {
@@ -2082,6 +2083,7 @@ impl Node {
             NodeEndpointCommand::SendOneway {
                 remote,
                 payload,
+                lane: _,
                 queued_at,
             } => {
                 crate::perf_profile::record_since(

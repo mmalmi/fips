@@ -473,17 +473,14 @@ impl FipsEndpoint {
         // the per-packet `oneshot::channel()` allocation entirely.
         // The node task's `SendOneway` arm runs the same code path as
         // `Send` but without writing the result into a oneshot.
-        let command_tx = endpoint_command_tx_for_payload(
-            &data,
+        let command = NodeEndpointCommand::send_oneway(remote, data, crate::perf_profile::stamp());
+        let command_tx = endpoint_command_tx_for_command(
+            &command,
             &self.endpoint_priority_commands,
             &self.endpoint_commands,
         );
         command_tx
-            .send(NodeEndpointCommand::SendOneway {
-                remote,
-                payload: data,
-                queued_at: crate::perf_profile::stamp(),
-            })
+            .send(command)
             .await
             .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
@@ -562,17 +559,14 @@ impl FipsEndpoint {
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
         let (response_tx, _response_rx) = oneshot::channel();
-        endpoint_command_tx_for_payload(
-            &data,
+        let command =
+            NodeEndpointCommand::send(remote, data, crate::perf_profile::stamp(), response_tx);
+        endpoint_command_tx_for_command(
+            &command,
             &self.endpoint_priority_commands,
             &self.endpoint_commands,
         )
-        .blocking_send(NodeEndpointCommand::Send {
-            remote,
-            payload: data,
-            queued_at: crate::perf_profile::stamp(),
-            response_tx,
-        })
+        .blocking_send(command)
         .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
@@ -751,12 +745,12 @@ impl FipsEndpoint {
     }
 }
 
-fn endpoint_command_tx_for_payload<'a>(
-    payload: &[u8],
+fn endpoint_command_tx_for_command<'a>(
+    command: &NodeEndpointCommand,
     priority_tx: &'a mpsc::Sender<NodeEndpointCommand>,
     bulk_tx: &'a mpsc::Sender<NodeEndpointCommand>,
 ) -> &'a mpsc::Sender<NodeEndpointCommand> {
-    match crate::node::endpoint_command_lane_for_payload(payload) {
+    match command.lane() {
         EndpointCommandLane::Priority => priority_tx,
         EndpointCommandLane::Bulk => bulk_tx,
     }
@@ -819,22 +813,49 @@ mod tests {
     fn endpoint_command_tx_helper_classifies_priority_and_bulk_payloads() {
         let (priority_tx, _priority_rx) = mpsc::channel(1);
         let (bulk_tx, _bulk_rx) = mpsc::channel(1);
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
 
         let tcp_ack = ipv6_tcp_packet(0x10, 0);
+        let tcp_ack = NodeEndpointCommand::send_oneway(remote, tcp_ack, None);
         assert!(std::ptr::eq(
-            endpoint_command_tx_for_payload(&tcp_ack, &priority_tx, &bulk_tx),
+            endpoint_command_tx_for_command(&tcp_ack, &priority_tx, &bulk_tx),
             &priority_tx,
         ));
 
         let icmpv4_ping = ipv4_icmp_echo_packet();
+        let icmpv4_ping = NodeEndpointCommand::send_oneway(remote, icmpv4_ping, None);
         assert!(std::ptr::eq(
-            endpoint_command_tx_for_payload(&icmpv4_ping, &priority_tx, &bulk_tx),
+            endpoint_command_tx_for_command(&icmpv4_ping, &priority_tx, &bulk_tx),
             &priority_tx,
         ));
 
         let bulk_tcp_data = ipv6_tcp_packet(0x18, 512);
+        let bulk_tcp_data = NodeEndpointCommand::send_oneway(remote, bulk_tcp_data, None);
         assert!(std::ptr::eq(
-            endpoint_command_tx_for_payload(&bulk_tcp_data, &priority_tx, &bulk_tx),
+            endpoint_command_tx_for_command(&bulk_tcp_data, &priority_tx, &bulk_tx),
+            &bulk_tx,
+        ));
+    }
+
+    #[test]
+    fn endpoint_command_owns_lane_selected_at_construction() {
+        let (priority_tx, _priority_rx) = mpsc::channel(1);
+        let (bulk_tx, _bulk_rx) = mpsc::channel(1);
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+
+        let tcp_ack = ipv6_tcp_packet(0x10, 0);
+        let priority_command = NodeEndpointCommand::send_oneway(remote, tcp_ack, None);
+        assert_eq!(priority_command.lane(), EndpointCommandLane::Priority);
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_command(&priority_command, &priority_tx, &bulk_tx),
+            &priority_tx,
+        ));
+
+        let bulk_tcp_data = ipv6_tcp_packet(0x18, 512);
+        let bulk_command = NodeEndpointCommand::send_oneway(remote, bulk_tcp_data, None);
+        assert_eq!(bulk_command.lane(), EndpointCommandLane::Bulk);
+        assert!(std::ptr::eq(
+            endpoint_command_tx_for_command(&bulk_command, &priority_tx, &bulk_tx),
             &bulk_tx,
         ));
     }

@@ -531,6 +531,7 @@ pub(crate) enum NodeEndpointCommand {
     Send {
         remote: PeerIdentity,
         payload: Vec<u8>,
+        lane: EndpointCommandLane,
         queued_at: Option<std::time::Instant>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
@@ -542,6 +543,7 @@ pub(crate) enum NodeEndpointCommand {
     SendOneway {
         remote: PeerIdentity,
         payload: Vec<u8>,
+        lane: EndpointCommandLane,
         queued_at: Option<std::time::Instant>,
     },
     PeerSnapshot {
@@ -564,6 +566,48 @@ pub(crate) enum NodeEndpointCommand {
         peers: Vec<crate::config::PeerConfig>,
         response_tx: tokio::sync::oneshot::Sender<Result<UpdatePeersOutcome, NodeError>>,
     },
+}
+
+impl NodeEndpointCommand {
+    pub(crate) fn send(
+        remote: PeerIdentity,
+        payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
+        response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
+    ) -> Self {
+        let lane = endpoint_command_lane_for_payload(&payload);
+        Self::Send {
+            remote,
+            payload,
+            lane,
+            queued_at,
+            response_tx,
+        }
+    }
+
+    pub(crate) fn send_oneway(
+        remote: PeerIdentity,
+        payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
+    ) -> Self {
+        let lane = endpoint_command_lane_for_payload(&payload);
+        Self::SendOneway {
+            remote,
+            payload,
+            lane,
+            queued_at,
+        }
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        match self {
+            Self::Send { lane, .. } | Self::SendOneway { lane, .. } => *lane,
+            Self::PeerSnapshot { .. }
+            | Self::RelaySnapshot { .. }
+            | Self::UpdateRelays { .. }
+            | Self::UpdatePeers { .. } => EndpointCommandLane::Priority,
+        }
+    }
 }
 
 /// Reports what changed in response to `UpdatePeers`.
