@@ -1429,6 +1429,69 @@ struct PendingConnect {
     peer_identity: PeerIdentity,
 }
 
+/// Pending outbound FMP handshakes keyed by `(transport_id, our_index)`.
+#[derive(Debug, Default)]
+pub(in crate::node) struct PendingOutboundHandshakes {
+    entries: HashMap<(TransportId, u32), LinkId>,
+}
+
+impl PendingOutboundHandshakes {
+    pub(in crate::node) fn insert(
+        &mut self,
+        key: (TransportId, u32),
+        link_id: LinkId,
+    ) -> Option<LinkId> {
+        self.entries.insert(key, link_id)
+    }
+
+    pub(in crate::node) fn remove(&mut self, key: &(TransportId, u32)) -> Option<LinkId> {
+        self.entries.remove(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn get(&self, key: &(TransportId, u32)) -> Option<&LinkId> {
+        self.entries.get(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_key(&self, key: &(TransportId, u32)) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(&(TransportId, u32), &mut LinkId) -> bool,
+    {
+        self.entries.retain(f);
+    }
+
+    pub(in crate::node) fn match_msg2(
+        &self,
+        transport_id: TransportId,
+        receiver_idx: u32,
+    ) -> Option<((TransportId, u32), LinkId)> {
+        let exact_key = (transport_id, receiver_idx);
+        if let Some(link_id) = self.entries.get(&exact_key).copied() {
+            return Some((exact_key, link_id));
+        }
+
+        let mut matches = self
+            .entries
+            .iter()
+            .filter(|((_, idx), _)| *idx == receiver_idx);
+        match (matches.next(), matches.next()) {
+            (Some((fallback_key, link_id)), None) => Some((*fallback_key, *link_id)),
+            _ => None,
+        }
+    }
+}
+
 /// A running FIPS node instance.
 ///
 /// This is the top-level container holding all node state.
@@ -1618,7 +1681,7 @@ pub struct Node {
     peers_by_index: HashMap<(TransportId, u32), NodeAddr>,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
-    pending_outbound: HashMap<(TransportId, u32), LinkId>,
+    pending_outbound: PendingOutboundHandshakes,
 
     // === Rate Limiting ===
     /// Rate limiter for msg1 processing (DoS protection).
@@ -1844,7 +1907,7 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
-            pending_outbound: HashMap::new(),
+            pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),
@@ -1990,7 +2053,7 @@ impl Node {
             dns_task: None,
             index_allocator: IndexAllocator::new(),
             peers_by_index: HashMap::new(),
-            pending_outbound: HashMap::new(),
+            pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
             routing_error_rate_limiter: RoutingErrorRateLimiter::new(),

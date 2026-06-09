@@ -1341,6 +1341,47 @@ fn test_node_pending_outbound_tracking() {
 }
 
 #[test]
+fn pending_outbound_handshakes_own_msg2_index_matching_and_cleanup() {
+    let original_transport = TransportId::new(1);
+    let reply_transport = TransportId::new(2);
+    let ambiguous_transport = TransportId::new(3);
+    let link_id = LinkId::new(11);
+    let ambiguous_link_id = LinkId::new(12);
+    let exact_link_id = LinkId::new(13);
+    let receiver_idx = 42;
+
+    let mut pending = PendingOutboundHandshakes::default();
+    pending.insert((original_transport, receiver_idx), link_id);
+
+    assert_eq!(
+        pending.match_msg2(reply_transport, receiver_idx),
+        Some(((original_transport, receiver_idx), link_id)),
+        "a unique sender index must survive a reply that arrives on an equivalent transport"
+    );
+
+    pending.insert((ambiguous_transport, receiver_idx), ambiguous_link_id);
+    assert_eq!(
+        pending.match_msg2(reply_transport, receiver_idx),
+        None,
+        "cross-transport fallback must refuse ambiguous sender indexes"
+    );
+
+    pending.insert((reply_transport, receiver_idx), exact_link_id);
+    assert_eq!(
+        pending.match_msg2(reply_transport, receiver_idx),
+        Some(((reply_transport, receiver_idx), exact_link_id)),
+        "exact transport/index match must win even when other transports share the index"
+    );
+
+    pending.remove(&(reply_transport, receiver_idx));
+    assert!(pending.contains_key(&(original_transport, receiver_idx)));
+    assert!(pending.contains_key(&(ambiguous_transport, receiver_idx)));
+    pending.remove(&(original_transport, receiver_idx));
+    pending.remove(&(ambiguous_transport, receiver_idx));
+    assert!(pending.is_empty());
+}
+
+#[test]
 fn test_node_peers_by_index_tracking() {
     let mut node = make_node();
     let transport_id = TransportId::new(1);
