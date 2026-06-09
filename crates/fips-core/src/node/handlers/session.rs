@@ -5,7 +5,6 @@
 //! SessionSetup (Noise XK msg1), SessionAck (msg2), SessionMsg3 (msg3),
 //! encrypted data, and error signals (CoordsRequired, PathBroken).
 
-use crate::NodeAddr;
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
@@ -39,6 +38,7 @@ use crate::protocol::{coords_wire_size, encode_coords};
 #[cfg(unix)]
 use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
+use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
 use tracing::{debug, info, trace, warn};
 
@@ -55,6 +55,7 @@ enum FspFrameOutcome {
     /// `plaintext` is the full inner-decoded payload — the per-msg_type
     /// payload starts at offset `FSP_INNER_HEADER_SIZE`.
     Authentic {
+        source_peer: PeerIdentity,
         plaintext: Vec<u8>,
         msg_type: u8,
         inner_flags_byte: u8,
@@ -66,6 +67,8 @@ enum FspFrameOutcome {
     NotEstablished,
     /// Decrypted payload was shorter than `FSP_INNER_HEADER_SIZE`.
     BadInnerHeader,
+    /// Established session does not yet have an authenticated remote identity.
+    MissingRemoteIdentity,
     /// All live epoch AEAD attempts failed.
     /// `consecutive` tracks the post-failure counter; if it crossed the
     /// threshold, `recover_session` is true so the post-borrow path can
@@ -1740,7 +1743,12 @@ impl Node {
             }
             entry.touch_inbound_frame(now_ms);
 
+            let Some(source_peer) = entry.remote_identity() else {
+                break 'outcome FspFrameOutcome::MissingRemoteIdentity;
+            };
+
             FspFrameOutcome::Authentic {
+                source_peer,
                 plaintext,
                 msg_type,
                 inner_flags_byte,
@@ -1751,13 +1759,20 @@ impl Node {
         // The &mut entry borrow on self.sessions has dropped. Handle
         // slow-path outcomes and dispatch by msg_type (which calls
         // other &mut self handlers).
-        let (plaintext, msg_type, _inner_flags_byte, _timestamp) = match outcome {
+        let (source_peer, plaintext, msg_type, _inner_flags_byte, _timestamp) = match outcome {
             FspFrameOutcome::Authentic {
+                source_peer,
                 plaintext,
                 msg_type,
                 inner_flags_byte,
                 timestamp,
-            } => (plaintext, msg_type, inner_flags_byte, timestamp),
+            } => (
+                source_peer,
+                plaintext,
+                msg_type,
+                inner_flags_byte,
+                timestamp,
+            ),
             FspFrameOutcome::UnknownSession => {
                 debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
                 return;
@@ -1773,6 +1788,13 @@ impl Node {
             }
             FspFrameOutcome::BadInnerHeader => {
                 debug!(src = %self.peer_display_name(src_addr), "Decrypted payload too short for FSP inner header");
+                return;
+            }
+            FspFrameOutcome::MissingRemoteIdentity => {
+                debug!(
+                    src = %self.peer_display_name(src_addr),
+                    "Established session missing authenticated remote identity"
+                );
                 return;
             }
             FspFrameOutcome::DecryptFailed {
@@ -1898,7 +1920,7 @@ impl Node {
                 // dominant FIPS-endpoint receive path.
                 let mut payload = plaintext;
                 payload.drain(..FSP_INNER_HEADER_SIZE);
-                self.deliver_endpoint_data(src_addr, payload);
+                self.deliver_endpoint_data(source_peer, payload);
             }
             Some(SessionMessageType::TraversalOffer) => {
                 self.handle_mesh_traversal_offer(src_addr, rest).await;
@@ -3791,7 +3813,8 @@ impl Node {
         Ok(false)
     }
 
-    fn deliver_endpoint_data(&self, src_addr: &NodeAddr, payload: Vec<u8>) {
+    fn deliver_endpoint_data(&self, source_peer: PeerIdentity, payload: Vec<u8>) {
+        let src_addr = source_peer.node_addr();
         let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
             trace!(
                 src = %self.peer_display_name(src_addr),
@@ -3801,8 +3824,7 @@ impl Node {
         };
 
         let event = NodeEndpointEvent::Data {
-            source_node_addr: *src_addr,
-            source_npub: self.npub_for_node_addr(src_addr),
+            source_peer,
             payload,
             queued_at: crate::perf_profile::stamp(),
         };

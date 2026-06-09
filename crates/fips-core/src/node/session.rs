@@ -7,13 +7,13 @@
 
 use std::time::Instant;
 
-use crate::NodeAddr;
 use crate::config::SessionMmpConfig;
 use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 #[cfg(unix)]
 use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
 use crate::noise::{HandshakeState, NoiseSession};
+use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
 #[cfg(unix)]
 use ring::aead::LessSafeKey;
@@ -95,6 +95,8 @@ pub(crate) struct SessionEntry {
     /// Remote node's address (session table key).
     #[allow(dead_code)]
     remote_addr: NodeAddr,
+    /// Remote node's authenticated identity, once the handshake has revealed it.
+    remote_identity: Option<PeerIdentity>,
     /// Remote node's static public key.
     remote_pubkey: PublicKey,
     /// Current session state. `None` only during state transitions.
@@ -194,8 +196,12 @@ impl SessionEntry {
         now_ms: u64,
         is_initiator: bool,
     ) -> Self {
+        let remote_identity = PeerIdentity::from_pubkey_full(remote_pubkey);
+        let remote_identity =
+            (*remote_identity.node_addr() == remote_addr).then_some(remote_identity);
         Self {
             remote_addr,
+            remote_identity,
             remote_pubkey,
             state: Some(state),
             created_at: now_ms,
@@ -234,6 +240,11 @@ impl SessionEntry {
     /// Get the remote node's public key.
     pub(crate) fn remote_pubkey(&self) -> &PublicKey {
         &self.remote_pubkey
+    }
+
+    /// Get the remote node's authenticated identity.
+    pub(crate) fn remote_identity(&self) -> Option<PeerIdentity> {
+        self.remote_identity
     }
 
     /// Get the current session state.

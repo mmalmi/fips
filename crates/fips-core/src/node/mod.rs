@@ -1247,8 +1247,7 @@ pub(crate) struct UpdatePeersOutcome {
 #[derive(Debug)]
 pub(crate) enum NodeEndpointEvent {
     Data {
-        source_node_addr: NodeAddr,
-        source_npub: Option<String>,
+        source_peer: PeerIdentity,
         payload: Vec<u8>,
         queued_at: Option<std::time::Instant>,
     },

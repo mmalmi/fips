@@ -400,13 +400,12 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
         .expect("endpoint data event should arrive");
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, node0_addr);
-            assert_eq!(source_npub, Some(nodes[0].node.npub()));
+            assert_eq!(*source_peer.node_addr(), node0_addr);
+            assert_eq!(source_peer.npub(), nodes[0].node.npub());
             assert_eq!(payload, b"ping");
         }
     }
@@ -426,13 +425,12 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
         .expect("endpoint data event should arrive");
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, node1_addr);
-            assert_eq!(source_npub, Some(nodes[1].node.npub()));
+            assert_eq!(*source_peer.node_addr(), node1_addr);
+            assert_eq!(source_peer.npub(), nodes[1].node.npub());
             assert_eq!(payload, b"pong");
         }
     }
@@ -480,13 +478,12 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         .expect("bob endpoint data should arrive");
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, alice_addr);
-            assert_eq!(source_npub, Some(nodes[0].node.npub()));
+            assert_eq!(*source_peer.node_addr(), alice_addr);
+            assert_eq!(source_peer.npub(), nodes[0].node.npub());
             assert_eq!(payload, b"alice-to-bob");
         }
     }
@@ -517,13 +514,12 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
         .expect("alice endpoint data should arrive");
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, bob_addr);
-            assert_eq!(source_npub, Some(nodes[2].node.npub()));
+            assert_eq!(*source_peer.node_addr(), bob_addr);
+            assert_eq!(source_peer.npub(), nodes[2].node.npub());
             assert_eq!(payload, b"bob-to-alice");
         }
     }
@@ -571,13 +567,12 @@ async fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary(
         if let Ok(event) = bob_endpoint.event_rx.try_recv() {
             match event {
                 NodeEndpointEvent::Data {
-                    source_node_addr,
-                    source_npub,
+                    source_peer,
                     payload,
                     ..
                 } => {
-                    assert_eq!(source_node_addr, alice_addr);
-                    assert_eq!(source_npub, Some(nodes[0].node.npub()));
+                    assert_eq!(*source_peer.node_addr(), alice_addr);
+                    assert_eq!(source_peer.npub(), nodes[0].node.npub());
                     assert_eq!(payload, b"first-contact");
                 }
             }
@@ -2331,11 +2326,11 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, alice_addr);
+            assert_eq!(*source_peer.node_addr(), alice_addr);
             assert_eq!(payload, b"direct-first");
         }
     }
@@ -2396,11 +2391,11 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, alice_addr);
+            assert_eq!(*source_peer.node_addr(), alice_addr);
             assert_eq!(payload, b"alice-fallback");
         }
     }
@@ -2414,11 +2409,11 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
     .await;
     match event {
         NodeEndpointEvent::Data {
-            source_node_addr,
+            source_peer,
             payload,
             ..
         } => {
-            assert_eq!(source_node_addr, bob_addr);
+            assert_eq!(*source_peer.node_addr(), bob_addr);
             assert_eq!(payload, b"bob-fallback");
         }
     }

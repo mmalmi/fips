@@ -57,12 +57,22 @@ pub enum FipsEndpointError {
 /// Source-attributed endpoint data delivered to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointMessage {
-    /// FIPS node address that originated the endpoint data.
-    pub source_node_addr: NodeAddr,
-    /// Source Nostr public key when the node has learned it.
-    pub source_npub: Option<String>,
+    /// Authenticated FIPS peer that originated the endpoint data.
+    pub source_peer: PeerIdentity,
     /// Application-owned payload bytes.
     pub data: Vec<u8>,
+}
+
+impl FipsEndpointMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
 }
 
 /// Reports what changed in response to [`FipsEndpoint::update_peers`].
@@ -240,9 +250,10 @@ impl FipsEndpointBuilder {
 
         let mut node = Node::new(config)?;
         endpoint_debug_log("FipsEndpointBuilder::bind node created");
-        let npub = node.npub();
-        let node_addr = *node.node_addr();
-        let address = *node.identity().address();
+        let identity = PeerIdentity::from_pubkey_full(node.identity().pubkey_full());
+        let npub = identity.npub();
+        let node_addr = *identity.node_addr();
+        let address = *identity.address();
         let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
         endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
         let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
@@ -258,6 +269,7 @@ impl FipsEndpointBuilder {
         let endpoint_commands = endpoint_data_io.command_tx;
 
         Ok(FipsEndpoint {
+            identity,
             npub,
             node_addr,
             address,
@@ -381,6 +393,7 @@ fn spawn_node_task(
 
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
+    identity: PeerIdentity,
     npub: String,
     node_addr: NodeAddr,
     address: FipsAddress,
@@ -520,8 +533,7 @@ impl FipsEndpoint {
     fn send_loopback(&self, data: Vec<u8>) -> Result<(), FipsEndpointError> {
         self.inbound_endpoint_tx
             .send(NodeEndpointEvent::Data {
-                source_node_addr: self.node_addr,
-                source_npub: Some(self.npub.clone()),
+                source_peer: self.identity,
                 payload: data,
                 queued_at: crate::perf_profile::stamp(),
             })
@@ -537,15 +549,13 @@ impl FipsEndpoint {
     pub async fn recv(&self) -> Option<FipsEndpointMessage> {
         let event = self.inbound_endpoint_rx.lock().await.recv().await?;
         let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             queued_at,
         } = event;
         crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
+            source_peer,
             data: payload,
         })
     }
@@ -618,15 +628,13 @@ impl FipsEndpoint {
         let mut rx = self.inbound_endpoint_rx.blocking_lock();
         let event = rx.blocking_recv()?;
         let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             queued_at,
         } = event;
         crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
+            source_peer,
             data: payload,
         })
     }
@@ -654,15 +662,13 @@ impl FipsEndpoint {
         let mut rx = self.inbound_endpoint_rx.try_lock().ok()?;
         let event = rx.try_recv().ok()?;
         let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
+            source_peer,
             payload,
             queued_at,
         } = event;
         crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
         Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
+            source_peer,
             data: payload,
         })
     }
@@ -962,8 +968,8 @@ mod tests {
             .await
             .expect("recv should not time out")
             .expect("message should arrive");
-        assert_eq!(message.source_node_addr, *endpoint.node_addr());
-        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
+        assert_eq!(message.source_npub(), endpoint.npub());
         assert_eq!(message.data, b"ping");
         assert!(endpoint.discovery_scope().is_none());
 
@@ -987,8 +993,8 @@ mod tests {
             .await
             .expect("recv should not time out")
             .expect("message should arrive");
-        assert_eq!(message.source_node_addr, *endpoint.node_addr());
-        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
+        assert_eq!(message.source_npub(), endpoint.npub());
         assert_eq!(message.data, b"ping");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
@@ -1010,8 +1016,8 @@ mod tests {
             .await
             .expect("recv should not time out")
             .expect("message should arrive");
-        assert_eq!(message.source_node_addr, *endpoint.node_addr());
-        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
+        assert_eq!(*message.source_node_addr(), *endpoint.node_addr());
+        assert_eq!(message.source_npub(), endpoint.npub());
         assert_eq!(message.data, b"ping");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
