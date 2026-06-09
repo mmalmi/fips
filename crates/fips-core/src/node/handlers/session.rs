@@ -3064,11 +3064,10 @@ impl Node {
     }
 
     #[cfg(unix)]
-    fn pipelined_endpoint_route_plan(
+    fn prepare_pipelined_endpoint_peer_runtime_route_snapshot(
         &mut self,
         dest_addr: &NodeAddr,
-        now_ms: u64,
-    ) -> Result<PipelinedEndpointRoutePlan, NodeError> {
+    ) -> Result<crate::node::PeerRuntimeRouteSnapshot, NodeError> {
         let Some(next_hop_addr) = self.find_next_hop(dest_addr).map(|peer| *peer.node_addr())
         else {
             return Err(NodeError::SendFailed {
@@ -3077,19 +3076,25 @@ impl Node {
             });
         };
 
+        self.peers
+            .prepare_peer_runtime_route_snapshot(&next_hop_addr)
+            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))
+    }
+
+    #[cfg(unix)]
+    fn pipelined_endpoint_route_plan(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+        peer_snapshot: &crate::node::PeerRuntimeRouteSnapshot,
+    ) -> PipelinedEndpointRoutePlan {
+        let next_hop_addr = peer_snapshot.node_addr();
         let mut path_mtu = u16::MAX;
-        if let Some(peer) = self.peers.get(&next_hop_addr)
-            && let Some(tid) = peer.transport_id()
-            && let Some(transport) = self.transports.get(&tid)
-        {
-            if let Some(addr) = peer.current_addr() {
-                path_mtu = path_mtu.min(transport.link_mtu(addr));
-            } else {
-                path_mtu = path_mtu.min(transport.mtu());
-            }
+        if let Some(transport) = self.transports.get(&peer_snapshot.transport_id()) {
+            path_mtu = path_mtu.min(peer_snapshot.path_mtu(transport));
         }
 
-        Ok(PipelinedEndpointRoutePlan::new(
+        PipelinedEndpointRoutePlan::new(
             *self.node_addr(),
             next_hop_addr,
             path_mtu,
@@ -3097,7 +3102,7 @@ impl Node {
             self.send_weight_for_peer(&next_hop_addr),
             next_hop_addr == *dest_addr
                 && self.session_direct_path_blocks_direct_payload(dest_addr, now_ms),
-        ))
+        )
     }
 
     #[cfg(unix)]
@@ -3105,7 +3110,10 @@ impl Node {
         &mut self,
         send: &PipelinedEndpointSend<'a>,
     ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, NodeError> {
-        let route_plan = self.pipelined_endpoint_route_plan(send.dest_addr, send.now_ms)?;
+        let peer_route_snapshot =
+            self.prepare_pipelined_endpoint_peer_runtime_route_snapshot(send.dest_addr)?;
+        let route_plan =
+            self.pipelined_endpoint_route_plan(send.dest_addr, send.now_ms, &peer_route_snapshot);
         let send_plan = route_plan.build_send_plan(send).map_err(|error| {
             Self::map_pipelined_endpoint_runtime_send_plan_error(
                 *send.dest_addr,
@@ -3113,14 +3121,8 @@ impl Node {
                 PipelinedEndpointRuntimeSendPlanError::SendPlan(error),
             )
         })?;
-        let peer_snapshot = self
-            .peers
-            .prepare_peer_runtime_send_snapshot(
-                &route_plan.next_hop_addr,
-                false,
-                send_plan.fmp_payload_len(),
-            )
-            .map_err(|e| Self::map_fmp_send_preparation_error(route_plan.next_hop_addr, e))?;
+        let peer_snapshot =
+            peer_route_snapshot.prepare_send_snapshot(false, send_plan.fmp_payload_len());
 
         PipelinedEndpointRuntimeSendPlan::from_parts(route_plan, send_plan, peer_snapshot).map_err(
             |error| {

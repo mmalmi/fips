@@ -1794,6 +1794,90 @@ pub(in crate::node) struct FmpSendPreparation {
     pub(in crate::node) payload_len: u16,
 }
 
+pub(in crate::node) struct PeerRuntimeRouteSnapshot {
+    node_addr: NodeAddr,
+    their_index: SessionIndex,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    connected_socket: Option<Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    timestamp_ms: u32,
+    base_flags: u8,
+    fmp_worker_send_available: bool,
+}
+
+impl PeerRuntimeRouteSnapshot {
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::node) fn new(
+        node_addr: NodeAddr,
+        their_index: SessionIndex,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
+            Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+        >,
+        timestamp_ms: u32,
+        base_flags: u8,
+        fmp_worker_send_available: bool,
+    ) -> Self {
+        Self {
+            node_addr,
+            their_index,
+            transport_id,
+            remote_addr,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket,
+            timestamp_ms,
+            base_flags,
+            fmp_worker_send_available,
+        }
+    }
+
+    pub(in crate::node) fn node_addr(&self) -> NodeAddr {
+        self.node_addr
+    }
+
+    pub(in crate::node) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn remote_addr(&self) -> &TransportAddr {
+        &self.remote_addr
+    }
+
+    pub(in crate::node) fn path_mtu(&self, transport: &TransportHandle) -> u16 {
+        debug_assert_eq!(transport.transport_id(), self.transport_id);
+        transport.link_mtu(&self.remote_addr)
+    }
+
+    pub(in crate::node) fn prepare_send_snapshot(
+        &self,
+        ce_flag: bool,
+        payload_len: u16,
+    ) -> PeerRuntimeSendSnapshot {
+        let mut flags = self.base_flags;
+        if ce_flag {
+            flags |= FLAG_CE;
+        }
+
+        PeerRuntimeSendSnapshot::new(
+            self.node_addr,
+            FmpSendPreparation {
+                their_index: self.their_index,
+                transport_id: self.transport_id,
+                remote_addr: self.remote_addr.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                connected_socket: self.connected_socket.clone(),
+                timestamp_ms: self.timestamp_ms,
+                flags,
+                payload_len,
+            },
+            self.fmp_worker_send_available,
+        )
+    }
+}
+
 pub(in crate::node) struct PeerRuntimeSendSnapshot {
     node_addr: NodeAddr,
     fmp_prepared: FmpSendPreparation,
@@ -2414,6 +2498,15 @@ impl PeerLifecycleRegistry {
         ce_flag: bool,
         payload_len: u16,
     ) -> Result<FmpSendPreparation, FmpSendPreparationError> {
+        let snapshot = Self::peer_runtime_route_snapshot_from_peer(*peer.node_addr(), peer)?
+            .prepare_send_snapshot(ce_flag, payload_len);
+        Ok(snapshot.fmp_prepared)
+    }
+
+    fn peer_runtime_route_snapshot_from_peer(
+        node_addr: NodeAddr,
+        peer: &ActivePeer,
+    ) -> Result<PeerRuntimeRouteSnapshot, FmpSendPreparationError> {
         let their_index = peer
             .their_index()
             .ok_or(FmpSendPreparationError::MissingTheirIndex)?;
@@ -2424,52 +2517,52 @@ impl PeerLifecycleRegistry {
             .current_addr()
             .cloned()
             .ok_or(FmpSendPreparationError::MissingCurrentAddr)?;
-        if peer.noise_session().is_none() {
-            return Err(FmpSendPreparationError::MissingNoiseSession);
-        }
+        let noise_session = peer
+            .noise_session()
+            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
 
         let timestamp_ms = peer.session_elapsed_ms();
         let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
-        let mut flags = if sp_flag { FLAG_SP } else { 0 };
-        if ce_flag {
-            flags |= FLAG_CE;
-        }
+        let mut base_flags = if sp_flag { FLAG_SP } else { 0 };
         if peer.current_k_bit() {
-            flags |= FLAG_KEY_EPOCH;
+            base_flags |= FLAG_KEY_EPOCH;
         }
 
-        Ok(FmpSendPreparation {
+        Ok(PeerRuntimeRouteSnapshot::new(
+            node_addr,
             their_index,
             transport_id,
             remote_addr,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            connected_socket: peer.connected_udp(),
+            peer.connected_udp(),
             timestamp_ms,
-            flags,
-            payload_len,
-        })
+            base_flags,
+            noise_session.has_send_cipher(),
+        ))
     }
 
     #[cfg(unix)]
+    pub(in crate::node) fn prepare_peer_runtime_route_snapshot(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Result<PeerRuntimeRouteSnapshot, FmpSendPreparationError> {
+        let peer = self
+            .active
+            .get(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        Self::peer_runtime_route_snapshot_from_peer(*node_addr, peer)
+    }
+
+    #[cfg(all(unix, test))]
     pub(in crate::node) fn prepare_peer_runtime_send_snapshot(
         &self,
         node_addr: &NodeAddr,
         ce_flag: bool,
         payload_len: u16,
     ) -> Result<PeerRuntimeSendSnapshot, FmpSendPreparationError> {
-        let peer = self
-            .active
-            .get(node_addr)
-            .ok_or(FmpSendPreparationError::MissingPeer)?;
-        let fmp_prepared = Self::fmp_send_preparation_from_peer(peer, ce_flag, payload_len)?;
-        let fmp_worker_send_available = peer
-            .noise_session()
-            .is_some_and(|session| session.has_send_cipher());
-        Ok(PeerRuntimeSendSnapshot::new(
-            *node_addr,
-            fmp_prepared,
-            fmp_worker_send_available,
-        ))
+        Ok(self
+            .prepare_peer_runtime_route_snapshot(node_addr)?
+            .prepare_send_snapshot(ce_flag, payload_len))
     }
 
     #[cfg(unix)]

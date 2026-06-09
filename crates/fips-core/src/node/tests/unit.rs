@@ -7483,6 +7483,109 @@ fn peer_runtime_send_snapshot_owns_fmp_metadata_and_worker_availability() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn peer_runtime_route_snapshot_owns_path_seed_and_send_snapshot_inputs() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(11);
+    let link_id = LinkId::new(12);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:19191");
+    let our_index = SessionIndex::new(13);
+    let their_index = SessionIndex::new(14);
+    let sender = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        sender,
+        our_index,
+        their_index,
+        transport_id,
+        remote_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x04; 8]),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let route_snapshot = registry
+        .prepare_peer_runtime_route_snapshot(&peer_addr)
+        .expect("peer runtime owner should prepare route snapshot");
+    assert_eq!(route_snapshot.node_addr(), peer_addr);
+    assert_eq!(route_snapshot.transport_id(), transport_id);
+    assert_eq!(route_snapshot.remote_addr(), &remote_addr);
+
+    let (packet_tx, _packet_rx) = packet_channel(4);
+    let udp = UdpTransport::new(
+        transport_id,
+        None,
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            mtu: Some(1234),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    let transport = TransportHandle::Udp(udp);
+    assert_eq!(
+        route_snapshot.path_mtu(&transport),
+        1234,
+        "route snapshot should seed path MTU from its own transport/current-address pair"
+    );
+
+    let payload_len = 104;
+    let send_snapshot = route_snapshot.prepare_send_snapshot(true, payload_len);
+    assert_eq!(send_snapshot.node_addr(), peer_addr);
+    assert_eq!(send_snapshot.fmp_prepared().transport_id, transport_id);
+    assert_eq!(send_snapshot.fmp_prepared().remote_addr, remote_addr);
+    assert_eq!(send_snapshot.fmp_prepared().their_index, their_index);
+    assert_eq!(send_snapshot.fmp_prepared().payload_len, payload_len);
+    assert_eq!(send_snapshot.fmp_prepared().flags & FLAG_CE, FLAG_CE);
+    assert!(
+        send_snapshot.fmp_worker_send_available(),
+        "route snapshot should carry worker-send availability into send snapshots"
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        0,
+        "route/send snapshot preparation must not consume a Noise send counter"
+    );
+
+    let reservation = registry
+        .reserve_peer_runtime_fmp_worker_send(&send_snapshot)
+        .expect("peer runtime send snapshot should reserve the FMP worker send")
+        .expect("established FMP peer should expose a worker cipher");
+    assert_eq!(reservation.counter, 0);
+    assert_eq!(
+        reservation.header,
+        build_established_header(
+            their_index,
+            reservation.counter,
+            send_snapshot.fmp_prepared().flags,
+            payload_len,
+        )
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        1,
+        "route-owned send snapshot should reserve exactly one FMP counter"
+    );
+}
+
 #[test]
 fn local_send_failures_own_peer_scoped_fast_dead_clear_and_expiry() {
     let failed_peer = make_node_addr(0xA1);
