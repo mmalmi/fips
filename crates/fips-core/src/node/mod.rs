@@ -76,6 +76,60 @@ const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
 const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
 const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
 
+#[derive(Debug, Default)]
+pub(in crate::node) struct LocalSendFailures {
+    failures: HashMap<NodeAddr, std::time::Instant>,
+}
+
+impl LocalSendFailures {
+    pub(in crate::node) fn note_send_outcome(
+        &mut self,
+        node_addr: &NodeAddr,
+        result: &Result<usize, TransportError>,
+        now: std::time::Instant,
+    ) {
+        match result {
+            Ok(_) => {
+                self.failures.remove(node_addr);
+            }
+            Err(error) if error.is_local_route_unavailable() => {
+                self.record_failure(*node_addr, now);
+            }
+            Err(_) => {}
+        }
+    }
+
+    pub(in crate::node) fn record_failure(&mut self, node_addr: NodeAddr, at: std::time::Instant) {
+        self.failures.insert(node_addr, at);
+    }
+
+    pub(in crate::node) fn dead_timeout_for_peer(
+        &self,
+        node_addr: &NodeAddr,
+        now: std::time::Instant,
+        dead_timeout: std::time::Duration,
+        fast_dead_timeout: std::time::Duration,
+    ) -> std::time::Duration {
+        match self.failures.get(node_addr).copied() {
+            Some(t) if now.duration_since(t) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW => {
+                fast_dead_timeout.min(dead_timeout)
+            }
+            None => dead_timeout,
+            Some(_) => dead_timeout,
+        }
+    }
+
+    pub(in crate::node) fn purge_expired(&mut self, now: std::time::Instant) {
+        self.failures
+            .retain(|_, at| now.duration_since(*at) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW);
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.failures.contains_key(node_addr)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FmpPlaintextTrafficClass {
     bulk_endpoint_data: bool,
@@ -1499,7 +1553,7 @@ pub struct Node {
     /// cleared on the next successful send to that peer. Used by
     /// `check_link_heartbeats` to compress only that peer's dead-timeout to
     /// `fast_link_dead_timeout_secs` while its outbound is observed broken.
-    local_send_failure_at_by_peer: HashMap<NodeAddr, std::time::Instant>,
+    local_send_failures: LocalSendFailures,
     /// Set when the rx loop could not complete its 1s maintenance work
     /// inside the watchdog timeout. Link-dead detection may be valid during
     /// overload, but traversal cooldown should not punish a path just because
@@ -1667,7 +1721,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
-            local_send_failure_at_by_peer: HashMap::new(),
+            local_send_failures: LocalSendFailures::default(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
@@ -1812,7 +1866,7 @@ impl Node {
             estimated_mesh_size: None,
             last_mesh_size_log: None,
             last_self_warn: None,
-            local_send_failure_at_by_peer: HashMap::new(),
+            local_send_failures: LocalSendFailures::default(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
             configured_peer_send_weights,
@@ -3744,16 +3798,8 @@ impl Node {
         node_addr: &NodeAddr,
         result: &Result<usize, TransportError>,
     ) {
-        match result {
-            Ok(_) => {
-                self.local_send_failure_at_by_peer.remove(node_addr);
-            }
-            Err(error) if error.is_local_route_unavailable() => {
-                self.local_send_failure_at_by_peer
-                    .insert(*node_addr, std::time::Instant::now());
-            }
-            Err(_) => {}
-        }
+        self.local_send_failures
+            .note_send_outcome(node_addr, result, std::time::Instant::now());
     }
 
     /// Return the active dead-timeout for one peer after considering recent
@@ -3768,18 +3814,16 @@ impl Node {
         dead_timeout: std::time::Duration,
         fast_dead_timeout: std::time::Duration,
     ) -> std::time::Duration {
-        match self.local_send_failure_at_by_peer.get(node_addr).copied() {
-            Some(t) if now.duration_since(t) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW => {
-                fast_dead_timeout.min(dead_timeout)
-            }
-            None => dead_timeout,
-            Some(_) => dead_timeout,
-        }
+        self.local_send_failures.dead_timeout_for_peer(
+            node_addr,
+            now,
+            dead_timeout,
+            fast_dead_timeout,
+        )
     }
 
     pub(in crate::node) fn purge_expired_local_send_failures(&mut self, now: std::time::Instant) {
-        self.local_send_failure_at_by_peer
-            .retain(|_, at| now.duration_since(*at) <= LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW);
+        self.local_send_failures.purge_expired(now);
     }
 
     pub(in crate::node) fn mark_rx_loop_maintenance_timeout(&mut self) {

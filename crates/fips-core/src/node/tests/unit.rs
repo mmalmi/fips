@@ -5455,7 +5455,7 @@ fn local_send_failure_fast_dead_signal_expires_quickly() {
     let dead_timeout = std::time::Duration::from_secs(30);
     let fast_dead_timeout = std::time::Duration::from_secs(5);
 
-    node.local_send_failure_at_by_peer.insert(peer_addr, now);
+    node.local_send_failures.record_failure(peer_addr, now);
 
     assert_eq!(
         node.local_send_failure_dead_timeout_for_peer(
@@ -5466,7 +5466,7 @@ fn local_send_failure_fast_dead_signal_expires_quickly() {
         ),
         fast_dead_timeout
     );
-    assert!(node.local_send_failure_at_by_peer.contains_key(&peer_addr));
+    assert!(node.local_send_failures.contains_key(&peer_addr));
 
     let later = now + std::time::Duration::from_secs(4);
     node.purge_expired_local_send_failures(later);
@@ -5480,9 +5480,56 @@ fn local_send_failure_fast_dead_signal_expires_quickly() {
         dead_timeout
     );
     assert!(
-        !node.local_send_failure_at_by_peer.contains_key(&peer_addr),
+        !node.local_send_failures.contains_key(&peer_addr),
         "stale route failures must not keep compressing link-dead timeout"
     );
+}
+
+#[test]
+fn local_send_failures_own_peer_scoped_fast_dead_clear_and_expiry() {
+    let failed_peer = make_node_addr(0xA1);
+    let quiet_peer = make_node_addr(0xA2);
+    let now = std::time::Instant::now();
+    let dead_timeout = std::time::Duration::from_secs(30);
+    let fast_dead_timeout = std::time::Duration::from_secs(5);
+    let route_error = Err(crate::transport::TransportError::SendFailed(
+        "No route to host (os error 65)".to_string(),
+    ));
+
+    let mut failures = LocalSendFailures::default();
+    failures.note_send_outcome(&failed_peer, &route_error, now);
+
+    assert!(failures.contains_key(&failed_peer));
+    assert!(!failures.contains_key(&quiet_peer));
+    assert_eq!(
+        failures.dead_timeout_for_peer(&failed_peer, now, dead_timeout, fast_dead_timeout),
+        fast_dead_timeout
+    );
+    assert_eq!(
+        failures.dead_timeout_for_peer(&quiet_peer, now, dead_timeout, fast_dead_timeout),
+        dead_timeout,
+        "local route failure must remain scoped to the peer whose send failed"
+    );
+
+    let non_local_error = Err(crate::transport::TransportError::SendFailed(
+        "connection refused".to_string(),
+    ));
+    failures.note_send_outcome(&quiet_peer, &non_local_error, now);
+    assert!(
+        !failures.contains_key(&quiet_peer),
+        "non-local send errors must not create a fast-dead route signal"
+    );
+
+    failures.note_send_outcome(&failed_peer, &Ok(1), now);
+    assert!(
+        !failures.contains_key(&failed_peer),
+        "successful sends must clear that peer's local route failure signal"
+    );
+
+    failures.record_failure(failed_peer, now);
+    let later = now + std::time::Duration::from_secs(4);
+    failures.purge_expired(later);
+    assert!(!failures.contains_key(&failed_peer));
 }
 
 #[tokio::test]
@@ -5541,8 +5588,8 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
 
     // Simulate a route-unavailable send to some other peer. The quiet peer
     // has exceeded the fast timeout, but not the normal link-dead timeout.
-    node.local_send_failure_at_by_peer
-        .insert(failed_addr, std::time::Instant::now());
+    node.local_send_failures
+        .record_failure(failed_addr, std::time::Instant::now());
 
     node.check_link_heartbeats().await;
 
