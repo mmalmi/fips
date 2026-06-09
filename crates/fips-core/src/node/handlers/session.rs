@@ -107,7 +107,7 @@ struct PipelinedEndpointWire {
 }
 
 #[cfg(unix)]
-struct PipelinedEndpointWireArgs<'a> {
+struct PipelinedEndpointWirePlan<'a> {
     source_addr: &'a NodeAddr,
     dest_addr: &'a NodeAddr,
     inner_plaintext: &'a [u8],
@@ -115,9 +115,19 @@ struct PipelinedEndpointWireArgs<'a> {
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
     path_mtu: u16,
     default_ttl: u8,
-    fmp_header: [u8; ESTABLISHED_HEADER_SIZE],
-    fsp_header: [u8; FSP_HEADER_SIZE],
-    timestamp_ms: u32,
+    link_plaintext_len: usize,
+    fmp_payload_len: u16,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointWorkerWire {
+    fmp_cipher: ring::aead::LessSafeKey,
+    fmp_counter: u64,
+    fsp_counter: u64,
+    wire_buf: Vec<u8>,
+    fsp_seal: crate::node::encrypt_worker::FspSealJob,
+    link_plaintext_len: usize,
+    wire_capacity: usize,
 }
 
 #[cfg(unix)]
@@ -142,41 +152,132 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
 }
 
 #[cfg(unix)]
-fn build_pipelined_endpoint_wire(args: PipelinedEndpointWireArgs<'_>) -> PipelinedEndpointWire {
-    let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
-        args.inner_plaintext.len(),
-        args.my_coords,
-        args.dest_coords,
-    );
-    let fmp_inner_len = pipelined_endpoint_fmp_payload_len(link_plaintext_len)
-        .expect("pipelined FMP payload length should be pre-validated")
-        as usize;
-
-    let wire_capacity = ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
-    let mut wire_buf = Vec::with_capacity(wire_capacity);
-    wire_buf.extend_from_slice(&args.fmp_header);
-    wire_buf.extend_from_slice(&args.timestamp_ms.to_le_bytes());
-    wire_buf.push(LinkMessageType::SessionDatagram.to_byte());
-    wire_buf.push(args.default_ttl);
-    wire_buf.extend_from_slice(&args.path_mtu.to_le_bytes());
-    wire_buf.extend_from_slice(args.source_addr.as_bytes());
-    wire_buf.extend_from_slice(args.dest_addr.as_bytes());
-    let fsp_aad_offset = wire_buf.len();
-    wire_buf.extend_from_slice(&args.fsp_header);
-    if let (Some(src), Some(dst)) = (args.my_coords, args.dest_coords) {
-        encode_coords(src, &mut wire_buf);
-        encode_coords(dst, &mut wire_buf);
+impl<'a> PipelinedEndpointWirePlan<'a> {
+    fn new(
+        source_addr: &'a NodeAddr,
+        dest_addr: &'a NodeAddr,
+        inner_plaintext: &'a [u8],
+        my_coords: Option<&'a crate::tree::TreeCoordinate>,
+        dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+        path_mtu: u16,
+        default_ttl: u8,
+    ) -> Option<Self> {
+        let link_plaintext_len =
+            pipelined_endpoint_link_plaintext_len(inner_plaintext.len(), my_coords, dest_coords);
+        let fmp_payload_len = pipelined_endpoint_fmp_payload_len(link_plaintext_len)?;
+        Some(Self {
+            source_addr,
+            dest_addr,
+            inner_plaintext,
+            my_coords,
+            dest_coords,
+            path_mtu,
+            default_ttl,
+            link_plaintext_len,
+            fmp_payload_len,
+        })
     }
-    let fsp_plaintext_offset = wire_buf.len();
-    wire_buf.extend_from_slice(args.inner_plaintext);
 
-    PipelinedEndpointWire {
-        wire_buf,
-        fsp_aad_offset,
-        fsp_plaintext_offset,
-        link_plaintext_len,
-        fmp_inner_len,
-        wire_capacity,
+    fn link_plaintext_len(&self) -> usize {
+        self.link_plaintext_len
+    }
+
+    fn fmp_payload_len(&self) -> u16 {
+        self.fmp_payload_len
+    }
+
+    fn build(
+        &self,
+        fmp_header: [u8; ESTABLISHED_HEADER_SIZE],
+        fsp_header: [u8; FSP_HEADER_SIZE],
+        timestamp_ms: u32,
+    ) -> PipelinedEndpointWire {
+        let fmp_inner_len = self.fmp_payload_len as usize;
+
+        let wire_capacity = ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
+        let mut wire_buf = Vec::with_capacity(wire_capacity);
+        wire_buf.extend_from_slice(&fmp_header);
+        wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+        wire_buf.push(LinkMessageType::SessionDatagram.to_byte());
+        wire_buf.push(self.default_ttl);
+        wire_buf.extend_from_slice(&self.path_mtu.to_le_bytes());
+        wire_buf.extend_from_slice(self.source_addr.as_bytes());
+        wire_buf.extend_from_slice(self.dest_addr.as_bytes());
+        let fsp_aad_offset = wire_buf.len();
+        wire_buf.extend_from_slice(&fsp_header);
+        if let (Some(src), Some(dst)) = (self.my_coords, self.dest_coords) {
+            encode_coords(src, &mut wire_buf);
+            encode_coords(dst, &mut wire_buf);
+        }
+        let fsp_plaintext_offset = wire_buf.len();
+        wire_buf.extend_from_slice(self.inner_plaintext);
+
+        PipelinedEndpointWire {
+            wire_buf,
+            fsp_aad_offset,
+            fsp_plaintext_offset,
+            link_plaintext_len: self.link_plaintext_len,
+            fmp_inner_len,
+            wire_capacity,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointWire {
+    fn into_worker_wire(
+        self,
+        fmp_reservation: crate::node::PreparedFmpWorkerReservation,
+        fsp_reservation: crate::node::session::FspSendReservation,
+    ) -> PipelinedEndpointWorkerWire {
+        debug_assert_eq!(self.wire_capacity, fmp_reservation.predicted_bytes);
+        debug_assert_eq!(
+            &self.wire_buf[..ESTABLISHED_HEADER_SIZE],
+            &fmp_reservation.header
+        );
+        debug_assert_eq!(
+            &self.wire_buf[self.fsp_aad_offset..self.fsp_aad_offset + FSP_HEADER_SIZE],
+            &fsp_reservation.header
+        );
+
+        PipelinedEndpointWorkerWire {
+            fmp_cipher: fmp_reservation.cipher,
+            fmp_counter: fmp_reservation.counter,
+            fsp_counter: fsp_reservation.counter,
+            wire_buf: self.wire_buf,
+            fsp_seal: crate::node::encrypt_worker::FspSealJob {
+                cipher: fsp_reservation.cipher,
+                counter: fsp_reservation.counter,
+                aad_offset: self.fsp_aad_offset,
+                plaintext_offset: self.fsp_plaintext_offset,
+            },
+            link_plaintext_len: self.link_plaintext_len,
+            wire_capacity: self.wire_capacity,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointWorkerWire {
+    fn into_job(
+        self,
+        send_target: crate::node::encrypt_worker::SelectedSendTarget,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+        scheduling_weight: u8,
+        queued_at: Option<std::time::Instant>,
+    ) -> crate::node::encrypt_worker::FmpSendJob {
+        crate::node::encrypt_worker::FmpSendJob {
+            cipher: self.fmp_cipher,
+            counter: self.fmp_counter,
+            wire_buf: self.wire_buf,
+            fsp_seal: Some(self.fsp_seal),
+            send_target,
+            bulk_endpoint_data,
+            drop_on_backpressure,
+            scheduling_weight,
+            queued_at,
+        }
     }
 }
 
@@ -2457,21 +2558,23 @@ impl Node {
             }
         }
 
-        let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
-            send.inner_plaintext.len(),
+        let source_addr = *self.node_addr();
+        let wire_plan = PipelinedEndpointWirePlan::new(
+            &source_addr,
+            dest_addr,
+            send.inner_plaintext,
             send.my_coords,
             send.dest_coords,
-        );
-        let fmp_payload_len =
-            pipelined_endpoint_fmp_payload_len(link_plaintext_len).ok_or_else(|| {
-                NodeError::SendFailed {
-                    node_addr: next_hop_addr,
-                    reason: "pipelined FMP payload too large".into(),
-                }
-            })?;
+            path_mtu,
+            self.config.node.session.default_ttl,
+        )
+        .ok_or_else(|| NodeError::SendFailed {
+            node_addr: next_hop_addr,
+            reason: "pipelined FMP payload too large".into(),
+        })?;
         let fmp_prepared = self
             .peers
-            .prepare_fmp_send(&next_hop_addr, false, fmp_payload_len)
+            .prepare_fmp_send(&next_hop_addr, false, wire_plan.fmp_payload_len())
             .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?;
 
         let transport = self
@@ -2540,36 +2643,32 @@ impl Node {
         else {
             return Ok(false);
         };
-        let source_addr = *self.node_addr();
-        let wire = build_pipelined_endpoint_wire(PipelinedEndpointWireArgs {
-            source_addr: &source_addr,
-            dest_addr,
-            inner_plaintext: send.inner_plaintext,
-            my_coords: send.my_coords,
-            dest_coords: send.dest_coords,
-            path_mtu,
-            default_ttl: self.config.node.session.default_ttl,
-            fmp_header: fmp_reservation.header,
-            fsp_header: fsp_reservation.header,
-            timestamp_ms: fmp_prepared.timestamp_ms,
-        });
+        let wire = wire_plan.build(
+            fmp_reservation.header,
+            fsp_reservation.header,
+            fmp_prepared.timestamp_ms,
+        );
+        let worker_wire = wire.into_worker_wire(fmp_reservation, fsp_reservation);
+        debug_assert_eq!(
+            worker_wire.link_plaintext_len,
+            wire_plan.link_plaintext_len()
+        );
 
-        debug_assert_eq!(wire.wire_capacity, fmp_reservation.predicted_bytes);
         let _ = self.peers.record_fmp_send_bookkeeping(
             &next_hop_addr,
-            fmp_reservation.counter,
+            worker_wire.fmp_counter,
             fmp_prepared.timestamp_ms,
-            fmp_reservation.predicted_bytes,
+            worker_wire.wire_capacity,
         );
         self.stats_mut()
             .forwarding
-            .record_originated(wire.link_plaintext_len + crate::noise::TAG_SIZE);
+            .record_originated(worker_wire.link_plaintext_len + crate::noise::TAG_SIZE);
 
         let _ = self.sessions.record_fsp_send_bookkeeping(
             dest_addr,
             FspSendBookkeepingInput::data(
                 send.payload.len(),
-                fsp_reservation.counter,
+                worker_wire.fsp_counter,
                 send.timestamp,
                 send.inner_plaintext.len() + crate::noise::TAG_SIZE,
                 send.now_ms,
@@ -2585,17 +2684,8 @@ impl Node {
             && bulk_endpoint_data
             && send.payload.drop_on_backpressure();
 
-        workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
-            cipher: fmp_reservation.cipher,
-            counter: fmp_reservation.counter,
-            wire_buf: wire.wire_buf,
-            fsp_seal: Some(crate::node::encrypt_worker::FspSealJob {
-                cipher: fsp_reservation.cipher,
-                counter: fsp_reservation.counter,
-                aad_offset: wire.fsp_aad_offset,
-                plaintext_offset: wire.fsp_plaintext_offset,
-            }),
-            send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
+        workers.dispatch(worker_wire.into_job(
+            crate::node::encrypt_worker::SelectedSendTarget::new(
                 socket,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 fmp_prepared.connected_socket,
@@ -2604,8 +2694,8 @@ impl Node {
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,
-            queued_at: crate::perf_profile::stamp(),
-        });
+            crate::perf_profile::stamp(),
+        ));
 
         Ok(true)
     }
@@ -3432,11 +3522,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn pipelined_endpoint_wire_uses_reserved_counters_and_offsets() {
+    fn pipelined_endpoint_wire_plan_owns_payload_sizing_and_worker_offsets() {
         use crate::node::wire::EncryptedHeader;
         use crate::node::wire::{FLAG_KEY_EPOCH, FLAG_SP, build_established_header};
+        use crate::node::{PreparedFmpWorkerReservation, session::FspSendReservation};
         use crate::tree::TreeCoordinate;
         use crate::utils::index::SessionIndex;
+        use ring::aead::{LessSafeKey, UnboundKey};
+
+        fn test_cipher(byte: u8) -> LessSafeKey {
+            let unbound =
+                UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[byte; 32]).expect("test key");
+            LessSafeKey::new(unbound)
+        }
 
         let source_addr = node_addr(0x10);
         let dest_addr = node_addr(0x20);
@@ -3453,30 +3551,30 @@ mod tests {
         let path_mtu = 1234;
         let default_ttl = 9;
         let timestamp_ms = 0x1122_3344;
-        let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
-            inner_plaintext.len(),
+        let plan = PipelinedEndpointWirePlan::new(
+            &source_addr,
+            &dest_addr,
+            &inner_plaintext,
             Some(&source_coords),
             Some(&dest_coords),
-        );
-        let fmp_payload_len =
-            pipelined_endpoint_fmp_payload_len(link_plaintext_len).expect("valid payload length");
-        let fmp_header =
-            build_established_header(their_index, fmp_counter, fmp_flags, fmp_payload_len);
-
-        let wire = build_pipelined_endpoint_wire(PipelinedEndpointWireArgs {
-            source_addr: &source_addr,
-            dest_addr: &dest_addr,
-            inner_plaintext: &inner_plaintext,
-            my_coords: Some(&source_coords),
-            dest_coords: Some(&dest_coords),
             path_mtu,
             default_ttl,
-            fmp_header,
-            fsp_header,
-            timestamp_ms,
-        });
-
+        )
+        .expect("valid pipelined endpoint plan");
         let coords_size = coords_wire_size(&source_coords) + coords_wire_size(&dest_coords);
+        assert_eq!(
+            plan.link_plaintext_len(),
+            SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + inner_plaintext.len()
+        );
+        assert_eq!(
+            plan.fmp_payload_len() as usize,
+            4 + plan.link_plaintext_len() + crate::noise::TAG_SIZE
+        );
+        let fmp_header =
+            build_established_header(their_index, fmp_counter, fmp_flags, plan.fmp_payload_len());
+
+        let wire = plan.build(fmp_header, fsp_header, timestamp_ms);
+
         assert_eq!(
             wire.link_plaintext_len,
             SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + inner_plaintext.len()
@@ -3540,6 +3638,37 @@ mod tests {
             wire.fsp_aad_offset + FSP_HEADER_SIZE + coords_size
         );
         assert_eq!(&wire.wire_buf[wire.fsp_plaintext_offset..], inner_plaintext);
+
+        let fmp_reservation = PreparedFmpWorkerReservation {
+            counter: fmp_counter,
+            header: fmp_header,
+            cipher: test_cipher(7),
+            predicted_bytes: wire.wire_capacity,
+        };
+        let fsp_reservation = FspSendReservation {
+            counter: fsp_counter,
+            header: fsp_header,
+            cipher: test_cipher(8),
+        };
+        let worker_wire = wire.into_worker_wire(fmp_reservation, fsp_reservation);
+        assert_eq!(worker_wire.fmp_counter, fmp_counter);
+        assert_eq!(worker_wire.fsp_counter, fsp_counter);
+        assert_eq!(
+            worker_wire.fsp_seal.aad_offset,
+            ESTABLISHED_HEADER_SIZE + 4 + SESSION_DATAGRAM_HEADER_SIZE
+        );
+        assert_eq!(
+            worker_wire.fsp_seal.plaintext_offset,
+            ESTABLISHED_HEADER_SIZE
+                + 4
+                + SESSION_DATAGRAM_HEADER_SIZE
+                + FSP_HEADER_SIZE
+                + coords_size
+        );
+        assert_eq!(
+            worker_wire.wire_capacity,
+            ESTABLISHED_HEADER_SIZE + plan.fmp_payload_len() as usize + crate::noise::TAG_SIZE
+        );
     }
 
     #[test]
