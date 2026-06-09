@@ -2390,6 +2390,113 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
 }
 
 #[test]
+fn session_registry_owns_fsp_send_bookkeeping() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let local = Identity::generate();
+    let peer = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let next_hop = make_node_addr(77);
+
+    let mut registry = SessionRegistry::default();
+    let mut entry = SessionEntry::new(
+        peer_addr,
+        peer.pubkey_full(),
+        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x01; 8], [0x02; 8])),
+        1_000,
+        true,
+    );
+    entry.init_mmp(&crate::config::SessionMmpConfig::default());
+    assert!(registry.insert(peer_addr, entry).is_none());
+
+    let data_update =
+        FspSendBookkeepingInput::data(123, 7, 1_234, 256, 2_000).with_next_hop(next_hop);
+    let data_result = registry
+        .record_fsp_send_bookkeeping(&peer_addr, data_update)
+        .expect("FSP data send bookkeeping should find session entry");
+    assert!(data_result.data_recorded);
+    assert!(data_result.mmp_recorded);
+    assert!(data_result.touched);
+    assert!(data_result.next_hop_recorded);
+
+    let entry = registry
+        .get(&peer_addr)
+        .expect("send bookkeeping must keep session storage");
+    assert_eq!(entry.traffic_counters(), (1, 0, 123, 0));
+    assert_eq!(entry.last_activity(), 2_000);
+    assert_eq!(entry.last_outbound_next_hop(), Some(next_hop));
+    let mmp = entry.mmp().expect("session should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 256);
+
+    let control_result = registry
+        .record_fsp_send_bookkeeping(&peer_addr, FspSendBookkeepingInput::control(8, 1_300, 64))
+        .expect("FSP control send bookkeeping should find session entry");
+    assert!(!control_result.data_recorded);
+    assert!(control_result.mmp_recorded);
+    assert!(!control_result.touched);
+    assert!(!control_result.next_hop_recorded);
+    let entry = registry
+        .get(&peer_addr)
+        .expect("control bookkeeping must keep session storage");
+    assert_eq!(
+        entry.traffic_counters(),
+        (1, 0, 123, 0),
+        "control/MMP bookkeeping must not inflate data counters"
+    );
+    assert_eq!(
+        entry.last_activity(),
+        2_000,
+        "control/MMP bookkeeping must not reset idle activity"
+    );
+    let mmp = entry.mmp().expect("session should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 320);
+
+    let legacy_full = Identity::generate();
+    let legacy_identity = PeerIdentity::from_pubkey_full(legacy_full.pubkey_full());
+    let legacy_addr = *legacy_identity.node_addr();
+    let legacy_entry = SessionEntry::new(
+        legacy_addr,
+        legacy_full.pubkey_full(),
+        EndToEndState::Established(make_test_fmp_session(
+            &local,
+            &legacy_full,
+            [0x03; 8],
+            [0x04; 8],
+        )),
+        3_000,
+        true,
+    );
+    assert!(registry.insert(legacy_addr, legacy_entry).is_none());
+    let legacy_result = registry
+        .record_fsp_send_bookkeeping(
+            &legacy_addr,
+            FspSendBookkeepingInput::data(10, 9, 1_400, 32, 4_000),
+        )
+        .expect("legacy session without MMP should still record data bookkeeping");
+    assert!(legacy_result.data_recorded);
+    assert!(!legacy_result.mmp_recorded);
+    assert!(legacy_result.touched);
+    let entry = registry
+        .get(&legacy_addr)
+        .expect("legacy bookkeeping must keep session storage");
+    assert_eq!(entry.traffic_counters(), (1, 0, 10, 0));
+    assert_eq!(entry.last_activity(), 4_000);
+
+    assert!(
+        registry
+            .record_fsp_send_bookkeeping(
+                &make_node_addr(99),
+                FspSendBookkeepingInput::control(10, 1_500, 48),
+            )
+            .is_none(),
+        "missing sessions should not record FSP send bookkeeping"
+    );
+}
+
+#[test]
 fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
     let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
     let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);

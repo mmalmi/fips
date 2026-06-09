@@ -21,8 +21,8 @@ use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
 use crate::node::{
-    EndpointDataPayload, EndpointDataSend, EndpointSendCommand, Node, NodeEndpointCommand,
-    NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    EndpointDataPayload, EndpointDataSend, EndpointSendCommand, FspSendBookkeepingInput, Node,
+    NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
@@ -2021,14 +2021,16 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        // Re-borrow after send (which borrowed &mut self)
-        if let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.record_sent(payload.len());
-            if let Some(mmp) = entry.mmp_mut() {
-                mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-            }
-            entry.touch(now_ms);
-        }
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::data(
+                payload.len(),
+                counter,
+                timestamp,
+                ciphertext.len(),
+                now_ms,
+            ),
+        );
 
         Ok(())
     }
@@ -2399,13 +2401,16 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        if let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.record_sent(payload.len());
-            if let Some(mmp) = entry.mmp_mut() {
-                mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-            }
-            entry.touch(now_ms);
-        }
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::data(
+                payload.len(),
+                counter,
+                timestamp,
+                ciphertext.len(),
+                now_ms,
+            ),
+        );
 
         Ok(())
     }
@@ -2592,18 +2597,17 @@ impl Node {
             .forwarding
             .record_originated(wire.link_plaintext_len + crate::noise::TAG_SIZE);
 
-        if let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.record_outbound_next_hop(next_hop_addr);
-            entry.record_sent(send.payload.len());
-            if let Some(mmp) = entry.mmp_mut() {
-                mmp.sender.record_sent(
-                    fsp_reservation.counter,
-                    send.timestamp,
-                    send.inner_plaintext.len() + crate::noise::TAG_SIZE,
-                );
-            }
-            entry.touch(send.now_ms);
-        }
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::data(
+                send.payload.len(),
+                fsp_reservation.counter,
+                send.timestamp,
+                send.inner_plaintext.len() + crate::noise::TAG_SIZE,
+                send.now_ms,
+            )
+            .with_next_hop(next_hop_addr),
+        );
         let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
         let bulk_endpoint_data =
@@ -2752,12 +2756,10 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        // Record in MMP sender state (no touch — MMP reports don't reset idle timer)
-        if let Some(entry) = self.sessions.get_mut(dest_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-        }
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::control(counter, timestamp, ciphertext.len()),
+        );
 
         Ok(())
     }
@@ -2840,12 +2842,10 @@ impl Node {
 
         self.send_session_datagram(&mut datagram).await?;
 
-        // Record in MMP (infrastructure traffic — no idle timer touch)
-        if let Some(entry) = self.sessions.get_mut(dest_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            mmp.sender.record_sent(counter, timestamp, ciphertext.len());
-        }
+        let _ = self.sessions.record_fsp_send_bookkeeping(
+            dest_addr,
+            FspSendBookkeepingInput::control(counter, timestamp, ciphertext.len()),
+        );
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
         Ok(())

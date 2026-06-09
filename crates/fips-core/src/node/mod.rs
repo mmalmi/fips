@@ -2416,6 +2416,59 @@ impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct FspSendBookkeepingInput {
+    pub(in crate::node) data_bytes: Option<usize>,
+    pub(in crate::node) counter: u64,
+    pub(in crate::node) timestamp: u32,
+    pub(in crate::node) frame_bytes: usize,
+    pub(in crate::node) touch_ms: Option<u64>,
+    pub(in crate::node) next_hop: Option<NodeAddr>,
+}
+
+impl FspSendBookkeepingInput {
+    pub(in crate::node) fn data(
+        data_bytes: usize,
+        counter: u64,
+        timestamp: u32,
+        frame_bytes: usize,
+        touch_ms: u64,
+    ) -> Self {
+        Self {
+            data_bytes: Some(data_bytes),
+            counter,
+            timestamp,
+            frame_bytes,
+            touch_ms: Some(touch_ms),
+            next_hop: None,
+        }
+    }
+
+    pub(in crate::node) fn control(counter: u64, timestamp: u32, frame_bytes: usize) -> Self {
+        Self {
+            data_bytes: None,
+            counter,
+            timestamp,
+            frame_bytes,
+            touch_ms: None,
+            next_hop: None,
+        }
+    }
+
+    pub(in crate::node) fn with_next_hop(mut self, next_hop: NodeAddr) -> Self {
+        self.next_hop = Some(next_hop);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct FspSendBookkeeping {
+    pub(in crate::node) data_recorded: bool,
+    pub(in crate::node) mmp_recorded: bool,
+    pub(in crate::node) touched: bool,
+    pub(in crate::node) next_hop_recorded: bool,
+}
+
 /// End-to-end FSP session storage keyed by remote node address.
 #[derive(Default)]
 pub(in crate::node) struct SessionRegistry {
@@ -2469,6 +2522,40 @@ impl SessionRegistry {
 
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &SessionEntry> {
         self.sessions.values()
+    }
+
+    pub(in crate::node) fn record_fsp_send_bookkeeping(
+        &mut self,
+        node_addr: &NodeAddr,
+        input: FspSendBookkeepingInput,
+    ) -> Option<FspSendBookkeeping> {
+        let entry = self.sessions.get_mut(node_addr)?;
+        let mut result = FspSendBookkeeping {
+            data_recorded: false,
+            mmp_recorded: false,
+            touched: false,
+            next_hop_recorded: false,
+        };
+
+        if let Some(next_hop) = input.next_hop {
+            entry.record_outbound_next_hop(next_hop);
+            result.next_hop_recorded = true;
+        }
+        if let Some(data_bytes) = input.data_bytes {
+            entry.record_sent(data_bytes);
+            result.data_recorded = true;
+        }
+        if let Some(mmp) = entry.mmp_mut() {
+            mmp.sender
+                .record_sent(input.counter, input.timestamp, input.frame_bytes);
+            result.mmp_recorded = true;
+        }
+        if let Some(touch_ms) = input.touch_ms {
+            entry.touch(touch_ms);
+            result.touched = true;
+        }
+
+        Some(result)
     }
 
     pub(in crate::node) fn record_worker_registration(
