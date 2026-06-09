@@ -139,6 +139,14 @@ struct PipelinedEndpointSendTarget {
     socket_addr: std::net::SocketAddr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionDatagramRuntimeRoute {
+    dest_addr: NodeAddr,
+    next_hop_addr: NodeAddr,
+    path_mtu: u16,
+    source_mmp_seeded: bool,
+}
+
 #[cfg(unix)]
 struct PipelinedEndpointDispatchPlan<'a> {
     next_hop_addr: NodeAddr,
@@ -328,6 +336,52 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
         .checked_add(link_plaintext_len)?
         .checked_add(crate::noise::TAG_SIZE)?;
     u16::try_from(payload_len).ok()
+}
+
+impl SessionDatagramRuntimeRoute {
+    fn new(
+        dest_addr: NodeAddr,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        source_mmp_seeded: bool,
+    ) -> Self {
+        Self {
+            dest_addr,
+            next_hop_addr,
+            path_mtu,
+            source_mmp_seeded,
+        }
+    }
+
+    #[cfg(test)]
+    fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    fn next_hop_addr(&self) -> NodeAddr {
+        self.next_hop_addr
+    }
+
+    #[cfg(test)]
+    fn path_mtu(&self) -> u16 {
+        self.path_mtu
+    }
+
+    #[cfg(test)]
+    fn source_mmp_seeded(&self) -> bool {
+        self.source_mmp_seeded
+    }
+
+    fn record_success(self, node: &mut Node, encoded_len: usize) {
+        if let Some(entry) = node.sessions.get_mut(&self.dest_addr) {
+            entry.record_outbound_next_hop(self.next_hop_addr);
+        }
+        node.stats_mut().forwarding.record_originated(encoded_len);
+    }
+
+    fn record_failure(self, node: &mut Node) {
+        node.record_route_failure(self.dest_addr, self.next_hop_addr);
+    }
 }
 
 #[cfg(unix)]
@@ -3860,50 +3914,63 @@ impl Node {
         &mut self,
         datagram: &mut SessionDatagram,
     ) -> Result<(), NodeError> {
-        let next_hop_addr = match self.find_next_hop(&datagram.dest_addr) {
+        let runtime_route = self.resolve_session_datagram_runtime_route(datagram)?;
+
+        let encoded = datagram.encode();
+        if let Err(err) = self
+            .send_encrypted_link_message(&runtime_route.next_hop_addr(), &encoded)
+            .await
+        {
+            runtime_route.record_failure(self);
+            return Err(err);
+        }
+        runtime_route.record_success(self, encoded.len());
+        Ok(())
+    }
+
+    fn resolve_session_datagram_runtime_route(
+        &mut self,
+        datagram: &mut SessionDatagram,
+    ) -> Result<SessionDatagramRuntimeRoute, NodeError> {
+        let dest_addr = datagram.dest_addr;
+        let next_hop_addr = match self.find_next_hop(&dest_addr) {
             Some(peer) => *peer.node_addr(),
             None => {
                 return Err(NodeError::SendFailed {
-                    node_addr: datagram.dest_addr,
+                    node_addr: dest_addr,
                     reason: "no route to destination".into(),
                 });
             }
         };
 
-        // Seed path_mtu from the first-hop transport MTU (same as forwarding path)
+        let mut path_mtu = datagram.path_mtu;
         if let Some(peer) = self.peers.get(&next_hop_addr)
             && let Some(tid) = peer.transport_id()
             && let Some(transport) = self.transports.get(&tid)
         {
-            if let Some(addr) = peer.current_addr() {
-                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(addr));
+            path_mtu = if let Some(addr) = peer.current_addr() {
+                path_mtu.min(transport.link_mtu(addr))
             } else {
-                datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
-            }
+                path_mtu.min(transport.mtu())
+            };
         }
+        datagram.path_mtu = path_mtu;
 
-        // Source-side: seed our PathMtuState.current_mtu from the outbound
-        // transport MTU so it doesn't stay at u16::MAX until the destination
-        // sends a PathMtuNotification back.
-        if let Some(entry) = self.sessions.get_mut(&datagram.dest_addr)
+        let source_mmp_seeded = if let Some(entry) = self.sessions.get_mut(&dest_addr)
             && let Some(mmp) = entry.mmp_mut()
         {
-            mmp.path_mtu.seed_source_mtu(datagram.path_mtu);
-        }
+            mmp.path_mtu.seed_source_mtu(path_mtu);
+            true
+        } else {
+            false
+        };
 
-        let encoded = datagram.encode();
-        if let Err(err) = self
-            .send_encrypted_link_message(&next_hop_addr, &encoded)
-            .await
-        {
-            self.record_route_failure(datagram.dest_addr, next_hop_addr);
-            return Err(err);
-        }
-        if let Some(entry) = self.sessions.get_mut(&datagram.dest_addr) {
-            entry.record_outbound_next_hop(next_hop_addr);
-        }
-        self.stats_mut().forwarding.record_originated(encoded.len());
-        Ok(())
+        Ok(SessionDatagramRuntimeRoute::new(
+            dest_addr,
+            next_hop_addr,
+            path_mtu,
+            source_mmp_seeded,
+        ))
     }
 
     /// Look up destination coordinates from available caches.
@@ -5758,6 +5825,142 @@ mod tests {
         assert_eq!(
             node.stats().forwarding.originated_bytes,
             originated_bytes_before + expected_originated_bytes as u64
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_datagram_runtime_route_owns_next_hop_path_mtu_and_bookkeeping() {
+        use crate::PeerIdentity;
+        use crate::config::RoutingMode;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{LinkId, TransportAddr, TransportHandle, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let dest = Identity::generate();
+        let transit = Identity::generate();
+        let transit_identity = PeerIdentity::from_pubkey_full(transit.pubkey_full());
+        let dest_addr = *dest.node_addr();
+        let transit_addr = *transit_identity.node_addr();
+        let transport_id = TransportId::new(0x57);
+
+        let mut config = crate::config::Config::new();
+        config.node.routing.mode = RoutingMode::ReplyLearned;
+        let mut node = Node::with_identity(local, config).expect("node");
+
+        let mut session = established_entry(&node.identity, &dest);
+        session.mark_established(0x1000);
+        session.init_mmp(&node.config.node.session_mmp);
+        assert_eq!(
+            session.mmp().expect("session mmp").path_mtu.current_mtu(),
+            u16::MAX
+        );
+        assert!(node.sessions.insert(dest_addr, session).is_none());
+
+        let active_peer = ActivePeer::with_session(
+            transit_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &transit),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:9"),
+            crate::transport::LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        node.peers
+            .insert_with_current_session_index(transit_addr, active_peer);
+        let (packet_tx, _packet_rx) = crate::transport::packet_channel(8);
+        let udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        assert!(
+            node.transports
+                .insert(transport_id, TransportHandle::Udp(udp))
+                .is_none()
+        );
+        node.learn_reverse_route(dest_addr, transit_addr);
+
+        let mut datagram = SessionDatagram::new(
+            *node.node_addr(),
+            dest_addr,
+            vec![SessionMessageType::DataPacket.to_byte(), 0, 0, 0],
+        )
+        .with_ttl(9);
+        let route = node
+            .resolve_session_datagram_runtime_route(&mut datagram)
+            .expect("learned transit route should resolve");
+
+        assert_eq!(route.dest_addr(), dest_addr);
+        assert_eq!(route.next_hop_addr(), transit_addr);
+        assert_eq!(route.path_mtu(), 1234);
+        assert!(
+            route.source_mmp_seeded(),
+            "route owner should seed the session source-side MMP path MTU"
+        );
+        assert_eq!(
+            datagram.path_mtu, 1234,
+            "route owner should min-fold the outgoing transport MTU into the datagram"
+        );
+        assert_eq!(
+            node.sessions
+                .get(&dest_addr)
+                .and_then(|entry| entry.mmp())
+                .expect("session mmp")
+                .path_mtu
+                .current_mtu(),
+            1234
+        );
+
+        let originated_before = node.stats().forwarding.originated_packets;
+        let originated_bytes_before = node.stats().forwarding.originated_bytes;
+        let encoded_len = datagram.encode().len();
+        route.record_success(&mut node, encoded_len);
+        let session = node.sessions.get(&dest_addr).expect("session exists");
+        assert_eq!(
+            session.last_outbound_next_hop(),
+            Some(transit_addr),
+            "route owner should record the successful outbound next hop"
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_packets,
+            originated_before + 1
+        );
+        assert_eq!(
+            node.stats().forwarding.originated_bytes,
+            originated_bytes_before + encoded_len as u64
+        );
+
+        let route = node
+            .resolve_session_datagram_runtime_route(&mut datagram)
+            .expect("learned transit route should still resolve");
+        route.record_failure(&mut node);
+        let snapshot = node.learned_route_table_snapshot(Node::now_ms());
+        let learned = snapshot
+            .destinations
+            .iter()
+            .find(|dest| dest.destination == dest_addr.to_string())
+            .and_then(|dest| {
+                dest.routes
+                    .iter()
+                    .find(|route| route.next_hop == transit_addr.to_string())
+            })
+            .expect("learned transit route should remain visible");
+        assert_eq!(
+            learned.failures, 1,
+            "route owner should record send failure against the selected learned next hop"
         );
     }
 
