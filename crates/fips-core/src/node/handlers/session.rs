@@ -131,6 +131,21 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
+struct PipelinedEndpointDispatchPlan<'a> {
+    next_hop_addr: NodeAddr,
+    payload: &'a EndpointDataPayload,
+    timestamp: u32,
+    now_ms: u64,
+    fsp_flags: u8,
+    path_mtu: u16,
+    inner_plaintext_len: usize,
+    fsp_payload_len: u16,
+    bulk_endpoint_data: bool,
+    drop_on_backpressure: bool,
+    scheduling_weight: u8,
+}
+
+#[cfg(unix)]
 fn pipelined_endpoint_link_plaintext_len(
     inner_plaintext_len: usize,
     my_coords: Option<&crate::tree::TreeCoordinate>,
@@ -149,6 +164,73 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
         .checked_add(link_plaintext_len)?
         .checked_add(crate::noise::TAG_SIZE)?;
     u16::try_from(payload_len).ok()
+}
+
+#[cfg(unix)]
+impl<'a> PipelinedEndpointDispatchPlan<'a> {
+    fn new(
+        send: &PipelinedEndpointSend<'a>,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+    ) -> Option<Self> {
+        let fsp_payload_len = u16::try_from(send.inner_plaintext.len()).ok()?;
+        let bulk_endpoint_data =
+            send.fsp_flags & FSP_FLAG_CP == 0 && send.payload.bulk_endpoint_data();
+        let drop_on_backpressure = next_hop_addr == *send.dest_addr
+            && !direct_path_blocks_direct_payload
+            && bulk_endpoint_data
+            && send.payload.drop_on_backpressure();
+
+        Some(Self {
+            next_hop_addr,
+            payload: send.payload,
+            timestamp: send.timestamp,
+            now_ms: send.now_ms,
+            fsp_flags: send.fsp_flags,
+            path_mtu,
+            inner_plaintext_len: send.inner_plaintext.len(),
+            fsp_payload_len,
+            bulk_endpoint_data,
+            drop_on_backpressure,
+            scheduling_weight,
+        })
+    }
+
+    fn fsp_reservation_input(&self) -> crate::node::FspWorkerSendReservationInput {
+        crate::node::FspWorkerSendReservationInput {
+            flags: self.fsp_flags,
+            payload_len: self.fsp_payload_len,
+            path_mtu: self.path_mtu,
+        }
+    }
+
+    fn fsp_bookkeeping_input(&self, fsp_counter: u64) -> FspSendBookkeepingInput {
+        FspSendBookkeepingInput::data(
+            self.payload.len(),
+            fsp_counter,
+            self.timestamp,
+            self.inner_plaintext_len + crate::noise::TAG_SIZE,
+            self.now_ms,
+        )
+        .with_next_hop(self.next_hop_addr)
+    }
+
+    fn into_worker_job(
+        self,
+        worker_wire: PipelinedEndpointWorkerWire,
+        send_target: crate::node::encrypt_worker::SelectedSendTarget,
+        queued_at: Option<std::time::Instant>,
+    ) -> crate::node::encrypt_worker::FmpSendJob {
+        worker_wire.into_job(
+            send_target,
+            self.bulk_endpoint_data,
+            self.drop_on_backpressure,
+            self.scheduling_weight,
+            queued_at,
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -2616,21 +2698,22 @@ impl Node {
             return Ok(false);
         }
 
-        let fsp_payload_len =
-            u16::try_from(send.inner_plaintext.len()).map_err(|_| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "endpoint FSP payload too large".into(),
-            })?;
+        let direct_path_blocks_direct_payload = next_hop_addr == *dest_addr
+            && self.session_direct_path_blocks_direct_payload(dest_addr, send.now_ms);
+        let dispatch_plan = PipelinedEndpointDispatchPlan::new(
+            &send,
+            next_hop_addr,
+            path_mtu,
+            self.send_weight_for_peer(&next_hop_addr),
+            direct_path_blocks_direct_payload,
+        )
+        .ok_or_else(|| NodeError::SendFailed {
+            node_addr: *dest_addr,
+            reason: "endpoint FSP payload too large".into(),
+        })?;
         let Some(fsp_reservation) = self
             .sessions
-            .reserve_endpoint_data_fsp_worker_send(
-                dest_addr,
-                crate::node::FspWorkerSendReservationInput {
-                    flags: send.fsp_flags,
-                    payload_len: fsp_payload_len,
-                    path_mtu,
-                },
-            )
+            .reserve_endpoint_data_fsp_worker_send(dest_addr, dispatch_plan.fsp_reservation_input())
             .map_err(|e| Self::map_fsp_worker_send_reservation_error(*dest_addr, e))?
         else {
             return Ok(false);
@@ -2666,34 +2749,17 @@ impl Node {
 
         let _ = self.sessions.record_fsp_send_bookkeeping(
             dest_addr,
-            FspSendBookkeepingInput::data(
-                send.payload.len(),
-                worker_wire.fsp_counter,
-                send.timestamp,
-                send.inner_plaintext.len() + crate::noise::TAG_SIZE,
-                send.now_ms,
-            )
-            .with_next_hop(next_hop_addr),
+            dispatch_plan.fsp_bookkeeping_input(worker_wire.fsp_counter),
         );
-        let scheduling_weight = self.send_weight_for_peer(&next_hop_addr);
 
-        let bulk_endpoint_data =
-            send.fsp_flags & FSP_FLAG_CP == 0 && send.payload.bulk_endpoint_data();
-        let drop_on_backpressure = next_hop_addr == *dest_addr
-            && !self.session_direct_path_blocks_direct_payload(dest_addr, send.now_ms)
-            && bulk_endpoint_data
-            && send.payload.drop_on_backpressure();
-
-        workers.dispatch(worker_wire.into_job(
+        workers.dispatch(dispatch_plan.into_worker_job(
+            worker_wire,
             crate::node::encrypt_worker::SelectedSendTarget::new(
                 socket,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 fmp_prepared.connected_socket,
                 socket_addr,
             ),
-            bulk_endpoint_data,
-            drop_on_backpressure,
-            scheduling_weight,
             crate::perf_profile::stamp(),
         ));
 
@@ -3669,6 +3735,70 @@ mod tests {
             worker_wire.wire_capacity,
             ESTABLISHED_HEADER_SIZE + plan.fmp_payload_len() as usize + crate::noise::TAG_SIZE
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipelined_endpoint_dispatch_plan_owns_worker_policy_and_bookkeeping() {
+        let dest_addr = node_addr(0x20);
+        let relay_addr = node_addr(0x30);
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let direct =
+            PipelinedEndpointDispatchPlan::new(&send, dest_addr, 1234, 7, false).expect("direct");
+        assert_eq!(direct.fsp_payload_len, inner_plaintext.len() as u16);
+        assert!(direct.bulk_endpoint_data);
+        assert!(direct.drop_on_backpressure);
+        assert_eq!(direct.scheduling_weight, 7);
+        let reservation = direct.fsp_reservation_input();
+        assert_eq!(
+            reservation,
+            crate::node::FspWorkerSendReservationInput {
+                flags: 0,
+                payload_len: inner_plaintext.len() as u16,
+                path_mtu: 1234
+            }
+        );
+        let bookkeeping = direct.fsp_bookkeeping_input(0x0102_0304_0506_0708);
+        assert_eq!(bookkeeping.data_bytes, Some(payload.len()));
+        assert_eq!(bookkeeping.counter, 0x0102_0304_0506_0708);
+        assert_eq!(bookkeeping.timestamp, send.timestamp);
+        assert_eq!(
+            bookkeeping.frame_bytes,
+            inner_plaintext.len() + crate::noise::TAG_SIZE
+        );
+        assert_eq!(bookkeeping.touch_ms, Some(send.now_ms));
+        assert_eq!(bookkeeping.next_hop, Some(dest_addr));
+
+        let relayed =
+            PipelinedEndpointDispatchPlan::new(&send, relay_addr, 1234, 7, false).expect("relay");
+        assert!(relayed.bulk_endpoint_data);
+        assert!(!relayed.drop_on_backpressure);
+
+        let degraded_direct =
+            PipelinedEndpointDispatchPlan::new(&send, dest_addr, 1234, 7, true).expect("degraded");
+        assert!(degraded_direct.bulk_endpoint_data);
+        assert!(!degraded_direct.drop_on_backpressure);
+
+        let control_send = PipelinedEndpointSend {
+            fsp_flags: FSP_FLAG_CP,
+            ..send
+        };
+        let control = PipelinedEndpointDispatchPlan::new(&control_send, dest_addr, 1234, 7, false)
+            .expect("control");
+        assert!(!control.bulk_endpoint_data);
+        assert!(!control.drop_on_backpressure);
     }
 
     #[test]
