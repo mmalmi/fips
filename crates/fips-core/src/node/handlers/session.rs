@@ -169,7 +169,6 @@ struct PipelinedEndpointRoutePlan {
 struct PipelinedEndpointPeerRuntimeRoute {
     source_addr: NodeAddr,
     peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
-    path_mtu: u16,
     default_ttl: u8,
     scheduling_weight: u8,
     direct_path_blocks_direct_payload: bool,
@@ -444,7 +443,6 @@ impl PipelinedEndpointPeerRuntimeRoute {
     fn new(
         source_addr: NodeAddr,
         peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
-        path_mtu: u16,
         default_ttl: u8,
         scheduling_weight: u8,
         direct_path_blocks_direct_payload: bool,
@@ -452,7 +450,6 @@ impl PipelinedEndpointPeerRuntimeRoute {
         Self {
             source_addr,
             peer_snapshot,
-            path_mtu,
             default_ttl,
             scheduling_weight,
             direct_path_blocks_direct_payload,
@@ -463,9 +460,8 @@ impl PipelinedEndpointPeerRuntimeRoute {
         self.peer_snapshot.node_addr()
     }
 
-    #[cfg(test)]
-    fn path_mtu(&self) -> u16 {
-        self.path_mtu
+    fn transport_id(&self) -> crate::transport::TransportId {
+        self.peer_snapshot.transport_id()
     }
 
     #[cfg(test)]
@@ -473,11 +469,14 @@ impl PipelinedEndpointPeerRuntimeRoute {
         self.scheduling_weight
     }
 
-    fn route_plan(&self) -> PipelinedEndpointRoutePlan {
+    fn route_plan(
+        &self,
+        transport: &crate::transport::TransportHandle,
+    ) -> PipelinedEndpointRoutePlan {
         PipelinedEndpointRoutePlan::new(
             self.source_addr,
             self.peer_snapshot.node_addr(),
-            self.path_mtu,
+            self.peer_snapshot.path_mtu(transport),
             self.default_ttl,
             self.scheduling_weight,
             self.direct_path_blocks_direct_payload,
@@ -487,8 +486,9 @@ impl PipelinedEndpointPeerRuntimeRoute {
     fn into_runtime_send_plan<'a>(
         self,
         send: &PipelinedEndpointSend<'a>,
+        transport: &crate::transport::TransportHandle,
     ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
-        let route_plan = self.route_plan();
+        let route_plan = self.route_plan(transport);
         let send_plan = route_plan
             .build_send_plan(send)
             .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
@@ -648,6 +648,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.route_plan.next_hop_addr
     }
 
+    #[cfg(test)]
     fn transport_id(&self) -> crate::transport::TransportId {
         self.peer_snapshot.fmp_prepared().transport_id
     }
@@ -843,6 +844,26 @@ impl<'a> PipelinedEndpointRuntimeSend<'a> {
         Self { runtime_plan }
     }
 
+    async fn resolve_dispatch_with_transport(
+        self,
+        transport: &crate::transport::TransportHandle,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<Option<PipelinedEndpointRuntimeSendDispatch<'a>>, PipelinedEndpointRuntimeSendError>
+    {
+        let TransportHandle::Udp(udp) = transport else {
+            return Ok(None);
+        };
+        let Some(send_target) = self.runtime_plan.resolve_send_target(udp).await else {
+            return Ok(None);
+        };
+
+        PipelinedEndpointRuntimeSendAttempt::new(self.runtime_plan, send_target)
+            .reserve(sessions, peers)
+            .map_err(PipelinedEndpointRuntimeSendError::Attempt)
+    }
+
+    #[cfg(test)]
     async fn resolve_dispatch(
         self,
         transports: &std::collections::HashMap<
@@ -857,16 +878,8 @@ impl<'a> PipelinedEndpointRuntimeSend<'a> {
         let transport = transports.get(&transport_id).ok_or(
             PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
         )?;
-        let TransportHandle::Udp(udp) = transport else {
-            return Ok(None);
-        };
-        let Some(send_target) = self.runtime_plan.resolve_send_target(udp).await else {
-            return Ok(None);
-        };
-
-        PipelinedEndpointRuntimeSendAttempt::new(self.runtime_plan, send_target)
-            .reserve(sessions, peers)
-            .map_err(PipelinedEndpointRuntimeSendError::Attempt)
+        self.resolve_dispatch_with_transport(transport, sessions, peers)
+            .await
     }
 }
 
@@ -896,9 +909,15 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
     > {
         let dest_addr = *self.send.dest_addr;
         let next_hop_addr = self.runtime_route.next_hop_addr();
+        let transport_id = self.runtime_route.transport_id();
+        let transport = transports.get(&transport_id).ok_or(
+            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
+                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
+            ),
+        )?;
         let runtime_plan = self
             .runtime_route
-            .into_runtime_send_plan(&self.send)
+            .into_runtime_send_plan(&self.send, transport)
             .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
                 dest_addr,
                 next_hop_addr,
@@ -906,7 +925,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             })?;
 
         PipelinedEndpointRuntimeSend::new(runtime_plan)
-            .resolve_dispatch(transports, sessions, peers)
+            .resolve_dispatch_with_transport(transport, sessions, peers)
             .await
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
@@ -3439,15 +3458,10 @@ impl Node {
         let peer_snapshot =
             self.prepare_pipelined_endpoint_peer_runtime_route_snapshot(dest_addr)?;
         let next_hop_addr = peer_snapshot.node_addr();
-        let mut path_mtu = u16::MAX;
-        if let Some(transport) = self.transports.get(&peer_snapshot.transport_id()) {
-            path_mtu = path_mtu.min(peer_snapshot.path_mtu(transport));
-        }
 
         Ok(PipelinedEndpointPeerRuntimeRoute::new(
             *self.node_addr(),
             peer_snapshot,
-            path_mtu,
             self.config.node.session.default_ttl,
             self.send_weight_for_peer(&next_hop_addr),
             next_hop_addr == *dest_addr
@@ -4939,7 +4953,8 @@ mod tests {
     #[test]
     fn pipelined_endpoint_peer_runtime_route_owns_snapshot_route_policy_and_send_plan() {
         use crate::node::wire::FLAG_SP;
-        use crate::transport::{TransportAddr, TransportId};
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{TransportAddr, TransportHandle, TransportId, packet_channel};
         use crate::utils::index::SessionIndex;
 
         let source_addr = node_addr(0x10);
@@ -4969,14 +4984,24 @@ mod tests {
             FLAG_SP,
             true,
         );
+        let (packet_tx, _packet_rx) = packet_channel(4);
+        let transport = TransportHandle::Udp(UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        ));
         let runtime_route =
-            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false);
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false);
         assert_eq!(runtime_route.next_hop_addr(), dest_addr);
-        assert_eq!(runtime_route.path_mtu(), 1234);
         assert_eq!(runtime_route.scheduling_weight(), 7);
 
         let runtime = runtime_route
-            .into_runtime_send_plan(&send)
+            .into_runtime_send_plan(&send, &transport)
             .expect("peer runtime route owner should build the runtime send plan");
 
         assert_eq!(runtime.source_addr(), source_addr);
@@ -5010,16 +5035,10 @@ mod tests {
             FLAG_SP,
             true,
         );
-        let degraded_runtime = PipelinedEndpointPeerRuntimeRoute::new(
-            source_addr,
-            degraded_snapshot,
-            1234,
-            9,
-            7,
-            true,
-        )
-        .into_runtime_send_plan(&send)
-        .expect("degraded direct route should still build runtime send plan");
+        let degraded_runtime =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, degraded_snapshot, 9, 7, true)
+                .into_runtime_send_plan(&send, &transport)
+                .expect("degraded direct route should still build runtime send plan");
         assert!(
             !degraded_runtime.drop_on_backpressure(),
             "blocked direct payload routes must not silently use bulk-drop policy"
@@ -5028,7 +5047,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn pipelined_endpoint_peer_runtime_send_owns_route_plan_and_runtime_dispatch() {
+    async fn pipelined_endpoint_peer_runtime_send_owns_transport_path_mtu_route_plan_and_runtime_dispatch()
+     {
         use crate::PeerIdentity;
         use crate::peer::ActivePeer;
         use crate::transport::udp::UdpTransport;
@@ -5074,6 +5094,7 @@ mod tests {
             None,
             crate::config::UdpConfig {
                 bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
                 ..Default::default()
             },
             packet_tx,
@@ -5104,7 +5125,7 @@ mod tests {
             .prepare_peer_runtime_route_snapshot(&dest_addr)
             .expect("active peer should prepare route snapshot");
         let runtime_route =
-            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false);
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false);
 
         let fsp_before = sessions
             .get(&dest_addr)
@@ -5124,6 +5145,11 @@ mod tests {
 
         assert_eq!(dispatch.dest_addr(), dest_addr);
         assert_eq!(dispatch.next_hop_addr(), dest_addr);
+        assert_eq!(
+            dispatch.fsp_reservation_input().path_mtu,
+            1234,
+            "peer runtime send owner should derive path MTU from the selected transport"
+        );
         assert_eq!(
             sessions
                 .get(&dest_addr)
@@ -5172,7 +5198,6 @@ mod tests {
         let missing_transport_route = PipelinedEndpointPeerRuntimeRoute::new(
             source_addr,
             missing_transport_snapshot,
-            1234,
             9,
             7,
             false,
@@ -5285,9 +5310,12 @@ mod tests {
         let route_snapshot = peers
             .prepare_peer_runtime_route_snapshot(&dest_addr)
             .expect("active peer should prepare route snapshot");
+        let transport = transports
+            .get(&transport_id)
+            .expect("transport should exist for runtime plan");
         let runtime =
-            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false)
-                .into_runtime_send_plan(&send)
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false)
+                .into_runtime_send_plan(&send, transport)
                 .expect("runtime route should build send plan");
 
         let fsp_before = sessions
@@ -5343,15 +5371,16 @@ mod tests {
             0,
             true,
         );
-        let missing_transport_runtime = PipelinedEndpointPeerRuntimeRoute::new(
-            source_addr,
+        let missing_transport_route =
+            PipelinedEndpointRoutePlan::new(source_addr, dest_addr, 1234, 9, 7, false);
+        let missing_transport_plan = missing_transport_route
+            .build_send_plan(&send)
+            .expect("missing-transport send plan should build");
+        let missing_transport_runtime = PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            missing_transport_route,
+            missing_transport_plan,
             missing_transport_snapshot,
-            1234,
-            9,
-            7,
-            false,
         )
-        .into_runtime_send_plan(&send)
         .expect("missing-transport runtime should still build send plan");
 
         assert!(matches!(
@@ -5432,6 +5461,10 @@ mod tests {
             packet_tx,
         );
         udp.start_async().await.expect("start UDP transport");
+        let transport = TransportHandle::Udp(udp);
+        let TransportHandle::Udp(udp) = &transport else {
+            unreachable!("test transport is UDP");
+        };
 
         let payload = EndpointDataPayload::new(vec![0xee; 64]);
         let inner_plaintext = vec![0xaa; 80];
@@ -5450,8 +5483,8 @@ mod tests {
             .prepare_peer_runtime_route_snapshot(&dest_addr)
             .expect("active peer should prepare route snapshot");
         let runtime =
-            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false)
-                .into_runtime_send_plan(&send)
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false)
+                .into_runtime_send_plan(&send, &transport)
                 .expect("runtime route should build send plan");
         let send_target = runtime
             .resolve_send_target(&udp)
@@ -5511,16 +5544,10 @@ mod tests {
             0,
             false,
         );
-        let blocked_runtime = PipelinedEndpointPeerRuntimeRoute::new(
-            source_addr,
-            blocked_snapshot,
-            1234,
-            9,
-            7,
-            false,
-        )
-        .into_runtime_send_plan(&send)
-        .expect("blocked worker runtime should still build send plan");
+        let blocked_runtime =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, blocked_snapshot, 9, 7, false)
+                .into_runtime_send_plan(&send, &transport)
+                .expect("blocked worker runtime should still build send plan");
         let blocked_target = blocked_runtime
             .resolve_send_target(&udp)
             .await
