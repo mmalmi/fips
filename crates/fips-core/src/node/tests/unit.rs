@@ -1405,6 +1405,40 @@ fn test_node_peers_by_index_tracking() {
     assert!(node.peers_by_index.is_empty());
 }
 
+#[test]
+fn session_index_registry_owns_lookup_replace_remove_and_peer_membership() {
+    let transport_id = TransportId::new(1);
+    let current_key = (transport_id, 10);
+    let pending_key = (transport_id, 11);
+    let peer_addr = make_node_addr(42);
+    let stale_peer_addr = make_node_addr(43);
+
+    let mut registry = SessionIndexRegistry::default();
+
+    assert_eq!(registry.insert(current_key, peer_addr), None);
+    assert_eq!(registry.insert(pending_key, peer_addr), None);
+    assert_eq!(registry.lookup(current_key), Some(peer_addr));
+    assert!(registry.peer_has_any_index(&peer_addr));
+
+    assert_eq!(registry.remove(&current_key), Some(peer_addr));
+    assert!(
+        registry.peer_has_any_index(&peer_addr),
+        "removing the old index during rekey drain must see the peer's new index"
+    );
+
+    assert_eq!(
+        registry.insert(pending_key, stale_peer_addr),
+        Some(peer_addr),
+        "a repaired session index must report the stale previous owner"
+    );
+    assert_eq!(registry.lookup(pending_key), Some(stale_peer_addr));
+    assert!(!registry.peer_has_any_index(&peer_addr));
+
+    assert_eq!(registry.remove(&pending_key), Some(stale_peer_addr));
+    assert!(!registry.peer_has_any_index(&stale_peer_addr));
+    assert!(registry.is_empty());
+}
+
 #[tokio::test]
 async fn test_node_rx_loop_requires_start() {
     let mut node = make_node();

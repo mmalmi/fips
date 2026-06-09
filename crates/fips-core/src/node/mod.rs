@@ -1429,6 +1429,49 @@ struct PendingConnect {
     peer_identity: PeerIdentity,
 }
 
+/// Active FMP receiver-index registry keyed by `(transport_id, our_index)`.
+#[derive(Debug, Default)]
+pub(in crate::node) struct SessionIndexRegistry {
+    entries: HashMap<(TransportId, u32), NodeAddr>,
+}
+
+impl SessionIndexRegistry {
+    pub(in crate::node) fn insert(
+        &mut self,
+        key: (TransportId, u32),
+        node_addr: NodeAddr,
+    ) -> Option<NodeAddr> {
+        self.entries.insert(key, node_addr)
+    }
+
+    pub(in crate::node) fn remove(&mut self, key: &(TransportId, u32)) -> Option<NodeAddr> {
+        self.entries.remove(key)
+    }
+
+    pub(in crate::node) fn lookup(&self, key: (TransportId, u32)) -> Option<NodeAddr> {
+        self.entries.get(&key).copied()
+    }
+
+    pub(in crate::node) fn peer_has_any_index(&self, node_addr: &NodeAddr) -> bool {
+        self.entries.values().any(|other| other == node_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn get(&self, key: &(TransportId, u32)) -> Option<&NodeAddr> {
+        self.entries.get(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_key(&self, key: &(TransportId, u32)) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Pending outbound FMP handshakes keyed by `(transport_id, our_index)`.
 #[derive(Debug, Default)]
 pub(in crate::node) struct PendingOutboundHandshakes {
@@ -1678,7 +1721,7 @@ pub struct Node {
     index_allocator: IndexAllocator,
     /// O(1) lookup: (transport_id, our_index) → NodeAddr.
     /// This maps our session index to the peer that uses it.
-    peers_by_index: HashMap<(TransportId, u32), NodeAddr>,
+    peers_by_index: SessionIndexRegistry,
     /// Pending outbound handshakes by our sender_idx.
     /// Tracks which LinkId corresponds to which session index.
     pending_outbound: PendingOutboundHandshakes,
@@ -1906,7 +1949,7 @@ impl Node {
             dns_identity_rx: None,
             dns_task: None,
             index_allocator: IndexAllocator::new(),
-            peers_by_index: HashMap::new(),
+            peers_by_index: SessionIndexRegistry::default(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -2052,7 +2095,7 @@ impl Node {
             dns_identity_rx: None,
             dns_task: None,
             index_allocator: IndexAllocator::new(),
-            peers_by_index: HashMap::new(),
+            peers_by_index: SessionIndexRegistry::default(),
             pending_outbound: PendingOutboundHandshakes::default(),
             msg1_rate_limiter,
             icmp_rate_limiter: IcmpRateLimiter::new(),
@@ -2484,8 +2527,7 @@ impl Node {
         // Find the peer that owns this index BEFORE removing it from
         // the index map, so we can decide whether the deregistration
         // also tears down the peer's connected UDP socket.
-        let owning_peer = self.peers_by_index.get(&cache_key).copied();
-        self.peers_by_index.remove(&cache_key);
+        let owning_peer = self.peers_by_index.remove(&cache_key);
         let session_key = DecryptSessionKey::from(cache_key);
         if self.decrypt_registered_sessions.remove(&session_key)
             && let Some(workers) = self.decrypt_workers.as_ref()
@@ -2503,10 +2545,7 @@ impl Node {
         // here when this is the peer's last index, so the connected
         // socket goes away with the peer.
         if let Some(peer_addr) = owning_peer {
-            let peer_has_other_index = self
-                .peers_by_index
-                .values()
-                .any(|other| *other == peer_addr);
+            let peer_has_other_index = self.peers_by_index.peer_has_any_index(&peer_addr);
             if !peer_has_other_index {
                 self.clear_connected_udp_for_peer(&peer_addr);
             }
@@ -2547,7 +2586,7 @@ impl Node {
         };
 
         let cache_key = (transport_id, our_index.as_u32());
-        match self.peers_by_index.get(&cache_key).copied() {
+        match self.peers_by_index.lookup(cache_key) {
             Some(existing) if existing == *node_addr => true,
             Some(existing) => {
                 warn!(
