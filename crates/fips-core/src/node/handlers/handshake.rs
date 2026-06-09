@@ -1361,9 +1361,14 @@ impl Node {
                     self.config.node.tree.announce_min_interval_ms,
                 );
 
-                self.peers.insert(peer_node_addr, new_peer);
-                self.peers
-                    .insert_session_index((transport_id, our_index.as_u32()), peer_node_addr);
+                let inserted = self
+                    .peers
+                    .insert_with_current_session_index(peer_node_addr, new_peer);
+                self.log_active_peer_insert_result(
+                    &peer_node_addr,
+                    &inserted,
+                    "cross_connection_won",
+                );
                 self.clear_session_direct_path_degraded(&peer_node_addr);
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.set_discovery_fallback_transit_allowed(
@@ -1474,9 +1479,10 @@ impl Node {
                 new_peer.set_last_tree_announce_sent_ms(ts);
             }
 
-            self.peers.insert(peer_node_addr, new_peer);
-            self.peers
-                .insert_session_index((transport_id, our_index.as_u32()), peer_node_addr);
+            let inserted = self
+                .peers
+                .insert_with_current_session_index(peer_node_addr, new_peer);
+            self.log_active_peer_insert_result(&peer_node_addr, &inserted, "promoted");
             self.clear_session_direct_path_degraded(&peer_node_addr);
             self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
             self.set_discovery_fallback_transit_allowed(

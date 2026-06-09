@@ -1566,6 +1566,60 @@ fn peer_lifecycle_registry_owns_session_index_removal_and_remaining_owner_state(
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_active_peer_insert_and_current_session_index() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let stale_peer_full = Identity::generate();
+    let stale_peer_identity = PeerIdentity::from_pubkey_full(stale_peer_full.pubkey_full());
+    let stale_peer_addr = *stale_peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("insert-peer");
+    let current_our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+    let current_key = (transport_id, current_our_index.as_u32());
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        remote_addr,
+        current_our_index,
+        their_index,
+    );
+
+    assert_eq!(
+        registry.insert_session_index(current_key, stale_peer_addr),
+        None
+    );
+    let inserted = registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    assert!(
+        inserted.previous_peer.is_none(),
+        "first insert should not replace active peer storage"
+    );
+    assert_eq!(
+        inserted.current_session_index,
+        Some(RegisteredPeerSessionIndex {
+            session_index: PeerSessionIndex {
+                kind: PeerSessionIndexKind::Current,
+                key: current_key,
+                index: current_our_index,
+            },
+            previous_owner: Some(stale_peer_addr),
+        }),
+        "peer lifecycle insertion must own current receiver-index registration and stale-owner repair"
+    );
+    assert!(registry.contains_key(&peer_addr));
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_active_peer_teardown_session_indices() {
     let node = make_node();
     let peer_full = Identity::generate();

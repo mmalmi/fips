@@ -1726,6 +1726,18 @@ pub(in crate::node) struct RemovedActivePeer {
     pub(in crate::node) session_indices: Vec<PeerSessionIndex>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct RegisteredPeerSessionIndex {
+    pub(in crate::node) session_index: PeerSessionIndex,
+    pub(in crate::node) previous_owner: Option<NodeAddr>,
+}
+
+#[derive(Debug)]
+pub(in crate::node) struct InsertedActivePeer {
+    pub(in crate::node) previous_peer: Option<ActivePeer>,
+    pub(in crate::node) current_session_index: Option<RegisteredPeerSessionIndex>,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -1908,12 +1920,25 @@ pub(in crate::node) struct PeerLifecycleRegistry {
 }
 
 impl PeerLifecycleRegistry {
+    fn active_peer_current_session_index(peer: &ActivePeer) -> Option<PeerSessionIndex> {
+        let transport_id = peer.transport_id()?;
+        let index = peer.our_index()?;
+        Some(PeerSessionIndex {
+            kind: PeerSessionIndexKind::Current,
+            key: (transport_id, index.as_u32()),
+            index,
+        })
+    }
+
     fn active_peer_session_indices(peer: &ActivePeer) -> Vec<PeerSessionIndex> {
         let Some(transport_id) = peer.transport_id() else {
             return Vec::new();
         };
 
         let mut indices = Vec::with_capacity(4);
+        if let Some(current) = Self::active_peer_current_session_index(peer) {
+            indices.push(current);
+        }
         let mut push_index = |kind: PeerSessionIndexKind, index: Option<SessionIndex>| {
             let Some(index) = index else {
                 return;
@@ -1928,7 +1953,6 @@ impl PeerLifecycleRegistry {
             indices.push(PeerSessionIndex { kind, key, index });
         };
 
-        push_index(PeerSessionIndexKind::Current, peer.our_index());
         push_index(PeerSessionIndexKind::Rekey, peer.rekey_our_index());
         push_index(PeerSessionIndexKind::Pending, peer.pending_our_index());
         push_index(PeerSessionIndexKind::Previous, peer.previous_our_index());
@@ -1989,12 +2013,35 @@ impl PeerLifecycleRegistry {
         self.connections.keys()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn insert(
         &mut self,
         node_addr: NodeAddr,
         peer: ActivePeer,
     ) -> Option<ActivePeer> {
         self.active.insert(node_addr, peer)
+    }
+
+    pub(in crate::node) fn insert_with_current_session_index(
+        &mut self,
+        node_addr: NodeAddr,
+        peer: ActivePeer,
+    ) -> InsertedActivePeer {
+        let current_session_index = Self::active_peer_current_session_index(&peer);
+        let previous_peer = self.active.insert(node_addr, peer);
+        let current_session_index = current_session_index.map(|session_index| {
+            let previous_owner = self
+                .active
+                .insert_session_index(session_index.key, node_addr);
+            RegisteredPeerSessionIndex {
+                session_index,
+                previous_owner,
+            }
+        });
+        InsertedActivePeer {
+            previous_peer,
+            current_session_index,
+        }
     }
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
@@ -3367,6 +3414,44 @@ impl Node {
                 );
                 self.peers.insert_session_index(cache_key, *node_addr);
                 true
+            }
+        }
+    }
+
+    pub(in crate::node) fn log_active_peer_insert_result(
+        &self,
+        node_addr: &NodeAddr,
+        inserted: &InsertedActivePeer,
+        context: &'static str,
+    ) {
+        if let Some(previous_peer) = inserted.previous_peer.as_ref() {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                previous_link_id = %previous_peer.link_id(),
+                context,
+                "Replaced active peer storage during lifecycle insert"
+            );
+        }
+
+        match inserted.current_session_index {
+            Some(registered) => {
+                if let Some(previous_owner) = registered.previous_owner {
+                    debug!(
+                        peer = %self.peer_display_name(node_addr),
+                        previous_owner = %self.peer_display_name(&previous_owner),
+                        transport_id = %registered.session_index.key.0,
+                        our_index = %registered.session_index.index,
+                        context,
+                        "Replaced current session-index owner during lifecycle insert"
+                    );
+                }
+            }
+            None => {
+                warn!(
+                    peer = %self.peer_display_name(node_addr),
+                    context,
+                    "Inserted active peer without a current session index"
+                );
             }
         }
     }
