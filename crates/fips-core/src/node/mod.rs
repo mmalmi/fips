@@ -1321,10 +1321,30 @@ pub(crate) struct UpdatePeersOutcome {
 
 /// Endpoint data events emitted by the node session receive path.
 #[derive(Debug)]
+pub(crate) struct NodeEndpointMessage {
+    pub(crate) source_peer: PeerIdentity,
+    pub(crate) payload: Vec<u8>,
+}
+
+impl NodeEndpointMessage {
+    pub(crate) fn new(source_peer: PeerIdentity, payload: Vec<u8>) -> Self {
+        Self {
+            source_peer,
+            payload,
+        }
+    }
+}
+
+/// Endpoint data events emitted by the node session receive path.
+#[derive(Debug)]
 pub(crate) enum NodeEndpointEvent {
     Data {
         source_peer: PeerIdentity,
         payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
+    },
+    DataBatch {
+        messages: Vec<NodeEndpointMessage>,
         queued_at: Option<std::time::Instant>,
     },
 }
@@ -3513,6 +3533,10 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
     endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
+    /// Nesting depth for rx-loop-scoped endpoint event batching.
+    endpoint_event_batch_depth: usize,
+    /// Endpoint payloads collected during the current rx-loop drain cycle.
+    endpoint_event_batch: Vec<NodeEndpointMessage>,
     /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
     /// spawned (set up in `start()` once transports are running).
     /// `Some(pool)` once available; the pool internally holds
@@ -3759,6 +3783,8 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            endpoint_event_batch_depth: 0,
+            endpoint_event_batch: Vec::new(),
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,
@@ -3901,6 +3927,8 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_event_tx: None,
+            endpoint_event_batch_depth: 0,
+            endpoint_event_batch: Vec::new(),
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,
@@ -5802,6 +5830,83 @@ impl Node {
             event_rx,
             event_tx,
         })
+    }
+
+    pub(in crate::node) fn begin_endpoint_event_batch(&mut self) {
+        if self.endpoint_event_tx.is_some() {
+            self.endpoint_event_batch_depth = self.endpoint_event_batch_depth.saturating_add(1);
+        }
+    }
+
+    pub(in crate::node) fn finish_endpoint_event_batch(&mut self) {
+        if self.endpoint_event_batch_depth == 0 {
+            return;
+        }
+        self.endpoint_event_batch_depth -= 1;
+        if self.endpoint_event_batch_depth == 0 {
+            self.flush_endpoint_event_batch();
+        }
+    }
+
+    pub(in crate::node) fn deliver_endpoint_event_message(
+        &mut self,
+        message: NodeEndpointMessage,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if self.endpoint_event_batch_depth > 0 {
+            self.endpoint_event_batch.push(message);
+            return Ok(());
+        }
+
+        self.send_endpoint_event(NodeEndpointEvent::Data {
+            source_peer: message.source_peer,
+            payload: message.payload,
+            queued_at: crate::perf_profile::stamp(),
+        })
+    }
+
+    fn flush_endpoint_event_batch(&mut self) {
+        let count = self.endpoint_event_batch.len();
+        if count == 0 {
+            return;
+        }
+
+        let queued_at = crate::perf_profile::stamp();
+        let event = if count == 1 {
+            let message = self
+                .endpoint_event_batch
+                .pop()
+                .expect("batch should contain message");
+            NodeEndpointEvent::Data {
+                source_peer: message.source_peer,
+                payload: message.payload,
+                queued_at,
+            }
+        } else {
+            NodeEndpointEvent::DataBatch {
+                messages: std::mem::take(&mut self.endpoint_event_batch),
+                queued_at,
+            }
+        };
+
+        if let Err(error) = self.send_endpoint_event(event) {
+            debug!(
+                error = %error,
+                messages = count,
+                "Failed to deliver endpoint data event batch"
+            );
+        }
+    }
+
+    fn send_endpoint_event(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
+            return Ok(());
+        };
+        let _t_deliver =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
+        endpoint_event_tx.send(event)
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {

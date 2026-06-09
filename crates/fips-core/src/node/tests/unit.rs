@@ -88,6 +88,49 @@ fn arm_test_fmp_rekey(peer: &mut ActivePeer, rekey_our_index: SessionIndex) {
     peer.set_rekey_state(handshake, rekey_our_index, vec![0xAB; 64], 0);
 }
 
+#[test]
+fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outside_scope() {
+    let mut node = Node::new(Config::new()).expect("node");
+    let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"single".to_vec()))
+        .expect("single endpoint event");
+    match endpoint_io.event_rx.try_recv().expect("single event") {
+        NodeEndpointEvent::Data {
+            source_peer,
+            payload,
+            ..
+        } => {
+            assert_eq!(source_peer, source);
+            assert_eq!(payload, b"single");
+        }
+        event => panic!("expected single endpoint event, got {event:?}"),
+    }
+
+    node.begin_endpoint_event_batch();
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+        .expect("first batched endpoint event");
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+        .expect("second batched endpoint event");
+    assert!(
+        endpoint_io.event_rx.try_recv().is_err(),
+        "batch scope should not flush before finish"
+    );
+
+    node.finish_endpoint_event_batch();
+    match endpoint_io.event_rx.try_recv().expect("batched event") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].source_peer, source);
+            assert_eq!(messages[0].payload, b"first");
+            assert_eq!(messages[1].source_peer, source);
+            assert_eq!(messages[1].payload, b"second");
+        }
+        event => panic!("expected endpoint event batch, got {event:?}"),
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn make_test_connected_udp_pair(
     transport_id: TransportId,

@@ -408,6 +408,7 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
             assert_eq!(source_peer.npub(), nodes[0].node.npub());
             assert_eq!(payload, b"ping");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     nodes[1]
@@ -433,6 +434,7 @@ async fn test_endpoint_data_flushes_after_session_establishment() {
             assert_eq!(source_peer.npub(), nodes[1].node.npub());
             assert_eq!(payload, b"pong");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     cleanup_nodes(&mut nodes).await;
@@ -486,6 +488,7 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             assert_eq!(source_peer.npub(), nodes[0].node.npub());
             assert_eq!(payload, b"alice-to-bob");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     assert!(
@@ -522,6 +525,7 @@ async fn test_endpoint_data_routes_through_non_endpoint_transit_node() {
             assert_eq!(source_peer.npub(), nodes[2].node.npub());
             assert_eq!(payload, b"bob-to-alice");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
     assert!(
         transit_endpoint.event_rx.try_recv().is_err(),
@@ -574,6 +578,9 @@ async fn test_endpoint_data_reply_learned_first_contact_routes_via_intermediary(
                     assert_eq!(*source_peer.node_addr(), alice_addr);
                     assert_eq!(source_peer.npub(), nodes[0].node.npub());
                     assert_eq!(payload, b"first-contact");
+                }
+                NodeEndpointEvent::DataBatch { .. } => {
+                    panic!("expected single endpoint data event")
                 }
             }
             assert!(
@@ -2333,6 +2340,7 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
             assert_eq!(*source_peer.node_addr(), alice_addr);
             assert_eq!(payload, b"direct-first");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     assert!(
@@ -2398,6 +2406,7 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
             assert_eq!(*source_peer.node_addr(), alice_addr);
             assert_eq!(payload, b"alice-fallback");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     let event = recv_endpoint_event_while_draining(
@@ -2416,6 +2425,7 @@ async fn test_direct_established_endpoint_data_falls_back_after_link_dead() {
             assert_eq!(*source_peer.node_addr(), bob_addr);
             assert_eq!(payload, b"bob-fallback");
         }
+        NodeEndpointEvent::DataBatch { .. } => panic!("expected single endpoint data event"),
     }
 
     cleanup_nodes(&mut nodes).await;

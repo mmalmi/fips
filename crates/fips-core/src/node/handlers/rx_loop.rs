@@ -348,6 +348,7 @@ impl Node {
         // line rate transports typically have several packets available per
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
+        self.begin_endpoint_event_batch();
         let mut drain = PacketDrainCursor::new(first_packet, budget, FALLBACK_INTERLEAVE_EVERY);
         while let Some(action) = drain.next(packet_rx) {
             match action {
@@ -372,9 +373,12 @@ impl Node {
             // burst aren't held up by the post-burst send flush.
             self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, PACKET_DRAIN_BUDGET)
                 .await;
+            self.finish_endpoint_event_batch();
             // Flush any batched sends triggered by inbound packets (e.g.
             // forwarded SessionDatagrams, MMP reports, tree announces).
             self.flush_pending_sends().await;
+        } else {
+            self.finish_endpoint_event_batch();
         }
         drained
     }
@@ -540,12 +544,15 @@ impl Node {
         first_bulk_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
+        self.begin_endpoint_event_batch();
         let mut drain =
             PriorityBulkDrainCursor::new(first_priority_event, first_bulk_event, budget);
         while let Some(event) = drain.next(&mut rx.priority, &mut rx.bulk) {
             self.process_decrypt_worker_event(event).await;
         }
-        drain.drained()
+        let drained = drain.drained();
+        self.finish_endpoint_event_batch();
+        drained
     }
 
     /// Flush any pending batched sends across all transports. Today

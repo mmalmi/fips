@@ -19,7 +19,7 @@ use crate::node::session_wire::{
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::{
     EndpointDataPayload, EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand,
-    FspSendBookkeepingInput, Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
+    FspSendBookkeepingInput, Node, NodeEndpointCommand, NodeEndpointMessage, NodeEndpointPeer,
     NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
     SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
@@ -4091,27 +4091,21 @@ impl Node {
         Ok(false)
     }
 
-    fn deliver_endpoint_data(&self, source_peer: PeerIdentity, payload: Vec<u8>) {
-        let src_addr = source_peer.node_addr();
-        let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
+    fn deliver_endpoint_data(&mut self, source_peer: PeerIdentity, payload: Vec<u8>) {
+        let src_addr = *source_peer.node_addr();
+        if self.endpoint_event_tx.is_none() {
             trace!(
-                src = %self.peer_display_name(src_addr),
+                src = %self.peer_display_name(&src_addr),
                 "Endpoint data received without an attached endpoint"
             );
             return;
-        };
+        }
 
-        let event = NodeEndpointEvent::Data {
-            source_peer,
-            payload,
-            queued_at: crate::perf_profile::stamp(),
-        };
-
-        let _t_deliver =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-        if let Err(error) = endpoint_event_tx.send(event) {
+        if let Err(error) =
+            self.deliver_endpoint_event_message(NodeEndpointMessage::new(source_peer, payload))
+        {
             debug!(
-                src = %self.peer_display_name(src_addr),
+                src = %self.peer_display_name(&src_addr),
                 error = %error,
                 "Failed to deliver endpoint data event"
             );
