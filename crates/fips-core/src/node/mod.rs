@@ -1434,7 +1434,7 @@ pub struct Node {
     /// Keyed by NodeAddr. Entries are created when a handshake times out
     /// or fails, and removed on successful promotion or when max retries
     /// are exhausted.
-    retry_pending: HashMap<NodeAddr, retry::RetryState>,
+    retry_pending: retry::PendingRouteRetries,
 
     /// Optional Nostr/STUN overlay discovery coordinator for `udp:nat` peers.
     nostr_discovery: Option<Arc<crate::discovery::nostr::NostrDiscovery>>,
@@ -1650,7 +1650,7 @@ impl Node {
                 std::time::Duration::from_secs(forward_min_interval_secs),
             ),
             pending_connects: Vec::new(),
-            retry_pending: HashMap::new(),
+            retry_pending: retry::PendingRouteRetries::default(),
             nostr_discovery: None,
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,
@@ -1795,7 +1795,7 @@ impl Node {
             discovery_backoff: DiscoveryBackoff::new(),
             discovery_forward_limiter: DiscoveryForwardRateLimiter::new(),
             pending_connects: Vec::new(),
-            retry_pending: HashMap::new(),
+            retry_pending: retry::PendingRouteRetries::default(),
             nostr_discovery: None,
             nostr_discovery_started_at_ms: None,
             lan_discovery: None,

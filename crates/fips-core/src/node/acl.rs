@@ -445,7 +445,7 @@ impl Node {
                 occupied.insert(*peer_addr);
             }
         }
-        for (peer_addr, state) in &self.retry_pending {
+        for (peer_addr, state) in self.retry_pending.iter() {
             if !configured_npubs.contains(&state.peer_config.npub) {
                 occupied.insert(*peer_addr);
             }
