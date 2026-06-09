@@ -210,6 +210,13 @@ enum PipelinedEndpointRuntimeSendAttemptError {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelinedEndpointRuntimeSendError {
+    TransportNotFound(crate::transport::TransportId),
+    Attempt(PipelinedEndpointRuntimeSendAttemptError),
+}
+
+#[cfg(unix)]
 struct PipelinedEndpointSendPlan<'a> {
     wire_plan: PipelinedEndpointWirePlan<'a>,
     dispatch_plan: PipelinedEndpointDispatchPlan<'a>,
@@ -234,6 +241,11 @@ struct PipelinedEndpointRuntimeSendDispatch<'a> {
 struct PipelinedEndpointRuntimeSendAttempt<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
     send_target: PipelinedEndpointSendTarget,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointRuntimeSend<'a> {
+    runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
 }
 
 #[cfg(unix)]
@@ -805,6 +817,39 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
             fmp_reservation,
             fsp_reservation,
         )))
+    }
+}
+
+#[cfg(unix)]
+impl<'a> PipelinedEndpointRuntimeSend<'a> {
+    fn new(runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>) -> Self {
+        Self { runtime_plan }
+    }
+
+    async fn resolve_dispatch(
+        self,
+        transports: &std::collections::HashMap<
+            crate::transport::TransportId,
+            crate::transport::TransportHandle,
+        >,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<Option<PipelinedEndpointRuntimeSendDispatch<'a>>, PipelinedEndpointRuntimeSendError>
+    {
+        let transport_id = self.runtime_plan.transport_id();
+        let transport = transports.get(&transport_id).ok_or(
+            PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
+        )?;
+        let TransportHandle::Udp(udp) = transport else {
+            return Ok(None);
+        };
+        let Some(send_target) = self.runtime_plan.resolve_send_target(udp).await else {
+            return Ok(None);
+        };
+
+        PipelinedEndpointRuntimeSendAttempt::new(self.runtime_plan, send_target)
+            .reserve(sessions, peers)
+            .map_err(PipelinedEndpointRuntimeSendError::Attempt)
     }
 }
 
@@ -3275,6 +3320,20 @@ impl Node {
     }
 
     #[cfg(unix)]
+    fn map_pipelined_endpoint_runtime_send_error(
+        error: PipelinedEndpointRuntimeSendError,
+    ) -> NodeError {
+        match error {
+            PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id) => {
+                NodeError::TransportNotFound(transport_id)
+            }
+            PipelinedEndpointRuntimeSendError::Attempt(error) => {
+                Self::map_pipelined_endpoint_runtime_send_attempt_error(error)
+            }
+        }
+    }
+
+    #[cfg(unix)]
     fn prepare_pipelined_endpoint_peer_runtime_route_snapshot(
         &mut self,
         dest_addr: &NodeAddr,
@@ -3341,22 +3400,10 @@ impl Node {
         &mut self,
         runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
     ) -> Result<Option<PipelinedEndpointRuntimeSendDispatch<'a>>, NodeError> {
-        let transport_id = runtime_plan.transport_id();
-
-        let transport = self
-            .transports
-            .get(&transport_id)
-            .ok_or(NodeError::TransportNotFound(transport_id))?;
-        let TransportHandle::Udp(udp) = transport else {
-            return Ok(None);
-        };
-        let Some(send_target) = runtime_plan.resolve_send_target(udp).await else {
-            return Ok(None);
-        };
-
-        PipelinedEndpointRuntimeSendAttempt::new(runtime_plan, send_target)
-            .reserve(&mut self.sessions, &mut self.peers)
-            .map_err(Self::map_pipelined_endpoint_runtime_send_attempt_error)
+        PipelinedEndpointRuntimeSend::new(runtime_plan)
+            .resolve_dispatch(&self.transports, &mut self.sessions, &mut self.peers)
+            .await
+            .map_err(Self::map_pipelined_endpoint_runtime_send_error)
     }
 
     #[cfg(unix)]
@@ -4913,6 +4960,178 @@ mod tests {
         assert!(
             !degraded_runtime.drop_on_backpressure(),
             "blocked direct payload routes must not silently use bulk-drop policy"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipelined_endpoint_runtime_send_owns_transport_target_and_reservation_handoff() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{LinkId, TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+        use std::collections::HashMap;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let source_addr = node_addr(0x10);
+        let transport_id = TransportId::new(0x55);
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(
+            sessions
+                .insert(dest_addr, established_entry(&local, &peer))
+                .is_none()
+        );
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&local, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            crate::transport::LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([0x02; 8]),
+        );
+        peers.insert_with_current_session_index(dest_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+
+        let mut transports = HashMap::new();
+        assert!(
+            transports
+                .insert(transport_id, crate::transport::TransportHandle::Udp(udp))
+                .is_none()
+        );
+
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let route_snapshot = peers
+            .prepare_peer_runtime_route_snapshot(&dest_addr)
+            .expect("active peer should prepare route snapshot");
+        let runtime =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false)
+                .into_runtime_send_plan(&send)
+                .expect("runtime route should build send plan");
+
+        let fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .send_counter();
+        let fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists")
+            .current_send_counter();
+
+        let dispatch = PipelinedEndpointRuntimeSend::new(runtime)
+            .resolve_dispatch(&transports, &mut sessions, &mut peers)
+            .await
+            .expect("runtime send owner should resolve transport and reserve")
+            .expect("established runtime send should dispatch");
+
+        assert_eq!(dispatch.dest_addr(), dest_addr);
+        assert_eq!(dispatch.next_hop_addr(), dest_addr);
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists")
+                .send_counter(),
+            fsp_before + 1,
+            "runtime send owner should consume exactly one FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists")
+                .current_send_counter(),
+            fmp_before + 1,
+            "runtime send owner should consume exactly one FMP counter"
+        );
+
+        let prepared = dispatch.into_prepared_send(None);
+        assert_eq!(prepared.dest_addr, dest_addr);
+        assert_eq!(prepared.next_hop_addr, dest_addr);
+        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.fmp_counter, fmp_before);
+
+        let missing_transport_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            dest_addr,
+            SessionIndex::new(0x2020),
+            TransportId::new(0x99),
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            0,
+            true,
+        );
+        let missing_transport_runtime = PipelinedEndpointPeerRuntimeRoute::new(
+            source_addr,
+            missing_transport_snapshot,
+            1234,
+            9,
+            7,
+            false,
+        )
+        .into_runtime_send_plan(&send)
+        .expect("missing-transport runtime should still build send plan");
+
+        assert!(matches!(
+            PipelinedEndpointRuntimeSend::new(missing_transport_runtime)
+                .resolve_dispatch(&transports, &mut sessions, &mut peers)
+                .await,
+            Err(PipelinedEndpointRuntimeSendError::TransportNotFound(id))
+                if id == TransportId::new(0x99)
+        ));
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after missing transport")
+                .send_counter(),
+            fsp_before + 1,
+            "missing transport must fail before consuming another FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after missing transport")
+                .current_send_counter(),
+            fmp_before + 1,
+            "missing transport must fail before consuming another FMP counter"
         );
     }
 
