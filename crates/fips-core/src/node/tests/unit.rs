@@ -6034,16 +6034,14 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
             true,
         ),
     );
-    let mut tun_packets = crate::node::PendingTunPacketQueue::default();
-    tun_packets.push_bounded(vec![1, 2, 3], usize::MAX);
-    node.pending_tun_packets.insert(peer_addr, tun_packets);
-    let mut endpoint_payloads = crate::node::PendingEndpointDataQueue::default();
-    endpoint_payloads.push_bounded(
+    node.pending_session_traffic
+        .push_tun_packet(peer_addr, vec![1, 2, 3], usize::MAX, usize::MAX);
+    node.pending_session_traffic.push_endpoint_data(
+        peer_addr,
         crate::node::EndpointDataPayload::new(vec![4, 5, 6]),
         usize::MAX,
+        usize::MAX,
     );
-    node.pending_endpoint_data
-        .insert(peer_addr, endpoint_payloads);
 
     node.check_link_heartbeats().await;
 
@@ -6066,15 +6064,15 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         "link-dead should preserve the established FSP session so fallback can carry traffic immediately"
     );
     assert_eq!(
-        node.pending_tun_packets
-            .get(&peer_addr)
+        node.pending_session_traffic
+            .tun_packets_for(&peer_addr)
             .map(|queue| queue.len()),
         Some(1),
         "queued TUN packets should survive direct link teardown"
     );
     assert_eq!(
-        node.pending_endpoint_data
-            .get(&peer_addr)
+        node.pending_session_traffic
+            .endpoint_data_for(&peer_addr)
             .map(|queue| queue.len()),
         Some(1),
         "queued endpoint data should survive direct link teardown"

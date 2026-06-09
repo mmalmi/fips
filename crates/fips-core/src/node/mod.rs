@@ -356,6 +356,150 @@ impl PendingTunPacketQueue {
     }
 }
 
+/// Admission result for pending session-establishment traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingSessionTrafficAdmission {
+    destination_dropped: bool,
+    dropped_oldest: bool,
+}
+
+impl PendingSessionTrafficAdmission {
+    pub(crate) fn destination_dropped(&self) -> bool {
+        self.destination_dropped
+    }
+
+    pub(crate) fn dropped_oldest(&self) -> bool {
+        self.dropped_oldest
+    }
+}
+
+/// Queued TUN and endpoint traffic removed for one destination.
+#[derive(Debug, Default)]
+pub(crate) struct PendingDestinationTraffic {
+    tun_packets: Option<PendingTunPacketQueue>,
+    endpoint_data: Option<PendingEndpointDataQueue>,
+}
+
+impl PendingDestinationTraffic {
+    pub(crate) fn tun_packets(&self) -> Option<&PendingTunPacketQueue> {
+        self.tun_packets.as_ref()
+    }
+
+    pub(crate) fn into_tun_packets(self) -> Option<PendingTunPacketQueue> {
+        self.tun_packets
+    }
+
+    pub(crate) fn endpoint_data(&self) -> Option<&PendingEndpointDataQueue> {
+        self.endpoint_data.as_ref()
+    }
+}
+
+/// Pending traffic waiting for session establishment.
+#[derive(Debug, Default)]
+pub(crate) struct PendingSessionTrafficQueues {
+    tun_packets: HashMap<NodeAddr, PendingTunPacketQueue>,
+    endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
+}
+
+impl PendingSessionTrafficQueues {
+    pub(crate) fn push_tun_packet(
+        &mut self,
+        dest_addr: NodeAddr,
+        packet: Vec<u8>,
+        max_destinations: usize,
+        packets_per_dest: usize,
+    ) -> PendingSessionTrafficAdmission {
+        if !self.tun_packets.contains_key(&dest_addr) && self.tun_packets.len() >= max_destinations
+        {
+            return PendingSessionTrafficAdmission {
+                destination_dropped: true,
+                dropped_oldest: false,
+            };
+        }
+
+        let admission = self
+            .tun_packets
+            .entry(dest_addr)
+            .or_default()
+            .push_bounded(packet, packets_per_dest);
+        PendingSessionTrafficAdmission {
+            destination_dropped: false,
+            dropped_oldest: admission.dropped_oldest(),
+        }
+    }
+
+    pub(crate) fn push_endpoint_data(
+        &mut self,
+        dest_addr: NodeAddr,
+        payload: impl Into<EndpointDataPayload>,
+        max_destinations: usize,
+        packets_per_dest: usize,
+    ) -> PendingSessionTrafficAdmission {
+        if !self.endpoint_data.contains_key(&dest_addr)
+            && self.endpoint_data.len() >= max_destinations
+        {
+            return PendingSessionTrafficAdmission {
+                destination_dropped: true,
+                dropped_oldest: false,
+            };
+        }
+
+        let admission = self
+            .endpoint_data
+            .entry(dest_addr)
+            .or_default()
+            .push_bounded(payload.into(), packets_per_dest);
+        PendingSessionTrafficAdmission {
+            destination_dropped: false,
+            dropped_oldest: admission.dropped_oldest(),
+        }
+    }
+
+    pub(crate) fn remove_destination(&mut self, dest_addr: &NodeAddr) -> PendingDestinationTraffic {
+        PendingDestinationTraffic {
+            tun_packets: self.tun_packets.remove(dest_addr),
+            endpoint_data: self.endpoint_data.remove(dest_addr),
+        }
+    }
+
+    pub(crate) fn take_tun_packets(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> Option<PendingTunPacketQueue> {
+        self.tun_packets.remove(dest_addr)
+    }
+
+    pub(crate) fn take_endpoint_data(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> Option<PendingEndpointDataQueue> {
+        self.endpoint_data.remove(dest_addr)
+    }
+
+    pub(crate) fn has_traffic_for(&self, dest_addr: &NodeAddr) -> bool {
+        self.tun_packets.contains_key(dest_addr) || self.endpoint_data.contains_key(dest_addr)
+    }
+
+    pub(crate) fn tun_packets_for(&self, dest_addr: &NodeAddr) -> Option<&PendingTunPacketQueue> {
+        self.tun_packets.get(dest_addr)
+    }
+
+    pub(crate) fn endpoint_data_for(
+        &self,
+        dest_addr: &NodeAddr,
+    ) -> Option<&PendingEndpointDataQueue> {
+        self.endpoint_data.get(dest_addr)
+    }
+
+    pub(crate) fn tun_destination_count(&self) -> usize {
+        self.tun_packets.len()
+    }
+
+    pub(crate) fn tun_packet_count(&self) -> usize {
+        self.tun_packets.values().map(|q| q.len()).sum()
+    }
+}
+
 fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
     const TCP_MIN_HEADER_LEN: usize = 20;
     const TCP_FLAG_FIN: u8 = 0x01;
@@ -1050,11 +1194,8 @@ pub struct Node {
     identity_cache: HashMap<[u8; 15], IdentityCacheEntry>,
 
     // === Pending TUN Packets ===
-    /// Packets queued while waiting for session establishment.
-    /// Keyed by destination NodeAddr, bounded per-dest and total.
-    pending_tun_packets: HashMap<NodeAddr, PendingTunPacketQueue>,
-    /// Endpoint data payloads queued while waiting for session establishment.
-    pending_endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
+    /// TUN packets and endpoint payloads queued while waiting for session establishment.
+    pending_session_traffic: PendingSessionTrafficQueues,
     // === Pending Discovery Lookups ===
     /// Tracks in-flight discovery lookups. Maps target NodeAddr to the
     /// initiation timestamp (Unix ms). Prevents duplicate flood queries.
@@ -1347,8 +1488,7 @@ impl Node {
             peers: HashMap::new(),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
-            pending_tun_packets: HashMap::new(),
-            pending_endpoint_data: HashMap::new(),
+            pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: HashMap::new(),
             max_connections,
             max_peers,
@@ -1495,8 +1635,7 @@ impl Node {
             peers: HashMap::new(),
             sessions: HashMap::new(),
             identity_cache: HashMap::new(),
-            pending_tun_packets: HashMap::new(),
-            pending_endpoint_data: HashMap::new(),
+            pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: HashMap::new(),
             max_connections,
             max_peers,
@@ -2874,12 +3013,12 @@ impl Node {
 
     /// Count of destinations with queued TUN packets awaiting session setup.
     pub fn pending_tun_destinations(&self) -> usize {
-        self.pending_tun_packets.len()
+        self.pending_session_traffic.tun_destination_count()
     }
 
     /// Total TUN packets queued across all destinations.
     pub fn pending_tun_total_packets(&self) -> usize {
-        self.pending_tun_packets.values().map(|q| q.len()).sum()
+        self.pending_session_traffic.tun_packet_count()
     }
 
     /// Iterate over retry state for diagnostics.

@@ -137,8 +137,7 @@ impl Node {
         peer.clear_connected_udp();
 
         if !preserve_queued_packets {
-            self.pending_tun_packets.remove(node_addr);
-            self.pending_endpoint_data.remove(node_addr);
+            self.pending_session_traffic.remove_destination(node_addr);
         }
 
         info!(
@@ -195,8 +194,7 @@ impl Node {
         }
 
         if !preserve_queued_packets {
-            self.pending_tun_packets.remove(node_addr);
-            self.pending_endpoint_data.remove(node_addr);
+            self.pending_session_traffic.remove_destination(node_addr);
         }
 
         let link_id = peer.link_id();

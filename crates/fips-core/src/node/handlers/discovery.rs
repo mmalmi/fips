@@ -252,8 +252,7 @@ impl Node {
             // Clean up pending lookup tracking
             self.pending_lookups.remove(&target);
 
-            let has_queued_traffic = self.pending_tun_packets.contains_key(&target)
-                || self.pending_endpoint_data.contains_key(&target);
+            let has_queued_traffic = self.pending_session_traffic.has_traffic_for(&target);
             let session_established = self
                 .sessions
                 .get(&target)
@@ -292,10 +291,13 @@ impl Node {
                 && self.should_warm_auto_connect_session(&target)
                 && self.graph_session_warmup_budget() > 0;
             if has_queued_traffic || should_warm_session {
-                let tun_packets = self.pending_tun_packets.get(&target).map_or(0, |p| p.len());
+                let tun_packets = self
+                    .pending_session_traffic
+                    .tun_packets_for(&target)
+                    .map_or(0, |p| p.len());
                 let endpoint_payloads = self
-                    .pending_endpoint_data
-                    .get(&target)
+                    .pending_session_traffic
+                    .endpoint_data_for(&target)
                     .map_or(0, |p| p.len());
                 debug!(
                     dest = %self.peer_display_name(&target),
@@ -862,12 +864,9 @@ impl Node {
             self.discovery_backoff.record_failure(&addr);
             let failures = self.discovery_backoff.failure_count(&addr);
 
-            let queued = self.pending_tun_packets.remove(&addr);
-            let pkt_count = queued.as_ref().map_or(0, |p| p.len());
-            let endpoint_count = self
-                .pending_endpoint_data
-                .remove(&addr)
-                .map_or(0, |p| p.len());
+            let queued = self.pending_session_traffic.remove_destination(&addr);
+            let pkt_count = queued.tun_packets().map_or(0, |p| p.len());
+            let endpoint_count = queued.endpoint_data().map_or(0, |p| p.len());
             info!(
                 target_node = %self.peer_display_name(&addr),
                 queued_packets = pkt_count,
@@ -875,7 +874,7 @@ impl Node {
                 failures = failures,
                 "Discovery lookup timed out, destination unreachable"
             );
-            if let Some(packets) = queued {
+            if let Some(packets) = queued.into_tun_packets() {
                 for pkt in packets.into_packets() {
                     self.send_icmpv6_dest_unreachable(&pkt);
                 }

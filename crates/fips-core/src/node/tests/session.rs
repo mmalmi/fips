@@ -2038,8 +2038,8 @@ async fn test_endpoint_data_for_pending_session_triggers_reply_learned_discovery
         .unwrap();
 
     assert_eq!(
-        node.pending_endpoint_data
-            .get(&dest_addr)
+        node.pending_session_traffic
+            .endpoint_data_for(&dest_addr)
             .map(|queue| queue.len()),
         Some(1),
         "endpoint payload should stay queued until the pending session recovers"
@@ -2074,8 +2074,8 @@ async fn test_endpoint_data_for_established_session_with_no_route_queues_and_dis
         .unwrap();
 
     assert_eq!(
-        node.pending_endpoint_data
-            .get(&dest_addr)
+        node.pending_session_traffic
+            .endpoint_data_for(&dest_addr)
             .map(|queue| queue.len()),
         Some(1),
         "endpoint payload should stay queued while fallback discovery repairs the route"
@@ -2886,8 +2886,8 @@ async fn test_tun_packet_for_pending_session_triggers_reply_learned_discovery() 
     node.handle_tun_outbound(ipv6_packet).await;
 
     assert_eq!(
-        node.pending_tun_packets
-            .get(&dest_addr)
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
             .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued until the pending session recovers"
@@ -2923,8 +2923,8 @@ async fn test_tun_packet_for_established_session_with_no_route_queues_and_discov
     node.handle_tun_outbound(ipv6_packet).await;
 
     assert_eq!(
-        node.pending_tun_packets
-            .get(&dest_addr)
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
             .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued while fallback discovery repairs the route"
@@ -2969,8 +2969,8 @@ async fn test_tun_packet_for_established_session_with_stale_direct_queues_and_di
     node.handle_tun_outbound(ipv6_packet).await;
 
     assert_eq!(
-        node.pending_tun_packets
-            .get(&dest_addr)
+        node.pending_session_traffic
+            .tun_packets_for(&dest_addr)
             .map(|queue| queue.len()),
         Some(1),
         "TUN packet should stay queued while fallback discovery runs"
@@ -3008,15 +3008,12 @@ async fn test_discovery_restarts_stale_pending_session_with_fresh_coords() {
         .coord_cache_mut()
         .insert(dest_addr, stale_coords.clone(), now_ms);
     insert_initiating_session_for(&mut nodes[0].node, dest_addr, dest_pubkey);
-    nodes[0]
-        .node
-        .pending_endpoint_data
-        .entry(dest_addr)
-        .or_default()
-        .push_bounded(
-            crate::node::EndpointDataPayload::new(b"queued".to_vec()),
-            usize::MAX,
-        );
+    nodes[0].node.pending_session_traffic.push_endpoint_data(
+        dest_addr,
+        crate::node::EndpointDataPayload::new(b"queued".to_vec()),
+        usize::MAX,
+        usize::MAX,
+    );
 
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
     nodes[0]
@@ -3094,8 +3091,8 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
     assert_eq!(
         nodes[0]
             .node
-            .pending_endpoint_data
-            .get(&dest_addr)
+            .pending_session_traffic
+            .endpoint_data_for(&dest_addr)
             .map(|queue| queue.len()),
         None,
         "fixture should not rely on queued endpoint payloads for fallback warmup"
@@ -3103,8 +3100,8 @@ async fn test_discovery_warms_established_session_over_fresh_fallback_route() {
     assert_eq!(
         nodes[0]
             .node
-            .pending_tun_packets
-            .get(&dest_addr)
+            .pending_session_traffic
+            .tun_packets_for(&dest_addr)
             .map(|queue| queue.len()),
         None,
         "fixture should not rely on queued TUN packets for fallback warmup"
@@ -3160,12 +3157,12 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     let src_fips = crate::FipsAddress::from_node_addr(&src_addr);
     let dest_fips = crate::FipsAddress::from_node_addr(&dest_addr);
     let ipv6_packet = build_ipv6_packet(&src_fips, &dest_fips, b"queued-fallback");
-    nodes[0]
-        .node
-        .pending_tun_packets
-        .entry(dest_addr)
-        .or_default()
-        .push_bounded(ipv6_packet.clone(), usize::MAX);
+    nodes[0].node.pending_session_traffic.push_tun_packet(
+        dest_addr,
+        ipv6_packet.clone(),
+        usize::MAX,
+        usize::MAX,
+    );
 
     let request_id = 4242;
     let fresh_coords = nodes[2].node.tree_state().my_coords().clone();
@@ -3184,7 +3181,11 @@ async fn test_discovery_flushes_queued_tun_for_established_session_with_fresh_ro
     drain_to_quiescence(&mut nodes).await;
 
     assert!(
-        !nodes[0].node.pending_tun_packets.contains_key(&dest_addr),
+        nodes[0]
+            .node
+            .pending_session_traffic
+            .tun_packets_for(&dest_addr)
+            .is_none(),
         "discovery should flush queued TUN traffic through the established session"
     );
     let delivered: Vec<Vec<u8>> = std::iter::from_fn(|| tun_rx.try_recv().ok()).collect();
@@ -3487,10 +3488,17 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
     node.sessions.insert(remote_addr, entry);
 
     // Insert some pending packets for this destination
-    let mut queue = crate::node::PendingTunPacketQueue::default();
-    queue.push_bounded(vec![1, 2, 3], usize::MAX);
-    node.pending_tun_packets.insert(remote_addr, queue);
-    assert!(node.pending_tun_packets.contains_key(&remote_addr));
+    node.pending_session_traffic.push_tun_packet(
+        remote_addr,
+        vec![1, 2, 3],
+        usize::MAX,
+        usize::MAX,
+    );
+    assert!(
+        node.pending_session_traffic
+            .tun_packets_for(&remote_addr)
+            .is_some()
+    );
 
     // Purge after idle timeout
     let now_ms = 1000 + 92_000;
@@ -3498,7 +3506,9 @@ fn test_purge_idle_sessions_cleans_pending_packets() {
 
     assert_eq!(node.session_count(), 0);
     assert!(
-        !node.pending_tun_packets.contains_key(&remote_addr),
+        node.pending_session_traffic
+            .tun_packets_for(&remote_addr)
+            .is_none(),
         "Pending packets should be cleaned up with idle session"
     );
 }

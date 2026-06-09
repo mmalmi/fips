@@ -1999,9 +1999,8 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     // dst = target's IPv6 representation (not strictly required, just non-multicast)
     let target_ipv6 = crate::FipsAddress::from_node_addr(&target_addr).to_ipv6();
     ipv6_pkt[24..40].copy_from_slice(&target_ipv6.octets());
-    let mut queue = crate::node::PendingTunPacketQueue::default();
-    queue.push_bounded(ipv6_pkt, usize::MAX);
-    node.pending_tun_packets.insert(target_addr, queue);
+    node.pending_session_traffic
+        .push_tun_packet(target_addr, ipv6_pkt, usize::MAX, usize::MAX);
 
     // Inject a PendingLookup directly: attempt=1, last_sent_ms=0. This
     // mirrors the post-condition of a successful `maybe_initiate_lookup`
@@ -2103,7 +2102,9 @@ async fn test_check_pending_lookups_default_sequence_unreachable() {
     );
     // Queued packet was drained from pending_tun_packets.
     assert!(
-        !node.pending_tun_packets.contains_key(&target_addr),
+        node.pending_session_traffic
+            .tun_packets_for(&target_addr)
+            .is_none(),
         "queued packets for the unreachable target must be drained"
     );
 

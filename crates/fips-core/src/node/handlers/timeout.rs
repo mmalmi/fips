@@ -200,8 +200,7 @@ impl Node {
             let name = self.peer_display_name(addr);
             info!(dest = %name, "Session handshake timed out, removing");
             self.sessions.remove(addr);
-            self.pending_tun_packets.remove(addr);
-            self.pending_endpoint_data.remove(addr);
+            self.pending_session_traffic.remove_destination(addr);
         }
 
         for peer_config in direct_fallbacks {
@@ -338,7 +337,7 @@ impl Node {
                 Self::log_session_mmp_teardown(&name, mmp);
             }
             self.sessions.remove(&addr);
-            self.pending_tun_packets.remove(&addr);
+            self.pending_session_traffic.remove_destination(&addr);
             debug!(
                 dest = %name,
                 idle_secs = timeout_ms / 1000,

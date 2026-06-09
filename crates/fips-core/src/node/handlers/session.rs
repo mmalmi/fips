@@ -3083,20 +3083,18 @@ impl Node {
 
     /// Queue a packet while waiting for session establishment.
     fn queue_pending_packet(&mut self, dest_addr: NodeAddr, packet: Vec<u8>) {
-        // Reject if we already have too many pending destinations
-        let max_dests = self.config.node.session.pending_max_destinations;
-        if !self.pending_tun_packets.contains_key(&dest_addr)
-            && self.pending_tun_packets.len() >= max_dests
-        {
+        let admission = self.pending_session_traffic.push_tun_packet(
+            dest_addr,
+            packet,
+            self.config.node.session.pending_max_destinations,
+            self.config.node.session.pending_packets_per_dest,
+        );
+        if admission.destination_dropped() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingTunDestinationDropped,
             );
             return;
         }
-
-        let queue = self.pending_tun_packets.entry(dest_addr).or_default();
-        let admission =
-            queue.push_bounded(packet, self.config.node.session.pending_packets_per_dest);
         if admission.dropped_oldest() {
             crate::perf_profile::record_event(crate::perf_profile::Event::PendingTunPacketDropped);
         }
@@ -3108,21 +3106,18 @@ impl Node {
         dest_addr: NodeAddr,
         payload: impl Into<EndpointDataPayload>,
     ) {
-        let max_dests = self.config.node.session.pending_max_destinations;
-        if !self.pending_endpoint_data.contains_key(&dest_addr)
-            && self.pending_endpoint_data.len() >= max_dests
-        {
+        let admission = self.pending_session_traffic.push_endpoint_data(
+            dest_addr,
+            payload,
+            self.config.node.session.pending_max_destinations,
+            self.config.node.session.pending_packets_per_dest,
+        );
+        if admission.destination_dropped() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointDestinationDropped,
             );
             return;
         }
-
-        let queue = self.pending_endpoint_data.entry(dest_addr).or_default();
-        let admission = queue.push_bounded(
-            payload.into(),
-            self.config.node.session.pending_packets_per_dest,
-        );
         if admission.dropped_oldest() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::PendingEndpointPacketDropped,
@@ -3136,7 +3131,7 @@ impl Node {
 
     /// Flush pending packets for a destination whose session just reached Established.
     pub(in crate::node) async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
-        if let Some(packets) = self.pending_tun_packets.remove(dest_addr) {
+        if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
             for packet in packets.into_packets() {
                 if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued TUN packet");
@@ -3145,7 +3140,7 @@ impl Node {
             }
         }
 
-        if let Some(payloads) = self.pending_endpoint_data.remove(dest_addr) {
+        if let Some(payloads) = self.pending_session_traffic.take_endpoint_data(dest_addr) {
             for payload in payloads.into_payloads() {
                 if let Err(e) = self.send_session_endpoint_data(dest_addr, &payload).await {
                     debug!(dest = %self.peer_display_name(dest_addr), error = %e, "Failed to send queued endpoint data");
@@ -3231,8 +3226,8 @@ mod pending_queue_tests {
         node.queue_pending_packet(tun_dest, vec![2]);
         node.queue_pending_packet(tun_dest, vec![3]);
         let tun_packets: Vec<Vec<u8>> = node
-            .pending_tun_packets
-            .get(&tun_dest)
+            .pending_session_traffic
+            .tun_packets_for(&tun_dest)
             .expect("tun queue")
             .iter()
             .cloned()
@@ -3244,8 +3239,8 @@ mod pending_queue_tests {
         node.queue_pending_endpoint_data(endpoint_dest, vec![5]);
         node.queue_pending_endpoint_data(endpoint_dest, vec![6]);
         let endpoint_payloads: Vec<Vec<u8>> = node
-            .pending_endpoint_data
-            .get(&endpoint_dest)
+            .pending_session_traffic
+            .endpoint_data_for(&endpoint_dest)
             .expect("endpoint queue")
             .iter()
             .map(|payload| payload.as_slice().to_vec())
@@ -3279,6 +3274,61 @@ mod pending_queue_tests {
     }
 
     #[test]
+    fn pending_session_traffic_queues_own_destination_admission() {
+        let mut queues = crate::node::PendingSessionTrafficQueues::default();
+        let tun_dest = NodeAddr::from_bytes([1u8; 16]);
+        let rejected_tun_dest = NodeAddr::from_bytes([2u8; 16]);
+        let endpoint_dest = NodeAddr::from_bytes([3u8; 16]);
+        let rejected_endpoint_dest = NodeAddr::from_bytes([4u8; 16]);
+
+        assert!(
+            !queues
+                .push_tun_packet(tun_dest, vec![1], 1, 2)
+                .destination_dropped()
+        );
+        assert!(
+            queues
+                .push_tun_packet(rejected_tun_dest, vec![2], 1, 2)
+                .destination_dropped()
+        );
+
+        assert!(
+            !queues
+                .push_endpoint_data(endpoint_dest, vec![3], 1, 2)
+                .destination_dropped()
+        );
+        assert!(
+            queues
+                .push_endpoint_data(rejected_endpoint_dest, vec![4], 1, 2)
+                .destination_dropped()
+        );
+
+        assert!(
+            !queues
+                .push_tun_packet(tun_dest, vec![5], 1, 2)
+                .dropped_oldest()
+        );
+        assert!(
+            queues
+                .push_tun_packet(tun_dest, vec![6], 1, 2)
+                .dropped_oldest()
+        );
+
+        let packets: Vec<Vec<u8>> = queues
+            .tun_packets_for(&tun_dest)
+            .expect("accepted TUN queue")
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(packets, vec![vec![5], vec![6]]);
+
+        let removed = queues.remove_destination(&tun_dest);
+        assert_eq!(removed.tun_packets().map(|queue| queue.len()), Some(2));
+        assert!(queues.tun_packets_for(&tun_dest).is_none());
+        assert!(queues.endpoint_data_for(&endpoint_dest).is_some());
+    }
+
+    #[test]
     fn pending_session_queues_reject_new_destinations_at_cap() {
         let mut node = make_node();
         node.config.node.session.pending_max_destinations = 1;
@@ -3287,21 +3337,30 @@ mod pending_queue_tests {
         let rejected_tun_dest = make_node_addr(0x52);
         node.queue_pending_packet(accepted_tun_dest, vec![1]);
         node.queue_pending_packet(rejected_tun_dest, vec![2]);
-        assert!(node.pending_tun_packets.contains_key(&accepted_tun_dest));
-        assert!(!node.pending_tun_packets.contains_key(&rejected_tun_dest));
+        assert!(
+            node.pending_session_traffic
+                .tun_packets_for(&accepted_tun_dest)
+                .is_some()
+        );
+        assert!(
+            node.pending_session_traffic
+                .tun_packets_for(&rejected_tun_dest)
+                .is_none()
+        );
 
         let accepted_endpoint_dest = make_node_addr(0x61);
         let rejected_endpoint_dest = make_node_addr(0x62);
         node.queue_pending_endpoint_data(accepted_endpoint_dest, vec![3]);
         node.queue_pending_endpoint_data(rejected_endpoint_dest, vec![4]);
         assert!(
-            node.pending_endpoint_data
-                .contains_key(&accepted_endpoint_dest)
+            node.pending_session_traffic
+                .endpoint_data_for(&accepted_endpoint_dest)
+                .is_some()
         );
         assert!(
-            !node
-                .pending_endpoint_data
-                .contains_key(&rejected_endpoint_dest)
+            node.pending_session_traffic
+                .endpoint_data_for(&rejected_endpoint_dest)
+                .is_none()
         );
     }
 }
