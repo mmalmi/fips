@@ -5,7 +5,7 @@
 
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
-    EndpointCommandLane, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
+    EndpointCommandLane, EndpointDataPayload, NodeEndpointCommand, NodeEndpointEvent,
     NodeEndpointPeer, NodeEndpointRelayStatus,
 };
 use crate::{
@@ -530,37 +530,51 @@ impl FipsEndpoint {
         }
 
         let queued_at = crate::perf_profile::stamp();
-        let mut priority_commands = Vec::new();
-        let mut bulk_commands = Vec::new();
+        let mut priority_payloads = Vec::new();
+        let mut bulk_payloads = Vec::new();
 
         for payload in payloads {
-            let command = EndpointSendCommand::new(remote, payload, queued_at);
-            match command.lane() {
-                EndpointCommandLane::Priority => priority_commands.push(command),
-                EndpointCommandLane::Bulk => bulk_commands.push(command),
+            let payload = EndpointDataPayload::new(payload);
+            match payload.lane() {
+                EndpointCommandLane::Priority => priority_payloads.push(payload),
+                EndpointCommandLane::Bulk => bulk_payloads.push(payload),
             }
         }
 
-        self.send_endpoint_command_batch(priority_commands, EndpointCommandLane::Priority)
-            .await?;
-        self.send_endpoint_command_batch(bulk_commands, EndpointCommandLane::Bulk)
-            .await?;
+        self.send_endpoint_command_batch(
+            remote,
+            priority_payloads,
+            queued_at,
+            EndpointCommandLane::Priority,
+        )
+        .await?;
+        self.send_endpoint_command_batch(
+            remote,
+            bulk_payloads,
+            queued_at,
+            EndpointCommandLane::Bulk,
+        )
+        .await?;
         Ok(())
     }
 
     async fn send_endpoint_command_batch(
         &self,
-        mut commands: Vec<EndpointSendCommand>,
+        remote: PeerIdentity,
+        mut payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<std::time::Instant>,
         lane: EndpointCommandLane,
     ) -> Result<(), FipsEndpointError> {
-        while !commands.is_empty() {
-            let tail = if commands.len() > ENDPOINT_SEND_BATCH_COMMAND_MAX {
-                commands.split_off(ENDPOINT_SEND_BATCH_COMMAND_MAX)
+        while !payloads.is_empty() {
+            let tail = if payloads.len() > ENDPOINT_SEND_BATCH_COMMAND_MAX {
+                payloads.split_off(ENDPOINT_SEND_BATCH_COMMAND_MAX)
             } else {
                 Vec::new()
             };
-            let batch = std::mem::replace(&mut commands, tail);
-            let Some(command) = NodeEndpointCommand::send_batch_oneway(batch, lane) else {
+            let batch = std::mem::replace(&mut payloads, tail);
+            let Some(command) =
+                NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at, lane)
+            else {
                 continue;
             };
             let command_tx = endpoint_command_tx_for_command(
@@ -970,12 +984,11 @@ mod tests {
             &bulk_tx,
         ));
 
+        let batch_payload = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
         let batch_command = NodeEndpointCommand::send_batch_oneway(
-            vec![crate::node::EndpointSendCommand::new(
-                remote,
-                ipv6_tcp_packet(0x18, 512),
-                None,
-            )],
+            remote,
+            vec![batch_payload],
+            None,
             EndpointCommandLane::Bulk,
         )
         .expect("non-empty batch command");

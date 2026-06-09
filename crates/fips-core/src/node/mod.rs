@@ -1150,10 +1150,11 @@ pub(crate) enum NodeEndpointCommand {
     /// packet on the application's send hot path.
     SendOneway { command: EndpointSendCommand },
     /// Fire-and-forget batch of endpoint payloads that already share the same
-    /// command lane. This keeps bursty embedded dataplanes from paying one
-    /// mpsc send/wake per packet while preserving the priority/bulk split.
+    /// peer and command lane. This keeps bursty embedded dataplanes from
+    /// paying one mpsc send/wake per packet while preserving the priority/bulk
+    /// split without repeating the resolved peer identity in every payload.
     SendBatchOneway {
-        commands: Vec<EndpointSendCommand>,
+        command: EndpointSendBatchCommand,
         lane: EndpointCommandLane,
     },
     PeerSnapshot {
@@ -1207,6 +1208,49 @@ impl EndpointSendCommand {
     }
 }
 
+/// Batch of endpoint payloads to one resolved peer.
+#[derive(Debug)]
+pub(crate) struct EndpointSendBatchCommand {
+    remote: PeerIdentity,
+    payloads: Vec<EndpointDataPayload>,
+    queued_at: Option<std::time::Instant>,
+}
+
+impl EndpointSendBatchCommand {
+    pub(crate) fn new(
+        remote: PeerIdentity,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<std::time::Instant>,
+    ) -> Option<Self> {
+        if payloads.is_empty() {
+            return None;
+        }
+        Some(Self {
+            remote,
+            payloads,
+            queued_at,
+        })
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        self.payloads[0].lane()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.payloads.len()
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        PeerIdentity,
+        Vec<EndpointDataPayload>,
+        Option<std::time::Instant>,
+    ) {
+        (self.remote, self.payloads, self.queued_at)
+    }
+}
+
 impl NodeEndpointCommand {
     pub(crate) fn send(
         remote: PeerIdentity,
@@ -1231,14 +1275,15 @@ impl NodeEndpointCommand {
     }
 
     pub(crate) fn send_batch_oneway(
-        commands: Vec<EndpointSendCommand>,
+        remote: PeerIdentity,
+        payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<std::time::Instant>,
         lane: EndpointCommandLane,
     ) -> Option<Self> {
-        if commands.is_empty() {
-            return None;
-        }
-        debug_assert!(commands.iter().all(|command| command.lane() == lane));
-        Some(Self::SendBatchOneway { commands, lane })
+        debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
+        let command = EndpointSendBatchCommand::new(remote, payloads, queued_at)?;
+        debug_assert_eq!(command.lane(), lane);
+        Some(Self::SendBatchOneway { command, lane })
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
@@ -1254,7 +1299,7 @@ impl NodeEndpointCommand {
 
     pub(crate) fn drain_cost(&self) -> usize {
         match self {
-            Self::SendBatchOneway { commands, .. } => commands.len().max(1),
+            Self::SendBatchOneway { command, .. } => command.len().max(1),
             Self::Send { .. }
             | Self::SendOneway { .. }
             | Self::PeerSnapshot { .. }
