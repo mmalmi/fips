@@ -1800,6 +1800,14 @@ pub(in crate::node) struct PreparedFmpInlineSend {
 }
 
 #[cfg(unix)]
+pub(in crate::node) struct PreparedFmpWorkerReservation {
+    pub(in crate::node) counter: u64,
+    pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) predicted_bytes: usize,
+}
+
+#[cfg(unix)]
 pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
@@ -2400,18 +2408,26 @@ impl PeerLifecycleRegistry {
     }
 
     #[cfg(unix)]
-    pub(in crate::node) fn prepare_fmp_worker_send(
+    pub(in crate::node) fn fmp_worker_send_available(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Result<bool, FmpSendPreparationError> {
+        let peer = self
+            .active
+            .get(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        let session = peer
+            .noise_session()
+            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
+        Ok(session.has_send_cipher())
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_prepared_fmp_worker_send(
         &mut self,
         node_addr: &NodeAddr,
         prepared: &FmpSendPreparation,
-        plaintext: &[u8],
-    ) -> Result<Option<PreparedFmpWorkerSend>, FmpSendPreparationError> {
-        const INNER_TS_LEN: usize = 4;
-        let expected_payload_len = INNER_TS_LEN + plaintext.len();
-        if prepared.payload_len as usize != expected_payload_len {
-            return Err(FmpSendPreparationError::PayloadLengthMismatch);
-        }
-
+    ) -> Result<Option<PreparedFmpWorkerReservation>, FmpSendPreparationError> {
         let peer = self
             .active
             .get_mut(node_addr)
@@ -2428,24 +2444,50 @@ impl PeerLifecycleRegistry {
         .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
 
         Ok(reservation.map(|reservation| {
-            let header = reservation.header;
-            let wire_len = ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize;
-            let predicted_bytes = wire_len + 16;
-            let mut wire_buf = Vec::with_capacity(predicted_bytes);
-            wire_buf.extend_from_slice(&header);
-            wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
-            wire_buf.extend_from_slice(plaintext);
-            debug_assert_eq!(wire_buf.len(), wire_len);
-
-            PreparedFmpWorkerSend {
+            let predicted_bytes =
+                ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize + crate::noise::TAG_SIZE;
+            PreparedFmpWorkerReservation {
                 counter: reservation.counter,
-                #[cfg(test)]
-                header,
+                header: reservation.header,
                 cipher: reservation.cipher,
-                wire_buf,
                 predicted_bytes,
             }
         }))
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn prepare_fmp_worker_send(
+        &mut self,
+        node_addr: &NodeAddr,
+        prepared: &FmpSendPreparation,
+        plaintext: &[u8],
+    ) -> Result<Option<PreparedFmpWorkerSend>, FmpSendPreparationError> {
+        const INNER_TS_LEN: usize = 4;
+        let expected_payload_len = INNER_TS_LEN + plaintext.len();
+        if prepared.payload_len as usize != expected_payload_len {
+            return Err(FmpSendPreparationError::PayloadLengthMismatch);
+        }
+
+        Ok(self
+            .reserve_prepared_fmp_worker_send(node_addr, prepared)?
+            .map(|reservation| {
+                let header = reservation.header;
+                let wire_len = ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize;
+                let mut wire_buf = Vec::with_capacity(reservation.predicted_bytes);
+                wire_buf.extend_from_slice(&header);
+                wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
+                wire_buf.extend_from_slice(plaintext);
+                debug_assert_eq!(wire_buf.len(), wire_len);
+
+                PreparedFmpWorkerSend {
+                    counter: reservation.counter,
+                    #[cfg(test)]
+                    header,
+                    cipher: reservation.cipher,
+                    wire_buf,
+                    predicted_bytes: reservation.predicted_bytes,
+                }
+            }))
     }
 
     pub(in crate::node) fn seal_prepared_fmp_inline_send(
@@ -5497,6 +5539,43 @@ impl Node {
         std::time::Instant::now().duration_since(t) <= grace
     }
 
+    fn map_fmp_send_preparation_error(
+        node_addr: NodeAddr,
+        error: FmpSendPreparationError,
+    ) -> NodeError {
+        match error {
+            FmpSendPreparationError::MissingPeer => NodeError::PeerNotFound(node_addr),
+            FmpSendPreparationError::MissingTheirIndex => NodeError::SendFailed {
+                node_addr,
+                reason: "no their_index".into(),
+            },
+            FmpSendPreparationError::MissingTransportId => NodeError::SendFailed {
+                node_addr,
+                reason: "no transport_id".into(),
+            },
+            FmpSendPreparationError::MissingCurrentAddr => NodeError::SendFailed {
+                node_addr,
+                reason: "no current_addr".into(),
+            },
+            FmpSendPreparationError::MissingNoiseSession => NodeError::SendFailed {
+                node_addr,
+                reason: "no noise session".into(),
+            },
+            FmpSendPreparationError::PayloadLengthMismatch => NodeError::SendFailed {
+                node_addr,
+                reason: "payload length mismatch".into(),
+            },
+            FmpSendPreparationError::CounterReservationFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "counter reservation failed".into(),
+            },
+            FmpSendPreparationError::EncryptionFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "encryption failed".into(),
+            },
+        }
+    }
+
     /// Like `send_encrypted_link_message` but allows setting the FMP CE flag.
     ///
     /// Used by the forwarding path to relay congestion signals hop-by-hop.
@@ -5515,41 +5594,10 @@ impl Node {
         const INNER_TS_LEN: usize = 4;
         let inner_len = INNER_TS_LEN + plaintext.len();
         let payload_len = inner_len as u16;
-        let map_fmp_send_error = |error: FmpSendPreparationError| match error {
-            FmpSendPreparationError::MissingPeer => NodeError::PeerNotFound(*node_addr),
-            FmpSendPreparationError::MissingTheirIndex => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no their_index".into(),
-            },
-            FmpSendPreparationError::MissingTransportId => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no transport_id".into(),
-            },
-            FmpSendPreparationError::MissingCurrentAddr => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no current_addr".into(),
-            },
-            FmpSendPreparationError::MissingNoiseSession => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no noise session".into(),
-            },
-            FmpSendPreparationError::PayloadLengthMismatch => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "payload length mismatch".into(),
-            },
-            FmpSendPreparationError::CounterReservationFailed => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "counter reservation failed".into(),
-            },
-            FmpSendPreparationError::EncryptionFailed => NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "encryption failed".into(),
-            },
-        };
         let prepared = self
             .peers
             .prepare_fmp_send(node_addr, ce_flag, payload_len)
-            .map_err(|e| map_fmp_send_error(e))?;
+            .map_err(|e| Self::map_fmp_send_preparation_error(*node_addr, e))?;
 
         // **Unix UDP send fast path.** On Unix, the encrypt-worker pool
         // is spawned at lifecycle start (workers = num_cpus) in
@@ -5634,7 +5682,7 @@ impl Node {
                     if let Some(worker_send) = self
                         .peers
                         .prepare_fmp_worker_send(node_addr, &prepared, plaintext)
-                        .map_err(|e| map_fmp_send_error(e))?
+                        .map_err(|e| Self::map_fmp_send_preparation_error(*node_addr, e))?
                     {
                         let reserved_counter = worker_send.counter;
                         let predicted_bytes = worker_send.predicted_bytes;
@@ -5682,7 +5730,7 @@ impl Node {
         let inline = self
             .peers
             .seal_prepared_fmp_inline_send(node_addr, &prepared, &inner_plaintext)
-            .map_err(|e| map_fmp_send_error(e))?;
+            .map_err(|e| Self::map_fmp_send_preparation_error(*node_addr, e))?;
 
         // Re-borrow peer for stats update after sending
         let send_result = {

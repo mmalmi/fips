@@ -17,9 +17,7 @@ use crate::node::session_wire::{
     fsp_prepend_inner_header, fsp_strip_inner_header, parse_encrypted_coords,
 };
 #[cfg(unix)]
-use crate::node::wire::{
-    ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
-};
+use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::{
     EndpointDataPayload, EndpointDataSend, EndpointSendCommand, FspSendBookkeepingInput, Node,
     NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
@@ -117,32 +115,46 @@ struct PipelinedEndpointWireArgs<'a> {
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
     path_mtu: u16,
     default_ttl: u8,
-    their_index: crate::utils::index::SessionIndex,
+    fmp_header: [u8; ESTABLISHED_HEADER_SIZE],
     fsp_header: [u8; FSP_HEADER_SIZE],
-    fmp_counter: u64,
-    fmp_flags: u8,
     timestamp_ms: u32,
 }
 
 #[cfg(unix)]
-fn build_pipelined_endpoint_wire(args: PipelinedEndpointWireArgs<'_>) -> PipelinedEndpointWire {
-    let coords_size = match (args.my_coords, args.dest_coords) {
+fn pipelined_endpoint_link_plaintext_len(
+    inner_plaintext_len: usize,
+    my_coords: Option<&crate::tree::TreeCoordinate>,
+    dest_coords: Option<&crate::tree::TreeCoordinate>,
+) -> usize {
+    let coords_size = match (my_coords, dest_coords) {
         (Some(src), Some(dst)) => coords_wire_size(src) + coords_wire_size(dst),
         _ => 0,
     };
-    let link_plaintext_len =
-        SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + args.inner_plaintext.len();
-    let fmp_inner_len = 4 + link_plaintext_len + crate::noise::TAG_SIZE;
-    let fmp_header = build_established_header(
-        args.their_index,
-        args.fmp_counter,
-        args.fmp_flags,
-        fmp_inner_len as u16,
+    SESSION_DATAGRAM_HEADER_SIZE + FSP_HEADER_SIZE + coords_size + inner_plaintext_len
+}
+
+#[cfg(unix)]
+fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> {
+    let payload_len = 4usize
+        .checked_add(link_plaintext_len)?
+        .checked_add(crate::noise::TAG_SIZE)?;
+    u16::try_from(payload_len).ok()
+}
+
+#[cfg(unix)]
+fn build_pipelined_endpoint_wire(args: PipelinedEndpointWireArgs<'_>) -> PipelinedEndpointWire {
+    let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
+        args.inner_plaintext.len(),
+        args.my_coords,
+        args.dest_coords,
     );
+    let fmp_inner_len = pipelined_endpoint_fmp_payload_len(link_plaintext_len)
+        .expect("pipelined FMP payload length should be pre-validated")
+        as usize;
 
     let wire_capacity = ESTABLISHED_HEADER_SIZE + fmp_inner_len + crate::noise::TAG_SIZE;
     let mut wire_buf = Vec::with_capacity(wire_capacity);
-    wire_buf.extend_from_slice(&fmp_header);
+    wire_buf.extend_from_slice(&args.fmp_header);
     wire_buf.extend_from_slice(&args.timestamp_ms.to_le_bytes());
     wire_buf.push(LinkMessageType::SessionDatagram.to_byte());
     wire_buf.push(args.default_ttl);
@@ -2445,74 +2457,46 @@ impl Node {
             }
         }
 
-        let (their_index, transport_id, remote_addr, timestamp_ms, fmp_flags, fmp_cipher) = {
-            let peer = self
-                .peers
-                .get_mut(&next_hop_addr)
-                .ok_or(NodeError::PeerNotFound(next_hop_addr))?;
-            let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
-                node_addr: next_hop_addr,
-                reason: "no their_index".into(),
-            })?;
-            let transport_id = peer.transport_id().ok_or_else(|| NodeError::SendFailed {
-                node_addr: next_hop_addr,
-                reason: "no transport_id".into(),
-            })?;
-            let remote_addr =
-                peer.current_addr()
-                    .cloned()
-                    .ok_or_else(|| NodeError::SendFailed {
-                        node_addr: next_hop_addr,
-                        reason: "no current_addr".into(),
-                    })?;
-            let timestamp_ms = peer.session_elapsed_ms();
-            let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
-            let mut fmp_flags = if sp_flag { FLAG_SP } else { 0 };
-            if peer.current_k_bit() {
-                fmp_flags |= FLAG_KEY_EPOCH;
-            }
-            let session = peer
-                .noise_session_mut()
-                .ok_or_else(|| NodeError::SendFailed {
+        let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
+            send.inner_plaintext.len(),
+            send.my_coords,
+            send.dest_coords,
+        );
+        let fmp_payload_len =
+            pipelined_endpoint_fmp_payload_len(link_plaintext_len).ok_or_else(|| {
+                NodeError::SendFailed {
                     node_addr: next_hop_addr,
-                    reason: "no noise session".into(),
-                })?;
-            let Some(fmp_cipher) = session.send_cipher_clone() else {
-                return Ok(false);
-            };
-            (
-                their_index,
-                transport_id,
-                remote_addr,
-                timestamp_ms,
-                fmp_flags,
-                fmp_cipher,
-            )
-        };
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let connected_socket = self
+                    reason: "pipelined FMP payload too large".into(),
+                }
+            })?;
+        let fmp_prepared = self
             .peers
-            .get(&next_hop_addr)
-            .and_then(|peer| peer.connected_udp());
+            .prepare_fmp_send(&next_hop_addr, false, fmp_payload_len)
+            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?;
 
         let transport = self
             .transports
-            .get(&transport_id)
-            .ok_or(NodeError::TransportNotFound(transport_id))?;
+            .get(&fmp_prepared.transport_id)
+            .ok_or(NodeError::TransportNotFound(fmp_prepared.transport_id))?;
         let TransportHandle::Udp(udp) = transport else {
             return Ok(false);
         };
         let socket_addr = {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                match connected_socket.as_ref() {
+                match fmp_prepared.connected_socket.as_ref() {
                     Some(socket) => Some(socket.peer_addr()),
-                    None => udp.resolve_for_off_task(&remote_addr).await.ok(),
+                    None => udp
+                        .resolve_for_off_task(&fmp_prepared.remote_addr)
+                        .await
+                        .ok(),
                 }
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
-                udp.resolve_for_off_task(&remote_addr).await.ok()
+                udp.resolve_for_off_task(&fmp_prepared.remote_addr)
+                    .await
+                    .ok()
             }
         };
         let Some(socket_addr) = socket_addr else {
@@ -2521,6 +2505,13 @@ impl Node {
         let Some(socket) = udp.async_socket() else {
             return Ok(false);
         };
+        if !self
+            .peers
+            .fmp_worker_send_available(&next_hop_addr)
+            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?
+        {
+            return Ok(false);
+        }
 
         let fsp_reservation = {
             let entry = self
@@ -2552,23 +2543,12 @@ impl Node {
             reservation
         };
 
-        let fmp_counter = {
-            let peer = self
-                .peers
-                .get_mut(&next_hop_addr)
-                .ok_or(NodeError::PeerNotFound(next_hop_addr))?;
-            let session = peer
-                .noise_session_mut()
-                .ok_or_else(|| NodeError::SendFailed {
-                    node_addr: next_hop_addr,
-                    reason: "no noise session".into(),
-                })?;
-            session
-                .take_send_counter()
-                .map_err(|e| NodeError::SendFailed {
-                    node_addr: next_hop_addr,
-                    reason: format!("counter reservation failed: {}", e),
-                })?
+        let Some(fmp_reservation) = self
+            .peers
+            .reserve_prepared_fmp_worker_send(&next_hop_addr, &fmp_prepared)
+            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?
+        else {
+            return Ok(false);
         };
         let source_addr = *self.node_addr();
         let wire = build_pipelined_endpoint_wire(PipelinedEndpointWireArgs {
@@ -2579,19 +2559,17 @@ impl Node {
             dest_coords: send.dest_coords,
             path_mtu,
             default_ttl: self.config.node.session.default_ttl,
-            their_index,
+            fmp_header: fmp_reservation.header,
             fsp_header: fsp_reservation.header,
-            fmp_counter,
-            fmp_flags,
-            timestamp_ms,
+            timestamp_ms: fmp_prepared.timestamp_ms,
         });
 
-        let predicted_bytes = wire.wire_capacity;
+        debug_assert_eq!(wire.wire_capacity, fmp_reservation.predicted_bytes);
         let _ = self.peers.record_fmp_send_bookkeeping(
             &next_hop_addr,
-            fmp_counter,
-            timestamp_ms,
-            predicted_bytes,
+            fmp_reservation.counter,
+            fmp_prepared.timestamp_ms,
+            fmp_reservation.predicted_bytes,
         );
         self.stats_mut()
             .forwarding
@@ -2618,8 +2596,8 @@ impl Node {
             && send.payload.drop_on_backpressure();
 
         workers.dispatch(crate::node::encrypt_worker::FmpSendJob {
-            cipher: fmp_cipher,
-            counter: fmp_counter,
+            cipher: fmp_reservation.cipher,
+            counter: fmp_reservation.counter,
             wire_buf: wire.wire_buf,
             fsp_seal: Some(crate::node::encrypt_worker::FspSealJob {
                 cipher: fsp_reservation.cipher,
@@ -2630,7 +2608,7 @@ impl Node {
             send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
                 socket,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                connected_socket,
+                fmp_prepared.connected_socket,
                 socket_addr,
             ),
             bulk_endpoint_data,
@@ -3466,6 +3444,7 @@ mod tests {
     #[test]
     fn pipelined_endpoint_wire_uses_reserved_counters_and_offsets() {
         use crate::node::wire::EncryptedHeader;
+        use crate::node::wire::{FLAG_KEY_EPOCH, FLAG_SP, build_established_header};
         use crate::tree::TreeCoordinate;
         use crate::utils::index::SessionIndex;
 
@@ -3484,6 +3463,15 @@ mod tests {
         let path_mtu = 1234;
         let default_ttl = 9;
         let timestamp_ms = 0x1122_3344;
+        let link_plaintext_len = pipelined_endpoint_link_plaintext_len(
+            inner_plaintext.len(),
+            Some(&source_coords),
+            Some(&dest_coords),
+        );
+        let fmp_payload_len =
+            pipelined_endpoint_fmp_payload_len(link_plaintext_len).expect("valid payload length");
+        let fmp_header =
+            build_established_header(their_index, fmp_counter, fmp_flags, fmp_payload_len);
 
         let wire = build_pipelined_endpoint_wire(PipelinedEndpointWireArgs {
             source_addr: &source_addr,
@@ -3493,10 +3481,8 @@ mod tests {
             dest_coords: Some(&dest_coords),
             path_mtu,
             default_ttl,
-            their_index,
+            fmp_header,
             fsp_header,
-            fmp_counter,
-            fmp_flags,
             timestamp_ms,
         });
 

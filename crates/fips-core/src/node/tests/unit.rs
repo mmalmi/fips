@@ -2305,6 +2305,95 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
             .expect("receiver should accept inline-sealed packet"),
         inline_inner_plaintext
     );
+
+    let pipelined_link_plaintext_len = crate::protocol::SESSION_DATAGRAM_HEADER_SIZE
+        + crate::node::session_wire::FSP_HEADER_SIZE
+        + 32;
+    let pipelined_payload_len = (4 + pipelined_link_plaintext_len + crate::noise::TAG_SIZE) as u16;
+    let pipelined_prepared = registry
+        .prepare_fmp_send(&peer_addr, false, pipelined_payload_len)
+        .expect("lifecycle owner should prepare pipelined FMP metadata");
+    assert!(
+        registry
+            .fmp_worker_send_available(&peer_addr)
+            .expect("lifecycle owner should expose worker send availability"),
+        "pipelined path should check FMP worker-cipher availability before reserving FSP"
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        2,
+        "worker availability check must not consume an FMP counter"
+    );
+    let pipelined_reservation = registry
+        .reserve_prepared_fmp_worker_send(&peer_addr, &pipelined_prepared)
+        .expect("pipelined FMP reservation should be owner-managed")
+        .expect("established FMP peer should expose a worker cipher");
+    assert_eq!(pipelined_reservation.counter, 2);
+    assert_eq!(
+        pipelined_reservation.header,
+        build_established_header(
+            their_index,
+            pipelined_reservation.counter,
+            pipelined_prepared.flags,
+            pipelined_payload_len,
+        )
+    );
+    assert_eq!(
+        pipelined_reservation.predicted_bytes,
+        ESTABLISHED_HEADER_SIZE + pipelined_payload_len as usize + crate::noise::TAG_SIZE,
+        "predicted bytes should include the outer FMP AEAD tag"
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        3,
+        "pipelined worker reservation should consume exactly one FMP counter"
+    );
+
+    let mut pipelined_link_ciphertext = vec![0xA5; pipelined_link_plaintext_len];
+    pipelined_link_ciphertext.extend_from_slice(&[0x5A; crate::noise::TAG_SIZE]);
+    let pipelined_inner =
+        prepend_inner_header(pipelined_prepared.timestamp_ms, &pipelined_link_ciphertext);
+    let mut pipelined_wire = Vec::with_capacity(pipelined_reservation.predicted_bytes);
+    pipelined_wire.extend_from_slice(&pipelined_reservation.header);
+    pipelined_wire.extend_from_slice(&pipelined_inner);
+    assert_eq!(
+        pipelined_wire.len(),
+        ESTABLISHED_HEADER_SIZE + pipelined_payload_len as usize
+    );
+    let pipelined_tag = {
+        let (header, plaintext) = pipelined_wire.split_at_mut(ESTABLISHED_HEADER_SIZE);
+        pipelined_reservation
+            .cipher
+            .seal_in_place_separate_tag(
+                crate::noise::CipherState::counter_to_nonce(pipelined_reservation.counter),
+                ring::aead::Aad::from(header),
+                plaintext,
+            )
+            .expect("pipelined worker-style FMP seal should succeed")
+    };
+    pipelined_wire.extend_from_slice(pipelined_tag.as_ref());
+    let pipelined_parsed =
+        EncryptedHeader::parse(&pipelined_wire).expect("pipelined wire packet parses");
+    assert_eq!(pipelined_parsed.counter, pipelined_reservation.counter);
+    assert_eq!(pipelined_parsed.receiver_idx, their_index);
+    assert_eq!(
+        receiver
+            .decrypt_with_replay_check_and_aad(
+                pipelined_parsed.ciphertext(&pipelined_wire),
+                pipelined_parsed.counter,
+                &pipelined_reservation.header,
+            )
+            .expect("receiver should accept pipelined worker-sealed packet"),
+        pipelined_inner
+    );
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
