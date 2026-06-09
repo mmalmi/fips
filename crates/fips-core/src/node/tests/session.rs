@@ -3736,6 +3736,48 @@ fn test_coords_warmup_config_default() {
 // ============================================================================
 
 #[test]
+fn identity_cache_owns_prefix_validation_lru_touch_and_lookup_views() {
+    let id1 = Identity::generate();
+    let id2 = Identity::generate();
+    let id3 = Identity::generate();
+    let wrong = Identity::generate();
+    let mut cache = IdentityCache::default();
+
+    assert!(cache.register(*id1.node_addr(), id1.pubkey_full(), 1_000, 2));
+    assert!(cache.register(*id2.node_addr(), id2.pubkey_full(), 2_000, 2));
+    assert_eq!(cache.len(), 2);
+
+    assert!(
+        !cache.register(*id1.node_addr(), wrong.pubkey_full(), 3_000, 2),
+        "node_addr/pubkey mismatches must not poison the prefix cache"
+    );
+    assert_eq!(
+        cache.pubkey_for_node_addr(id1.node_addr()),
+        Some(id1.pubkey_full()),
+        "rejected claims must leave the existing identity intact"
+    );
+
+    let id1_prefix = IdentityCache::prefix_for(id1.node_addr());
+    assert_eq!(
+        cache.lookup_by_prefix(&id1_prefix, 4_000),
+        Some((*id1.node_addr(), id1.pubkey_full())),
+        "lookup must touch the LRU timestamp for the entry it returns"
+    );
+
+    assert!(cache.register(*id3.node_addr(), id3.pubkey_full(), 5_000, 2));
+    assert_eq!(cache.len(), 2);
+    assert!(
+        cache.has_prefix_for(id1.node_addr()),
+        "touched id1 should survive LRU eviction"
+    );
+    assert!(
+        !cache.has_prefix_for(id2.node_addr()),
+        "untouched oldest entry should be evicted"
+    );
+    assert_eq!(cache.npub_for_node_addr(id3.node_addr()), Some(id3.npub()));
+}
+
+#[test]
 fn test_identity_cache_lru_eviction() {
     let mut node = make_node();
     node.config.node.cache.identity_size = 2;
@@ -3748,27 +3790,21 @@ fn test_identity_cache_lru_eviction() {
     let mut prefix1 = [0u8; 15];
     prefix1.copy_from_slice(&id1.node_addr().as_bytes()[0..15]);
     let (xonly1, _) = id1.pubkey_full().x_only_public_key();
-    node.identity_cache.insert(
-        prefix1,
-        IdentityCacheEntry::new(
-            *id1.node_addr(),
-            id1.pubkey_full(),
-            encode_npub(&xonly1),
-            1000,
-        ),
+    node.identity_cache.insert_for_test(
+        *id1.node_addr(),
+        id1.pubkey_full(),
+        encode_npub(&xonly1),
+        1000,
     );
 
     let mut prefix2 = [0u8; 15];
     prefix2.copy_from_slice(&id2.node_addr().as_bytes()[0..15]);
     let (xonly2, _) = id2.pubkey_full().x_only_public_key();
-    node.identity_cache.insert(
-        prefix2,
-        IdentityCacheEntry::new(
-            *id2.node_addr(),
-            id2.pubkey_full(),
-            encode_npub(&xonly2),
-            2000,
-        ),
+    node.identity_cache.insert_for_test(
+        *id2.node_addr(),
+        id2.pubkey_full(),
+        encode_npub(&xonly2),
+        2000,
     );
 
     assert_eq!(node.identity_cache_len(), 2);

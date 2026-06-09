@@ -952,6 +952,132 @@ impl IdentityCacheEntry {
     }
 }
 
+/// Prefix-indexed identity cache for FipsAddress/NodeAddr lookup.
+#[derive(Debug, Default)]
+pub(in crate::node) struct IdentityCache {
+    entries: HashMap<[u8; 15], IdentityCacheEntry>,
+}
+
+impl IdentityCache {
+    pub(in crate::node) fn prefix_for(node_addr: &NodeAddr) -> [u8; 15] {
+        let mut prefix = [0u8; 15];
+        prefix.copy_from_slice(&node_addr.as_bytes()[0..15]);
+        prefix
+    }
+
+    pub(in crate::node) fn register(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+        now_ms: u64,
+        max_entries: usize,
+    ) -> bool {
+        let prefix = Self::prefix_for(&node_addr);
+        if let Some(entry) = self.entries.get(&prefix)
+            && entry.node_addr == node_addr
+            && entry.pubkey == pubkey
+        {
+            return true;
+        }
+
+        let (xonly, _) = pubkey.x_only_public_key();
+        let derived_node_addr = NodeAddr::from_pubkey(&xonly);
+        if derived_node_addr != node_addr {
+            debug!(
+                claimed_node_addr = %node_addr,
+                derived_node_addr = %derived_node_addr,
+                "Rejected identity cache entry with mismatched public key"
+            );
+            return false;
+        }
+
+        if let Some(entry) = self.entries.get_mut(&prefix)
+            && entry.node_addr == node_addr
+        {
+            entry.pubkey = pubkey;
+            entry.last_seen_ms = now_ms;
+            return true;
+        }
+
+        let npub = encode_npub(&xonly);
+        self.entries.insert(
+            prefix,
+            IdentityCacheEntry::new(node_addr, pubkey, npub, now_ms),
+        );
+        self.evict_lru(max_entries);
+        true
+    }
+
+    pub(in crate::node) fn lookup_by_prefix(
+        &mut self,
+        prefix: &[u8; 15],
+        now_ms: u64,
+    ) -> Option<(NodeAddr, secp256k1::PublicKey)> {
+        let entry = self.entries.get_mut(prefix)?;
+        entry.last_seen_ms = now_ms;
+        Some((entry.node_addr, entry.pubkey))
+    }
+
+    pub(in crate::node) fn has_prefix_for(&self, node_addr: &NodeAddr) -> bool {
+        self.entries.contains_key(&Self::prefix_for(node_addr))
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(in crate::node) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&NodeAddr, &secp256k1::PublicKey, u64)> {
+        self.entries
+            .values()
+            .map(|entry| (&entry.node_addr, &entry.pubkey, entry.last_seen_ms))
+    }
+
+    pub(in crate::node) fn pubkey_for_node_addr(
+        &self,
+        addr: &NodeAddr,
+    ) -> Option<secp256k1::PublicKey> {
+        self.entries
+            .get(&Self::prefix_for(addr))
+            .filter(|entry| &entry.node_addr == addr)
+            .map(|entry| entry.pubkey)
+    }
+
+    pub(in crate::node) fn npub_for_node_addr(&self, addr: &NodeAddr) -> Option<String> {
+        self.entries
+            .get(&Self::prefix_for(addr))
+            .filter(|entry| &entry.node_addr == addr)
+            .map(|entry| entry.npub.clone())
+    }
+
+    fn evict_lru(&mut self, max_entries: usize) {
+        if self.entries.len() > max_entries
+            && let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_seen_ms)
+                .map(|(key, _)| *key)
+        {
+            self.entries.remove(&oldest_key);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn insert_for_test(
+        &mut self,
+        node_addr: NodeAddr,
+        pubkey: secp256k1::PublicKey,
+        npub: String,
+        last_seen_ms: u64,
+    ) {
+        self.entries.insert(
+            Self::prefix_for(&node_addr),
+            IdentityCacheEntry::new(node_addr, pubkey, npub, last_seen_ms),
+        );
+    }
+}
+
 /// App-owned packet channels for embedding FIPS without a system TUN.
 #[derive(Debug)]
 pub struct ExternalPacketIo {
@@ -1666,7 +1792,7 @@ pub struct Node {
     // === Identity Cache ===
     /// Maps FipsAddress prefix bytes (bytes 1-15) to cached peer identity data.
     /// Enables reverse lookup from IPv6 destination to session/routing identity.
-    identity_cache: HashMap<[u8; 15], IdentityCacheEntry>,
+    identity_cache: IdentityCache,
 
     // === Pending TUN Packets ===
     /// TUN packets and endpoint payloads queued while waiting for session establishment.
@@ -1955,7 +2081,7 @@ impl Node {
             connections: HashMap::new(),
             peers: HashMap::new(),
             sessions: HashMap::new(),
-            identity_cache: HashMap::new(),
+            identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),
             max_connections,
@@ -2101,7 +2227,7 @@ impl Node {
             connections: HashMap::new(),
             peers: HashMap::new(),
             sessions: HashMap::new(),
-            identity_cache: HashMap::new(),
+            identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),
             max_connections,
@@ -3359,55 +3485,15 @@ impl Node {
         node_addr: NodeAddr,
         pubkey: secp256k1::PublicKey,
     ) -> bool {
-        let mut prefix = [0u8; 15];
-        prefix.copy_from_slice(&node_addr.as_bytes()[0..15]);
-        if let Some(entry) = self.identity_cache.get(&prefix)
-            && entry.node_addr == node_addr
-            && entry.pubkey == pubkey
-        {
-            // Endpoint sends pass the same PeerIdentity on every packet. Once
-            // validated, avoid re-deriving NodeAddr from the public key in the
-            // data path; that hash showed up in macOS sender profiles.
-            return true;
-        }
-
-        let (xonly, _) = pubkey.x_only_public_key();
-        let derived_node_addr = NodeAddr::from_pubkey(&xonly);
-        if derived_node_addr != node_addr {
-            debug!(
-                claimed_node_addr = %node_addr,
-                derived_node_addr = %derived_node_addr,
-                "Rejected identity cache entry with mismatched public key"
-            );
-            return false;
-        }
-
-        let now_ms = Self::now_ms();
-        if let Some(entry) = self.identity_cache.get_mut(&prefix)
-            && entry.node_addr == node_addr
-        {
-            entry.pubkey = pubkey;
-            entry.last_seen_ms = now_ms;
-            return true;
-        }
-
-        let npub = encode_npub(&xonly);
-        self.identity_cache.insert(
-            prefix,
-            IdentityCacheEntry::new(node_addr, pubkey, npub, now_ms),
-        );
-        // LRU eviction
-        let max = self.config.node.cache.identity_size;
-        if self.identity_cache.len() > max
-            && let Some(oldest_key) = self
-                .identity_cache
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_seen_ms)
-                .map(|(k, _)| *k)
-        {
-            self.identity_cache.remove(&oldest_key);
-        }
-        true
+        // Endpoint sends pass the same PeerIdentity on every packet. Once
+        // validated, avoid re-deriving NodeAddr from the public key in the
+        // data path; that hash showed up in macOS sender profiles.
+        self.identity_cache.register(
+            node_addr,
+            pubkey,
+            Self::now_ms(),
+            self.config.node.cache.identity_size,
+        )
     }
 
     /// Look up a destination by FipsAddress prefix (bytes 1-15 of the IPv6 address).
@@ -3415,19 +3501,12 @@ impl Node {
         &mut self,
         prefix: &[u8; 15],
     ) -> Option<(NodeAddr, secp256k1::PublicKey)> {
-        if let Some(entry) = self.identity_cache.get_mut(prefix) {
-            entry.last_seen_ms = Self::now_ms(); // LRU touch
-            Some((entry.node_addr, entry.pubkey))
-        } else {
-            None
-        }
+        self.identity_cache.lookup_by_prefix(prefix, Self::now_ms())
     }
 
     /// Check if a node's identity is in the cache (without LRU touch).
     pub(crate) fn has_cached_identity(&self, addr: &NodeAddr) -> bool {
-        let mut prefix = [0u8; 15];
-        prefix.copy_from_slice(&addr.as_bytes()[0..15]);
-        self.identity_cache.contains_key(&prefix)
+        self.identity_cache.has_prefix_for(addr)
     }
 
     /// Number of identity cache entries.
@@ -3442,9 +3521,7 @@ impl Node {
     pub fn identity_cache_iter(
         &self,
     ) -> impl Iterator<Item = (&NodeAddr, &secp256k1::PublicKey, u64)> {
-        self.identity_cache
-            .values()
-            .map(|entry| (&entry.node_addr, &entry.pubkey, entry.last_seen_ms))
+        self.identity_cache.iter()
     }
 
     /// Configured maximum identity cache size.
@@ -3995,21 +4072,11 @@ impl Node {
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {
-        let mut prefix = [0u8; 15];
-        prefix.copy_from_slice(&addr.as_bytes()[0..15]);
-        self.identity_cache
-            .get(&prefix)
-            .filter(|entry| &entry.node_addr == addr)
-            .map(|entry| entry.pubkey)
+        self.identity_cache.pubkey_for_node_addr(addr)
     }
 
     pub(crate) fn npub_for_node_addr(&self, addr: &NodeAddr) -> Option<String> {
-        let mut prefix = [0u8; 15];
-        prefix.copy_from_slice(&addr.as_bytes()[0..15]);
-        self.identity_cache
-            .get(&prefix)
-            .filter(|entry| &entry.node_addr == addr)
-            .map(|entry| entry.npub.clone())
+        self.identity_cache.npub_for_node_addr(addr)
     }
 
     pub(in crate::node) fn deliver_external_ipv6_packet(
