@@ -2019,6 +2019,70 @@ impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
     }
 }
 
+/// End-to-end FSP session storage keyed by remote node address.
+#[derive(Default)]
+pub(in crate::node) struct SessionRegistry {
+    sessions: HashMap<NodeAddr, SessionEntry>,
+}
+
+impl SessionRegistry {
+    pub(in crate::node) fn insert(
+        &mut self,
+        node_addr: NodeAddr,
+        entry: SessionEntry,
+    ) -> Option<SessionEntry> {
+        self.sessions.insert(node_addr, entry)
+    }
+
+    pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<SessionEntry> {
+        self.sessions.remove(node_addr)
+    }
+
+    pub(in crate::node) fn get(&self, node_addr: &NodeAddr) -> Option<&SessionEntry> {
+        self.sessions.get(node_addr)
+    }
+
+    pub(in crate::node) fn get_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut SessionEntry> {
+        self.sessions.get_mut(node_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.sessions.contains_key(node_addr)
+    }
+
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&NodeAddr, &SessionEntry)> {
+        self.sessions.iter()
+    }
+
+    pub(in crate::node) fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&NodeAddr, &mut SessionEntry)> {
+        self.sessions.iter_mut()
+    }
+
+    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &SessionEntry> {
+        self.sessions.values()
+    }
+}
+
+impl<'a> IntoIterator for &'a SessionRegistry {
+    type Item = (&'a NodeAddr, &'a SessionEntry);
+    type IntoIter = std::collections::hash_map::Iter<'a, NodeAddr, SessionEntry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.sessions.iter()
+    }
+}
+
 /// Rx-loop mirror of sessions accepted by decrypt-worker shards.
 #[derive(Debug, Default)]
 pub(in crate::node) struct DecryptSessionRegistrations {
@@ -2236,7 +2300,7 @@ pub struct Node {
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
     /// Keyed by remote NodeAddr.
-    sessions: HashMap<NodeAddr, SessionEntry>,
+    sessions: SessionRegistry,
 
     // === Identity Cache ===
     /// Maps FipsAddress prefix bytes (bytes 1-15) to cached peer identity data.
@@ -2524,7 +2588,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             peers: PeerLifecycleRegistry::default(),
-            sessions: HashMap::new(),
+            sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),
@@ -2667,7 +2731,7 @@ impl Node {
             packet_tx: None,
             packet_rx: None,
             peers: PeerLifecycleRegistry::default(),
-            sessions: HashMap::new(),
+            sessions: SessionRegistry::default(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
             pending_lookups: handlers::discovery::PendingDiscoveryLookups::default(),

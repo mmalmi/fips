@@ -1561,6 +1561,63 @@ fn peer_lifecycle_registry_owns_connection_and_active_peer_storage() {
 }
 
 #[test]
+fn session_registry_owns_endpoint_session_storage_replace_and_cleanup() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let local = Identity::generate();
+    let peer = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let mut registry = SessionRegistry::default();
+    let first = SessionEntry::new(
+        peer_addr,
+        peer.pubkey_full(),
+        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x01; 8], [0x02; 8])),
+        1_000,
+        true,
+    );
+    assert!(registry.insert(peer_addr, first).is_none());
+    assert_eq!(registry.len(), 1);
+    assert!(registry.contains_key(&peer_addr));
+    assert_eq!(
+        registry.get(&peer_addr).map(SessionEntry::remote_pubkey),
+        Some(&peer.pubkey_full())
+    );
+
+    let replacement = SessionEntry::new(
+        peer_addr,
+        peer.pubkey_full(),
+        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x03; 8], [0x04; 8])),
+        2_000,
+        true,
+    );
+    let replaced = registry
+        .insert(peer_addr, replacement)
+        .expect("session replacement should return the previous entry");
+    assert_eq!(replaced.remote_pubkey(), &peer.pubkey_full());
+    registry
+        .get_mut(&peer_addr)
+        .expect("mutable access should stay behind the same owner")
+        .record_sent(123);
+
+    assert_eq!(
+        registry
+            .iter()
+            .map(|(addr, entry)| (*addr, entry.remote_pubkey()))
+            .collect::<Vec<_>>(),
+        vec![(peer_addr, &peer.pubkey_full())]
+    );
+
+    let removed = registry
+        .remove(&peer_addr)
+        .expect("session storage should live in the session owner");
+    assert_eq!(removed.remote_pubkey(), &peer.pubkey_full());
+    assert!(!registry.contains_key(&peer_addr));
+    assert!(registry.is_empty());
+}
+
+#[test]
 fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
     let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
     let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
