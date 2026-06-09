@@ -1472,6 +1472,42 @@ impl SessionIndexRegistry {
     }
 }
 
+/// Rx-loop mirror of sessions accepted by decrypt-worker shards.
+#[derive(Debug, Default)]
+pub(in crate::node) struct DecryptSessionRegistrations {
+    sessions: HashSet<DecryptSessionKey>,
+}
+
+impl DecryptSessionRegistrations {
+    pub(in crate::node) fn record_worker_registration(
+        &mut self,
+        session_key: DecryptSessionKey,
+        accepted: bool,
+    ) -> bool {
+        if !accepted {
+            return false;
+        }
+        self.sessions.insert(session_key);
+        true
+    }
+
+    pub(in crate::node) fn unregister_if_registered(
+        &mut self,
+        session_key: &DecryptSessionKey,
+    ) -> bool {
+        self.sessions.remove(session_key)
+    }
+
+    pub(in crate::node) fn is_registered(&self, session_key: &DecryptSessionKey) -> bool {
+        self.sessions.contains(session_key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+}
+
 /// Pending outbound FMP handshakes keyed by `(transport_id, our_index)`.
 #[derive(Debug, Default)]
 pub(in crate::node) struct PendingOutboundHandshakes {
@@ -1692,9 +1728,9 @@ pub struct Node {
     /// (worker doesn't have it yet). Per the data-plane restructure,
     /// the worker owns its session state directly — there's no shared
     /// `Arc<RwLock<HashMap>>` of cipher / replay state anymore, only
-    /// this set tracks **whether** the worker has been told about a
+    /// this owner tracks **whether** the worker has been told about a
     /// given session.
-    decrypt_registered_sessions: std::collections::HashSet<DecryptSessionKey>,
+    decrypt_registered_sessions: DecryptSessionRegistrations,
     /// Fallback channel: decrypt worker bounces non-fast-path packets
     /// (anything that's not bulk EndpointData) back here for rx_loop
     /// to handle via the legacy path. Drained by rx_loop with a bounded
@@ -1939,7 +1975,7 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_registered_sessions: std::collections::HashSet::new(),
+            decrypt_registered_sessions: DecryptSessionRegistrations::default(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
@@ -2085,7 +2121,7 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_registered_sessions: std::collections::HashSet::new(),
+            decrypt_registered_sessions: DecryptSessionRegistrations::default(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
@@ -2529,7 +2565,9 @@ impl Node {
         // also tears down the peer's connected UDP socket.
         let owning_peer = self.peers_by_index.remove(&cache_key);
         let session_key = DecryptSessionKey::from(cache_key);
-        if self.decrypt_registered_sessions.remove(&session_key)
+        if self
+            .decrypt_registered_sessions
+            .unregister_if_registered(&session_key)
             && let Some(workers) = self.decrypt_workers.as_ref()
         {
             workers.unregister_session(session_key);

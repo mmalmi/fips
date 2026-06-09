@@ -194,7 +194,7 @@ impl Node {
         // worker pool exists, and this session has been handed off
         // to it.
         if let Some(workers) = self.decrypt_workers.as_ref().cloned()
-            && self.decrypt_registered_sessions.contains(&session_key)
+            && self.decrypt_registered_sessions.is_registered(&session_key)
         {
             let job = super::super::decrypt_worker::DecryptJob::new(
                 packet.data,
@@ -411,9 +411,9 @@ impl Node {
         // means we keep using the legacy in-line decrypt path
         // until a later `register_decrypt_worker_session` succeeds
         // (the FSP-established / rekey callers retry naturally).
-        if workers.register_session(session_key, state) {
-            self.decrypt_registered_sessions.insert(session_key);
-        }
+        let accepted = workers.register_session(session_key, state);
+        self.decrypt_registered_sessions
+            .record_worker_registration(session_key, accepted);
     }
 
     /// Build the **owned FMP recv state** handed off to the decrypt

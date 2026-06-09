@@ -848,7 +848,7 @@ fn test_promote_registers_decrypt_worker() {
     let peer = node.get_peer(&node_addr).unwrap();
     let our_index = peer.our_index().unwrap();
     assert!(
-        node.decrypt_registered_sessions.contains(
+        node.decrypt_registered_sessions.is_registered(
             &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32())
         ),
         "decrypt_registered_sessions must contain the new session after promote"
@@ -1172,7 +1172,7 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
         "peer must still be present after rekey-drain deregistration"
     );
     assert!(
-        !node.decrypt_registered_sessions.contains(
+        !node.decrypt_registered_sessions.is_registered(
             &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, index_old)
         ),
         "old session must be evicted from decrypt_registered_sessions"
@@ -1437,6 +1437,31 @@ fn session_index_registry_owns_lookup_replace_remove_and_peer_membership() {
     assert_eq!(registry.remove(&pending_key), Some(stale_peer_addr));
     assert!(!registry.peer_has_any_index(&stale_peer_addr));
     assert!(registry.is_empty());
+}
+
+#[test]
+fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
+    let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
+    let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
+    let mut registrations = DecryptSessionRegistrations::default();
+
+    assert!(!registrations.record_worker_registration(session_key, false));
+    assert!(
+        !registrations.is_registered(&session_key),
+        "a full worker queue must not make rx-loop dispatch to an unregistered shard"
+    );
+    assert!(
+        !registrations.unregister_if_registered(&session_key),
+        "worker unregister should be skipped when local registration never succeeded"
+    );
+
+    assert!(registrations.record_worker_registration(session_key, true));
+    assert!(registrations.is_registered(&session_key));
+    assert!(!registrations.is_registered(&other_key));
+
+    assert!(registrations.unregister_if_registered(&session_key));
+    assert!(!registrations.is_registered(&session_key));
+    assert!(registrations.is_empty());
 }
 
 #[tokio::test]
