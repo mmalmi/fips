@@ -194,7 +194,7 @@ impl Node {
         // worker pool exists, and this session has been handed off
         // to it.
         if let Some(workers) = self.decrypt_workers.as_ref().cloned()
-            && self.decrypt_registered_sessions.is_registered(&session_key)
+            && self.sessions.is_worker_registered(&session_key)
         {
             let job = super::super::decrypt_worker::DecryptJob::new(
                 packet.data,
@@ -403,8 +403,8 @@ impl Node {
         // full (sustained ingress + registration burst on the same
         // shard), `try_send` returns `Full` and the cipher + replay
         // state are dropped on the floor. If we still inserted into
-        // `decrypt_registered_sessions`, every subsequent packet for
-        // this session would be `dispatch_job`'d to the worker,
+        // the session registry's worker-registration mirror, every subsequent
+        // packet for this session would be `dispatch_job`'d to the worker,
         // miss the unregistered HashMap entry, and silently drop —
         // permanent black hole until the session rotates. Gating
         // the local "is registered" set on the dispatch result
@@ -412,7 +412,7 @@ impl Node {
         // until a later `register_decrypt_worker_session` succeeds
         // (the FSP-established / rekey callers retry naturally).
         let accepted = workers.register_session(session_key, state);
-        self.decrypt_registered_sessions
+        self.sessions
             .record_worker_registration(session_key, accepted);
     }
 

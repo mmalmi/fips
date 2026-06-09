@@ -2023,6 +2023,7 @@ impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
 #[derive(Default)]
 pub(in crate::node) struct SessionRegistry {
     sessions: HashMap<NodeAddr, SessionEntry>,
+    worker_registrations: DecryptSessionRegistrations,
 }
 
 impl SessionRegistry {
@@ -2071,6 +2072,32 @@ impl SessionRegistry {
 
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &SessionEntry> {
         self.sessions.values()
+    }
+
+    pub(in crate::node) fn record_worker_registration(
+        &mut self,
+        session_key: DecryptSessionKey,
+        accepted: bool,
+    ) -> bool {
+        self.worker_registrations
+            .record_worker_registration(session_key, accepted)
+    }
+
+    pub(in crate::node) fn unregister_worker_session_if_registered(
+        &mut self,
+        session_key: &DecryptSessionKey,
+    ) -> bool {
+        self.worker_registrations
+            .unregister_if_registered(session_key)
+    }
+
+    pub(in crate::node) fn is_worker_registered(&self, session_key: &DecryptSessionKey) -> bool {
+        self.worker_registrations.is_registered(session_key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn worker_registration_is_empty(&self) -> bool {
+        self.worker_registrations.is_empty()
     }
 }
 
@@ -2361,15 +2388,6 @@ pub struct Node {
     /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
     /// `encrypt_workers` for the receive side.
     decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Set of sessions that have been registered with the decrypt
-    /// shard worker pool. Used by rx_loop to decide between fast-path
-    /// dispatch (worker owns the session) and legacy in-place decrypt
-    /// (worker doesn't have it yet). Per the data-plane restructure,
-    /// the worker owns its session state directly — there's no shared
-    /// `Arc<RwLock<HashMap>>` of cipher / replay state anymore, only
-    /// this owner tracks **whether** the worker has been told about a
-    /// given session.
-    decrypt_registered_sessions: DecryptSessionRegistrations,
     /// Fallback channel: decrypt worker bounces non-fast-path packets
     /// (anything that's not bulk EndpointData) back here for rx_loop
     /// to handle via the legacy path. Drained by rx_loop with a bounded
@@ -2609,7 +2627,6 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_registered_sessions: DecryptSessionRegistrations::default(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
@@ -2752,7 +2769,6 @@ impl Node {
             endpoint_event_tx: None,
             encrypt_workers: None,
             decrypt_workers: None,
-            decrypt_registered_sessions: DecryptSessionRegistrations::default(),
             decrypt_fallback_tx,
             decrypt_fallback_rx,
             tun_reader_handle: None,
@@ -3178,8 +3194,8 @@ impl Node {
         let owning_peer = self.peers.remove_session_index(&cache_key);
         let session_key = DecryptSessionKey::from(cache_key);
         if self
-            .decrypt_registered_sessions
-            .unregister_if_registered(&session_key)
+            .sessions
+            .unregister_worker_session_if_registered(&session_key)
             && let Some(workers) = self.decrypt_workers.as_ref()
         {
             workers.unregister_session(session_key);

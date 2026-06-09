@@ -831,7 +831,7 @@ fn bootstrap_transports_own_membership_peer_npub_and_cleanup() {
 
 /// After `promote_connection`'s initial-promote branch the peer's
 /// (transport_id, our_index) pair must be in
-/// `decrypt_registered_sessions`. Unit tests construct `Node`
+/// the session registry's worker-registration mirror. Unit tests construct `Node`
 /// directly so `decrypt_workers` defaults to `None`; spawn a
 /// 1-thread pool here so the registration code path actually runs.
 #[test]
@@ -849,10 +849,12 @@ fn test_promote_registers_decrypt_worker() {
     let peer = node.get_peer(&node_addr).unwrap();
     let our_index = peer.our_index().unwrap();
     assert!(
-        node.decrypt_registered_sessions.is_registered(
-            &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32())
-        ),
-        "decrypt_registered_sessions must contain the new session after promote"
+        node.sessions
+            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
+                transport_id,
+                our_index.as_u32()
+            )),
+        "session registry must contain the new worker registration after promote"
     );
 }
 
@@ -1176,10 +1178,13 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
         "peer must still be present after rekey-drain deregistration"
     );
     assert!(
-        !node.decrypt_registered_sessions.is_registered(
-            &crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, index_old)
-        ),
-        "old session must be evicted from decrypt_registered_sessions"
+        !node
+            .sessions
+            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
+                transport_id,
+                index_old
+            )),
+        "old session must be evicted from the session registry worker-registration mirror"
     );
 }
 
@@ -1561,13 +1566,15 @@ fn peer_lifecycle_registry_owns_connection_and_active_peer_storage() {
 }
 
 #[test]
-fn session_registry_owns_endpoint_session_storage_replace_and_cleanup() {
+fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror() {
     use crate::node::session::{EndToEndState, SessionEntry};
 
     let local = Identity::generate();
     let peer = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
     let peer_addr = *peer_identity.node_addr();
+    let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
+    let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
 
     let mut registry = SessionRegistry::default();
     let first = SessionEntry::new(
@@ -1584,6 +1591,16 @@ fn session_registry_owns_endpoint_session_storage_replace_and_cleanup() {
         registry.get(&peer_addr).map(SessionEntry::remote_pubkey),
         Some(&peer.pubkey_full())
     );
+    assert!(
+        !registry.record_worker_registration(session_key, false),
+        "a rejected worker registration must not mark the session worker-owned"
+    );
+    assert!(!registry.is_worker_registered(&session_key));
+    assert!(!registry.unregister_worker_session_if_registered(&session_key));
+
+    assert!(registry.record_worker_registration(session_key, true));
+    assert!(registry.is_worker_registered(&session_key));
+    assert!(!registry.is_worker_registered(&other_key));
 
     let replacement = SessionEntry::new(
         peer_addr,
@@ -1613,8 +1630,14 @@ fn session_registry_owns_endpoint_session_storage_replace_and_cleanup() {
         .remove(&peer_addr)
         .expect("session storage should live in the session owner");
     assert_eq!(removed.remote_pubkey(), &peer.pubkey_full());
+    assert!(
+        registry.unregister_worker_session_if_registered(&session_key),
+        "worker registration mirror should be cleaned through the session owner"
+    );
+    assert!(!registry.is_worker_registered(&session_key));
     assert!(!registry.contains_key(&peer_addr));
     assert!(registry.is_empty());
+    assert!(registry.worker_registration_is_empty());
 }
 
 #[test]
