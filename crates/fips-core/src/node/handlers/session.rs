@@ -25,7 +25,8 @@ use crate::node::{
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
-    HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
+    HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
+    XK_HANDSHAKE_MSG3_SIZE,
 };
 use crate::protocol::{
     CoordsRequired, FspInnerFlags, MtuExceeded, PathBroken, PathMtuNotification, SessionAck,
@@ -137,6 +138,33 @@ struct PipelinedEndpointSendTarget {
     connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     socket_addr: std::net::SocketAddr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFspSendBookkeeping {
+    Data { payload_len: usize, now_ms: u64 },
+    Control,
+}
+
+struct SessionFspSendPlan<'a> {
+    dest_addr: NodeAddr,
+    timestamp: u32,
+    fsp_flags: u8,
+    inner_plaintext: &'a [u8],
+    coords: Option<(
+        &'a crate::tree::TreeCoordinate,
+        &'a crate::tree::TreeCoordinate,
+    )>,
+    bookkeeping: SessionFspSendBookkeeping,
+}
+
+struct SealedSessionFspSend {
+    dest_addr: NodeAddr,
+    timestamp: u32,
+    counter: u64,
+    ciphertext_len: usize,
+    fsp_payload: Vec<u8>,
+    bookkeeping: SessionFspSendBookkeeping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,6 +364,120 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
         .checked_add(link_plaintext_len)?
         .checked_add(crate::noise::TAG_SIZE)?;
     u16::try_from(payload_len).ok()
+}
+
+impl<'a> SessionFspSendPlan<'a> {
+    fn new(
+        dest_addr: NodeAddr,
+        timestamp: u32,
+        fsp_flags: u8,
+        inner_plaintext: &'a [u8],
+        coords: Option<(
+            &'a crate::tree::TreeCoordinate,
+            &'a crate::tree::TreeCoordinate,
+        )>,
+        bookkeeping: SessionFspSendBookkeeping,
+    ) -> Self {
+        let fsp_flags = if coords.is_some() {
+            fsp_flags | FSP_FLAG_CP
+        } else {
+            fsp_flags & !FSP_FLAG_CP
+        };
+        Self {
+            dest_addr,
+            timestamp,
+            fsp_flags,
+            inner_plaintext,
+            coords,
+            bookkeeping,
+        }
+    }
+
+    fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    fn seal(self, session: &mut NoiseSession) -> Result<SealedSessionFspSend, NodeError> {
+        let payload_len =
+            u16::try_from(self.inner_plaintext.len()).map_err(|_| NodeError::SendFailed {
+                node_addr: self.dest_addr,
+                reason: "session FSP payload too large".into(),
+            })?;
+        let counter = session.current_send_counter();
+        let header = build_fsp_header(counter, self.fsp_flags, payload_len);
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
+            session
+                .encrypt_with_aad(self.inner_plaintext, &header)
+                .map_err(|e| NodeError::SendFailed {
+                    node_addr: self.dest_addr,
+                    reason: format!("session encrypt failed: {}", e),
+                })?
+        };
+
+        let coords_size = self
+            .coords
+            .as_ref()
+            .map(|(src, dst)| coords_wire_size(src) + coords_wire_size(dst))
+            .unwrap_or(0);
+        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + coords_size + ciphertext.len());
+        fsp_payload.extend_from_slice(&header);
+        if let Some((src, dst)) = self.coords {
+            encode_coords(src, &mut fsp_payload);
+            encode_coords(dst, &mut fsp_payload);
+        }
+        fsp_payload.extend_from_slice(&ciphertext);
+
+        Ok(SealedSessionFspSend {
+            dest_addr: self.dest_addr,
+            timestamp: self.timestamp,
+            counter,
+            ciphertext_len: ciphertext.len(),
+            fsp_payload,
+            bookkeeping: self.bookkeeping,
+        })
+    }
+}
+
+impl SealedSessionFspSend {
+    #[cfg(test)]
+    fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    #[cfg(test)]
+    fn counter(&self) -> u64 {
+        self.counter
+    }
+
+    fn fsp_bookkeeping_input(&self) -> FspSendBookkeepingInput {
+        match self.bookkeeping {
+            SessionFspSendBookkeeping::Data {
+                payload_len,
+                now_ms,
+            } => FspSendBookkeepingInput::data(
+                payload_len,
+                self.counter,
+                self.timestamp,
+                self.ciphertext_len,
+                now_ms,
+            ),
+            SessionFspSendBookkeeping::Control => {
+                FspSendBookkeepingInput::control(self.counter, self.timestamp, self.ciphertext_len)
+            }
+        }
+    }
+
+    fn into_datagram(
+        self,
+        source_addr: NodeAddr,
+        ttl: u8,
+    ) -> (SessionDatagram, FspSendBookkeepingInput) {
+        let bookkeeping = self.fsp_bookkeeping_input();
+        let datagram =
+            SessionDatagram::new(source_addr, self.dest_addr, self.fsp_payload).with_ttl(ttl);
+        (datagram, bookkeeping)
+    }
 }
 
 impl SessionDatagramRuntimeRoute {
@@ -3101,66 +3243,52 @@ impl Node {
             flags |= FSP_FLAG_K;
         }
 
-        // Borrow session for counter + encryption (after potential standalone send)
-        let entry = self
-            .sessions
-            .get_mut(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let session = match entry.state_mut() {
-            EndToEndState::Established(s) => s,
-            _ => {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "session not established".into(),
-                });
-            }
+        let coords = my_coords.as_ref().zip(dest_coords.as_ref());
+        self.send_session_fsp_plan(SessionFspSendPlan::new(
+            *dest_addr,
+            timestamp,
+            flags,
+            &inner_plaintext,
+            coords,
+            SessionFspSendBookkeeping::Data {
+                payload_len: payload.len(),
+                now_ms,
+            },
+        ))
+        .await
+    }
+
+    async fn send_session_fsp_plan(
+        &mut self,
+        plan: SessionFspSendPlan<'_>,
+    ) -> Result<(), NodeError> {
+        let dest_addr = plan.dest_addr();
+        let sealed = {
+            let entry = self
+                .sessions
+                .get_mut(&dest_addr)
+                .ok_or_else(|| NodeError::SendFailed {
+                    node_addr: dest_addr,
+                    reason: "no session".into(),
+                })?;
+            let session = match entry.state_mut() {
+                EndToEndState::Established(s) => s,
+                _ => {
+                    return Err(NodeError::SendFailed {
+                        node_addr: dest_addr,
+                        reason: "session not established".into(),
+                    });
+                }
+            };
+            plan.seal(session)?
         };
-        let counter = session.current_send_counter();
-
-        // Build 12-byte FSP header (used as AAD for AEAD)
-        let payload_len = inner_plaintext.len() as u16;
-        let header = build_fsp_header(counter, flags, payload_len);
-
-        // Encrypt with AAD binding to the FSP header
-        let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
-            session
-                .encrypt_with_aad(&inner_plaintext, &header)
-                .map_err(|e| NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: format!("session encrypt failed: {}", e),
-                })?
-        };
-
-        // Assemble: header(12) + [coords] + ciphertext
-        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
-        fsp_payload.extend_from_slice(&header);
-        if let (Some(src), Some(dst)) = (&my_coords, &dest_coords) {
-            encode_coords(src, &mut fsp_payload);
-            encode_coords(dst, &mut fsp_payload);
-        }
-        fsp_payload.extend_from_slice(&ciphertext);
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
-            .with_ttl(self.config.node.session.default_ttl);
-
+        let (mut datagram, bookkeeping) =
+            sealed.into_datagram(*self.node_addr(), self.config.node.session.default_ttl);
         self.send_session_datagram(&mut datagram).await?;
 
-        let _ = self.sessions.record_fsp_send_bookkeeping(
-            dest_addr,
-            FspSendBookkeepingInput::data(
-                payload.len(),
-                counter,
-                timestamp,
-                ciphertext.len(),
-                now_ms,
-            ),
-        );
-
+        let _ = self
+            .sessions
+            .record_fsp_send_bookkeeping(&dest_addr, bookkeeping);
         Ok(())
     }
 
@@ -3487,61 +3615,19 @@ impl Node {
             return Ok(());
         }
 
-        let entry = self
-            .sessions
-            .get_mut(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let session = match entry.state_mut() {
-            EndToEndState::Established(s) => s,
-            _ => {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "session not established".into(),
-                });
-            }
-        };
-        let counter = session.current_send_counter();
-        let payload_len = inner_plaintext.len() as u16;
-        let header = build_fsp_header(counter, flags, payload_len);
-        let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
-            session
-                .encrypt_with_aad(&inner_plaintext, &header)
-                .map_err(|e| NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: format!("session encrypt failed: {}", e),
-                })?
-        };
-
-        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len() + 200);
-        fsp_payload.extend_from_slice(&header);
-        if let (Some(src), Some(dst)) = (&my_coords, &dest_coords) {
-            encode_coords(src, &mut fsp_payload);
-            encode_coords(dst, &mut fsp_payload);
-        }
-        fsp_payload.extend_from_slice(&ciphertext);
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
-            .with_ttl(self.config.node.session.default_ttl);
-
-        self.send_session_datagram(&mut datagram).await?;
-
-        let _ = self.sessions.record_fsp_send_bookkeeping(
-            dest_addr,
-            FspSendBookkeepingInput::data(
-                payload.len(),
-                counter,
-                timestamp,
-                ciphertext.len(),
+        let coords = my_coords.as_ref().zip(dest_coords.as_ref());
+        self.send_session_fsp_plan(SessionFspSendPlan::new(
+            *dest_addr,
+            timestamp,
+            flags,
+            &inner_plaintext,
+            coords,
+            SessionFspSendBookkeeping::Data {
+                payload_len: payload.len(),
                 now_ms,
-            ),
-        );
-
-        Ok(())
+            },
+        ))
+        .await
     }
 
     #[cfg(unix)]
@@ -3761,62 +3847,26 @@ impl Node {
         // Build inner flags with spin bit
         let inner_flags = FspInnerFlags { spin_bit }.to_byte();
 
-        // Get mutable access for encryption
-        let entry = self
-            .sessions
-            .get_mut(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-
-        // Read K-bit before mutable borrow of session state
-        let k_flags = if entry.current_k_bit() { FSP_FLAG_K } else { 0 };
-
-        let session = match entry.state_mut() {
-            EndToEndState::Established(s) => s,
-            _ => {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "session not established".into(),
-                });
-            }
+        let k_flags = if let Some(entry) = self.sessions.get(dest_addr)
+            && entry.current_k_bit()
+        {
+            FSP_FLAG_K
+        } else {
+            0
         };
-
-        let counter = session.current_send_counter();
 
         // FSP inner header + plaintext
         let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
 
-        // Build 12-byte FSP header (K-bit for key epoch, no CP for reports)
-        let payload_len = inner_plaintext.len() as u16;
-        let header = build_fsp_header(counter, k_flags, payload_len);
-
-        // Encrypt with AAD
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
-
-        // Assemble: header(12) + ciphertext (no coords)
-        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + ciphertext.len());
-        fsp_payload.extend_from_slice(&header);
-        fsp_payload.extend_from_slice(&ciphertext);
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
-            .with_ttl(self.config.node.session.default_ttl);
-
-        self.send_session_datagram(&mut datagram).await?;
-
-        let _ = self.sessions.record_fsp_send_bookkeeping(
-            dest_addr,
-            FspSendBookkeepingInput::control(counter, timestamp, ciphertext.len()),
-        );
-
-        Ok(())
+        self.send_session_fsp_plan(SessionFspSendPlan::new(
+            *dest_addr,
+            timestamp,
+            k_flags,
+            &inner_plaintext,
+            None,
+            SessionFspSendBookkeeping::Control,
+        ))
+        .await
     }
 
     /// Send a standalone CoordsWarmup message to warm transit node caches.
@@ -3846,61 +3896,20 @@ impl Node {
         let timestamp = entry.session_timestamp(now_ms);
         let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
 
-        // Get mutable access for encryption
-        let entry = self
-            .sessions
-            .get_mut(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let session = match entry.state_mut() {
-            EndToEndState::Established(s) => s,
-            _ => {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "session not established".into(),
-                });
-            }
-        };
-
-        let counter = session.current_send_counter();
-
         // FSP inner header only, no body payload
         let msg_type = SessionMessageType::CoordsWarmup.to_byte();
         let inner_flags = FspInnerFlags { spin_bit }.to_byte();
         let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &[]);
 
-        // Build FSP header with CP flag
-        let payload_len = inner_plaintext.len() as u16;
-        let header = build_fsp_header(counter, FSP_FLAG_CP, payload_len);
-
-        // Encrypt with AAD
-        let ciphertext = session
-            .encrypt_with_aad(&inner_plaintext, &header)
-            .map_err(|e| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: format!("session encrypt failed: {}", e),
-            })?;
-
-        // Assemble: header(12) + coords + ciphertext
-        let coords_size = coords_wire_size(&my_coords) + coords_wire_size(&dest_coords);
-        let mut fsp_payload = Vec::with_capacity(FSP_HEADER_SIZE + coords_size + ciphertext.len());
-        fsp_payload.extend_from_slice(&header);
-        encode_coords(&my_coords, &mut fsp_payload);
-        encode_coords(&dest_coords, &mut fsp_payload);
-        fsp_payload.extend_from_slice(&ciphertext);
-
-        let my_addr = *self.node_addr();
-        let mut datagram = SessionDatagram::new(my_addr, *dest_addr, fsp_payload)
-            .with_ttl(self.config.node.session.default_ttl);
-
-        self.send_session_datagram(&mut datagram).await?;
-
-        let _ = self.sessions.record_fsp_send_bookkeeping(
-            dest_addr,
-            FspSendBookkeepingInput::control(counter, timestamp, ciphertext.len()),
-        );
+        self.send_session_fsp_plan(SessionFspSendPlan::new(
+            *dest_addr,
+            timestamp,
+            0,
+            &inner_plaintext,
+            Some((&my_coords, &dest_coords)),
+            SessionFspSendBookkeeping::Control,
+        ))
+        .await?;
 
         debug!(dest = %self.peer_display_name(dest_addr), "Sent standalone CoordsWarmup");
         Ok(())
@@ -4743,6 +4752,71 @@ mod tests {
             .expect("control");
         assert!(!control.bulk_endpoint_data);
         assert!(!control.drop_on_backpressure);
+    }
+
+    #[test]
+    fn session_fsp_send_plan_owns_flags_coords_wire_and_bookkeeping() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut session = make_xk_session(&local, &peer);
+        let dest_addr = *peer.node_addr();
+        let src_coords = crate::tree::TreeCoordinate::root(node_addr(0x11));
+        let dst_coords = crate::tree::TreeCoordinate::root(node_addr(0x22));
+        let inner_plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            1,
+            b"hello",
+        );
+        let plan = SessionFspSendPlan::new(
+            dest_addr,
+            0x0102_0304,
+            FSP_FLAG_CP | FSP_FLAG_K,
+            &inner_plaintext,
+            Some((&src_coords, &dst_coords)),
+            SessionFspSendBookkeeping::Data {
+                payload_len: 5,
+                now_ms: 0x5566_7788,
+            },
+        );
+
+        let counter_before = session.current_send_counter();
+        let sealed = plan.seal(&mut session).expect("seal should succeed");
+        assert_eq!(sealed.dest_addr(), dest_addr);
+        assert_eq!(sealed.counter(), counter_before);
+        assert_eq!(
+            session.current_send_counter(),
+            counter_before + 1,
+            "sealing should consume exactly one FSP counter"
+        );
+
+        let (datagram, bookkeeping) = sealed.into_datagram(node_addr(0xaa), 7);
+        assert_eq!(datagram.dest_addr, dest_addr);
+        assert_eq!(datagram.ttl, 7);
+        let header =
+            FspEncryptedHeader::parse(&datagram.payload).expect("sealed payload has FSP header");
+        assert_eq!(header.flags, FSP_FLAG_CP | FSP_FLAG_K);
+        assert_eq!(header.counter, counter_before);
+        assert_eq!(header.payload_len as usize, inner_plaintext.len());
+        assert!(
+            header.has_coords(),
+            "send plan should carry coords-present flag and coords together"
+        );
+        let expected_coords_size = coords_wire_size(&src_coords) + coords_wire_size(&dst_coords);
+        assert_eq!(
+            datagram.payload.len(),
+            FSP_HEADER_SIZE + expected_coords_size + inner_plaintext.len() + crate::noise::TAG_SIZE
+        );
+        assert_eq!(
+            bookkeeping,
+            FspSendBookkeepingInput::data(
+                5,
+                counter_before,
+                0x0102_0304,
+                inner_plaintext.len() + crate::noise::TAG_SIZE,
+                0x5566_7788,
+            )
+        );
     }
 
     #[cfg(unix)]
