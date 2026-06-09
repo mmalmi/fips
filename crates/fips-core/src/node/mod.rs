@@ -1746,6 +1746,14 @@ pub(in crate::node) struct ReplacedActivePeerCurrentSession {
     pub(in crate::node) replay_suppressed_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
+    pub(in crate::node) address_changed: bool,
+    pub(in crate::node) path_bookkeeping_recorded: bool,
+    pub(in crate::node) mmp_recorded: bool,
+    pub(in crate::node) spin_rtt: Option<std::time::Duration>,
+}
+
 impl SessionIndexRegistry {
     pub(in crate::node) fn insert(
         &mut self,
@@ -2146,6 +2154,48 @@ impl PeerLifecycleRegistry {
             session_index: pending_session_index,
             previous_owner,
         })
+    }
+
+    pub(in crate::node) fn record_authenticated_fmp_receive(
+        &mut self,
+        node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+        packet_timestamp_ms: u64,
+        packet_len: usize,
+        fmp_counter: u64,
+        inner_timestamp_ms: u32,
+        ce_flag: bool,
+        sp_flag: bool,
+        now: std::time::Instant,
+        path_bookkeeping_allowed: bool,
+    ) -> Option<AuthenticatedFmpReceiveBookkeeping> {
+        let peer = self.active.get_mut(node_addr)?;
+        peer.reset_decrypt_failures();
+
+        let mut result = AuthenticatedFmpReceiveBookkeeping {
+            address_changed: false,
+            path_bookkeeping_recorded: false,
+            mmp_recorded: false,
+            spin_rtt: None,
+        };
+        if !path_bookkeeping_allowed {
+            return Some(result);
+        }
+
+        result.address_changed = peer.set_current_addr(transport_id, remote_addr);
+        peer.link_stats_mut()
+            .record_recv(packet_len, packet_timestamp_ms);
+        peer.touch(packet_timestamp_ms);
+        result.path_bookkeeping_recorded = true;
+        if let Some(mmp) = peer.mmp_mut() {
+            mmp.receiver
+                .record_recv(fmp_counter, inner_timestamp_ms, packet_len, ce_flag, now);
+            result.spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
+            result.mmp_recorded = true;
+        }
+
+        Some(result)
     }
 
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {

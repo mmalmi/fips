@@ -8,12 +8,11 @@
 //! shard owns the recv-side state from the moment a peer becomes
 //! reachable.
 //!
-//! Per-peer bookkeeping (`peer.touch`, `link_stats.record_recv`,
-//! `mmp.receiver.record_recv`, `set_current_addr`) happens in the
-//! rx_loop's `decrypt_fallback_rx` arm after the worker bounces the
-//! FMP plaintext back; that arm is the single canonical site for
-//! "this packet was successfully received and authenticated" side-
-//! effects under the shard architecture.
+//! The rx_loop's `decrypt_fallback_rx` arm hands authenticated FMP
+//! plaintext back to `process_authentic_fmp_plaintext`; peer receive
+//! bookkeeping then goes through `PeerLifecycleRegistry`, keeping
+//! liveness, link stats, path rotation, and MMP receive metrics in
+//! one lifecycle owner.
 
 use crate::node::Node;
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptSessionKey};
@@ -166,10 +165,9 @@ impl Node {
         // `promote_connection`), so in production every
         // `handle_encrypted_frame` for an established session
         // dispatches the packet to the worker and returns. All
-        // per-peer bookkeeping (`peer.touch`, `link_stats.record_recv`,
-        // `mmp.receiver.record_recv`, `set_current_addr`) runs in the
-        // rx_loop's `decrypt_fallback_rx` arm after the worker bounces
-        // the FMP plaintext back.
+        // per-peer bookkeeping runs through
+        // `PeerLifecycleRegistry::record_authenticated_fmp_receive`
+        // after the worker bounces the FMP plaintext back.
         //
         // The in-line decrypt below this is the **synchronous test-
         // mode path**: unit tests construct `Node` instances directly
@@ -321,27 +319,28 @@ impl Node {
             return;
         };
         let now = Instant::now();
-        let mut address_changed = false;
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
             node_addr,
             transport_id,
             remote_addr,
             packet_timestamp_ms,
         );
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            peer.reset_decrypt_failures();
-            if path_bookkeeping_allowed {
-                address_changed = peer.set_current_addr(transport_id, remote_addr);
-                peer.link_stats_mut()
-                    .record_recv(packet_len, packet_timestamp_ms);
-                peer.touch(packet_timestamp_ms);
-                if let Some(mmp) = peer.mmp_mut() {
-                    mmp.receiver
-                        .record_recv(fmp_counter, inner_ts, packet_len, ce_flag, now);
-                    let _spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
-                }
-            }
-        }
+        let address_changed = self
+            .peers
+            .record_authenticated_fmp_receive(
+                node_addr,
+                transport_id,
+                remote_addr,
+                packet_timestamp_ms,
+                packet_len,
+                fmp_counter,
+                inner_ts,
+                ce_flag,
+                sp_flag,
+                now,
+                path_bookkeeping_allowed,
+            )
+            .is_some_and(|update| update.address_changed);
         // Address rotation invalidates the per-peer connected UDP
         // socket: it's `connect(2)`-ed to the old kernel 5-tuple
         // (cached route + neighbour entry), and continuing to

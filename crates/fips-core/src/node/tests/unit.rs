@@ -1805,6 +1805,120 @@ fn peer_lifecycle_registry_owns_pending_rekey_session_and_index_registration() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let old_transport_id = TransportId::new(1);
+    let new_transport_id = TransportId::new(2);
+    let link_id = LinkId::new(10);
+    let old_addr = TransportAddr::from_string("authenticated-recv-old-path");
+    let new_addr = TransportAddr::from_string("authenticated-recv-new-path");
+    let ignored_addr = TransportAddr::from_string("authenticated-recv-ignored-path");
+    let current_our_index = SessionIndex::new(10);
+    let current_their_index = SessionIndex::new(20);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let mut active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        old_transport_id,
+        link_id,
+        old_addr,
+        current_our_index,
+        current_their_index,
+    );
+    active_peer.increment_decrypt_failures();
+    active_peer.mark_stale();
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let now = std::time::Instant::now();
+    let update = registry
+        .record_authenticated_fmp_receive(
+            &peer_addr,
+            new_transport_id,
+            &new_addr,
+            2_000,
+            128,
+            7,
+            1_234,
+            true,
+            false,
+            now,
+            true,
+        )
+        .expect("authenticated receive bookkeeping should find active peer");
+
+    assert!(
+        update.address_changed,
+        "path update should report that connected UDP must be cleared"
+    );
+    assert!(update.path_bookkeeping_recorded);
+    assert!(update.mmp_recorded);
+    assert!(
+        update.spin_rtt.is_none(),
+        "first initiator spin edge flips the bit but has no prior edge for RTT"
+    );
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("authenticated receive must keep active peer storage");
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(peer.transport_id(), Some(new_transport_id));
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(peer.last_seen(), 2_000);
+    assert_eq!(peer.link_stats().packets_recv, 1);
+    assert_eq!(peer.link_stats().bytes_recv, 128);
+    assert_eq!(peer.link_stats().last_recv_ms, 2_000);
+    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
+    assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
+    assert_eq!(mmp.receiver.cumulative_bytes_recv(), 128);
+    assert_eq!(mmp.receiver.highest_counter(), 7);
+    assert_eq!(mmp.receiver.ecn_ce_count(), 1);
+    assert!(
+        mmp.spin_bit.tx_bit(),
+        "authenticated receive bookkeeping should own spin-bit observation"
+    );
+
+    registry
+        .get_mut(&peer_addr)
+        .expect("peer should still exist")
+        .increment_decrypt_failures();
+    let skipped = registry
+        .record_authenticated_fmp_receive(
+            &peer_addr,
+            new_transport_id,
+            &ignored_addr,
+            3_000,
+            64,
+            8,
+            1_999,
+            false,
+            true,
+            now,
+            false,
+        )
+        .expect("disallowed path bookkeeping should still reset decrypt failures");
+
+    assert!(!skipped.address_changed);
+    assert!(!skipped.path_bookkeeping_recorded);
+    assert!(!skipped.mmp_recorded);
+    assert!(skipped.spin_rtt.is_none());
+    let peer = registry
+        .get(&peer_addr)
+        .expect("skipped receive must keep active peer storage");
+    assert_eq!(peer.consecutive_decrypt_failures(), 0);
+    assert_eq!(peer.current_addr(), Some(&new_addr));
+    assert_eq!(peer.last_seen(), 2_000);
+    assert_eq!(peer.link_stats().packets_recv, 1);
+    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
+    assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_active_peer_teardown_session_indices() {
     let node = make_node();
     let peer_full = Identity::generate();
