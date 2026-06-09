@@ -2582,13 +2582,12 @@ impl Node {
         });
 
         let predicted_bytes = wire.wire_capacity;
-        if let Some(peer) = self.peers.get_mut(&next_hop_addr) {
-            peer.link_stats_mut().record_sent(predicted_bytes);
-            if let Some(mmp) = peer.mmp_mut() {
-                mmp.sender
-                    .record_sent(fmp_counter, timestamp_ms, predicted_bytes);
-            }
-        }
+        let _ = self.peers.record_fmp_send_bookkeeping(
+            &next_hop_addr,
+            fmp_counter,
+            timestamp_ms,
+            predicted_bytes,
+        );
         self.stats_mut()
             .forwarding
             .record_originated(wire.link_plaintext_len + crate::noise::TAG_SIZE);

@@ -1764,6 +1764,11 @@ pub(in crate::node) struct AuthenticatedFmpReceiveBookkeeping {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct FmpSendBookkeeping {
+    pub(in crate::node) mmp_recorded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct LinkDeadDirectPathDegradation {
     pub(in crate::node) link_id: LinkId,
     pub(in crate::node) connected_udp_cleared: bool,
@@ -2246,6 +2251,27 @@ impl PeerLifecycleRegistry {
             result.mmp_recorded = true;
         }
 
+        Some(result)
+    }
+
+    pub(in crate::node) fn record_fmp_send_bookkeeping(
+        &mut self,
+        node_addr: &NodeAddr,
+        fmp_counter: u64,
+        timestamp_ms: u32,
+        bytes_sent: usize,
+    ) -> Option<FmpSendBookkeeping> {
+        let peer = self.active.get_mut(node_addr)?;
+        peer.link_stats_mut().record_sent(bytes_sent);
+
+        let mut result = FmpSendBookkeeping {
+            mmp_recorded: false,
+        };
+        if let Some(mmp) = peer.mmp_mut() {
+            mmp.sender
+                .record_sent(fmp_counter, timestamp_ms, bytes_sent);
+            result.mmp_recorded = true;
+        }
         Some(result)
     }
 
@@ -5285,22 +5311,18 @@ impl Node {
                         wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
                         wire_buf.extend_from_slice(plaintext);
                         let predicted_bytes = wire_capacity;
-                        // Stats / MMP update inline — predicted size
-                        // is exact for ChaCha20-Poly1305 (tag is
-                        // constant 16 bytes). When `connected_socket` is
-                        // `Some`, the worker sends on it without a
-                        // destination sockaddr — the kernel skips the
+                        // Lifecycle send bookkeeping uses the predicted
+                        // wire size, exact for ChaCha20-Poly1305 because the
+                        // tag is constant 16 bytes. When `connected_socket`
+                        // is `Some`, the worker sends on it without a
+                        // destination sockaddr, so the kernel skips the
                         // per-packet sockaddr + route + neighbor resolve.
-                        if let Some(peer) = self.peers.get_mut(node_addr) {
-                            peer.link_stats_mut().record_sent(predicted_bytes);
-                            if let Some(mmp) = peer.mmp_mut() {
-                                mmp.sender.record_sent(
-                                    reserved_counter,
-                                    timestamp_ms,
-                                    predicted_bytes,
-                                );
-                            }
-                        }
+                        let _ = self.peers.record_fmp_send_bookkeeping(
+                            node_addr,
+                            reserved_counter,
+                            timestamp_ms,
+                            predicted_bytes,
+                        );
                         let scheduling_weight = self.send_weight_for_peer(node_addr);
                         let traffic_class = classify_fmp_plaintext_traffic(plaintext);
                         workers.dispatch(self::encrypt_worker::FmpSendJob {
@@ -5368,13 +5390,9 @@ impl Node {
         })?;
 
         // Update send statistics
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            peer.link_stats_mut().record_sent(bytes_sent);
-            // MMP: record sent frame for sender report generation
-            if let Some(mmp) = peer.mmp_mut() {
-                mmp.sender.record_sent(counter, timestamp_ms, bytes_sent);
-            }
-        }
+        let _ =
+            self.peers
+                .record_fmp_send_bookkeeping(node_addr, counter, timestamp_ms, bytes_sent);
 
         Ok(())
     }

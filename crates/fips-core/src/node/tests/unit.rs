@@ -2021,6 +2021,94 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("fmp-send-bookkeeping-peer");
+    let current_our_index = SessionIndex::new(10);
+    let current_their_index = SessionIndex::new(20);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        remote_addr,
+        current_our_index,
+        current_their_index,
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let update = registry
+        .record_fmp_send_bookkeeping(&peer_addr, 7, 1_234, 256)
+        .expect("FMP send bookkeeping should find active peer");
+    assert!(
+        update.mmp_recorded,
+        "active FMP peers should update MMP sender state with link send stats"
+    );
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("send bookkeeping must keep active peer storage");
+    assert_eq!(peer.link_stats().packets_sent, 1);
+    assert_eq!(peer.link_stats().bytes_sent, 256);
+    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 256);
+
+    let second_update = registry
+        .record_fmp_send_bookkeeping(&peer_addr, 8, 1_300, 128)
+        .expect("second FMP send bookkeeping should find active peer");
+    assert!(second_update.mmp_recorded);
+    let peer = registry
+        .get(&peer_addr)
+        .expect("second send bookkeeping must keep active peer storage");
+    assert_eq!(peer.link_stats().packets_sent, 2);
+    assert_eq!(peer.link_stats().bytes_sent, 384);
+    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 384);
+
+    let no_mmp_full = Identity::generate();
+    let no_mmp_identity = PeerIdentity::from_pubkey_full(no_mmp_full.pubkey_full());
+    let no_mmp_addr = *no_mmp_identity.node_addr();
+    assert!(
+        registry
+            .insert(
+                no_mmp_addr,
+                ActivePeer::new(no_mmp_identity, LinkId::new(77), 3_000),
+            )
+            .is_none()
+    );
+    let legacy_update = registry
+        .record_fmp_send_bookkeeping(&no_mmp_addr, 9, 1_400, 64)
+        .expect("legacy active peer should still record link send stats");
+    assert!(
+        !legacy_update.mmp_recorded,
+        "legacy peers without MMP state should not claim MMP sender updates"
+    );
+    let peer = registry
+        .get(&no_mmp_addr)
+        .expect("legacy send bookkeeping must keep active peer storage");
+    assert_eq!(peer.link_stats().packets_sent, 1);
+    assert_eq!(peer.link_stats().bytes_sent, 64);
+
+    assert!(
+        registry
+            .record_fmp_send_bookkeeping(&make_node_addr(99), 10, 1_500, 32)
+            .is_none(),
+        "missing active peers should not record send bookkeeping"
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_link_dead_direct_path_degradation() {
     let node = make_node();
     let peer_full = Identity::generate();
