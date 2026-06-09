@@ -197,6 +197,19 @@ enum PipelinedEndpointRuntimeSendPlanError {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipelinedEndpointRuntimeSendAttemptError {
+    FspReservation {
+        dest_addr: NodeAddr,
+        error: crate::node::FspWorkerSendReservationError,
+    },
+    FmpReservation {
+        next_hop_addr: NodeAddr,
+        error: crate::node::FmpSendPreparationError,
+    },
+}
+
+#[cfg(unix)]
 struct PipelinedEndpointSendPlan<'a> {
     wire_plan: PipelinedEndpointWirePlan<'a>,
     dispatch_plan: PipelinedEndpointDispatchPlan<'a>,
@@ -215,6 +228,12 @@ struct PipelinedEndpointRuntimeSendDispatch<'a> {
     send_target: PipelinedEndpointSendTarget,
     fmp_reservation: crate::node::PreparedFmpWorkerReservation,
     fsp_reservation: crate::node::session::FspSendReservation,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointRuntimeSendAttempt<'a> {
+    runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
+    send_target: PipelinedEndpointSendTarget,
 }
 
 #[cfg(unix)]
@@ -722,6 +741,70 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
         self.into_prepared_send(crate::perf_profile::stamp())
             .commit(node, workers);
+    }
+}
+
+#[cfg(unix)]
+impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
+    fn new(
+        runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
+        send_target: PipelinedEndpointSendTarget,
+    ) -> Self {
+        Self {
+            runtime_plan,
+            send_target,
+        }
+    }
+
+    fn reserve(
+        self,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<
+        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
+        PipelinedEndpointRuntimeSendAttemptError,
+    > {
+        let Self {
+            runtime_plan,
+            send_target,
+        } = self;
+
+        if !runtime_plan.fmp_worker_send_available() {
+            return Ok(None);
+        }
+
+        let dest_addr = runtime_plan.dest_addr();
+        let next_hop_addr = runtime_plan.next_hop_addr();
+        let Some(fsp_reservation) = sessions
+            .reserve_endpoint_data_fsp_worker_send(&dest_addr, runtime_plan.fsp_reservation_input())
+            .map_err(
+                |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
+                    dest_addr,
+                    error,
+                },
+            )?
+        else {
+            return Ok(None);
+        };
+
+        let Some(fmp_reservation) = peers
+            .reserve_peer_runtime_fmp_worker_send(runtime_plan.peer_snapshot())
+            .map_err(
+                |error| PipelinedEndpointRuntimeSendAttemptError::FmpReservation {
+                    next_hop_addr,
+                    error,
+                },
+            )?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(PipelinedEndpointRuntimeSendDispatch::new(
+            runtime_plan,
+            send_target,
+            fmp_reservation,
+            fsp_reservation,
+        )))
     }
 }
 
@@ -3177,6 +3260,21 @@ impl Node {
     }
 
     #[cfg(unix)]
+    fn map_pipelined_endpoint_runtime_send_attempt_error(
+        error: PipelinedEndpointRuntimeSendAttemptError,
+    ) -> NodeError {
+        match error {
+            PipelinedEndpointRuntimeSendAttemptError::FspReservation { dest_addr, error } => {
+                Self::map_fsp_worker_send_reservation_error(dest_addr, error)
+            }
+            PipelinedEndpointRuntimeSendAttemptError::FmpReservation {
+                next_hop_addr,
+                error,
+            } => Self::map_fmp_send_preparation_error(next_hop_addr, error),
+        }
+    }
+
+    #[cfg(unix)]
     fn prepare_pipelined_endpoint_peer_runtime_route_snapshot(
         &mut self,
         dest_addr: &NodeAddr,
@@ -3243,8 +3341,6 @@ impl Node {
         &mut self,
         runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
     ) -> Result<Option<PipelinedEndpointRuntimeSendDispatch<'a>>, NodeError> {
-        let next_hop_addr = runtime_plan.next_hop_addr();
-        let dest_addr = runtime_plan.dest_addr();
         let transport_id = runtime_plan.transport_id();
 
         let transport = self
@@ -3258,32 +3354,9 @@ impl Node {
             return Ok(None);
         };
 
-        if !runtime_plan.fmp_worker_send_available() {
-            return Ok(None);
-        }
-
-        let Some(fsp_reservation) = self
-            .sessions
-            .reserve_endpoint_data_fsp_worker_send(&dest_addr, runtime_plan.fsp_reservation_input())
-            .map_err(|e| Self::map_fsp_worker_send_reservation_error(dest_addr, e))?
-        else {
-            return Ok(None);
-        };
-
-        let Some(fmp_reservation) = self
-            .peers
-            .reserve_peer_runtime_fmp_worker_send(runtime_plan.peer_snapshot())
-            .map_err(|e| Self::map_fmp_send_preparation_error(next_hop_addr, e))?
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some(PipelinedEndpointRuntimeSendDispatch::new(
-            runtime_plan,
-            send_target,
-            fmp_reservation,
-            fsp_reservation,
-        )))
+        PipelinedEndpointRuntimeSendAttempt::new(runtime_plan, send_target)
+            .reserve(&mut self.sessions, &mut self.peers)
+            .map_err(Self::map_pipelined_endpoint_runtime_send_attempt_error)
     }
 
     #[cfg(unix)]
@@ -4840,6 +4913,177 @@ mod tests {
         assert!(
             !degraded_runtime.drop_on_backpressure(),
             "blocked direct payload routes must not silently use bulk-drop policy"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipelined_endpoint_runtime_send_attempt_owns_target_and_reservations() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{LinkId, TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let source_addr = node_addr(0x10);
+        let transport_id = TransportId::new(0x55);
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(
+            sessions
+                .insert(dest_addr, established_entry(&local, &peer))
+                .is_none()
+        );
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&local, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            crate::transport::LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([0x02; 8]),
+        );
+        peers.insert_with_current_session_index(dest_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: &inner_plaintext,
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let route_snapshot = peers
+            .prepare_peer_runtime_route_snapshot(&dest_addr)
+            .expect("active peer should prepare route snapshot");
+        let runtime =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 1234, 9, 7, false)
+                .into_runtime_send_plan(&send)
+                .expect("runtime route should build send plan");
+        let send_target = runtime
+            .resolve_send_target(&udp)
+            .await
+            .expect("started UDP transport resolves send target");
+
+        let fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .send_counter();
+        let fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists")
+            .current_send_counter();
+
+        let dispatch = PipelinedEndpointRuntimeSendAttempt::new(runtime, send_target)
+            .reserve(&mut sessions, &mut peers)
+            .expect("runtime send attempt should reserve from both registries")
+            .expect("established runtime send attempt should dispatch");
+
+        assert_eq!(dispatch.dest_addr(), dest_addr);
+        assert_eq!(dispatch.next_hop_addr(), dest_addr);
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists")
+                .send_counter(),
+            fsp_before + 1,
+            "attempt should consume exactly one FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists")
+                .current_send_counter(),
+            fmp_before + 1,
+            "attempt should consume exactly one FMP counter"
+        );
+
+        let prepared = dispatch.into_prepared_send(None);
+        assert_eq!(prepared.dest_addr, dest_addr);
+        assert_eq!(prepared.next_hop_addr, dest_addr);
+        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.fmp_counter, fmp_before);
+        assert_eq!(prepared.worker_job.counter, fmp_before);
+
+        let blocked_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            dest_addr,
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            0,
+            false,
+        );
+        let blocked_runtime = PipelinedEndpointPeerRuntimeRoute::new(
+            source_addr,
+            blocked_snapshot,
+            1234,
+            9,
+            7,
+            false,
+        )
+        .into_runtime_send_plan(&send)
+        .expect("blocked worker runtime should still build send plan");
+        let blocked_target = blocked_runtime
+            .resolve_send_target(&udp)
+            .await
+            .expect("started UDP transport resolves blocked send target");
+
+        assert!(
+            PipelinedEndpointRuntimeSendAttempt::new(blocked_runtime, blocked_target)
+                .reserve(&mut sessions, &mut peers)
+                .expect("unavailable worker is a recoverable no-dispatch result")
+                .is_none()
+        );
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after blocked attempt")
+                .send_counter(),
+            fsp_before + 1,
+            "blocked attempt must not consume another FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after blocked attempt")
+                .current_send_counter(),
+            fmp_before + 1,
+            "blocked attempt must not consume another FMP counter"
         );
     }
 
