@@ -131,6 +131,15 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
+struct PipelinedEndpointSendTarget {
+    socket: crate::transport::udp::socket::AsyncUdpSocket,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    connected_socket:
+        Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    socket_addr: std::net::SocketAddr,
+}
+
+#[cfg(unix)]
 struct PipelinedEndpointDispatchPlan<'a> {
     next_hop_addr: NodeAddr,
     payload: &'a EndpointDataPayload,
@@ -164,6 +173,44 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
         .checked_add(link_plaintext_len)?
         .checked_add(crate::noise::TAG_SIZE)?;
     u16::try_from(payload_len).ok()
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointSendTarget {
+    async fn resolve(
+        udp: &crate::transport::udp::UdpTransport,
+        prepared: &crate::node::FmpSendPreparation,
+    ) -> Option<Self> {
+        let socket_addr = {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                match prepared.connected_socket.as_ref() {
+                    Some(socket) => Some(socket.peer_addr()),
+                    None => udp.resolve_for_off_task(&prepared.remote_addr).await.ok(),
+                }
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
+            }
+        }?;
+        let socket = udp.async_socket()?;
+        Some(Self {
+            socket,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket: prepared.connected_socket.clone(),
+            socket_addr,
+        })
+    }
+
+    fn into_selected_send_target(self) -> crate::node::encrypt_worker::SelectedSendTarget {
+        crate::node::encrypt_worker::SelectedSendTarget::new(
+            self.socket,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            self.connected_socket,
+            self.socket_addr,
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -2666,28 +2713,8 @@ impl Node {
         let TransportHandle::Udp(udp) = transport else {
             return Ok(false);
         };
-        let socket_addr = {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                match fmp_prepared.connected_socket.as_ref() {
-                    Some(socket) => Some(socket.peer_addr()),
-                    None => udp
-                        .resolve_for_off_task(&fmp_prepared.remote_addr)
-                        .await
-                        .ok(),
-                }
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            {
-                udp.resolve_for_off_task(&fmp_prepared.remote_addr)
-                    .await
-                    .ok()
-            }
-        };
-        let Some(socket_addr) = socket_addr else {
-            return Ok(false);
-        };
-        let Some(socket) = udp.async_socket() else {
+        let Some(send_target) = PipelinedEndpointSendTarget::resolve(udp, &fmp_prepared).await
+        else {
             return Ok(false);
         };
         if !self
@@ -2754,12 +2781,7 @@ impl Node {
 
         workers.dispatch(dispatch_plan.into_worker_job(
             worker_wire,
-            crate::node::encrypt_worker::SelectedSendTarget::new(
-                socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                fmp_prepared.connected_socket,
-                socket_addr,
-            ),
+            send_target.into_selected_send_target(),
             crate::perf_profile::stamp(),
         ));
 
@@ -3799,6 +3821,96 @@ mod tests {
             .expect("control");
         assert!(!control.bulk_endpoint_data);
         assert!(!control.drop_on_backpressure);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipelined_endpoint_send_target_owns_connected_udp_preference_and_fallback() {
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+        use std::net::SocketAddr;
+
+        fn prepared(
+            transport_id: TransportId,
+            remote_addr: TransportAddr,
+            #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
+                std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
+            >,
+        ) -> crate::node::FmpSendPreparation {
+            crate::node::FmpSendPreparation {
+                their_index: SessionIndex::new(0xA0B0_C0D0),
+                transport_id,
+                remote_addr,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                connected_socket,
+                timestamp_ms: 123,
+                flags: 0,
+                payload_len: 16,
+            }
+        }
+
+        let transport_id = TransportId::new(0x77);
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+
+        let fallback_addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let fallback_prepared = prepared(
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+        );
+        assert!(
+            PipelinedEndpointSendTarget::resolve(&udp, &fallback_prepared)
+                .await
+                .is_none(),
+            "an unstarted UDP transport has no worker socket to own"
+        );
+
+        udp.start_async().await.expect("start UDP transport");
+        let fallback_target = PipelinedEndpointSendTarget::resolve(&udp, &fallback_prepared)
+            .await
+            .expect("started UDP transport resolves numeric fallback");
+        assert_eq!(fallback_target.socket_addr, fallback_addr);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(fallback_target.connected_socket.is_none());
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let peer_udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind peer udp");
+            let peer_addr = peer_udp.local_addr().expect("peer udp addr");
+            let connected = std::sync::Arc::new(
+                crate::transport::udp::connected_peer::ConnectedPeerSocket::open(
+                    "127.0.0.1:0".parse().unwrap(),
+                    peer_addr,
+                    1 << 20,
+                    1 << 20,
+                )
+                .expect("open connected udp"),
+            );
+            let connected_prepared = prepared(
+                transport_id,
+                TransportAddr::from_string("invalid fallback target"),
+                Some(connected.clone()),
+            );
+            let connected_target = PipelinedEndpointSendTarget::resolve(&udp, &connected_prepared)
+                .await
+                .expect("connected socket should avoid fallback resolution");
+            assert_eq!(connected_target.socket_addr, peer_addr);
+            assert!(std::sync::Arc::ptr_eq(
+                connected_target.connected_socket.as_ref().unwrap(),
+                &connected
+            ));
+        }
     }
 
     #[test]
