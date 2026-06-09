@@ -2107,6 +2107,47 @@ impl PeerLifecycleRegistry {
         })
     }
 
+    pub(in crate::node) fn install_pending_rekey_session_and_index(
+        &mut self,
+        node_addr: &NodeAddr,
+        pending_session: crate::noise::NoiseSession,
+        pending_our_index: SessionIndex,
+        pending_their_index: SessionIndex,
+        initiated_by_local: bool,
+        remote_epoch: Option<[u8; 8]>,
+    ) -> Option<RegisteredPeerSessionIndex> {
+        let pending_session_index = {
+            let peer = self.active.get_mut(node_addr)?;
+            let transport_id = peer.transport_id()?;
+            let session_index = PeerSessionIndex {
+                kind: PeerSessionIndexKind::Pending,
+                key: (transport_id, pending_our_index.as_u32()),
+                index: pending_our_index,
+            };
+            if remote_epoch.is_some() {
+                peer.set_remote_epoch(remote_epoch);
+            }
+            peer.set_pending_session(
+                pending_session,
+                pending_our_index,
+                pending_their_index,
+                initiated_by_local,
+            );
+            if !initiated_by_local {
+                peer.record_peer_rekey();
+            }
+            session_index
+        };
+
+        let previous_owner = self
+            .active
+            .insert_session_index(pending_session_index.key, *node_addr);
+        Some(RegisteredPeerSessionIndex {
+            session_index: pending_session_index,
+            previous_owner,
+        })
+    }
+
     pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
         self.active.remove(node_addr)
     }
@@ -3542,6 +3583,25 @@ impl Node {
                 our_index = %replacement.new_session_index.session_index.index,
                 context,
                 "Replaced current session-index owner during session replacement"
+            );
+        }
+    }
+
+    pub(in crate::node) fn log_registered_peer_session_index_result(
+        &self,
+        node_addr: &NodeAddr,
+        registered: &RegisteredPeerSessionIndex,
+        context: &'static str,
+    ) {
+        if let Some(previous_owner) = registered.previous_owner {
+            debug!(
+                peer = %self.peer_display_name(node_addr),
+                previous_owner = %self.peer_display_name(&previous_owner),
+                transport_id = %registered.session_index.key.0,
+                our_index = %registered.session_index.index,
+                index_kind = ?registered.session_index.kind,
+                context,
+                "Replaced session-index owner during lifecycle registration"
             );
         }
     }

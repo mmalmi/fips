@@ -371,21 +371,28 @@ impl Node {
                             }
                         }
 
-                        // Store pending session on the existing peer
-                        if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                            peer.set_pending_session(
-                                noise_session,
-                                our_new_index,
-                                header.sender_idx,
-                                false,
+                        let Some(registered) = self.peers.install_pending_rekey_session_and_index(
+                            &peer_node_addr,
+                            noise_session,
+                            our_new_index,
+                            header.sender_idx,
+                            false,
+                            None,
+                        ) else {
+                            warn!(
+                                peer = %self.peer_display_name(&peer_node_addr),
+                                "Could not install responder pending rekey session"
                             );
-                            peer.record_peer_rekey();
-                        }
-
-                        // Register new index in active peer registry session-index dispatch
-                        self.peers.insert_session_index(
-                            (packet.transport_id, our_new_index.as_u32()),
-                            peer_node_addr,
+                            let _ = self.index_allocator.free(our_new_index);
+                            self.peers.remove_connection(&link_id);
+                            self.links.remove(&link_id);
+                            self.msg1_rate_limiter.complete_handshake();
+                            return;
+                        };
+                        self.log_registered_peer_session_index_result(
+                            &peer_node_addr,
+                            &registered,
+                            "responder_pending_rekey",
                         );
 
                         // Clean up any temporary connection/link state from this path.
@@ -673,8 +680,8 @@ impl Node {
             if let Some(peer_node_addr) = peer_addr {
                 let display_name = self.peer_display_name(&peer_node_addr);
 
-                // Complete the rekey handshake on the ActivePeer
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
+                let mut abandoned_rekey = None;
+                let completed_rekey = if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
                     match peer.complete_rekey_msg2(noise_msg2) {
                         Ok((session, remote_epoch)) => {
                             let our_index = peer.rekey_our_index().unwrap_or(header.receiver_idx);
@@ -682,37 +689,7 @@ impl Node {
                                 (peer.remote_epoch(), remote_epoch),
                                 (Some(old), Some(new)) if old != new
                             );
-                            if remote_epoch.is_some() {
-                                peer.set_remote_epoch(remote_epoch);
-                            }
-                            peer.set_pending_session(session, our_index, header.sender_idx, true);
-
-                            if let Some(transport_id) = peer.transport_id() {
-                                self.peers.insert_session_index(
-                                    (transport_id, our_index.as_u32()),
-                                    peer_node_addr,
-                                );
-                            }
-
-                            if remote_epoch_changed {
-                                if self.sessions.remove(&peer_node_addr).is_some() {
-                                    debug!(
-                                        peer = %display_name,
-                                        "Cleared stale FSP session after peer restart during FMP rekey"
-                                    );
-                                }
-                                info!(
-                                    peer = %display_name,
-                                    "Peer restart detected during FMP rekey, replacing stale endpoint session"
-                                );
-                            }
-
-                            debug!(
-                                peer = %display_name,
-                                new_our_index = %our_index,
-                                new_their_index = %header.sender_idx,
-                                "Rekey completed (initiator), pending K-bit cutover"
-                            );
+                            Some((session, remote_epoch, our_index, remote_epoch_changed))
                         }
                         Err(e) => {
                             warn!(
@@ -720,12 +697,75 @@ impl Node {
                                 error = %e,
                                 "Rekey msg2 processing failed"
                             );
-                            if let Some(idx) = peer.abandon_rekey() {
-                                if let Some(tid) = peer.transport_id() {
-                                    self.deregister_session_index((tid, idx.as_u32()));
-                                }
-                                let _ = self.index_allocator.free(idx);
+                            abandoned_rekey =
+                                peer.abandon_rekey().map(|idx| (peer.transport_id(), idx));
+                            None
+                        }
+                    }
+                } else {
+                    warn!(
+                        peer = %display_name,
+                        "Rekey msg2 matched a peer that disappeared before completion"
+                    );
+                    None
+                };
+
+                if let Some((transport_id, idx)) = abandoned_rekey {
+                    if let Some(tid) = transport_id {
+                        self.deregister_session_index((tid, idx.as_u32()));
+                    }
+                    let _ = self.index_allocator.free(idx);
+                }
+
+                if let Some((session, remote_epoch, our_index, remote_epoch_changed)) =
+                    completed_rekey
+                {
+                    if let Some(registered) = self.peers.install_pending_rekey_session_and_index(
+                        &peer_node_addr,
+                        session,
+                        our_index,
+                        header.sender_idx,
+                        true,
+                        remote_epoch,
+                    ) {
+                        self.log_registered_peer_session_index_result(
+                            &peer_node_addr,
+                            &registered,
+                            "initiator_pending_rekey",
+                        );
+
+                        if remote_epoch_changed {
+                            if self.sessions.remove(&peer_node_addr).is_some() {
+                                debug!(
+                                    peer = %display_name,
+                                    "Cleared stale FSP session after peer restart during FMP rekey"
+                                );
                             }
+                            info!(
+                                peer = %display_name,
+                                "Peer restart detected during FMP rekey, replacing stale endpoint session"
+                            );
+                        }
+
+                        debug!(
+                            peer = %display_name,
+                            new_our_index = %our_index,
+                            new_their_index = %header.sender_idx,
+                            "Rekey completed (initiator), pending K-bit cutover"
+                        );
+                    } else {
+                        warn!(
+                            peer = %display_name,
+                            "Could not install initiator pending rekey session"
+                        );
+                        if let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                            && let Some(idx) = peer.abandon_rekey()
+                        {
+                            let transport_id = peer.transport_id();
+                            if let Some(tid) = transport_id {
+                                self.deregister_session_index((tid, idx.as_u32()));
+                            }
+                            let _ = self.index_allocator.free(idx);
                         }
                     }
                 }

@@ -1727,6 +1727,84 @@ fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() 
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_pending_rekey_session_and_index_registration() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let stale_peer_full = Identity::generate();
+    let stale_peer_identity = PeerIdentity::from_pubkey_full(stale_peer_full.pubkey_full());
+    let stale_peer_addr = *stale_peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let current_addr = TransportAddr::from_string("pending-rekey-path");
+    let current_our_index = SessionIndex::new(10);
+    let current_their_index = SessionIndex::new(20);
+    let pending_our_index = SessionIndex::new(11);
+    let pending_their_index = SessionIndex::new(21);
+    let current_key = (transport_id, current_our_index.as_u32());
+    let pending_key = (transport_id, pending_our_index.as_u32());
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        current_addr,
+        current_our_index,
+        current_their_index,
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+    assert_eq!(
+        registry.insert_session_index(pending_key, stale_peer_addr),
+        None
+    );
+
+    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x05; 8], [0x06; 8]);
+    let registered = registry
+        .install_pending_rekey_session_and_index(
+            &peer_addr,
+            pending_session,
+            pending_our_index,
+            pending_their_index,
+            false,
+            None,
+        )
+        .expect("pending rekey session should be owned by the lifecycle registry");
+
+    assert_eq!(
+        registered,
+        RegisteredPeerSessionIndex {
+            session_index: PeerSessionIndex {
+                kind: PeerSessionIndexKind::Pending,
+                key: pending_key,
+                index: pending_our_index,
+            },
+            previous_owner: Some(stale_peer_addr),
+        },
+        "installing a pending rekey session must also register its receiver index and report stale-owner repair"
+    );
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+    assert_eq!(registry.lookup_session_index(pending_key), Some(peer_addr));
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("pending rekey install must keep active peer storage");
+    assert_eq!(peer.pending_our_index(), Some(pending_our_index));
+    assert_eq!(peer.pending_their_index(), Some(pending_their_index));
+    assert!(peer.pending_new_session().is_some());
+    assert!(!peer.pending_rekey_initiator());
+    assert!(
+        !peer.rekey_in_progress(),
+        "completed pending rekey install should clear in-progress handshake state"
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_active_peer_teardown_session_indices() {
     let node = make_node();
     let peer_full = Identity::generate();
