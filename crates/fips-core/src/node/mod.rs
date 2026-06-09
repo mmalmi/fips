@@ -1775,6 +1775,7 @@ pub(in crate::node) enum FmpSendPreparationError {
     MissingTransportId,
     MissingCurrentAddr,
     MissingNoiseSession,
+    PayloadLengthMismatch,
     CounterReservationFailed,
     EncryptionFailed,
 }
@@ -1796,6 +1797,16 @@ pub(in crate::node) struct PreparedFmpInlineSend {
     #[cfg(test)]
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
     pub(in crate::node) wire_packet: Vec<u8>,
+}
+
+#[cfg(unix)]
+pub(in crate::node) struct PreparedFmpWorkerSend {
+    pub(in crate::node) counter: u64,
+    #[cfg(test)]
+    pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) wire_buf: Vec<u8>,
+    pub(in crate::node) predicted_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2389,11 +2400,18 @@ impl PeerLifecycleRegistry {
     }
 
     #[cfg(unix)]
-    pub(in crate::node) fn reserve_prepared_fmp_worker_send(
+    pub(in crate::node) fn prepare_fmp_worker_send(
         &mut self,
         node_addr: &NodeAddr,
         prepared: &FmpSendPreparation,
-    ) -> Result<Option<FmpWorkerSendReservation>, FmpSendPreparationError> {
+        plaintext: &[u8],
+    ) -> Result<Option<PreparedFmpWorkerSend>, FmpSendPreparationError> {
+        const INNER_TS_LEN: usize = 4;
+        let expected_payload_len = INNER_TS_LEN + plaintext.len();
+        if prepared.payload_len as usize != expected_payload_len {
+            return Err(FmpSendPreparationError::PayloadLengthMismatch);
+        }
+
         let peer = self
             .active
             .get_mut(node_addr)
@@ -2401,13 +2419,33 @@ impl PeerLifecycleRegistry {
         let session = peer
             .noise_session_mut()
             .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
-        reserve_fmp_worker_send(
+        let reservation = reserve_fmp_worker_send(
             session,
             prepared.their_index,
             prepared.flags,
             prepared.payload_len,
         )
-        .map_err(|_| FmpSendPreparationError::CounterReservationFailed)
+        .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
+
+        Ok(reservation.map(|reservation| {
+            let header = reservation.header;
+            let wire_len = ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize;
+            let predicted_bytes = wire_len + 16;
+            let mut wire_buf = Vec::with_capacity(predicted_bytes);
+            wire_buf.extend_from_slice(&header);
+            wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
+            wire_buf.extend_from_slice(plaintext);
+            debug_assert_eq!(wire_buf.len(), wire_len);
+
+            PreparedFmpWorkerSend {
+                counter: reservation.counter,
+                #[cfg(test)]
+                header,
+                cipher: reservation.cipher,
+                wire_buf,
+                predicted_bytes,
+            }
+        }))
     }
 
     pub(in crate::node) fn seal_prepared_fmp_inline_send(
@@ -5495,6 +5533,10 @@ impl Node {
                 node_addr: *node_addr,
                 reason: "no noise session".into(),
             },
+            FmpSendPreparationError::PayloadLengthMismatch => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "payload length mismatch".into(),
+            },
             FmpSendPreparationError::CounterReservationFailed => NodeError::SendFailed {
                 node_addr: *node_addr,
                 reason: "counter reservation failed".into(),
@@ -5589,34 +5631,13 @@ impl Node {
                     // the worker target is known. If the off-task path is
                     // unavailable, the inline path below remains the sole
                     // counter owner for this packet.
-                    if let Some(reservation) = self
+                    if let Some(worker_send) = self
                         .peers
-                        .reserve_prepared_fmp_worker_send(node_addr, &prepared)
+                        .prepare_fmp_worker_send(node_addr, &prepared, plaintext)
                         .map_err(|e| map_fmp_send_error(e))?
                     {
-                        let reserved_counter = reservation.counter;
-                        let header = reservation.header;
-                        // Build the wire buffer **directly** from
-                        // `plaintext` with a single allocation:
-                        //   `[16 header][4 ts][plaintext...]` with
-                        // +16 trailing capacity for the AEAD tag.
-                        // The worker seals `wire_buf[16..]` in
-                        // place and appends the tag — no second
-                        // alloc, no second memcpy.
-                        //
-                        // Previous design built `inner_plaintext`
-                        // via `prepend_inner_header` (1 alloc + 1
-                        // copy) and then let the worker memcpy
-                        // header + plaintext into a fresh Vec
-                        // (another alloc + copy). At ~100 kpps the
-                        // saved alloc/copy is ~150 MB/sec of memory
-                        // bandwidth on the hot rx_loop + worker.
-                        let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
-                        let mut wire_buf = Vec::with_capacity(wire_capacity);
-                        wire_buf.extend_from_slice(&header);
-                        wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
-                        wire_buf.extend_from_slice(plaintext);
-                        let predicted_bytes = wire_capacity;
+                        let reserved_counter = worker_send.counter;
+                        let predicted_bytes = worker_send.predicted_bytes;
                         // Lifecycle send bookkeeping uses the predicted
                         // wire size, exact for ChaCha20-Poly1305 because the
                         // tag is constant 16 bytes. When `connected_socket`
@@ -5632,9 +5653,9 @@ impl Node {
                         let scheduling_weight = self.send_weight_for_peer(node_addr);
                         let traffic_class = classify_fmp_plaintext_traffic(plaintext);
                         workers.dispatch(self::encrypt_worker::FmpSendJob {
-                            cipher: reservation.cipher,
+                            cipher: worker_send.cipher,
                             counter: reserved_counter,
-                            wire_buf,
+                            wire_buf: worker_send.wire_buf,
                             fsp_seal: None,
                             send_target: self::encrypt_worker::SelectedSendTarget::new(
                                 socket,

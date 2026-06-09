@@ -2170,8 +2170,7 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
     registry.insert_with_current_session_index(peer_addr, active_peer);
 
     let plaintext = b"owner-prepared-fmp";
-    let inner_plaintext = prepend_inner_header(123, plaintext);
-    let payload_len = inner_plaintext.len() as u16;
+    let payload_len = (4 + plaintext.len()) as u16;
     let prepared = registry
         .prepare_fmp_send(&peer_addr, true, payload_len)
         .expect("lifecycle owner should prepare FMP send metadata");
@@ -2191,15 +2190,53 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
         "preparation must not consume a Noise send counter"
     );
 
+    let mismatched_prepared = registry
+        .prepare_fmp_send(&peer_addr, true, payload_len + 1)
+        .expect("lifecycle owner should prepare mismatched metadata for guard");
+    assert!(
+        matches!(
+            registry.prepare_fmp_worker_send(&peer_addr, &mismatched_prepared, plaintext),
+            Err(FmpSendPreparationError::PayloadLengthMismatch)
+        ),
+        "payload mismatch should be rejected before counter reservation"
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        0,
+        "payload mismatch must not consume a Noise send counter"
+    );
+
     let worker = registry
-        .reserve_prepared_fmp_worker_send(&peer_addr, &prepared)
-        .expect("worker reservation should be owner-managed")
+        .prepare_fmp_worker_send(&peer_addr, &prepared, plaintext)
+        .expect("worker packet preparation should be owner-managed")
         .expect("established FMP peer should expose a worker cipher");
     assert_eq!(worker.counter, 0);
     assert_eq!(
         worker.header,
         build_established_header(their_index, worker.counter, prepared.flags, payload_len)
     );
+    assert_eq!(
+        worker.predicted_bytes,
+        ESTABLISHED_HEADER_SIZE + payload_len as usize + 16
+    );
+    assert_eq!(
+        worker.wire_buf.len(),
+        ESTABLISHED_HEADER_SIZE + payload_len as usize
+    );
+    assert!(
+        worker.wire_buf.capacity() >= worker.predicted_bytes,
+        "worker wire buffer should reserve room for the FMP AEAD tag"
+    );
+    assert_eq!(&worker.wire_buf[..ESTABLISHED_HEADER_SIZE], &worker.header);
+    assert_eq!(
+        &worker.wire_buf[ESTABLISHED_HEADER_SIZE..ESTABLISHED_HEADER_SIZE + 4],
+        &prepared.timestamp_ms.to_le_bytes()
+    );
+    assert_eq!(&worker.wire_buf[ESTABLISHED_HEADER_SIZE + 4..], plaintext);
     assert_eq!(
         registry
             .get(&peer_addr)
@@ -2210,27 +2247,40 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
         "worker reservation should consume exactly one counter"
     );
 
-    let mut worker_ciphertext = inner_plaintext.clone();
-    worker
-        .cipher
-        .seal_in_place_append_tag(
-            crate::noise::CipherState::counter_to_nonce(worker.counter),
-            ring::aead::Aad::from(&worker.header),
-            &mut worker_ciphertext,
-        )
-        .expect("worker-style FMP seal should succeed");
+    let worker_inner_plaintext = prepend_inner_header(prepared.timestamp_ms, plaintext);
+    let mut worker_wire = worker.wire_buf.clone();
+    let worker_tag = {
+        let (header, plaintext) = worker_wire.split_at_mut(ESTABLISHED_HEADER_SIZE);
+        worker
+            .cipher
+            .seal_in_place_separate_tag(
+                crate::noise::CipherState::counter_to_nonce(worker.counter),
+                ring::aead::Aad::from(header),
+                plaintext,
+            )
+            .expect("worker-style FMP seal should succeed")
+    };
+    worker_wire.extend_from_slice(worker_tag.as_ref());
+    let worker_parsed = EncryptedHeader::parse(&worker_wire).expect("worker wire packet parses");
+    assert_eq!(worker_parsed.counter, worker.counter);
+    assert_eq!(worker_parsed.receiver_idx, their_index);
     assert_eq!(
         receiver
-            .decrypt_with_replay_check_and_aad(&worker_ciphertext, worker.counter, &worker.header,)
+            .decrypt_with_replay_check_and_aad(
+                worker_parsed.ciphertext(&worker_wire),
+                worker_parsed.counter,
+                &worker.header,
+            )
             .expect("receiver should accept worker-sealed packet"),
-        inner_plaintext
+        worker_inner_plaintext
     );
 
     let inline_prepared = registry
         .prepare_fmp_send(&peer_addr, false, payload_len)
         .expect("lifecycle owner should prepare inline FMP send metadata");
+    let inline_inner_plaintext = prepend_inner_header(inline_prepared.timestamp_ms, plaintext);
     let inline = registry
-        .seal_prepared_fmp_inline_send(&peer_addr, &inline_prepared, &inner_plaintext)
+        .seal_prepared_fmp_inline_send(&peer_addr, &inline_prepared, &inline_inner_plaintext)
         .expect("inline seal should be owner-managed");
     assert_eq!(inline.counter, 1);
     assert_eq!(
@@ -2253,7 +2303,7 @@ fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
                 &inline.header,
             )
             .expect("receiver should accept inline-sealed packet"),
-        inner_plaintext
+        inline_inner_plaintext
     );
 }
 
