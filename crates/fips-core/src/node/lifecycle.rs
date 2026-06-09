@@ -1087,10 +1087,6 @@ impl Node {
 
         self.links.insert(link_id, link);
 
-        // Add reverse lookup for packet dispatch
-        self.addr_to_link
-            .insert((transport_id, remote_addr.clone()), link_id);
-
         if is_connection_oriented {
             // Connection-oriented: start non-blocking connect, defer handshake
             if let Some(transport) = self.transports.get(&transport_id) {
@@ -1113,7 +1109,6 @@ impl Node {
                     Err(e) => {
                         // Clean up link
                         self.links.remove(&link_id);
-                        self.addr_to_link.remove(&(transport_id, remote_addr));
                         return Err(NodeError::from_transport_error(e));
                     }
                 }
@@ -1149,7 +1144,6 @@ impl Node {
             Err(e) => {
                 // Clean up the link we just created
                 self.links.remove(&link_id);
-                self.addr_to_link.remove(&(transport_id, remote_addr));
                 return Err(NodeError::IndexAllocationFailed(e.to_string()));
             }
         };
@@ -1163,7 +1157,6 @@ impl Node {
                     // Clean up the index and link
                     let _ = self.index_allocator.free(our_index);
                     self.links.remove(&link_id);
-                    self.addr_to_link.remove(&(transport_id, remote_addr));
                     return Err(NodeError::HandshakeFailed(e.to_string()));
                 }
             };
@@ -1227,8 +1220,6 @@ impl Node {
                             .remove(&(transport_id, our_index.as_u32()));
                         self.connections.remove(&link_id);
                         self.links.remove(&link_id);
-                        self.addr_to_link
-                            .remove(&(transport_id, remote_addr.clone()));
                         let _ = self.index_allocator.free(our_index);
                         return Err(NodeError::from_transport_error(e));
                     }
@@ -1239,8 +1230,6 @@ impl Node {
                     .remove(&(transport_id, our_index.as_u32()));
                 self.connections.remove(&link_id);
                 self.links.remove(&link_id);
-                self.addr_to_link
-                    .remove(&(transport_id, remote_addr.clone()));
                 let _ = self.index_allocator.free(our_index);
                 return Err(NodeError::TransportError(format!(
                     "transport {transport_id} disappeared before first handshake send"

@@ -1476,7 +1476,7 @@ impl RecentDiscoveryRequests {
     }
 }
 
-/// Key for addr_to_link reverse lookup.
+/// Key for reverse address dispatch.
 type AddrKey = (TransportId, TransportAddr);
 
 /// Reverse index from `(transport, remote address)` to active/pending link.
@@ -1490,6 +1490,7 @@ impl LinkAddressIndex {
         self.entries.insert(key, link_id)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn remove(&mut self, key: &AddrKey) -> Option<LinkId> {
         self.entries.remove(key)
     }
@@ -1511,6 +1512,7 @@ impl LinkAddressIndex {
         self.entries.get(&(transport_id, addr.clone())).copied()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn get(&self, key: &AddrKey) -> Option<&LinkId> {
         self.entries.get(key)
     }
@@ -1522,6 +1524,96 @@ impl LinkAddressIndex {
     #[cfg(test)]
     pub(in crate::node) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// Link storage plus reverse dispatch index.
+#[derive(Debug, Default)]
+pub(in crate::node) struct LinkRegistry {
+    links: HashMap<LinkId, Link>,
+    by_addr: LinkAddressIndex,
+}
+
+impl LinkRegistry {
+    pub(in crate::node) fn insert(&mut self, link_id: LinkId, link: Link) -> Option<Link> {
+        debug_assert_eq!(link_id, link.link_id());
+        let previous = self.links.insert(link_id, link);
+        if let Some(previous) = &previous {
+            let previous_key = (previous.transport_id(), previous.remote_addr().clone());
+            self.by_addr.remove_if_points_to(&previous_key, &link_id);
+        }
+
+        let link = self
+            .links
+            .get(&link_id)
+            .expect("link inserted above should be present");
+        self.by_addr
+            .insert((link.transport_id(), link.remote_addr().clone()), link_id);
+        previous
+    }
+
+    pub(in crate::node) fn insert_addr(&mut self, key: AddrKey, link_id: LinkId) -> Option<LinkId> {
+        self.by_addr.insert(key, link_id)
+    }
+
+    pub(in crate::node) fn remove(&mut self, link_id: &LinkId) -> Option<Link> {
+        let link = self.links.remove(link_id)?;
+        let key = (link.transport_id(), link.remote_addr().clone());
+        self.by_addr.remove_if_points_to(&key, link_id);
+        Some(link)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn remove_addr(&mut self, key: &AddrKey) -> Option<LinkId> {
+        self.by_addr.remove(key)
+    }
+
+    pub(in crate::node) fn lookup_addr(
+        &self,
+        transport_id: TransportId,
+        addr: &TransportAddr,
+    ) -> Option<LinkId> {
+        self.by_addr.lookup(transport_id, addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn get_addr(&self, key: &AddrKey) -> Option<&LinkId> {
+        self.by_addr.get(key)
+    }
+
+    pub(in crate::node) fn contains_addr(&self, key: &AddrKey) -> bool {
+        self.by_addr.contains_key(key)
+    }
+
+    pub(in crate::node) fn get(&self, link_id: &LinkId) -> Option<&Link> {
+        self.links.get(link_id)
+    }
+
+    pub(in crate::node) fn get_mut(&mut self, link_id: &LinkId) -> Option<&mut Link> {
+        self.links.get_mut(link_id)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_key(&self, link_id: &LinkId) -> bool {
+        self.links.contains_key(link_id)
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.links.len()
+    }
+
+    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &Link> {
+        self.links.values()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&LinkId, &Link)> {
+        self.links.iter()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.links.is_empty()
     }
 }
 
@@ -1789,8 +1881,8 @@ impl PendingOutboundHandshakes {
 /// 1. **Connection phase** (`connections`): Handshake in progress, indexed by LinkId
 /// 2. **Active phase** (`peers`): Authenticated, indexed by NodeAddr
 ///
-/// The `addr_to_link` map enables dispatching incoming packets to the right
-/// connection before authentication completes.
+/// The link registry dispatches incoming packets to the right connection before
+/// authentication completes.
 // Discovery lookup constants moved to config: node.discovery.attempt_timeouts_secs, node.discovery.ttl
 pub struct Node {
     // === Identity ===
@@ -1845,10 +1937,8 @@ pub struct Node {
     transports: HashMap<TransportId, TransportHandle>,
     /// Per-transport kernel drop tracking for congestion detection.
     transport_drops: TransportDropTracker,
-    /// Active links.
-    links: HashMap<LinkId, Link>,
-    /// Reverse lookup: (transport_id, remote_addr) -> link_id.
-    addr_to_link: LinkAddressIndex,
+    /// Active links plus reverse address dispatch index.
+    links: LinkRegistry,
 
     // === Packet Channel ===
     /// Packet sender for transports.
@@ -2156,8 +2246,7 @@ impl Node {
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: TransportDropTracker::default(),
-            links: HashMap::new(),
-            addr_to_link: LinkAddressIndex::default(),
+            links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
@@ -2302,8 +2391,7 @@ impl Node {
             recent_requests: RecentDiscoveryRequests::default(),
             transports: HashMap::new(),
             transport_drops: TransportDropTracker::default(),
-            links: HashMap::new(),
-            addr_to_link: LinkAddressIndex::default(),
+            links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
             connections: HashMap::new(),
@@ -3262,12 +3350,8 @@ impl Node {
             });
         }
         let link_id = link.link_id();
-        let transport_id = link.transport_id();
-        let remote_addr = link.remote_addr().clone();
 
         self.links.insert(link_id, link);
-        self.addr_to_link
-            .insert((transport_id, remote_addr), link_id);
         Ok(())
     }
 
@@ -3287,22 +3371,16 @@ impl Node {
         transport_id: TransportId,
         addr: &TransportAddr,
     ) -> Option<LinkId> {
-        self.addr_to_link.lookup(transport_id, addr)
+        self.links.lookup_addr(transport_id, addr)
     }
 
     /// Remove a link.
     ///
-    /// Only removes the addr_to_link reverse lookup if it still points to this
+    /// Only removes the reverse address dispatch entry if it still points to this
     /// link. In cross-connection scenarios, a newer link may have replaced the
     /// entry for the same address.
     pub fn remove_link(&mut self, link_id: &LinkId) -> Option<Link> {
-        if let Some(link) = self.links.remove(link_id) {
-            let key = (link.transport_id(), link.remote_addr().clone());
-            self.addr_to_link.remove_if_points_to(&key, link_id);
-            Some(link)
-        } else {
-            None
-        }
+        self.links.remove(link_id)
     }
 
     pub(crate) fn cleanup_bootstrap_transport_if_unused(&mut self, transport_id: TransportId) {

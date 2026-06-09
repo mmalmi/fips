@@ -18,21 +18,22 @@ impl Node {
     /// maintenance traffic on established sessions). Two predicates cover
     /// "established peer at this transport+addr":
     ///
-    /// 1. `addr_to_link` has an entry for `(transport_id, remote_addr)`.
-    ///    This is the fast path and matches when the peer registered with
-    ///    the same `TransportAddr` form we observe on inbound packets
-    ///    (e.g., both numeric when peer config uses a numeric IP).
+    /// 1. The link registry has an address-index entry for
+    ///    `(transport_id, remote_addr)`. This is the fast path and matches
+    ///    when the peer registered with the same `TransportAddr` form we
+    ///    observe on inbound packets (e.g., both numeric when peer config uses
+    ///    a numeric IP).
     ///
     /// 2. An active peer's `current_addr()` matches `(transport_id,
     ///    remote_addr)`. `current_addr` is updated from inbound encrypted-
     ///    frame source addrs (always numeric `SocketAddr`-form), so this
-    ///    catches established peers whose `addr_to_link` key is hostname-
-    ///    form (because `initiate_connection` populated it from a
-    ///    hostname-bearing peer config) while inbound rekey msg1 arrives
-    ///    in numeric form. Without this second predicate, the carve-out
-    ///    misses any deployment that combines a hostname-based peer config
-    ///    with `udp.accept_connections: false` or `udp.outbound_only: true`
-    ///    (the production trigger for the 2026-04-30 bug).
+    ///    catches established peers whose address-index key is hostname-form
+    ///    (because `initiate_connection` populated it from a hostname-bearing
+    ///    peer config) while inbound rekey msg1 arrives in numeric form.
+    ///    Without this second predicate, the carve-out misses any deployment
+    ///    that combines a hostname-based peer config with
+    ///    `udp.accept_connections: false` or `udp.outbound_only: true` (the
+    ///    production trigger for the 2026-04-30 bug).
     ///
     /// Otherwise the transport's `accept_connections` config decides;
     /// absence of a registered transport admits (no gate to apply).
@@ -42,8 +43,8 @@ impl Node {
         remote_addr: &crate::transport::TransportAddr,
     ) -> bool {
         if self
-            .addr_to_link
-            .contains_key(&(transport_id, remote_addr.clone()))
+            .links
+            .contains_addr(&(transport_id, remote_addr.clone()))
         {
             return true;
         }
@@ -114,9 +115,10 @@ impl Node {
         // Epoch-based restart detection: if the sender already has an inbound
         // link AND is an active peer in self.peers, fall through to decrypt
         // the msg1 and check the epoch. Otherwise, treat as duplicate.
-        let addr_key = (packet.transport_id, packet.remote_addr.clone());
         let mut possible_restart = false;
-        if let Some(&existing_link_id) = self.addr_to_link.get(&addr_key)
+        if let Some(existing_link_id) = self
+            .links
+            .lookup_addr(packet.transport_id, &packet.remote_addr)
             && let Some(link) = self.links.get(&existing_link_id)
         {
             if link.direction() == LinkDirection::Inbound {
@@ -212,8 +214,9 @@ impl Node {
         let peer_node_addr = *peer_identity.node_addr();
 
         // Identity-based restart/rekey detection: if the peer is already
-        // active but addr_to_link didn't match (different source address, e.g.,
-        // TCP from a different port), we still need to check for restart/rekey.
+        // active but address-index dispatch didn't match (different source
+        // address, e.g., TCP from a different port), we still need to check
+        // for restart/rekey.
         if !possible_restart && self.peers.contains_key(&peer_node_addr) {
             possible_restart = true;
         }
@@ -238,7 +241,7 @@ impl Node {
 
         // Epoch-based restart detection and duplicate msg1 handling.
         //
-        // If we fell through from the addr_to_link check above with
+        // If we fell through from the address-index check above with
         // possible_restart=true, we now have the decrypted epoch from msg1.
         // Compare it against the stored epoch for this peer.
         if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
@@ -385,10 +388,9 @@ impl Node {
                             peer_node_addr,
                         );
 
-                        // Clean up: remove the temporary connection/link we created.
-                        // Do NOT remove addr_to_link — the entry must remain pointing
-                        // to the original link so future msg1s from this address are
-                        // recognized as rekeys (not new connections).
+                        // Clean up any temporary connection/link state from this path.
+                        // The active peer's link registry entry must keep recognizing
+                        // future msg1s from this address as rekeys, not new connections.
                         self.connections.remove(&link_id);
                         self.links.remove(&link_id);
 
@@ -459,7 +461,6 @@ impl Node {
         );
 
         self.links.insert(link_id, link);
-        self.addr_to_link.insert(addr_key, link_id);
         self.connections.insert(link_id, conn);
 
         // Build and send msg2 response, storing for potential resend
@@ -488,8 +489,6 @@ impl Node {
                     // Clean up on failure
                     self.connections.remove(&link_id);
                     self.links.remove(&link_id);
-                    self.addr_to_link
-                        .remove(&(packet.transport_id, packet.remote_addr));
                     let _ = self.index_allocator.free(our_index);
                     self.msg1_rate_limiter.complete_handshake();
                     return;
@@ -560,8 +559,8 @@ impl Node {
                         }
                         // This connection lost — clean up its link
                         self.remove_link(&link_id);
-                        // Restore addr_to_link for the winner's link
-                        self.addr_to_link.insert(
+                        // Restore address dispatch for the winner's link
+                        self.links.insert_addr(
                             (packet.transport_id, packet.remote_addr.clone()),
                             winner_link_id,
                         );
@@ -943,8 +942,8 @@ impl Node {
                     (outbound_transport_id, outbound_our_index.as_u32()),
                     peer_node_addr,
                 );
-                self.addr_to_link
-                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
+                self.links
+                    .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
                 self.clear_session_direct_path_degraded(&peer_node_addr);
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
@@ -1064,8 +1063,8 @@ impl Node {
                     (outbound_transport_id, outbound_our_index.as_u32()),
                     peer_node_addr,
                 );
-                self.addr_to_link
-                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
+                self.links
+                    .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
                 self.register_decrypt_worker_session(&peer_node_addr);
 
                 self.pending_outbound.remove(&key);
@@ -1164,9 +1163,11 @@ impl Node {
                         }
                         // Clean up the losing connection's link
                         self.remove_link(&loser_link_id);
-                        // Ensure addr_to_link points to the winning link
-                        self.addr_to_link
-                            .insert((packet.transport_id, packet.remote_addr.clone()), link_id);
+                        // Ensure address dispatch points to the winning link
+                        self.links.insert_addr(
+                            (packet.transport_id, packet.remote_addr.clone()),
+                            link_id,
+                        );
                         debug!(
                             peer = %self.peer_display_name(&node_addr),
                             loser_link_id = %loser_link_id,
@@ -1187,8 +1188,8 @@ impl Node {
                         }
                         // This connection lost — clean up its link
                         self.remove_link(&link_id);
-                        // Ensure addr_to_link points to the winner's link
-                        self.addr_to_link.insert(
+                        // Ensure address dispatch points to the winner's link
+                        self.links.insert_addr(
                             (packet.transport_id, packet.remote_addr.clone()),
                             winner_link_id,
                         );

@@ -77,7 +77,7 @@ impl Node {
             let _ = self.index_allocator.free(idx);
         }
 
-        // Remove link and addr_to_link
+        // Remove link and its reverse address dispatch entry.
         self.remove_link(&link_id);
         if let Some(transport_id) = transport_id {
             self.cleanup_bootstrap_transport_if_unused(transport_id);

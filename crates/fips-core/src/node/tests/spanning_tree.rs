@@ -128,8 +128,8 @@ fn prepare_outbound_msg1(nodes: &mut [TestNode], i: usize, j: usize) -> Vec<u8> 
     initiator.node.links.insert(link_id, link);
     initiator
         .node
-        .addr_to_link
-        .insert((transport_id, responder_addr.clone()), link_id);
+        .links
+        .insert_addr((transport_id, responder_addr.clone()), link_id);
     initiator.node.connections.insert(link_id, conn);
     initiator
         .node
@@ -621,8 +621,8 @@ fn clear_edge_state(nodes: &mut [TestNode], from: usize, to: usize) {
 
     nodes[from]
         .node
-        .addr_to_link
-        .remove(&(transport_id, remote_addr));
+        .links
+        .remove_addr(&(transport_id, remote_addr));
 
     let live_connection_ids: std::collections::HashSet<LinkId> =
         nodes[from].node.connections.keys().copied().collect();

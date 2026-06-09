@@ -596,7 +596,7 @@ fn test_node_link_management() {
 
     assert!(node.get_link(&link_id).is_some());
 
-    // Test addr_to_link lookup
+    // Test reverse address dispatch lookup.
     assert_eq!(
         node.find_link_by_addr(TransportId::new(1), &TransportAddr::from_string("test")),
         Some(link_id)
@@ -1534,6 +1534,60 @@ fn link_address_index_owns_lookup_replace_and_stale_safe_remove() {
     assert!(index.is_empty());
 }
 
+#[test]
+fn link_registry_owns_storage_address_index_and_stale_safe_cleanup() {
+    let transport_id = TransportId::new(1);
+    let addr = TransportAddr::from_string("127.0.0.1:7000");
+    let first_link_id = LinkId::new(10);
+    let winning_link_id = LinkId::new(11);
+    let first_link = Link::connectionless(
+        first_link_id,
+        transport_id,
+        addr.clone(),
+        LinkDirection::Outbound,
+        Duration::from_millis(100),
+    );
+    let winning_link = Link::connectionless(
+        winning_link_id,
+        transport_id,
+        addr.clone(),
+        LinkDirection::Inbound,
+        Duration::from_millis(100),
+    );
+
+    let mut registry = LinkRegistry::default();
+
+    assert!(registry.insert(first_link_id, first_link).is_none());
+    assert_eq!(
+        registry.get(&first_link_id).map(Link::link_id),
+        Some(first_link_id)
+    );
+    assert_eq!(
+        registry.lookup_addr(transport_id, &addr),
+        Some(first_link_id)
+    );
+
+    assert!(registry.insert(winning_link_id, winning_link).is_none());
+    assert_eq!(
+        registry.lookup_addr(transport_id, &addr),
+        Some(winning_link_id),
+        "newer link for the same address must own receive dispatch"
+    );
+
+    let removed = registry.remove(&first_link_id).expect("remove stale loser");
+    assert_eq!(removed.link_id(), first_link_id);
+    assert_eq!(
+        registry.lookup_addr(transport_id, &addr),
+        Some(winning_link_id),
+        "removing a stale loser must not delete the winner's address mapping"
+    );
+
+    let removed = registry.remove(&winning_link_id).expect("remove winner");
+    assert_eq!(removed.link_id(), winning_link_id);
+    assert_eq!(registry.lookup_addr(transport_id, &addr), None);
+    assert!(registry.is_empty());
+}
+
 #[tokio::test]
 async fn test_node_rx_loop_requires_start() {
     let mut node = make_node();
@@ -1620,8 +1674,8 @@ fn test_promote_cleans_up_pending_outbound_to_same_peer() {
         Duration::from_millis(100),
     );
     node.links.insert(pending_link_id, pending_link);
-    node.addr_to_link
-        .insert((transport_id, pending_addr.clone()), pending_link_id);
+    node.links
+        .insert_addr((transport_id, pending_addr.clone()), pending_link_id);
     node.connections.insert(pending_link_id, pending_conn);
     node.pending_outbound
         .insert((transport_id, pending_index.as_u32()), pending_link_id);
@@ -4432,8 +4486,8 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((old_transport_id, old_addr.clone()), old_link_id);
+    node.links
+        .insert_addr((old_transport_id, old_addr.clone()), old_link_id);
 
     let new_transport_id = TransportId::new(2);
     let new_link_id = LinkId::new(11);
@@ -4456,8 +4510,8 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((new_transport_id, new_addr.clone()), new_link_id);
+    node.links
+        .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
     node.connections.insert(new_link_id, conn);
     node.pending_outbound
         .insert((new_transport_id, our_index.as_u32()), new_link_id);
@@ -4484,12 +4538,12 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
         "new outbound link should remain active"
     );
     assert_eq!(
-        node.addr_to_link.get(&(old_transport_id, old_addr.clone())),
+        node.links.get_addr(&(old_transport_id, old_addr.clone())),
         None
     );
     assert_eq!(
-        node.addr_to_link
-            .get(&(new_transport_id, new_addr.clone()))
+        node.links
+            .get_addr(&(new_transport_id, new_addr.clone()))
             .copied(),
         Some(new_link_id)
     );
@@ -4545,8 +4599,8 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((old_transport_id, old_addr.clone()), old_link_id);
+    node.links
+        .insert_addr((old_transport_id, old_addr.clone()), old_link_id);
     node.connections.insert(old_link_id, old_conn);
     node.promote_connection(old_link_id, peer_identity, 1_100)
         .unwrap();
@@ -4605,8 +4659,8 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((new_transport_id, new_addr.clone()), new_link_id);
+    node.links
+        .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
     node.connections.insert(new_link_id, new_conn);
 
     let result = node
@@ -4826,8 +4880,8 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((old_transport_id, old_addr.clone()), old_link_id);
+    node.links
+        .insert_addr((old_transport_id, old_addr.clone()), old_link_id);
 
     let new_transport_id = TransportId::new(2);
     let new_link_id = LinkId::new(11);
@@ -4850,8 +4904,8 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((new_transport_id, new_addr.clone()), new_link_id);
+    node.links
+        .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
     node.connections.insert(new_link_id, new_conn);
     node.pending_outbound
         .insert((new_transport_id, our_index.as_u32()), new_link_id);
@@ -4878,12 +4932,12 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
         "new outbound link should remain active"
     );
     assert_eq!(
-        node.addr_to_link.get(&(old_transport_id, old_addr.clone())),
+        node.links.get_addr(&(old_transport_id, old_addr.clone())),
         None
     );
     assert_eq!(
-        node.addr_to_link
-            .get(&(new_transport_id, new_addr.clone()))
+        node.links
+            .get_addr(&(new_transport_id, new_addr.clone()))
             .copied(),
         Some(new_link_id)
     );
@@ -4974,8 +5028,8 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((transport_id, static_addr.clone()), old_link_id);
+    node.links
+        .insert_addr((transport_id, static_addr.clone()), old_link_id);
 
     let new_link_id = LinkId::new(11);
     let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, 2_000);
@@ -4996,8 +5050,8 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((transport_id, lower_priority_addr.clone()), new_link_id);
+    node.links
+        .insert_addr((transport_id, lower_priority_addr.clone()), new_link_id);
     node.connections.insert(new_link_id, new_conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), new_link_id);
@@ -5024,14 +5078,14 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         "lower-priority alternate link should be discarded"
     );
     assert_eq!(
-        node.addr_to_link
-            .get(&(transport_id, static_addr.clone()))
+        node.links
+            .get_addr(&(transport_id, static_addr.clone()))
             .copied(),
         Some(old_link_id)
     );
     assert_eq!(
-        node.addr_to_link
-            .get(&(transport_id, lower_priority_addr.clone())),
+        node.links
+            .get_addr(&(transport_id, lower_priority_addr.clone())),
         None
     );
 
@@ -5226,8 +5280,8 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((old_transport_id, old_addr.clone()), old_link_id);
+    node.links
+        .insert_addr((old_transport_id, old_addr.clone()), old_link_id);
 
     let dial_transport_id = TransportId::new(2);
     let recv_transport_id = TransportId::new(3);
@@ -5251,8 +5305,8 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((dial_transport_id, gateway_addr.clone()), new_link_id);
+    node.links
+        .insert_addr((dial_transport_id, gateway_addr.clone()), new_link_id);
     node.connections.insert(new_link_id, new_conn);
     node.pending_outbound
         .insert((dial_transport_id, our_index.as_u32()), new_link_id);
@@ -5334,8 +5388,8 @@ async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
             Duration::from_millis(100),
         ),
     );
-    node.addr_to_link
-        .insert((transport_id, remote_addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, remote_addr.clone()), link_id);
     node.connections.insert(link_id, conn);
     node.promote_connection(link_id, peer_identity, 1_100)
         .unwrap();

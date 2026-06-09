@@ -240,8 +240,8 @@ async fn test_outbound_msg2_denied_after_acl_reload() {
     );
     node_a.links.insert(link_id_a, link_a);
     node_a
-        .addr_to_link
-        .insert((transport_id, remote_addr.clone()), link_id_a);
+        .links
+        .insert_addr((transport_id, remote_addr.clone()), link_id_a);
     node_a.connections.insert(link_id_a, conn_a);
     node_a
         .pending_outbound

@@ -539,8 +539,8 @@ async fn test_static_address_handshake_without_nostr_discovery() {
 ///
 /// Simulates the live scenario where both nodes have auto_connect to each other.
 /// Both send msg1 simultaneously, creating a cross-connection that must be
-/// resolved by the tie-breaker rule. Exercises the addr_to_link fix that allows
-/// inbound msg1 when an outbound link to the same address already exists.
+/// resolved by the tie-breaker rule. Exercises the address-index fix that
+/// allows inbound msg1 when an outbound link to the same address already exists.
 #[tokio::test]
 async fn test_cross_connection_both_initiate() {
     use crate::config::UdpConfig;
@@ -614,8 +614,8 @@ async fn test_cross_connection_both_initiate() {
     );
     node_a.links.insert(link_id_a_out, link_a_out);
     node_a
-        .addr_to_link
-        .insert((transport_id_a, remote_addr_b.clone()), link_id_a_out);
+        .links
+        .insert_addr((transport_id_a, remote_addr_b.clone()), link_id_a_out);
     node_a.connections.insert(link_id_a_out, conn_a);
     node_a
         .pending_outbound
@@ -644,8 +644,8 @@ async fn test_cross_connection_both_initiate() {
     );
     node_b.links.insert(link_id_b_out, link_b_out);
     node_b
-        .addr_to_link
-        .insert((transport_id_b, remote_addr_a.clone()), link_id_b_out);
+        .links
+        .insert_addr((transport_id_b, remote_addr_a.clone()), link_id_b_out);
     node_b.connections.insert(link_id_b_out, conn_b);
     node_b
         .pending_outbound
@@ -665,8 +665,8 @@ async fn test_cross_connection_both_initiate() {
         .expect("B send msg1");
 
     // === Phase 2: Both nodes receive the other's msg1 ===
-    // Before the fix, addr_to_link would reject these because outbound links
-    // already exist for these addresses.
+    // Before the fix, address-index dispatch would reject these because
+    // outbound links already exist for these addresses.
 
     // B receives A's msg1
     let packet_at_b = timeout(Duration::from_secs(1), packet_rx_b.recv())
@@ -793,8 +793,8 @@ async fn test_stale_connection_cleanup() {
         Duration::from_millis(100),
     );
     node.links.insert(link_id, link);
-    node.addr_to_link
-        .insert((transport_id, remote_addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, remote_addr.clone()), link_id);
     node.connections.insert(link_id, conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
@@ -831,8 +831,8 @@ async fn test_stale_connection_cleanup() {
         "Session index should be freed"
     );
     assert!(
-        !node.addr_to_link.contains_key(&(transport_id, remote_addr)),
-        "addr_to_link should be cleaned up"
+        !node.links.contains_addr(&(transport_id, remote_addr)),
+        "address dispatch should be cleaned up"
     );
 }
 
@@ -871,8 +871,8 @@ async fn test_failed_connection_cleanup() {
         Duration::from_millis(100),
     );
     node.links.insert(link_id, link);
-    node.addr_to_link
-        .insert((transport_id, remote_addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, remote_addr.clone()), link_id);
     node.connections.insert(link_id, conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
@@ -967,8 +967,7 @@ async fn test_resend_scheduling() {
         Duration::from_millis(100),
     );
     node.links.insert(link_id, link);
-    node.addr_to_link
-        .insert((transport_id, remote_addr), link_id);
+    node.links.insert_addr((transport_id, remote_addr), link_id);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
     node.connections.insert(link_id, conn);
@@ -1072,7 +1071,7 @@ fn test_should_admit_msg1_no_transport() {
     assert!(node.should_admit_msg1(TransportId::new(1), &addr));
 }
 
-/// `should_admit_msg1` rejects a fresh msg1 (no addr_to_link entry) when
+/// `should_admit_msg1` rejects a fresh msg1 (no address-index entry) when
 /// the transport has accept_connections=false. Behavior unchanged from
 /// before the carve-out.
 #[tokio::test]
@@ -1120,11 +1119,11 @@ async fn test_should_admit_msg1_admits_rekey_when_accept_off() {
 
     let addr = TransportAddr::from_string("10.0.0.2:2121");
 
-    // Pre-populate addr_to_link as if a session were established for this
+    // Pre-populate address dispatch as if a session were established for this
     // peer on this transport (rekey msg1 will arrive against this entry).
     let link_id = node.allocate_link_id();
-    node.addr_to_link
-        .insert((transport_id, addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, addr.clone()), link_id);
 
     assert!(node.should_admit_msg1(transport_id, &addr));
 }
@@ -1132,7 +1131,7 @@ async fn test_should_admit_msg1_admits_rekey_when_accept_off() {
 /// Same regression coverage as the TCP test above, but exercising the
 /// UDP transport's new `accept_connections` config field (introduced
 /// alongside the `outbound_only` mode). Proves the Node-level gate's
-/// addr_to_link carve-out is transport-agnostic and that the new UDP
+/// address-index carve-out is transport-agnostic and that the new UDP
 /// config knob is wired correctly through the Transport trait.
 #[tokio::test]
 async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
@@ -1154,16 +1153,16 @@ async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
 
     let addr = TransportAddr::from_string("10.0.0.2:2121");
 
-    // Fresh msg1 (no addr_to_link entry) is rejected by the gate when
+    // Fresh msg1 (no address-index entry) is rejected by the gate when
     // the transport refuses inbound.
     assert!(!node.should_admit_msg1(transport_id, &addr));
 
-    // Pre-populate addr_to_link as if a session were established. The
+    // Pre-populate address dispatch as if a session were established. The
     // rekey carve-out admits the msg1 even though the transport still
     // says accept_connections() == false.
     let link_id = node.allocate_link_id();
-    node.addr_to_link
-        .insert((transport_id, addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, addr.clone()), link_id);
 
     assert!(node.should_admit_msg1(transport_id, &addr));
 }
@@ -1171,12 +1170,12 @@ async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
 /// Regression test for the udp.outbound_only rekey loop observed in
 /// production 2026-04-30 (parallel to ISSUE-2026-0004).
 ///
-/// Production scenario: nomad runs `udp.outbound_only=true` with peer
-/// core-vm configured by hostname (`core-vm.tail65015.ts.net:2121`).
-/// `initiate_connection` populates `addr_to_link` with the literal
-/// hostname-form `TransportAddr`. core-vm's later rekey msg1 arrives at
-/// nomad with a numeric source addr (the kernel always reports
-/// `SocketAddr` in numeric form via `recvfrom`), so the `addr_to_link`
+/// Production scenario: one peer runs `udp.outbound_only=true` with the other
+/// peer configured by hostname (`peer.example.test:2121`).
+/// `initiate_connection` populates address dispatch with the literal
+/// hostname-form `TransportAddr`. The other peer's later rekey msg1 arrives
+/// with a numeric source addr (the kernel always reports
+/// `SocketAddr` in numeric form via `recvfrom`), so the address-index
 /// lookup misses, the gate falls through to `accept_connections()`
 /// (false in outbound_only mode), and rejects. Result: dual-init
 /// tie-breaker stalls because the loser side never produces msg2.
@@ -1184,7 +1183,7 @@ async fn test_should_admit_msg1_admits_rekey_when_udp_accept_off() {
 /// The carve-out predicate must also consult peer state by source
 /// address: `current_addr()` is updated from inbound encrypted-frame
 /// source addrs (`handlers/encrypted.rs`), so an established peer can
-/// be matched even when the addr_to_link key is hostname-form and the
+/// be matched even when the address-index key is hostname-form and the
 /// incoming addr is numeric.
 #[tokio::test]
 async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
@@ -1206,12 +1205,12 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
         .insert(transport_id, TransportHandle::Udp(udp));
 
     // Simulate initiate_connection's effect when peer config carries a
-    // hostname: addr_to_link is populated with hostname-form, not
+    // hostname: address dispatch is populated with hostname-form, not
     // numeric-form.
-    let hostname_addr = TransportAddr::from_string("core-vm.example:2121");
+    let hostname_addr = TransportAddr::from_string("peer.example.test:2121");
     let link_id = node.allocate_link_id();
-    node.addr_to_link
-        .insert((transport_id, hostname_addr.clone()), link_id);
+    node.links
+        .insert_addr((transport_id, hostname_addr.clone()), link_id);
 
     // Promote a peer at the hostname's resolved numeric form
     // (current_addr is set from the SocketAddr in udp_receive_loop).
@@ -1227,17 +1226,17 @@ async fn test_should_admit_msg1_admits_rekey_when_addr_form_differs() {
     assert!(node.should_admit_msg1(transport_id, &hostname_addr));
 
     // The bug: incoming rekey msg1 arrives with numeric source addr.
-    // Without the additional carve-out, this is rejected (addr_to_link
+    // Without the additional carve-out, this is rejected (address-index
     // miss → accept_connections() false → drop).
     assert!(
         node.should_admit_msg1(transport_id, &numeric_addr),
         "rekey msg1 from established peer must be admitted even when \
-         addr_to_link is keyed by a different addr-form (hostname vs \
+         address dispatch is keyed by a different addr-form (hostname vs \
          numeric); the carve-out must consult peer current_addr"
     );
 
     // Negative: a stranger at a different numeric addr is still rejected
-    // (no peer there, no addr_to_link entry, falls to accept_connections).
+    // (no peer there, no address-index entry, falls to accept_connections).
     let stranger_addr = TransportAddr::from_string("198.51.100.1:2121");
     assert!(
         !node.should_admit_msg1(transport_id, &stranger_addr),
