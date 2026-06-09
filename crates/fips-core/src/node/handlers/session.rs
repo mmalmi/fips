@@ -2513,34 +2513,24 @@ impl Node {
             return Ok(false);
         }
 
-        let fsp_reservation = {
-            let entry = self
-                .sessions
-                .get_mut(dest_addr)
-                .ok_or_else(|| NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "no session".into(),
-                })?;
-            if let Some(mmp) = entry.mmp_mut() {
-                mmp.path_mtu.seed_source_mtu(path_mtu);
-            }
-            if !entry.is_established() {
-                return Err(NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: "session not established".into(),
-                });
-            }
-            let payload_len = send.inner_plaintext.len() as u16;
-            let Some(reservation) = entry
-                .reserve_fsp_worker_send(send.fsp_flags, payload_len)
-                .map_err(|e| NodeError::SendFailed {
-                    node_addr: *dest_addr,
-                    reason: format!("session counter reservation failed: {}", e),
-                })?
-            else {
-                return Ok(false);
-            };
-            reservation
+        let fsp_payload_len =
+            u16::try_from(send.inner_plaintext.len()).map_err(|_| NodeError::SendFailed {
+                node_addr: *dest_addr,
+                reason: "endpoint FSP payload too large".into(),
+            })?;
+        let Some(fsp_reservation) = self
+            .sessions
+            .reserve_endpoint_data_fsp_worker_send(
+                dest_addr,
+                crate::node::FspWorkerSendReservationInput {
+                    flags: send.fsp_flags,
+                    payload_len: fsp_payload_len,
+                    path_mtu,
+                },
+            )
+            .map_err(|e| Self::map_fsp_worker_send_reservation_error(*dest_addr, e))?
+        else {
+            return Ok(false);
         };
 
         let Some(fmp_reservation) = self

@@ -38,6 +38,8 @@ use self::wire::{
 use crate::bloom::{BloomFilter, BloomState};
 use crate::cache::CoordCache;
 use crate::config::{NostrDiscoveryPolicy, PeerConfig, RoutingMode};
+#[cfg(unix)]
+use crate::node::session::FspSendReservation;
 use crate::node::session::SessionEntry;
 use crate::node::session_wire::{FSP_PHASE_ESTABLISHED, FspCommonPrefix};
 use crate::peer::{ActivePeer, PeerConnection};
@@ -2777,6 +2779,22 @@ pub(in crate::node) struct FspSendBookkeeping {
     pub(in crate::node) next_hop_recorded: bool,
 }
 
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct FspWorkerSendReservationInput {
+    pub(in crate::node) flags: u8,
+    pub(in crate::node) payload_len: u16,
+    pub(in crate::node) path_mtu: u16,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum FspWorkerSendReservationError {
+    MissingSession,
+    NotEstablished,
+    CounterReservationFailed,
+}
+
 /// End-to-end FSP session storage keyed by remote node address.
 #[derive(Default)]
 pub(in crate::node) struct SessionRegistry {
@@ -2864,6 +2882,27 @@ impl SessionRegistry {
         }
 
         Some(result)
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
+        &mut self,
+        node_addr: &NodeAddr,
+        input: FspWorkerSendReservationInput,
+    ) -> Result<Option<FspSendReservation>, FspWorkerSendReservationError> {
+        let entry = self
+            .sessions
+            .get_mut(node_addr)
+            .ok_or(FspWorkerSendReservationError::MissingSession)?;
+        if let Some(mmp) = entry.mmp_mut() {
+            mmp.path_mtu.seed_source_mtu(input.path_mtu);
+        }
+        if !entry.is_established() {
+            return Err(FspWorkerSendReservationError::NotEstablished);
+        }
+        entry
+            .reserve_fsp_worker_send(input.flags, input.payload_len)
+            .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
 
     pub(in crate::node) fn record_worker_registration(
@@ -5572,6 +5611,27 @@ impl Node {
             FmpSendPreparationError::EncryptionFailed => NodeError::SendFailed {
                 node_addr,
                 reason: "encryption failed".into(),
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    fn map_fsp_worker_send_reservation_error(
+        node_addr: NodeAddr,
+        error: FspWorkerSendReservationError,
+    ) -> NodeError {
+        match error {
+            FspWorkerSendReservationError::MissingSession => NodeError::SendFailed {
+                node_addr,
+                reason: "no session".into(),
+            },
+            FspWorkerSendReservationError::NotEstablished => NodeError::SendFailed {
+                node_addr,
+                reason: "session not established".into(),
+            },
+            FspWorkerSendReservationError::CounterReservationFailed => NodeError::SendFailed {
+                node_addr,
+                reason: "session counter reservation failed".into(),
             },
         }
     }
