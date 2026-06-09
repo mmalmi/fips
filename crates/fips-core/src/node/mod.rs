@@ -1768,6 +1768,36 @@ pub(in crate::node) struct FmpSendBookkeeping {
     pub(in crate::node) mmp_recorded: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum FmpSendPreparationError {
+    MissingPeer,
+    MissingTheirIndex,
+    MissingTransportId,
+    MissingCurrentAddr,
+    MissingNoiseSession,
+    CounterReservationFailed,
+    EncryptionFailed,
+}
+
+pub(in crate::node) struct FmpSendPreparation {
+    pub(in crate::node) their_index: SessionIndex,
+    pub(in crate::node) transport_id: TransportId,
+    pub(in crate::node) remote_addr: TransportAddr,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::node) connected_socket:
+        Option<Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
+    pub(in crate::node) timestamp_ms: u32,
+    pub(in crate::node) flags: u8,
+    pub(in crate::node) payload_len: u16,
+}
+
+pub(in crate::node) struct PreparedFmpInlineSend {
+    pub(in crate::node) counter: u64,
+    #[cfg(test)]
+    pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
+    pub(in crate::node) wire_packet: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::node) struct ConnectedUdpActivationPlan {
     pub(in crate::node) candidates: Vec<NodeAddr>,
@@ -2310,6 +2340,109 @@ impl PeerLifecycleRegistry {
             result.mmp_recorded = true;
         }
         Some(result)
+    }
+
+    pub(in crate::node) fn prepare_fmp_send(
+        &self,
+        node_addr: &NodeAddr,
+        ce_flag: bool,
+        payload_len: u16,
+    ) -> Result<FmpSendPreparation, FmpSendPreparationError> {
+        let peer = self
+            .active
+            .get(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        let their_index = peer
+            .their_index()
+            .ok_or(FmpSendPreparationError::MissingTheirIndex)?;
+        let transport_id = peer
+            .transport_id()
+            .ok_or(FmpSendPreparationError::MissingTransportId)?;
+        let remote_addr = peer
+            .current_addr()
+            .cloned()
+            .ok_or(FmpSendPreparationError::MissingCurrentAddr)?;
+        if peer.noise_session().is_none() {
+            return Err(FmpSendPreparationError::MissingNoiseSession);
+        }
+
+        let timestamp_ms = peer.session_elapsed_ms();
+        let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
+        let mut flags = if sp_flag { FLAG_SP } else { 0 };
+        if ce_flag {
+            flags |= FLAG_CE;
+        }
+        if peer.current_k_bit() {
+            flags |= FLAG_KEY_EPOCH;
+        }
+
+        Ok(FmpSendPreparation {
+            their_index,
+            transport_id,
+            remote_addr,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket: peer.connected_udp(),
+            timestamp_ms,
+            flags,
+            payload_len,
+        })
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_prepared_fmp_worker_send(
+        &mut self,
+        node_addr: &NodeAddr,
+        prepared: &FmpSendPreparation,
+    ) -> Result<Option<FmpWorkerSendReservation>, FmpSendPreparationError> {
+        let peer = self
+            .active
+            .get_mut(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        let session = peer
+            .noise_session_mut()
+            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
+        reserve_fmp_worker_send(
+            session,
+            prepared.their_index,
+            prepared.flags,
+            prepared.payload_len,
+        )
+        .map_err(|_| FmpSendPreparationError::CounterReservationFailed)
+    }
+
+    pub(in crate::node) fn seal_prepared_fmp_inline_send(
+        &mut self,
+        node_addr: &NodeAddr,
+        prepared: &FmpSendPreparation,
+        inner_plaintext: &[u8],
+    ) -> Result<PreparedFmpInlineSend, FmpSendPreparationError> {
+        let peer = self
+            .active
+            .get_mut(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        let session = peer
+            .noise_session_mut()
+            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
+        let counter = session.current_send_counter();
+        let header = build_established_header(
+            prepared.their_index,
+            counter,
+            prepared.flags,
+            prepared.payload_len,
+        );
+        let ciphertext = {
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
+            session
+                .encrypt_with_aad(inner_plaintext, &header)
+                .map_err(|_| FmpSendPreparationError::EncryptionFailed)?
+        };
+        let wire_packet = build_encrypted(&header, &ciphertext);
+        Ok(PreparedFmpInlineSend {
+            counter,
+            #[cfg(test)]
+            header,
+            wire_packet,
+        })
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -5335,49 +5468,6 @@ impl Node {
         plaintext: &[u8],
         ce_flag: bool,
     ) -> Result<(), NodeError> {
-        let peer = self
-            .peers
-            .get_mut(node_addr)
-            .ok_or(NodeError::PeerNotFound(*node_addr))?;
-
-        let their_index = peer.their_index().ok_or_else(|| NodeError::SendFailed {
-            node_addr: *node_addr,
-            reason: "no their_index".into(),
-        })?;
-        let transport_id = peer.transport_id().ok_or_else(|| NodeError::SendFailed {
-            node_addr: *node_addr,
-            reason: "no transport_id".into(),
-        })?;
-        let remote_addr = peer
-            .current_addr()
-            .cloned()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no current_addr".into(),
-            })?;
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let connected_socket = peer.connected_udp();
-
-        // Prepend 4-byte session-relative timestamp (inner header)
-        let timestamp_ms = peer.session_elapsed_ms();
-
-        // MMP: read spin bit value before entering session borrow
-        let sp_flag = peer.mmp().map(|mmp| mmp.spin_bit.tx_bit()).unwrap_or(false);
-        let mut flags = if sp_flag { FLAG_SP } else { 0 };
-        if ce_flag {
-            flags |= FLAG_CE;
-        }
-        if peer.current_k_bit() {
-            flags |= FLAG_KEY_EPOCH;
-        }
-
-        let session = peer
-            .noise_session_mut()
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *node_addr,
-                reason: "no noise session".into(),
-            })?;
-
         // The inner-plaintext layout is `[ts:4 LE][plaintext...]`, so
         // its length is exactly `INNER_TS_LEN + plaintext.len()` — no
         // need to build the Vec just to measure it. The worker path uses
@@ -5387,6 +5477,37 @@ impl Node {
         const INNER_TS_LEN: usize = 4;
         let inner_len = INNER_TS_LEN + plaintext.len();
         let payload_len = inner_len as u16;
+        let map_fmp_send_error = |error: FmpSendPreparationError| match error {
+            FmpSendPreparationError::MissingPeer => NodeError::PeerNotFound(*node_addr),
+            FmpSendPreparationError::MissingTheirIndex => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "no their_index".into(),
+            },
+            FmpSendPreparationError::MissingTransportId => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "no transport_id".into(),
+            },
+            FmpSendPreparationError::MissingCurrentAddr => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "no current_addr".into(),
+            },
+            FmpSendPreparationError::MissingNoiseSession => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "no noise session".into(),
+            },
+            FmpSendPreparationError::CounterReservationFailed => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "counter reservation failed".into(),
+            },
+            FmpSendPreparationError::EncryptionFailed => NodeError::SendFailed {
+                node_addr: *node_addr,
+                reason: "encryption failed".into(),
+            },
+        };
+        let prepared = self
+            .peers
+            .prepare_fmp_send(node_addr, ce_flag, payload_len)
+            .map_err(|e| map_fmp_send_error(e))?;
 
         // **Unix UDP send fast path.** On Unix, the encrypt-worker pool
         // is spawned at lifecycle start (workers = num_cpus) in
@@ -5411,13 +5532,13 @@ impl Node {
         // without calling `start()`.
         let transport_for_send = self
             .transports
-            .get(&transport_id)
-            .ok_or(NodeError::TransportNotFound(transport_id))?;
-        match transport_for_send.connection_state(&remote_addr) {
+            .get(&prepared.transport_id)
+            .ok_or(NodeError::TransportNotFound(prepared.transport_id))?;
+        match transport_for_send.connection_state(&prepared.remote_addr) {
             ConnectionState::Connected => {}
             other => {
                 if matches!(other, ConnectionState::None) {
-                    let _ = transport_for_send.connect(&remote_addr).await;
+                    let _ = transport_for_send.connect(&prepared.remote_addr).await;
                 }
                 return Err(NodeError::SendFailed {
                     node_addr: *node_addr,
@@ -5443,14 +5564,16 @@ impl Node {
                         let socket_addr = {
                             #[cfg(any(target_os = "linux", target_os = "macos"))]
                             {
-                                match connected_socket.as_ref() {
+                                match prepared.connected_socket.as_ref() {
                                     Some(socket) => Some(socket.peer_addr()),
-                                    None => udp.resolve_for_off_task(&remote_addr).await.ok(),
+                                    None => {
+                                        udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
+                                    }
                                 }
                             }
                             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                             {
-                                udp.resolve_for_off_task(&remote_addr).await.ok()
+                                udp.resolve_for_off_task(&prepared.remote_addr).await.ok()
                             }
                         };
                         match (udp.async_socket(), socket_addr) {
@@ -5466,13 +5589,10 @@ impl Node {
                     // the worker target is known. If the off-task path is
                     // unavailable, the inline path below remains the sole
                     // counter owner for this packet.
-                    if let Some(reservation) =
-                        reserve_fmp_worker_send(session, their_index, flags, payload_len).map_err(
-                            |e| NodeError::SendFailed {
-                                node_addr: *node_addr,
-                                reason: format!("counter reservation failed: {}", e),
-                            },
-                        )?
+                    if let Some(reservation) = self
+                        .peers
+                        .reserve_prepared_fmp_worker_send(node_addr, &prepared)
+                        .map_err(|e| map_fmp_send_error(e))?
                     {
                         let reserved_counter = reservation.counter;
                         let header = reservation.header;
@@ -5494,7 +5614,7 @@ impl Node {
                         let wire_capacity = ESTABLISHED_HEADER_SIZE + inner_len + 16;
                         let mut wire_buf = Vec::with_capacity(wire_capacity);
                         wire_buf.extend_from_slice(&header);
-                        wire_buf.extend_from_slice(&timestamp_ms.to_le_bytes());
+                        wire_buf.extend_from_slice(&prepared.timestamp_ms.to_le_bytes());
                         wire_buf.extend_from_slice(plaintext);
                         let predicted_bytes = wire_capacity;
                         // Lifecycle send bookkeeping uses the predicted
@@ -5506,7 +5626,7 @@ impl Node {
                         let _ = self.peers.record_fmp_send_bookkeeping(
                             node_addr,
                             reserved_counter,
-                            timestamp_ms,
+                            prepared.timestamp_ms,
                             predicted_bytes,
                         );
                         let scheduling_weight = self.send_weight_for_peer(node_addr);
@@ -5519,7 +5639,7 @@ impl Node {
                             send_target: self::encrypt_worker::SelectedSendTarget::new(
                                 socket,
                                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                                connected_socket,
+                                prepared.connected_socket.clone(),
                                 socket_addr,
                             ),
                             bulk_endpoint_data: traffic_class.bulk_endpoint_data,
@@ -5537,30 +5657,22 @@ impl Node {
         // Build the inner plaintext lazily here — the worker path
         // above never reaches this point, so the prepend_inner_header
         // alloc is avoided in the fast path.
-        let inner_plaintext = prepend_inner_header(timestamp_ms, plaintext);
-        let counter = session.current_send_counter();
-        let header = build_established_header(their_index, counter, flags, payload_len);
-        // Encrypt with AAD binding to the outer header
-        let ciphertext = {
-            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
-            session
-                .encrypt_with_aad(&inner_plaintext, &header)
-                .map_err(|e| NodeError::SendFailed {
-                    node_addr: *node_addr,
-                    reason: format!("encryption failed: {}", e),
-                })?
-        };
-
-        let wire_packet = build_encrypted(&header, &ciphertext);
+        let inner_plaintext = prepend_inner_header(prepared.timestamp_ms, plaintext);
+        let inline = self
+            .peers
+            .seal_prepared_fmp_inline_send(node_addr, &prepared, &inner_plaintext)
+            .map_err(|e| map_fmp_send_error(e))?;
 
         // Re-borrow peer for stats update after sending
         let send_result = {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
             let transport = self
                 .transports
-                .get(&transport_id)
-                .ok_or(NodeError::TransportNotFound(transport_id))?;
-            transport.send(&remote_addr, &wire_packet).await
+                .get(&prepared.transport_id)
+                .ok_or(NodeError::TransportNotFound(prepared.transport_id))?;
+            transport
+                .send(&prepared.remote_addr, &inline.wire_packet)
+                .await
         };
         self.note_local_send_outcome(node_addr, &send_result);
         let bytes_sent = send_result.map_err(|e| match e {
@@ -5576,9 +5688,12 @@ impl Node {
         })?;
 
         // Update send statistics
-        let _ =
-            self.peers
-                .record_fmp_send_bookkeeping(node_addr, counter, timestamp_ms, bytes_sent);
+        let _ = self.peers.record_fmp_send_bookkeeping(
+            node_addr,
+            inline.counter,
+            prepared.timestamp_ms,
+            bytes_sent,
+        );
 
         Ok(())
     }

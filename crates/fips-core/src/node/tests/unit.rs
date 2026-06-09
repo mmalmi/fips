@@ -1,8 +1,8 @@
 use super::*;
 use crate::discovery::nostr::{BootstrapEvent, NostrDiscovery};
 use crate::node::wire::{
-    FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, Msg1Header, build_encrypted, build_established_header,
-    build_msg2,
+    EncryptedHeader, FLAG_CE, FLAG_KEY_EPOCH, FLAG_SP, Msg1Header, build_encrypted,
+    build_established_header, build_msg2,
 };
 use crate::peer::{ActivePeer, PromotionResult};
 use crate::transport::ReceivedPacket;
@@ -2134,6 +2134,126 @@ fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
             .record_fmp_send_bookkeeping(&make_node_addr(99), 10, 1_500, 32)
             .is_none(),
         "missing active peers should not record send bookkeeping"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn peer_lifecycle_registry_owns_fmp_send_preparation_and_seal_paths() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(7);
+    let link_id = LinkId::new(9);
+    let remote_addr = TransportAddr::from_string("fmp-send-prepare-peer");
+    let our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+    let (sender, mut receiver) =
+        make_test_fmp_session_pair(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        sender,
+        our_index,
+        their_index,
+        transport_id,
+        remote_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x02; 8]),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let plaintext = b"owner-prepared-fmp";
+    let inner_plaintext = prepend_inner_header(123, plaintext);
+    let payload_len = inner_plaintext.len() as u16;
+    let prepared = registry
+        .prepare_fmp_send(&peer_addr, true, payload_len)
+        .expect("lifecycle owner should prepare FMP send metadata");
+
+    assert_eq!(prepared.transport_id, transport_id);
+    assert_eq!(prepared.remote_addr, remote_addr);
+    assert_eq!(prepared.their_index, their_index);
+    assert_eq!(prepared.payload_len, payload_len);
+    assert_eq!(prepared.flags & FLAG_CE, FLAG_CE);
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        0,
+        "preparation must not consume a Noise send counter"
+    );
+
+    let worker = registry
+        .reserve_prepared_fmp_worker_send(&peer_addr, &prepared)
+        .expect("worker reservation should be owner-managed")
+        .expect("established FMP peer should expose a worker cipher");
+    assert_eq!(worker.counter, 0);
+    assert_eq!(
+        worker.header,
+        build_established_header(their_index, worker.counter, prepared.flags, payload_len)
+    );
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        1,
+        "worker reservation should consume exactly one counter"
+    );
+
+    let mut worker_ciphertext = inner_plaintext.clone();
+    worker
+        .cipher
+        .seal_in_place_append_tag(
+            crate::noise::CipherState::counter_to_nonce(worker.counter),
+            ring::aead::Aad::from(&worker.header),
+            &mut worker_ciphertext,
+        )
+        .expect("worker-style FMP seal should succeed");
+    assert_eq!(
+        receiver
+            .decrypt_with_replay_check_and_aad(&worker_ciphertext, worker.counter, &worker.header,)
+            .expect("receiver should accept worker-sealed packet"),
+        inner_plaintext
+    );
+
+    let inline_prepared = registry
+        .prepare_fmp_send(&peer_addr, false, payload_len)
+        .expect("lifecycle owner should prepare inline FMP send metadata");
+    let inline = registry
+        .seal_prepared_fmp_inline_send(&peer_addr, &inline_prepared, &inner_plaintext)
+        .expect("inline seal should be owner-managed");
+    assert_eq!(inline.counter, 1);
+    assert_eq!(
+        registry
+            .get(&peer_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("peer session")
+            .current_send_counter(),
+        2,
+        "inline seal should consume exactly one counter"
+    );
+    let parsed = EncryptedHeader::parse(&inline.wire_packet).expect("inline wire packet parses");
+    assert_eq!(parsed.counter, inline.counter);
+    assert_eq!(parsed.receiver_idx, their_index);
+    assert_eq!(
+        receiver
+            .decrypt_with_replay_check_and_aad(
+                parsed.ciphertext(&inline.wire_packet),
+                parsed.counter,
+                &inline.header,
+            )
+            .expect("receiver should accept inline-sealed packet"),
+        inner_plaintext
     );
 }
 
