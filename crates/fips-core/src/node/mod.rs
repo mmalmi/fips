@@ -529,10 +529,7 @@ pub(crate) enum NodeEndpointCommand {
     /// care whether the local-stack handoff succeeded (e.g.
     /// `blocking_send` waits for the runtime to accept the send).
     Send {
-        remote: PeerIdentity,
-        payload: Vec<u8>,
-        lane: EndpointCommandLane,
-        queued_at: Option<std::time::Instant>,
+        command: EndpointSendCommand,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     },
     /// **Fire-and-forget** variant of `Send` — no oneshot allocation,
@@ -540,12 +537,7 @@ pub(crate) enum NodeEndpointCommand {
     /// (`FipsEndpoint::send`) where the caller already discards the
     /// result. Saves one oneshot::channel() allocation per outbound
     /// packet on the application's send hot path.
-    SendOneway {
-        remote: PeerIdentity,
-        payload: Vec<u8>,
-        lane: EndpointCommandLane,
-        queued_at: Option<std::time::Instant>,
-    },
+    SendOneway { command: EndpointSendCommand },
     PeerSnapshot {
         response_tx: tokio::sync::oneshot::Sender<Vec<NodeEndpointPeer>>,
     },
@@ -568,6 +560,40 @@ pub(crate) enum NodeEndpointCommand {
     },
 }
 
+/// Message payload for outbound endpoint data handed from an embedded
+/// application into the node rx loop.
+#[derive(Debug)]
+pub(crate) struct EndpointSendCommand {
+    remote: PeerIdentity,
+    payload: Vec<u8>,
+    lane: EndpointCommandLane,
+    queued_at: Option<std::time::Instant>,
+}
+
+impl EndpointSendCommand {
+    pub(crate) fn new(
+        remote: PeerIdentity,
+        payload: Vec<u8>,
+        queued_at: Option<std::time::Instant>,
+    ) -> Self {
+        let lane = endpoint_command_lane_for_payload(&payload);
+        Self {
+            remote,
+            payload,
+            lane,
+            queued_at,
+        }
+    }
+
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        self.lane
+    }
+
+    pub(crate) fn into_parts(self) -> (PeerIdentity, Vec<u8>, Option<std::time::Instant>) {
+        (self.remote, self.payload, self.queued_at)
+    }
+}
+
 impl NodeEndpointCommand {
     pub(crate) fn send(
         remote: PeerIdentity,
@@ -575,12 +601,8 @@ impl NodeEndpointCommand {
         queued_at: Option<std::time::Instant>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     ) -> Self {
-        let lane = endpoint_command_lane_for_payload(&payload);
         Self::Send {
-            remote,
-            payload,
-            lane,
-            queued_at,
+            command: EndpointSendCommand::new(remote, payload, queued_at),
             response_tx,
         }
     }
@@ -590,18 +612,14 @@ impl NodeEndpointCommand {
         payload: Vec<u8>,
         queued_at: Option<std::time::Instant>,
     ) -> Self {
-        let lane = endpoint_command_lane_for_payload(&payload);
         Self::SendOneway {
-            remote,
-            payload,
-            lane,
-            queued_at,
+            command: EndpointSendCommand::new(remote, payload, queued_at),
         }
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
         match self {
-            Self::Send { lane, .. } | Self::SendOneway { lane, .. } => *lane,
+            Self::Send { command, .. } | Self::SendOneway { command } => command.lane(),
             Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }

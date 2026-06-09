@@ -23,9 +23,9 @@ use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
 use crate::node::{
-    Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
-    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    EndpointSendCommand, Node, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
+    NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
+    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
@@ -2065,37 +2065,17 @@ impl Node {
     ) {
         match command {
             NodeEndpointCommand::Send {
-                remote,
-                payload,
-                lane: _,
-                queued_at,
+                command,
                 response_tx,
             } => {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::EndpointCommandWait,
-                    queued_at,
-                );
-                let _t =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-                let result = self.send_endpoint_data(remote, payload).await;
+                let result = self.handle_endpoint_send_command(command).await;
                 let _ = response_tx.send(result);
             }
-            NodeEndpointCommand::SendOneway {
-                remote,
-                payload,
-                lane: _,
-                queued_at,
-            } => {
-                crate::perf_profile::record_since(
-                    crate::perf_profile::Stage::EndpointCommandWait,
-                    queued_at,
-                );
-                let _t =
-                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
+            NodeEndpointCommand::SendOneway { command } => {
                 // Result deliberately discarded — caller wanted
                 // fire-and-forget. Errors still get logged inside
                 // `send_endpoint_data` so they're not silent.
-                let _ = self.send_endpoint_data(remote, payload).await;
+                let _ = self.handle_endpoint_send_command(command).await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
@@ -2195,6 +2175,19 @@ impl Node {
                 let _ = response_tx.send(result);
             }
         }
+    }
+
+    async fn handle_endpoint_send_command(
+        &mut self,
+        command: EndpointSendCommand,
+    ) -> Result<(), NodeError> {
+        let (remote, payload, queued_at) = command.into_parts();
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::EndpointCommandWait,
+            queued_at,
+        );
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
+        self.send_endpoint_data(remote, payload).await
     }
 
     pub(in crate::node) async fn send_endpoint_data(

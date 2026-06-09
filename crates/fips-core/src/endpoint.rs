@@ -860,6 +860,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn endpoint_send_command_owns_payload_lane_and_queue_stamp() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let payload = ipv6_tcp_packet(0x18, 512);
+        let queued_at = Some(std::time::Instant::now());
+
+        let command = crate::node::EndpointSendCommand::new(remote, payload.clone(), queued_at);
+        assert_eq!(command.lane(), EndpointCommandLane::Bulk);
+
+        let (owned_remote, owned_payload, owned_queued_at) = command.into_parts();
+        assert_eq!(owned_remote, remote);
+        assert_eq!(owned_payload, payload);
+        assert_eq!(owned_queued_at, queued_at);
+    }
+
     #[tokio::test]
     async fn endpoint_starts_without_system_tun() {
         let endpoint = FipsEndpoint::builder()
