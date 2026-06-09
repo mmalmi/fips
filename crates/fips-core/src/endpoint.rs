@@ -869,10 +869,11 @@ mod tests {
         let command = crate::node::EndpointSendCommand::new(remote, payload.clone(), queued_at);
         assert_eq!(command.lane(), EndpointCommandLane::Bulk);
 
-        let (owned_remote, owned_payload, owned_queued_at) = command.into_parts();
-        assert_eq!(owned_remote, remote);
-        assert_eq!(owned_payload.as_slice(), payload.as_slice());
-        assert_eq!(owned_payload.lane(), EndpointCommandLane::Bulk);
+        let (owned_send, owned_queued_at) = command.into_parts();
+        assert_eq!(owned_send.dest_addr(), *remote.node_addr());
+        assert_eq!(owned_send.dest_pubkey(), remote.pubkey_full());
+        assert_eq!(owned_send.payload().as_slice(), payload.as_slice());
+        assert_eq!(owned_send.payload().lane(), EndpointCommandLane::Bulk);
         assert_eq!(owned_queued_at, queued_at);
     }
 
@@ -889,6 +890,19 @@ mod tests {
         let opaque_bulk = crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]);
         assert_eq!(opaque_bulk.lane(), EndpointCommandLane::Bulk);
         assert!(opaque_bulk.drop_on_backpressure());
+    }
+
+    #[test]
+    fn endpoint_data_send_owns_remote_identity_and_payload_policy() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+        let payload = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
+
+        let send = crate::node::EndpointDataSend::new(remote, payload.clone());
+        assert_eq!(send.dest_addr(), *remote.node_addr());
+        assert_eq!(send.dest_pubkey(), remote.pubkey_full());
+        assert_eq!(send.payload().lane(), EndpointCommandLane::Bulk);
+        assert!(!send.payload().drop_on_backpressure());
+        assert_eq!(send.payload().as_slice(), payload.as_slice());
     }
 
     #[tokio::test]

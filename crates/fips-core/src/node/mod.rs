@@ -230,6 +230,40 @@ impl From<Vec<u8>> for EndpointDataPayload {
     }
 }
 
+/// Outbound endpoint data plus the peer identity it is bound to.
+#[derive(Debug)]
+pub(crate) struct EndpointDataSend {
+    dest_addr: NodeAddr,
+    dest_pubkey: secp256k1::PublicKey,
+    payload: EndpointDataPayload,
+}
+
+impl EndpointDataSend {
+    pub(crate) fn new(remote: PeerIdentity, payload: EndpointDataPayload) -> Self {
+        Self {
+            dest_addr: *remote.node_addr(),
+            dest_pubkey: remote.pubkey_full(),
+            payload,
+        }
+    }
+
+    pub(crate) fn dest_addr(&self) -> NodeAddr {
+        self.dest_addr
+    }
+
+    pub(crate) fn dest_pubkey(&self) -> secp256k1::PublicKey {
+        self.dest_pubkey
+    }
+
+    pub(crate) fn payload(&self) -> &EndpointDataPayload {
+        &self.payload
+    }
+
+    pub(crate) fn into_payload(self) -> EndpointDataPayload {
+        self.payload
+    }
+}
+
 fn endpoint_tcp_payload_is_latency_sensitive(payload: &[u8], tcp_offset: usize) -> bool {
     const TCP_MIN_HEADER_LEN: usize = 20;
     const TCP_FLAG_FIN: u8 = 0x01;
@@ -613,8 +647,7 @@ pub(crate) enum NodeEndpointCommand {
 /// application into the node rx loop.
 #[derive(Debug)]
 pub(crate) struct EndpointSendCommand {
-    remote: PeerIdentity,
-    payload: EndpointDataPayload,
+    send: EndpointDataSend,
     queued_at: Option<std::time::Instant>,
 }
 
@@ -625,24 +658,17 @@ impl EndpointSendCommand {
         queued_at: Option<std::time::Instant>,
     ) -> Self {
         Self {
-            remote,
-            payload: EndpointDataPayload::new(payload),
+            send: EndpointDataSend::new(remote, EndpointDataPayload::new(payload)),
             queued_at,
         }
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
-        self.payload.lane()
+        self.send.payload().lane()
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        PeerIdentity,
-        EndpointDataPayload,
-        Option<std::time::Instant>,
-    ) {
-        (self.remote, self.payload, self.queued_at)
+    pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<std::time::Instant>) {
+        (self.send, self.queued_at)
     }
 }
 

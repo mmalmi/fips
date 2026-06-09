@@ -21,9 +21,10 @@ use crate::node::wire::{
     ESTABLISHED_HEADER_SIZE, FLAG_KEY_EPOCH, FLAG_SP, build_established_header,
 };
 use crate::node::{
-    EndpointDataPayload, EndpointSendCommand, Node, NodeEndpointCommand, NodeEndpointEvent,
-    NodeEndpointPeer, NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
-    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    EndpointDataPayload, EndpointDataSend, EndpointSendCommand, Node, NodeEndpointCommand,
+    NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE, XK_HANDSHAKE_MSG3_SIZE,
@@ -2179,13 +2180,13 @@ impl Node {
         &mut self,
         command: EndpointSendCommand,
     ) -> Result<(), NodeError> {
-        let (remote, payload, queued_at) = command.into_parts();
+        let (send, queued_at) = command.into_parts();
         crate::perf_profile::record_since(
             crate::perf_profile::Stage::EndpointCommandWait,
             queued_at,
         );
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
-        self.send_endpoint_data_payload(remote, payload).await
+        self.send_endpoint_data_send(send).await
     }
 
     #[cfg(test)]
@@ -2194,31 +2195,31 @@ impl Node {
         remote: crate::PeerIdentity,
         payload: Vec<u8>,
     ) -> Result<(), NodeError> {
-        self.send_endpoint_data_payload(remote, EndpointDataPayload::new(payload))
-            .await
+        self.send_endpoint_data_send(EndpointDataSend::new(
+            remote,
+            EndpointDataPayload::new(payload),
+        ))
+        .await
     }
 
-    async fn send_endpoint_data_payload(
-        &mut self,
-        remote: crate::PeerIdentity,
-        payload: EndpointDataPayload,
-    ) -> Result<(), NodeError> {
-        let dest_addr = *remote.node_addr();
-        let dest_pubkey = remote.pubkey_full();
+    async fn send_endpoint_data_send(&mut self, send: EndpointDataSend) -> Result<(), NodeError> {
+        let dest_addr = send.dest_addr();
+        let dest_pubkey = send.dest_pubkey();
         self.register_identity(dest_addr, dest_pubkey);
-        self.send_or_queue_endpoint_data(dest_addr, Some(dest_pubkey), payload)
-            .await
+        self.send_or_queue_endpoint_data(send).await
     }
 
     async fn send_or_queue_endpoint_data(
         &mut self,
-        dest_addr: NodeAddr,
-        dest_pubkey: Option<PublicKey>,
-        payload: EndpointDataPayload,
+        send: EndpointDataSend,
     ) -> Result<(), NodeError> {
+        let dest_addr = send.dest_addr();
         if let Some(entry) = self.sessions.get(&dest_addr) {
             if entry.is_established() {
-                match self.send_session_endpoint_data(&dest_addr, &payload).await {
+                match self
+                    .send_session_endpoint_data(&dest_addr, send.payload())
+                    .await
+                {
                     Ok(()) => return Ok(()),
                     Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
                         debug!(
@@ -2226,14 +2227,14 @@ impl Node {
                             error = %error,
                             "Established endpoint-data session lost route; queueing payload and probing fallback"
                         );
-                        self.queue_pending_endpoint_data(dest_addr, payload);
+                        self.queue_pending_endpoint_send(send);
                         self.maybe_initiate_lookup(&dest_addr).await;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
                 }
             }
-            self.queue_pending_endpoint_data(dest_addr, payload);
+            self.queue_pending_endpoint_send(send);
             let should_discover = self.config.node.routing.mode
                 == crate::config::RoutingMode::ReplyLearned
                 || self.find_next_hop(&dest_addr).is_none();
@@ -2243,14 +2244,9 @@ impl Node {
             return Ok(());
         }
 
-        let dest_pubkey = dest_pubkey
-            .or_else(|| self.pubkey_for_node_addr(&dest_addr))
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: dest_addr,
-                reason: "unknown remote identity for endpoint data".into(),
-            })?;
+        let dest_pubkey = send.dest_pubkey();
         if self.find_next_hop(&dest_addr).is_none() {
-            self.queue_pending_endpoint_data(dest_addr, payload);
+            self.queue_pending_endpoint_send(send);
             self.maybe_initiate_lookup(&dest_addr).await;
             return Ok(());
         }
@@ -2260,13 +2256,13 @@ impl Node {
             Err(NodeError::SendFailed { node_addr, reason })
                 if node_addr == dest_addr && reason == "no route to destination" =>
             {
-                self.queue_pending_endpoint_data(dest_addr, payload);
+                self.queue_pending_endpoint_send(send);
                 self.maybe_initiate_lookup(&dest_addr).await;
                 return Ok(());
             }
             Err(error) => return Err(error),
         }
-        self.queue_pending_endpoint_data(dest_addr, payload);
+        self.queue_pending_endpoint_send(send);
         Ok(())
     }
 
@@ -3130,6 +3126,10 @@ impl Node {
             );
         }
         queue.push_back(payload.into());
+    }
+
+    fn queue_pending_endpoint_send(&mut self, send: EndpointDataSend) {
+        self.queue_pending_endpoint_data(send.dest_addr(), send.into_payload());
     }
 
     /// Flush pending packets for a destination whose session just reached Established.
