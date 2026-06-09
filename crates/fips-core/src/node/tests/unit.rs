@@ -1620,6 +1620,108 @@ fn peer_lifecycle_registry_owns_active_peer_insert_and_current_session_index() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_current_session_index_repair() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let stale_peer_full = Identity::generate();
+    let stale_peer_identity = PeerIdentity::from_pubkey_full(stale_peer_full.pubkey_full());
+    let stale_peer_addr = *stale_peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(10);
+    let remote_addr = TransportAddr::from_string("current-index-repair-peer");
+    let current_our_index = SessionIndex::new(10);
+    let their_index = SessionIndex::new(20);
+    let current_key = (transport_id, current_our_index.as_u32());
+    let current_session_index = PeerSessionIndex {
+        kind: PeerSessionIndexKind::Current,
+        key: current_key,
+        index: current_our_index,
+    };
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        transport_id,
+        link_id,
+        remote_addr,
+        current_our_index,
+        their_index,
+    );
+    assert!(registry.insert(peer_addr, active_peer).is_none());
+
+    let missing_repair = registry.ensure_current_session_index_registered(&peer_addr);
+    assert_eq!(
+        missing_repair,
+        CurrentSessionIndexRegistration::Repaired(RegisteredPeerSessionIndex {
+            session_index: current_session_index,
+            previous_owner: None,
+        }),
+        "missing current receiver-index repair should be a lifecycle-owner operation"
+    );
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+
+    let already_registered = registry.ensure_current_session_index_registered(&peer_addr);
+    assert_eq!(
+        already_registered,
+        CurrentSessionIndexRegistration::AlreadyRegistered(current_session_index),
+        "already-correct current receiver-index state should not be repaired again"
+    );
+
+    assert_eq!(
+        registry.insert_session_index(current_key, stale_peer_addr),
+        Some(peer_addr)
+    );
+    let stale_owner_repair = registry.ensure_current_session_index_registered(&peer_addr);
+    assert_eq!(
+        stale_owner_repair,
+        CurrentSessionIndexRegistration::Repaired(RegisteredPeerSessionIndex {
+            session_index: current_session_index,
+            previous_owner: Some(stale_peer_addr),
+        }),
+        "stale current receiver-index owner repair should stay with the lifecycle owner"
+    );
+    assert_eq!(registry.lookup_session_index(current_key), Some(peer_addr));
+
+    assert_eq!(
+        registry.ensure_current_session_index_registered(&make_node_addr(99)),
+        CurrentSessionIndexRegistration::MissingActivePeer
+    );
+
+    let no_transport_full = Identity::generate();
+    let no_transport_identity = PeerIdentity::from_pubkey_full(no_transport_full.pubkey_full());
+    let no_transport_addr = *no_transport_identity.node_addr();
+    assert!(
+        registry
+            .insert(
+                no_transport_addr,
+                ActivePeer::new(no_transport_identity, LinkId::new(77), 3_000),
+            )
+            .is_none()
+    );
+    assert_eq!(
+        registry.ensure_current_session_index_registered(&no_transport_addr),
+        CurrentSessionIndexRegistration::MissingTransportId
+    );
+
+    registry
+        .get_mut(&no_transport_addr)
+        .expect("no-transport peer should exist")
+        .set_current_addr(
+            TransportId::new(77),
+            &TransportAddr::from_string("current-index-repair-no-index"),
+        );
+    assert_eq!(
+        registry.ensure_current_session_index_registered(&no_transport_addr),
+        CurrentSessionIndexRegistration::MissingLocalIndex
+    );
+}
+
+#[test]
 fn peer_lifecycle_registry_owns_current_session_replacement_and_index_handoff() {
     let node = make_node();
     let peer_full = Identity::generate();

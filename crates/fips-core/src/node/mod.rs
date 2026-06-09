@@ -1739,6 +1739,15 @@ pub(in crate::node) struct InsertedActivePeer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) enum CurrentSessionIndexRegistration {
+    MissingActivePeer,
+    MissingTransportId,
+    MissingLocalIndex,
+    AlreadyRegistered(PeerSessionIndex),
+    Repaired(RegisteredPeerSessionIndex),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct ReplacedActivePeerCurrentSession {
     pub(in crate::node) old_link_id: LinkId,
     pub(in crate::node) old_session_index: Option<PeerSessionIndex>,
@@ -2066,6 +2075,42 @@ impl PeerLifecycleRegistry {
         }
     }
 
+    pub(in crate::node) fn ensure_current_session_index_registered(
+        &mut self,
+        node_addr: &NodeAddr,
+    ) -> CurrentSessionIndexRegistration {
+        let Some(peer) = self.active.get(node_addr) else {
+            return CurrentSessionIndexRegistration::MissingActivePeer;
+        };
+        let Some(transport_id) = peer.transport_id() else {
+            return CurrentSessionIndexRegistration::MissingTransportId;
+        };
+        let Some(our_index) = peer.our_index() else {
+            return CurrentSessionIndexRegistration::MissingLocalIndex;
+        };
+        let session_index = PeerSessionIndex {
+            kind: PeerSessionIndexKind::Current,
+            key: (transport_id, our_index.as_u32()),
+            index: our_index,
+        };
+
+        match self.active.lookup_session_index(session_index.key) {
+            Some(existing) if existing == *node_addr => {
+                CurrentSessionIndexRegistration::AlreadyRegistered(session_index)
+            }
+            expected_previous_owner => {
+                let previous_owner = self
+                    .active
+                    .insert_session_index(session_index.key, *node_addr);
+                debug_assert_eq!(previous_owner, expected_previous_owner);
+                CurrentSessionIndexRegistration::Repaired(RegisteredPeerSessionIndex {
+                    session_index,
+                    previous_owner,
+                })
+            }
+        }
+    }
+
     pub(in crate::node) fn replace_current_session_and_path(
         &mut self,
         node_addr: &NodeAddr,
@@ -2289,6 +2334,7 @@ impl PeerLifecycleRegistry {
         self.active.iter_mut()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn insert_session_index(
         &mut self,
         key: (TransportId, u32),
@@ -3555,50 +3601,47 @@ impl Node {
         node_addr: &NodeAddr,
         context: &'static str,
     ) -> bool {
-        let Some(peer) = self.peers.get(node_addr) else {
-            return false;
-        };
-        let Some(transport_id) = peer.transport_id() else {
-            warn!(
-                peer = %self.peer_display_name(node_addr),
-                context,
-                "Cannot register current session index without transport id"
-            );
-            return false;
-        };
-        let Some(our_index) = peer.our_index() else {
-            warn!(
-                peer = %self.peer_display_name(node_addr),
-                context,
-                "Cannot register current session index without local index"
-            );
-            return false;
-        };
-
-        let cache_key = (transport_id, our_index.as_u32());
-        match self.peers.lookup_session_index(cache_key) {
-            Some(existing) if existing == *node_addr => true,
-            Some(existing) => {
+        match self
+            .peers
+            .ensure_current_session_index_registered(node_addr)
+        {
+            CurrentSessionIndexRegistration::MissingActivePeer => false,
+            CurrentSessionIndexRegistration::MissingTransportId => {
                 warn!(
                     peer = %self.peer_display_name(node_addr),
-                    previous_owner = %self.peer_display_name(&existing),
-                    transport_id = %transport_id,
-                    our_index = %our_index,
                     context,
-                    "Repairing current session index with stale owner"
+                    "Cannot register current session index without transport id"
                 );
-                self.peers.insert_session_index(cache_key, *node_addr);
-                true
+                false
             }
-            None => {
+            CurrentSessionIndexRegistration::MissingLocalIndex => {
                 warn!(
                     peer = %self.peer_display_name(node_addr),
-                    transport_id = %transport_id,
-                    our_index = %our_index,
                     context,
-                    "Repairing missing current session index"
+                    "Cannot register current session index without local index"
                 );
-                self.peers.insert_session_index(cache_key, *node_addr);
+                false
+            }
+            CurrentSessionIndexRegistration::AlreadyRegistered(_) => true,
+            CurrentSessionIndexRegistration::Repaired(registered) => {
+                if let Some(existing) = registered.previous_owner {
+                    warn!(
+                        peer = %self.peer_display_name(node_addr),
+                        previous_owner = %self.peer_display_name(&existing),
+                        transport_id = %registered.session_index.key.0,
+                        our_index = %registered.session_index.index,
+                        context,
+                        "Repairing current session index with stale owner"
+                    );
+                } else {
+                    warn!(
+                        peer = %self.peer_display_name(node_addr),
+                        transport_id = %registered.session_index.key.0,
+                        our_index = %registered.session_index.index,
+                        context,
+                        "Repairing missing current session index"
+                    );
+                }
                 true
             }
         }
