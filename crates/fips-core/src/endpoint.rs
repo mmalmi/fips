@@ -18,7 +18,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
-const ENDPOINT_RECV_BATCH_MAX: usize = 64;
+const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
@@ -641,9 +641,26 @@ impl FipsEndpoint {
     /// across a bounded burst.
     pub async fn recv_batch(&self, max: usize) -> Option<Vec<FipsEndpointMessage>> {
         let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut messages = Vec::with_capacity(max);
+        self.recv_batch_into(&mut messages, max).await?;
+        Some(messages)
+    }
+
+    /// Receive one endpoint message, then drain ready follow-ons into a caller-owned buffer.
+    ///
+    /// This is the allocation-conscious form of [`Self::recv_batch`] for hot
+    /// dataplane consumers. The provided buffer is cleared before use and keeps
+    /// its allocation across calls.
+    pub async fn recv_batch_into(
+        &self,
+        messages: &mut Vec<FipsEndpointMessage>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        messages.clear();
+
         let mut rx = self.inbound_endpoint_rx.lock().await;
         let first = rx.recv().await?;
-        let mut messages = Vec::with_capacity(max);
         messages.push(endpoint_event_to_message(first));
 
         while messages.len() < max {
@@ -653,7 +670,7 @@ impl FipsEndpoint {
             messages.push(endpoint_event_to_message(event));
         }
 
-        Some(messages)
+        Some(messages.len())
     }
 
     /// Synchronous blocking send — parks the calling **OS thread** on
@@ -1172,6 +1189,51 @@ mod tests {
             .expect("recv should not time out")
             .expect("message should arrive");
         assert_eq!(message.data, b"third");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn recv_batch_into_reuses_caller_buffer_and_respects_limit() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_batch_to_peer(
+                local,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+            )
+            .await
+            .expect("loopback batch send should succeed");
+
+        let mut messages = Vec::with_capacity(8);
+        let capacity = messages.capacity();
+        let received = tokio::time::timeout(
+            Duration::from_secs(1),
+            endpoint.recv_batch_into(&mut messages, 2),
+        )
+        .await
+        .expect("recv batch should not time out")
+        .expect("messages should arrive");
+        assert_eq!(received, 2);
+        assert_eq!(messages.capacity(), capacity);
+        assert_eq!(messages[0].data, b"first");
+        assert_eq!(messages[1].data, b"second");
+
+        let received = tokio::time::timeout(
+            Duration::from_secs(1),
+            endpoint.recv_batch_into(&mut messages, 8),
+        )
+        .await
+        .expect("recv batch should not time out")
+        .expect("message should arrive");
+        assert_eq!(received, 1);
+        assert_eq!(messages.capacity(), capacity);
+        assert_eq!(messages[0].data, b"third");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
