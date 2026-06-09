@@ -12,7 +12,7 @@ impl Node {
     /// Called periodically by the RX event loop. Removes connections that have
     /// been idle longer than the configured handshake timeout or are in Failed state.
     pub(in crate::node) fn check_timeouts(&mut self) {
-        if self.connections.is_empty() {
+        if self.peers.connection_is_empty() {
             return;
         }
 
@@ -20,15 +20,15 @@ impl Node {
         let timeout_ms = self.config.node.rate_limit.handshake_timeout_secs * 1000;
 
         let stale: Vec<LinkId> = self
-            .connections
-            .iter()
+            .peers
+            .connection_iter()
             .filter(|(_, conn)| conn.is_timed_out(now_ms, timeout_ms) || conn.is_failed())
             .map(|(link_id, _)| *link_id)
             .collect();
 
         for link_id in stale {
             // Log and schedule retry before cleanup (need connection state)
-            if let Some(conn) = self.connections.get(&link_id) {
+            if let Some(conn) = self.peers.get_connection(&link_id) {
                 let direction = conn.direction();
                 let idle_ms = conn.idle_time(now_ms);
                 if conn.is_failed() {
@@ -63,7 +63,7 @@ impl Node {
     /// the link and address mapping. Does not log — callers provide context-appropriate
     /// log messages.
     fn cleanup_stale_connection(&mut self, link_id: LinkId, _now_ms: u64) {
-        let conn = match self.connections.remove(&link_id) {
+        let conn = match self.peers.remove_connection(&link_id) {
             Some(c) => c,
             None => return,
         };
@@ -89,7 +89,7 @@ impl Node {
     /// For outbound connections in SentMsg1 state, resends the stored msg1
     /// with exponential backoff. Called periodically from the RX event loop.
     pub(in crate::node) async fn resend_pending_handshakes(&mut self, now_ms: u64) {
-        if self.connections.is_empty() {
+        if self.peers.connection_is_empty() {
             return;
         }
 
@@ -100,8 +100,8 @@ impl Node {
         // Collect resend candidates: outbound, in SentMsg1, with stored msg1,
         // under max resends, and past the scheduled time.
         let candidates: Vec<(LinkId, Vec<u8>)> = self
-            .connections
-            .iter()
+            .peers
+            .connection_iter()
             .filter(|(_, conn)| {
                 conn.is_outbound()
                     && conn.handshake_state() == HandshakeState::SentMsg1
@@ -116,7 +116,7 @@ impl Node {
 
         for (link_id, msg1_bytes) in candidates {
             // Get transport and address info from the connection
-            let (transport_id, remote_addr) = match self.connections.get(&link_id) {
+            let (transport_id, remote_addr) = match self.peers.get_connection(&link_id) {
                 Some(conn) => match (conn.transport_id(), conn.source_addr()) {
                     (Some(tid), Some(addr)) => (tid, addr.clone()),
                     _ => continue,
@@ -141,7 +141,7 @@ impl Node {
                 false
             };
 
-            if sent && let Some(conn) = self.connections.get_mut(&link_id) {
+            if sent && let Some(conn) = self.peers.get_connection_mut(&link_id) {
                 let count = conn.resend_count() + 1;
                 let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
                 conn.record_resend(next);

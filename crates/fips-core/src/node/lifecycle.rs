@@ -585,7 +585,7 @@ impl Node {
     }
 
     fn is_connecting_to_peer(&self, peer_node_addr: &NodeAddr) -> bool {
-        self.connections.values().any(|conn| {
+        self.peers.connection_values().any(|conn| {
             conn.expected_identity()
                 .map(|id| id.node_addr() == peer_node_addr)
                 .unwrap_or(false)
@@ -598,7 +598,7 @@ impl Node {
         transport_id: TransportId,
         remote_addr: &TransportAddr,
     ) -> bool {
-        self.connections.values().any(|conn| {
+        self.peers.connection_values().any(|conn| {
             conn.expected_identity()
                 .map(|id| id.node_addr() == peer_node_addr)
                 .unwrap_or(false)
@@ -727,8 +727,8 @@ impl Node {
 
     fn outbound_handshake_slots(&self) -> usize {
         let used = self
-            .connections
-            .len()
+            .peers
+            .connection_len()
             .saturating_add(self.pending_connects.len());
         if self.max_connections == 0 {
             usize::MAX
@@ -754,8 +754,8 @@ impl Node {
         }
 
         let in_flight_for_peer = self
-            .connections
-            .values()
+            .peers
+            .connection_values()
             .filter(|conn| {
                 conn.expected_identity()
                     .map(|id| id.node_addr() == peer_node_addr)
@@ -794,8 +794,8 @@ impl Node {
         let candidate_priority = u16::from(candidate_priority);
 
         let victim = self
-            .connections
-            .iter()
+            .peers
+            .connection_iter()
             .filter_map(|(link_id, conn)| {
                 let identity = conn.expected_identity()?;
                 if identity.node_addr() != peer_node_addr {
@@ -826,7 +826,7 @@ impl Node {
             return false;
         };
 
-        let Some(conn) = self.connections.remove(&link_id) else {
+        let Some(conn) = self.peers.remove_connection(&link_id) else {
             return false;
         };
         if let Some(idx) = conn.our_index()
@@ -1185,7 +1185,7 @@ impl Node {
         // Track in pending_outbound for msg2 dispatch
         self.pending_outbound
             .insert((transport_id, our_index.as_u32()), link_id);
-        self.connections.insert(link_id, connection);
+        self.peers.insert_connection(link_id, connection);
 
         // Send the wire format handshake message. If the very first send fails
         // synchronously (for example an IPv6 candidate on an IPv4-only UDP
@@ -1218,7 +1218,7 @@ impl Node {
                         );
                         self.pending_outbound
                             .remove(&(transport_id, our_index.as_u32()));
-                        self.connections.remove(&link_id);
+                        self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
                         let _ = self.index_allocator.free(our_index);
                         return Err(NodeError::from_transport_error(e));
@@ -1228,7 +1228,7 @@ impl Node {
             None => {
                 self.pending_outbound
                     .remove(&(transport_id, our_index.as_u32()));
-                self.connections.remove(&link_id);
+                self.peers.remove_connection(&link_id);
                 self.links.remove(&link_id);
                 let _ = self.index_allocator.free(our_index);
                 return Err(NodeError::TransportError(format!(
@@ -2540,7 +2540,7 @@ impl Node {
         info!("Node started:");
         info!("       state: {}", self.state);
         info!("  transports: {}", self.transports.len());
-        info!(" connections: {}", self.connections.len());
+        info!(" connections: {}", self.peers.connection_len());
         Ok(())
     }
 
@@ -3254,7 +3254,7 @@ impl Node {
                 skipped_cooldown = skipped_cooldown.saturating_add(1);
                 continue;
             }
-            let connecting = self.connections.values().any(|conn| {
+            let connecting = self.peers.connection_values().any(|conn| {
                 conn.expected_identity()
                     .map(|id| id.node_addr() == &node_addr)
                     .unwrap_or(false)
@@ -3390,8 +3390,8 @@ impl Node {
 
     fn available_outbound_slots(&self) -> usize {
         let connection_used = self
-            .connections
-            .len()
+            .peers
+            .connection_len()
             .saturating_add(self.pending_connects.len());
         let connection_slots = if self.max_connections == 0 {
             usize::MAX

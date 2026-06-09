@@ -223,7 +223,7 @@ impl Node {
 
         if self.max_peers > 0 && self.peers.len() >= self.max_peers {
             let is_known_active = self.peers.contains_key(&peer_node_addr);
-            let is_pending_outbound = self.connections.iter().any(|(_, conn)| {
+            let is_pending_outbound = self.peers.connection_iter().any(|(_, conn)| {
                 conn.expected_identity()
                     .map(|id| *id.node_addr() == peer_node_addr)
                     .unwrap_or(false)
@@ -284,7 +284,7 @@ impl Node {
                                 peer = %self.peer_display_name(&peer_node_addr),
                                 "Rekey msg1 received but already have pending session, dropping"
                             );
-                            self.connections.remove(&link_id);
+                            self.peers.remove_connection(&link_id);
                             self.links.remove(&link_id);
                             self.msg1_rate_limiter.complete_handshake();
                             return;
@@ -303,7 +303,7 @@ impl Node {
                                     peer = %self.peer_display_name(&peer_node_addr),
                                     "Dual rekey initiation: we win (smaller addr), dropping their msg1"
                                 );
-                                self.connections.remove(&link_id);
+                                self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
@@ -391,7 +391,7 @@ impl Node {
                         // Clean up any temporary connection/link state from this path.
                         // The active peer's link registry entry must keep recognizing
                         // future msg1s from this address as rekeys, not new connections.
-                        self.connections.remove(&link_id);
+                        self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
 
                         self.msg1_rate_limiter.complete_handshake();
@@ -461,11 +461,11 @@ impl Node {
         );
 
         self.links.insert(link_id, link);
-        self.connections.insert(link_id, conn);
+        self.peers.insert_connection(link_id, conn);
 
         // Build and send msg2 response, storing for potential resend
         let wire_msg2 = build_msg2(our_index, header.sender_idx, &msg2_response);
-        if let Some(conn) = self.connections.get_mut(&link_id) {
+        if let Some(conn) = self.peers.get_connection_mut(&link_id) {
             conn.set_handshake_msg2(wire_msg2.clone());
         }
 
@@ -487,7 +487,7 @@ impl Node {
                         "Failed to send msg2"
                     );
                     // Clean up on failure
-                    self.connections.remove(&link_id);
+                    self.peers.remove_connection(&link_id);
                     self.links.remove(&link_id);
                     let _ = self.index_allocator.free(our_index);
                     self.msg1_rate_limiter.complete_handshake();
@@ -592,7 +592,7 @@ impl Node {
     /// (if already promoted).
     fn find_stored_msg2(&self, link_id: LinkId) -> Option<Vec<u8>> {
         // Check pending connection first
-        if let Some(conn) = self.connections.get(&link_id)
+        if let Some(conn) = self.peers.get_connection(&link_id)
             && let Some(msg2) = conn.handshake_msg2()
         {
             return Some(msg2.to_vec());
@@ -655,9 +655,10 @@ impl Node {
         };
 
         // Check if this is a rekey msg2: the handshake state is on the
-        // ActivePeer (not a PeerConnection), so self.connections won't have it.
+        // ActivePeer (not a pending PeerConnection), so the lifecycle registry
+        // will not have it in the connection phase.
         // Look for a peer with matching rekey_our_index.
-        if !self.connections.contains_key(&link_id) {
+        if !self.peers.contains_connection(&link_id) {
             let noise_msg2 = &packet.data[header.noise_msg2_offset..];
 
             // Find peer with rekey in progress for this index
@@ -739,7 +740,7 @@ impl Node {
         }
 
         let (peer_identity, our_index) = {
-            let conn = self.connections.get_mut(&link_id).unwrap();
+            let conn = self.peers.get_connection_mut(&link_id).unwrap();
 
             let noise_msg2 = &packet.data[header.noise_msg2_offset..];
             if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
@@ -783,7 +784,7 @@ impl Node {
                     transport.close_connection(&addr).await;
                 }
             }
-            self.connections.remove(&link_id);
+            self.peers.remove_connection(&link_id);
             self.remove_link(&link_id);
             if let Some(idx) = our_index {
                 let _ = self.index_allocator.free(idx);
@@ -818,7 +819,7 @@ impl Node {
             );
 
             // Extract the outbound connection
-            let mut conn = match self.connections.remove(&link_id) {
+            let mut conn = match self.peers.remove_connection(&link_id) {
                 Some(c) => c,
                 None => {
                     self.pending_outbound.remove(&key);
@@ -1223,8 +1224,8 @@ impl Node {
     ) -> Result<PromotionResult, NodeError> {
         // Remove the connection from pending
         let mut connection = self
-            .connections
-            .remove(&link_id)
+            .peers
+            .remove_connection(&link_id)
             .ok_or(NodeError::ConnectionNotFound(link_id))?;
 
         // Verify handshake is complete and extract session
@@ -1416,8 +1417,8 @@ impl Node {
             // peer. The outbound will be cleaned up in handle_msg2 or by
             // the 30s handshake timeout.
             let pending_to_same_peer: Vec<LinkId> = self
-                .connections
-                .iter()
+                .peers
+                .connection_iter()
                 .filter(|(_, conn)| {
                     conn.expected_identity()
                         .map(|id| *id.node_addr() == peer_node_addr)

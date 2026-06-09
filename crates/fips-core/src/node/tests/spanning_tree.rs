@@ -130,7 +130,7 @@ fn prepare_outbound_msg1(nodes: &mut [TestNode], i: usize, j: usize) -> Vec<u8> 
         .node
         .links
         .insert_addr((transport_id, responder_addr.clone()), link_id);
-    initiator.node.connections.insert(link_id, conn);
+    initiator.node.peers.insert_connection(link_id, conn);
     initiator
         .node
         .pending_outbound
@@ -187,7 +187,7 @@ async fn run_synthetic_node_work(nodes: &mut [TestNode]) {
 
 fn has_synthetic_pending_work(nodes: &[TestNode]) -> bool {
     nodes.iter().any(|tn| {
-        !tn.node.connections.is_empty()
+        !tn.node.peers.connection_is_empty()
             || tn.node.peers.iter().any(|(addr, peer)| {
                 peer.has_pending_tree_announce() || tn.node.bloom_state.needs_update(addr)
             })
@@ -604,7 +604,7 @@ fn clear_edge_state(nodes: &mut [TestNode], from: usize, to: usize) {
         .collect();
 
     for link_id in stale_link_ids {
-        if let Some(conn) = nodes[from].node.connections.remove(&link_id)
+        if let Some(conn) = nodes[from].node.peers.remove_connection(&link_id)
             && let Some(idx) = conn.our_index()
         {
             nodes[from]
@@ -625,7 +625,7 @@ fn clear_edge_state(nodes: &mut [TestNode], from: usize, to: usize) {
         .remove_addr(&(transport_id, remote_addr));
 
     let live_connection_ids: std::collections::HashSet<LinkId> =
-        nodes[from].node.connections.keys().copied().collect();
+        nodes[from].node.peers.connection_keys().copied().collect();
     nodes[from]
         .node
         .pending_outbound

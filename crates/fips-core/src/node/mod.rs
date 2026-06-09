@@ -1773,6 +1773,11 @@ impl ActivePeerRegistry {
         self.peers.len()
     }
 
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.peers.is_empty()
+    }
+
     pub(in crate::node) fn values(&self) -> impl Iterator<Item = &ActivePeer> {
         self.peers.values()
     }
@@ -1843,6 +1848,174 @@ impl<'a> IntoIterator for &'a ActivePeerRegistry {
 
     fn into_iter(self) -> Self::IntoIter {
         self.peers.iter()
+    }
+}
+
+/// Peer lifecycle storage for handshake and active phases.
+#[derive(Debug, Default)]
+pub(in crate::node) struct PeerLifecycleRegistry {
+    connections: HashMap<LinkId, PeerConnection>,
+    active: ActivePeerRegistry,
+}
+
+impl PeerLifecycleRegistry {
+    pub(in crate::node) fn insert_connection(
+        &mut self,
+        link_id: LinkId,
+        connection: PeerConnection,
+    ) -> Option<PeerConnection> {
+        debug_assert_eq!(link_id, connection.link_id());
+        self.connections.insert(link_id, connection)
+    }
+
+    pub(in crate::node) fn remove_connection(
+        &mut self,
+        link_id: &LinkId,
+    ) -> Option<PeerConnection> {
+        self.connections.remove(link_id)
+    }
+
+    pub(in crate::node) fn get_connection(&self, link_id: &LinkId) -> Option<&PeerConnection> {
+        self.connections.get(link_id)
+    }
+
+    pub(in crate::node) fn get_connection_mut(
+        &mut self,
+        link_id: &LinkId,
+    ) -> Option<&mut PeerConnection> {
+        self.connections.get_mut(link_id)
+    }
+
+    pub(in crate::node) fn contains_connection(&self, link_id: &LinkId) -> bool {
+        self.connections.contains_key(link_id)
+    }
+
+    pub(in crate::node) fn connection_len(&self) -> usize {
+        self.connections.len()
+    }
+
+    pub(in crate::node) fn connection_is_empty(&self) -> bool {
+        self.connections.is_empty()
+    }
+
+    pub(in crate::node) fn connection_values(&self) -> impl Iterator<Item = &PeerConnection> {
+        self.connections.values()
+    }
+
+    pub(in crate::node) fn connection_iter(
+        &self,
+    ) -> impl Iterator<Item = (&LinkId, &PeerConnection)> {
+        self.connections.iter()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn connection_keys(&self) -> impl Iterator<Item = &LinkId> {
+        self.connections.keys()
+    }
+
+    pub(in crate::node) fn insert(
+        &mut self,
+        node_addr: NodeAddr,
+        peer: ActivePeer,
+    ) -> Option<ActivePeer> {
+        self.active.insert(node_addr, peer)
+    }
+
+    pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<ActivePeer> {
+        self.active.remove(node_addr)
+    }
+
+    pub(in crate::node) fn get(&self, node_addr: &NodeAddr) -> Option<&ActivePeer> {
+        self.active.get(node_addr)
+    }
+
+    pub(in crate::node) fn get_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut ActivePeer> {
+        self.active.get_mut(node_addr)
+    }
+
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.active.contains_key(node_addr)
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.active.len()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.active.is_empty()
+    }
+
+    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &ActivePeer> {
+        self.active.values()
+    }
+
+    pub(in crate::node) fn values_mut(&mut self) -> impl Iterator<Item = &mut ActivePeer> {
+        self.active.values_mut()
+    }
+
+    pub(in crate::node) fn keys(&self) -> impl Iterator<Item = &NodeAddr> {
+        self.active.keys()
+    }
+
+    pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&NodeAddr, &ActivePeer)> {
+        self.active.iter()
+    }
+
+    pub(in crate::node) fn iter_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&NodeAddr, &mut ActivePeer)> {
+        self.active.iter_mut()
+    }
+
+    pub(in crate::node) fn insert_session_index(
+        &mut self,
+        key: (TransportId, u32),
+        node_addr: NodeAddr,
+    ) -> Option<NodeAddr> {
+        self.active.insert_session_index(key, node_addr)
+    }
+
+    pub(in crate::node) fn remove_session_index(
+        &mut self,
+        key: &(TransportId, u32),
+    ) -> Option<NodeAddr> {
+        self.active.remove_session_index(key)
+    }
+
+    pub(in crate::node) fn lookup_session_index(
+        &self,
+        key: (TransportId, u32),
+    ) -> Option<NodeAddr> {
+        self.active.lookup_session_index(key)
+    }
+
+    pub(in crate::node) fn peer_has_any_session_index(&self, node_addr: &NodeAddr) -> bool {
+        self.active.peer_has_any_session_index(node_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn get_session_index(&self, key: &(TransportId, u32)) -> Option<&NodeAddr> {
+        self.active.get_session_index(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn contains_session_index(&self, key: &(TransportId, u32)) -> bool {
+        self.active.contains_session_index(key)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn session_index_is_empty(&self) -> bool {
+        self.active.session_index_is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a PeerLifecycleRegistry {
+    type Item = (&'a NodeAddr, &'a ActivePeer);
+    type IntoIter = std::collections::hash_map::Iter<'a, NodeAddr, ActivePeer>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.active.peers.iter()
     }
 }
 
@@ -2056,14 +2229,9 @@ pub struct Node {
     /// Packet receiver (for event loop).
     packet_rx: Option<PacketRx>,
 
-    // === Connections (Handshake Phase) ===
-    /// Pending connections (handshake in progress).
-    /// Indexed by LinkId since we don't know the peer's identity yet.
-    connections: HashMap<LinkId, PeerConnection>,
-
-    // === Peers (Active Phase) ===
-    /// Authenticated peers plus active receiver-index dispatch.
-    peers: ActivePeerRegistry,
+    // === Peer Lifecycle ===
+    /// Pending handshake connections plus authenticated peers.
+    peers: PeerLifecycleRegistry,
 
     // === End-to-End Sessions ===
     /// Session table for end-to-end encrypted sessions.
@@ -2355,8 +2523,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            connections: HashMap::new(),
-            peers: ActivePeerRegistry::default(),
+            peers: PeerLifecycleRegistry::default(),
             sessions: HashMap::new(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
@@ -2499,8 +2666,7 @@ impl Node {
             links: LinkRegistry::default(),
             packet_tx: None,
             packet_rx: None,
-            connections: HashMap::new(),
-            peers: ActivePeerRegistry::default(),
+            peers: PeerLifecycleRegistry::default(),
             sessions: HashMap::new(),
             identity_cache: IdentityCache::default(),
             pending_session_traffic: PendingSessionTrafficQueues::default(),
@@ -3335,8 +3501,8 @@ impl Node {
     /// cap. A cap of `0` means uncapped.
     pub(crate) fn outbound_admission_check(&self) -> bool {
         let connection_used = self
-            .connections
-            .len()
+            .peers
+            .connection_len()
             .saturating_add(self.pending_connects.len());
         let peer_allowed = self.max_peers == 0 || self.peers.len() < self.max_peers;
         let connection_allowed =
@@ -3372,8 +3538,8 @@ impl Node {
     /// connection/link, but it does not consume a new peer slot.
     pub(crate) fn outbound_direct_refresh_admission_check(&self) -> bool {
         let connection_used = self
-            .connections
-            .len()
+            .peers
+            .connection_len()
             .saturating_add(self.pending_connects.len());
         let connection_allowed =
             self.max_connections == 0 || connection_used < self.max_connections;
@@ -3390,7 +3556,7 @@ impl Node {
 
     /// Number of pending connections (handshake in progress).
     pub fn connection_count(&self) -> usize {
-        self.connections.len()
+        self.peers.connection_len()
     }
 
     /// Number of authenticated peers.
@@ -3497,8 +3663,8 @@ impl Node {
             .values()
             .any(|link| link.transport_id() == transport_id)
             || self
-                .connections
-                .values()
+                .peers
+                .connection_values()
                 .any(|conn| conn.transport_id() == Some(transport_id))
             || self
                 .peers
@@ -3534,38 +3700,38 @@ impl Node {
     pub fn add_connection(&mut self, connection: PeerConnection) -> Result<(), NodeError> {
         let link_id = connection.link_id();
 
-        if self.connections.contains_key(&link_id) {
+        if self.peers.contains_connection(&link_id) {
             return Err(NodeError::ConnectionAlreadyExists(link_id));
         }
 
-        if self.max_connections > 0 && self.connections.len() >= self.max_connections {
+        if self.max_connections > 0 && self.peers.connection_len() >= self.max_connections {
             return Err(NodeError::MaxConnectionsExceeded {
                 max: self.max_connections,
             });
         }
 
-        self.connections.insert(link_id, connection);
+        self.peers.insert_connection(link_id, connection);
         Ok(())
     }
 
     /// Get a connection by LinkId.
     pub fn get_connection(&self, link_id: &LinkId) -> Option<&PeerConnection> {
-        self.connections.get(link_id)
+        self.peers.get_connection(link_id)
     }
 
     /// Get a mutable connection by LinkId.
     pub fn get_connection_mut(&mut self, link_id: &LinkId) -> Option<&mut PeerConnection> {
-        self.connections.get_mut(link_id)
+        self.peers.get_connection_mut(link_id)
     }
 
     /// Remove a connection.
     pub fn remove_connection(&mut self, link_id: &LinkId) -> Option<PeerConnection> {
-        self.connections.remove(link_id)
+        self.peers.remove_connection(link_id)
     }
 
     /// Iterate over all connections.
     pub fn connections(&self) -> impl Iterator<Item = &PeerConnection> {
-        self.connections.values()
+        self.peers.connection_values()
     }
 
     // === Peer Management (Active Phase) ===

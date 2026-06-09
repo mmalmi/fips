@@ -1848,7 +1848,7 @@ fn add_direct_peer_for_identity(node: &mut Node, identity: &Identity) {
 }
 
 fn has_outbound_handshake_to(node: &Node, dest_addr: &NodeAddr) -> bool {
-    node.connections.values().any(|conn| {
+    node.peers.connection_values().any(|conn| {
         conn.is_outbound()
             && conn
                 .expected_identity()

@@ -432,7 +432,7 @@ impl Node {
         let peer_node_addr = peer_identity.node_addr();
         self.peers.contains_key(peer_node_addr)
             || self.retry_pending.contains_key(peer_node_addr)
-            || self.connections.values().any(|conn| {
+            || self.peers.connection_values().any(|conn| {
                 conn.expected_identity()
                     .is_some_and(|id| id == peer_identity)
             })
@@ -451,8 +451,8 @@ impl Node {
             }
         }
         for identity in self
-            .connections
-            .values()
+            .peers
+            .connection_values()
             .filter_map(|conn| conn.expected_identity())
         {
             if !configured_npubs.contains(&identity.npub()) {

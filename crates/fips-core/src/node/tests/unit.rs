@@ -325,8 +325,8 @@ async fn test_try_peer_addresses_races_all_concrete_udp_candidates() {
         .unwrap();
 
     let mut addrs = node
-        .connections
-        .values()
+        .peers
+        .connection_values()
         .filter_map(|conn| conn.source_addr().and_then(|addr| addr.as_str()))
         .collect::<Vec<_>>();
     addrs.sort();
@@ -378,8 +378,8 @@ async fn test_try_peer_addresses_skips_incompatible_udp_address_family() {
 
     assert_eq!(node.connection_count(), 1);
     assert_eq!(
-        node.connections
-            .values()
+        node.peers
+            .connection_values()
             .next()
             .and_then(|conn| conn.source_addr())
             .and_then(|addr| addr.as_str()),
@@ -1509,6 +1509,58 @@ fn active_peer_registry_owns_storage_session_index_and_stale_safe_cleanup() {
 }
 
 #[test]
+fn peer_lifecycle_registry_owns_connection_and_active_peer_storage() {
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(77);
+    let session_key = (transport_id, 10);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let connection = PeerConnection::outbound(link_id, peer_identity.clone(), 1_000);
+
+    assert!(registry.insert_connection(link_id, connection).is_none());
+    assert_eq!(registry.connection_len(), 1);
+    assert!(registry.contains_connection(&link_id));
+    assert_eq!(
+        registry
+            .get_connection(&link_id)
+            .and_then(|conn: &PeerConnection| conn.expected_identity())
+            .map(|identity: &PeerIdentity| identity.node_addr()),
+        Some(&peer_addr)
+    );
+
+    assert!(
+        registry
+            .insert(peer_addr, ActivePeer::new(peer_identity, link_id, 2_000))
+            .is_none()
+    );
+    assert_eq!(registry.len(), 1);
+    assert!(registry.contains_key(&peer_addr));
+    assert_eq!(registry.insert_session_index(session_key, peer_addr), None);
+    assert_eq!(registry.lookup_session_index(session_key), Some(peer_addr));
+
+    let removed_connection = registry
+        .remove_connection(&link_id)
+        .expect("pending connection storage should live in the lifecycle owner");
+    assert_eq!(removed_connection.link_id(), link_id);
+    assert!(
+        registry.get(&peer_addr).is_some(),
+        "active peer storage must survive pending-connection teardown"
+    );
+    assert_eq!(registry.lookup_session_index(session_key), Some(peer_addr));
+
+    let removed_peer = registry
+        .remove(&peer_addr)
+        .expect("active peer storage should live in the lifecycle owner");
+    assert_eq!(removed_peer.node_addr(), &peer_addr);
+    assert!(registry.connection_is_empty());
+    assert!(registry.is_empty());
+}
+
+#[test]
 fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
     let session_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(1), 10);
     let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
@@ -1745,7 +1797,7 @@ fn test_promote_cleans_up_pending_outbound_to_same_peer() {
     node.links.insert(pending_link_id, pending_link);
     node.links
         .insert_addr((transport_id, pending_addr.clone()), pending_link_id);
-    node.connections.insert(pending_link_id, pending_conn);
+    node.peers.insert_connection(pending_link_id, pending_conn);
     node.pending_outbound
         .insert((transport_id, pending_index.as_u32()), pending_link_id);
 
@@ -3939,8 +3991,8 @@ async fn update_peers_races_new_alternative_even_when_current_path_is_still_know
     assert_eq!(node.peer_count(), 1, "existing link must stay live");
     assert_eq!(node.connection_count(), 1);
     assert_eq!(
-        node.connections
-            .values()
+        node.peers
+            .connection_values()
             .next()
             .and_then(|conn| conn.source_addr()),
         Some(&new_addr)
@@ -4033,8 +4085,8 @@ async fn update_peers_races_more_alternatives_while_peer_is_connecting_with_budg
         "one existing in-flight path plus three new paths should hit the per-peer race budget"
     );
     let attempted: std::collections::HashSet<_> = node
-        .connections
-        .values()
+        .peers
+        .connection_values()
         .filter_map(|conn| conn.source_addr().map(ToString::to_string))
         .collect();
     for addr in [
@@ -4100,7 +4152,7 @@ async fn update_peers_races_primary_path_when_active_peer_uses_bootstrap_transpo
         1,
         "bootstrap NAT path should not suppress a primary-transport refresh"
     );
-    let conn = node.connections.values().next().unwrap();
+    let conn = node.peers.connection_values().next().unwrap();
     assert_eq!(conn.transport_id(), Some(primary_id));
 
     for transport in node.transports.values_mut() {
@@ -4155,8 +4207,8 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
         "retry maintenance should race the configured direct path and re-probe the old UDP path while fallback remains active"
     );
     let attempted: std::collections::HashSet<_> = node
-        .connections
-        .values()
+        .peers
+        .connection_values()
         .filter_map(|conn| {
             (conn.transport_id() == Some(primary_id))
                 .then(|| conn.source_addr().map(ToString::to_string))
@@ -4422,7 +4474,7 @@ async fn active_nostr_peer_without_static_addresses_retests_observed_udp_path() 
         1,
         "reconnecting active peers with no static hints should still probe the last observed UDP endpoint"
     );
-    let conn = node.connections.values().next().unwrap();
+    let conn = node.peers.connection_values().next().unwrap();
     assert_eq!(conn.transport_id(), Some(primary_id));
     assert_eq!(conn.source_addr(), Some(&current_addr));
     assert_eq!(
@@ -4581,7 +4633,7 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
     );
     node.links
         .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
-    node.connections.insert(new_link_id, conn);
+    node.peers.insert_connection(new_link_id, conn);
     node.pending_outbound
         .insert((new_transport_id, our_index.as_u32()), new_link_id);
 
@@ -4670,7 +4722,7 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
     );
     node.links
         .insert_addr((old_transport_id, old_addr.clone()), old_link_id);
-    node.connections.insert(old_link_id, old_conn);
+    node.peers.insert_connection(old_link_id, old_conn);
     node.promote_connection(old_link_id, peer_identity, 1_100)
         .unwrap();
     assert_eq!(
@@ -4730,7 +4782,7 @@ async fn outbound_restart_promotion_clears_stale_fsp_session() {
     );
     node.links
         .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
 
     let result = node
         .promote_connection(new_link_id, peer_identity, 2_100)
@@ -4806,7 +4858,7 @@ async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lo
     new_conn.set_their_index(new_their_index);
     new_conn.set_transport_id(new_transport_id);
     new_conn.set_source_addr(new_addr);
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
 
     let result = node
         .promote_connection(new_link_id, peer_identity, 2_100)
@@ -4882,7 +4934,7 @@ async fn fresh_outbound_alternate_path_replaces_healthy_peer_even_if_tie_breaker
     new_conn.set_their_index(new_their_index);
     new_conn.set_transport_id(new_transport_id);
     new_conn.set_source_addr(new_addr.clone());
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
 
     let result = node
         .promote_connection(new_link_id, peer_identity, 2_100)
@@ -4975,7 +5027,7 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
     );
     node.links
         .insert_addr((new_transport_id, new_addr.clone()), new_link_id);
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
     node.pending_outbound
         .insert((new_transport_id, our_index.as_u32()), new_link_id);
 
@@ -5121,7 +5173,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
     );
     node.links
         .insert_addr((transport_id, lower_priority_addr.clone()), new_link_id);
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), new_link_id);
 
@@ -5376,7 +5428,7 @@ async fn handle_msg2_matches_pending_outbound_by_index_when_reply_transport_id_c
     );
     node.links
         .insert_addr((dial_transport_id, gateway_addr.clone()), new_link_id);
-    node.connections.insert(new_link_id, new_conn);
+    node.peers.insert_connection(new_link_id, new_conn);
     node.pending_outbound
         .insert((dial_transport_id, our_index.as_u32()), new_link_id);
 
@@ -5459,7 +5511,7 @@ async fn fmp_recovery_rekey_epoch_change_clears_stale_fsp_session() {
     );
     node.links
         .insert_addr((transport_id, remote_addr.clone()), link_id);
-    node.connections.insert(link_id, conn);
+    node.peers.insert_connection(link_id, conn);
     node.promote_connection(link_id, peer_identity, 1_100)
         .unwrap();
     assert_eq!(
@@ -5678,7 +5730,7 @@ fn outbound_admission_check_respects_connection_and_link_caps() {
             Duration::from_millis(100),
         ),
     );
-    node.connections.insert(link_id, conn);
+    node.peers.insert_connection(link_id, conn);
     assert!(
         !node.outbound_admission_check(),
         "bootstrap/open-discovery work must stop at max_connections"

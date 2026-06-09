@@ -78,7 +78,7 @@ async fn test_two_node_handshake_udp() {
         Duration::from_millis(100),
     );
     node_a.links.insert(link_id_a, link_a);
-    node_a.connections.insert(link_id_a, conn_a);
+    node_a.peers.insert_connection(link_id_a, conn_a);
     node_a
         .pending_outbound
         .insert((transport_id_a, our_index_a.as_u32()), link_id_a);
@@ -315,7 +315,7 @@ async fn test_run_rx_loop_handshake() {
         Duration::from_millis(100),
     );
     node_a.links.insert(link_id_a, link_a);
-    node_a.connections.insert(link_id_a, conn_a);
+    node_a.peers.insert_connection(link_id_a, conn_a);
     node_a
         .pending_outbound
         .insert((transport_id_a, our_index_a.as_u32()), link_id_a);
@@ -616,7 +616,7 @@ async fn test_cross_connection_both_initiate() {
     node_a
         .links
         .insert_addr((transport_id_a, remote_addr_b.clone()), link_id_a_out);
-    node_a.connections.insert(link_id_a_out, conn_a);
+    node_a.peers.insert_connection(link_id_a_out, conn_a);
     node_a
         .pending_outbound
         .insert((transport_id_a, our_index_a.as_u32()), link_id_a_out);
@@ -646,7 +646,7 @@ async fn test_cross_connection_both_initiate() {
     node_b
         .links
         .insert_addr((transport_id_b, remote_addr_a.clone()), link_id_b_out);
-    node_b.connections.insert(link_id_b_out, conn_b);
+    node_b.peers.insert_connection(link_id_b_out, conn_b);
     node_b
         .pending_outbound
         .insert((transport_id_b, our_index_b.as_u32()), link_id_b_out);
@@ -795,7 +795,7 @@ async fn test_stale_connection_cleanup() {
     node.links.insert(link_id, link);
     node.links
         .insert_addr((transport_id, remote_addr.clone()), link_id);
-    node.connections.insert(link_id, conn);
+    node.peers.insert_connection(link_id, conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
 
@@ -873,7 +873,7 @@ async fn test_failed_connection_cleanup() {
     node.links.insert(link_id, link);
     node.links
         .insert_addr((transport_id, remote_addr.clone()), link_id);
-    node.connections.insert(link_id, conn);
+    node.peers.insert_connection(link_id, conn);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
 
@@ -970,12 +970,12 @@ async fn test_resend_scheduling() {
     node.links.insert_addr((transport_id, remote_addr), link_id);
     node.pending_outbound
         .insert((transport_id, our_index.as_u32()), link_id);
-    node.connections.insert(link_id, conn);
+    node.peers.insert_connection(link_id, conn);
 
     // Before resend time: nothing should happen (no transport = can't send,
     // but the filter should exclude it because now < next_resend_at)
     node.resend_pending_handshakes(now_ms + 500).await;
-    let conn = node.connections.get(&link_id).unwrap();
+    let conn = node.peers.get_connection(&link_id).unwrap();
     assert_eq!(conn.resend_count(), 0, "No resend before scheduled time");
 
     // At resend time: would resend if transport existed. Without transport,
@@ -984,7 +984,7 @@ async fn test_resend_scheduling() {
     node.resend_pending_handshakes(now_ms + 1000).await;
     // No transport registered, so send fails — count stays 0.
     // That's the expected behavior (transport absence is a transient condition).
-    let conn = node.connections.get(&link_id).unwrap();
+    let conn = node.peers.get_connection(&link_id).unwrap();
     assert_eq!(
         conn.resend_count(),
         0,
