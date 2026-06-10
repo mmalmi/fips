@@ -254,8 +254,21 @@ impl SessionDispatchCommit {
         &self.source_addr
     }
 
+    #[cfg(test)]
     fn receive_completion(&self) -> Option<SessionReceiveCompletion> {
         self.receive_completion
+    }
+
+    fn record_receive(&self, sessions: &mut crate::node::SessionRegistry, now_ms: u64) -> bool {
+        let Some(completion) = self.receive_completion else {
+            return false;
+        };
+        let Some(entry) = sessions.get_mut(&completion.source_addr) else {
+            return false;
+        };
+        entry.record_recv(completion.body_len);
+        entry.touch(now_ms);
+        true
     }
 }
 
@@ -2195,12 +2208,7 @@ impl Node {
 
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        if let Some(completion) = commit.receive_completion()
-            && let Some(entry) = self.sessions.get_mut(&completion.source_addr)
-        {
-            entry.record_recv(completion.body_len);
-            entry.touch(Self::now_ms());
-        }
+        commit.record_receive(&mut self.sessions, Self::now_ms());
 
         // Flush any pending outbound packets (e.g., simultaneous initiation
         // where responder also had queued outbound packets)
@@ -5176,6 +5184,16 @@ mod tests {
                 body_len: endpoint_payload.len()
             })
         );
+        let local = Identity::generate();
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(source_addr, established_entry(&local, &peer));
+        assert!(commit.record_receive(&mut sessions, 0x0bad_cafe));
+        let entry = sessions.get(&source_addr).expect("session should remain");
+        assert_eq!(
+            entry.traffic_counters(),
+            (0, 1, 0, endpoint_payload.len() as u64)
+        );
+        assert_eq!(entry.last_activity(), 0x0bad_cafe);
 
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
@@ -5211,6 +5229,13 @@ mod tests {
             None,
             "MMP reports still flush pending packets without recording receive progress"
         );
+        assert!(!report_commit.record_receive(&mut sessions, 0x0bad_f00d));
+        let entry = sessions.get(&source_addr).expect("session should remain");
+        assert_eq!(
+            entry.traffic_counters(),
+            (0, 1, 0, endpoint_payload.len() as u64)
+        );
+        assert_eq!(entry.last_activity(), 0x0bad_cafe);
     }
 
     #[test]
