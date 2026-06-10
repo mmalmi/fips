@@ -115,6 +115,54 @@ enum SessionPathMtuApplySkip {
     MmpDisabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFspSendContextError {
+    NoSession,
+    NotEstablished,
+}
+
+impl SessionFspSendContextError {
+    fn into_node_error(self, node_addr: NodeAddr) -> NodeError {
+        let reason = match self {
+            Self::NoSession => "no session",
+            Self::NotEstablished => "session not established",
+        };
+        NodeError::SendFailed {
+            node_addr,
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionFspSendContext {
+    timestamp: u32,
+    spin_bit: bool,
+    current_k_bit: bool,
+    coords_warmup_remaining: u8,
+}
+
+impl SessionFspSendContext {
+    fn wants_coords(&self) -> bool {
+        self.coords_warmup_remaining > 0
+    }
+
+    fn inner_flags_byte(&self) -> u8 {
+        FspInnerFlags {
+            spin_bit: self.spin_bit,
+        }
+        .to_byte()
+    }
+
+    fn fsp_flags(&self, include_coords: bool) -> u8 {
+        let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
+        if self.current_k_bit {
+            flags |= FSP_FLAG_K;
+        }
+        flags
+    }
+}
+
 /// Authenticated established-FSP message ready for local dispatch.
 ///
 /// This is the post-open unit the rx loop dispatches today, and the future
@@ -895,9 +943,8 @@ impl SessionDatagramRuntimeRoute {
     }
 
     fn record_success(self, node: &mut Node, encoded_len: usize) {
-        if let Some(entry) = node.sessions.get_mut(&self.dest_addr) {
-            entry.record_outbound_next_hop(self.next_hop_addr);
-        }
+        node.sessions
+            .record_session_datagram_next_hop(&self.dest_addr, self.next_hop_addr);
         node.stats_mut().forwarding.record_originated(encoded_len);
     }
 
@@ -2316,6 +2363,78 @@ impl crate::node::SessionRegistry {
         entry.set_coords_warmup_remaining(warmup_packets);
         true
     }
+
+    fn session_fsp_send_context(
+        &self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+    ) -> Result<SessionFspSendContext, SessionFspSendContextError> {
+        let Some(entry) = self.get(dest_addr) else {
+            return Err(SessionFspSendContextError::NoSession);
+        };
+        if !entry.is_established() {
+            return Err(SessionFspSendContextError::NotEstablished);
+        }
+
+        Ok(SessionFspSendContext {
+            timestamp: entry.session_timestamp(now_ms),
+            spin_bit: entry.mmp().is_some_and(|m| m.spin_bit.tx_bit()),
+            current_k_bit: entry.current_k_bit(),
+            coords_warmup_remaining: entry.coords_warmup_remaining(),
+        })
+    }
+
+    fn consume_coords_warmup_packet(&mut self, dest_addr: &NodeAddr) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        let remaining = entry.coords_warmup_remaining();
+        if remaining == 0 {
+            return false;
+        }
+        entry.set_coords_warmup_remaining(remaining - 1);
+        true
+    }
+
+    fn seal_session_fsp_send(
+        &mut self,
+        plan: SessionFspSendPlan<'_>,
+    ) -> Result<SealedSessionFspSend, NodeError> {
+        let dest_addr = plan.dest_addr();
+        let Some(entry) = self.get_mut(&dest_addr) else {
+            return Err(SessionFspSendContextError::NoSession.into_node_error(dest_addr));
+        };
+        let session = match entry.state_mut() {
+            EndToEndState::Established(session) => session,
+            _ => {
+                return Err(SessionFspSendContextError::NotEstablished.into_node_error(dest_addr));
+            }
+        };
+        plan.seal(session)
+    }
+
+    fn seed_session_datagram_path_mtu(&mut self, dest_addr: &NodeAddr, path_mtu: u16) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        let Some(mmp) = entry.mmp_mut() else {
+            return false;
+        };
+        mmp.path_mtu.seed_source_mtu(path_mtu);
+        true
+    }
+
+    fn record_session_datagram_next_hop(
+        &mut self,
+        dest_addr: &NodeAddr,
+        next_hop_addr: NodeAddr,
+    ) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        entry.record_outbound_next_hop(next_hop_addr);
+        true
+    }
 }
 
 impl Node {
@@ -3694,24 +3813,12 @@ impl Node {
         payload: &[u8],
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
-
-        // First borrow: read session metadata (NLL releases before coord decision)
-        let entry = self
+        let send_context = self
             .sessions
-            .get(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let wants_coords = entry.coords_warmup_remaining() > 0;
-        let timestamp = entry.session_timestamp(now_ms);
-        let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
-        if !entry.is_established() {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "session not established".into(),
-            });
-        }
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        let wants_coords = send_context.wants_coords();
+        let timestamp = send_context.timestamp;
 
         // Build port-prefixed plaintext: [src_port:2 LE][dst_port:2 LE][payload...]
         let mut port_payload = Vec::with_capacity(FSP_PORT_HEADER_SIZE + payload.len());
@@ -3721,7 +3828,7 @@ impl Node {
 
         // Build inner plaintext (doesn't depend on counter)
         let msg_type = SessionMessageType::DataPacket.to_byte(); // 0x10
-        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
+        let inner_flags = send_context.inner_flags_byte();
         let inner_plaintext =
             fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &port_payload);
 
@@ -3747,18 +3854,14 @@ impl Node {
             (false, None, None)
         };
 
-        // Decrement warmup counter if we sent coords (piggybacked or standalone)
-        if wants_coords && let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.set_coords_warmup_remaining(entry.coords_warmup_remaining() - 1);
+        // Consume one warmup opportunity for either piggybacked coords or the
+        // standalone warmup attempt, preserving the previous retry behavior.
+        if wants_coords {
+            self.sessions.consume_coords_warmup_packet(dest_addr);
         }
 
         // Build FSP flags (CP flag if coords, K-bit for key epoch)
-        let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
-        if let Some(entry) = self.sessions.get(dest_addr)
-            && entry.current_k_bit()
-        {
-            flags |= FSP_FLAG_K;
-        }
+        let flags = send_context.fsp_flags(include_coords);
 
         let coords = my_coords.as_ref().zip(dest_coords.as_ref());
         self.send_session_fsp_plan(SessionFspSendPlan::new(
@@ -3780,25 +3883,7 @@ impl Node {
         plan: SessionFspSendPlan<'_>,
     ) -> Result<(), NodeError> {
         let dest_addr = plan.dest_addr();
-        let sealed = {
-            let entry = self
-                .sessions
-                .get_mut(&dest_addr)
-                .ok_or_else(|| NodeError::SendFailed {
-                    node_addr: dest_addr,
-                    reason: "no session".into(),
-                })?;
-            let session = match entry.state_mut() {
-                EndToEndState::Established(s) => s,
-                _ => {
-                    return Err(NodeError::SendFailed {
-                        node_addr: dest_addr,
-                        reason: "session not established".into(),
-                    });
-                }
-            };
-            plan.seal(session)?
-        };
+        let sealed = self.sessions.seal_session_fsp_send(plan)?;
         let (mut datagram, bookkeeping) =
             sealed.into_datagram(*self.node_addr(), self.config.node.session.default_ttl);
         self.send_session_datagram(&mut datagram).await?;
@@ -4229,26 +4314,15 @@ impl Node {
         }
 
         let now_ms = Self::now_ms();
-
-        let entry = self
+        let send_context = self
             .sessions
-            .get(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let wants_coords = entry.coords_warmup_remaining() > 0;
-        let timestamp = entry.session_timestamp(now_ms);
-        let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
-        if !entry.is_established() {
-            return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "session not established".into(),
-            });
-        }
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        let wants_coords = send_context.wants_coords();
+        let timestamp = send_context.timestamp;
 
         let msg_type = SessionMessageType::EndpointData.to_byte();
-        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
+        let inner_flags = send_context.inner_flags_byte();
         let inner_plaintext =
             fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload.as_slice());
 
@@ -4270,16 +4344,13 @@ impl Node {
             (false, None, None)
         };
 
-        if wants_coords && let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.set_coords_warmup_remaining(entry.coords_warmup_remaining() - 1);
+        // Consume one warmup opportunity for either piggybacked coords or the
+        // standalone warmup attempt, preserving the previous retry behavior.
+        if wants_coords {
+            self.sessions.consume_coords_warmup_packet(dest_addr);
         }
 
-        let mut flags = if include_coords { FSP_FLAG_CP } else { 0 };
-        if let Some(entry) = self.sessions.get(dest_addr)
-            && entry.current_k_bit()
-        {
-            flags |= FSP_FLAG_K;
-        }
+        let flags = send_context.fsp_flags(include_coords);
 
         Ok(PreparedEndpointSessionData {
             dest_addr,
@@ -4587,28 +4658,15 @@ impl Node {
         payload: &[u8],
     ) -> Result<(), NodeError> {
         let now_ms = Self::now_ms();
-
-        // Read spin bit and session timestamp from entry
-        let entry = self
+        let send_context = self
             .sessions
-            .get(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let timestamp = entry.session_timestamp(now_ms);
-        let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        let timestamp = send_context.timestamp;
 
         // Build inner flags with spin bit
-        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
-
-        let k_flags = if let Some(entry) = self.sessions.get(dest_addr)
-            && entry.current_k_bit()
-        {
-            FSP_FLAG_K
-        } else {
-            0
-        };
+        let inner_flags = send_context.inner_flags_byte();
+        let k_flags = send_context.fsp_flags(false);
 
         // FSP inner header + plaintext
         let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload);
@@ -4639,21 +4697,15 @@ impl Node {
 
         let my_coords = self.tree_state.my_coords().clone();
         let dest_coords = self.get_dest_coords(dest_addr);
-
-        // Read session metadata
-        let entry = self
+        let send_context = self
             .sessions
-            .get(dest_addr)
-            .ok_or_else(|| NodeError::SendFailed {
-                node_addr: *dest_addr,
-                reason: "no session".into(),
-            })?;
-        let timestamp = entry.session_timestamp(now_ms);
-        let spin_bit = entry.mmp().is_some_and(|m| m.spin_bit.tx_bit());
+            .session_fsp_send_context(dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(*dest_addr))?;
+        let timestamp = send_context.timestamp;
 
         // FSP inner header only, no body payload
         let msg_type = SessionMessageType::CoordsWarmup.to_byte();
-        let inner_flags = FspInnerFlags { spin_bit }.to_byte();
+        let inner_flags = send_context.inner_flags_byte();
         let inner_plaintext = fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &[]);
 
         self.send_session_fsp_plan(SessionFspSendPlan::new(
@@ -4720,14 +4772,9 @@ impl Node {
         }
         datagram.path_mtu = path_mtu;
 
-        let source_mmp_seeded = if let Some(entry) = self.sessions.get_mut(&dest_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            mmp.path_mtu.seed_source_mtu(path_mtu);
-            true
-        } else {
-            false
-        };
+        let source_mmp_seeded = self
+            .sessions
+            .seed_session_datagram_path_mtu(&dest_addr, path_mtu);
 
         Ok(SessionDatagramRuntimeRoute::new(
             dest_addr,
@@ -5532,6 +5579,172 @@ mod tests {
                 .coords_warmup_remaining(),
             2
         );
+    }
+
+    #[test]
+    fn session_registry_owns_fsp_send_context_and_coords_warmup_consumption() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let now_ms = 0x0102_0304_0506_0708;
+        let mut entry = established_entry(&local, &peer);
+        let expected_timestamp = entry.session_timestamp(now_ms);
+        entry.set_coords_warmup_remaining(2);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let context = sessions
+            .session_fsp_send_context(&peer_addr, now_ms)
+            .expect("established context");
+        assert_eq!(context.timestamp, expected_timestamp);
+        assert!(context.wants_coords());
+        assert_eq!(
+            context.inner_flags_byte(),
+            FspInnerFlags { spin_bit: false }.to_byte()
+        );
+        assert_eq!(context.fsp_flags(false), 0);
+        assert_eq!(context.fsp_flags(true), FSP_FLAG_CP);
+
+        assert!(sessions.consume_coords_warmup_packet(&peer_addr));
+        assert_eq!(
+            sessions
+                .get(&peer_addr)
+                .expect("session")
+                .coords_warmup_remaining(),
+            1
+        );
+        assert!(sessions.consume_coords_warmup_packet(&peer_addr));
+        assert_eq!(
+            sessions
+                .get(&peer_addr)
+                .expect("session")
+                .coords_warmup_remaining(),
+            0
+        );
+        assert!(!sessions.consume_coords_warmup_packet(&peer_addr));
+    }
+
+    #[test]
+    fn session_registry_fsp_send_context_reports_skip_reasons() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut sessions = crate::node::SessionRegistry::default();
+
+        assert_eq!(
+            sessions.session_fsp_send_context(&peer_addr, 123),
+            Err(SessionFspSendContextError::NoSession)
+        );
+
+        assert!(
+            sessions
+                .insert(peer_addr, initiating_entry(&local, &peer))
+                .is_none()
+        );
+        assert_eq!(
+            sessions.session_fsp_send_context(&peer_addr, 123),
+            Err(SessionFspSendContextError::NotEstablished)
+        );
+
+        let inner_plaintext =
+            fsp_prepend_inner_header(123, SessionMessageType::EndpointData.to_byte(), 0, b"hello");
+        let plan = SessionFspSendPlan::new(
+            peer_addr,
+            123,
+            0,
+            &inner_plaintext,
+            None,
+            SessionFspSendBookkeeping::Control,
+        );
+        let error = match sessions.seal_session_fsp_send(plan) {
+            Ok(_) => panic!("initiating session must not seal established FSP data"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                NodeError::SendFailed { node_addr, ref reason }
+                    if node_addr == peer_addr && reason == "session not established"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_fsp_sealing_and_datagram_bookkeeping() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let next_hop = node_addr(0x55);
+        let mut entry = established_entry(&local, &peer);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+        let counter_before = entry.send_counter();
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let inner_plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"hello",
+        );
+        let plan = SessionFspSendPlan::new(
+            peer_addr,
+            0x0102_0304,
+            FSP_FLAG_K,
+            &inner_plaintext,
+            None,
+            SessionFspSendBookkeeping::Data {
+                payload_len: 5,
+                now_ms: 0x5566_7788,
+            },
+        );
+
+        let sealed = sessions
+            .seal_session_fsp_send(plan)
+            .expect("established session should seal");
+        assert_eq!(sealed.dest_addr(), peer_addr);
+        assert_eq!(sealed.counter(), counter_before);
+        assert_eq!(
+            sessions.get(&peer_addr).expect("session").send_counter(),
+            counter_before + 1
+        );
+
+        let (_datagram, bookkeeping) = sealed.into_datagram(node_addr(0xaa), 7);
+        assert_eq!(
+            bookkeeping,
+            FspSendBookkeepingInput::data(
+                5,
+                counter_before,
+                0x0102_0304,
+                inner_plaintext.len() + crate::noise::TAG_SIZE,
+                0x5566_7788,
+            )
+        );
+
+        assert!(sessions.seed_session_datagram_path_mtu(&peer_addr, 1280));
+        assert_eq!(
+            sessions
+                .get(&peer_addr)
+                .and_then(|entry| entry.mmp())
+                .expect("session mmp")
+                .path_mtu
+                .current_mtu(),
+            1280
+        );
+        assert!(sessions.record_session_datagram_next_hop(&peer_addr, next_hop));
+        assert_eq!(
+            sessions
+                .get(&peer_addr)
+                .expect("session")
+                .last_outbound_next_hop(),
+            Some(next_hop)
+        );
+        assert!(!sessions.seed_session_datagram_path_mtu(&node_addr(0x77), 1280));
+        assert!(!sessions.record_session_datagram_next_hop(&node_addr(0x77), next_hop));
     }
 
     #[test]
