@@ -378,12 +378,7 @@ impl SessionDispatchCommit {
         let Some(completion) = self.receive_completion else {
             return false;
         };
-        let Some(entry) = sessions.get_mut(&completion.source_addr) else {
-            return false;
-        };
-        entry.record_recv(completion.body_len);
-        entry.touch(now_ms);
-        true
+        sessions.record_receive_completion(completion, now_ms)
     }
 
     async fn finalize(self, node: &mut Node) {
@@ -1887,6 +1882,33 @@ struct SessionRuntimeReceive<'a> {
     now_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct EstablishedFspReceive<'a> {
+    header: &'a FspEncryptedHeader,
+    ciphertext: &'a [u8],
+    path_mtu: u16,
+    ce_flag: bool,
+    now_ms: u64,
+}
+
+impl<'a> EstablishedFspReceive<'a> {
+    fn new(
+        header: &'a FspEncryptedHeader,
+        ciphertext: &'a [u8],
+        path_mtu: u16,
+        ce_flag: bool,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            header,
+            ciphertext,
+            path_mtu,
+            ce_flag,
+            now_ms,
+        }
+    }
+}
+
 impl<'a> SessionRuntimeReceive<'a> {
     fn new(
         entry: &'a mut SessionEntry,
@@ -2003,6 +2025,41 @@ impl<'a> SessionRuntimeReceive<'a> {
             inner_flags_byte,
             timestamp,
         ))
+    }
+}
+
+impl crate::node::SessionRegistry {
+    fn open_established_fsp_frame(
+        &mut self,
+        source_addr: &NodeAddr,
+        receive: EstablishedFspReceive<'_>,
+    ) -> FspFrameOutcome {
+        let Some(entry) = self.get_mut(source_addr) else {
+            return FspFrameOutcome::UnknownSession;
+        };
+
+        SessionRuntimeReceive::new(
+            entry,
+            receive.header,
+            receive.ciphertext,
+            receive.path_mtu,
+            receive.ce_flag,
+            receive.now_ms,
+        )
+        .open_established()
+    }
+
+    fn record_receive_completion(
+        &mut self,
+        completion: SessionReceiveCompletion,
+        now_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.get_mut(&completion.source_addr) else {
+            return false;
+        };
+        entry.record_recv(completion.body_len);
+        entry.touch(now_ms);
+        true
     }
 }
 
@@ -2130,21 +2187,20 @@ impl Node {
         }
 
         let ciphertext = &payload[ciphertext_offset..];
-        // One mutable session borrow owns FSP open/replay, K-bit handling,
-        // failure accounting, MMP receive bookkeeping, and the dispatch
-        // metadata returned to this post-borrow handler.
-        let outcome = match self.sessions.get_mut(src_addr) {
-            Some(entry) => SessionRuntimeReceive::new(
-                entry,
+        // The session registry owns the mutable lookup plus FSP open/replay,
+        // K-bit handling, failure accounting, MMP receive bookkeeping, and
+        // dispatch metadata. The rx loop supplies the parsed wire facts but no
+        // longer peeks into the session map directly on this hot edge.
+        let outcome = self.sessions.open_established_fsp_frame(
+            src_addr,
+            EstablishedFspReceive::new(
                 &header,
                 ciphertext,
                 delivery.path_mtu(),
                 delivery.ce_flag(),
                 Self::now_ms(),
-            )
-            .open_established(),
-            None => FspFrameOutcome::UnknownSession,
-        };
+            ),
+        );
 
         // The &mut entry borrow on self.sessions has dropped. Handle
         // slow-path outcomes and dispatch by msg_type (which calls
@@ -5110,6 +5166,70 @@ mod tests {
         }
         assert_eq!(entry.consecutive_decrypt_failures(), 0);
         assert_eq!(entry.last_inbound_frame_ms(), 2_000);
+    }
+
+    #[test]
+    fn session_registry_owns_established_fsp_open_lookup_and_bookkeeping() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let (local_session, mut peer_sender) = make_xk_session_pair(&local, &peer);
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(local_session),
+            1_000,
+            true,
+        );
+        entry.mark_established(1_000);
+        entry.record_decrypt_failure();
+
+        let endpoint_payload = b"registry runtime receive".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+        let counter = peer_sender.current_send_counter();
+        let header = build_fsp_header(counter, 0, plaintext.len() as u16);
+        let ciphertext = peer_sender
+            .encrypt_with_aad(&plaintext, &header)
+            .expect("test frame should encrypt");
+        let mut wire = header.to_vec();
+        wire.extend_from_slice(&ciphertext);
+        let parsed = FspEncryptedHeader::parse(&wire).expect("test frame should parse");
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*peer.node_addr(), entry);
+
+        let outcome = sessions.open_established_fsp_frame(
+            peer.node_addr(),
+            EstablishedFspReceive::new(&parsed, &wire[FSP_HEADER_SIZE..], 1_280, true, 2_000),
+        );
+
+        match outcome {
+            FspFrameOutcome::Authentic(message) => {
+                assert_eq!(message.source_peer().node_addr(), peer.node_addr());
+                assert_eq!(
+                    message.msg_type(),
+                    SessionMessageType::EndpointData.to_byte()
+                );
+                assert_eq!(message.body(), endpoint_payload);
+            }
+            other => panic!("expected authentic FSP frame, got {other:?}"),
+        }
+        let entry = sessions
+            .get(peer.node_addr())
+            .expect("session should remain");
+        assert_eq!(entry.consecutive_decrypt_failures(), 0);
+        assert_eq!(entry.last_inbound_frame_ms(), 2_000);
+
+        let missing = node_addr(0x77);
+        let outcome = sessions.open_established_fsp_frame(
+            &missing,
+            EstablishedFspReceive::new(&parsed, &wire[FSP_HEADER_SIZE..], 1_280, false, 2_001),
+        );
+        assert!(matches!(outcome, FspFrameOutcome::UnknownSession));
     }
 
     #[test]
