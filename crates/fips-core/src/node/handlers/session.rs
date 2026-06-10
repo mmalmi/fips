@@ -50,6 +50,7 @@ use tracing::{debug, info, trace, warn};
 /// `&mut entry` borrow on `self.sessions` drops. Lets the steady-state
 /// AEAD + MMP + path-MTU work all run under one `get_mut(src_addr)`
 /// instead of seven `self.sessions` operations per packet.
+#[derive(Debug)]
 enum FspFrameOutcome {
     /// FSP frame decrypted successfully; ready to dispatch by msg_type.
     /// `plaintext` is the full inner-decoded payload — the per-msg_type
@@ -1560,6 +1561,142 @@ fn should_ignore_stale_epoch_drain_failure(entry: &SessionEntry, received_k_bit:
         && received_k_bit != entry.current_k_bit()
 }
 
+/// Receive-side owner for one established FSP frame.
+///
+/// This is still called from the rx loop today, but it is the movable boundary
+/// for the future peer/session runtime: FSP open/replay, K-bit cutover,
+/// decrypt-failure accounting, MMP receive bookkeeping, and dispatch metadata
+/// now live behind one owner instead of an inline `Node` block.
+struct SessionRuntimeReceive<'a> {
+    entry: &'a mut SessionEntry,
+    ciphertext: &'a [u8],
+    counter: u64,
+    aad: &'a [u8],
+    received_k_bit: bool,
+    path_mtu: u16,
+    ce_flag: bool,
+    now_ms: u64,
+}
+
+impl<'a> SessionRuntimeReceive<'a> {
+    fn new(
+        entry: &'a mut SessionEntry,
+        header: &'a FspEncryptedHeader,
+        ciphertext: &'a [u8],
+        path_mtu: u16,
+        ce_flag: bool,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            entry,
+            ciphertext,
+            counter: header.counter,
+            aad: &header.header_bytes,
+            received_k_bit: header.flags & FSP_FLAG_K != 0,
+            path_mtu,
+            ce_flag,
+            now_ms,
+        }
+    }
+
+    fn open_established(self) -> FspFrameOutcome {
+        if !self.entry.is_established() {
+            return FspFrameOutcome::NotEstablished;
+        }
+
+        let (plaintext, slot) = {
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+            match self.entry.open_fsp_established_frame(
+                self.ciphertext,
+                self.counter,
+                self.aad,
+                self.received_k_bit,
+                self.now_ms,
+            ) {
+                Ok(result) => result,
+                Err(FspOpenError::NoLiveEpochAccepted) => {
+                    if should_ignore_stale_epoch_drain_failure(self.entry, self.received_k_bit) {
+                        return FspFrameOutcome::StaleEpochDrainFailure {
+                            counter: self.counter,
+                        };
+                    }
+                    let consecutive = self.entry.record_decrypt_failure();
+                    let recover_session =
+                        should_start_decrypt_failure_rekey(self.entry, consecutive);
+                    return FspFrameOutcome::DecryptFailed {
+                        error: crate::noise::NoiseError::DecryptionFailed,
+                        counter: self.counter,
+                        consecutive,
+                        recover_session,
+                    };
+                }
+            }
+        };
+
+        match slot {
+            EpochSlot::Pending => {
+                // A frame that authenticates against pending proves the peer
+                // reached the new epoch; promote pending to current.
+                if self.entry.rekey_msg3_payload().is_some() {
+                    self.entry.confirm_peer_new_epoch();
+                }
+                self.entry.handle_peer_kbit_flip(self.now_ms);
+            }
+            EpochSlot::Current => {
+                // If the initiator already cut over on its timer, a
+                // current-epoch frame confirms the responder received msg3.
+                if self.entry.rekey_msg3_payload().is_some()
+                    && self.entry.pending_new_session().is_none()
+                {
+                    self.entry.confirm_peer_new_epoch();
+                }
+            }
+            EpochSlot::Previous => {}
+        }
+
+        // Successful decrypt resets failure accounting so one bad packet does
+        // not carry forward toward recovery rekey.
+        self.entry.reset_decrypt_failures();
+        if self.entry.handshake_payload().is_some()
+            && self.entry.pending_new_session().is_none()
+            && !self.entry.has_rekey_in_progress()
+            && slot == EpochSlot::Current
+            && self.received_k_bit == self.entry.current_k_bit()
+        {
+            self.entry.clear_handshake_payload();
+        }
+
+        let (timestamp, msg_type, inner_flags_byte) = match fsp_strip_inner_header(&plaintext) {
+            Some((ts, mt, inf, _rest)) => (ts, mt, inf),
+            None => return FspFrameOutcome::BadInnerHeader,
+        };
+
+        if let Some(mmp) = self.entry.mmp_mut() {
+            let now = std::time::Instant::now();
+            mmp.receiver
+                .record_recv(self.counter, timestamp, plaintext.len(), self.ce_flag, now);
+            let inner_flags = FspInnerFlags::from_byte(inner_flags_byte);
+            let _spin_rtt = mmp
+                .spin_bit
+                .rx_observe(inner_flags.spin_bit, self.counter, now);
+            mmp.path_mtu.observe_incoming_mtu(self.path_mtu);
+        }
+        self.entry.touch_inbound_frame(self.now_ms);
+
+        let Some(source_peer) = self.entry.remote_identity() else {
+            return FspFrameOutcome::MissingRemoteIdentity;
+        };
+
+        FspFrameOutcome::Authentic {
+            source_peer,
+            plaintext,
+            msg_type,
+            inner_flags_byte,
+            timestamp,
+        }
+    }
+}
+
 impl Node {
     /// Handle a locally-delivered session datagram payload.
     ///
@@ -1697,142 +1834,20 @@ impl Node {
         }
 
         let ciphertext = &payload[ciphertext_offset..];
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
-
-        // Single &mut sessions[src_addr] borrow for is_established,
-        // K-bit detect+handle, AEAD decrypt, drain-window fallback,
-        // failure-counter bookkeeping (rehandshake threshold), inner-
-        // header strip, MMP receive, and path-MTU observation. Down
-        // from 7 `self.sessions` operations per packet
-        // (get + get + get_mut + remove + insert + get_mut + get_mut)
-        // to a single `get_mut`. Slow-path operations that need
-        // `&mut self` (decrypt-failure logging, msg_type dispatch into
-        // sub-handlers, session re-initiation after threshold) run
-        // after the borrow drops, communicated via `FspFrameOutcome`.
-        let outcome: FspFrameOutcome = 'outcome: {
-            let entry = match self.sessions.get_mut(src_addr) {
-                Some(e) => e,
-                None => break 'outcome FspFrameOutcome::UnknownSession,
-            };
-            if !entry.is_established() {
-                break 'outcome FspFrameOutcome::NotEstablished;
-            }
-
-            let now_ms = Self::now_ms();
-            let (plaintext, slot) = {
-                let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                match entry.open_fsp_established_frame(
-                    ciphertext,
-                    header.counter,
-                    &header.header_bytes,
-                    received_k_bit,
-                    now_ms,
-                ) {
-                    Ok(result) => result,
-                    Err(FspOpenError::NoLiveEpochAccepted) => {
-                        if should_ignore_stale_epoch_drain_failure(entry, received_k_bit) {
-                            break 'outcome FspFrameOutcome::StaleEpochDrainFailure {
-                                counter: header.counter,
-                            };
-                        }
-                        // Every live epoch failed. Once the consecutive-failure
-                        // threshold trips, recover by rekeying in place instead
-                        // of deleting this session. That keeps old-session
-                        // packets decryptable until the new session cuts over.
-                        let consecutive = entry.record_decrypt_failure();
-                        let recover_session =
-                            should_start_decrypt_failure_rekey(entry, consecutive);
-                        break 'outcome FspFrameOutcome::DecryptFailed {
-                            error: crate::noise::NoiseError::DecryptionFailed,
-                            counter: header.counter,
-                            consecutive,
-                            recover_session,
-                        };
-                    }
-                }
-            };
-
-            match slot {
-                EpochSlot::Pending => {
-                    // A frame that authenticates against pending proves the
-                    // peer reached the new epoch; promote pending to current.
-                    if entry.rekey_msg3_payload().is_some() {
-                        entry.confirm_peer_new_epoch();
-                    }
-                    entry.handle_peer_kbit_flip(now_ms);
-                }
-                EpochSlot::Current => {
-                    // If the initiator already cut over on its timer, a
-                    // current-epoch frame confirms the responder received msg3.
-                    if entry.rekey_msg3_payload().is_some() && entry.pending_new_session().is_none()
-                    {
-                        entry.confirm_peer_new_epoch();
-                    }
-                }
-                EpochSlot::Previous => {}
-            }
-
-            // Successful decrypt — reset the per-session failure
-            // counter so a single bad packet doesn't carry forward
-            // toward the threshold.
-            entry.reset_decrypt_failures();
-            if entry.handshake_payload().is_some()
-                && entry.pending_new_session().is_none()
-                && !entry.has_rekey_in_progress()
-                && slot == EpochSlot::Current
-                && received_k_bit == entry.current_k_bit()
-            {
-                entry.clear_handshake_payload();
-            }
-
-            // Strip FSP inner header (6 bytes) for the timestamp +
-            // msg_type + inner_flags fields. The rest of the buffer
-            // (the per-msg_type payload) is re-derived as
-            // `&plaintext[FSP_INNER_HEADER_SIZE..]` outside the borrow
-            // scope, since `rest` would otherwise borrow from
-            // `plaintext` and prevent us from returning owned
-            // `plaintext` from the labeled block.
-            let (timestamp, msg_type, inner_flags_byte) = match fsp_strip_inner_header(&plaintext) {
-                Some((ts, mt, inf, _rest)) => (ts, mt, inf),
-                None => break 'outcome FspFrameOutcome::BadInnerHeader,
-            };
-
-            // MMP receive bookkeeping + path-MTU observation. Same
-            // &mut entry borrow — collapses the two consecutive
-            // `self.sessions.get_mut(src_addr) + entry.mmp_mut()`
-            // blocks (and the matching pair of `Instant::now()`
-            // calls) from the original implementation into one.
-            if let Some(mmp) = entry.mmp_mut() {
-                let now = std::time::Instant::now();
-                mmp.receiver
-                    .record_recv(header.counter, timestamp, plaintext.len(), ce_flag, now);
-                // Spin bit: advance state machine for correct TX
-                // reflection. RTT samples not fed into SRTT —
-                // timestamp-echo provides accurate RTT; spin bit
-                // includes variable inter-frame delays.
-                let inner_flags = FspInnerFlags::from_byte(inner_flags_byte);
-                let _spin_rtt = mmp
-                    .spin_bit
-                    .rx_observe(inner_flags.spin_bit, header.counter, now);
-                // Feed path_mtu from datagram envelope to MMP path
-                // MTU tracking. Done for ALL session messages, not
-                // just DataPackets, so the destination learns the
-                // path MTU even when only reports flow.
-                mmp.path_mtu.observe_incoming_mtu(path_mtu);
-            }
-            entry.touch_inbound_frame(now_ms);
-
-            let Some(source_peer) = entry.remote_identity() else {
-                break 'outcome FspFrameOutcome::MissingRemoteIdentity;
-            };
-
-            FspFrameOutcome::Authentic {
-                source_peer,
-                plaintext,
-                msg_type,
-                inner_flags_byte,
-                timestamp,
-            }
+        // One mutable session borrow owns FSP open/replay, K-bit handling,
+        // failure accounting, MMP receive bookkeeping, and the dispatch
+        // metadata returned to this post-borrow handler.
+        let outcome = match self.sessions.get_mut(src_addr) {
+            Some(entry) => SessionRuntimeReceive::new(
+                entry,
+                &header,
+                ciphertext,
+                path_mtu,
+                ce_flag,
+                Self::now_ms(),
+            )
+            .open_established(),
+            None => FspFrameOutcome::UnknownSession,
         };
 
         // The &mut entry borrow on self.sessions has dropped. Handle
@@ -4874,6 +4889,110 @@ mod tests {
             1000,
             true,
         )
+    }
+
+    #[test]
+    fn session_runtime_receive_owns_fsp_open_bookkeeping_and_dispatch_metadata() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let (local_session, mut peer_sender) = make_xk_session_pair(&local, &peer);
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(local_session),
+            1_000,
+            true,
+        );
+        entry.mark_established(1_000);
+        entry.record_decrypt_failure();
+
+        let endpoint_payload = b"endpoint runtime receive".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+        let counter = peer_sender.current_send_counter();
+        let header = build_fsp_header(counter, 0, plaintext.len() as u16);
+        let ciphertext = peer_sender
+            .encrypt_with_aad(&plaintext, &header)
+            .expect("test frame should encrypt");
+        let mut wire = header.to_vec();
+        wire.extend_from_slice(&ciphertext);
+        let parsed = FspEncryptedHeader::parse(&wire).expect("test frame should parse");
+
+        let outcome = SessionRuntimeReceive::new(
+            &mut entry,
+            &parsed,
+            &wire[FSP_HEADER_SIZE..],
+            1_280,
+            true,
+            2_000,
+        )
+        .open_established();
+
+        match outcome {
+            FspFrameOutcome::Authentic {
+                source_peer,
+                plaintext: opened,
+                msg_type,
+                inner_flags_byte,
+                timestamp,
+            } => {
+                assert_eq!(source_peer.node_addr(), peer.node_addr());
+                assert_eq!(opened, plaintext);
+                assert_eq!(msg_type, SessionMessageType::EndpointData.to_byte());
+                assert_eq!(inner_flags_byte, 0);
+                assert_eq!(timestamp, 0x0102_0304);
+            }
+            other => panic!("expected authentic FSP frame, got {other:?}"),
+        }
+        assert_eq!(entry.consecutive_decrypt_failures(), 0);
+        assert_eq!(entry.last_inbound_frame_ms(), 2_000);
+    }
+
+    #[test]
+    fn session_runtime_receive_owns_decrypt_failure_recovery_gate() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        let plaintext_len = FSP_INNER_HEADER_SIZE + 32;
+        let forged_ciphertext = vec![0u8; plaintext_len + crate::noise::TAG_SIZE];
+
+        for attempt in 1..=DECRYPT_FAILURE_RECOVERY_THRESHOLD {
+            let header = build_fsp_header(attempt as u64, 0, plaintext_len as u16);
+            let mut wire = header.to_vec();
+            wire.extend_from_slice(&forged_ciphertext);
+            let parsed = FspEncryptedHeader::parse(&wire).expect("forged frame should parse");
+            let outcome = SessionRuntimeReceive::new(
+                &mut entry,
+                &parsed,
+                &wire[FSP_HEADER_SIZE..],
+                1_280,
+                false,
+                2_000 + attempt as u64,
+            )
+            .open_established();
+
+            match outcome {
+                FspFrameOutcome::DecryptFailed {
+                    counter,
+                    consecutive,
+                    recover_session,
+                    ..
+                } => {
+                    assert_eq!(counter, attempt as u64);
+                    assert_eq!(consecutive, attempt);
+                    assert_eq!(
+                        recover_session,
+                        attempt == DECRYPT_FAILURE_RECOVERY_THRESHOLD
+                    );
+                }
+                other => panic!("expected decrypt failure, got {other:?}"),
+            }
+        }
     }
 
     #[cfg(unix)]
