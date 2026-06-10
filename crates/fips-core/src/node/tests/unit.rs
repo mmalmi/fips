@@ -132,6 +132,50 @@ fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outsi
 }
 
 #[test]
+fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let mut runtime = EndpointEventRuntime::default();
+
+    assert!(!runtime.is_attached());
+    runtime
+        .deliver_message(NodeEndpointMessage::new(source, b"detached".to_vec()))
+        .expect("detached endpoint runtime delivery should be a no-op");
+    assert!(
+        event_rx.try_recv().is_err(),
+        "detached runtime must not enqueue endpoint events"
+    );
+    assert_eq!(event_tx.queued_messages(), 0);
+
+    runtime.attach(event_tx.clone());
+    runtime.begin_batch();
+    runtime
+        .deliver_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+        .expect("first batched endpoint event");
+    runtime
+        .deliver_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+        .expect("second batched endpoint event");
+    assert!(
+        event_rx.try_recv().is_err(),
+        "runtime batch scope should not flush before finish"
+    );
+
+    runtime.finish_batch();
+    assert_eq!(event_tx.queued_messages(), 2);
+    match event_rx.try_recv().expect("batched event") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].source_peer, source);
+            assert_eq!(messages[0].payload, b"first");
+            assert_eq!(messages[1].source_peer, source);
+            assert_eq!(messages[1].payload, b"second");
+        }
+        event => panic!("expected endpoint event batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+}
+
+#[test]
 fn endpoint_event_queue_owns_backlog_message_count() {
     let mut node = Node::new(Config::new()).expect("node");
     let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");

@@ -1137,6 +1137,19 @@ pub(crate) struct EndpointEventReceiver {
     queued_messages: Arc<AtomicUsize>,
 }
 
+/// Delivery-side owner for endpoint data emitted by session receive handling.
+///
+/// The rx loop currently owns this runtime, but keeping sender, batching, and
+/// backlog accounting behind one value makes the future peer/shard receive
+/// runtime move explicit instead of threading endpoint-event fields through
+/// `Node` packet handlers.
+#[derive(Debug, Default)]
+pub(in crate::node) struct EndpointEventRuntime {
+    sender: Option<EndpointEventSender>,
+    batch_depth: usize,
+    batch: Vec<NodeEndpointMessage>,
+}
+
 impl EndpointEventSender {
     fn channel() -> (Self, EndpointEventReceiver) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1181,6 +1194,92 @@ impl EndpointEventSender {
     #[cfg(test)]
     pub(crate) fn queued_messages(&self) -> usize {
         self.queued_messages.load(Relaxed)
+    }
+}
+
+impl EndpointEventRuntime {
+    fn attach(&mut self, sender: EndpointEventSender) {
+        self.sender = Some(sender);
+        self.batch_depth = 0;
+        self.batch.clear();
+    }
+
+    pub(in crate::node) fn is_attached(&self) -> bool {
+        self.sender.is_some()
+    }
+
+    pub(in crate::node) fn begin_batch(&mut self) {
+        if self.is_attached() {
+            self.batch_depth = self.batch_depth.saturating_add(1);
+        }
+    }
+
+    pub(in crate::node) fn finish_batch(&mut self) {
+        if self.batch_depth == 0 {
+            return;
+        }
+        self.batch_depth -= 1;
+        if self.batch_depth == 0 {
+            self.flush_batch();
+        }
+    }
+
+    pub(in crate::node) fn deliver_message(
+        &mut self,
+        message: NodeEndpointMessage,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if self.batch_depth > 0 {
+            self.batch.push(message);
+            return Ok(());
+        }
+
+        self.send(NodeEndpointEvent::Data {
+            source_peer: message.source_peer,
+            payload: message.payload,
+            queued_at: crate::perf_profile::stamp(),
+        })
+    }
+
+    fn flush_batch(&mut self) {
+        let count = self.batch.len();
+        if count == 0 {
+            return;
+        }
+
+        let queued_at = crate::perf_profile::stamp();
+        let event = if count == 1 {
+            let message = self.batch.pop().expect("batch should contain message");
+            NodeEndpointEvent::Data {
+                source_peer: message.source_peer,
+                payload: message.payload,
+                queued_at,
+            }
+        } else {
+            NodeEndpointEvent::DataBatch {
+                messages: std::mem::take(&mut self.batch),
+                queued_at,
+            }
+        };
+
+        if let Err(error) = self.send(event) {
+            debug!(
+                error = %error,
+                messages = count,
+                "Failed to deliver endpoint data event batch"
+            );
+        }
+    }
+
+    fn send(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let Some(sender) = &self.sender else {
+            return Ok(());
+        };
+        let _t_deliver =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
+        sender.send(event)
     }
 }
 
@@ -3762,12 +3861,8 @@ pub struct Node {
     endpoint_priority_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
-    /// Endpoint data event sink used by embedded/no-daemon integrations.
-    endpoint_event_tx: Option<EndpointEventSender>,
-    /// Nesting depth for rx-loop-scoped endpoint event batching.
-    endpoint_event_batch_depth: usize,
-    /// Endpoint payloads collected during the current rx-loop drain cycle.
-    endpoint_event_batch: Vec<NodeEndpointMessage>,
+    /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
+    endpoint_events: EndpointEventRuntime,
     /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
     /// spawned (set up in `start()` once transports are running).
     /// `Some(pool)` once available; the pool internally holds
@@ -4013,9 +4108,7 @@ impl Node {
             external_packet_tx: None,
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
-            endpoint_event_tx: None,
-            endpoint_event_batch_depth: 0,
-            endpoint_event_batch: Vec::new(),
+            endpoint_events: EndpointEventRuntime::default(),
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,
@@ -4157,9 +4250,7 @@ impl Node {
             external_packet_tx: None,
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
-            endpoint_event_tx: None,
-            endpoint_event_batch_depth: 0,
-            endpoint_event_batch: Vec::new(),
+            endpoint_events: EndpointEventRuntime::default(),
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,
@@ -6053,7 +6144,7 @@ impl Node {
         let (event_tx, event_rx) = EndpointEventSender::channel();
         self.endpoint_priority_command_rx = Some(priority_command_rx);
         self.endpoint_command_rx = Some(command_rx);
-        self.endpoint_event_tx = Some(event_tx.clone());
+        self.endpoint_events.attach(event_tx.clone());
 
         Ok(EndpointDataIo {
             priority_command_tx,
@@ -6064,80 +6155,18 @@ impl Node {
     }
 
     pub(in crate::node) fn begin_endpoint_event_batch(&mut self) {
-        if self.endpoint_event_tx.is_some() {
-            self.endpoint_event_batch_depth = self.endpoint_event_batch_depth.saturating_add(1);
-        }
+        self.endpoint_events.begin_batch();
     }
 
     pub(in crate::node) fn finish_endpoint_event_batch(&mut self) {
-        if self.endpoint_event_batch_depth == 0 {
-            return;
-        }
-        self.endpoint_event_batch_depth -= 1;
-        if self.endpoint_event_batch_depth == 0 {
-            self.flush_endpoint_event_batch();
-        }
+        self.endpoint_events.finish_batch();
     }
 
     pub(in crate::node) fn deliver_endpoint_event_message(
         &mut self,
         message: NodeEndpointMessage,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        if self.endpoint_event_batch_depth > 0 {
-            self.endpoint_event_batch.push(message);
-            return Ok(());
-        }
-
-        self.send_endpoint_event(NodeEndpointEvent::Data {
-            source_peer: message.source_peer,
-            payload: message.payload,
-            queued_at: crate::perf_profile::stamp(),
-        })
-    }
-
-    fn flush_endpoint_event_batch(&mut self) {
-        let count = self.endpoint_event_batch.len();
-        if count == 0 {
-            return;
-        }
-
-        let queued_at = crate::perf_profile::stamp();
-        let event = if count == 1 {
-            let message = self
-                .endpoint_event_batch
-                .pop()
-                .expect("batch should contain message");
-            NodeEndpointEvent::Data {
-                source_peer: message.source_peer,
-                payload: message.payload,
-                queued_at,
-            }
-        } else {
-            NodeEndpointEvent::DataBatch {
-                messages: std::mem::take(&mut self.endpoint_event_batch),
-                queued_at,
-            }
-        };
-
-        if let Err(error) = self.send_endpoint_event(event) {
-            debug!(
-                error = %error,
-                messages = count,
-                "Failed to deliver endpoint data event batch"
-            );
-        }
-    }
-
-    fn send_endpoint_event(
-        &self,
-        event: NodeEndpointEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
-            return Ok(());
-        };
-        let _t_deliver =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-        endpoint_event_tx.send(event)
+        self.endpoint_events.deliver_message(message)
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {

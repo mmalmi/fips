@@ -4140,7 +4140,7 @@ impl Node {
 
     fn deliver_endpoint_data(&mut self, source_peer: PeerIdentity, payload: Vec<u8>) {
         let src_addr = *source_peer.node_addr();
-        if self.endpoint_event_tx.is_none() {
+        if !self.endpoint_events.is_attached() {
             trace!(
                 src = %self.peer_display_name(&src_addr),
                 "Endpoint data received without an attached endpoint"
