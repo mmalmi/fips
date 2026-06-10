@@ -33,6 +33,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tcp::TcpTransport;
 use thiserror::Error;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error::TryRecvError};
 use tor::TorTransport;
 use tor::control::TorMonitoringInfo;
 use udp::UdpTransport;
@@ -115,27 +116,103 @@ pub(crate) fn received_timestamp_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Wire-size threshold for keeping transport receive work out of the bulk
+/// FIFO. Most heartbeat, MMP, rekey, ping, and handshake-shaped datagrams are
+/// comfortably below this; full-size endpoint payloads are not.
+const PRIORITY_PACKET_MAX_LEN: usize = 512;
+
 /// Channel sender for received packets.
 ///
-/// Uses tokio's unbounded mpsc so that per-packet send is a wait-free
-/// linked-list push instead of a semaphore acquisition + `.await`. At
-/// multi-Gbps the bounded variant's per-send cost (semaphore CAS +
-/// waker dance, even on the fast path) is one of the dominant items
-/// on the receive hot path; recvmmsg drains the kernel queue in
-/// 32-packet bursts and we want to dump those into the channel as
-/// fast as possible without each push incurring scheduler bookkeeping.
-///
-/// Backpressure is provided by the kernel UDP receive buffer (the
-/// transport's `recvmmsg` is the only producer for inbound packets);
-/// if the rx_loop falls behind, packets queue up here and the kernel
-/// drops new arrivals once its buffer fills. Memory growth is
-/// effectively bounded because the same rx_loop that consumes this
-/// channel is what runs `process_packet` — if it stalls, recvmmsg
-/// can't run either since they share the runtime.
-pub type PacketTx = tokio::sync::mpsc::UnboundedSender<ReceivedPacket>;
+/// Internally this is still unbounded mpsc so per-packet send remains a
+/// wait-free linked-list push instead of a semaphore acquisition + `.await`.
+/// The difference from a single FIFO is the reserved progress lane: small,
+/// control-shaped datagrams go to a priority receiver that the rx loop drains
+/// before bulk. That lets liveness/rekey/MMP-sized packets overtake a bulk
+/// backlog at the earliest queue boundary, before decrypt-worker priority can
+/// help.
+#[derive(Clone, Debug)]
+pub struct PacketTx {
+    priority: UnboundedSender<ReceivedPacket>,
+    bulk: UnboundedSender<ReceivedPacket>,
+}
 
 /// Channel receiver for received packets.
-pub type PacketRx = tokio::sync::mpsc::UnboundedReceiver<ReceivedPacket>;
+pub struct PacketRx {
+    priority: UnboundedReceiver<ReceivedPacket>,
+    bulk: UnboundedReceiver<ReceivedPacket>,
+    priority_closed: bool,
+    bulk_closed: bool,
+}
+
+impl PacketTx {
+    pub fn send(
+        &self,
+        packet: ReceivedPacket,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
+        if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
+            self.priority.send(packet)
+        } else {
+            self.bulk.send(packet)
+        }
+    }
+}
+
+impl PacketRx {
+    pub async fn recv(&mut self) -> Option<ReceivedPacket> {
+        loop {
+            match self.try_recv() {
+                Ok(packet) => return Some(packet),
+                Err(TryRecvError::Disconnected) => return None,
+                Err(TryRecvError::Empty) => {}
+            }
+
+            tokio::select! {
+                biased;
+                packet = self.priority.recv(), if !self.priority_closed => {
+                    match packet {
+                        Some(packet) => return Some(packet),
+                        None => self.priority_closed = true,
+                    }
+                }
+                packet = self.bulk.recv(), if !self.bulk_closed => {
+                    match packet {
+                        Some(packet) => return Some(packet),
+                        None => self.bulk_closed = true,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Result<ReceivedPacket, TryRecvError> {
+        match self.priority.try_recv() {
+            Ok(packet) => return Ok(packet),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.priority_closed = true;
+            }
+        }
+
+        match self.bulk.try_recv() {
+            Ok(packet) => Ok(packet),
+            Err(TryRecvError::Empty) => {
+                if self.priority_closed && self.bulk_closed {
+                    Err(TryRecvError::Disconnected)
+                } else {
+                    Err(TryRecvError::Empty)
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.bulk_closed = true;
+                if self.priority_closed {
+                    Err(TryRecvError::Disconnected)
+                } else {
+                    Err(TryRecvError::Empty)
+                }
+            }
+        }
+    }
+}
 
 /// Create a packet channel.
 ///
@@ -144,7 +221,20 @@ pub type PacketRx = tokio::sync::mpsc::UnboundedReceiver<ReceivedPacket>;
 /// touched) but is ignored — the channel is unbounded. See [`PacketTx`]
 /// for the rationale.
 pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
-    tokio::sync::mpsc::unbounded_channel()
+    let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        PacketTx {
+            priority: priority_tx,
+            bulk: bulk_tx,
+        },
+        PacketRx {
+            priority: priority_rx,
+            bulk: bulk_rx,
+            priority_closed: false,
+            bulk_closed: false,
+        },
+    )
 }
 
 // ============================================================================
@@ -1767,6 +1857,64 @@ mod tests {
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.data, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn packet_channel_reserves_priority_progress_ahead_of_bulk_backlog() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ))
+        .unwrap();
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0x11; 32],
+        ))
+        .unwrap();
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0x22; 48],
+        ))
+        .unwrap();
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ))
+        .unwrap();
+
+        assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0x22);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    }
+
+    #[test]
+    fn packet_channel_try_recv_uses_same_priority_policy() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ))
+        .unwrap();
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0x11; 32],
+        ))
+        .unwrap();
+
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+        assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
     }
 
     // ========================================================================

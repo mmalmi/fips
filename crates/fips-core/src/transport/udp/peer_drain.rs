@@ -446,9 +446,9 @@ fn recv_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::packet_channel;
     use std::net::UdpSocket;
     use std::time::Duration;
-    use tokio::sync::mpsc;
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread
     /// on it, send packets at it from a remote, verify they land in
@@ -468,7 +468,7 @@ mod tests {
         );
 
         // packet_tx for the drain thread to push into.
-        let (tx, mut rx) = mpsc::unbounded_channel::<ReceivedPacket>();
+        let (tx, mut rx) = packet_channel(32);
         let transport_id = TransportId::new(42);
 
         // Find out what local_addr the kernel assigned to our socket
@@ -530,7 +530,7 @@ mod tests {
             ConnectedPeerSocket::open("127.0.0.1:0".parse().unwrap(), peer_addr, 1 << 20, 1 << 20)
                 .expect("ConnectedPeerSocket::open"),
         );
-        let (tx, _rx) = mpsc::unbounded_channel::<ReceivedPacket>();
+        let (tx, _rx) = packet_channel(32);
         let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx)
             .expect("PeerRecvDrain::spawn");
 

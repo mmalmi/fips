@@ -10,11 +10,12 @@ use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
 use crate::node::{AuthenticatedFmpPlaintext, Node, NodeEndpointCommand, NodeError};
+use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
 use crate::transport::TransportHandle;
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, trace, warn};
 
 /// How often the raw-packet drain loop yields a slice of work to the
@@ -341,7 +342,7 @@ impl Node {
 
     async fn drain_rx_loop_data_queues(
         &mut self,
-        packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
+        packet_rx: &mut PacketRx,
         decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -366,7 +367,7 @@ impl Node {
 
     async fn drain_packet_rx(
         &mut self,
-        packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
+        packet_rx: &mut PacketRx,
         decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
         mut side_queues: Option<RxLoopSideQueues<'_>>,
         first_packet: Option<ReceivedPacket>,
@@ -900,7 +901,10 @@ impl<T> PacketDrainCursor<T> {
         }
     }
 
-    fn next(&mut self, packet_rx: &mut UnboundedReceiver<T>) -> Option<PacketDrainAction<T>> {
+    fn next<R>(&mut self, packet_rx: &mut R) -> Option<PacketDrainAction<T>>
+    where
+        R: PacketDrainReceiver<T>,
+    {
         if self.remaining == 0 {
             return None;
         }
@@ -918,7 +922,7 @@ impl<T> PacketDrainCursor<T> {
         let packet = self
             .first_packet
             .take()
-            .or_else(|| packet_rx.try_recv().ok())?;
+            .or_else(|| packet_rx.try_recv_packet())?;
         self.remaining -= 1;
         self.drained += 1;
         Some(PacketDrainAction::Packet(packet))
@@ -942,6 +946,22 @@ impl<T> PacketDrainCursor<T> {
                 .drained
                 .is_multiple_of(self.side_queue_interleave_every)
             && self.last_side_queue_interleave_at != self.drained
+    }
+}
+
+trait PacketDrainReceiver<T> {
+    fn try_recv_packet(&mut self) -> Option<T>;
+}
+
+impl<T> PacketDrainReceiver<T> for tokio::sync::mpsc::UnboundedReceiver<T> {
+    fn try_recv_packet(&mut self) -> Option<T> {
+        self.try_recv().ok()
+    }
+}
+
+impl PacketDrainReceiver<ReceivedPacket> for PacketRx {
+    fn try_recv_packet(&mut self) -> Option<ReceivedPacket> {
+        self.try_recv().ok()
     }
 }
 
