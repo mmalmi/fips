@@ -3468,6 +3468,9 @@ impl Node {
                             packets_recv: stats.packets_recv,
                             bytes_sent: stats.bytes_sent,
                             bytes_recv: stats.bytes_recv,
+                            rekey_in_progress: peer.rekey_in_progress(),
+                            rekey_draining: peer.is_draining(),
+                            current_k_bit: Some(peer.current_k_bit()),
                             direct_probe_pending: retry_state.is_some(),
                             direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
                         }
@@ -3496,6 +3499,9 @@ impl Node {
                         packets_recv: 0,
                         bytes_sent: 0,
                         bytes_recv: 0,
+                        rekey_in_progress: false,
+                        rekey_draining: false,
+                        current_k_bit: None,
                         direct_probe_pending: true,
                         direct_probe_after_ms: Some(retry_state.retry_after_ms),
                     });

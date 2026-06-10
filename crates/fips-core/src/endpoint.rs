@@ -233,6 +233,12 @@ pub struct FipsEndpointPeer {
     pub bytes_sent: u64,
     /// Link bytes received.
     pub bytes_recv: u64,
+    /// Whether a link-layer rekey is currently in progress.
+    pub rekey_in_progress: bool,
+    /// Whether this peer is draining an old key during rekey.
+    pub rekey_draining: bool,
+    /// Current link-layer key bit for active peers.
+    pub current_k_bit: Option<bool>,
     /// Whether direct UDP probing is queued while this peer may still be
     /// reachable through a fallback transport.
     pub direct_probe_pending: bool,
@@ -1022,6 +1028,9 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             packets_recv: peer.packets_recv,
             bytes_sent: peer.bytes_sent,
             bytes_recv: peer.bytes_recv,
+            rekey_in_progress: peer.rekey_in_progress,
+            rekey_draining: peer.rekey_draining,
+            current_k_bit: peer.current_k_bit,
             direct_probe_pending: peer.direct_probe_pending,
             direct_probe_after_ms: peer.direct_probe_after_ms,
         }
@@ -1040,7 +1049,7 @@ impl From<NodeEndpointRelayStatus> for FipsEndpointRelayStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::NodeEndpointMessage;
+    use crate::node::{NodeEndpointMessage, NodeEndpointPeer};
     use std::time::Duration;
 
     fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
@@ -1061,6 +1070,31 @@ mod tests {
         packet[9] = 1;
         packet[20] = 8;
         packet
+    }
+
+    #[test]
+    fn endpoint_peer_conversion_preserves_rekey_state() {
+        let peer = FipsEndpointPeer::from(NodeEndpointPeer {
+            npub: "npub1peer".to_string(),
+            connected: true,
+            transport_addr: Some("127.0.0.1:9000".to_string()),
+            transport_type: Some("udp".to_string()),
+            link_id: 7,
+            srtt_ms: Some(12),
+            packets_sent: 3,
+            packets_recv: 4,
+            bytes_sent: 120,
+            bytes_recv: 240,
+            rekey_in_progress: true,
+            rekey_draining: true,
+            current_k_bit: Some(true),
+            direct_probe_pending: false,
+            direct_probe_after_ms: None,
+        });
+
+        assert!(peer.rekey_in_progress);
+        assert!(peer.rekey_draining);
+        assert_eq!(peer.current_k_bit, Some(true));
     }
 
     #[test]

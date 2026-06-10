@@ -1362,6 +1362,9 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) packets_recv: u64,
     pub(crate) bytes_sent: u64,
     pub(crate) bytes_recv: u64,
+    pub(crate) rekey_in_progress: bool,
+    pub(crate) rekey_draining: bool,
+    pub(crate) current_k_bit: Option<bool>,
     pub(crate) direct_probe_pending: bool,
     pub(crate) direct_probe_after_ms: Option<u64>,
 }
