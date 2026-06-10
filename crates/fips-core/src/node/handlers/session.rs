@@ -1909,6 +1909,96 @@ impl<'a> EstablishedFspReceive<'a> {
     }
 }
 
+#[derive(Debug)]
+enum EstablishedFspWireError {
+    BadHeader,
+    BadCoords(crate::protocol::ProtocolError),
+}
+
+#[derive(Debug, Default)]
+struct EstablishedFspCoordWarmup {
+    source: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
+    local: Option<(NodeAddr, crate::tree::TreeCoordinate)>,
+}
+
+impl EstablishedFspCoordWarmup {
+    fn from_parsed(
+        source_addr: NodeAddr,
+        local_addr: NodeAddr,
+        source_coords: Option<crate::tree::TreeCoordinate>,
+        local_coords: Option<crate::tree::TreeCoordinate>,
+    ) -> Self {
+        Self {
+            source: source_coords.map(|coords| (source_addr, coords)),
+            local: local_coords.map(|coords| (local_addr, coords)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.source.is_none() && self.local.is_none()
+    }
+
+    fn apply(self, coord_cache: &mut crate::cache::CoordCache, now_ms: u64) {
+        if let Some((addr, coords)) = self.source {
+            coord_cache.insert(addr, coords, now_ms);
+        }
+        if let Some((addr, coords)) = self.local {
+            coord_cache.insert(addr, coords, now_ms);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EstablishedFspWire<'a> {
+    header: FspEncryptedHeader,
+    ciphertext: &'a [u8],
+    coord_warmup: EstablishedFspCoordWarmup,
+}
+
+impl<'a> EstablishedFspWire<'a> {
+    fn parse(
+        payload: &'a [u8],
+        source_addr: NodeAddr,
+        local_addr: NodeAddr,
+    ) -> Result<Self, EstablishedFspWireError> {
+        let header =
+            FspEncryptedHeader::parse(payload).ok_or(EstablishedFspWireError::BadHeader)?;
+        let mut ciphertext_offset = FSP_HEADER_SIZE;
+        let mut coord_warmup = EstablishedFspCoordWarmup::default();
+
+        if header.has_coords() {
+            let (source_coords, local_coords, bytes_consumed) =
+                parse_encrypted_coords(&payload[FSP_HEADER_SIZE..])
+                    .map_err(EstablishedFspWireError::BadCoords)?;
+            coord_warmup = EstablishedFspCoordWarmup::from_parsed(
+                source_addr,
+                local_addr,
+                source_coords,
+                local_coords,
+            );
+            ciphertext_offset += bytes_consumed;
+        }
+
+        Ok(Self {
+            header,
+            ciphertext: &payload[ciphertext_offset..],
+            coord_warmup,
+        })
+    }
+
+    fn has_coord_warmup(&self) -> bool {
+        !self.coord_warmup.is_empty()
+    }
+
+    fn apply_coord_warmup(&mut self, coord_cache: &mut crate::cache::CoordCache, now_ms: u64) {
+        std::mem::take(&mut self.coord_warmup).apply(coord_cache, now_ms);
+    }
+
+    fn receive(&self, path_mtu: u16, ce_flag: bool, now_ms: u64) -> EstablishedFspReceive<'_> {
+        EstablishedFspReceive::new(&self.header, self.ciphertext, path_mtu, ce_flag, now_ms)
+    }
+}
+
 impl<'a> SessionRuntimeReceive<'a> {
     fn new(
         entry: &'a mut SessionEntry,
@@ -2150,56 +2240,32 @@ impl Node {
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspHandle);
         let src_addr = delivery.source_addr();
         let payload = delivery.payload();
-        // Parse the 12-byte encrypted header (includes the 4-byte prefix)
-        let header = match FspEncryptedHeader::parse(payload) {
-            Some(h) => h,
-            None => {
+        let mut wire = match EstablishedFspWire::parse(payload, *src_addr, *self.node_addr()) {
+            Ok(wire) => wire,
+            Err(EstablishedFspWireError::BadHeader) => {
                 debug!(
                     len = payload.len(),
                     "Encrypted session message too short for FSP header"
                 );
                 return;
             }
+            Err(EstablishedFspWireError::BadCoords(e)) => {
+                debug!(error = %e, "Failed to parse coords from encrypted session message");
+                return;
+            }
         };
 
-        // Determine where ciphertext starts (after header, optionally after coords)
-        let mut ciphertext_offset = FSP_HEADER_SIZE;
-
-        // If CP flag set, parse cleartext coords between header and ciphertext
-        if header.has_coords() {
-            let coord_data = &payload[FSP_HEADER_SIZE..];
-            match parse_encrypted_coords(coord_data) {
-                Ok((src_coords, dest_coords, bytes_consumed)) => {
-                    let now_ms = Self::now_ms();
-                    if let Some(coords) = src_coords {
-                        self.coord_cache.insert(*src_addr, coords, now_ms);
-                    }
-                    if let Some(coords) = dest_coords {
-                        self.coord_cache.insert(*self.node_addr(), coords, now_ms);
-                    }
-                    ciphertext_offset += bytes_consumed;
-                }
-                Err(e) => {
-                    debug!(error = %e, "Failed to parse coords from encrypted session message");
-                    return;
-                }
-            }
+        if wire.has_coord_warmup() {
+            wire.apply_coord_warmup(&mut self.coord_cache, Self::now_ms());
         }
 
-        let ciphertext = &payload[ciphertext_offset..];
         // The session registry owns the mutable lookup plus FSP open/replay,
         // K-bit handling, failure accounting, MMP receive bookkeeping, and
         // dispatch metadata. The rx loop supplies the parsed wire facts but no
         // longer peeks into the session map directly on this hot edge.
         let outcome = self.sessions.open_established_fsp_frame(
             src_addr,
-            EstablishedFspReceive::new(
-                &header,
-                ciphertext,
-                delivery.path_mtu(),
-                delivery.ce_flag(),
-                Self::now_ms(),
-            ),
+            wire.receive(delivery.path_mtu(), delivery.ce_flag(), Self::now_ms()),
         );
 
         // The &mut entry borrow on self.sessions has dropped. Handle
@@ -5166,6 +5232,68 @@ mod tests {
         }
         assert_eq!(entry.consecutive_decrypt_failures(), 0);
         assert_eq!(entry.last_inbound_frame_ms(), 2_000);
+    }
+
+    #[test]
+    fn established_fsp_wire_owns_ciphertext_offset_and_coord_warmup() {
+        use crate::tree::TreeCoordinate;
+
+        let source_addr = node_addr(0x01);
+        let local_addr = node_addr(0x02);
+        let root_addr = node_addr(0xf0);
+        let source_coords = TreeCoordinate::from_addrs(vec![source_addr, root_addr]).unwrap();
+        let local_coords = TreeCoordinate::from_addrs(vec![local_addr, root_addr]).unwrap();
+
+        let header = build_fsp_header(42, FSP_FLAG_CP | FSP_FLAG_K, 20);
+        let mut wire_bytes = header.to_vec();
+        encode_coords(&source_coords, &mut wire_bytes);
+        encode_coords(&local_coords, &mut wire_bytes);
+        let ciphertext_offset = wire_bytes.len();
+        wire_bytes.extend_from_slice(&[0xcc; 36]);
+
+        let mut wire = EstablishedFspWire::parse(&wire_bytes, source_addr, local_addr)
+            .expect("wire should parse with coord warmup");
+        assert_eq!(wire.header.counter, 42);
+        assert_eq!(wire.header.flags, FSP_FLAG_CP | FSP_FLAG_K);
+        assert_eq!(wire.ciphertext, &wire_bytes[ciphertext_offset..]);
+        assert!(wire.has_coord_warmup());
+
+        let receive = wire.receive(1_280, true, 2_000);
+        assert_eq!(receive.header.counter, 42);
+        assert_eq!(receive.ciphertext, &wire_bytes[ciphertext_offset..]);
+        assert_eq!(receive.path_mtu, 1_280);
+        assert!(receive.ce_flag);
+        assert_eq!(receive.now_ms, 2_000);
+
+        let mut coord_cache = crate::cache::CoordCache::new(16, 1_000);
+        wire.apply_coord_warmup(&mut coord_cache, 1_500);
+        assert!(!wire.has_coord_warmup());
+        assert_eq!(
+            coord_cache
+                .get(&source_addr, 1_500)
+                .expect("source coords should be cached")
+                .root_id(),
+            &root_addr
+        );
+        assert_eq!(
+            coord_cache
+                .get(&local_addr, 1_500)
+                .expect("local coords should be cached")
+                .root_id(),
+            &root_addr
+        );
+
+        assert!(matches!(
+            EstablishedFspWire::parse(&wire_bytes[..FSP_HEADER_SIZE - 1], source_addr, local_addr),
+            Err(EstablishedFspWireError::BadHeader)
+        ));
+        let mut truncated_coords = build_fsp_header(43, FSP_FLAG_CP, 20).to_vec();
+        truncated_coords.extend_from_slice(&2u16.to_le_bytes());
+        truncated_coords.extend_from_slice(&[0u8; 14]);
+        assert!(matches!(
+            EstablishedFspWire::parse(&truncated_coords, source_addr, local_addr),
+            Err(EstablishedFspWireError::BadCoords(_))
+        ));
     }
 
     #[test]
