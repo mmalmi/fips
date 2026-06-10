@@ -187,6 +187,12 @@ struct SessionReceiveCompletion {
     body_len: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionDispatchCommit {
+    source_addr: NodeAddr,
+    receive_completion: Option<SessionReceiveCompletion>,
+}
+
 impl AuthenticatedSessionDispatch {
     fn new(
         source_addr: NodeAddr,
@@ -231,8 +237,25 @@ impl AuthenticatedSessionDispatch {
             })
     }
 
+    fn commit(&self) -> SessionDispatchCommit {
+        SessionDispatchCommit {
+            source_addr: self.source_addr,
+            receive_completion: self.receive_completion(),
+        }
+    }
+
     fn into_endpoint_data_delivery(self) -> EndpointDataDelivery {
         self.message.into_endpoint_data_delivery()
+    }
+}
+
+impl SessionDispatchCommit {
+    fn source_addr(&self) -> &NodeAddr {
+        &self.source_addr
+    }
+
+    fn receive_completion(&self) -> Option<SessionReceiveCompletion> {
+        self.receive_completion
     }
 }
 
@@ -2055,16 +2078,22 @@ impl Node {
             delivery.ce_flag(),
             session_message,
         );
+        self.handle_authenticated_session_dispatch(dispatch).await;
+    }
 
+    async fn handle_authenticated_session_dispatch(
+        &mut self,
+        dispatch: AuthenticatedSessionDispatch,
+    ) {
         // Reverse-route learning runs after the borrow drops
         // (`learn_reverse_route` takes `&mut self`).
         self.learn_reverse_route(*dispatch.source_addr(), *dispatch.previous_hop_addr());
 
         // Capture the dispatch facts now, before the EndpointData branch takes
         // ownership of the message and drains the inner header in place.
-        let dispatch_source_addr = *dispatch.source_addr();
+        let source_addr = *dispatch.source_addr();
         let msg_type = dispatch.msg_type();
-        let receive_completion = dispatch.receive_completion();
+        let commit = dispatch.commit();
 
         // Dispatch by msg_type
         match SessionMessageType::from_byte(msg_type) {
@@ -2081,7 +2110,7 @@ impl Node {
                 match dst_port {
                     FSP_PORT_IPV6_SHIM => {
                         use crate::FipsAddress;
-                        let src_ipv6 = FipsAddress::from_node_addr(src_addr).to_ipv6().octets();
+                        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
                         let dst_ipv6 = FipsAddress::from_node_addr(self.node_addr())
                             .to_ipv6()
                             .octets();
@@ -2097,7 +2126,7 @@ impl Node {
                                     self.stats_mut().congestion.record_ce_received();
                                 }
                                 if self.external_packet_tx.is_some() {
-                                    self.deliver_external_ipv6_packet(src_addr, packet);
+                                    self.deliver_external_ipv6_packet(&source_addr, packet);
                                 } else if let Some(tun_tx) = &self.tun_tx {
                                     let _t = crate::perf_profile::Timer::start(
                                         crate::perf_profile::Stage::TunWrite,
@@ -2107,14 +2136,14 @@ impl Node {
                                     }
                                 } else {
                                     trace!(
-                                        src = %self.peer_display_name(src_addr),
+                                        src = %self.peer_display_name(&source_addr),
                                         "IPv6 shim packet decompressed (no TUN interface)"
                                     );
                                 }
                             }
                             None => {
                                 debug!(
-                                    src = %self.peer_display_name(src_addr),
+                                    src = %self.peer_display_name(&source_addr),
                                     len = service_payload.len(),
                                     "IPv6 shim decompression failed"
                                 );
@@ -2123,7 +2152,7 @@ impl Node {
                     }
                     _ => {
                         debug!(
-                            src = %self.peer_display_name(src_addr),
+                            src = %self.peer_display_name(&source_addr),
                             dst_port,
                             "Unknown FSP service port, dropping DataPacket"
                         );
@@ -2135,37 +2164,38 @@ impl Node {
             }
             Some(SessionMessageType::TraversalOffer) => {
                 let rest = dispatch.body();
-                self.handle_mesh_traversal_offer(src_addr, rest).await;
+                self.handle_mesh_traversal_offer(&source_addr, rest).await;
             }
             Some(SessionMessageType::TraversalAnswer) => {
                 let rest = dispatch.body();
-                self.handle_mesh_traversal_answer(src_addr, rest).await;
+                self.handle_mesh_traversal_answer(&source_addr, rest).await;
             }
             Some(SessionMessageType::SenderReport) => {
                 let rest = dispatch.body();
-                self.handle_session_sender_report(src_addr, rest);
+                self.handle_session_sender_report(&source_addr, rest);
             }
             Some(SessionMessageType::ReceiverReport) => {
                 let rest = dispatch.body();
-                self.handle_session_receiver_report(src_addr, rest).await;
+                self.handle_session_receiver_report(&source_addr, rest)
+                    .await;
             }
             Some(SessionMessageType::PathMtuNotification) => {
                 let rest = dispatch.body();
-                self.handle_session_path_mtu_notification(src_addr, rest);
+                self.handle_session_path_mtu_notification(&source_addr, rest);
             }
             Some(SessionMessageType::CoordsWarmup) => {
                 // Standalone coordinate warming — coords already extracted
                 // from CP flag by transit nodes. No action needed at endpoint.
-                trace!(src = %self.peer_display_name(src_addr), "CoordsWarmup received");
+                trace!(src = %self.peer_display_name(&source_addr), "CoordsWarmup received");
             }
             _ => {
-                debug!(src = %self.peer_display_name(src_addr), msg_type, "Unknown session message type, dropping");
+                debug!(src = %self.peer_display_name(&source_addr), msg_type, "Unknown session message type, dropping");
             }
         }
 
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        if let Some(completion) = receive_completion
+        if let Some(completion) = commit.receive_completion()
             && let Some(entry) = self.sessions.get_mut(&completion.source_addr)
         {
             entry.record_recv(completion.body_len);
@@ -2174,7 +2204,7 @@ impl Node {
 
         // Flush any pending outbound packets (e.g., simultaneous initiation
         // where responder also had queued outbound packets)
-        self.flush_pending_packets(&dispatch_source_addr).await;
+        self.flush_pending_packets(commit.source_addr()).await;
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
@@ -5137,6 +5167,15 @@ mod tests {
                 body_len: endpoint_payload.len()
             })
         );
+        let commit = dispatch.commit();
+        assert_eq!(commit.source_addr(), &source_addr);
+        assert_eq!(
+            commit.receive_completion(),
+            Some(SessionReceiveCompletion {
+                source_addr,
+                body_len: endpoint_payload.len()
+            })
+        );
 
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
@@ -5164,6 +5203,13 @@ mod tests {
             report_dispatch.receive_completion(),
             None,
             "MMP reports must not reset session idle/traffic counters"
+        );
+        let report_commit = report_dispatch.commit();
+        assert_eq!(report_commit.source_addr(), &source_addr);
+        assert_eq!(
+            report_commit.receive_completion(),
+            None,
+            "MMP reports still flush pending packets without recording receive progress"
         );
     }
 
