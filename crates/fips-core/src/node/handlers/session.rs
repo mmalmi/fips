@@ -56,13 +56,7 @@ enum FspFrameOutcome {
     /// FSP frame decrypted successfully; ready to dispatch by msg_type.
     /// `plaintext` is the full inner-decoded payload — the per-msg_type
     /// payload starts at offset `FSP_INNER_HEADER_SIZE`.
-    Authentic {
-        source_peer: PeerIdentity,
-        plaintext: Vec<u8>,
-        msg_type: u8,
-        inner_flags_byte: u8,
-        timestamp: u32,
-    },
+    Authentic(AuthenticatedSessionMessage),
     /// `self.sessions` had no entry for the source address.
     UnknownSession,
     /// Session entry exists but the XK handshake hasn't completed yet.
@@ -87,6 +81,90 @@ enum FspFrameOutcome {
     /// either. This is normally replayed or very stale post-cutover traffic,
     /// not evidence that the current session diverged.
     StaleEpochDrainFailure { counter: u64 },
+}
+
+/// Authenticated established-FSP message ready for local dispatch.
+///
+/// This is the post-open unit the rx loop dispatches today, and the future
+/// peer/session runtime should be able to own directly: source identity,
+/// inner-header metadata, and payload move together instead of returning to
+/// loose msg_type/plaintext/source arguments.
+#[derive(Debug)]
+struct AuthenticatedSessionMessage {
+    source_peer: PeerIdentity,
+    plaintext: Vec<u8>,
+    msg_type: u8,
+    #[allow(dead_code)]
+    inner_flags_byte: u8,
+    #[allow(dead_code)]
+    timestamp: u32,
+}
+
+impl AuthenticatedSessionMessage {
+    fn new(
+        source_peer: PeerIdentity,
+        plaintext: Vec<u8>,
+        msg_type: u8,
+        inner_flags_byte: u8,
+        timestamp: u32,
+    ) -> Self {
+        debug_assert!(plaintext.len() >= FSP_INNER_HEADER_SIZE);
+        Self {
+            source_peer,
+            plaintext,
+            msg_type,
+            inner_flags_byte,
+            timestamp,
+        }
+    }
+
+    #[cfg(test)]
+    fn source_peer(&self) -> PeerIdentity {
+        self.source_peer
+    }
+
+    #[cfg(test)]
+    fn plaintext(&self) -> &[u8] {
+        &self.plaintext
+    }
+
+    fn msg_type(&self) -> u8 {
+        self.msg_type
+    }
+
+    #[cfg(test)]
+    fn inner_flags_byte(&self) -> u8 {
+        self.inner_flags_byte
+    }
+
+    #[cfg(test)]
+    fn timestamp(&self) -> u32 {
+        self.timestamp
+    }
+
+    fn body(&self) -> &[u8] {
+        debug_assert!(self.plaintext.len() >= FSP_INNER_HEADER_SIZE);
+        &self.plaintext[FSP_INNER_HEADER_SIZE..]
+    }
+
+    fn body_len(&self) -> usize {
+        debug_assert!(self.plaintext.len() >= FSP_INNER_HEADER_SIZE);
+        self.plaintext.len() - FSP_INNER_HEADER_SIZE
+    }
+
+    fn is_application_data(&self) -> bool {
+        self.msg_type == SessionMessageType::DataPacket.to_byte()
+            || self.msg_type == SessionMessageType::EndpointData.to_byte()
+    }
+
+    fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
+        debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
+        // Keep the receive hot path allocation-free after AEAD open: draining
+        // the inner header trims the existing plaintext Vec in place instead
+        // of copying the endpoint payload into a new Vec.
+        self.plaintext.drain(..FSP_INNER_HEADER_SIZE);
+        EndpointDataDelivery::new(self.source_peer, self.plaintext)
+    }
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -1688,13 +1766,13 @@ impl<'a> SessionRuntimeReceive<'a> {
             return FspFrameOutcome::MissingRemoteIdentity;
         };
 
-        FspFrameOutcome::Authentic {
+        FspFrameOutcome::Authentic(AuthenticatedSessionMessage::new(
             source_peer,
             plaintext,
             msg_type,
             inner_flags_byte,
             timestamp,
-        }
+        ))
     }
 }
 
@@ -1841,20 +1919,8 @@ impl Node {
         // The &mut entry borrow on self.sessions has dropped. Handle
         // slow-path outcomes and dispatch by msg_type (which calls
         // other &mut self handlers).
-        let (source_peer, plaintext, msg_type, _inner_flags_byte, _timestamp) = match outcome {
-            FspFrameOutcome::Authentic {
-                source_peer,
-                plaintext,
-                msg_type,
-                inner_flags_byte,
-                timestamp,
-            } => (
-                source_peer,
-                plaintext,
-                msg_type,
-                inner_flags_byte,
-                timestamp,
-            ),
+        let session_message = match outcome {
+            FspFrameOutcome::Authentic(session_message) => session_message,
             FspFrameOutcome::UnknownSession => {
                 debug!(src = %self.peer_display_name(src_addr), "Encrypted session message for unknown session");
                 return;
@@ -1919,16 +1985,16 @@ impl Node {
         // (`learn_reverse_route` takes `&mut self`).
         self.learn_reverse_route(*src_addr, *delivery.previous_hop_addr());
 
-        // Capture the post-inner-header length now, before any branch
-        // takes ownership of `plaintext` (the EndpointData arm drains
-        // the inner header off the front and forwards the Vec to
-        // `deliver_endpoint_data` rather than allocating a fresh Vec).
-        let rest_len = plaintext.len() - FSP_INNER_HEADER_SIZE;
-        let rest = &plaintext[FSP_INNER_HEADER_SIZE..];
+        // Capture the dispatch facts now, before the EndpointData branch takes
+        // ownership of the message and drains the inner header in place.
+        let msg_type = session_message.msg_type();
+        let rest_len = session_message.body_len();
+        let application_data = session_message.is_application_data();
 
         // Dispatch by msg_type
         match SessionMessageType::from_byte(msg_type) {
             Some(SessionMessageType::DataPacket) => {
+                let rest = session_message.body();
                 // msg_type 0x10: port-multiplexed service dispatch
                 if rest.len() < FSP_PORT_HEADER_SIZE {
                     debug!(len = rest.len(), "DataPacket too short for port header");
@@ -1990,31 +2056,26 @@ impl Node {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                // Hand the plaintext Vec straight through to the endpoint
-                // event queue instead of `rest.to_vec()`-ing a fresh
-                // allocation. `Vec::drain` does a single memmove of the
-                // payload to the front of the existing buffer (no realloc,
-                // no second 1500-byte memcpy), trimming the inner-header
-                // prefix in place. At 174 kpps single-stream that's one
-                // allocation + one big memcpy saved per packet on the
-                // dominant FIPS-endpoint receive path.
-                let mut payload = plaintext;
-                payload.drain(..FSP_INNER_HEADER_SIZE);
-                self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, payload));
+                self.deliver_endpoint_data(session_message.into_endpoint_data_delivery());
             }
             Some(SessionMessageType::TraversalOffer) => {
+                let rest = session_message.body();
                 self.handle_mesh_traversal_offer(src_addr, rest).await;
             }
             Some(SessionMessageType::TraversalAnswer) => {
+                let rest = session_message.body();
                 self.handle_mesh_traversal_answer(src_addr, rest).await;
             }
             Some(SessionMessageType::SenderReport) => {
+                let rest = session_message.body();
                 self.handle_session_sender_report(src_addr, rest);
             }
             Some(SessionMessageType::ReceiverReport) => {
+                let rest = session_message.body();
                 self.handle_session_receiver_report(src_addr, rest).await;
             }
             Some(SessionMessageType::PathMtuNotification) => {
+                let rest = session_message.body();
                 self.handle_session_path_mtu_notification(src_addr, rest);
             }
             Some(SessionMessageType::CoordsWarmup) => {
@@ -2029,10 +2090,7 @@ impl Node {
 
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        if (msg_type == SessionMessageType::DataPacket.to_byte()
-            || msg_type == SessionMessageType::EndpointData.to_byte())
-            && let Some(entry) = self.sessions.get_mut(src_addr)
-        {
+        if application_data && let Some(entry) = self.sessions.get_mut(src_addr) {
             entry.record_recv(rest_len);
             entry.touch(Self::now_ms());
         }
@@ -4917,23 +4975,48 @@ mod tests {
         .open_established();
 
         match outcome {
-            FspFrameOutcome::Authentic {
-                source_peer,
-                plaintext: opened,
-                msg_type,
-                inner_flags_byte,
-                timestamp,
-            } => {
-                assert_eq!(source_peer.node_addr(), peer.node_addr());
-                assert_eq!(opened, plaintext);
-                assert_eq!(msg_type, SessionMessageType::EndpointData.to_byte());
-                assert_eq!(inner_flags_byte, 0);
-                assert_eq!(timestamp, 0x0102_0304);
+            FspFrameOutcome::Authentic(message) => {
+                assert_eq!(message.source_peer().node_addr(), peer.node_addr());
+                assert_eq!(message.plaintext(), plaintext);
+                assert_eq!(
+                    message.msg_type(),
+                    SessionMessageType::EndpointData.to_byte()
+                );
+                assert_eq!(message.inner_flags_byte(), 0);
+                assert_eq!(message.timestamp(), 0x0102_0304);
+                assert_eq!(message.body(), endpoint_payload);
+                assert!(message.is_application_data());
             }
             other => panic!("expected authentic FSP frame, got {other:?}"),
         }
         assert_eq!(entry.consecutive_decrypt_failures(), 0);
         assert_eq!(entry.last_inbound_frame_ms(), 2_000);
+    }
+
+    #[test]
+    fn authenticated_session_message_owns_endpoint_delivery_conversion() {
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let endpoint_payload = b"endpoint delivery".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+
+        let message = AuthenticatedSessionMessage::new(
+            source_peer,
+            plaintext,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            0x0102_0304,
+        );
+
+        assert_eq!(message.body(), endpoint_payload);
+        let delivery = message.into_endpoint_data_delivery();
+        assert_eq!(delivery.source_peer, source_peer);
+        assert_eq!(delivery.payload, endpoint_payload);
     }
 
     #[test]
