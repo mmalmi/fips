@@ -1999,6 +1999,13 @@ impl<'a> EstablishedFspWire<'a> {
     }
 }
 
+#[derive(Debug)]
+enum EarlyEncryptedHandshakeResend {
+    NoPayload,
+    BudgetExhausted,
+    Resend { payload: Vec<u8> },
+}
+
 impl<'a> SessionRuntimeReceive<'a> {
     fn new(
         entry: &'a mut SessionEntry,
@@ -2119,6 +2126,38 @@ impl<'a> SessionRuntimeReceive<'a> {
 }
 
 impl crate::node::SessionRegistry {
+    fn prepare_handshake_resend_after_early_encrypted_data(
+        &mut self,
+        source_addr: &NodeAddr,
+        max_resends: u32,
+    ) -> EarlyEncryptedHandshakeResend {
+        let Some(entry) = self.get_mut(source_addr) else {
+            return EarlyEncryptedHandshakeResend::NoPayload;
+        };
+        if entry.handshake_payload().is_none() {
+            return EarlyEncryptedHandshakeResend::NoPayload;
+        }
+        if entry.resend_count() >= max_resends {
+            entry.clear_handshake_payload();
+            return EarlyEncryptedHandshakeResend::BudgetExhausted;
+        }
+
+        EarlyEncryptedHandshakeResend::Resend {
+            payload: entry
+                .handshake_payload()
+                .expect("checked handshake payload above")
+                .to_vec(),
+        }
+    }
+
+    fn record_handshake_resend(&mut self, source_addr: &NodeAddr, next_resend_at_ms: u64) -> bool {
+        let Some(entry) = self.get_mut(source_addr) else {
+            return false;
+        };
+        entry.record_resend(next_resend_at_ms);
+        true
+    }
+
     fn open_established_fsp_frame(
         &mut self,
         source_addr: &NodeAddr,
@@ -2872,27 +2911,19 @@ impl Node {
 
     async fn resend_handshake_after_early_encrypted_data(&mut self, src_addr: &NodeAddr) {
         let max_resends = self.config.node.rate_limit.handshake_max_resends;
-        let payload = match self.sessions.get(src_addr) {
-            Some(entry)
-                if entry.handshake_payload().is_some() && entry.resend_count() < max_resends =>
-            {
-                entry.handshake_payload().map(<[u8]>::to_vec)
-            }
-            Some(entry) if entry.handshake_payload().is_some() => {
-                let name = self.peer_display_name(src_addr);
-                if let Some(entry) = self.sessions.get_mut(src_addr) {
-                    entry.clear_handshake_payload();
-                }
+        let payload = match self
+            .sessions
+            .prepare_handshake_resend_after_early_encrypted_data(src_addr, max_resends)
+        {
+            EarlyEncryptedHandshakeResend::Resend { payload } => payload,
+            EarlyEncryptedHandshakeResend::BudgetExhausted => {
                 debug!(
-                    src = %name,
+                    src = %self.peer_display_name(src_addr),
                     "Early encrypted data arrived after handshake resend budget was exhausted"
                 );
-                None
+                return;
             }
-            _ => None,
-        };
-        let Some(payload) = payload else {
-            return;
+            EarlyEncryptedHandshakeResend::NoPayload => return,
         };
 
         let my_addr = *self.node_addr();
@@ -2912,9 +2943,8 @@ impl Node {
         if sent {
             let now_ms = Self::now_ms();
             let interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            if let Some(entry) = self.sessions.get_mut(src_addr) {
-                entry.record_resend(now_ms + interval);
-            }
+            self.sessions
+                .record_handshake_resend(src_addr, now_ms + interval);
             debug!(
                 src = %self.peer_display_name(src_addr),
                 "Resent session handshake after early encrypted data"
@@ -5294,6 +5324,61 @@ mod tests {
             EstablishedFspWire::parse(&truncated_coords, source_addr, local_addr),
             Err(EstablishedFspWireError::BadCoords(_))
         ));
+    }
+
+    #[test]
+    fn session_registry_owns_early_encrypted_handshake_resend_budget() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let handshake = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            1_000,
+            true,
+        );
+        let payload = vec![0x10, 0x20, 0x30];
+        entry.set_handshake_payload(payload.clone(), 1_500);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*peer.node_addr(), entry);
+
+        match sessions.prepare_handshake_resend_after_early_encrypted_data(peer.node_addr(), 2) {
+            EarlyEncryptedHandshakeResend::Resend { payload: resend } => {
+                assert_eq!(resend, payload);
+            }
+            other => panic!("expected resend decision, got {other:?}"),
+        }
+        assert!(sessions.record_handshake_resend(peer.node_addr(), 2_000));
+        let entry = sessions
+            .get(peer.node_addr())
+            .expect("session should remain");
+        assert_eq!(entry.resend_count(), 1);
+        assert_eq!(entry.next_resend_at_ms(), 2_000);
+        assert_eq!(entry.handshake_payload(), Some(payload.as_slice()));
+
+        assert!(matches!(
+            sessions.prepare_handshake_resend_after_early_encrypted_data(peer.node_addr(), 1),
+            EarlyEncryptedHandshakeResend::BudgetExhausted
+        ));
+        let entry = sessions
+            .get(peer.node_addr())
+            .expect("session should remain");
+        assert!(entry.handshake_payload().is_none());
+        assert_eq!(entry.next_resend_at_ms(), 0);
+        assert_eq!(
+            entry.resend_count(),
+            1,
+            "clearing an exhausted payload must not rewrite resend history"
+        );
+
+        let missing = node_addr(0x77);
+        assert!(matches!(
+            sessions.prepare_handshake_resend_after_early_encrypted_data(&missing, 2),
+            EarlyEncryptedHandshakeResend::NoPayload
+        ));
+        assert!(!sessions.record_handshake_resend(&missing, 3_000));
     }
 
     #[test]
