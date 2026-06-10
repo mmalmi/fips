@@ -18,9 +18,9 @@ use crate::node::session_wire::{
 #[cfg(unix)]
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::{
-    EncryptedSessionPayload, EndpointDataPayload, EndpointDataSend, EndpointSendBatchCommand,
-    EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload, Node, NodeEndpointCommand,
-    NodeEndpointMessage, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointDataSend,
+    EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload,
+    Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
     SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
@@ -2000,7 +2000,7 @@ impl Node {
                 // dominant FIPS-endpoint receive path.
                 let mut payload = plaintext;
                 payload.drain(..FSP_INNER_HEADER_SIZE);
-                self.deliver_endpoint_data(source_peer, payload);
+                self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, payload));
             }
             Some(SessionMessageType::TraversalOffer) => {
                 self.handle_mesh_traversal_offer(src_addr, rest).await;
@@ -4139,8 +4139,8 @@ impl Node {
         Ok(false)
     }
 
-    fn deliver_endpoint_data(&mut self, source_peer: PeerIdentity, payload: Vec<u8>) {
-        let src_addr = *source_peer.node_addr();
+    fn deliver_endpoint_data(&mut self, delivery: EndpointDataDelivery) {
+        let src_addr = *delivery.source_peer.node_addr();
         if !self.endpoint_events.is_attached() {
             trace!(
                 src = %self.peer_display_name(&src_addr),
@@ -4149,9 +4149,7 @@ impl Node {
             return;
         }
 
-        if let Err(error) =
-            self.deliver_endpoint_event_message(NodeEndpointMessage::new(source_peer, payload))
-        {
+        if let Err(error) = self.deliver_endpoint_event_message(delivery) {
             debug!(
                 src = %self.peer_display_name(&src_addr),
                 error = %error,

@@ -94,7 +94,7 @@ fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outsi
     let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"single".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"single".to_vec()))
         .expect("single endpoint event");
     match endpoint_io.event_rx.try_recv().expect("single event") {
         NodeEndpointEvent::Data {
@@ -109,9 +109,9 @@ fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outsi
     }
 
     node.begin_endpoint_event_batch();
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"first".to_vec()))
         .expect("first batched endpoint event");
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"second".to_vec()))
         .expect("second batched endpoint event");
     assert!(
         endpoint_io.event_rx.try_recv().is_err(),
@@ -139,7 +139,7 @@ fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
 
     assert!(!runtime.is_attached());
     runtime
-        .deliver_message(NodeEndpointMessage::new(source, b"detached".to_vec()))
+        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"detached".to_vec()))
         .expect("detached endpoint runtime delivery should be a no-op");
     assert!(
         event_rx.try_recv().is_err(),
@@ -150,10 +150,10 @@ fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
     runtime.attach(event_tx.clone());
     runtime.begin_batch();
     runtime
-        .deliver_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"first".to_vec()))
         .expect("first batched endpoint event");
     runtime
-        .deliver_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"second".to_vec()))
         .expect("second batched endpoint event");
     assert!(
         event_rx.try_recv().is_err(),
@@ -182,14 +182,14 @@ fn endpoint_event_queue_owns_backlog_message_count() {
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"single".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"single".to_vec()))
         .expect("single endpoint event");
     assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
 
     node.begin_endpoint_event_batch();
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"first".to_vec()))
         .expect("first batched endpoint event");
-    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"second".to_vec()))
         .expect("second batched endpoint event");
     node.finish_endpoint_event_batch();
     assert_eq!(

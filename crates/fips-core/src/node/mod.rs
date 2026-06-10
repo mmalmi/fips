@@ -1147,7 +1147,7 @@ pub(crate) struct EndpointEventReceiver {
 pub(in crate::node) struct EndpointEventRuntime {
     sender: Option<EndpointEventSender>,
     batch_depth: usize,
-    batch: Vec<NodeEndpointMessage>,
+    batch: Vec<EndpointDataDelivery>,
 }
 
 impl EndpointEventSender {
@@ -1224,9 +1224,9 @@ impl EndpointEventRuntime {
         }
     }
 
-    pub(in crate::node) fn deliver_message(
+    pub(in crate::node) fn deliver_endpoint_data(
         &mut self,
-        message: NodeEndpointMessage,
+        message: EndpointDataDelivery,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         if self.batch_depth > 0 {
             self.batch.push(message);
@@ -1511,14 +1511,18 @@ pub(crate) struct UpdatePeersOutcome {
     pub(crate) unchanged: usize,
 }
 
-/// Endpoint data events emitted by the node session receive path.
+/// Authenticated endpoint data emitted by the session receive path.
+///
+/// Keeping source identity and payload together makes the delivery-side
+/// ownership boundary explicit for the current rx loop and for a future
+/// peer/session runtime that can move endpoint-data delivery off the bounce path.
 #[derive(Debug)]
-pub(crate) struct NodeEndpointMessage {
+pub(crate) struct EndpointDataDelivery {
     pub(crate) source_peer: PeerIdentity,
     pub(crate) payload: Vec<u8>,
 }
 
-impl NodeEndpointMessage {
+impl EndpointDataDelivery {
     pub(crate) fn new(source_peer: PeerIdentity, payload: Vec<u8>) -> Self {
         Self {
             source_peer,
@@ -1536,7 +1540,7 @@ pub(crate) enum NodeEndpointEvent {
         queued_at: Option<std::time::Instant>,
     },
     DataBatch {
-        messages: Vec<NodeEndpointMessage>,
+        messages: Vec<EndpointDataDelivery>,
         queued_at: Option<std::time::Instant>,
     },
 }
@@ -6389,9 +6393,9 @@ impl Node {
 
     pub(in crate::node) fn deliver_endpoint_event_message(
         &mut self,
-        message: NodeEndpointMessage,
+        message: EndpointDataDelivery,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
-        self.endpoint_events.deliver_message(message)
+        self.endpoint_events.deliver_endpoint_data(message)
     }
 
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {

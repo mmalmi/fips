@@ -1070,7 +1070,7 @@ impl From<NodeEndpointRelayStatus> for FipsEndpointRelayStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{NodeEndpointMessage, NodeEndpointPeer};
+    use crate::node::{EndpointDataDelivery, NodeEndpointPeer};
     use std::time::Duration;
 
     fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
@@ -1429,9 +1429,9 @@ mod tests {
             .inbound_endpoint_tx
             .send(NodeEndpointEvent::DataBatch {
                 messages: vec![
-                    NodeEndpointMessage::new(local, b"first".to_vec()),
-                    NodeEndpointMessage::new(local, b"second".to_vec()),
-                    NodeEndpointMessage::new(local, b"third".to_vec()),
+                    EndpointDataDelivery::new(local, b"first".to_vec()),
+                    EndpointDataDelivery::new(local, b"second".to_vec()),
+                    EndpointDataDelivery::new(local, b"third".to_vec()),
                 ],
                 queued_at: crate::perf_profile::stamp(),
             })
@@ -1484,8 +1484,8 @@ mod tests {
             .inbound_endpoint_tx
             .send(NodeEndpointEvent::DataBatch {
                 messages: vec![
-                    NodeEndpointMessage::new(local, b"first".to_vec()),
-                    NodeEndpointMessage::new(local, b"second".to_vec()),
+                    EndpointDataDelivery::new(local, b"first".to_vec()),
+                    EndpointDataDelivery::new(local, b"second".to_vec()),
                 ],
                 queued_at: crate::perf_profile::stamp(),
             })
@@ -1514,8 +1514,8 @@ mod tests {
             .inbound_endpoint_tx
             .send(NodeEndpointEvent::DataBatch {
                 messages: vec![
-                    NodeEndpointMessage::new(local, b"first".to_vec()),
-                    NodeEndpointMessage::new(local, b"second".to_vec()),
+                    EndpointDataDelivery::new(local, b"first".to_vec()),
+                    EndpointDataDelivery::new(local, b"second".to_vec()),
                 ],
                 queued_at: crate::perf_profile::stamp(),
             })
