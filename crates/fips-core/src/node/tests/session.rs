@@ -856,7 +856,7 @@ async fn drain_to_quiescence(nodes: &mut [TestNode]) {
 
 async fn recv_endpoint_event_while_draining(
     nodes: &mut [TestNode],
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    rx: &mut EndpointEventReceiver,
     timeout: Duration,
     context: &str,
 ) -> NodeEndpointEvent {

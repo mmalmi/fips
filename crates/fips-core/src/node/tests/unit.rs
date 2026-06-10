@@ -131,6 +131,35 @@ fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outsi
     }
 }
 
+#[test]
+fn endpoint_event_queue_owns_backlog_message_count() {
+    let mut node = Node::new(Config::new()).expect("node");
+    let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"single".to_vec()))
+        .expect("single endpoint event");
+    assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
+
+    node.begin_endpoint_event_batch();
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"first".to_vec()))
+        .expect("first batched endpoint event");
+    node.deliver_endpoint_event_message(NodeEndpointMessage::new(source, b"second".to_vec()))
+        .expect("second batched endpoint event");
+    node.finish_endpoint_event_batch();
+    assert_eq!(
+        endpoint_io.event_tx.queued_messages(),
+        3,
+        "backlog count should account for batch payloads, not channel items"
+    );
+
+    endpoint_io.event_rx.try_recv().expect("single event");
+    assert_eq!(endpoint_io.event_tx.queued_messages(), 2);
+    endpoint_io.event_rx.try_recv().expect("batched event");
+    assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn make_test_connected_udp_pair(
     transport_id: TransportId,

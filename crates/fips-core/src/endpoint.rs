@@ -5,8 +5,8 @@
 
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
-    EndpointCommandLane, EndpointDataPayload, NodeEndpointCommand, NodeEndpointEvent,
-    NodeEndpointPeer, NodeEndpointRelayStatus,
+    EndpointCommandLane, EndpointDataPayload, EndpointEventReceiver, EndpointEventSender,
+    NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
 };
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -99,12 +99,12 @@ impl EndpointQueuedMessage {
 }
 
 struct EndpointReceiveState {
-    rx: mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    rx: EndpointEventReceiver,
     pending: VecDeque<EndpointQueuedMessage>,
 }
 
 impl EndpointReceiveState {
-    fn new(rx: mpsc::UnboundedReceiver<NodeEndpointEvent>) -> Self {
+    fn new(rx: EndpointEventReceiver) -> Self {
         Self {
             rx,
             pending: VecDeque::new(),
@@ -534,7 +534,7 @@ pub struct FipsEndpoint {
     /// path. The node's rx_loop also sends into this channel directly
     /// (it holds a clone of this sender) so there is no per-packet relay
     /// task between the node task and `recv()`.
-    inbound_endpoint_tx: mpsc::UnboundedSender<NodeEndpointEvent>,
+    inbound_endpoint_tx: EndpointEventSender,
     /// Unbounded receiver plus pending tail from an internal batch. This was
     /// previously fed by a per-packet relay task
     /// that translated `NodeEndpointEvent::Data` into `FipsEndpointMessage`

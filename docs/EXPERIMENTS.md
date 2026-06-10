@@ -1,5 +1,29 @@
 # FIPS Experiments
 
+## 2026-06-10 - Endpoint event backlog is observable
+
+- Observation: inbound endpoint data delivery intentionally uses a wait-free
+  unbounded channel so the node rx loop does not park behind an embedded app
+  consumer. That keeps the packet mover fast, but an app-side consumer falling
+  behind should be visible before any riskier bounded-queue rewrite.
+- Fix: endpoint delivery now goes through a tiny `EndpointEventSender` /
+  `EndpointEventReceiver` owner. It keeps current delivery semantics, counts
+  queued endpoint messages including `DataBatch` payloads, decrements as the
+  consumer drains events, and emits the `endpoint_event_backlog_high` pipeline
+  event when the backlog crosses the high-water threshold.
+- Regression tests: `endpoint_event_queue_owns_backlog_message_count` proves
+  one direct event plus a two-message batch are counted as three queued
+  endpoint messages and return to zero after receives.
+- Verification: `cargo fmt`, `bash -n scripts/test-dataplane-ownership-fast.sh`,
+  `cargo test -p fips-core endpoint_event -- --nocapture`,
+  `./scripts/test-dataplane-ownership-fast.sh --skip-docker
+  --skip-release-check endpoint_event_queue_owns_backlog_message_count`,
+  `cargo check -p fips-core --release`, and the nvpn local-FIPS
+  `./scripts/test-dataplane-safety-fast.sh fips` suite passed.
+- Limit: this is observability and ownership evidence. It does not yet replace
+  the unbounded endpoint event channel or prove live host-pair/macOS
+  screenshare behavior under a slow embedded consumer.
+
 ## 2026-06-10 - Active fallback retry honors auto-reconnect policy
 
 - Observation: an nvpn/FIPS operator report described incoming TCP clients on

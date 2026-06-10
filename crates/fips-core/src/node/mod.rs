@@ -67,6 +67,7 @@ use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -77,6 +78,7 @@ const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
 const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
 const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
 const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
+const ENDPOINT_EVENT_BACKLOG_HIGH_WATER: usize = 4096;
 
 #[derive(Debug, Default)]
 pub(in crate::node) struct LocalSendFailures {
@@ -1110,16 +1112,107 @@ pub(crate) struct EndpointDataIo {
     /// wait-free push (no semaphore acquire), and so we can drop the
     /// per-packet cross-task relay that previously sat between the node
     /// task and the `FipsEndpoint::recv()` consumer. Backpressure is
-    /// naturally bounded — the rx_loop both produces here and runs the
-    /// same runtime that schedules the consumer, so a stalled consumer
-    /// stalls production too.
-    pub(crate) event_rx: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    /// still visible through `endpoint_event_wait` latency and the
+    /// `endpoint_event_backlog_high` pipeline event when the consumer falls
+    /// materially behind.
+    pub(crate) event_rx: EndpointEventReceiver,
     /// Clone of the event_tx exposed for in-process loopback (e.g.
     /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
     /// event into the same queue without going through the encrypt /
     /// decrypt path, while keeping every consumer reading from a single
     /// channel.
-    pub(crate) event_tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
+    pub(crate) event_tx: EndpointEventSender,
+}
+
+/// Observable owner for endpoint events delivered to embedded applications.
+#[derive(Debug, Clone)]
+pub(crate) struct EndpointEventSender {
+    tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
+    queued_messages: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct EndpointEventReceiver {
+    rx: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    queued_messages: Arc<AtomicUsize>,
+}
+
+impl EndpointEventSender {
+    fn channel() -> (Self, EndpointEventReceiver) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let queued_messages = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                tx,
+                queued_messages: Arc::clone(&queued_messages),
+            },
+            EndpointEventReceiver {
+                rx,
+                queued_messages,
+            },
+        )
+    }
+
+    pub(crate) fn send(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let count = event.message_count();
+        let previous = self.queued_messages.fetch_add(count, Relaxed);
+        let queued = previous.saturating_add(count);
+        match self.tx.send(event) {
+            Ok(()) => {
+                if previous < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+                    && queued >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+                {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::EndpointEventBacklogHigh,
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.queued_messages.fetch_sub(count, Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_messages(&self) -> usize {
+        self.queued_messages.load(Relaxed)
+    }
+}
+
+impl EndpointEventReceiver {
+    pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
+        let event = self.rx.recv().await?;
+        self.note_dequeued(&event);
+        Some(event)
+    }
+
+    pub(crate) fn blocking_recv(&mut self) -> Option<NodeEndpointEvent> {
+        let event = self.rx.blocking_recv()?;
+        self.note_dequeued(&event);
+        Some(event)
+    }
+
+    pub(crate) fn try_recv(
+        &mut self,
+    ) -> Result<NodeEndpointEvent, tokio::sync::mpsc::error::TryRecvError> {
+        let event = self.rx.try_recv()?;
+        self.note_dequeued(&event);
+        Ok(event)
+    }
+
+    fn note_dequeued(&self, event: &NodeEndpointEvent) {
+        let count = event.message_count();
+        let _ = self
+            .queued_messages
+            .fetch_update(Relaxed, Relaxed, |current| {
+                Some(current.saturating_sub(count))
+            });
+    }
 }
 
 fn endpoint_data_command_capacity(requested: usize) -> usize {
@@ -1347,6 +1440,15 @@ pub(crate) enum NodeEndpointEvent {
         messages: Vec<NodeEndpointMessage>,
         queued_at: Option<std::time::Instant>,
     },
+}
+
+impl NodeEndpointEvent {
+    fn message_count(&self) -> usize {
+        match self {
+            NodeEndpointEvent::Data { .. } => 1,
+            NodeEndpointEvent::DataBatch { messages, .. } => messages.len(),
+        }
+    }
 }
 
 /// Authenticated peer state exposed to embedded endpoint callers.
@@ -3542,7 +3644,7 @@ pub struct Node {
     /// Bulk endpoint data command receiver used by embedded/no-daemon integrations.
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event sink used by embedded/no-daemon integrations.
-    endpoint_event_tx: Option<tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>>,
+    endpoint_event_tx: Option<EndpointEventSender>,
     /// Nesting depth for rx-loop-scoped endpoint event batching.
     endpoint_event_batch_depth: usize,
     /// Endpoint payloads collected during the current rx-loop drain cycle.
@@ -5829,7 +5931,7 @@ impl Node {
         // `EndpointDataIo::event_rx` docs for the rationale (kills the
         // per-packet semaphore + the cross-task relay task that used to
         // sit on top of this channel).
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, event_rx) = EndpointEventSender::channel();
         self.endpoint_priority_command_rx = Some(priority_command_rx);
         self.endpoint_command_rx = Some(command_rx);
         self.endpoint_event_tx = Some(event_tx.clone());
