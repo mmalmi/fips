@@ -247,6 +247,120 @@ impl AuthenticatedSessionDispatch {
     fn into_endpoint_data_delivery(self) -> EndpointDataDelivery {
         self.message.into_endpoint_data_delivery()
     }
+
+    async fn dispatch(self, node: &mut Node) {
+        // Reverse-route learning runs after the session-entry borrow drops.
+        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
+
+        // Capture the dispatch facts now, before the EndpointData branch takes
+        // ownership of the message and drains the inner header in place.
+        let source_addr = *self.source_addr();
+        let msg_type = self.msg_type();
+        let commit = self.commit();
+
+        match SessionMessageType::from_byte(msg_type) {
+            Some(SessionMessageType::DataPacket) => {
+                let rest = self.body();
+                // msg_type 0x10: port-multiplexed service dispatch
+                if rest.len() < FSP_PORT_HEADER_SIZE {
+                    debug!(len = rest.len(), "DataPacket too short for port header");
+                    return;
+                }
+                let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
+                let service_payload = &rest[FSP_PORT_HEADER_SIZE..];
+
+                match dst_port {
+                    FSP_PORT_IPV6_SHIM => {
+                        use crate::FipsAddress;
+                        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+                        let dst_ipv6 = FipsAddress::from_node_addr(node.node_addr())
+                            .to_ipv6()
+                            .octets();
+
+                        match crate::upper::ipv6_shim::decompress_ipv6(
+                            service_payload,
+                            src_ipv6,
+                            dst_ipv6,
+                        ) {
+                            Some(mut packet) => {
+                                if self.ce_flag() {
+                                    mark_ipv6_ecn_ce(&mut packet);
+                                    node.stats_mut().congestion.record_ce_received();
+                                }
+                                if node.external_packet_tx.is_some() {
+                                    node.deliver_external_ipv6_packet(&source_addr, packet);
+                                } else if let Some(tun_tx) = &node.tun_tx {
+                                    let _t = crate::perf_profile::Timer::start(
+                                        crate::perf_profile::Stage::TunWrite,
+                                    );
+                                    if let Err(e) = tun_tx.send(packet) {
+                                        debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
+                                    }
+                                } else {
+                                    trace!(
+                                        src = %node.peer_display_name(&source_addr),
+                                        "IPv6 shim packet decompressed (no TUN interface)"
+                                    );
+                                }
+                            }
+                            None => {
+                                debug!(
+                                    src = %node.peer_display_name(&source_addr),
+                                    len = service_payload.len(),
+                                    "IPv6 shim decompression failed"
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!(
+                            src = %node.peer_display_name(&source_addr),
+                            dst_port,
+                            "Unknown FSP service port, dropping DataPacket"
+                        );
+                    }
+                }
+            }
+            Some(SessionMessageType::EndpointData) => {
+                node.deliver_endpoint_data(self.into_endpoint_data_delivery());
+            }
+            Some(SessionMessageType::TraversalOffer) => {
+                let rest = self.body();
+                node.handle_mesh_traversal_offer(&source_addr, rest).await;
+            }
+            Some(SessionMessageType::TraversalAnswer) => {
+                let rest = self.body();
+                node.handle_mesh_traversal_answer(&source_addr, rest).await;
+            }
+            Some(SessionMessageType::SenderReport) => {
+                let rest = self.body();
+                node.handle_session_sender_report(&source_addr, rest);
+            }
+            Some(SessionMessageType::ReceiverReport) => {
+                let rest = self.body();
+                node.handle_session_receiver_report(&source_addr, rest)
+                    .await;
+            }
+            Some(SessionMessageType::PathMtuNotification) => {
+                let rest = self.body();
+                node.handle_session_path_mtu_notification(&source_addr, rest);
+            }
+            Some(SessionMessageType::CoordsWarmup) => {
+                // Standalone coordinate warming — coords already extracted
+                // from CP flag by transit nodes. No action needed at endpoint.
+                trace!(src = %node.peer_display_name(&source_addr), "CoordsWarmup received");
+            }
+            _ => {
+                debug!(
+                    src = %node.peer_display_name(&source_addr),
+                    msg_type,
+                    "Unknown session message type, dropping"
+                );
+            }
+        }
+
+        commit.finalize(node).await;
+    }
 }
 
 impl SessionDispatchCommit {
@@ -2102,122 +2216,7 @@ impl Node {
             delivery.ce_flag(),
             session_message,
         );
-        self.handle_authenticated_session_dispatch(dispatch).await;
-    }
-
-    async fn handle_authenticated_session_dispatch(
-        &mut self,
-        dispatch: AuthenticatedSessionDispatch,
-    ) {
-        // Reverse-route learning runs after the borrow drops
-        // (`learn_reverse_route` takes `&mut self`).
-        self.learn_reverse_route(*dispatch.source_addr(), *dispatch.previous_hop_addr());
-
-        // Capture the dispatch facts now, before the EndpointData branch takes
-        // ownership of the message and drains the inner header in place.
-        let source_addr = *dispatch.source_addr();
-        let msg_type = dispatch.msg_type();
-        let commit = dispatch.commit();
-
-        // Dispatch by msg_type
-        match SessionMessageType::from_byte(msg_type) {
-            Some(SessionMessageType::DataPacket) => {
-                let rest = dispatch.body();
-                // msg_type 0x10: port-multiplexed service dispatch
-                if rest.len() < FSP_PORT_HEADER_SIZE {
-                    debug!(len = rest.len(), "DataPacket too short for port header");
-                    return;
-                }
-                let dst_port = u16::from_le_bytes([rest[2], rest[3]]);
-                let service_payload = &rest[FSP_PORT_HEADER_SIZE..];
-
-                match dst_port {
-                    FSP_PORT_IPV6_SHIM => {
-                        use crate::FipsAddress;
-                        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
-                        let dst_ipv6 = FipsAddress::from_node_addr(self.node_addr())
-                            .to_ipv6()
-                            .octets();
-
-                        match crate::upper::ipv6_shim::decompress_ipv6(
-                            service_payload,
-                            src_ipv6,
-                            dst_ipv6,
-                        ) {
-                            Some(mut packet) => {
-                                if dispatch.ce_flag() {
-                                    mark_ipv6_ecn_ce(&mut packet);
-                                    self.stats_mut().congestion.record_ce_received();
-                                }
-                                if self.external_packet_tx.is_some() {
-                                    self.deliver_external_ipv6_packet(&source_addr, packet);
-                                } else if let Some(tun_tx) = &self.tun_tx {
-                                    let _t = crate::perf_profile::Timer::start(
-                                        crate::perf_profile::Stage::TunWrite,
-                                    );
-                                    if let Err(e) = tun_tx.send(packet) {
-                                        debug!(error = %e, "Failed to deliver decompressed IPv6 packet to TUN");
-                                    }
-                                } else {
-                                    trace!(
-                                        src = %self.peer_display_name(&source_addr),
-                                        "IPv6 shim packet decompressed (no TUN interface)"
-                                    );
-                                }
-                            }
-                            None => {
-                                debug!(
-                                    src = %self.peer_display_name(&source_addr),
-                                    len = service_payload.len(),
-                                    "IPv6 shim decompression failed"
-                                );
-                            }
-                        }
-                    }
-                    _ => {
-                        debug!(
-                            src = %self.peer_display_name(&source_addr),
-                            dst_port,
-                            "Unknown FSP service port, dropping DataPacket"
-                        );
-                    }
-                }
-            }
-            Some(SessionMessageType::EndpointData) => {
-                self.deliver_endpoint_data(dispatch.into_endpoint_data_delivery());
-            }
-            Some(SessionMessageType::TraversalOffer) => {
-                let rest = dispatch.body();
-                self.handle_mesh_traversal_offer(&source_addr, rest).await;
-            }
-            Some(SessionMessageType::TraversalAnswer) => {
-                let rest = dispatch.body();
-                self.handle_mesh_traversal_answer(&source_addr, rest).await;
-            }
-            Some(SessionMessageType::SenderReport) => {
-                let rest = dispatch.body();
-                self.handle_session_sender_report(&source_addr, rest);
-            }
-            Some(SessionMessageType::ReceiverReport) => {
-                let rest = dispatch.body();
-                self.handle_session_receiver_report(&source_addr, rest)
-                    .await;
-            }
-            Some(SessionMessageType::PathMtuNotification) => {
-                let rest = dispatch.body();
-                self.handle_session_path_mtu_notification(&source_addr, rest);
-            }
-            Some(SessionMessageType::CoordsWarmup) => {
-                // Standalone coordinate warming — coords already extracted
-                // from CP flag by transit nodes. No action needed at endpoint.
-                trace!(src = %self.peer_display_name(&source_addr), "CoordsWarmup received");
-            }
-            _ => {
-                debug!(src = %self.peer_display_name(&source_addr), msg_type, "Unknown session message type, dropping");
-            }
-        }
-
-        commit.finalize(self).await;
+        dispatch.dispatch(self).await;
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
