@@ -163,6 +163,28 @@ impl SessionFspSendContext {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundSessionState {
+    Established,
+    Pending,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TunOutboundSessionDecision {
+    Established,
+    EstablishedPathMtuExceeded { path_ipv6_mtu: u32 },
+    Pending,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoveryRetrySessionDecision {
+    Established,
+    RestartedPending,
+    Missing,
+}
+
 /// Authenticated established-FSP message ready for local dispatch.
 ///
 /// This is the post-open unit the rx loop dispatches today, and the future
@@ -2435,6 +2457,63 @@ impl crate::node::SessionRegistry {
         entry.record_outbound_next_hop(next_hop_addr);
         true
     }
+
+    fn should_skip_session_initiation(&self, dest_addr: &NodeAddr) -> bool {
+        self.get(dest_addr)
+            .is_some_and(|entry| entry.is_established() || entry.is_initiating())
+    }
+
+    fn outbound_session_state(&self, dest_addr: &NodeAddr) -> OutboundSessionState {
+        let Some(entry) = self.get(dest_addr) else {
+            return OutboundSessionState::Missing;
+        };
+        if entry.is_established() {
+            OutboundSessionState::Established
+        } else {
+            OutboundSessionState::Pending
+        }
+    }
+
+    fn tun_outbound_session_decision(
+        &self,
+        dest_addr: &NodeAddr,
+        effective_mtu: usize,
+        packet_len: usize,
+    ) -> TunOutboundSessionDecision {
+        let Some(entry) = self.get(dest_addr) else {
+            return TunOutboundSessionDecision::Missing;
+        };
+        if !entry.is_established() {
+            return TunOutboundSessionDecision::Pending;
+        }
+
+        if let Some(mmp) = entry.mmp() {
+            let path_mtu = mmp.path_mtu.current_mtu();
+            let path_ipv6_mtu = crate::upper::icmp::effective_ipv6_mtu(path_mtu) as usize;
+            if path_ipv6_mtu < effective_mtu && packet_len > path_ipv6_mtu {
+                return TunOutboundSessionDecision::EstablishedPathMtuExceeded {
+                    path_ipv6_mtu: path_ipv6_mtu as u32,
+                };
+            }
+        }
+
+        TunOutboundSessionDecision::Established
+    }
+
+    fn prepare_retry_session_after_discovery(
+        &mut self,
+        dest_addr: &NodeAddr,
+    ) -> DiscoveryRetrySessionDecision {
+        let Some(existing) = self.get(dest_addr) else {
+            return DiscoveryRetrySessionDecision::Missing;
+        };
+        if existing.is_established() {
+            return DiscoveryRetrySessionDecision::Established;
+        }
+
+        self.remove(dest_addr);
+        DiscoveryRetrySessionDecision::RestartedPending
+    }
 }
 
 impl Node {
@@ -3744,10 +3823,7 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: PublicKey,
     ) -> Result<(), NodeError> {
-        // Check for existing session
-        if let Some(existing) = self.sessions.get(&dest_addr)
-            && (existing.is_established() || existing.is_initiating())
-        {
+        if self.sessions.should_skip_session_initiation(&dest_addr) {
             return Ok(());
         }
 
@@ -4233,8 +4309,8 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         payload: EndpointDataPayload,
     ) -> Result<(), NodeError> {
-        if let Some(entry) = self.sessions.get(&dest_addr) {
-            if entry.is_established() {
+        match self.sessions.outbound_session_state(&dest_addr) {
+            OutboundSessionState::Established => {
                 match self.send_session_endpoint_data(&dest_addr, &payload).await {
                     Ok(()) => return Ok(()),
                     Err(error) if Self::session_send_needs_path_recovery(&error, &dest_addr) => {
@@ -4250,14 +4326,17 @@ impl Node {
                     Err(error) => return Err(error),
                 }
             }
-            self.queue_pending_endpoint_data(dest_addr, payload);
-            let should_discover = self.config.node.routing.mode
-                == crate::config::RoutingMode::ReplyLearned
-                || self.find_next_hop(&dest_addr).is_none();
-            if should_discover {
-                self.maybe_initiate_lookup(&dest_addr).await;
+            OutboundSessionState::Pending => {
+                self.queue_pending_endpoint_data(dest_addr, payload);
+                let should_discover = self.config.node.routing.mode
+                    == crate::config::RoutingMode::ReplyLearned
+                    || self.find_next_hop(&dest_addr).is_none();
+                if should_discover {
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                }
+                return Ok(());
             }
-            return Ok(());
+            OutboundSessionState::Missing => {}
         }
 
         if self.find_next_hop(&dest_addr).is_none() {
@@ -4844,21 +4923,12 @@ impl Node {
             }
         };
 
-        // Check for established session
-        if let Some(entry) = self.sessions.get(&dest_addr) {
-            if entry.is_established() {
-                // Check per-destination path MTU learned from MtuExceeded signals.
-                // The first oversized packet is forwarded normally and triggers
-                // the MtuExceeded signal; subsequent packets are caught here and
-                // generate ICMPv6 Packet Too Big back to the application.
-                if let Some(mmp) = entry.mmp() {
-                    let path_mtu = mmp.path_mtu.current_mtu();
-                    let path_ipv6_mtu = crate::upper::icmp::effective_ipv6_mtu(path_mtu) as usize;
-                    if path_ipv6_mtu < effective_mtu && ipv6_packet.len() > path_ipv6_mtu {
-                        self.send_icmpv6_packet_too_big(&ipv6_packet, path_ipv6_mtu as u32);
-                        return;
-                    }
-                }
+        match self.sessions.tun_outbound_session_decision(
+            &dest_addr,
+            effective_mtu,
+            ipv6_packet.len(),
+        ) {
+            TunOutboundSessionDecision::Established => {
                 if let Err(e) = self.send_ipv6_packet(&dest_addr, &ipv6_packet).await {
                     if Self::session_send_needs_path_recovery(&e, &dest_addr) {
                         debug!(
@@ -4874,15 +4944,21 @@ impl Node {
                 }
                 return;
             }
-            // Session exists but not yet established — queue the packet
-            self.queue_pending_packet(dest_addr, ipv6_packet);
-            let should_discover = self.config.node.routing.mode
-                == crate::config::RoutingMode::ReplyLearned
-                || self.find_next_hop(&dest_addr).is_none();
-            if should_discover {
-                self.maybe_initiate_lookup(&dest_addr).await;
+            TunOutboundSessionDecision::EstablishedPathMtuExceeded { path_ipv6_mtu } => {
+                self.send_icmpv6_packet_too_big(&ipv6_packet, path_ipv6_mtu);
+                return;
             }
-            return;
+            TunOutboundSessionDecision::Pending => {
+                self.queue_pending_packet(dest_addr, ipv6_packet);
+                let should_discover = self.config.node.routing.mode
+                    == crate::config::RoutingMode::ReplyLearned
+                    || self.find_next_hop(&dest_addr).is_none();
+                if should_discover {
+                    self.maybe_initiate_lookup(&dest_addr).await;
+                }
+                return;
+            }
+            TunOutboundSessionDecision::Missing => {}
         }
 
         // No session: initiate one and queue the packet.
@@ -5041,19 +5117,20 @@ impl Node {
             }
         };
 
-        if let Some(existing) = self.sessions.get(&dest_addr) {
-            if existing.is_established() {
+        match self
+            .sessions
+            .prepare_retry_session_after_discovery(&dest_addr)
+        {
+            DiscoveryRetrySessionDecision::Established => {
                 return;
             }
-
-            // The old initiating session encoded its SessionSetup before the
-            // LookupResponse refreshed coord_cache/reverse routes. Rebuild it
-            // so the retry actually uses the newly discovered mesh path.
-            debug!(
-                dest = %self.peer_display_name(&dest_addr),
-                "Restarting pending session after discovery refreshed route"
-            );
-            self.sessions.remove(&dest_addr);
+            DiscoveryRetrySessionDecision::RestartedPending => {
+                debug!(
+                    dest = %self.peer_display_name(&dest_addr),
+                    "Restarting pending session after discovery refreshed route"
+                );
+            }
+            DiscoveryRetrySessionDecision::Missing => {}
         }
 
         match self.initiate_session(dest_addr, dest_pubkey).await {
@@ -5745,6 +5822,113 @@ mod tests {
         );
         assert!(!sessions.seed_session_datagram_path_mtu(&node_addr(0x77), 1280));
         assert!(!sessions.record_session_datagram_next_hop(&node_addr(0x77), next_hop));
+    }
+
+    #[test]
+    fn session_registry_owns_outbound_session_state_and_tun_pmtu_guard() {
+        let local = Identity::generate();
+        let established_peer = Identity::generate();
+        let initiating_peer = Identity::generate();
+        let established_addr = *established_peer.node_addr();
+        let initiating_addr = *initiating_peer.node_addr();
+        let missing_addr = node_addr(0x99);
+        let mut established = established_entry(&local, &established_peer);
+        established.init_mmp(&crate::config::SessionMmpConfig::default());
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(established_addr, established).is_none());
+        assert!(
+            sessions
+                .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
+                .is_none()
+        );
+
+        assert_eq!(
+            sessions.outbound_session_state(&established_addr),
+            OutboundSessionState::Established
+        );
+        assert_eq!(
+            sessions.outbound_session_state(&initiating_addr),
+            OutboundSessionState::Pending
+        );
+        assert_eq!(
+            sessions.outbound_session_state(&missing_addr),
+            OutboundSessionState::Missing
+        );
+        assert!(sessions.should_skip_session_initiation(&established_addr));
+        assert!(sessions.should_skip_session_initiation(&initiating_addr));
+        assert!(!sessions.should_skip_session_initiation(&missing_addr));
+
+        assert_eq!(
+            sessions.tun_outbound_session_decision(&established_addr, 1500, 1280),
+            TunOutboundSessionDecision::Established
+        );
+
+        let path_mtu = 1280;
+        assert!(sessions.seed_session_datagram_path_mtu(&established_addr, path_mtu));
+        let path_ipv6_mtu = crate::upper::icmp::effective_ipv6_mtu(path_mtu) as usize;
+        assert_eq!(
+            sessions.tun_outbound_session_decision(&established_addr, 1500, path_ipv6_mtu + 1),
+            TunOutboundSessionDecision::EstablishedPathMtuExceeded {
+                path_ipv6_mtu: path_ipv6_mtu as u32
+            }
+        );
+        assert_eq!(
+            sessions.tun_outbound_session_decision(&established_addr, 1500, path_ipv6_mtu),
+            TunOutboundSessionDecision::Established
+        );
+        assert_eq!(
+            sessions.tun_outbound_session_decision(&initiating_addr, 1500, 1280),
+            TunOutboundSessionDecision::Pending
+        );
+        assert_eq!(
+            sessions.tun_outbound_session_decision(&missing_addr, 1500, 1280),
+            TunOutboundSessionDecision::Missing
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_discovery_retry_restart_policy() {
+        let local = Identity::generate();
+        let established_peer = Identity::generate();
+        let initiating_peer = Identity::generate();
+        let established_addr = *established_peer.node_addr();
+        let initiating_addr = *initiating_peer.node_addr();
+        let missing_addr = node_addr(0x88);
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(
+            sessions
+                .insert(
+                    established_addr,
+                    established_entry(&local, &established_peer)
+                )
+                .is_none()
+        );
+        assert!(
+            sessions
+                .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
+                .is_none()
+        );
+
+        assert_eq!(
+            sessions.prepare_retry_session_after_discovery(&established_addr),
+            DiscoveryRetrySessionDecision::Established
+        );
+        assert!(
+            sessions.get(&established_addr).is_some(),
+            "established sessions must remain intact"
+        );
+        assert_eq!(
+            sessions.prepare_retry_session_after_discovery(&initiating_addr),
+            DiscoveryRetrySessionDecision::RestartedPending
+        );
+        assert!(
+            sessions.get(&initiating_addr).is_none(),
+            "pending setup should be removed so it can be rebuilt with fresh coords"
+        );
+        assert_eq!(
+            sessions.prepare_retry_session_after_discovery(&missing_addr),
+            DiscoveryRetrySessionDecision::Missing
+        );
     }
 
     #[test]
