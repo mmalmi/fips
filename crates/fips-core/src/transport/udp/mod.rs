@@ -2,6 +2,8 @@
 //!
 //! Provides UDP-based transport for FIPS peer communication.
 
+#[cfg(target_os = "linux")]
+use super::received_timestamp_ms;
 use super::{
     DiscoveredPeer, PacketTx, ReceivedPacket, Transport, TransportAddr, TransportError,
     TransportId, TransportState, TransportType,
@@ -563,6 +565,8 @@ async fn udp_receive_loop(
             match recv_result {
                 Ok((count, kernel_drops)) => {
                     stats.set_kernel_drops(kernel_drops as u64);
+                    let timestamp_ms = received_timestamp_ms();
+                    let trace_enqueued_at = crate::perf_profile::stamp();
                     for i in 0..count {
                         let len = lens[i];
                         let Some(remote_addr) = addrs[i] else {
@@ -589,7 +593,13 @@ async fn udp_receive_loop(
                         let mut data = std::mem::replace(&mut backing[i], vec![0u8; buf_size]);
                         data.truncate(len);
                         let addr = TransportAddr::from_socket_addr(remote_addr);
-                        let packet = ReceivedPacket::new(transport_id, addr, data);
+                        let packet = ReceivedPacket::with_trace_timestamp(
+                            transport_id,
+                            addr,
+                            data,
+                            timestamp_ms,
+                            trace_enqueued_at,
+                        );
 
                         trace!(
                             transport_id = %transport_id,

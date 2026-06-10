@@ -60,17 +60,13 @@ pub struct ReceivedPacket {
 impl ReceivedPacket {
     /// Create a new received packet with current timestamp.
     pub fn new(transport_id: TransportId, remote_addr: TransportAddr, data: Vec<u8>) -> Self {
-        let timestamp_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        Self {
+        Self::with_trace_timestamp(
             transport_id,
             remote_addr,
             data,
-            timestamp_ms,
-            trace_enqueued_at: crate::perf_profile::stamp(),
-        }
+            received_timestamp_ms(),
+            crate::perf_profile::stamp(),
+        )
     }
 
     /// Create a received packet with explicit timestamp.
@@ -80,14 +76,43 @@ impl ReceivedPacket {
         data: Vec<u8>,
         timestamp_ms: u64,
     ) -> Self {
+        Self::with_trace_timestamp(
+            transport_id,
+            remote_addr,
+            data,
+            timestamp_ms,
+            crate::perf_profile::stamp(),
+        )
+    }
+
+    /// Create a received packet with explicit wall-clock and queue timestamps.
+    ///
+    /// UDP receive paths can drain several datagrams per kernel batch. Those
+    /// datagrams arrived close together, so sharing one wall-clock sample and
+    /// one queue trace stamp across the batch avoids per-packet clock reads
+    /// while preserving arrival order and queue residence visibility.
+    pub(crate) fn with_trace_timestamp(
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        data: Vec<u8>,
+        timestamp_ms: u64,
+        trace_enqueued_at: Option<Instant>,
+    ) -> Self {
         Self {
             transport_id,
             remote_addr,
             data,
             timestamp_ms,
-            trace_enqueued_at: crate::perf_profile::stamp(),
+            trace_enqueued_at,
         }
     }
+}
+
+pub(crate) fn received_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Channel sender for received packets.
@@ -1710,6 +1735,22 @@ mod tests {
         );
 
         assert_eq!(packet.timestamp_ms, 12345);
+    }
+
+    #[test]
+    fn received_packet_can_reuse_batch_timestamps() {
+        let trace_enqueued_at = crate::perf_profile::stamp();
+        let packet = ReceivedPacket::with_trace_timestamp(
+            TransportId::new(7),
+            TransportAddr::from_string("batch"),
+            vec![8, 9],
+            67890,
+            trace_enqueued_at,
+        );
+
+        assert_eq!(packet.transport_id, TransportId::new(7));
+        assert_eq!(packet.timestamp_ms, 67890);
+        assert_eq!(packet.trace_enqueued_at, trace_enqueued_at);
     }
 
     #[tokio::test]

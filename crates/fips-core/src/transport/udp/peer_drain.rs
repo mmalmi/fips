@@ -21,7 +21,7 @@
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use super::super::{ReceivedPacket, TransportAddr, TransportId};
+use super::super::{ReceivedPacket, TransportAddr, TransportId, received_timestamp_ms};
 use super::PacketTx;
 use super::connected_peer::ConnectedPeerSocket;
 use crate::discovery::is_punch_packet;
@@ -233,6 +233,8 @@ fn drain_loop(
             }
         };
 
+        let timestamp_ms = received_timestamp_ms();
+        let trace_enqueued_at = crate::perf_profile::stamp();
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
@@ -252,7 +254,13 @@ fn drain_loop(
                 );
                 continue;
             }
-            let packet = ReceivedPacket::new(transport_id, packet_addr.clone(), data);
+            let packet = ReceivedPacket::with_trace_timestamp(
+                transport_id,
+                packet_addr.clone(),
+                data,
+                timestamp_ms,
+                trace_enqueued_at,
+            );
             if packet_tx.send(packet).is_err() {
                 trace!("fips-peer-drain: packet channel closed; exiting");
                 return;
