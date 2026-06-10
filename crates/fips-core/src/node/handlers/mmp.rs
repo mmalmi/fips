@@ -29,6 +29,67 @@ fn format_throughput(bps: f64) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ProcessedMmpReceiverReport {
+    first_rtt: bool,
+    srtt_ms: Option<f64>,
+    loss_rate: f64,
+    etx: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MmpReceiverReportSkip {
+    UnknownPeer,
+    MmpDisabled,
+}
+
+impl crate::node::PeerLifecycleRegistry {
+    fn process_mmp_receiver_report(
+        &mut self,
+        from: &NodeAddr,
+        rr: &ReceiverReport,
+        now: Instant,
+    ) -> Result<ProcessedMmpReceiverReport, MmpReceiverReportSkip> {
+        let peer = self
+            .active
+            .get_mut(from)
+            .ok_or(MmpReceiverReportSkip::UnknownPeer)?;
+
+        let our_timestamp_ms = peer.session_elapsed_ms();
+        let Some(mmp) = peer.mmp_mut() else {
+            return Err(MmpReceiverReportSkip::MmpDisabled);
+        };
+
+        // Process the report: computes RTT from timestamp echo, updates
+        // loss rate, goodput rate, jitter trend, and ETX.
+        let first_rtt = mmp
+            .metrics
+            .process_receiver_report(rr, our_timestamp_ms, now);
+
+        // Feed SRTT back to sender/receiver report interval tuning.
+        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
+            let srtt_us = (srtt_ms * 1000.0) as i64;
+            mmp.sender.update_report_interval_from_srtt(srtt_us);
+            mmp.receiver.update_report_interval_from_srtt(srtt_us);
+        }
+
+        // Update reverse delivery ratio from our own receiver state
+        // (what fraction of peer's frames we received), using per-interval
+        // deltas.
+        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+        let peer_highest = mmp.receiver.highest_counter();
+        mmp.metrics
+            .update_reverse_delivery(our_recv_packets, peer_highest);
+
+        Ok(ProcessedMmpReceiverReport {
+            first_rtt,
+            srtt_ms: mmp.metrics.srtt_ms(),
+            loss_rate: mmp.metrics.loss_rate(),
+            etx: mmp.metrics.etx,
+        })
+    }
+}
+
 impl Node {
     /// Handle an incoming SenderReport from a peer.
     ///
@@ -87,54 +148,30 @@ impl Node {
 
         let peer_name = self.peer_display_name(from);
 
-        let peer = match self.peers.get_mut(from) {
-            Some(p) => p,
-            None => {
+        let processed = match self
+            .peers
+            .process_mmp_receiver_report(from, &rr, Instant::now())
+        {
+            Ok(processed) => processed,
+            Err(MmpReceiverReportSkip::UnknownPeer) => {
                 debug!(from = %peer_name, "ReceiverReport from unknown peer");
                 return;
             }
+            Err(MmpReceiverReportSkip::MmpDisabled) => return,
         };
-
-        // Get session timestamp before taking mutable borrow on MMP
-        let our_timestamp_ms = peer.session_elapsed_ms();
-
-        let Some(mmp) = peer.mmp_mut() else {
-            return;
-        };
-
-        // Process the report: computes RTT from timestamp echo, updates
-        // loss rate, goodput rate, jitter trend, and ETX.
-        let now = Instant::now();
-        let first_rtt = mmp
-            .metrics
-            .process_receiver_report(&rr, our_timestamp_ms, now);
-
-        // Feed SRTT back to sender/receiver report interval tuning
-        if let Some(srtt_ms) = mmp.metrics.srtt_ms() {
-            let srtt_us = (srtt_ms * 1000.0) as i64;
-            mmp.sender.update_report_interval_from_srtt(srtt_us);
-            mmp.receiver.update_report_interval_from_srtt(srtt_us);
-        }
-
-        // Update reverse delivery ratio from our own receiver state
-        // (what fraction of peer's frames we received), using per-interval deltas.
-        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
-        let peer_highest = mmp.receiver.highest_counter();
-        mmp.metrics
-            .update_reverse_delivery(our_recv_packets, peer_highest);
 
         trace!(
             from = %peer_name,
-            rtt_ms = ?mmp.metrics.srtt_ms(),
-            loss = format_args!("{:.1}%", mmp.metrics.loss_rate() * 100.0),
-            etx = format_args!("{:.2}", mmp.metrics.etx),
+            rtt_ms = ?processed.srtt_ms,
+            loss = format_args!("{:.1}%", processed.loss_rate * 100.0),
+            etx = format_args!("{:.2}", processed.etx),
             "Processed ReceiverReport"
         );
 
         // First RTT sample — peer is now eligible for parent selection.
         // Trigger re-evaluation so the node doesn't wait for the next
         // periodic tick or TreeAnnounce.
-        if first_rtt {
+        if processed.first_rtt {
             let peer_costs: std::collections::HashMap<crate::NodeAddr, f64> = self
                 .peers
                 .iter()
@@ -642,5 +679,143 @@ impl Node {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::PeerLifecycleRegistry;
+    use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseSession};
+    use crate::peer::ActivePeer;
+    use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+    use crate::utils::index::SessionIndex;
+    use crate::{Identity, NodeAddr, PeerIdentity};
+    use std::time::{Duration, Instant};
+
+    fn node_addr(byte: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = byte;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn make_fmp_session_pair(
+        initiator: &Identity,
+        responder: &Identity,
+    ) -> (NoiseSession, NoiseSession) {
+        let mut initiator_hs =
+            NoiseHandshakeState::new_initiator(initiator.keypair(), responder.pubkey_full());
+        let mut responder_hs = NoiseHandshakeState::new_responder(responder.keypair());
+        initiator_hs.set_local_epoch([1u8; 8]);
+        responder_hs.set_local_epoch([2u8; 8]);
+
+        let msg1 = initiator_hs.write_message_1().unwrap();
+        responder_hs.read_message_1(&msg1).unwrap();
+        let msg2 = responder_hs.write_message_2().unwrap();
+        initiator_hs.read_message_2(&msg2).unwrap();
+
+        (
+            initiator_hs.into_session().unwrap(),
+            responder_hs.into_session().unwrap(),
+        )
+    }
+
+    fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let (session, _) = make_fmp_session_pair(local, peer);
+        ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(tag.into()),
+            1_000,
+            session,
+            SessionIndex::new(tag * 10 + 1),
+            SessionIndex::new(tag * 10 + 2),
+            TransportId::new(tag),
+            TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
+            LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([2u8; 8]),
+        )
+    }
+
+    fn sample_receiver_report(timestamp_echo: u32) -> ReceiverReport {
+        ReceiverReport {
+            highest_counter: 10,
+            cumulative_packets_recv: 10,
+            cumulative_bytes_recv: 1_200,
+            timestamp_echo,
+            dwell_time: 0,
+            max_burst_loss: 0,
+            mean_burst_loss: 0,
+            jitter: 123,
+            ecn_ce_count: 0,
+            owd_trend: 0,
+            burst_loss_count: 0,
+            cumulative_reorder_count: 0,
+            interval_packets_recv: 10,
+            interval_bytes_recv: 1_200,
+        }
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_mmp_receiver_report_processing() {
+        let local = Identity::generate();
+        let peer_id = Identity::generate();
+        let mut peer = active_fmp_peer(&local, &peer_id, 1);
+
+        {
+            let mmp = peer.mmp_mut().expect("MMP enabled");
+            mmp.receiver
+                .record_recv(10, 1, 1_200, false, Instant::now());
+        }
+
+        let mut peers = PeerLifecycleRegistry::default();
+        peers.insert(*peer_id.node_addr(), peer);
+
+        std::thread::sleep(Duration::from_millis(20));
+        let outcome = peers
+            .process_mmp_receiver_report(
+                peer_id.node_addr(),
+                &sample_receiver_report(1),
+                Instant::now(),
+            )
+            .expect("receiver report should process");
+
+        assert!(outcome.first_rtt);
+        assert!(outcome.srtt_ms.is_some());
+        assert_eq!(outcome.loss_rate, 0.0);
+        assert_eq!(outcome.etx, 1.0);
+
+        let peer = peers.get(peer_id.node_addr()).expect("peer retained");
+        let mmp = peer.mmp().expect("MMP retained");
+        assert_eq!(mmp.metrics.srtt_ms(), outcome.srtt_ms);
+        assert!(peer.has_srtt());
+        assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
+        assert_eq!(mmp.receiver.highest_counter(), 10);
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_mmp_receiver_report_skip_paths() {
+        let mut peers = PeerLifecycleRegistry::default();
+        let rr = sample_receiver_report(0);
+
+        assert_eq!(
+            peers.process_mmp_receiver_report(&node_addr(0x77), &rr, Instant::now()),
+            Err(MmpReceiverReportSkip::UnknownPeer)
+        );
+
+        let no_mmp_identity = Identity::generate();
+        let no_mmp_peer = ActivePeer::new(
+            PeerIdentity::from_pubkey_full(no_mmp_identity.pubkey_full()),
+            LinkId::new(9),
+            1_000,
+        );
+        peers.insert(*no_mmp_identity.node_addr(), no_mmp_peer);
+
+        assert_eq!(
+            peers.process_mmp_receiver_report(no_mmp_identity.node_addr(), &rr, Instant::now()),
+            Err(MmpReceiverReportSkip::MmpDisabled)
+        );
     }
 }
