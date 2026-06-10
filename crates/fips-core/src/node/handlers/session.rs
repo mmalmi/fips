@@ -2259,6 +2259,141 @@ impl crate::node::SessionRegistry {
         true
     }
 
+    fn abandon_rekey(&mut self, source_addr: &NodeAddr) -> bool {
+        let Some(entry) = self.get_mut(source_addr) else {
+            return false;
+        };
+        entry.abandon_rekey();
+        true
+    }
+
+    fn install_initiating_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        remote_pubkey: PublicKey,
+        handshake: HandshakeState,
+        setup_payload: Vec<u8>,
+        now_ms: u64,
+        resend_interval_ms: u64,
+    ) -> Option<SessionEntry> {
+        let mut entry = SessionEntry::new(
+            remote_addr,
+            remote_pubkey,
+            EndToEndState::Initiating(handshake),
+            now_ms,
+            true,
+        );
+        entry.set_handshake_payload(setup_payload, now_ms + resend_interval_ms);
+        self.insert(remote_addr, entry)
+    }
+
+    fn install_awaiting_msg3_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        placeholder_pubkey: PublicKey,
+        handshake: HandshakeState,
+        ack_payload: Vec<u8>,
+        now_ms: u64,
+        resend_interval_ms: u64,
+    ) -> Option<SessionEntry> {
+        let mut entry = SessionEntry::new(
+            remote_addr,
+            placeholder_pubkey,
+            EndToEndState::AwaitingMsg3(handshake),
+            now_ms,
+            false,
+        );
+        entry.set_handshake_payload(ack_payload, now_ms + resend_interval_ms);
+        self.insert(remote_addr, entry)
+    }
+
+    fn install_established_initiator_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        mut entry: SessionEntry,
+        session: NoiseSession,
+        msg3_resend_payload: Vec<u8>,
+        now_ms: u64,
+        resend_interval_ms: u64,
+        coords_warmup_packets: u8,
+        mmp_config: &crate::config::SessionMmpConfig,
+    ) -> Option<SessionEntry> {
+        entry.set_state(EndToEndState::Established(session));
+        entry.set_coords_warmup_remaining(coords_warmup_packets);
+        entry.mark_established(now_ms);
+        entry.init_mmp(mmp_config);
+        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval_ms);
+        entry.touch(now_ms);
+        self.insert(remote_addr, entry)
+    }
+
+    fn install_established_responder_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        remote_pubkey: PublicKey,
+        session: NoiseSession,
+        now_ms: u64,
+        coords_warmup_packets: u8,
+        mmp_config: &crate::config::SessionMmpConfig,
+    ) -> Option<SessionEntry> {
+        let mut entry = SessionEntry::new(
+            remote_addr,
+            remote_pubkey,
+            EndToEndState::Established(session),
+            now_ms,
+            false,
+        );
+        entry.set_coords_warmup_remaining(coords_warmup_packets);
+        entry.mark_established(now_ms);
+        entry.init_mmp(mmp_config);
+        entry.touch(now_ms);
+        self.insert(remote_addr, entry)
+    }
+
+    fn install_rekey_responder_awaiting_msg3(
+        &mut self,
+        remote_addr: &NodeAddr,
+        handshake: HandshakeState,
+        ack_payload: Vec<u8>,
+        now_ms: u64,
+        resend_interval_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.get_mut(remote_addr) else {
+            return false;
+        };
+        entry.set_rekey_state(handshake, false);
+        entry.set_handshake_payload(ack_payload, now_ms + resend_interval_ms);
+        entry.record_peer_rekey(now_ms);
+        true
+    }
+
+    fn install_rekey_initiator_pending_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        mut entry: SessionEntry,
+        session: NoiseSession,
+        msg3_resend_payload: Vec<u8>,
+        now_ms: u64,
+        resend_interval_ms: u64,
+    ) -> Option<SessionEntry> {
+        entry.set_pending_session(session);
+        entry.set_rekey_completed_ms(now_ms);
+        entry.clear_handshake_payload();
+        entry.set_rekey_msg3_payload(msg3_resend_payload, now_ms + resend_interval_ms);
+        self.insert(remote_addr, entry)
+    }
+
+    fn install_rekey_responder_pending_session(
+        &mut self,
+        remote_addr: NodeAddr,
+        mut entry: SessionEntry,
+        session: NoiseSession,
+    ) -> Option<SessionEntry> {
+        entry.set_pending_session(session);
+        entry.clear_handshake_payload();
+        self.insert(remote_addr, entry)
+    }
+
     fn open_established_fsp_frame(
         &mut self,
         source_addr: &NodeAddr,
@@ -2882,9 +3017,8 @@ impl Node {
                                 let now_ms = Self::now_ms();
                                 let interval =
                                     self.config.node.rate_limit.handshake_resend_interval_ms;
-                                if let Some(entry) = self.sessions.get_mut(src_addr) {
-                                    entry.record_resend(now_ms + interval);
-                                }
+                                self.sessions
+                                    .record_handshake_resend(src_addr, now_ms + interval);
                             }
                             return;
                         }
@@ -2901,8 +3035,7 @@ impl Node {
                             src = %self.peer_display_name(src_addr),
                             "Dual FSP rekey initiation: we lose (larger addr), abandoning ours"
                         );
-                        let entry = self.sessions.get_mut(src_addr).unwrap();
-                        entry.abandon_rekey();
+                        self.sessions.abandon_rekey(src_addr);
                     } else if has_pending {
                         if pending_rekey_wins_tiebreak(
                             self.identity.node_addr(),
@@ -2921,8 +3054,7 @@ impl Node {
                             local_pending_initiator = existing.is_rekey_initiator(),
                             "FSP rekey msg1 received with stale pending rekey, abandoning pending and responding"
                         );
-                        let entry = self.sessions.get_mut(src_addr).unwrap();
-                        entry.abandon_rekey();
+                        self.sessions.abandon_rekey(src_addr);
                     }
                     let our_keypair = self.identity.keypair();
                     let mut handshake = HandshakeState::new_xk_responder(our_keypair);
@@ -2958,11 +3090,14 @@ impl Node {
 
                     // Store rekey state on the existing entry
                     let now_ms = Self::now_ms();
-                    let entry = self.sessions.get_mut(src_addr).unwrap();
-                    entry.set_rekey_state(handshake, false);
                     let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-                    entry.set_handshake_payload(ack_payload, now_ms + resend_interval);
-                    entry.record_peer_rekey(now_ms);
+                    self.sessions.install_rekey_responder_awaiting_msg3(
+                        src_addr,
+                        handshake,
+                        ack_payload,
+                        now_ms,
+                        resend_interval,
+                    );
 
                     debug!(
                         src = %self.peer_display_name(src_addr),
@@ -3019,15 +3154,14 @@ impl Node {
         let placeholder_pubkey = self.identity.keypair().public_key();
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        let mut entry = SessionEntry::new(
+        self.sessions.install_awaiting_msg3_session(
             *src_addr,
             placeholder_pubkey,
-            EndToEndState::AwaitingMsg3(handshake),
+            handshake,
+            ack_payload,
             now_ms,
-            false,
+            resend_interval,
         );
-        entry.set_handshake_payload(ack_payload, now_ms + resend_interval);
-        self.sessions.insert(*src_addr, entry);
 
         debug!(src = %self.peer_display_name(src_addr), "SessionSetup processed (XK), SessionAck sent, awaiting msg3");
     }
@@ -3118,12 +3252,15 @@ impl Node {
             };
 
             let now_ms = Self::now_ms();
-            entry.set_pending_session(session);
-            entry.set_rekey_completed_ms(now_ms);
-            entry.clear_handshake_payload();
             let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            entry.set_rekey_msg3_payload(msg3_resend_payload, now_ms + resend_interval);
-            self.sessions.insert(*src_addr, entry);
+            self.sessions.install_rekey_initiator_pending_session(
+                *src_addr,
+                entry,
+                session,
+                msg3_resend_payload,
+                now_ms,
+                resend_interval,
+            );
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -3217,14 +3354,17 @@ impl Node {
         };
 
         let now_ms = Self::now_ms();
-        entry.set_state(EndToEndState::Established(session));
-        entry.set_coords_warmup_remaining(self.config.node.session.coords_warmup_packets);
-        entry.mark_established(now_ms);
-        entry.init_mmp(&self.config.node.session_mmp);
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        entry.set_handshake_payload(msg3_resend_payload, now_ms + resend_interval);
-        entry.touch(now_ms);
-        self.sessions.insert(*src_addr, entry);
+        self.sessions.install_established_initiator_session(
+            *src_addr,
+            entry,
+            session,
+            msg3_resend_payload,
+            now_ms,
+            resend_interval,
+            self.config.node.session.coords_warmup_packets,
+            &self.config.node.session_mmp,
+        );
         self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
 
         // Flush any queued outbound packets for this destination
@@ -3337,9 +3477,8 @@ impl Node {
                 }
             };
 
-            entry.set_pending_session(session);
-            entry.clear_handshake_payload();
-            self.sessions.insert(*src_addr, entry);
+            self.sessions
+                .install_rekey_responder_pending_session(*src_addr, entry, session);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -3388,18 +3527,14 @@ impl Node {
 
         let now_ms = Self::now_ms();
         // Replace the placeholder pubkey with the real one
-        let mut new_entry = SessionEntry::new(
+        self.sessions.install_established_responder_session(
             *src_addr,
             remote_pubkey,
-            EndToEndState::Established(session),
+            session,
             now_ms,
-            false,
+            self.config.node.session.coords_warmup_packets,
+            &self.config.node.session_mmp,
         );
-        new_entry.set_coords_warmup_remaining(self.config.node.session.coords_warmup_packets);
-        new_entry.mark_established(now_ms);
-        new_entry.init_mmp(&self.config.node.session_mmp);
-        new_entry.touch(now_ms);
-        self.sessions.insert(*src_addr, new_entry);
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;
@@ -3858,15 +3993,14 @@ impl Node {
         // Store session entry with handshake payload for potential resend
         let now_ms = Self::now_ms();
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-        let mut entry = SessionEntry::new(
+        self.sessions.install_initiating_session(
             dest_addr,
             dest_pubkey,
-            EndToEndState::Initiating(handshake),
+            handshake,
+            setup_payload,
             now_ms,
-            true,
+            resend_interval,
         );
-        entry.set_handshake_payload(setup_payload, now_ms + resend_interval);
-        self.sessions.insert(dest_addr, entry);
 
         debug!(dest = %self.peer_display_name(&dest_addr), "Session initiation started");
         Ok(())
@@ -5929,6 +6063,193 @@ mod tests {
             sessions.prepare_retry_session_after_discovery(&missing_addr),
             DiscoveryRetrySessionDecision::Missing
         );
+    }
+
+    #[test]
+    fn session_registry_owns_handshake_session_installation() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut sessions = crate::node::SessionRegistry::default();
+        let mmp_config = crate::config::SessionMmpConfig::default();
+
+        let mut initiating_handshake =
+            HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        initiating_handshake.set_local_epoch([1u8; 8]);
+        assert!(
+            sessions
+                .install_initiating_session(
+                    peer_addr,
+                    peer.pubkey_full(),
+                    initiating_handshake,
+                    vec![0x11, 0x22],
+                    1_000,
+                    250,
+                )
+                .is_none()
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("initiating session should be installed");
+        assert!(entry.is_initiating());
+        assert!(entry.is_initiator());
+        assert_eq!(entry.handshake_payload(), Some([0x11, 0x22].as_slice()));
+        assert_eq!(entry.next_resend_at_ms(), 1_250);
+
+        let mut awaiting_handshake = HandshakeState::new_xk_responder(local.keypair());
+        awaiting_handshake.set_local_epoch([2u8; 8]);
+        assert!(
+            sessions
+                .install_awaiting_msg3_session(
+                    peer_addr,
+                    local.pubkey_full(),
+                    awaiting_handshake,
+                    vec![0x33],
+                    2_000,
+                    500,
+                )
+                .is_some(),
+            "awaiting-msg3 install replaces the old initiating entry"
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("awaiting-msg3 session should be installed");
+        assert!(entry.is_awaiting_msg3());
+        assert!(!entry.is_initiator());
+        assert_eq!(entry.handshake_payload(), Some([0x33].as_slice()));
+        assert_eq!(entry.next_resend_at_ms(), 2_500);
+
+        let (initiator_session, _) = make_xk_session_pair(&local, &peer);
+        let mut entry = initiating_entry(&local, &peer);
+        let _ = entry.take_state();
+        assert!(
+            sessions
+                .install_established_initiator_session(
+                    peer_addr,
+                    entry,
+                    initiator_session,
+                    vec![0x44, 0x55],
+                    3_000,
+                    750,
+                    3,
+                    &mmp_config,
+                )
+                .is_some()
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("established initiator session should be installed");
+        assert!(entry.is_established());
+        assert!(entry.is_initiator());
+        assert_eq!(entry.coords_warmup_remaining(), 3);
+        assert_eq!(entry.session_start_ms(), 3_000);
+        assert_eq!(entry.last_activity(), 3_000);
+        assert!(entry.mmp().is_some());
+        assert_eq!(entry.handshake_payload(), Some([0x44, 0x55].as_slice()));
+        assert_eq!(entry.next_resend_at_ms(), 3_750);
+
+        let (_, responder_session) = make_xk_session_pair(&peer, &local);
+        assert!(
+            sessions
+                .install_established_responder_session(
+                    peer_addr,
+                    peer.pubkey_full(),
+                    responder_session,
+                    4_000,
+                    2,
+                    &mmp_config,
+                )
+                .is_some()
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("established responder session should be installed");
+        assert!(entry.is_established());
+        assert!(!entry.is_initiator());
+        assert_eq!(entry.coords_warmup_remaining(), 2);
+        assert_eq!(entry.session_start_ms(), 4_000);
+        assert_eq!(entry.last_activity(), 4_000);
+        assert!(entry.mmp().is_some());
+        assert_eq!(*entry.remote_pubkey(), peer.pubkey_full());
+        assert_eq!(entry.handshake_payload(), None);
+    }
+
+    #[test]
+    fn session_registry_owns_rekey_session_installation_and_abandon() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut sessions = crate::node::SessionRegistry::default();
+
+        assert!(
+            sessions
+                .insert(peer_addr, established_entry(&local, &peer))
+                .is_none()
+        );
+        let mut rekey_handshake = HandshakeState::new_xk_responder(local.keypair());
+        rekey_handshake.set_local_epoch([3u8; 8]);
+        assert!(sessions.install_rekey_responder_awaiting_msg3(
+            &peer_addr,
+            rekey_handshake,
+            vec![0xaa],
+            5_000,
+            125,
+        ));
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("rekey awaiting-msg3 state should remain installed");
+        assert!(entry.has_rekey_in_progress());
+        assert!(!entry.is_rekey_initiator());
+        assert_eq!(entry.handshake_payload(), Some([0xaa].as_slice()));
+        assert_eq!(entry.next_resend_at_ms(), 5_125);
+        assert!(entry.is_rekey_dampened(5_100, 500));
+
+        assert!(sessions.abandon_rekey(&peer_addr));
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("session should remain after abandon");
+        assert!(!entry.has_rekey_in_progress());
+        assert!(entry.pending_new_session().is_none());
+        assert_eq!(entry.handshake_payload(), None);
+
+        let (pending_session, _) = make_xk_session_pair(&local, &peer);
+        let mut entry = established_entry(&local, &peer);
+        entry.set_handshake_payload(vec![0xbb], 6_050);
+        assert!(
+            sessions
+                .install_rekey_initiator_pending_session(
+                    peer_addr,
+                    entry,
+                    pending_session,
+                    vec![0xcc, 0xdd],
+                    6_000,
+                    250,
+                )
+                .is_some()
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("initiator pending rekey should be installed");
+        assert!(entry.pending_new_session().is_some());
+        assert_eq!(entry.rekey_completed_ms(), 6_000);
+        assert_eq!(entry.handshake_payload(), None);
+        assert_eq!(entry.rekey_msg3_payload(), Some([0xcc, 0xdd].as_slice()));
+        assert_eq!(entry.rekey_msg3_next_resend_ms(), 6_250);
+
+        let (_, pending_session) = make_xk_session_pair(&peer, &local);
+        let mut entry = established_entry(&local, &peer);
+        entry.set_handshake_payload(vec![0xee], 7_050);
+        assert!(
+            sessions
+                .install_rekey_responder_pending_session(peer_addr, entry, pending_session)
+                .is_some()
+        );
+        let entry = sessions
+            .get(&peer_addr)
+            .expect("responder pending rekey should be installed");
+        assert!(entry.pending_new_session().is_some());
+        assert_eq!(entry.handshake_payload(), None);
+        assert_eq!(entry.rekey_msg3_payload(), None);
     }
 
     #[test]
