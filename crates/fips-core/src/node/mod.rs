@@ -1367,6 +1367,10 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) current_k_bit: Option<bool>,
     pub(crate) direct_probe_pending: bool,
     pub(crate) direct_probe_after_ms: Option<u64>,
+    pub(crate) nostr_traversal_consecutive_failures: u32,
+    pub(crate) nostr_traversal_in_cooldown: bool,
+    pub(crate) nostr_traversal_cooldown_until_ms: Option<u64>,
+    pub(crate) nostr_traversal_last_observed_skew_ms: Option<i64>,
 }
 
 /// Live Nostr relay state exposed to embedded endpoint callers.

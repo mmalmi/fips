@@ -244,6 +244,14 @@ pub struct FipsEndpointPeer {
     pub direct_probe_pending: bool,
     /// Millisecond timestamp when the queued direct probe becomes eligible.
     pub direct_probe_after_ms: Option<u64>,
+    /// Consecutive Nostr traversal failures recorded for this peer.
+    pub nostr_traversal_consecutive_failures: u32,
+    /// Whether Nostr traversal is currently cooling down for this peer.
+    pub nostr_traversal_in_cooldown: bool,
+    /// Millisecond timestamp when Nostr traversal cooldown ends.
+    pub nostr_traversal_cooldown_until_ms: Option<u64>,
+    /// Last observed Nostr timestamp skew in milliseconds for this peer.
+    pub nostr_traversal_last_observed_skew_ms: Option<i64>,
 }
 
 /// Live Nostr relay state visible to an embedded application.
@@ -1033,6 +1041,10 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             current_k_bit: peer.current_k_bit,
             direct_probe_pending: peer.direct_probe_pending,
             direct_probe_after_ms: peer.direct_probe_after_ms,
+            nostr_traversal_consecutive_failures: peer.nostr_traversal_consecutive_failures,
+            nostr_traversal_in_cooldown: peer.nostr_traversal_in_cooldown,
+            nostr_traversal_cooldown_until_ms: peer.nostr_traversal_cooldown_until_ms,
+            nostr_traversal_last_observed_skew_ms: peer.nostr_traversal_last_observed_skew_ms,
         }
     }
 }
@@ -1090,11 +1102,19 @@ mod tests {
             current_k_bit: Some(true),
             direct_probe_pending: false,
             direct_probe_after_ms: None,
+            nostr_traversal_consecutive_failures: 2,
+            nostr_traversal_in_cooldown: true,
+            nostr_traversal_cooldown_until_ms: Some(1_234),
+            nostr_traversal_last_observed_skew_ms: Some(-42),
         });
 
         assert!(peer.rekey_in_progress);
         assert!(peer.rekey_draining);
         assert_eq!(peer.current_k_bit, Some(true));
+        assert_eq!(peer.nostr_traversal_consecutive_failures, 2);
+        assert!(peer.nostr_traversal_in_cooldown);
+        assert_eq!(peer.nostr_traversal_cooldown_until_ms, Some(1_234));
+        assert_eq!(peer.nostr_traversal_last_observed_skew_ms, Some(-42));
     }
 
     #[test]

@@ -3444,18 +3444,32 @@ impl Node {
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
+                let nostr_failure_state: std::collections::HashMap<String, _> = self
+                    .nostr_discovery_handle()
+                    .map(|discovery| {
+                        discovery
+                            .failure_state_snapshot()
+                            .into_iter()
+                            .map(|state| (state.npub.clone(), state))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let mut peers = self
                     .peers()
                     .map(|peer| {
                         let link_id = peer.link_id();
                         let retry_state = self.retry_pending.get(peer.node_addr());
+                        let npub = peer.npub();
+                        let nostr_state = nostr_failure_state.get(&npub);
+                        let nostr_traversal_cooldown_until_ms =
+                            nostr_state.and_then(|state| state.cooldown_until_ms);
                         let transport_type = self.get_link(&link_id).and_then(|link| {
                             self.get_transport(&link.transport_id())
                                 .map(|handle| handle.transport_type().name.to_string())
                         });
                         let stats = peer.link_stats();
                         NodeEndpointPeer {
-                            npub: peer.npub(),
+                            npub,
                             connected: true,
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
@@ -3473,6 +3487,13 @@ impl Node {
                             current_k_bit: Some(peer.current_k_bit()),
                             direct_probe_pending: retry_state.is_some(),
                             direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
+                            nostr_traversal_consecutive_failures: nostr_state
+                                .map_or(0, |state| state.consecutive_failures),
+                            nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms
+                                .is_some(),
+                            nostr_traversal_cooldown_until_ms,
+                            nostr_traversal_last_observed_skew_ms: nostr_state
+                                .and_then(|state| state.last_observed_skew_ms),
                         }
                     })
                     .collect::<Vec<_>>();
@@ -3488,8 +3509,12 @@ impl Node {
                         continue;
                     }
 
+                    let npub = retry_state.peer_config.npub.clone();
+                    let nostr_state = nostr_failure_state.get(&npub);
+                    let nostr_traversal_cooldown_until_ms =
+                        nostr_state.and_then(|state| state.cooldown_until_ms);
                     peers.push(NodeEndpointPeer {
-                        npub: retry_state.peer_config.npub.clone(),
+                        npub,
                         connected: false,
                         transport_addr: None,
                         transport_type: None,
@@ -3504,6 +3529,12 @@ impl Node {
                         current_k_bit: None,
                         direct_probe_pending: true,
                         direct_probe_after_ms: Some(retry_state.retry_after_ms),
+                        nostr_traversal_consecutive_failures: nostr_state
+                            .map_or(0, |state| state.consecutive_failures),
+                        nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms.is_some(),
+                        nostr_traversal_cooldown_until_ms,
+                        nostr_traversal_last_observed_skew_ms: nostr_state
+                            .and_then(|state| state.last_observed_skew_ms),
                     });
                 }
 
