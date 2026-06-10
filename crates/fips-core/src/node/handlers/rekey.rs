@@ -40,6 +40,26 @@ struct ExhaustedSessionRekeyMsg3 {
     dest_addr: NodeAddr,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FmpRekeyMsg1Resend {
+    node_addr: NodeAddr,
+    transport_id: crate::transport::TransportId,
+    remote_addr: crate::transport::TransportAddr,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FmpRekeyIndexCleanup {
+    transport_id: Option<crate::transport::TransportId>,
+    rekey_our_index: crate::utils::index::SessionIndex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExhaustedFmpRekeyMsg1 {
+    node_addr: NodeAddr,
+    cleanup: Option<FmpRekeyIndexCleanup>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SessionRekeyTickPlan {
     cutover: Vec<NodeAddr>,
@@ -73,6 +93,74 @@ enum SessionRekeyInitiationSkip {
 }
 
 impl crate::node::PeerLifecycleRegistry {
+    fn exhaust_fmp_rekey_msg1_resend_budgets(
+        &mut self,
+        max_resends: u32,
+    ) -> Vec<ExhaustedFmpRekeyMsg1> {
+        let exhausted: Vec<NodeAddr> = self
+            .active
+            .iter()
+            .filter(|(_, peer)| {
+                peer.rekey_in_progress()
+                    && peer.rekey_msg1().is_some()
+                    && peer.rekey_msg1_resend_count() >= max_resends
+            })
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        exhausted
+            .into_iter()
+            .filter_map(|node_addr| {
+                let peer = self.active.get_mut(&node_addr)?;
+                let transport_id = peer.transport_id();
+                let cleanup = peer
+                    .abandon_rekey()
+                    .map(|rekey_our_index| FmpRekeyIndexCleanup {
+                        transport_id,
+                        rekey_our_index,
+                    });
+                Some(ExhaustedFmpRekeyMsg1 { node_addr, cleanup })
+            })
+            .collect()
+    }
+
+    fn due_fmp_rekey_msg1_resends(&self, now_ms: u64, max_resends: u32) -> Vec<FmpRekeyMsg1Resend> {
+        self.active
+            .iter()
+            .filter(|(_, peer)| {
+                peer.rekey_in_progress()
+                    && peer.rekey_msg1().is_some()
+                    && peer.rekey_msg1_resend_count() < max_resends
+                    && peer.needs_msg1_resend(now_ms)
+            })
+            .filter_map(|(node_addr, peer)| {
+                let transport_id = peer.transport_id()?;
+                let remote_addr = peer.current_addr()?.clone();
+                let payload = peer.rekey_msg1()?.to_vec();
+                Some(FmpRekeyMsg1Resend {
+                    node_addr: *node_addr,
+                    transport_id,
+                    remote_addr,
+                    payload,
+                })
+            })
+            .collect()
+    }
+
+    fn record_scheduled_fmp_rekey_msg1_resend(
+        &mut self,
+        node_addr: &NodeAddr,
+        now_ms: u64,
+        interval_ms: u64,
+        backoff: f64,
+    ) -> Option<u32> {
+        let peer = self.active.get_mut(node_addr)?;
+        let count = peer.rekey_msg1_resend_count() + 1;
+        let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
+        peer.record_rekey_msg1_resend(next);
+        Some(count)
+    }
+
     fn plan_fmp_rekey_tick(
         &self,
         rekey_after_secs: u64,
@@ -511,64 +599,44 @@ impl Node {
         let backoff = self.config.node.rate_limit.handshake_resend_backoff;
         let max_resends = self.config.node.rate_limit.handshake_max_resends;
 
-        // Collect peers needing action
-        let mut to_resend: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
-        let mut to_abandon: Vec<NodeAddr> = Vec::new();
-
-        for (node_addr, peer) in &self.peers {
-            if !peer.rekey_in_progress() || peer.rekey_msg1().is_none() {
-                continue;
-            }
-            if peer.rekey_msg1_resend_count() >= max_resends {
-                to_abandon.push(*node_addr);
-                continue;
-            }
-            if peer.needs_msg1_resend(now_ms) {
-                to_resend.push((*node_addr, peer.rekey_msg1().unwrap().to_vec()));
-            }
-        }
-
-        for node_addr in to_abandon {
-            let abandoned = if let Some(peer) = self.peers.get_mut(&node_addr) {
-                let transport_id = peer.transport_id();
-                peer.abandon_rekey().map(|idx| (transport_id, idx))
-            } else {
-                None
-            };
-            if let Some((transport_id, idx)) = abandoned {
-                if let Some(tid) = transport_id {
-                    self.pending_outbound.remove(&(tid, idx.as_u32()));
-                    self.deregister_session_index((tid, idx.as_u32()));
+        for exhausted in self
+            .peers
+            .exhaust_fmp_rekey_msg1_resend_budgets(max_resends)
+        {
+            if let Some(cleanup) = exhausted.cleanup {
+                if let Some(transport_id) = cleanup.transport_id {
+                    self.pending_outbound
+                        .remove(&(transport_id, cleanup.rekey_our_index.as_u32()));
+                    self.deregister_session_index((transport_id, cleanup.rekey_our_index.as_u32()));
                 }
-                let _ = self.index_allocator.free(idx);
+                let _ = self.index_allocator.free(cleanup.rekey_our_index);
             }
             warn!(
-                peer = %self.peer_display_name(&node_addr),
+                peer = %self.peer_display_name(&exhausted.node_addr),
                 "FMP rekey aborted: msg1 unconfirmed after max retransmissions"
             );
         }
 
-        for (node_addr, msg1_bytes) in to_resend {
-            let (transport_id, remote_addr) = match self.peers.get(&node_addr) {
-                Some(p) => match (p.transport_id(), p.current_addr()) {
-                    (Some(tid), Some(addr)) => (tid, addr.clone()),
-                    _ => continue,
-                },
-                None => continue,
-            };
-
-            let sent = if let Some(transport) = self.transports.get(&transport_id) {
-                transport.send(&remote_addr, &msg1_bytes).await.is_ok()
+        for resend in self.peers.due_fmp_rekey_msg1_resends(now_ms, max_resends) {
+            let sent = if let Some(transport) = self.transports.get(&resend.transport_id) {
+                transport
+                    .send(&resend.remote_addr, &resend.payload)
+                    .await
+                    .is_ok()
             } else {
                 false
             };
 
-            if sent && let Some(peer) = self.peers.get_mut(&node_addr) {
-                let count = peer.rekey_msg1_resend_count() + 1;
-                let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
-                peer.record_rekey_msg1_resend(next);
+            if sent
+                && let Some(count) = self.peers.record_scheduled_fmp_rekey_msg1_resend(
+                    &resend.node_addr,
+                    now_ms,
+                    interval_ms,
+                    backoff,
+                )
+            {
                 trace!(
-                    peer = %self.peer_display_name(&node_addr),
+                    peer = %self.peer_display_name(&resend.node_addr),
                     resend = count,
                     "Resent rekey msg1"
                 );
@@ -1096,6 +1164,135 @@ mod tests {
             peers.complete_due_fmp_rekey_drain(&node_addr(0x77), 0),
             None
         );
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_fmp_rekey_msg1_resend_selection_and_accounting() {
+        let local = Identity::generate();
+        let due_peer = Identity::generate();
+        let future_peer = Identity::generate();
+        let exhausted_peer = Identity::generate();
+        let missing_target_peer = Identity::generate();
+
+        let mut due = active_fmp_peer(&local, &due_peer, 1);
+        arm_in_progress_fmp_rekey(&mut due, &local, &due_peer);
+        due.set_msg1_next_resend(1_500);
+
+        let mut future = active_fmp_peer(&local, &future_peer, 2);
+        arm_in_progress_fmp_rekey(&mut future, &local, &future_peer);
+        future.set_msg1_next_resend(2_500);
+
+        let mut exhausted = active_fmp_peer(&local, &exhausted_peer, 3);
+        arm_in_progress_fmp_rekey(&mut exhausted, &local, &exhausted_peer);
+        exhausted.record_rekey_msg1_resend(1_500);
+
+        let mut missing_target = no_session_fmp_peer(&missing_target_peer, 4);
+        arm_in_progress_fmp_rekey(&mut missing_target, &local, &missing_target_peer);
+        missing_target.set_msg1_next_resend(1_500);
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*due_peer.node_addr(), due);
+        peers.insert(*future_peer.node_addr(), future);
+        peers.insert(*exhausted_peer.node_addr(), exhausted);
+        peers.insert(*missing_target_peer.node_addr(), missing_target);
+
+        assert_eq!(
+            peers.due_fmp_rekey_msg1_resends(1_499, 1),
+            Vec::<FmpRekeyMsg1Resend>::new()
+        );
+
+        let resends = peers.due_fmp_rekey_msg1_resends(1_500, 1);
+        assert_eq!(resends.len(), 1);
+        assert_eq!(resends[0].node_addr, *due_peer.node_addr());
+        assert_eq!(resends[0].transport_id, TransportId::new(1));
+        assert_eq!(
+            resends[0].remote_addr,
+            TransportAddr::from_string("127.0.0.1:4001")
+        );
+        assert_eq!(resends[0].payload, vec![0xAB; 64]);
+
+        let count = peers
+            .record_scheduled_fmp_rekey_msg1_resend(due_peer.node_addr(), 1_500, 1_000, 2.0)
+            .expect("due peer should still exist");
+        assert_eq!(count, 1);
+        let due = peers.get(due_peer.node_addr()).expect("due peer remains");
+        assert_eq!(due.rekey_msg1_resend_count(), 1);
+        assert!(!due.needs_msg1_resend(3_499));
+        assert!(due.needs_msg1_resend(3_500));
+
+        assert!(
+            peers
+                .record_scheduled_fmp_rekey_msg1_resend(&node_addr(0x77), 1_500, 1_000, 2.0,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_exhausted_fmp_rekey_msg1_cleanup() {
+        let local = Identity::generate();
+        let exhausted_peer = Identity::generate();
+        let under_budget_peer = Identity::generate();
+        let missing_target_peer = Identity::generate();
+        let idle_peer = Identity::generate();
+
+        let mut exhausted = active_fmp_peer(&local, &exhausted_peer, 1);
+        arm_in_progress_fmp_rekey(&mut exhausted, &local, &exhausted_peer);
+        exhausted.record_rekey_msg1_resend(9_000);
+
+        let mut under_budget = active_fmp_peer(&local, &under_budget_peer, 2);
+        arm_in_progress_fmp_rekey(&mut under_budget, &local, &under_budget_peer);
+
+        let mut missing_target = no_session_fmp_peer(&missing_target_peer, 3);
+        arm_in_progress_fmp_rekey(&mut missing_target, &local, &missing_target_peer);
+        missing_target.record_rekey_msg1_resend(9_000);
+
+        let idle = active_fmp_peer(&local, &idle_peer, 4);
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*exhausted_peer.node_addr(), exhausted);
+        peers.insert(*under_budget_peer.node_addr(), under_budget);
+        peers.insert(*missing_target_peer.node_addr(), missing_target);
+        peers.insert(*idle_peer.node_addr(), idle);
+
+        let mut exhausted = peers.exhaust_fmp_rekey_msg1_resend_budgets(1);
+        exhausted.sort_by_key(|item| item.node_addr);
+        let mut expected = vec![
+            ExhaustedFmpRekeyMsg1 {
+                node_addr: *exhausted_peer.node_addr(),
+                cleanup: Some(FmpRekeyIndexCleanup {
+                    transport_id: Some(TransportId::new(1)),
+                    rekey_our_index: SessionIndex::new(9_001),
+                }),
+            },
+            ExhaustedFmpRekeyMsg1 {
+                node_addr: *missing_target_peer.node_addr(),
+                cleanup: Some(FmpRekeyIndexCleanup {
+                    transport_id: None,
+                    rekey_our_index: SessionIndex::new(9_001),
+                }),
+            },
+        ];
+        expected.sort_by_key(|item| item.node_addr);
+        assert_eq!(exhausted, expected);
+
+        let exhausted = peers
+            .get(exhausted_peer.node_addr())
+            .expect("exhausted peer should remain");
+        assert!(!exhausted.rekey_in_progress());
+        assert!(exhausted.rekey_msg1().is_none());
+        assert_eq!(exhausted.rekey_our_index(), None);
+
+        let under_budget = peers
+            .get(under_budget_peer.node_addr())
+            .expect("under-budget peer should remain");
+        assert!(under_budget.rekey_in_progress());
+        assert!(under_budget.rekey_msg1().is_some());
+        assert_eq!(under_budget.rekey_msg1_resend_count(), 0);
+
+        let idle = peers
+            .get(idle_peer.node_addr())
+            .expect("idle peer should remain");
+        assert!(!idle.rekey_in_progress());
     }
 
     #[test]
