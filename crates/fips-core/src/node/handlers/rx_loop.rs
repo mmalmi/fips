@@ -33,7 +33,9 @@ const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
 const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
-const PACKET_DRAIN_BUDGET: usize = 256;
+/// Raw receive burst cap. This amortizes select/scheduler hops across a hot
+/// transport queue; fallback/side interleaves reserve progress before the cap.
+const PACKET_DRAIN_BUDGET: usize = 512;
 const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
