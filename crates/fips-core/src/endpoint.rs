@@ -244,6 +244,12 @@ pub struct FipsEndpointPeer {
     pub direct_probe_pending: bool,
     /// Millisecond timestamp when the queued direct probe becomes eligible.
     pub direct_probe_after_ms: Option<u64>,
+    /// Number of direct probe/retry attempts accumulated for this peer.
+    pub direct_probe_retry_count: u32,
+    /// Whether the queued direct probe is an unlimited auto-reconnect.
+    pub direct_probe_auto_reconnect: bool,
+    /// Millisecond timestamp when a bounded direct probe/retry entry expires.
+    pub direct_probe_expires_at_ms: Option<u64>,
     /// Consecutive Nostr traversal failures recorded for this peer.
     pub nostr_traversal_consecutive_failures: u32,
     /// Whether Nostr traversal is currently cooling down for this peer.
@@ -1041,6 +1047,9 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             current_k_bit: peer.current_k_bit,
             direct_probe_pending: peer.direct_probe_pending,
             direct_probe_after_ms: peer.direct_probe_after_ms,
+            direct_probe_retry_count: peer.direct_probe_retry_count,
+            direct_probe_auto_reconnect: peer.direct_probe_auto_reconnect,
+            direct_probe_expires_at_ms: peer.direct_probe_expires_at_ms,
             nostr_traversal_consecutive_failures: peer.nostr_traversal_consecutive_failures,
             nostr_traversal_in_cooldown: peer.nostr_traversal_in_cooldown,
             nostr_traversal_cooldown_until_ms: peer.nostr_traversal_cooldown_until_ms,
@@ -1102,6 +1111,9 @@ mod tests {
             current_k_bit: Some(true),
             direct_probe_pending: false,
             direct_probe_after_ms: None,
+            direct_probe_retry_count: 0,
+            direct_probe_auto_reconnect: false,
+            direct_probe_expires_at_ms: None,
             nostr_traversal_consecutive_failures: 2,
             nostr_traversal_in_cooldown: true,
             nostr_traversal_cooldown_until_ms: Some(1_234),

@@ -3468,6 +3468,7 @@ impl Node {
                                 .map(|handle| handle.transport_type().name.to_string())
                         });
                         let stats = peer.link_stats();
+                        let direct_probe_pending = retry_state.is_some();
                         NodeEndpointPeer {
                             npub,
                             connected: true,
@@ -3485,8 +3486,14 @@ impl Node {
                             rekey_in_progress: peer.rekey_in_progress(),
                             rekey_draining: peer.is_draining(),
                             current_k_bit: Some(peer.current_k_bit()),
-                            direct_probe_pending: retry_state.is_some(),
+                            direct_probe_pending,
                             direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
+                            direct_probe_retry_count: retry_state
+                                .map_or(0, |state| state.retry_count),
+                            direct_probe_auto_reconnect: retry_state
+                                .is_some_and(|state| state.reconnect),
+                            direct_probe_expires_at_ms: retry_state
+                                .and_then(|state| state.expires_at_ms),
                             nostr_traversal_consecutive_failures: nostr_state
                                 .map_or(0, |state| state.consecutive_failures),
                             nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms
@@ -3529,6 +3536,9 @@ impl Node {
                         current_k_bit: None,
                         direct_probe_pending: true,
                         direct_probe_after_ms: Some(retry_state.retry_after_ms),
+                        direct_probe_retry_count: retry_state.retry_count,
+                        direct_probe_auto_reconnect: retry_state.reconnect,
+                        direct_probe_expires_at_ms: retry_state.expires_at_ms,
                         nostr_traversal_consecutive_failures: nostr_state
                             .map_or(0, |state| state.consecutive_failures),
                         nostr_traversal_in_cooldown: nostr_traversal_cooldown_until_ms.is_some(),
