@@ -645,6 +645,14 @@ impl Node {
             crate::perf_profile::Stage::TransportQueueWait,
             packet.trace_enqueued_at,
         );
+        crate::perf_profile::record_since(
+            if packet.is_priority_sized() {
+                crate::perf_profile::Stage::TransportPriorityQueueWait
+            } else {
+                crate::perf_profile::Stage::TransportBulkQueueWait
+            },
+            packet.trace_enqueued_at,
+        );
         if is_punch_packet(&packet.data) {
             trace!(
                 transport_id = %packet.transport_id,

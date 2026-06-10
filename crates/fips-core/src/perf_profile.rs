@@ -27,6 +27,8 @@
 //!
 //! Handoff waits tracked:
 //!   * `TRANSPORT_QUEUE_WAIT` — UDP/transport receive loop → rx_loop
+//!   * `TRANSPORT_PRIORITY_QUEUE_WAIT` — priority-sized transport packets → rx_loop
+//!   * `TRANSPORT_BULK_QUEUE_WAIT` — bulk-sized transport packets → rx_loop
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
@@ -36,7 +38,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 16;
+const N_STAGES: usize = 18;
 const N_EVENTS: usize = 22;
 const HIST_BUCKETS: usize = 48;
 
@@ -82,6 +84,12 @@ pub enum Stage {
     /// Time spent waiting after `rx_loop` delivers endpoint data until
     /// the embedded endpoint consumer receives it.
     EndpointEventWait = 15,
+    /// Priority-sized transport receive wait, split from the aggregate
+    /// `transport_queue_wait` so liveness/control reserve can be verified.
+    TransportPriorityQueueWait = 16,
+    /// Bulk-sized transport receive wait, split from the aggregate
+    /// `transport_queue_wait` so bulk pressure cannot hide priority behavior.
+    TransportBulkQueueWait = 17,
 }
 
 impl Stage {
@@ -103,6 +111,8 @@ impl Stage {
             Stage::FmpWorkerQueueWait => "fmp_worker_queue_wait",
             Stage::TransportQueueWait => "transport_queue_wait",
             Stage::EndpointEventWait => "endpoint_event_wait",
+            Stage::TransportPriorityQueueWait => "transport_priority_queue_wait",
+            Stage::TransportBulkQueueWait => "transport_bulk_queue_wait",
         }
     }
 }
@@ -125,6 +135,8 @@ fn stage_from_index(idx: usize) -> Stage {
         13 => Stage::FmpWorkerQueueWait,
         14 => Stage::TransportQueueWait,
         15 => Stage::EndpointEventWait,
+        16 => Stage::TransportPriorityQueueWait,
+        17 => Stage::TransportBulkQueueWait,
         _ => unreachable!(),
     }
 }

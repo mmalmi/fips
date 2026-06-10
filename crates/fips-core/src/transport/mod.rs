@@ -107,6 +107,10 @@ impl ReceivedPacket {
             trace_enqueued_at,
         }
     }
+
+    pub(crate) fn is_priority_sized(&self) -> bool {
+        self.data.len() <= PRIORITY_PACKET_MAX_LEN
+    }
 }
 
 pub(crate) fn received_timestamp_ms() -> u64 {
