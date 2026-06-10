@@ -250,6 +250,7 @@ impl AuthenticatedSessionDispatch {
 }
 
 impl SessionDispatchCommit {
+    #[cfg(test)]
     fn source_addr(&self) -> &NodeAddr {
         &self.source_addr
     }
@@ -269,6 +270,16 @@ impl SessionDispatchCommit {
         entry.record_recv(completion.body_len);
         entry.touch(now_ms);
         true
+    }
+
+    async fn finalize(self, node: &mut Node) {
+        // Only application data resets the idle timer and traffic counters —
+        // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
+        self.record_receive(&mut node.sessions, Node::now_ms());
+
+        // Flush any pending outbound packets (e.g., simultaneous initiation
+        // where responder also had queued outbound packets).
+        node.flush_pending_packets(&self.source_addr).await;
     }
 }
 
@@ -2206,13 +2217,7 @@ impl Node {
             }
         }
 
-        // Only application data resets the idle timer and traffic counters —
-        // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        commit.record_receive(&mut self.sessions, Self::now_ms());
-
-        // Flush any pending outbound packets (e.g., simultaneous initiation
-        // where responder also had queued outbound packets)
-        self.flush_pending_packets(commit.source_addr()).await;
+        commit.finalize(self).await;
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
