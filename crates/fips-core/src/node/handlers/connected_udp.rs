@@ -31,7 +31,9 @@
 //! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
 //! tests. `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
 //! caps the one-drain-thread-per-peer fast path for large meshes without
-//! disabling wildcard UDP delivery. The old macOS-specific
+//! disabling wildcard UDP delivery. Peer-cap and fd-budget skips are reported
+//! as perf events so a large mesh can show why some peers stayed on wildcard
+//! UDP without looking like activation failures. The old macOS-specific
 //! `FIPS_MACOS_CONNECTED_UDP=0` is ignored so stale launchd plists do not
 //! disable the now-default fast path.
 
@@ -74,18 +76,32 @@ impl Node {
                 .connected_udp_activation_plan(&self.configured_peer_send_weights);
             let candidates = plan.candidates;
             let peer_cap = connected_udp_peer_cap(self.config.node.connected_udp.max_peers);
+            let fd_reserve = connected_udp_fd_reserve(self.config.node.connected_udp.fd_reserve);
+            let fd_soft_limit = connected_udp_fd_soft_limit();
             let mut installed_count = plan.installed_count;
             let mut peer_cap_skipped = 0usize;
+            let mut fd_budget_skipped = 0usize;
             let total_candidates = candidates.len();
             for (idx, addr) in candidates.into_iter().enumerate() {
+                let candidates_waiting = total_candidates.saturating_sub(idx);
                 if !connected_udp_peer_budget_allows(installed_count, peer_cap) {
-                    let candidates_waiting = total_candidates.saturating_sub(idx);
                     peer_cap_skipped =
                         peer_cap_skipped.saturating_add(connected_udp_peer_cap_skipped_candidates(
                             installed_count,
                             peer_cap,
                             candidates_waiting,
                         ));
+                    break;
+                }
+                if !connected_udp_fd_budget_allows(installed_count, fd_soft_limit, fd_reserve) {
+                    fd_budget_skipped = fd_budget_skipped.saturating_add(
+                        connected_udp_fd_budget_skipped_candidates(
+                            installed_count,
+                            fd_soft_limit,
+                            fd_reserve,
+                            candidates_waiting,
+                        ),
+                    );
                     break;
                 }
                 match self
@@ -120,6 +136,20 @@ impl Node {
                     installed = installed_count,
                     max_peers = peer_cap,
                     "connected UDP peer cap reached; remaining peers stay on wildcard UDP"
+                );
+            }
+            if fd_budget_skipped > 0 {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::ConnectedUdpFdBudgetSkipped,
+                    fd_budget_skipped as u64,
+                );
+                debug!(
+                    skipped = fd_budget_skipped,
+                    installed = installed_count,
+                    soft_limit = ?fd_soft_limit,
+                    fd_reserve,
+                    fds_per_peer = CONNECTED_UDP_FDS_PER_PEER,
+                    "connected UDP fd budget reached; remaining peers stay on wildcard UDP"
                 );
             }
         }
@@ -348,6 +378,20 @@ fn connected_udp_peer_cap_skipped_candidates(
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_fd_budget_skipped_candidates(
+    installed_peers: usize,
+    soft_limit: Option<usize>,
+    reserve: usize,
+    candidates_waiting: usize,
+) -> usize {
+    if connected_udp_fd_budget_allows(installed_peers, soft_limit, reserve) {
+        0
+    } else {
+        candidates_waiting
+    }
+}
+
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
@@ -395,6 +439,33 @@ mod tests {
             connected_udp_peer_cap_skipped_candidates(2, 2, 37),
             37,
             "large-mesh cap exhaustion should report the whole skipped tail once"
+        );
+    }
+
+    #[test]
+    fn fd_budget_skip_count_is_zero_while_budget_remains() {
+        assert_eq!(
+            connected_udp_fd_budget_skipped_candidates(0, Some(131), 128, 50),
+            0
+        );
+        assert_eq!(
+            connected_udp_fd_budget_skipped_candidates(10_000, None, 128, 50),
+            0,
+            "unknown or unlimited fd limits rely on actual socket-open errors"
+        );
+    }
+
+    #[test]
+    fn fd_budget_skip_count_covers_current_and_remaining_candidates() {
+        assert_eq!(
+            connected_udp_fd_budget_skipped_candidates(1, Some(131), 128, 37),
+            37,
+            "fd-budget exhaustion should report the whole skipped tail once"
+        );
+        assert_eq!(
+            connected_udp_fd_budget_skipped_candidates(0, Some(64), 128, 11),
+            11,
+            "reserve above the soft limit leaves no connected-UDP fd budget"
         );
     }
 }
