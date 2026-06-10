@@ -183,6 +183,7 @@ impl Node {
                 );
                 if let Some(state) = self.retry_pending.get_mut(node_addr) {
                     state.peer_config = new_pc.clone();
+                    state.reconnect = new_pc.auto_reconnect;
                     state.retry_after_ms = Self::now_ms();
                 }
                 if let Some(alias) = new_pc.alias.clone() {
@@ -199,6 +200,7 @@ impl Node {
                 );
                 if let Some(state) = self.retry_pending.get_mut(node_addr) {
                     state.peer_config = new_pc.clone();
+                    state.reconnect = new_pc.auto_reconnect;
                 }
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
                     auto_connect_refresh_configs.push(new_pc.clone());

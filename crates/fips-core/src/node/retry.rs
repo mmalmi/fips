@@ -279,6 +279,7 @@ impl Node {
         if let Some(state) = self.retry_pending.get_mut(&node_addr) {
             // Already tracking — increment
             state.retry_count += 1;
+            state.reconnect = state.reconnect || state.peer_config.auto_reconnect;
             if !state.reconnect && state.retry_count > max_retries {
                 info!(
                     peer = %peer_name,
@@ -301,7 +302,7 @@ impl Node {
             if let Some(pc) = peer_config {
                 let mut state = RetryState::new(pc);
                 state.retry_count = 1;
-                state.reconnect = true;
+                state.reconnect = state.peer_config.auto_reconnect;
                 let delay = state.backoff_ms(base_interval_ms, max_backoff_ms);
                 state.retry_after_ms = now_ms + delay;
                 debug!(
@@ -354,7 +355,7 @@ impl Node {
         let peer_name = self.peer_display_name(&node_addr);
 
         if let Some(state) = self.retry_pending.get_mut(&node_addr) {
-            state.reconnect = true;
+            state.reconnect = state.reconnect || state.peer_config.auto_reconnect;
             state.retry_after_ms = retry_after_ms;
             debug!(
                 peer = %peer_name,
@@ -364,7 +365,7 @@ impl Node {
             );
         } else if let Some(pc) = peer_config {
             let mut state = RetryState::new(pc);
-            state.reconnect = true;
+            state.reconnect = state.peer_config.auto_reconnect;
             state.retry_after_ms = retry_after_ms;
             debug!(
                 peer = %peer_name,

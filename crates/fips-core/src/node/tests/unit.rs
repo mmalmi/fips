@@ -3445,7 +3445,7 @@ fn test_schedule_retry_creates_entry() {
     assert_eq!(state.retry_count, 1);
     assert!(
         state.reconnect,
-        "Auto-connect peers always get reconnect=true"
+        "auto-connect peers default to unlimited auto-reconnect"
     );
     // Default base = 5s, 2^1 = 10s, but first retry is 2^0... let me check:
     // retry_count is set to 1, backoff_ms(5000) = 5000 * 2^1 = 10000
@@ -3630,9 +3630,10 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
     assert_eq!(node.retry_pending.len(), 6);
 }
 
-/// Test that auto-connect peers retry indefinitely (never exhaust).
+/// Test that auto-connect peers with auto-reconnect enabled retry indefinitely
+/// (never exhaust).
 #[test]
-fn test_schedule_retry_auto_connect_never_exhausts() {
+fn test_schedule_retry_auto_reconnect_never_exhausts() {
     let peer_identity = Identity::generate();
     let peer_npub = peer_identity.npub();
     let peer_node_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
@@ -3647,7 +3648,7 @@ fn test_schedule_retry_auto_connect_never_exhausts() {
 
     let mut node = Node::new(config).unwrap();
 
-    // All attempts should keep the entry alive despite max_retries=2
+    // All attempts should keep the entry alive despite max_retries=2.
     node.schedule_retry(peer_node_addr, 1000);
     assert!(node.retry_pending.contains_key(&peer_node_addr));
 
@@ -3663,6 +3664,42 @@ fn test_schedule_retry_auto_connect_never_exhausts() {
     assert_eq!(
         node.retry_pending.get(&peer_node_addr).unwrap().retry_count,
         3
+    );
+}
+
+/// Test that auto-connect peers with auto-reconnect disabled remain bounded.
+#[test]
+fn test_schedule_retry_auto_connect_without_auto_reconnect_exhausts() {
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+    let peer_node_addr = *PeerIdentity::from_npub(&peer_npub).unwrap().node_addr();
+
+    let mut peer_config = crate::config::PeerConfig::new(peer_npub, "udp", "10.0.0.2:2121");
+    peer_config.auto_reconnect = false;
+
+    let mut config = Config::new();
+    config.node.retry.max_retries = 2;
+    config.peers.push(peer_config);
+
+    let mut node = Node::new(config).unwrap();
+
+    node.schedule_retry(peer_node_addr, 1000);
+    {
+        let state = node.retry_pending.get(&peer_node_addr).unwrap();
+        assert_eq!(state.retry_count, 1);
+        assert!(
+            !state.reconnect,
+            "auto_reconnect=false should keep failed-handshake retries bounded"
+        );
+    }
+
+    node.schedule_retry(peer_node_addr, 2000);
+    assert!(node.retry_pending.contains_key(&peer_node_addr));
+
+    node.schedule_retry(peer_node_addr, 3000);
+    assert!(
+        !node.retry_pending.contains_key(&peer_node_addr),
+        "finite auto-connect retries should exhaust at max_retries"
     );
 }
 
