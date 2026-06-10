@@ -17,6 +17,7 @@
 use crate::node::Node;
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
+use crate::node::{PeerRuntimeReceive, PeerRuntimeReceiveError};
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
@@ -292,9 +293,7 @@ impl Node {
     /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
     /// 4-byte inner timestamp still at the front (i.e. the same
     /// layout the legacy `strip_inner_header` consumed).
-    #[allow(clippy::too_many_arguments)] // single canonical post-decrypt hook;
-    // grouping these into a struct just shifts the
-    // boilerplate around without simplifying anything.
+    #[allow(clippy::too_many_arguments)] // packet facts arrive from both worker and test-mode callers.
     pub(in crate::node) async fn process_authentic_fmp_plaintext(
         &mut self,
         node_addr: &crate::NodeAddr,
@@ -307,16 +306,19 @@ impl Node {
         sp_flag: bool,
         fmp_plaintext: &[u8],
     ) {
-        const INNER_TIMESTAMP_LEN: usize = 4;
-        let inner_ts = if fmp_plaintext.len() >= INNER_TIMESTAMP_LEN {
-            u32::from_le_bytes([
-                fmp_plaintext[0],
-                fmp_plaintext[1],
-                fmp_plaintext[2],
-                fmp_plaintext[3],
-            ])
-        } else {
-            return;
+        let runtime_receive = match PeerRuntimeReceive::from_authenticated_fmp_plaintext(
+            node_addr,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter,
+            ce_flag,
+            sp_flag,
+            fmp_plaintext,
+        ) {
+            Ok(receive) => receive,
+            Err(PeerRuntimeReceiveError::MissingInnerTimestamp) => return,
         };
         let now = Instant::now();
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
@@ -325,22 +327,8 @@ impl Node {
             remote_addr,
             packet_timestamp_ms,
         );
-        let address_changed = self
-            .peers
-            .record_authenticated_fmp_receive(
-                node_addr,
-                transport_id,
-                remote_addr,
-                packet_timestamp_ms,
-                packet_len,
-                fmp_counter,
-                inner_ts,
-                ce_flag,
-                sp_flag,
-                now,
-                path_bookkeeping_allowed,
-            )
-            .is_some_and(|update| update.address_changed);
+        let dispatch =
+            runtime_receive.record_bookkeeping(&mut self.peers, now, path_bookkeeping_allowed);
         // Address rotation invalidates the per-peer connected UDP
         // socket: it's `connect(2)`-ed to the old kernel 5-tuple
         // (cached route + neighbour entry), and continuing to
@@ -352,16 +340,19 @@ impl Node {
         // the borrow on `self.peers` is released — `clear_connected_
         // udp_for_peer` may need to traverse other peer state.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if address_changed {
-            self.clear_connected_udp_for_peer(node_addr);
+        if dispatch.address_changed() {
+            self.clear_connected_udp_for_peer(dispatch.node_addr());
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = address_changed;
+            let _ = dispatch.address_changed();
         }
-        let link_message = &fmp_plaintext[INNER_TIMESTAMP_LEN..];
-        self.dispatch_link_message(node_addr, link_message, ce_flag)
-            .await;
+        self.dispatch_link_message(
+            dispatch.node_addr(),
+            dispatch.link_message(),
+            dispatch.ce_flag(),
+        )
+        .await;
     }
 
     /// Register a peer's recv state with the decrypt-worker shard
