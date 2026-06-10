@@ -10,6 +10,7 @@ use crate::node::Node;
 use crate::node::wire::build_msg1;
 use crate::noise::HandshakeState;
 use crate::protocol::{SessionDatagram, SessionSetup};
+use secp256k1::PublicKey;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
 
@@ -46,7 +47,53 @@ struct SessionRekeyTickPlan {
     initiate: Vec<NodeAddr>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionRekeyInitiation {
+    dest_pubkey: PublicKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionRekeyInitiationSkip {
+    MissingSession,
+    NotEstablished,
+    RekeyInProgress,
+}
+
 impl crate::node::SessionRegistry {
+    fn prepare_session_rekey_initiation(
+        &self,
+        dest_addr: &NodeAddr,
+    ) -> Result<SessionRekeyInitiation, SessionRekeyInitiationSkip> {
+        let entry = self
+            .get(dest_addr)
+            .ok_or(SessionRekeyInitiationSkip::MissingSession)?;
+        if !entry.is_established() {
+            return Err(SessionRekeyInitiationSkip::NotEstablished);
+        }
+        if entry.has_rekey_in_progress() || entry.pending_new_session().is_some() {
+            return Err(SessionRekeyInitiationSkip::RekeyInProgress);
+        }
+        Ok(SessionRekeyInitiation {
+            dest_pubkey: *entry.remote_pubkey(),
+        })
+    }
+
+    fn record_session_rekey_initiated(
+        &mut self,
+        dest_addr: &NodeAddr,
+        handshake: HandshakeState,
+        setup_payload: Vec<u8>,
+        next_resend_at_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        entry.set_rekey_state(handshake, true);
+        entry.set_handshake_payload(setup_payload, next_resend_at_ms);
+        entry.reset_decrypt_failures();
+        true
+    }
+
     fn plan_session_rekey_tick(
         &self,
         now_ms: u64,
@@ -612,29 +659,28 @@ impl Node {
             return false;
         }
 
-        let entry = match self.sessions.get(dest_addr) {
-            Some(e) => e,
-            None => return false,
+        let initiation = match self.sessions.prepare_session_rekey_initiation(dest_addr) {
+            Ok(initiation) => initiation,
+            Err(SessionRekeyInitiationSkip::MissingSession) => return false,
+            Err(SessionRekeyInitiationSkip::NotEstablished) => {
+                trace!(
+                    peer = %self.peer_display_name(dest_addr),
+                    "FSP rekey skipped: session is not established"
+                );
+                return false;
+            }
+            Err(SessionRekeyInitiationSkip::RekeyInProgress) => {
+                trace!(
+                    peer = %self.peer_display_name(dest_addr),
+                    "FSP rekey skipped: rekey already in progress"
+                );
+                return false;
+            }
         };
-        if !entry.is_established() {
-            trace!(
-                peer = %self.peer_display_name(dest_addr),
-                "FSP rekey skipped: session is not established"
-            );
-            return false;
-        }
-        if entry.has_rekey_in_progress() || entry.pending_new_session().is_some() {
-            trace!(
-                peer = %self.peer_display_name(dest_addr),
-                "FSP rekey skipped: rekey already in progress"
-            );
-            return false;
-        }
-        let dest_pubkey = *entry.remote_pubkey();
 
         // Create Noise XK initiator handshake
         let our_keypair = self.identity.keypair();
-        let mut handshake = HandshakeState::new_xk_initiator(our_keypair, dest_pubkey);
+        let mut handshake = HandshakeState::new_xk_initiator(our_keypair, initiation.dest_pubkey);
         handshake.set_local_epoch(self.startup_epoch);
 
         let msg1 = match handshake.write_xk_message_1() {
@@ -669,13 +715,13 @@ impl Node {
             return false;
         }
 
-        // Store rekey state on the existing session entry
-        if let Some(entry) = self.sessions.get_mut(dest_addr) {
-            entry.set_rekey_state(handshake, true);
-            let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
-            entry.set_handshake_payload(setup_payload, Self::now_ms() + resend_interval);
-            entry.reset_decrypt_failures();
-        } else {
+        let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
+        if !self.sessions.record_session_rekey_initiated(
+            dest_addr,
+            handshake,
+            setup_payload,
+            Self::now_ms() + resend_interval,
+        ) {
             return false;
         }
 
@@ -736,6 +782,17 @@ mod tests {
         entry
     }
 
+    fn initiating_entry(local: &Identity, peer: &Identity, now_ms: u64) -> SessionEntry {
+        let handshake = NoiseHandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+        SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            now_ms,
+            true,
+        )
+    }
+
     fn arm_completed_initiator_rekey(
         entry: &mut SessionEntry,
         local: &Identity,
@@ -749,6 +806,98 @@ mod tests {
         let (pending_session, _) = make_xk_session_pair(local, peer);
         entry.set_pending_session(pending_session);
         entry.set_rekey_completed_ms(completed_ms);
+    }
+
+    #[test]
+    fn session_registry_owns_session_rekey_initiation_eligibility() {
+        let local = Identity::generate();
+        let ready_peer = Identity::generate();
+        let initiating_peer = Identity::generate();
+        let in_progress_peer = Identity::generate();
+        let pending_peer = Identity::generate();
+
+        let ready = established_entry(&local, &ready_peer, 1_000);
+        let initiating = initiating_entry(&local, &initiating_peer, 1_000);
+
+        let mut in_progress = established_entry(&local, &in_progress_peer, 1_000);
+        in_progress.set_rekey_state(
+            NoiseHandshakeState::new_xk_initiator(local.keypair(), in_progress_peer.pubkey_full()),
+            true,
+        );
+
+        let (pending_session, _) = make_xk_session_pair(&local, &pending_peer);
+        let mut pending = established_entry(&local, &pending_peer, 1_000);
+        pending.set_pending_session(pending_session);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*ready_peer.node_addr(), ready);
+        sessions.insert(*initiating_peer.node_addr(), initiating);
+        sessions.insert(*in_progress_peer.node_addr(), in_progress);
+        sessions.insert(*pending_peer.node_addr(), pending);
+
+        assert_eq!(
+            sessions
+                .prepare_session_rekey_initiation(ready_peer.node_addr())
+                .expect("ready session should be eligible"),
+            SessionRekeyInitiation {
+                dest_pubkey: ready_peer.pubkey_full(),
+            }
+        );
+        assert_eq!(
+            sessions.prepare_session_rekey_initiation(&node_addr(0x77)),
+            Err(SessionRekeyInitiationSkip::MissingSession)
+        );
+        assert_eq!(
+            sessions.prepare_session_rekey_initiation(initiating_peer.node_addr()),
+            Err(SessionRekeyInitiationSkip::NotEstablished)
+        );
+        assert_eq!(
+            sessions.prepare_session_rekey_initiation(in_progress_peer.node_addr()),
+            Err(SessionRekeyInitiationSkip::RekeyInProgress)
+        );
+        assert_eq!(
+            sessions.prepare_session_rekey_initiation(pending_peer.node_addr()),
+            Err(SessionRekeyInitiationSkip::RekeyInProgress)
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_session_rekey_initiation_state_install() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer, 1_000);
+        assert_eq!(entry.record_decrypt_failure(), 1);
+        assert_eq!(entry.record_decrypt_failure(), 2);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*peer.node_addr(), entry);
+
+        let handshake = NoiseHandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        assert!(sessions.record_session_rekey_initiated(
+            peer.node_addr(),
+            handshake,
+            vec![0xA0, 0xA1],
+            2_500,
+        ));
+
+        let entry = sessions
+            .get(peer.node_addr())
+            .expect("session should remain installed");
+        assert!(entry.has_rekey_in_progress());
+        assert!(entry.is_rekey_initiator());
+        assert_eq!(entry.handshake_payload(), Some(&[0xA0, 0xA1][..]));
+        assert_eq!(entry.next_resend_at_ms(), 2_500);
+        assert_eq!(entry.resend_count(), 0);
+        assert_eq!(entry.consecutive_decrypt_failures(), 0);
+
+        let missing_handshake =
+            NoiseHandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        assert!(!sessions.record_session_rekey_initiated(
+            &node_addr(0x77),
+            missing_handshake,
+            vec![0xB0],
+            3_000,
+        ));
     }
 
     #[test]
