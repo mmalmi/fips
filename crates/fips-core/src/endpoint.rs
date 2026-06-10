@@ -633,15 +633,12 @@ impl FipsEndpoint {
         // The node task's `SendOneway` arm runs the same code path as
         // `Send` but without writing the result into a oneshot.
         let command = NodeEndpointCommand::send_oneway(remote, data, crate::perf_profile::stamp());
-        let command_tx = endpoint_command_tx_for_command(
-            &command,
+        send_endpoint_command(
+            command,
             &self.endpoint_priority_commands,
             &self.endpoint_commands,
-        );
-        command_tx
-            .send(command)
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -711,15 +708,12 @@ impl FipsEndpoint {
             else {
                 continue;
             };
-            let command_tx = endpoint_command_tx_for_command(
-                &command,
+            send_endpoint_command(
+                command,
                 &self.endpoint_priority_commands,
                 &self.endpoint_commands,
-            );
-            command_tx
-                .send(command)
-                .await
-                .map_err(|_| FipsEndpointError::Closed)?;
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1066,6 +1060,33 @@ fn endpoint_command_tx_for_command<'a>(
     }
 }
 
+async fn send_endpoint_command(
+    command: NodeEndpointCommand,
+    priority_tx: &mpsc::Sender<NodeEndpointCommand>,
+    bulk_tx: &mpsc::Sender<NodeEndpointCommand>,
+) -> Result<(), FipsEndpointError> {
+    let command_tx = endpoint_command_tx_for_command(&command, priority_tx, bulk_tx);
+
+    if command.drop_on_backpressure() {
+        match command_tx.try_send(command) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Full(command)) => {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointCommandBulkDropped,
+                    command.drain_cost() as u64,
+                );
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => return Err(FipsEndpointError::Closed),
+        }
+    }
+
+    command_tx
+        .send(command)
+        .await
+        .map_err(|_| FipsEndpointError::Closed)
+}
+
 impl From<NodeEndpointPeer> for FipsEndpointPeer {
     fn from(peer: NodeEndpointPeer) -> Self {
         Self {
@@ -1229,6 +1250,112 @@ mod tests {
             endpoint_command_tx_for_command(&batch_command, &priority_tx, &bulk_tx),
             &bulk_tx,
         ));
+    }
+
+    #[test]
+    fn endpoint_command_owns_discard_policy_selected_at_construction() {
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+
+        let priority_command =
+            NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x10, 0), None);
+        assert_eq!(priority_command.lane(), EndpointCommandLane::Priority);
+        assert!(!priority_command.drop_on_backpressure());
+
+        let reliable_bulk =
+            NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
+        assert_eq!(reliable_bulk.lane(), EndpointCommandLane::Bulk);
+        assert!(!reliable_bulk.drop_on_backpressure());
+
+        let discardable_bulk = NodeEndpointCommand::send_oneway(remote, vec![0, 1, 2, 3], None);
+        assert_eq!(discardable_bulk.lane(), EndpointCommandLane::Bulk);
+        assert!(discardable_bulk.drop_on_backpressure());
+
+        let reliable_batch = NodeEndpointCommand::send_batch_oneway(
+            remote,
+            vec![
+                crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
+                crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]),
+            ],
+            None,
+            EndpointCommandLane::Bulk,
+        )
+        .expect("mixed bulk batch command");
+        assert_eq!(reliable_batch.lane(), EndpointCommandLane::Bulk);
+        assert!(!reliable_batch.drop_on_backpressure());
+
+        let discardable_batch = NodeEndpointCommand::send_batch_oneway(
+            remote,
+            vec![
+                crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]),
+                crate::node::EndpointDataPayload::new(vec![4, 5, 6, 7]),
+            ],
+            None,
+            EndpointCommandLane::Bulk,
+        )
+        .expect("discardable bulk batch command");
+        assert_eq!(discardable_batch.lane(), EndpointCommandLane::Bulk);
+        assert!(discardable_batch.drop_on_backpressure());
+    }
+
+    #[tokio::test]
+    async fn endpoint_command_enqueue_drops_only_discardable_bulk_when_full() {
+        let (priority_tx, _priority_rx) = mpsc::channel(1);
+        let (bulk_tx, mut bulk_rx) = mpsc::channel(1);
+        let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+
+        let queued_discardable = NodeEndpointCommand::send_oneway(remote, vec![0, 1, 2, 3], None);
+        assert!(queued_discardable.drop_on_backpressure());
+        bulk_tx
+            .try_send(queued_discardable)
+            .expect("bulk queue should accept the first command");
+
+        let dropped_discardable = NodeEndpointCommand::send_oneway(remote, vec![4, 5, 6, 7], None);
+        assert!(dropped_discardable.drop_on_backpressure());
+        send_endpoint_command(dropped_discardable, &priority_tx, &bulk_tx)
+            .await
+            .expect("discardable bulk should be accepted as dropped");
+
+        let first = bulk_rx
+            .try_recv()
+            .expect("only the first command should remain queued");
+        assert!(first.drop_on_backpressure());
+        assert!(matches!(
+            bulk_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        let queued_reliable =
+            NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
+        assert!(!queued_reliable.drop_on_backpressure());
+        bulk_tx
+            .try_send(queued_reliable)
+            .expect("bulk queue should accept the reliable fill command");
+
+        let waiting_reliable =
+            NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
+        assert!(!waiting_reliable.drop_on_backpressure());
+        let send_fut = send_endpoint_command(waiting_reliable, &priority_tx, &bulk_tx);
+        tokio::pin!(send_fut);
+
+        tokio::select! {
+            result = &mut send_fut => panic!("reliable bulk must not be dropped: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+
+        let first = bulk_rx
+            .try_recv()
+            .expect("free one bulk slot for the waiting reliable command");
+        assert!(!first.drop_on_backpressure());
+
+        tokio::time::timeout(Duration::from_secs(1), send_fut)
+            .await
+            .expect("reliable bulk send should complete once space is available")
+            .expect("reliable bulk enqueue should succeed");
+
+        let second = bulk_rx
+            .try_recv()
+            .expect("reliable command should enqueue after space is available");
+        assert!(!second.drop_on_backpressure());
     }
 
     #[test]

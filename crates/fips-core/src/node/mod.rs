@@ -1395,6 +1395,10 @@ impl EndpointSendCommand {
         self.send.payload().lane()
     }
 
+    pub(crate) fn drop_on_backpressure(&self) -> bool {
+        self.send.payload().drop_on_backpressure()
+    }
+
     pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<std::time::Instant>) {
         (self.send, self.queued_at)
     }
@@ -1430,6 +1434,12 @@ impl EndpointSendBatchCommand {
 
     pub(crate) fn len(&self) -> usize {
         self.payloads.len()
+    }
+
+    pub(crate) fn drop_on_backpressure(&self) -> bool {
+        self.payloads
+            .iter()
+            .all(EndpointDataPayload::drop_on_backpressure)
     }
 
     pub(crate) fn into_parts(
@@ -1486,6 +1496,22 @@ impl NodeEndpointCommand {
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. } => EndpointCommandLane::Priority,
+        }
+    }
+
+    pub(crate) fn drop_on_backpressure(&self) -> bool {
+        match self {
+            Self::SendOneway { command } => {
+                command.lane() == EndpointCommandLane::Bulk && command.drop_on_backpressure()
+            }
+            Self::SendBatchOneway { command, lane } => {
+                *lane == EndpointCommandLane::Bulk && command.drop_on_backpressure()
+            }
+            Self::Send { .. }
+            | Self::PeerSnapshot { .. }
+            | Self::RelaySnapshot { .. }
+            | Self::UpdateRelays { .. }
+            | Self::UpdatePeers { .. } => false,
         }
     }
 
