@@ -329,12 +329,10 @@ impl Node {
         {
             let _ = dispatch.address_changed();
         }
-        self.dispatch_link_message(
-            dispatch.node_addr(),
-            dispatch.link_message(),
-            dispatch.ce_flag(),
-        )
-        .await;
+        let Some(link_message) = dispatch.into_link_message() else {
+            return;
+        };
+        self.dispatch_link_message(link_message).await;
     }
 
     /// Register a peer's recv state with the decrypt-worker shard

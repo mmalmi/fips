@@ -1,7 +1,7 @@
 //! Link message dispatch and peer removal.
 
 use crate::NodeAddr;
-use crate::node::{Node, PeerSessionIndexKind};
+use crate::node::{AuthenticatedLinkMessage, Node, PeerSessionIndexKind};
 use tracing::{debug, info, trace};
 
 impl Node {
@@ -10,21 +10,17 @@ impl Node {
     /// Link messages are protocol messages exchanged between authenticated peers.
     pub(in crate::node) async fn dispatch_link_message(
         &mut self,
-        from: &NodeAddr,
-        plaintext: &[u8],
-        ce_flag: bool,
+        message: AuthenticatedLinkMessage<'_>,
     ) {
-        if plaintext.is_empty() {
-            return;
-        }
-
-        let msg_type = plaintext[0];
-        let payload = &plaintext[1..];
+        let from = message.source_node_addr();
+        let msg_type = message.msg_type();
+        let payload = message.payload();
 
         match msg_type {
             0x00 => {
                 // SessionDatagram
-                self.handle_session_datagram(from, payload, ce_flag).await;
+                self.handle_session_datagram(from, payload, message.ce_flag())
+                    .await;
             }
             0x01 => {
                 // SenderReport

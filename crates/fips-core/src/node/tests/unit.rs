@@ -2244,6 +2244,13 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
         .expect("authenticated receive should find the active peer");
     assert!(bookkeeping.path_bookkeeping_recorded);
     assert!(bookkeeping.mmp_recorded);
+    let link_message = dispatch
+        .into_link_message()
+        .expect("non-empty FMP link message should parse");
+    assert_eq!(link_message.source_node_addr(), &peer_addr);
+    assert_eq!(link_message.msg_type(), 0xaa);
+    assert_eq!(link_message.payload(), &[0xbb, 0xcc]);
+    assert!(link_message.ce_flag());
 
     let peer = registry
         .get(&peer_addr)

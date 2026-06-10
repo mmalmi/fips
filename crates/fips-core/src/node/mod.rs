@@ -2107,6 +2107,13 @@ pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
     bookkeeping: Option<AuthenticatedFmpReceiveBookkeeping>,
 }
 
+pub(in crate::node) struct AuthenticatedLinkMessage<'a> {
+    source_peer: PeerIdentity,
+    msg_type: u8,
+    payload: &'a [u8],
+    ce_flag: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct FmpSendBookkeeping {
     pub(in crate::node) mmp_recorded: bool,
@@ -2290,12 +2297,24 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
         self.source_peer.node_addr()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn ce_flag(&self) -> bool {
         self.ce_flag
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn link_message(&self) -> &'a [u8] {
         self.link_message
+    }
+
+    pub(in crate::node) fn into_link_message(self) -> Option<AuthenticatedLinkMessage<'a>> {
+        let (&msg_type, payload) = self.link_message.split_first()?;
+        Some(AuthenticatedLinkMessage {
+            source_peer: self.source_peer,
+            msg_type,
+            payload,
+            ce_flag: self.ce_flag,
+        })
     }
 
     pub(in crate::node) fn address_changed(&self) -> bool {
@@ -2306,6 +2325,24 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
     #[cfg(test)]
     pub(in crate::node) fn bookkeeping(&self) -> Option<AuthenticatedFmpReceiveBookkeeping> {
         self.bookkeeping
+    }
+}
+
+impl<'a> AuthenticatedLinkMessage<'a> {
+    pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    pub(in crate::node) fn msg_type(&self) -> u8 {
+        self.msg_type
+    }
+
+    pub(in crate::node) fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
+    pub(in crate::node) fn ce_flag(&self) -> bool {
+        self.ce_flag
     }
 }
 
