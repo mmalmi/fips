@@ -18,10 +18,11 @@ use crate::node::session_wire::{
 #[cfg(unix)]
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::{
-    EndpointDataPayload, EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand,
-    FspSendBookkeepingInput, Node, NodeEndpointCommand, NodeEndpointMessage, NodeEndpointPeer,
-    NodeEndpointRelayStatus, NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD,
-    SESSION_DIRECT_DEGRADED_MIN_SAMPLE, SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    EncryptedSessionPayload, EndpointDataPayload, EndpointDataSend, EndpointSendBatchCommand,
+    EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload, Node, NodeEndpointCommand,
+    NodeEndpointMessage, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
+    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
@@ -1710,12 +1711,10 @@ impl Node {
     /// - Phase 0x0 + !U → encrypted session message (data, reports, etc.)
     pub(in crate::node) async fn handle_session_payload(
         &mut self,
-        src_addr: &NodeAddr,
-        payload: &[u8],
-        path_mtu: u16,
-        ce_flag: bool,
-        previous_hop: Option<NodeAddr>,
+        delivery: LocalSessionPayload<'_>,
     ) {
+        let src_addr = *delivery.source_addr();
+        let payload = delivery.payload();
         let prefix = match FspCommonPrefix::parse(payload) {
             Some(p) => p,
             None => {
@@ -1731,13 +1730,13 @@ impl Node {
 
         match prefix.phase {
             FSP_PHASE_MSG1 => {
-                self.handle_session_setup(src_addr, inner).await;
+                self.handle_session_setup(&src_addr, inner).await;
             }
             FSP_PHASE_MSG2 => {
-                self.handle_session_ack(src_addr, inner).await;
+                self.handle_session_ack(&src_addr, inner).await;
             }
             FSP_PHASE_MSG3 => {
-                self.handle_session_msg3(src_addr, inner).await;
+                self.handle_session_msg3(&src_addr, inner).await;
             }
             FSP_PHASE_ESTABLISHED if prefix.is_unencrypted() => {
                 // Plaintext error signals: read msg_type from first byte after prefix
@@ -1763,14 +1762,8 @@ impl Node {
                 }
             }
             FSP_PHASE_ESTABLISHED => {
-                self.handle_encrypted_session_msg(
-                    src_addr,
-                    payload,
-                    path_mtu,
-                    ce_flag,
-                    previous_hop,
-                )
-                .await;
+                self.handle_encrypted_session_msg(delivery.into_encrypted())
+                    .await;
             }
             _ => {
                 debug!(phase = prefix.phase, "Unknown FSP phase");
@@ -1787,16 +1780,11 @@ impl Node {
     /// 4. AEAD decrypt with AAD = header_bytes
     /// 5. Strip FSP inner header → timestamp, msg_type, inner_flags
     /// 6. Dispatch by msg_type
-    async fn handle_encrypted_session_msg(
-        &mut self,
-        src_addr: &NodeAddr,
-        payload: &[u8],
-        path_mtu: u16,
-        ce_flag: bool,
-        previous_hop: Option<NodeAddr>,
-    ) {
+    async fn handle_encrypted_session_msg(&mut self, delivery: EncryptedSessionPayload<'_>) {
         let _t_fsp_handle =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspHandle);
+        let src_addr = delivery.source_addr();
+        let payload = delivery.payload();
         // Parse the 12-byte encrypted header (includes the 4-byte prefix)
         let header = match FspEncryptedHeader::parse(payload) {
             Some(h) => h,
@@ -1842,8 +1830,8 @@ impl Node {
                 entry,
                 &header,
                 ciphertext,
-                path_mtu,
-                ce_flag,
+                delivery.path_mtu(),
+                delivery.ce_flag(),
                 Self::now_ms(),
             )
             .open_established(),
@@ -1929,9 +1917,7 @@ impl Node {
 
         // Reverse-route learning runs after the borrow drops
         // (`learn_reverse_route` takes `&mut self`).
-        if let Some(next_hop) = previous_hop {
-            self.learn_reverse_route(*src_addr, next_hop);
-        }
+        self.learn_reverse_route(*src_addr, *delivery.previous_hop_addr());
 
         // Capture the post-inner-header length now, before any branch
         // takes ownership of `plaintext` (the EndpointData arm drains
@@ -1965,7 +1951,7 @@ impl Node {
                             dst_ipv6,
                         ) {
                             Some(mut packet) => {
-                                if ce_flag {
+                                if delivery.ce_flag() {
                                     mark_ipv6_ecn_ce(&mut packet);
                                     self.stats_mut().congestion.record_ce_received();
                                 }

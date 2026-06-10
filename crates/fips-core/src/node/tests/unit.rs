@@ -2269,6 +2269,18 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     assert_eq!(session_datagram.previous_hop_addr(), &peer_addr);
     assert_eq!(session_datagram.payload(), &[0xbb, 0xcc]);
     assert!(session_datagram.ce_flag());
+    let session_source = make_node_addr(0x44);
+    let local_payload =
+        session_datagram.local_session_payload(session_source, &[0xdd, 0xee], 1_280);
+    assert_eq!(local_payload.source_addr(), &session_source);
+    assert_eq!(local_payload.previous_hop_addr(), &peer_addr);
+    assert_eq!(local_payload.payload(), &[0xdd, 0xee]);
+    let encrypted_payload = local_payload.into_encrypted();
+    assert_eq!(encrypted_payload.source_addr(), &session_source);
+    assert_eq!(encrypted_payload.previous_hop_addr(), &peer_addr);
+    assert_eq!(encrypted_payload.payload(), &[0xdd, 0xee]);
+    assert_eq!(encrypted_payload.path_mtu(), 1_280);
+    assert!(encrypted_payload.ce_flag());
 
     let peer = registry
         .get(&peer_addr)
