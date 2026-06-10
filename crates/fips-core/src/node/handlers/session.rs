@@ -167,6 +167,75 @@ impl AuthenticatedSessionMessage {
     }
 }
 
+/// Local dispatch context for an authenticated established-FSP message.
+///
+/// The rx loop still executes the handlers today. This object is the next
+/// ownership boundary for the future peer/session runtime: source route facts,
+/// CE state, the authenticated session message, and receive-completion
+/// bookkeeping move together.
+#[derive(Debug)]
+struct AuthenticatedSessionDispatch {
+    source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
+    ce_flag: bool,
+    message: AuthenticatedSessionMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionReceiveCompletion {
+    source_addr: NodeAddr,
+    body_len: usize,
+}
+
+impl AuthenticatedSessionDispatch {
+    fn new(
+        source_addr: NodeAddr,
+        previous_hop_addr: NodeAddr,
+        ce_flag: bool,
+        message: AuthenticatedSessionMessage,
+    ) -> Self {
+        Self {
+            source_addr,
+            previous_hop_addr,
+            ce_flag,
+            message,
+        }
+    }
+
+    fn source_addr(&self) -> &NodeAddr {
+        &self.source_addr
+    }
+
+    fn previous_hop_addr(&self) -> &NodeAddr {
+        &self.previous_hop_addr
+    }
+
+    fn ce_flag(&self) -> bool {
+        self.ce_flag
+    }
+
+    fn msg_type(&self) -> u8 {
+        self.message.msg_type()
+    }
+
+    fn body(&self) -> &[u8] {
+        self.message.body()
+    }
+
+    fn receive_completion(&self) -> Option<SessionReceiveCompletion> {
+        self.message
+            .is_application_data()
+            .then_some(SessionReceiveCompletion {
+                source_addr: self.source_addr,
+                body_len: self.message.body_len(),
+            })
+    }
+
+    fn into_endpoint_data_delivery(self) -> EndpointDataDelivery {
+        self.message.into_endpoint_data_delivery()
+    }
+}
+
 #[cfg_attr(not(unix), allow(dead_code))]
 struct PipelinedEndpointSend<'a> {
     dest_addr: &'a NodeAddr,
@@ -1980,21 +2049,27 @@ impl Node {
                 return;
             }
         };
+        let dispatch = AuthenticatedSessionDispatch::new(
+            *src_addr,
+            *delivery.previous_hop_addr(),
+            delivery.ce_flag(),
+            session_message,
+        );
 
         // Reverse-route learning runs after the borrow drops
         // (`learn_reverse_route` takes `&mut self`).
-        self.learn_reverse_route(*src_addr, *delivery.previous_hop_addr());
+        self.learn_reverse_route(*dispatch.source_addr(), *dispatch.previous_hop_addr());
 
         // Capture the dispatch facts now, before the EndpointData branch takes
         // ownership of the message and drains the inner header in place.
-        let msg_type = session_message.msg_type();
-        let rest_len = session_message.body_len();
-        let application_data = session_message.is_application_data();
+        let dispatch_source_addr = *dispatch.source_addr();
+        let msg_type = dispatch.msg_type();
+        let receive_completion = dispatch.receive_completion();
 
         // Dispatch by msg_type
         match SessionMessageType::from_byte(msg_type) {
             Some(SessionMessageType::DataPacket) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 // msg_type 0x10: port-multiplexed service dispatch
                 if rest.len() < FSP_PORT_HEADER_SIZE {
                     debug!(len = rest.len(), "DataPacket too short for port header");
@@ -2017,7 +2092,7 @@ impl Node {
                             dst_ipv6,
                         ) {
                             Some(mut packet) => {
-                                if delivery.ce_flag() {
+                                if dispatch.ce_flag() {
                                     mark_ipv6_ecn_ce(&mut packet);
                                     self.stats_mut().congestion.record_ce_received();
                                 }
@@ -2056,26 +2131,26 @@ impl Node {
                 }
             }
             Some(SessionMessageType::EndpointData) => {
-                self.deliver_endpoint_data(session_message.into_endpoint_data_delivery());
+                self.deliver_endpoint_data(dispatch.into_endpoint_data_delivery());
             }
             Some(SessionMessageType::TraversalOffer) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 self.handle_mesh_traversal_offer(src_addr, rest).await;
             }
             Some(SessionMessageType::TraversalAnswer) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 self.handle_mesh_traversal_answer(src_addr, rest).await;
             }
             Some(SessionMessageType::SenderReport) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 self.handle_session_sender_report(src_addr, rest);
             }
             Some(SessionMessageType::ReceiverReport) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 self.handle_session_receiver_report(src_addr, rest).await;
             }
             Some(SessionMessageType::PathMtuNotification) => {
-                let rest = session_message.body();
+                let rest = dispatch.body();
                 self.handle_session_path_mtu_notification(src_addr, rest);
             }
             Some(SessionMessageType::CoordsWarmup) => {
@@ -2090,14 +2165,16 @@ impl Node {
 
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        if application_data && let Some(entry) = self.sessions.get_mut(src_addr) {
-            entry.record_recv(rest_len);
+        if let Some(completion) = receive_completion
+            && let Some(entry) = self.sessions.get_mut(&completion.source_addr)
+        {
+            entry.record_recv(completion.body_len);
             entry.touch(Self::now_ms());
         }
 
         // Flush any pending outbound packets (e.g., simultaneous initiation
         // where responder also had queued outbound packets)
-        self.flush_pending_packets(src_addr).await;
+        self.flush_pending_packets(&dispatch_source_addr).await;
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
@@ -5017,6 +5094,77 @@ mod tests {
         let delivery = message.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
         assert_eq!(delivery.payload, endpoint_payload);
+    }
+
+    #[test]
+    fn authenticated_session_dispatch_owns_route_ce_and_completion_facts() {
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let previous_hop_addr = node_addr(0x55);
+        let endpoint_payload = b"endpoint completion".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+        let dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            true,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                plaintext,
+                SessionMessageType::EndpointData.to_byte(),
+                0,
+                0x0102_0304,
+            ),
+        );
+
+        assert_eq!(dispatch.source_addr(), &source_addr);
+        assert_eq!(dispatch.previous_hop_addr(), &previous_hop_addr);
+        assert!(dispatch.ce_flag());
+        assert_eq!(
+            dispatch.msg_type(),
+            SessionMessageType::EndpointData.to_byte()
+        );
+        assert_eq!(dispatch.body(), endpoint_payload);
+        assert_eq!(
+            dispatch.receive_completion(),
+            Some(SessionReceiveCompletion {
+                source_addr,
+                body_len: endpoint_payload.len()
+            })
+        );
+
+        let delivery = dispatch.into_endpoint_data_delivery();
+        assert_eq!(delivery.source_peer, source_peer);
+        assert_eq!(delivery.payload, endpoint_payload);
+
+        let report_plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::SenderReport.to_byte(),
+            0,
+            b"report",
+        );
+        let report_dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            false,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                report_plaintext,
+                SessionMessageType::SenderReport.to_byte(),
+                0,
+                0x0102_0304,
+            ),
+        );
+        assert_eq!(
+            report_dispatch.receive_completion(),
+            None,
+            "MMP reports must not reset session idle/traffic counters"
+        );
     }
 
     #[test]
