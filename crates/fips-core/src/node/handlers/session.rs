@@ -83,6 +83,20 @@ enum FspFrameOutcome {
     StaleEpochDrainFailure { counter: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ProcessedSessionReceiverReport {
+    sample: Option<(u64, f64)>,
+    used_direct_next_hop: bool,
+    srtt_ms: Option<f64>,
+    route_quality_sample: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionReceiverReportSkip {
+    UnknownSession,
+    MmpDisabled,
+}
+
 /// Authenticated established-FSP message ready for local dispatch.
 ///
 /// This is the post-open unit the rx loop dispatches today, and the future
@@ -2190,6 +2204,59 @@ impl crate::node::SessionRegistry {
         entry.touch(now_ms);
         true
     }
+
+    fn process_session_receiver_report(
+        &mut self,
+        src_addr: &NodeAddr,
+        rr: &ReceiverReport,
+        now_ms: u64,
+        now: std::time::Instant,
+    ) -> Result<ProcessedSessionReceiverReport, SessionReceiverReportSkip> {
+        let Some(entry) = self.get_mut(src_addr) else {
+            return Err(SessionReceiverReportSkip::UnknownSession);
+        };
+
+        let our_timestamp_ms = entry.session_timestamp(now_ms);
+        let last_outbound_next_hop = entry.last_outbound_next_hop();
+
+        let Some(mmp) = entry.mmp_mut() else {
+            return Err(SessionReceiverReportSkip::MmpDisabled);
+        };
+
+        mmp.metrics
+            .process_receiver_report(rr, our_timestamp_ms, now);
+
+        let srtt_ms = mmp.metrics.srtt_ms();
+        if let Some(srtt_ms) = srtt_ms {
+            let srtt_us = (srtt_ms * 1000.0) as i64;
+            mmp.sender.update_report_interval_with_bounds(
+                srtt_us,
+                MIN_SESSION_REPORT_INTERVAL_MS,
+                MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.receiver.update_report_interval_with_bounds(
+                srtt_us,
+                MIN_SESSION_REPORT_INTERVAL_MS,
+                MAX_SESSION_REPORT_INTERVAL_MS,
+            );
+            mmp.path_mtu.update_interval_from_srtt(srtt_ms);
+        }
+
+        let our_recv_packets = mmp.receiver.cumulative_packets_recv();
+        let peer_highest = mmp.receiver.highest_counter();
+        mmp.metrics
+            .update_reverse_delivery(our_recv_packets, peer_highest);
+
+        Ok(ProcessedSessionReceiverReport {
+            sample: mmp.metrics.last_forward_loss_sample(),
+            used_direct_next_hop: last_outbound_next_hop == Some(*src_addr),
+            srtt_ms,
+            route_quality_sample: session_receiver_report_can_drive_route_quality(
+                mmp.mode(),
+                srtt_ms,
+            ),
+        })
+    }
 }
 
 impl Node {
@@ -3128,64 +3195,23 @@ impl Node {
 
         let now_ms = Self::now_ms();
         let peer_name = self.peer_display_name(src_addr);
-        let (sample, used_direct_next_hop, srtt_ms, route_quality_sample) = {
-            let entry = match self.sessions.get_mut(src_addr) {
-                Some(e) => e,
-                None => {
-                    debug!(src = %peer_name, "SessionReceiverReport for unknown session");
-                    return;
-                }
-            };
-
-            let our_timestamp_ms = entry.session_timestamp(now_ms);
-            let last_outbound_next_hop = entry.last_outbound_next_hop();
-
-            let Some(mmp) = entry.mmp_mut() else {
+        let processed = match self.sessions.process_session_receiver_report(
+            src_addr,
+            &rr,
+            now_ms,
+            std::time::Instant::now(),
+        ) {
+            Ok(processed) => processed,
+            Err(SessionReceiverReportSkip::UnknownSession) => {
+                debug!(src = %peer_name, "SessionReceiverReport for unknown session");
                 return;
-            };
-
-            let now = std::time::Instant::now();
-            mmp.metrics
-                .process_receiver_report(&rr, our_timestamp_ms, now);
-
-            // Feed SRTT back to sender/receiver report interval tuning (session-layer bounds)
-            let srtt_ms = mmp.metrics.srtt_ms();
-            if let Some(srtt_ms) = srtt_ms {
-                let srtt_us = (srtt_ms * 1000.0) as i64;
-                mmp.sender.update_report_interval_with_bounds(
-                    srtt_us,
-                    MIN_SESSION_REPORT_INTERVAL_MS,
-                    MAX_SESSION_REPORT_INTERVAL_MS,
-                );
-                mmp.receiver.update_report_interval_with_bounds(
-                    srtt_us,
-                    MIN_SESSION_REPORT_INTERVAL_MS,
-                    MAX_SESSION_REPORT_INTERVAL_MS,
-                );
-                // Also update PathMtu notification interval from SRTT
-                mmp.path_mtu.update_interval_from_srtt(srtt_ms);
             }
-
-            // Update reverse delivery ratio from our own receiver state, using per-interval deltas.
-            let our_recv_packets = mmp.receiver.cumulative_packets_recv();
-            let peer_highest = mmp.receiver.highest_counter();
-            mmp.metrics
-                .update_reverse_delivery(our_recv_packets, peer_highest);
-
-            let route_quality_sample =
-                session_receiver_report_can_drive_route_quality(mmp.mode(), srtt_ms);
-
-            (
-                mmp.metrics.last_forward_loss_sample(),
-                last_outbound_next_hop == Some(*src_addr),
-                srtt_ms,
-                route_quality_sample,
-            )
+            Err(SessionReceiverReportSkip::MmpDisabled) => return,
         };
 
-        if let Some((span, loss)) = sample
-            && used_direct_next_hop
-            && route_quality_sample
+        if let Some((span, loss)) = processed.sample
+            && processed.used_direct_next_hop
+            && processed.route_quality_sample
             && span >= SESSION_DIRECT_DEGRADED_MIN_SAMPLE
         {
             if loss >= SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD
@@ -3218,9 +3244,9 @@ impl Node {
 
         trace!(
             src = %peer_name,
-            rtt_ms = ?srtt_ms,
-            route_quality_sample,
-            loss = sample
+            rtt_ms = ?processed.srtt_ms,
+            route_quality_sample = processed.route_quality_sample,
+            loss = processed.sample
                 .map(|(_, loss)| format!("{:.1}%", loss * 100.0))
                 .unwrap_or_else(|| "n/a".to_string()),
             "Processed SessionReceiverReport"
@@ -5202,6 +5228,128 @@ mod tests {
             1000,
             true,
         )
+    }
+
+    fn receiver_report(
+        highest_counter: u64,
+        cumulative_packets_recv: u64,
+        cumulative_bytes_recv: u64,
+        timestamp_echo: u32,
+    ) -> ReceiverReport {
+        ReceiverReport {
+            highest_counter,
+            cumulative_packets_recv,
+            cumulative_bytes_recv,
+            timestamp_echo,
+            dwell_time: 0,
+            max_burst_loss: 0,
+            mean_burst_loss: 0,
+            jitter: 0,
+            ecn_ce_count: 0,
+            owd_trend: 0,
+            burst_loss_count: 0,
+            cumulative_reorder_count: 0,
+            interval_packets_recv: 0,
+            interval_bytes_recv: 0,
+        }
+    }
+
+    #[test]
+    fn session_registry_owns_session_receiver_report_processing() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+        entry.record_outbound_next_hop(peer_addr);
+        entry.mmp_mut().expect("session mmp").receiver.record_recv(
+            40,
+            10,
+            1200,
+            false,
+            std::time::Instant::now(),
+        );
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let now = std::time::Instant::now();
+        let baseline = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(100, 100, 10_000, 50),
+                1_100,
+                now,
+            )
+            .expect("baseline report should process");
+
+        assert_eq!(baseline.sample, None);
+        assert!(baseline.used_direct_next_hop);
+        assert_eq!(baseline.srtt_ms, Some(50.0));
+        assert!(baseline.route_quality_sample);
+
+        let lossy = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(300, 290, 29_000, 100),
+                1_200,
+                now + std::time::Duration::from_secs(1),
+            )
+            .expect("lossy report should process");
+        let (span, loss) = lossy.sample.expect("second report should sample loss");
+        assert_eq!(span, 200);
+        assert!(
+            (loss - 0.05).abs() < 0.01,
+            "loss={loss}, expected roughly 5%"
+        );
+
+        let mmp = sessions
+            .get(&peer_addr)
+            .and_then(|entry| entry.mmp())
+            .expect("session mmp");
+        assert!(mmp.metrics.srtt_ms().is_some());
+        assert_eq!(
+            mmp.sender.report_interval(),
+            std::time::Duration::from_millis(MIN_SESSION_REPORT_INTERVAL_MS)
+        );
+        assert_eq!(
+            mmp.receiver.report_interval(),
+            std::time::Duration::from_millis(MIN_SESSION_REPORT_INTERVAL_MS)
+        );
+    }
+
+    #[test]
+    fn session_registry_session_receiver_report_processing_reports_skip_reasons() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut sessions = crate::node::SessionRegistry::default();
+        let rr = receiver_report(100, 100, 10_000, 50);
+
+        assert_eq!(
+            sessions.process_session_receiver_report(
+                &peer_addr,
+                &rr,
+                1_100,
+                std::time::Instant::now()
+            ),
+            Err(SessionReceiverReportSkip::UnknownSession)
+        );
+
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        assert_eq!(
+            sessions.process_session_receiver_report(
+                &peer_addr,
+                &rr,
+                1_100,
+                std::time::Instant::now()
+            ),
+            Err(SessionReceiverReportSkip::MmpDisabled)
+        );
     }
 
     #[test]
