@@ -60,6 +60,21 @@ struct ExhaustedFmpRekeyMsg1 {
     cleanup: Option<FmpRekeyIndexCleanup>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FmpRekeyInitiation {
+    transport_id: crate::transport::TransportId,
+    remote_addr: crate::transport::TransportAddr,
+    link_id: crate::transport::LinkId,
+    peer_pubkey: PublicKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FmpRekeyInitiationSkip {
+    MissingPeer,
+    MissingTransport,
+    MissingAddress,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SessionRekeyTickPlan {
     cutover: Vec<NodeAddr>,
@@ -93,6 +108,45 @@ enum SessionRekeyInitiationSkip {
 }
 
 impl crate::node::PeerLifecycleRegistry {
+    fn prepare_fmp_rekey_initiation(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Result<FmpRekeyInitiation, FmpRekeyInitiationSkip> {
+        let peer = self
+            .active
+            .get(node_addr)
+            .ok_or(FmpRekeyInitiationSkip::MissingPeer)?;
+        let transport_id = peer
+            .transport_id()
+            .ok_or(FmpRekeyInitiationSkip::MissingTransport)?;
+        let remote_addr = peer
+            .current_addr()
+            .cloned()
+            .ok_or(FmpRekeyInitiationSkip::MissingAddress)?;
+
+        Ok(FmpRekeyInitiation {
+            transport_id,
+            remote_addr,
+            link_id: peer.link_id(),
+            peer_pubkey: peer.identity().pubkey_full(),
+        })
+    }
+
+    fn record_fmp_rekey_initiated(
+        &mut self,
+        node_addr: &NodeAddr,
+        handshake: HandshakeState,
+        our_index: crate::utils::index::SessionIndex,
+        wire_msg1: Vec<u8>,
+        next_resend_ms: u64,
+    ) -> bool {
+        let Some(peer) = self.active.get_mut(node_addr) else {
+            return false;
+        };
+        peer.set_rekey_state(handshake, our_index, wire_msg1, next_resend_ms);
+        true
+    }
+
     fn exhaust_fmp_rekey_msg1_resend_budgets(
         &mut self,
         max_resends: u32,
@@ -497,21 +551,12 @@ impl Node {
     /// link (same transport, same remote address), and stores the handshake
     /// state on the ActivePeer. No new Link or PeerConnection is created.
     pub(in crate::node) async fn initiate_rekey(&mut self, node_addr: &NodeAddr) -> bool {
-        let peer = match self.peers.get(node_addr) {
-            Some(p) => p,
-            None => return false,
+        let initiation = match self.peers.prepare_fmp_rekey_initiation(node_addr) {
+            Ok(initiation) => initiation,
+            Err(FmpRekeyInitiationSkip::MissingPeer) => return false,
+            Err(FmpRekeyInitiationSkip::MissingTransport) => return false,
+            Err(FmpRekeyInitiationSkip::MissingAddress) => return false,
         };
-
-        let transport_id = match peer.transport_id() {
-            Some(t) => t,
-            None => return false,
-        };
-        let remote_addr = match peer.current_addr() {
-            Some(a) => a.clone(),
-            None => return false,
-        };
-        let link_id = peer.link_id();
-        let peer_pubkey = peer.identity().pubkey_full();
 
         // Allocate a new session index for the rekey
         let our_index = match self.index_allocator.allocate() {
@@ -528,7 +573,7 @@ impl Node {
 
         // Create IK initiator handshake directly (no PeerConnection)
         let our_keypair = self.identity.keypair();
-        let mut hs = HandshakeState::new_initiator(our_keypair, peer_pubkey);
+        let mut hs = HandshakeState::new_initiator(our_keypair, initiation.peer_pubkey);
         hs.set_local_epoch(self.startup_epoch);
 
         let noise_msg1 = match hs.write_message_1() {
@@ -547,11 +592,11 @@ impl Node {
         let wire_msg1 = build_msg1(our_index, &noise_msg1);
 
         // Send msg1 on the existing link (same transport + address)
-        let Some(transport) = self.transports.get(&transport_id) else {
+        let Some(transport) = self.transports.get(&initiation.transport_id) else {
             let _ = self.index_allocator.free(our_index);
             return false;
         };
-        match transport.send(&remote_addr, &wire_msg1).await {
+        match transport.send(&initiation.remote_addr, &wire_msg1).await {
             Ok(_) => {
                 debug!(
                     peer = %self.peer_display_name(node_addr),
@@ -573,16 +618,22 @@ impl Node {
         // Store handshake state on the ActivePeer (not a separate PeerConnection)
         let resend_interval = self.config.node.rate_limit.handshake_resend_interval_ms;
         let now_ms = Self::now_ms();
-        if let Some(peer) = self.peers.get_mut(node_addr) {
-            peer.set_rekey_state(hs, our_index, wire_msg1, now_ms + resend_interval);
-        } else {
+        if !self.peers.record_fmp_rekey_initiated(
+            node_addr,
+            hs,
+            our_index,
+            wire_msg1,
+            now_ms + resend_interval,
+        ) {
             let _ = self.index_allocator.free(our_index);
             return false;
         }
 
         // Register in pending_outbound for msg2 dispatch (maps to existing link)
-        self.pending_outbound
-            .insert((transport_id, our_index.as_u32()), link_id);
+        self.pending_outbound.insert(
+            (initiation.transport_id, our_index.as_u32()),
+            initiation.link_id,
+        );
         true
     }
 
@@ -1164,6 +1215,79 @@ mod tests {
             peers.complete_due_fmp_rekey_drain(&node_addr(0x77), 0),
             None
         );
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_fmp_rekey_initiation_target_snapshot() {
+        let local = Identity::generate();
+        let ready_peer = Identity::generate();
+        let missing_transport_peer = Identity::generate();
+
+        let ready = active_fmp_peer(&local, &ready_peer, 7);
+        let missing_transport = no_session_fmp_peer(&missing_transport_peer, 8);
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*ready_peer.node_addr(), ready);
+        peers.insert(*missing_transport_peer.node_addr(), missing_transport);
+
+        assert_eq!(
+            peers
+                .prepare_fmp_rekey_initiation(ready_peer.node_addr())
+                .expect("ready FMP peer should have an initiation target"),
+            FmpRekeyInitiation {
+                transport_id: TransportId::new(7),
+                remote_addr: TransportAddr::from_string("127.0.0.1:4007"),
+                link_id: LinkId::new(7),
+                peer_pubkey: ready_peer.pubkey_full(),
+            }
+        );
+        assert_eq!(
+            peers.prepare_fmp_rekey_initiation(&node_addr(0x77)),
+            Err(FmpRekeyInitiationSkip::MissingPeer)
+        );
+        assert_eq!(
+            peers.prepare_fmp_rekey_initiation(missing_transport_peer.node_addr()),
+            Err(FmpRekeyInitiationSkip::MissingTransport)
+        );
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_fmp_rekey_initiation_state_install() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let ready = active_fmp_peer(&local, &peer, 9);
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*peer.node_addr(), ready);
+
+        let handshake = NoiseHandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+        assert!(peers.record_fmp_rekey_initiated(
+            peer.node_addr(),
+            handshake,
+            SessionIndex::new(9_009),
+            vec![0xC0, 0xC1, 0xC2],
+            4_500,
+        ));
+
+        let peer = peers
+            .get(peer.node_addr())
+            .expect("FMP peer should remain installed");
+        assert!(peer.rekey_in_progress());
+        assert_eq!(peer.rekey_our_index(), Some(SessionIndex::new(9_009)));
+        assert_eq!(peer.rekey_msg1(), Some(&[0xC0, 0xC1, 0xC2][..]));
+        assert_eq!(peer.rekey_msg1_resend_count(), 0);
+        assert!(!peer.needs_msg1_resend(4_499));
+        assert!(peer.needs_msg1_resend(4_500));
+
+        let missing_handshake =
+            NoiseHandshakeState::new_initiator(local.keypair(), peer.identity().pubkey_full());
+        assert!(!peers.record_fmp_rekey_initiated(
+            &node_addr(0x77),
+            missing_handshake,
+            SessionIndex::new(9_010),
+            vec![0xD0],
+            5_000,
+        ));
     }
 
     #[test]
