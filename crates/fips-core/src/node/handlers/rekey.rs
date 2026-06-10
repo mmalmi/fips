@@ -47,6 +47,19 @@ struct SessionRekeyTickPlan {
     initiate: Vec<NodeAddr>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct FmpRekeyTickPlan {
+    cutover: Vec<NodeAddr>,
+    drain: Vec<NodeAddr>,
+    initiate: Vec<NodeAddr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FmpRekeyDrainCompletion {
+    transport_id: Option<crate::transport::TransportId>,
+    old_our_index: crate::utils::index::SessionIndex,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionRekeyInitiation {
     dest_pubkey: PublicKey,
@@ -57,6 +70,84 @@ enum SessionRekeyInitiationSkip {
     MissingSession,
     NotEstablished,
     RekeyInProgress,
+}
+
+impl crate::node::PeerLifecycleRegistry {
+    fn plan_fmp_rekey_tick(
+        &self,
+        rekey_after_secs: u64,
+        rekey_after_messages: u64,
+        cutover_delay: Duration,
+        drain_secs: u64,
+        dampening_secs: u64,
+    ) -> FmpRekeyTickPlan {
+        let mut plan = FmpRekeyTickPlan::default();
+
+        for (node_addr, peer) in &self.active {
+            if !peer.has_session() || !peer.is_healthy() {
+                continue;
+            }
+
+            if peer.pending_new_session().is_some()
+                && !peer.rekey_in_progress()
+                && peer.pending_rekey_cutover_due(cutover_delay)
+            {
+                plan.cutover.push(*node_addr);
+                continue;
+            }
+
+            if peer.is_draining() && peer.drain_expired(drain_secs) {
+                plan.drain.push(*node_addr);
+            }
+
+            if peer.rekey_in_progress() || peer.is_rekey_dampened(dampening_secs) {
+                continue;
+            }
+
+            let elapsed = peer.session_established_at().elapsed().as_secs();
+            let counter = peer
+                .noise_session()
+                .map(|s| s.current_send_counter())
+                .unwrap_or(0);
+            let effective_after_secs =
+                rekey_after_secs.saturating_add_signed(peer.rekey_jitter_secs());
+            if elapsed >= effective_after_secs || counter >= rekey_after_messages {
+                plan.initiate.push(*node_addr);
+            }
+        }
+
+        plan
+    }
+
+    fn cutover_due_fmp_rekey(&mut self, node_addr: &NodeAddr, cutover_delay: Duration) -> bool {
+        let Some(peer) = self.active.get_mut(node_addr) else {
+            return false;
+        };
+        if peer.pending_new_session().is_none()
+            || peer.rekey_in_progress()
+            || !peer.pending_rekey_cutover_due(cutover_delay)
+        {
+            return false;
+        }
+        peer.cutover_to_new_session().is_some()
+    }
+
+    fn complete_due_fmp_rekey_drain(
+        &mut self,
+        node_addr: &NodeAddr,
+        drain_secs: u64,
+    ) -> Option<FmpRekeyDrainCompletion> {
+        let peer = self.active.get_mut(node_addr)?;
+        if !peer.is_draining() || !peer.drain_expired(drain_secs) {
+            return None;
+        }
+        let transport_id = peer.transport_id();
+        let old_our_index = peer.complete_drain()?;
+        Some(FmpRekeyDrainCompletion {
+            transport_id,
+            old_our_index,
+        })
+    }
 }
 
 impl crate::node::SessionRegistry {
@@ -253,108 +344,61 @@ impl Node {
         let rekey_after_secs = self.config.node.rekey.after_secs;
         let rekey_after_messages = self.config.node.rekey.after_messages;
 
-        // Collect peers that need action (to avoid borrow conflicts)
-        let mut peers_to_cutover: Vec<NodeAddr> = Vec::new();
-        let mut peers_to_drain: Vec<NodeAddr> = Vec::new();
-        let mut peers_to_rekey: Vec<NodeAddr> = Vec::new();
-
-        for (node_addr, peer) in &self.peers {
-            if !peer.has_session() || !peer.is_healthy() {
-                continue;
-            }
-
-            // 1. Initiator-side cutover: we completed a rekey and have a
-            //    pending session ready. Responders wait for the peer's K-bit.
-            if peer.pending_new_session().is_some()
-                && !peer.rekey_in_progress()
-                && peer.pending_rekey_cutover_due(Duration::from_millis(FMP_CUTOVER_DELAY_MS))
-            {
-                peers_to_cutover.push(*node_addr);
-                continue;
-            }
-
-            // 2. Drain window expiry
-            if peer.is_draining() && peer.drain_expired(DRAIN_WINDOW_SECS) {
-                peers_to_drain.push(*node_addr);
-            }
-
-            // 3. Rekey trigger
-            if peer.rekey_in_progress() {
-                continue;
-            }
-            if peer.is_rekey_dampened(REKEY_DAMPENING_SECS) {
-                continue;
-            }
-
-            let elapsed = peer.session_established_at().elapsed().as_secs();
-            let counter = peer
-                .noise_session()
-                .map(|s| s.current_send_counter())
-                .unwrap_or(0);
-
-            let effective_after_secs =
-                rekey_after_secs.saturating_add_signed(peer.rekey_jitter_secs());
-            if elapsed >= effective_after_secs || counter >= rekey_after_messages {
-                peers_to_rekey.push(*node_addr);
-            }
-        }
+        let plan = self.peers.plan_fmp_rekey_tick(
+            rekey_after_secs,
+            rekey_after_messages,
+            Duration::from_millis(FMP_CUTOVER_DELAY_MS),
+            DRAIN_WINDOW_SECS,
+            REKEY_DAMPENING_SECS,
+        );
 
         // Execute cutover for initiator side
-        for node_addr in peers_to_cutover {
-            let did_cutover = {
-                if let Some(peer) = self.peers.get_mut(&node_addr)
-                    && let Some(_old_our_index) = peer.cutover_to_new_session()
-                {
-                    debug!(
-                        peer = %self.peer_display_name(&node_addr),
-                        "Rekey cutover complete (initiator), K-bit flipped"
-                    );
-                    true
-                } else {
-                    false
-                }
-            };
+        for node_addr in plan.cutover {
             // Re-register the (now-current) FMP session with the
             // decrypt worker shard. Without this, the worker's
             // owned cipher + replay state stays pinned to the
             // pre-rekey session and post-cutover packets miss the
             // worker entirely. See the matching comment in
             // `handle_encrypted_frame`'s K-bit-flip branch.
-            if did_cutover {
+            if self
+                .peers
+                .cutover_due_fmp_rekey(&node_addr, Duration::from_millis(FMP_CUTOVER_DELAY_MS))
+            {
+                debug!(
+                    peer = %self.peer_display_name(&node_addr),
+                    "Rekey cutover complete (initiator), K-bit flipped"
+                );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.register_decrypt_worker_session(&node_addr);
             }
         }
 
         // Execute drain completion
-        for node_addr in peers_to_drain {
-            let drained = if let Some(peer) = self.peers.get_mut(&node_addr)
-                && let Some(old_our_index) = peer.complete_drain()
-            {
-                let transport_id = peer.transport_id();
+        for node_addr in plan.drain {
+            let drained = self
+                .peers
+                .complete_due_fmp_rekey_drain(&node_addr, DRAIN_WINDOW_SECS);
+            if let Some(drained) = drained {
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
-                    old_index = %old_our_index,
+                    old_index = %drained.old_our_index,
                     "Drain complete, previous session erased"
                 );
-                Some((transport_id, old_our_index))
-            } else {
-                None
-            };
-            // Drop the old session index through `deregister_session_
-            // index` rather than registry removal directly so
-            // the decrypt worker also evicts the old session's owned
-            // cipher + replay state. Pre-fix the worker held onto
-            // the old entry forever, wasting a HashMap slot per
-            // rekey for the peer's lifetime.
-            if let Some((Some(transport_id), old_our_index)) = drained {
-                self.deregister_session_index((transport_id, old_our_index.as_u32()));
-                let _ = self.index_allocator.free(old_our_index);
+                // Drop the old session index through `deregister_session_
+                // index` rather than registry removal directly so
+                // the decrypt worker also evicts the old session's owned
+                // cipher + replay state. Pre-fix the worker held onto
+                // the old entry forever, wasting a HashMap slot per
+                // rekey for the peer's lifetime.
+                if let Some(transport_id) = drained.transport_id {
+                    self.deregister_session_index((transport_id, drained.old_our_index.as_u32()));
+                    let _ = self.index_allocator.free(drained.old_our_index);
+                }
             }
         }
 
         // Initiate new rekeys
-        for node_addr in peers_to_rekey {
+        for node_addr in plan.initiate {
             let _ = self.initiate_rekey(&node_addr).await;
         }
     }
@@ -738,7 +782,11 @@ mod tests {
     use super::*;
     use crate::node::session::{EndToEndState, SessionEntry};
     use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseSession};
-    use crate::{Identity, NodeAddr};
+    use crate::peer::ActivePeer;
+    use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+    use crate::utils::index::SessionIndex;
+    use crate::{Identity, NodeAddr, PeerIdentity};
+    use std::time::Instant;
 
     fn node_addr(byte: u8) -> NodeAddr {
         let mut bytes = [0u8; 16];
@@ -762,6 +810,27 @@ mod tests {
         initiator_hs.read_xk_message_2(&msg2).unwrap();
         let msg3 = initiator_hs.write_xk_message_3().unwrap();
         responder_hs.read_xk_message_3(&msg3).unwrap();
+
+        (
+            initiator_hs.into_session().unwrap(),
+            responder_hs.into_session().unwrap(),
+        )
+    }
+
+    fn make_fmp_session_pair(
+        initiator: &Identity,
+        responder: &Identity,
+    ) -> (NoiseSession, NoiseSession) {
+        let mut initiator_hs =
+            NoiseHandshakeState::new_initiator(initiator.keypair(), responder.pubkey_full());
+        let mut responder_hs = NoiseHandshakeState::new_responder(responder.keypair());
+        initiator_hs.set_local_epoch([1u8; 8]);
+        responder_hs.set_local_epoch([2u8; 8]);
+
+        let msg1 = initiator_hs.write_message_1().unwrap();
+        responder_hs.read_message_1(&msg1).unwrap();
+        let msg2 = responder_hs.write_message_2().unwrap();
+        initiator_hs.read_message_2(&msg2).unwrap();
 
         (
             initiator_hs.into_session().unwrap(),
@@ -806,6 +875,227 @@ mod tests {
         let (pending_session, _) = make_xk_session_pair(local, peer);
         entry.set_pending_session(pending_session);
         entry.set_rekey_completed_ms(completed_ms);
+    }
+
+    fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let (session, _) = make_fmp_session_pair(local, peer);
+        ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(tag.into()),
+            1_000,
+            session,
+            SessionIndex::new(tag * 10 + 1),
+            SessionIndex::new(tag * 10 + 2),
+            TransportId::new(tag),
+            TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
+            LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([2u8; 8]),
+        )
+    }
+
+    fn no_session_fmp_peer(peer: &Identity, tag: u32) -> ActivePeer {
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        ActivePeer::new(peer_identity, LinkId::new(tag.into()), 1_000)
+    }
+
+    fn arm_completed_fmp_rekey(
+        entry: &mut ActivePeer,
+        local: &Identity,
+        peer: &Identity,
+        tag: u32,
+        initiated_by_local: bool,
+    ) {
+        let (pending_session, _) = make_fmp_session_pair(local, peer);
+        entry.set_pending_session(
+            pending_session,
+            SessionIndex::new(tag * 10 + 3),
+            SessionIndex::new(tag * 10 + 4),
+            initiated_by_local,
+        );
+    }
+
+    fn arm_in_progress_fmp_rekey(entry: &mut ActivePeer, local: &Identity, peer: &Identity) {
+        let handshake = NoiseHandshakeState::new_initiator(local.keypair(), peer.pubkey_full());
+        entry.set_rekey_state(handshake, SessionIndex::new(9_001), vec![0xAB; 64], 0);
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_fmp_rekey_tick_selection() {
+        let local = Identity::generate();
+        let cutover_peer = Identity::generate();
+        let responder_pending_peer = Identity::generate();
+        let drain_peer = Identity::generate();
+        let aged_peer = Identity::generate();
+        let counter_peer = Identity::generate();
+        let in_progress_peer = Identity::generate();
+        let dampened_peer = Identity::generate();
+        let stale_peer = Identity::generate();
+        let no_session_peer = Identity::generate();
+
+        let mut cutover = active_fmp_peer(&local, &cutover_peer, 1);
+        arm_completed_fmp_rekey(&mut cutover, &local, &cutover_peer, 1, true);
+
+        let mut responder_pending = active_fmp_peer(&local, &responder_pending_peer, 2);
+        arm_completed_fmp_rekey(
+            &mut responder_pending,
+            &local,
+            &responder_pending_peer,
+            2,
+            false,
+        );
+
+        let mut drain = active_fmp_peer(&local, &drain_peer, 3);
+        arm_completed_fmp_rekey(&mut drain, &local, &drain_peer, 3, true);
+        assert!(drain.cutover_to_new_session().is_some());
+
+        let mut aged = active_fmp_peer(&local, &aged_peer, 4);
+        aged.set_session_established_at_for_test(
+            Instant::now() - Duration::from_secs(REKEY_DAMPENING_SECS + 20_000),
+        );
+
+        let mut counter = active_fmp_peer(&local, &counter_peer, 5);
+        counter
+            .noise_session_mut()
+            .unwrap()
+            .encrypt(b"tick")
+            .unwrap();
+
+        let mut in_progress = active_fmp_peer(&local, &in_progress_peer, 6);
+        arm_in_progress_fmp_rekey(&mut in_progress, &local, &in_progress_peer);
+
+        let mut dampened = active_fmp_peer(&local, &dampened_peer, 7);
+        dampened.record_peer_rekey();
+
+        let mut stale = active_fmp_peer(&local, &stale_peer, 8);
+        stale.mark_stale();
+
+        let no_session = no_session_fmp_peer(&no_session_peer, 9);
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*cutover_peer.node_addr(), cutover);
+        peers.insert(*responder_pending_peer.node_addr(), responder_pending);
+        peers.insert(*drain_peer.node_addr(), drain);
+        peers.insert(*aged_peer.node_addr(), aged);
+        peers.insert(*counter_peer.node_addr(), counter);
+        peers.insert(*in_progress_peer.node_addr(), in_progress);
+        peers.insert(*dampened_peer.node_addr(), dampened);
+        peers.insert(*stale_peer.node_addr(), stale);
+        peers.insert(*no_session_peer.node_addr(), no_session);
+
+        let mut plan =
+            peers.plan_fmp_rekey_tick(10_000, 1, Duration::ZERO, 0, REKEY_DAMPENING_SECS);
+        plan.cutover.sort();
+        plan.drain.sort();
+        plan.initiate.sort();
+
+        assert_eq!(plan.cutover, vec![*cutover_peer.node_addr()]);
+        assert_eq!(plan.drain, vec![*drain_peer.node_addr()]);
+        let mut expected_initiate = vec![*aged_peer.node_addr(), *counter_peer.node_addr()];
+        expected_initiate.sort();
+        assert_eq!(plan.initiate, expected_initiate);
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_fmp_rekey_tick_cutover_and_drain_mutation() {
+        let local = Identity::generate();
+        let cutover_peer = Identity::generate();
+        let responder_pending_peer = Identity::generate();
+        let early_cutover_peer = Identity::generate();
+        let drain_peer = Identity::generate();
+        let early_drain_peer = Identity::generate();
+
+        let mut cutover = active_fmp_peer(&local, &cutover_peer, 1);
+        let cutover_k_bit = cutover.current_k_bit();
+        arm_completed_fmp_rekey(&mut cutover, &local, &cutover_peer, 1, true);
+
+        let mut responder_pending = active_fmp_peer(&local, &responder_pending_peer, 2);
+        arm_completed_fmp_rekey(
+            &mut responder_pending,
+            &local,
+            &responder_pending_peer,
+            2,
+            false,
+        );
+
+        let mut early_cutover = active_fmp_peer(&local, &early_cutover_peer, 3);
+        arm_completed_fmp_rekey(&mut early_cutover, &local, &early_cutover_peer, 3, true);
+
+        let mut drain = active_fmp_peer(&local, &drain_peer, 4);
+        let drain_old_index = drain.our_index().expect("active peer should have index");
+        arm_completed_fmp_rekey(&mut drain, &local, &drain_peer, 4, true);
+        assert!(drain.cutover_to_new_session().is_some());
+
+        let mut early_drain = active_fmp_peer(&local, &early_drain_peer, 5);
+        arm_completed_fmp_rekey(&mut early_drain, &local, &early_drain_peer, 5, true);
+        assert!(early_drain.cutover_to_new_session().is_some());
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        peers.insert(*cutover_peer.node_addr(), cutover);
+        peers.insert(*responder_pending_peer.node_addr(), responder_pending);
+        peers.insert(*early_cutover_peer.node_addr(), early_cutover);
+        peers.insert(*drain_peer.node_addr(), drain);
+        peers.insert(*early_drain_peer.node_addr(), early_drain);
+
+        assert!(peers.cutover_due_fmp_rekey(cutover_peer.node_addr(), Duration::ZERO));
+        let cutover = peers
+            .get(cutover_peer.node_addr())
+            .expect("cutover peer should remain");
+        assert!(cutover.pending_new_session().is_none());
+        assert!(cutover.is_draining());
+        assert_eq!(cutover.current_k_bit(), !cutover_k_bit);
+
+        assert!(!peers.cutover_due_fmp_rekey(responder_pending_peer.node_addr(), Duration::ZERO));
+        assert!(
+            peers
+                .get(responder_pending_peer.node_addr())
+                .expect("responder-pending peer should remain")
+                .pending_new_session()
+                .is_some()
+        );
+
+        assert!(
+            !peers.cutover_due_fmp_rekey(early_cutover_peer.node_addr(), Duration::from_secs(60))
+        );
+        assert!(
+            peers
+                .get(early_cutover_peer.node_addr())
+                .expect("early-cutover peer should remain")
+                .pending_new_session()
+                .is_some()
+        );
+
+        assert_eq!(
+            peers.complete_due_fmp_rekey_drain(drain_peer.node_addr(), 0),
+            Some(FmpRekeyDrainCompletion {
+                transport_id: Some(TransportId::new(4)),
+                old_our_index: drain_old_index,
+            })
+        );
+        assert!(
+            !peers
+                .get(drain_peer.node_addr())
+                .expect("drained peer should remain")
+                .is_draining()
+        );
+
+        assert_eq!(
+            peers.complete_due_fmp_rekey_drain(early_drain_peer.node_addr(), 60),
+            None
+        );
+        assert!(
+            peers
+                .get(early_drain_peer.node_addr())
+                .expect("early-drain peer should remain")
+                .is_draining()
+        );
+
+        assert_eq!(
+            peers.complete_due_fmp_rekey_drain(&node_addr(0x77), 0),
+            None
+        );
     }
 
     #[test]
