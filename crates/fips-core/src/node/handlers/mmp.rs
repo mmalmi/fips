@@ -43,6 +43,30 @@ enum MmpReceiverReportSkip {
     MmpDisabled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MmpLinkReport {
+    node_addr: NodeAddr,
+    encoded: Vec<u8>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct MmpLinkReportBatch {
+    sender_reports: Vec<MmpLinkReport>,
+    receiver_reports: Vec<MmpLinkReport>,
+    metric_logs: Vec<MmpLinkMetricSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MmpLinkMetricSnapshot {
+    node_addr: NodeAddr,
+    rtt_ms: Option<f64>,
+    loss_rate: Option<f64>,
+    jitter_ms: f64,
+    goodput_bps: f64,
+    tx_packets: u64,
+    rx_packets: u64,
+}
+
 impl crate::node::PeerLifecycleRegistry {
     fn process_mmp_receiver_report(
         &mut self,
@@ -87,6 +111,60 @@ impl crate::node::PeerLifecycleRegistry {
             loss_rate: mmp.metrics.loss_rate(),
             etx: mmp.metrics.etx,
         })
+    }
+
+    fn collect_due_mmp_link_reports(&mut self, now: Instant) -> MmpLinkReportBatch {
+        let mut batch = MmpLinkReportBatch::default();
+
+        for (node_addr, peer) in self.active.iter_mut() {
+            let Some(mmp) = peer.mmp_mut() else {
+                continue;
+            };
+
+            let mode = mmp.mode();
+
+            if mode == MmpMode::Full
+                && mmp.sender.should_send_report(now)
+                && let Some(sr) = mmp.sender.build_report(now)
+            {
+                batch.sender_reports.push(MmpLinkReport {
+                    node_addr: *node_addr,
+                    encoded: sr.encode(),
+                });
+            }
+
+            if mode != MmpMode::Minimal
+                && mmp.receiver.should_send_report(now)
+                && let Some(rr) = mmp.receiver.build_report(now)
+            {
+                batch.receiver_reports.push(MmpLinkReport {
+                    node_addr: *node_addr,
+                    encoded: rr.encode(),
+                });
+            }
+
+            if mmp.should_log(now) {
+                let metrics = &mmp.metrics;
+                batch.metric_logs.push(MmpLinkMetricSnapshot {
+                    node_addr: *node_addr,
+                    rtt_ms: metrics
+                        .rtt_trend
+                        .initialized()
+                        .then(|| metrics.rtt_trend.long() / 1000.0),
+                    loss_rate: metrics
+                        .loss_trend
+                        .initialized()
+                        .then(|| metrics.loss_trend.long()),
+                    jitter_ms: mmp.receiver.jitter_us() as f64 / 1000.0,
+                    goodput_bps: metrics.goodput_bps(),
+                    tx_packets: mmp.sender.cumulative_packets_sent(),
+                    rx_packets: mmp.receiver.cumulative_packets_recv(),
+                });
+                mmp.mark_logged(now);
+            }
+        }
+
+        batch
     }
 }
 
@@ -232,87 +310,51 @@ impl Node {
     ///
     /// Called from the tick handler. Also emits periodic operator logs.
     pub(in crate::node) async fn check_mmp_reports(&mut self) {
-        let now = Instant::now();
+        let batch = self.peers.collect_due_mmp_link_reports(Instant::now());
 
-        // Collect peers that need reports (can't borrow self mutably while iterating)
-        let mut sender_reports: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
-        let mut receiver_reports: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
+        for metrics in &batch.metric_logs {
+            let peer_name = self.peer_display_name(&metrics.node_addr);
+            Self::log_mmp_metrics(&peer_name, metrics);
+        }
 
-        for (node_addr, peer) in self.peers.iter_mut() {
-            // Compute display name before taking mutable MMP borrow
-            let peer_name = self
-                .peer_aliases
-                .get(node_addr)
-                .cloned()
-                .unwrap_or_else(|| peer.identity().short_npub());
-
-            let Some(mmp) = peer.mmp_mut() else {
-                continue;
-            };
-
-            let mode = mmp.mode();
-
-            // Sender reports: Full mode only
-            if mode == MmpMode::Full
-                && mmp.sender.should_send_report(now)
-                && let Some(sr) = mmp.sender.build_report(now)
+        for report in batch.sender_reports {
+            if let Err(e) = self
+                .send_encrypted_link_message(&report.node_addr, &report.encoded)
+                .await
             {
-                sender_reports.push((*node_addr, sr.encode()));
-            }
-
-            // Receiver reports: Full and Lightweight modes
-            if mode != MmpMode::Minimal
-                && mmp.receiver.should_send_report(now)
-                && let Some(rr) = mmp.receiver.build_report(now)
-            {
-                receiver_reports.push((*node_addr, rr.encode()));
-            }
-
-            // Periodic operator logging
-            if mmp.should_log(now) {
-                Self::log_mmp_metrics(&peer_name, mmp);
-                mmp.mark_logged(now);
+                debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send SenderReport");
             }
         }
 
-        // Send collected reports
-        for (node_addr, encoded) in sender_reports {
-            if let Err(e) = self.send_encrypted_link_message(&node_addr, &encoded).await {
-                debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send SenderReport");
-            }
-        }
-
-        for (node_addr, encoded) in receiver_reports {
-            if let Err(e) = self.send_encrypted_link_message(&node_addr, &encoded).await {
-                debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send ReceiverReport");
+        for report in batch.receiver_reports {
+            if let Err(e) = self
+                .send_encrypted_link_message(&report.node_addr, &report.encoded)
+                .await
+            {
+                debug!(peer = %self.peer_display_name(&report.node_addr), error = %e, "Failed to send ReceiverReport");
             }
         }
     }
 
     /// Emit periodic MMP metrics for a peer.
-    fn log_mmp_metrics(peer_name: &str, mmp: &crate::mmp::MmpPeerState) {
-        let m = &mmp.metrics;
-
-        let rtt_str = if m.rtt_trend.initialized() {
-            format!("{:.1}ms", m.rtt_trend.long() / 1000.0)
-        } else {
-            "n/a".to_string()
-        };
-        let loss_str = if m.loss_trend.initialized() {
-            format!("{:.1}%", m.loss_trend.long() * 100.0)
-        } else {
-            "n/a".to_string()
-        };
-        let jitter_ms = mmp.receiver.jitter_us() as f64 / 1000.0;
+    fn log_mmp_metrics(peer_name: &str, metrics: &MmpLinkMetricSnapshot) {
+        let rtt_str = metrics
+            .rtt_ms
+            .map(|rtt| format!("{rtt:.1}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
+        let loss_str = metrics
+            .loss_rate
+            .map(|loss| format!("{:.1}%", loss * 100.0))
+            .unwrap_or_else(|| "n/a".to_string());
 
         debug!(
             peer = %peer_name,
             rtt = %rtt_str,
             loss = %loss_str,
-            jitter = format_args!("{:.1}ms", jitter_ms),
-            goodput = %format_throughput(m.goodput_bps()),
-            tx_pkts = mmp.sender.cumulative_packets_sent(),
-            rx_pkts = mmp.receiver.cumulative_packets_recv(),
+            jitter = format_args!("{:.1}ms", metrics.jitter_ms),
+            goodput = %format_throughput(metrics.goodput_bps),
+            tx_pkts = metrics.tx_packets,
+            rx_pkts = metrics.rx_packets,
             "MMP link metrics"
         );
     }
@@ -721,6 +763,15 @@ mod tests {
     }
 
     fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
+        active_fmp_peer_with_mmp_config(local, peer, tag, &crate::mmp::MmpConfig::default())
+    }
+
+    fn active_fmp_peer_with_mmp_config(
+        local: &Identity,
+        peer: &Identity,
+        tag: u32,
+        mmp_config: &crate::mmp::MmpConfig,
+    ) -> ActivePeer {
         let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
         let (session, _) = make_fmp_session_pair(local, peer);
         ActivePeer::with_session(
@@ -734,7 +785,7 @@ mod tests {
             TransportAddr::from_string(&format!("127.0.0.1:{}", 4_000 + tag)),
             LinkStats::new(),
             true,
-            &crate::mmp::MmpConfig::default(),
+            mmp_config,
             Some([2u8; 8]),
         )
     }
@@ -816,6 +867,103 @@ mod tests {
         assert_eq!(
             peers.process_mmp_receiver_report(no_mmp_identity.node_addr(), &rr, Instant::now()),
             Err(MmpReceiverReportSkip::MmpDisabled)
+        );
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_owns_due_mmp_link_report_collection() {
+        let local = Identity::generate();
+        let peer_id = Identity::generate();
+        let mut peer = active_fmp_peer(&local, &peer_id, 2);
+        let now = Instant::now();
+
+        {
+            let mmp = peer.mmp_mut().expect("MMP enabled");
+            mmp.sender.record_sent(12, 3, 512);
+            mmp.receiver.record_recv(12, 3, 512, false, now);
+        }
+
+        let mut peers = PeerLifecycleRegistry::default();
+        peers.insert(*peer_id.node_addr(), peer);
+
+        let batch = peers.collect_due_mmp_link_reports(now + Duration::from_millis(1));
+        assert_eq!(batch.sender_reports.len(), 1);
+        assert_eq!(batch.receiver_reports.len(), 1);
+        assert_eq!(batch.metric_logs.len(), 1);
+        assert_eq!(batch.sender_reports[0].node_addr, *peer_id.node_addr());
+        assert_eq!(batch.sender_reports[0].encoded[0], 0x01);
+        assert_eq!(batch.receiver_reports[0].node_addr, *peer_id.node_addr());
+        assert_eq!(batch.receiver_reports[0].encoded[0], 0x02);
+        assert_eq!(batch.metric_logs[0].node_addr, *peer_id.node_addr());
+        assert_eq!(batch.metric_logs[0].tx_packets, 1);
+        assert_eq!(batch.metric_logs[0].rx_packets, 1);
+
+        let second = peers.collect_due_mmp_link_reports(now + Duration::from_millis(2));
+        assert!(second.sender_reports.is_empty());
+        assert!(second.receiver_reports.is_empty());
+        assert!(second.metric_logs.is_empty());
+    }
+
+    #[test]
+    fn peer_lifecycle_registry_mmp_link_report_collection_respects_modes() {
+        let local = Identity::generate();
+        let lightweight_peer = Identity::generate();
+        let minimal_peer = Identity::generate();
+        let no_mmp_peer = Identity::generate();
+        let now = Instant::now();
+
+        let mut lightweight_config = crate::mmp::MmpConfig::default();
+        lightweight_config.mode = MmpMode::Lightweight;
+        let mut lightweight =
+            active_fmp_peer_with_mmp_config(&local, &lightweight_peer, 3, &lightweight_config);
+        {
+            let mmp = lightweight.mmp_mut().expect("MMP enabled");
+            mmp.sender.record_sent(1, 1, 100);
+            mmp.receiver.record_recv(1, 1, 100, false, now);
+        }
+
+        let mut minimal_config = crate::mmp::MmpConfig::default();
+        minimal_config.mode = MmpMode::Minimal;
+        let mut minimal =
+            active_fmp_peer_with_mmp_config(&local, &minimal_peer, 4, &minimal_config);
+        {
+            let mmp = minimal.mmp_mut().expect("MMP enabled");
+            mmp.sender.record_sent(1, 1, 100);
+            mmp.receiver.record_recv(1, 1, 100, false, now);
+        }
+
+        let no_mmp = ActivePeer::new(
+            PeerIdentity::from_pubkey_full(no_mmp_peer.pubkey_full()),
+            LinkId::new(5),
+            1_000,
+        );
+
+        let mut peers = PeerLifecycleRegistry::default();
+        peers.insert(*lightweight_peer.node_addr(), lightweight);
+        peers.insert(*minimal_peer.node_addr(), minimal);
+        peers.insert(*no_mmp_peer.node_addr(), no_mmp);
+
+        let batch = peers.collect_due_mmp_link_reports(now + Duration::from_millis(1));
+
+        assert!(batch.sender_reports.is_empty());
+        assert_eq!(batch.receiver_reports.len(), 1);
+        assert_eq!(
+            batch.receiver_reports[0].node_addr,
+            *lightweight_peer.node_addr()
+        );
+        assert_eq!(batch.receiver_reports[0].encoded[0], 0x02);
+        assert_eq!(batch.metric_logs.len(), 2);
+        assert!(
+            batch
+                .metric_logs
+                .iter()
+                .any(|metrics| metrics.node_addr == *lightweight_peer.node_addr())
+        );
+        assert!(
+            batch
+                .metric_logs
+                .iter()
+                .any(|metrics| metrics.node_addr == *minimal_peer.node_addr())
         );
     }
 }

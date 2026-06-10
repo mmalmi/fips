@@ -3542,12 +3542,6 @@ impl PeerLifecycleRegistry {
         self.active.iter()
     }
 
-    pub(in crate::node) fn iter_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (&NodeAddr, &mut ActivePeer)> {
-        self.active.iter_mut()
-    }
-
     #[cfg(test)]
     pub(in crate::node) fn insert_session_index(
         &mut self,
