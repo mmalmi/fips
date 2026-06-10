@@ -10,7 +10,7 @@ use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2,
     FspCommonPrefix, parse_encrypted_coords,
 };
-use crate::node::{Node, NodeError};
+use crate::node::{AuthenticatedSessionDatagram, Node, NodeError};
 use crate::protocol::{
     CoordsRequired, MtuExceeded, PathBroken, SessionAck, SessionDatagram, SessionDatagramRef,
     SessionSetup,
@@ -21,8 +21,9 @@ use tracing::{debug, warn};
 impl Node {
     /// Handle an incoming SessionDatagram from a peer.
     ///
-    /// Called by `dispatch_link_message` for msg_type 0x00. The payload
-    /// has already had its msg_type byte stripped by dispatch.
+    /// Called by `dispatch_link_message` for msg_type 0x00. The payload has
+    /// already had its msg_type byte stripped by dispatch, and the previous
+    /// hop is the authenticated peer that sent the enclosing link message.
     ///
     /// Hot path: borrows `payload` via `SessionDatagramRef` (zero copy)
     /// for the common local-delivery case. The owning `SessionDatagram`
@@ -30,10 +31,12 @@ impl Node {
     /// direct peers).
     pub(in crate::node) async fn handle_session_datagram(
         &mut self,
-        from: &NodeAddr,
-        payload: &[u8],
-        incoming_ce: bool,
+        datagram: AuthenticatedSessionDatagram<'_>,
     ) {
+        let previous_hop = *datagram.previous_hop_addr();
+        let payload = datagram.payload();
+        let incoming_ce = datagram.ce_flag();
+
         self.stats_mut().forwarding.record_received(payload.len());
 
         let datagram_ref = match SessionDatagramRef::decode(payload) {
@@ -75,7 +78,7 @@ impl Node {
                 datagram_ref.payload,
                 datagram_ref.path_mtu,
                 incoming_ce,
-                Some(*from),
+                Some(previous_hop),
             )
             .await;
             return;
@@ -97,7 +100,7 @@ impl Node {
         // Find next hop toward destination. Transit forwarding must not send
         // a non-local datagram back to the hop it arrived from; learned
         // reverse routes are observations, not loop-free source routes.
-        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, from) {
+        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, &previous_hop) {
             Some(next_hop_addr) => next_hop_addr,
             None => {
                 self.stats_mut()

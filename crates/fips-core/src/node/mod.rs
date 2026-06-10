@@ -2114,6 +2114,12 @@ pub(in crate::node) struct AuthenticatedLinkMessage<'a> {
     ce_flag: bool,
 }
 
+pub(in crate::node) struct AuthenticatedSessionDatagram<'a> {
+    previous_hop_peer: PeerIdentity,
+    payload: &'a [u8],
+    ce_flag: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::node) struct FmpSendBookkeeping {
     pub(in crate::node) mmp_recorded: bool,
@@ -2335,6 +2341,38 @@ impl<'a> AuthenticatedLinkMessage<'a> {
 
     pub(in crate::node) fn msg_type(&self) -> u8 {
         self.msg_type
+    }
+
+    pub(in crate::node) fn payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn ce_flag(&self) -> bool {
+        self.ce_flag
+    }
+
+    pub(in crate::node) fn into_session_datagram(self) -> AuthenticatedSessionDatagram<'a> {
+        debug_assert_eq!(self.msg_type, LinkMessageType::SessionDatagram.to_byte());
+        AuthenticatedSessionDatagram::new(self.source_peer, self.payload, self.ce_flag)
+    }
+}
+
+impl<'a> AuthenticatedSessionDatagram<'a> {
+    pub(in crate::node) fn new(
+        previous_hop_peer: PeerIdentity,
+        payload: &'a [u8],
+        ce_flag: bool,
+    ) -> Self {
+        Self {
+            previous_hop_peer,
+            payload,
+            ce_flag,
+        }
+    }
+
+    pub(in crate::node) fn previous_hop_addr(&self) -> &NodeAddr {
+        self.previous_hop_peer.node_addr()
     }
 
     pub(in crate::node) fn payload(&self) -> &'a [u8] {

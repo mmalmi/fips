@@ -16,14 +16,22 @@ use spanning_tree::{
 // Unit Tests
 // ============================================================================
 
+fn authenticated_session_datagram<'a>(
+    payload: &'a [u8],
+    incoming_ce: bool,
+) -> AuthenticatedSessionDatagram<'a> {
+    AuthenticatedSessionDatagram::new(make_peer_identity(), payload, incoming_ce)
+}
+
 // --- Decode errors ---
 
 #[tokio::test]
 async fn test_forwarding_decode_error() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     // Too-short payload: should log error and return without panic
-    node.handle_session_datagram(&from, &[0x00; 5], false).await;
+    let payload = [0x00; 5];
+    node.handle_session_datagram(authenticated_session_datagram(&payload, false))
+        .await;
 }
 
 // --- TTL ---
@@ -31,13 +39,12 @@ async fn test_forwarding_decode_error() {
 #[tokio::test]
 async fn test_forwarding_hop_limit_exhausted() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src = make_node_addr(0x01);
     let dest = make_node_addr(0x02);
     let dg = SessionDatagram::new(src, dest, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(0);
     let encoded = dg.encode();
     // Dispatch with payload after msg_type byte
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
     // No panic, no send (node has no peers)
 }
@@ -48,13 +55,12 @@ async fn test_forwarding_hop_limit_one_drops_at_transit() {
     // still be delivered this hop but would be dropped at the next.
     // decrement_ttl returns true (1 > 0), so the handler proceeds.
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let my_addr = *node.node_addr();
     let src = make_node_addr(0x01);
     let dg = SessionDatagram::new(src, my_addr, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(1);
     let encoded = dg.encode();
     // Should succeed — ttl=1 decrements to 0 but packet is still processed
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 }
 
@@ -64,11 +70,11 @@ async fn test_forwarding_hop_limit_one_drops_at_transit() {
 async fn test_forwarding_local_delivery() {
     let mut node = make_node();
     let my_addr = *node.node_addr();
-    let from = make_node_addr(0xAA);
+    let from = make_node_addr(0x01);
     let dg = SessionDatagram::new(from, my_addr, vec![0x10, 0x00, 0x00, 0x00]);
     let encoded = dg.encode();
     // Should detect local delivery and return without forwarding
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 }
 
@@ -81,7 +87,6 @@ async fn test_forwarding_direct_peer() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
 
-    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
 
     // Build a datagram from some external source destined for node 1
@@ -92,7 +97,7 @@ async fn test_forwarding_direct_peer() {
     // Handle on node 0: should forward to node 1 (direct peer)
     nodes[0]
         .node
-        .handle_session_datagram(&node0_addr, &encoded[1..], false)
+        .handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // Process packets — node 1 should receive the forwarded datagram
@@ -110,7 +115,6 @@ async fn test_forwarding_direct_peer() {
 #[tokio::test]
 async fn test_coord_cache_warming_session_setup() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -135,7 +139,7 @@ async fn test_coord_cache_warming_session_setup() {
 
     // Handle the datagram (will be local delivery or no-route, but cache warming
     // happens before routing decision)
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // After: both src and dest coords should be cached
@@ -154,7 +158,6 @@ async fn test_coord_cache_warming_session_setup() {
 #[tokio::test]
 async fn test_coord_cache_warming_session_ack() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -176,7 +179,7 @@ async fn test_coord_cache_warming_session_ack() {
     assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
     assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // SessionAck caches both src_coords and dest_coords
@@ -198,7 +201,6 @@ async fn test_coord_cache_warming_session_ack() {
 #[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -225,7 +227,7 @@ async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
     assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     assert!(
@@ -241,7 +243,6 @@ async fn test_coord_cache_warming_encrypted_msg_with_coords() {
 #[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_no_coords() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
 
@@ -259,7 +260,7 @@ async fn test_coord_cache_warming_encrypted_msg_no_coords() {
         .unwrap()
         .as_millis() as u64;
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     assert!(

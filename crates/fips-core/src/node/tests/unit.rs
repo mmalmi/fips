@@ -2218,7 +2218,15 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     active_peer.increment_decrypt_failures();
     registry.insert_with_current_session_index(peer_addr, active_peer);
 
-    let fmp_plaintext = [0xd2, 0x04, 0x00, 0x00, 0xaa, 0xbb, 0xcc];
+    let fmp_plaintext = [
+        0xd2,
+        0x04,
+        0x00,
+        0x00,
+        LinkMessageType::SessionDatagram.to_byte(),
+        0xbb,
+        0xcc,
+    ];
     let receive =
         PeerRuntimeReceive::from_authenticated_fmp_plaintext(AuthenticatedFmpPlaintext::new(
             peer_identity,
@@ -2237,7 +2245,10 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     assert_eq!(dispatch.source_peer(), peer_identity);
     assert_eq!(dispatch.node_addr(), &peer_addr);
     assert!(dispatch.ce_flag());
-    assert_eq!(dispatch.link_message(), &[0xaa, 0xbb, 0xcc]);
+    assert_eq!(
+        dispatch.link_message(),
+        &[LinkMessageType::SessionDatagram.to_byte(), 0xbb, 0xcc]
+    );
     assert!(dispatch.address_changed());
     let bookkeeping = dispatch
         .bookkeeping()
@@ -2248,9 +2259,16 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
         .into_link_message()
         .expect("non-empty FMP link message should parse");
     assert_eq!(link_message.source_node_addr(), &peer_addr);
-    assert_eq!(link_message.msg_type(), 0xaa);
+    assert_eq!(
+        link_message.msg_type(),
+        LinkMessageType::SessionDatagram.to_byte()
+    );
     assert_eq!(link_message.payload(), &[0xbb, 0xcc]);
     assert!(link_message.ce_flag());
+    let session_datagram = link_message.into_session_datagram();
+    assert_eq!(session_datagram.previous_hop_addr(), &peer_addr);
+    assert_eq!(session_datagram.payload(), &[0xbb, 0xcc]);
+    assert!(session_datagram.ce_flag());
 
     let peer = registry
         .get(&peer_addr)

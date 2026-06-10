@@ -12,47 +12,50 @@ impl Node {
         &mut self,
         message: AuthenticatedLinkMessage<'_>,
     ) {
-        let from = message.source_node_addr();
         let msg_type = message.msg_type();
-        let payload = message.payload();
 
         match msg_type {
             0x00 => {
                 // SessionDatagram
-                self.handle_session_datagram(from, payload, message.ce_flag())
+                self.handle_session_datagram(message.into_session_datagram())
                     .await;
             }
             0x01 => {
                 // SenderReport
-                self.handle_sender_report(from, payload);
+                self.handle_sender_report(message.source_node_addr(), message.payload());
             }
             0x02 => {
                 // ReceiverReport
-                self.handle_receiver_report(from, payload).await;
+                self.handle_receiver_report(message.source_node_addr(), message.payload())
+                    .await;
             }
             0x10 => {
                 // TreeAnnounce
-                self.handle_tree_announce(from, payload).await;
+                self.handle_tree_announce(message.source_node_addr(), message.payload())
+                    .await;
             }
             0x20 => {
                 // FilterAnnounce
-                self.handle_filter_announce(from, payload).await;
+                self.handle_filter_announce(message.source_node_addr(), message.payload())
+                    .await;
             }
             0x30 => {
                 // LookupRequest
-                self.handle_lookup_request(from, payload).await;
+                self.handle_lookup_request(message.source_node_addr(), message.payload())
+                    .await;
             }
             0x31 => {
                 // LookupResponse
-                self.handle_lookup_response(from, payload).await;
+                self.handle_lookup_response(message.source_node_addr(), message.payload())
+                    .await;
             }
             0x50 => {
                 // Disconnect
-                self.handle_disconnect(from, payload);
+                self.handle_disconnect(message.source_node_addr(), message.payload());
             }
             0x51 => {
                 // Heartbeat — no-op, last_recv_time already updated by record_recv()
-                trace!(peer = %self.peer_display_name(from), "Received heartbeat");
+                trace!(peer = %self.peer_display_name(message.source_node_addr()), "Received heartbeat");
             }
             _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
