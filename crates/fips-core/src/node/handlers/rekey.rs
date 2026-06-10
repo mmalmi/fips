@@ -39,7 +39,98 @@ struct ExhaustedSessionRekeyMsg3 {
     dest_addr: NodeAddr,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct SessionRekeyTickPlan {
+    cutover: Vec<NodeAddr>,
+    drain: Vec<NodeAddr>,
+    initiate: Vec<NodeAddr>,
+}
+
 impl crate::node::SessionRegistry {
+    fn plan_session_rekey_tick(
+        &self,
+        now_ms: u64,
+        rekey_after_secs: u64,
+        rekey_after_messages: u64,
+        drain_ms: u64,
+        dampening_ms: u64,
+        cutover_delay_ms: u64,
+    ) -> SessionRekeyTickPlan {
+        let mut plan = SessionRekeyTickPlan::default();
+
+        for (node_addr, entry) in self.iter() {
+            if !entry.is_established() {
+                continue;
+            }
+
+            if entry.pending_new_session().is_some()
+                && !entry.has_rekey_in_progress()
+                && entry.is_rekey_initiator()
+                && now_ms.saturating_sub(entry.rekey_completed_ms()) >= cutover_delay_ms
+            {
+                plan.cutover.push(*node_addr);
+                continue;
+            }
+
+            if entry.is_draining() && entry.drain_expired(now_ms, drain_ms) {
+                plan.drain.push(*node_addr);
+            }
+
+            if entry.has_rekey_in_progress()
+                || entry.pending_new_session().is_some()
+                || entry.rekey_msg3_payload().is_some()
+                || entry.is_rekey_dampened(now_ms, dampening_ms)
+            {
+                continue;
+            }
+
+            let elapsed_secs = now_ms.saturating_sub(entry.session_start_ms()) / 1000;
+            let effective_after_secs =
+                rekey_after_secs.saturating_add_signed(entry.rekey_jitter_secs());
+            if elapsed_secs >= effective_after_secs || entry.send_counter() >= rekey_after_messages
+            {
+                plan.initiate.push(*node_addr);
+            }
+        }
+
+        plan
+    }
+
+    fn cutover_due_session_rekey(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+        cutover_delay_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        if entry.pending_new_session().is_none()
+            || entry.has_rekey_in_progress()
+            || !entry.is_rekey_initiator()
+            || now_ms.saturating_sub(entry.rekey_completed_ms()) < cutover_delay_ms
+        {
+            return false;
+        }
+        entry.cutover_to_new_session(now_ms)
+    }
+
+    fn complete_due_session_rekey_drain(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+        drain_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        if !entry.is_draining() || !entry.drain_expired(now_ms, drain_ms) {
+            return false;
+        }
+        entry.complete_drain();
+        true
+    }
+
     fn exhaust_due_rekey_msg3_resend_budgets(
         &mut self,
         now_ms: u64,
@@ -466,61 +557,20 @@ impl Node {
         let drain_ms = DRAIN_WINDOW_SECS * 1000;
         let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
-        let mut sessions_to_cutover: Vec<NodeAddr> = Vec::new();
-        let mut sessions_to_drain: Vec<NodeAddr> = Vec::new();
-        let mut sessions_to_rekey: Vec<NodeAddr> = Vec::new();
-
-        for (node_addr, entry) in &self.sessions {
-            if !entry.is_established() {
-                continue;
-            }
-
-            // 1. Initiator-side cutover: completed rekey, pending session ready.
-            //    Defer cutover until msg3 has had time to reach the responder.
-            //    Without this delay, K-bit-flipped data can arrive before
-            //    msg3, causing decryption failures on the responder.
-            if entry.pending_new_session().is_some()
-                && !entry.has_rekey_in_progress()
-                && entry.is_rekey_initiator()
-                && now_ms.saturating_sub(entry.rekey_completed_ms()) >= FSP_CUTOVER_DELAY_MS
-            {
-                sessions_to_cutover.push(*node_addr);
-                continue;
-            }
-
-            // 2. Drain window expiry
-            if entry.is_draining() && entry.drain_expired(now_ms, drain_ms) {
-                sessions_to_drain.push(*node_addr);
-            }
-
-            // 3. Rekey trigger
-            if entry.has_rekey_in_progress() {
-                continue;
-            }
-            if entry.pending_new_session().is_some() {
-                continue; // Pending session present, awaiting cutover
-            }
-            if entry.rekey_msg3_payload().is_some() {
-                continue; // Current rekey still awaits peer confirmation.
-            }
-            if entry.is_rekey_dampened(now_ms, dampening_ms) {
-                continue;
-            }
-
-            let elapsed_secs = now_ms.saturating_sub(entry.session_start_ms()) / 1000;
-            let counter = entry.send_counter();
-
-            let effective_after_secs =
-                rekey_after_secs.saturating_add_signed(entry.rekey_jitter_secs());
-            if elapsed_secs >= effective_after_secs || counter >= rekey_after_messages {
-                sessions_to_rekey.push(*node_addr);
-            }
-        }
+        let plan = self.sessions.plan_session_rekey_tick(
+            now_ms,
+            rekey_after_secs,
+            rekey_after_messages,
+            drain_ms,
+            dampening_ms,
+            FSP_CUTOVER_DELAY_MS,
+        );
 
         // Execute cutover for initiator side
-        for node_addr in sessions_to_cutover {
-            if let Some(entry) = self.sessions.get_mut(&node_addr)
-                && entry.cutover_to_new_session(now_ms)
+        for node_addr in plan.cutover {
+            if self
+                .sessions
+                .cutover_due_session_rekey(&node_addr, now_ms, FSP_CUTOVER_DELAY_MS)
             {
                 debug!(
                     peer = %self.peer_display_name(&node_addr),
@@ -530,9 +580,11 @@ impl Node {
         }
 
         // Execute drain completion
-        for node_addr in sessions_to_drain {
-            if let Some(entry) = self.sessions.get_mut(&node_addr) {
-                entry.complete_drain();
+        for node_addr in plan.drain {
+            if self
+                .sessions
+                .complete_due_session_rekey_drain(&node_addr, now_ms, drain_ms)
+            {
                 trace!(
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, previous session erased"
@@ -541,7 +593,7 @@ impl Node {
         }
 
         // Initiate new rekeys
-        for node_addr in sessions_to_rekey {
+        for node_addr in plan.initiate {
             let _ = self.initiate_session_rekey(&node_addr).await;
         }
     }
@@ -682,6 +734,188 @@ mod tests {
         );
         entry.mark_established(now_ms);
         entry
+    }
+
+    fn arm_completed_initiator_rekey(
+        entry: &mut SessionEntry,
+        local: &Identity,
+        peer: &Identity,
+        completed_ms: u64,
+    ) {
+        entry.set_rekey_state(
+            NoiseHandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full()),
+            true,
+        );
+        let (pending_session, _) = make_xk_session_pair(local, peer);
+        entry.set_pending_session(pending_session);
+        entry.set_rekey_completed_ms(completed_ms);
+    }
+
+    #[test]
+    fn session_registry_owns_rekey_tick_selection() {
+        let local = Identity::generate();
+        let cutover_peer = Identity::generate();
+        let early_cutover_peer = Identity::generate();
+        let drain_peer = Identity::generate();
+        let drain_and_rekey_peer = Identity::generate();
+        let rekey_peer = Identity::generate();
+        let under_age_peer = Identity::generate();
+        let dampened_peer = Identity::generate();
+        let msg3_peer = Identity::generate();
+
+        let now_ms = 20_000_000;
+        let rekey_after_secs = 10_000;
+        let drain_ms = DRAIN_WINDOW_SECS * 1000;
+        let dampening_ms = REKEY_DAMPENING_SECS * 1000;
+
+        let mut cutover = established_entry(&local, &cutover_peer, 1_000);
+        arm_completed_initiator_rekey(&mut cutover, &local, &cutover_peer, now_ms - 2_500);
+
+        let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
+        arm_completed_initiator_rekey(
+            &mut early_cutover,
+            &local,
+            &early_cutover_peer,
+            now_ms - 1_000,
+        );
+
+        let mut drain = established_entry(&local, &drain_peer, now_ms - 11_000);
+        arm_completed_initiator_rekey(&mut drain, &local, &drain_peer, now_ms - 11_000);
+        assert!(drain.cutover_to_new_session(now_ms - 11_000));
+
+        let mut drain_and_rekey = established_entry(&local, &drain_and_rekey_peer, 1_000);
+        arm_completed_initiator_rekey(&mut drain_and_rekey, &local, &drain_and_rekey_peer, 1_000);
+        assert!(drain_and_rekey.cutover_to_new_session(1_000));
+
+        let rekey = established_entry(&local, &rekey_peer, 1_000);
+        let under_age = established_entry(&local, &under_age_peer, now_ms - 1_000);
+
+        let mut dampened = established_entry(&local, &dampened_peer, 1_000);
+        dampened.record_peer_rekey(now_ms - 1_000);
+
+        let mut msg3 = established_entry(&local, &msg3_peer, 1_000);
+        msg3.set_rekey_msg3_payload(vec![0x90], now_ms);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*cutover_peer.node_addr(), cutover);
+        sessions.insert(*early_cutover_peer.node_addr(), early_cutover);
+        sessions.insert(*drain_peer.node_addr(), drain);
+        sessions.insert(*drain_and_rekey_peer.node_addr(), drain_and_rekey);
+        sessions.insert(*rekey_peer.node_addr(), rekey);
+        sessions.insert(*under_age_peer.node_addr(), under_age);
+        sessions.insert(*dampened_peer.node_addr(), dampened);
+        sessions.insert(*msg3_peer.node_addr(), msg3);
+
+        let mut plan = sessions.plan_session_rekey_tick(
+            now_ms,
+            rekey_after_secs,
+            u64::MAX,
+            drain_ms,
+            dampening_ms,
+            FSP_CUTOVER_DELAY_MS,
+        );
+        plan.cutover.sort();
+        plan.drain.sort();
+        plan.initiate.sort();
+
+        let mut expected_cutover = vec![*cutover_peer.node_addr()];
+        expected_cutover.sort();
+        assert_eq!(plan.cutover, expected_cutover);
+
+        let mut expected_drain = vec![*drain_peer.node_addr(), *drain_and_rekey_peer.node_addr()];
+        expected_drain.sort();
+        assert_eq!(plan.drain, expected_drain);
+
+        let mut expected_initiate =
+            vec![*drain_and_rekey_peer.node_addr(), *rekey_peer.node_addr()];
+        expected_initiate.sort();
+        assert_eq!(plan.initiate, expected_initiate);
+    }
+
+    #[test]
+    fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
+        let local = Identity::generate();
+        let cutover_peer = Identity::generate();
+        let early_cutover_peer = Identity::generate();
+        let drain_peer = Identity::generate();
+        let early_drain_peer = Identity::generate();
+
+        let now_ms = 20_000;
+        let drain_ms = DRAIN_WINDOW_SECS * 1000;
+
+        let mut cutover = established_entry(&local, &cutover_peer, 1_000);
+        arm_completed_initiator_rekey(&mut cutover, &local, &cutover_peer, now_ms - 2_500);
+
+        let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
+        arm_completed_initiator_rekey(
+            &mut early_cutover,
+            &local,
+            &early_cutover_peer,
+            now_ms - 1_000,
+        );
+
+        let mut drain = established_entry(&local, &drain_peer, 1_000);
+        arm_completed_initiator_rekey(&mut drain, &local, &drain_peer, 1_000);
+        assert!(drain.cutover_to_new_session(1_000));
+
+        let mut early_drain = established_entry(&local, &early_drain_peer, now_ms - 1_000);
+        arm_completed_initiator_rekey(&mut early_drain, &local, &early_drain_peer, now_ms - 1_000);
+        assert!(early_drain.cutover_to_new_session(now_ms - 1_000));
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*cutover_peer.node_addr(), cutover);
+        sessions.insert(*early_cutover_peer.node_addr(), early_cutover);
+        sessions.insert(*drain_peer.node_addr(), drain);
+        sessions.insert(*early_drain_peer.node_addr(), early_drain);
+
+        assert!(sessions.cutover_due_session_rekey(
+            cutover_peer.node_addr(),
+            now_ms,
+            FSP_CUTOVER_DELAY_MS
+        ));
+        let cutover = sessions
+            .get(cutover_peer.node_addr())
+            .expect("cutover session should remain");
+        assert!(cutover.pending_new_session().is_none());
+        assert!(cutover.is_draining());
+        assert_eq!(cutover.rekey_completed_ms(), 0);
+
+        assert!(!sessions.cutover_due_session_rekey(
+            early_cutover_peer.node_addr(),
+            now_ms,
+            FSP_CUTOVER_DELAY_MS
+        ));
+        assert!(
+            sessions
+                .get(early_cutover_peer.node_addr())
+                .expect("early cutover session should remain")
+                .pending_new_session()
+                .is_some()
+        );
+
+        assert!(sessions.complete_due_session_rekey_drain(
+            drain_peer.node_addr(),
+            now_ms,
+            drain_ms
+        ));
+        assert!(
+            !sessions
+                .get(drain_peer.node_addr())
+                .expect("drained session should remain")
+                .is_draining()
+        );
+
+        assert!(!sessions.complete_due_session_rekey_drain(
+            early_drain_peer.node_addr(),
+            now_ms,
+            drain_ms
+        ));
+        assert!(
+            sessions
+                .get(early_drain_peer.node_addr())
+                .expect("early drain session should remain")
+                .is_draining()
+        );
     }
 
     #[test]
