@@ -579,7 +579,7 @@ impl Node {
         let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
             ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
         self.process_authentic_fmp_plaintext(
-            &fallback.source_node_addr,
+            fallback.source_peer.node_addr(),
             fallback.transport_id,
             &fallback.remote_addr,
             fallback.timestamp_ms,
@@ -594,7 +594,7 @@ impl Node {
 
     async fn process_decrypt_failure_report(&mut self, report: DecryptFailureReport) {
         debug!(
-            peer = %self.peer_display_name(&report.source_node_addr),
+            peer = %self.peer_display_name(report.source_peer.node_addr()),
             counter = report.fmp_counter,
             replay_highest = report.fmp_replay_highest,
             "Worker FMP AEAD decryption failed"

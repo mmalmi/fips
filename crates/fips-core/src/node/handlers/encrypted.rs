@@ -201,7 +201,6 @@ impl Node {
                 packet.transport_id,
                 packet.remote_addr,
                 packet.timestamp_ms,
-                node_addr,
                 header.counter,
                 header.flags,
                 header.header_bytes,
@@ -574,7 +573,8 @@ impl Node {
         &mut self,
         report: &DecryptFailureReport,
     ) {
-        let Some(peer) = self.peers.get(&report.source_node_addr) else {
+        let source_node_addr = report.source_peer.node_addr();
+        let Some(peer) = self.peers.get(source_node_addr) else {
             return;
         };
         let session_age = peer.session_established_at().elapsed();
@@ -585,7 +585,7 @@ impl Node {
         };
         if session_age.as_secs() < grace_secs {
             trace!(
-                peer = %self.peer_display_name(&report.source_node_addr),
+                peer = %self.peer_display_name(source_node_addr),
                 counter = report.fmp_counter,
                 replay_highest = report.fmp_replay_highest,
                 session_age_ms = session_age.as_millis(),
@@ -595,6 +595,6 @@ impl Node {
             return;
         }
 
-        self.handle_decrypt_failure(&report.source_node_addr).await;
+        self.handle_decrypt_failure(source_node_addr).await;
     }
 }

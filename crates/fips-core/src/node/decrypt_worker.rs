@@ -41,8 +41,8 @@
 // rather than gate them individually.
 #![cfg_attr(not(unix), allow(dead_code))]
 
+use crate::PeerIdentity;
 use crate::transport::{TransportAddr, TransportId};
-use crate::{NodeAddr, PeerIdentity};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
@@ -250,11 +250,6 @@ pub(crate) struct DecryptJob {
     pub _transport_id: TransportId,
     pub _remote_addr: TransportAddr,
     pub timestamp_ms: u64,
-    /// Source NodeAddr (looked up via active peer registry session-index
-    /// dispatch on rx_loop).
-    /// Needed to attach to the bounced `DecryptFallback` so rx_loop
-    /// can dispatch its legacy link-message handler.
-    pub source_node_addr: NodeAddr,
     /// Counter from the FMP outer header. Used both as nonce input
     /// and to update the replay window.
     pub fmp_counter: u64,
@@ -269,11 +264,10 @@ pub(crate) struct DecryptJob {
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
     pub fmp_ciphertext_offset: usize,
 
-    /// Anything that's NOT bulk EndpointData gets bounced back to the
-    /// rx_loop via this channel along with its now-decrypted plaintext.
-    /// The rx_loop drains this in a select! arm and runs the legacy
-    /// dispatch (handshakes, MMP reports, routing errors, IPv6-shim →
-    /// TUN). Keeps the slow paths working unchanged.
+    /// Every authenticated link message is bounced back to the rx_loop via
+    /// this channel along with its now-decrypted FMP plaintext. The rx_loop
+    /// drains this in a select! arm and remains the sole FSP/session-dispatch
+    /// owner until a future shard/runtime owns both layers.
     pub fallback_tx: DecryptWorkerFallbackSender,
 }
 
@@ -285,7 +279,6 @@ impl DecryptJob {
         transport_id: TransportId,
         remote_addr: TransportAddr,
         timestamp_ms: u64,
-        source_node_addr: NodeAddr,
         fmp_counter: u64,
         fmp_flags: u8,
         fmp_header: [u8; 16],
@@ -300,7 +293,6 @@ impl DecryptJob {
             _transport_id: transport_id,
             _remote_addr: remote_addr,
             timestamp_ms,
-            source_node_addr,
             fmp_counter,
             fmp_flags,
             fmp_header,
@@ -314,12 +306,13 @@ impl DecryptJob {
     }
 }
 
-/// Result of a successful FMP decrypt + replay accept, when the
-/// worker has decided this packet isn't on the EndpointData fast
-/// path and is bouncing it back to rx_loop for the legacy slow path.
+/// Result of a successful FMP decrypt + replay accept. The worker currently
+/// bounces every authenticated link message back to rx_loop for FSP/session
+/// dispatch, but the event carries the authenticated source peer so a future
+/// shard/runtime can use the same typed handoff for direct endpoint delivery.
 #[allow(dead_code)] // fmp_counter / fmp_flags retained for future debug paths
 pub(crate) struct DecryptFallback {
-    pub source_node_addr: NodeAddr,
+    pub source_peer: PeerIdentity,
     /// Transport this packet arrived on — used by rx_loop's bounce
     /// arm to call `peer.set_current_addr()` so address rotation +
     /// MMP link-dead tracking continue to see updates for packets
@@ -366,7 +359,7 @@ pub(crate) struct DecryptFallback {
 impl DecryptFallback {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        source_node_addr: NodeAddr,
+        source_peer: PeerIdentity,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         timestamp_ms: u64,
@@ -379,7 +372,7 @@ impl DecryptFallback {
     ) -> Self {
         let lane = decrypt_worker_packet_lane(packet_len);
         Self {
-            source_node_addr,
+            source_peer,
             transport_id,
             remote_addr,
             timestamp_ms,
@@ -403,7 +396,7 @@ impl DecryptFallback {
 /// decisions stay in one place instead of being silently dropped inside
 /// the worker thread.
 pub(crate) struct DecryptFailureReport {
-    pub source_node_addr: NodeAddr,
+    pub source_peer: PeerIdentity,
     pub fmp_counter: u64,
     pub fmp_replay_highest: u64,
 }
@@ -839,7 +832,6 @@ impl DecryptWorkerShard {
             _transport_id: transport_id,
             _remote_addr: remote_addr,
             timestamp_ms,
-            source_node_addr,
             fmp_counter,
             fmp_flags,
             fmp_header,
@@ -852,27 +844,18 @@ impl DecryptWorkerShard {
         let packet_len = packet_data.len();
 
         // Look up the shard-owned session state. If absent (session not
-        // yet registered, or unregistered mid-flight), bounce the raw
-        // packet to rx_loop so it can run its legacy decrypt + populate
-        // the session via RegisterSession on success.
+        // yet registered, or unregistered mid-flight), drop. The caller only
+        // marks a session worker-owned after registration is accepted, so an
+        // absent session here is stale in-flight work, not a fallback path.
         let state = match self.sessions.get_mut(&session_key) {
             Some(s) => s,
             None => {
-                // The legacy rx_loop already has the ciphertext bytes
-                // (worker owns `packet_data` here), but it can re-do the
-                // decrypt from scratch since this is the first-packet
-                // path. Bounce by sending the **encrypted** FMP frame
-                // back wrapped in a fallback — rx_loop's
-                // `dispatch_link_message` won't recognise it though, so
-                // we just drop instead. This is a transient state on a
-                // brand-new session; subsequent packets land after
-                // registration.
                 let _ = fallback_tx; // explicitly ignore — drop path
-                let _ = source_node_addr;
                 let _ = packet_data;
                 return Ok(());
             }
         };
+        let source_peer = state.source_peer;
 
         // === Phase 1: FMP decrypt ===
         let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
@@ -892,7 +875,7 @@ impl DecryptWorkerShard {
             Err(FmpOpenError::Aead { fmp_replay_highest }) => {
                 let _ =
                     fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
-                        source_node_addr,
+                        source_peer,
                         fmp_counter,
                         fmp_replay_highest,
                     }));
@@ -960,7 +943,7 @@ impl DecryptWorkerShard {
         // per-packet allocation; rx_loop slices into `packet_data`.
         let _ = link_msg; // sanity-check borrow before sending buffer onward
         let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback::new(
-            source_node_addr,
+            source_peer,
             transport_id,
             remote_addr,
             timestamp_ms,
@@ -1122,7 +1105,6 @@ mod tests {
             session_key.transport_id,
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             1_000,
-            crate::NodeAddr::from_bytes([0u8; 16]),
             1,
             0,
             [0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE],
@@ -1141,7 +1123,7 @@ mod tests {
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
         DecryptWorkerEvent::Plaintext(DecryptFallback::new(
-            crate::NodeAddr::from_bytes([1u8; 16]),
+            test_source_peer(),
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             1_000,
@@ -1156,7 +1138,7 @@ mod tests {
 
     fn dummy_failure_event() -> DecryptWorkerEvent {
         DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
-            source_node_addr: crate::NodeAddr::from_bytes([2u8; 16]),
+            source_peer: test_source_peer(),
             fmp_counter: 2,
             fmp_replay_highest: 1,
         })
@@ -1219,7 +1201,6 @@ mod tests {
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             1_000,
-            crate::NodeAddr::from_bytes([0u8; 16]),
             fmp_counter,
             fmp_flags,
             header,
@@ -1890,13 +1871,14 @@ mod tests {
         // Owning state held by the worker for this session.
         let session_key = test_session_key(1, 99);
         let mut shard = DecryptWorkerShard::new();
+        let source_peer = test_source_peer();
         shard.register_session(
             0,
             session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
-                source_peer: test_source_peer(),
+                source_peer,
             },
         );
 
@@ -1908,7 +1890,6 @@ mod tests {
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             1_000,
-            crate::NodeAddr::from_bytes([0u8; 16]),
             counter,
             flags_byte,
             header,
@@ -1923,6 +1904,10 @@ mod tests {
             DecryptWorkerEvent::Plaintext(fallback) => fallback,
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
         };
+        assert_eq!(
+            fallback.source_peer, source_peer,
+            "plaintext fallback must carry the worker-registered source peer"
+        );
         assert_eq!(
             fallback.fmp_flags, flags_byte,
             "fmp_flags must round-trip from DecryptJob to DecryptFallback"
@@ -1954,25 +1939,24 @@ mod tests {
 
         let session_key = test_session_key(1, 77);
         let mut shard = DecryptWorkerShard::new();
+        let source_peer = test_source_peer();
         shard.register_session(
             0,
             session_key,
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
-                source_peer: test_source_peer(),
+                source_peer,
             },
         );
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        let source_node_addr = crate::NodeAddr::from_bytes([9u8; 16]);
         let job = DecryptJob::new(
             wire,
             session_key,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             1_000,
-            source_node_addr,
             counter,
             0,
             header,
@@ -1985,7 +1969,7 @@ mod tests {
         let event = fallback_rx.priority.try_recv().expect("failure delivered");
         match event {
             DecryptWorkerEvent::DecryptFailure(report) => {
-                assert_eq!(report.source_node_addr, source_node_addr);
+                assert_eq!(report.source_peer, source_peer);
                 assert_eq!(report.fmp_counter, counter);
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),

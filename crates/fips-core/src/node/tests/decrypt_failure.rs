@@ -187,7 +187,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
 
     for counter in 1..=THRESHOLD + 5 {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
         })
@@ -227,7 +227,7 @@ async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
         })
@@ -263,7 +263,7 @@ async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
         })
@@ -295,7 +295,7 @@ async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
         })
