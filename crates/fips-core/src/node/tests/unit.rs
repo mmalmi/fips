@@ -8617,6 +8617,70 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
 }
 
 #[test]
+fn queue_active_fallback_direct_retries_skips_non_reconnect_transit_peer() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: false,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).expect("node");
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    node.queue_active_fallback_direct_retries(&bootstrap);
+
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "transit peers with auto_reconnect=false must not enter the fast active fallback retry loop"
+    );
+}
+
+#[tokio::test]
+async fn process_pending_retries_drops_non_reconnect_active_direct_refresh_state() {
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: false,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).expect("node");
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "stale fast retry state for a non-reconnect active transit peer should be dropped instead of refiring every tick"
+    );
+}
+
+#[test]
 fn stale_udp_nostr_peer_without_static_addresses_keeps_direct_retry() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {

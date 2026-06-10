@@ -3878,6 +3878,10 @@ impl Node {
         peer_node_addr: &NodeAddr,
         peer_config: &PeerConfig,
     ) -> bool {
+        if !peer_config.auto_reconnect {
+            return false;
+        }
+
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };

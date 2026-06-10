@@ -1,5 +1,30 @@
 # FIPS Experiments
 
+## 2026-06-10 - Active fallback retry honors auto-reconnect policy
+
+- Observation: an nvpn/FIPS operator report described incoming TCP clients on
+  a loaded shared test mesh retrying once per second after the server hit its
+  maximum inbound TCP connection cap. That cadence is abnormal for polite FIPS
+  behavior and matches a retry entry that remains due across 1 second node
+  maintenance ticks.
+- Root cause: the active-fallback direct refresh path ignored
+  `PeerConfig.auto_reconnect`. A transit-only peer configured with
+  `auto_reconnect = false` could still be queued as an active direct refresh;
+  after a failed attempt, the quick-reprobe rescheduler refused to advance it,
+  leaving a stale due retry entry that could fire again on the next tick.
+- Fix: `active_peer_should_keep_direct_retry` now returns false for peers whose
+  config disables `auto_reconnect`. Fast active direct refresh remains available
+  for roster/opt-in peers, while transit-only/bootstrap peers fall back to
+  bounded normal connection behavior.
+- Regression tests: added coverage that active fallback retry seeding skips
+  non-reconnect transit peers and that stale due direct-refresh state for such
+  peers is dropped instead of refiring.
+- Verification: `cargo fmt --check`, `git diff --check`,
+  `cargo test -p fips-core non_reconnect -- --nocapture`, and
+  `cargo test -p fips-core active_fallback -- --nocapture` passed locally.
+- Limit: no live shared-mesh TCP cap reproduction or long-running public mesh
+  soak was run for this narrow policy fix.
+
 ## 2026-05-14 - Restart stale pending sessions after discovery
 
 - Observation: mini and win11-dev could exchange lookup/discovery traffic, and
