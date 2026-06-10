@@ -648,6 +648,10 @@ const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
+const DEFAULT_WORKER_BATCH_SIZE: usize = 48;
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
 pub(crate) const DEFAULT_SEND_WEIGHT: u8 = 1;
 pub(crate) const EXPLICIT_PEER_SEND_WEIGHT: u8 = 2;
 #[cfg(not(target_os = "macos"))]
@@ -681,6 +685,25 @@ fn parse_worker_channel_cap(raw: Option<&str>, default: usize) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(default)
         .clamp(1, 32768)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn worker_batch_size() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        let raw = std::env::var("FIPS_WORKER_BATCH").ok();
+        parse_worker_batch_size(raw.as_deref(), DEFAULT_WORKER_BATCH_SIZE)
+    })
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+        // Linux UDP_GSO submission in this module is capped at 64 iovecs.
+        // Keep the worker drain cap aligned so a same-target group never asks
+        // the GSO path to submit a prefix while accounting the whole group.
+        .clamp(1, 64)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2123,8 +2146,7 @@ enum SealPacketError {
 fn run_worker(idx: usize, rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
-    const BATCH_SIZE: usize = 32;
-    let mut shard = EncryptWorkerShard::new(idx, BATCH_SIZE);
+    let mut shard = EncryptWorkerShard::new(idx, worker_batch_size());
 
     while shard.drain_and_flush_once(|batch, max| rx.recv_batch(batch, max), flush_batch_sync) {}
     trace!(worker = idx, "FMP encrypt worker thread exiting");
@@ -3182,6 +3204,18 @@ mod unix_tests {
         assert_eq!(
             encrypt_worker_lane_for_endpoint_data(true),
             EncryptWorkerLane::Bulk
+        );
+    }
+
+    #[test]
+    fn worker_batch_size_parse_stays_within_sender_accounting_limit() {
+        assert_eq!(parse_worker_batch_size(Some("0"), 32), 1);
+        assert_eq!(parse_worker_batch_size(Some("999"), 32), 64);
+        assert_eq!(parse_worker_batch_size(Some("17"), 32), 17);
+        assert_eq!(
+            parse_worker_batch_size(Some("not-a-number"), 31),
+            31,
+            "invalid env values should keep the supplied platform default"
         );
     }
 
