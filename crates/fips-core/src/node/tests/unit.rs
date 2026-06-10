@@ -2169,20 +2169,19 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 fn peer_runtime_receive_rejects_short_authenticated_fmp_plaintext() {
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
-    let peer_addr = *peer_identity.node_addr();
     let remote_addr = TransportAddr::from_string("short-authenticated-fmp");
 
-    let result = PeerRuntimeReceive::from_authenticated_fmp_plaintext(
-        &peer_addr,
-        TransportId::new(1),
-        &remote_addr,
-        1_000,
-        32,
-        1,
-        false,
-        false,
-        &[1, 2, 3],
-    );
+    let result =
+        PeerRuntimeReceive::from_authenticated_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            peer_identity,
+            TransportId::new(1),
+            &remote_addr,
+            1_000,
+            32,
+            1,
+            0,
+            &[1, 2, 3],
+        ));
 
     assert!(matches!(
         result,
@@ -2220,21 +2219,22 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     registry.insert_with_current_session_index(peer_addr, active_peer);
 
     let fmp_plaintext = [0xd2, 0x04, 0x00, 0x00, 0xaa, 0xbb, 0xcc];
-    let receive = PeerRuntimeReceive::from_authenticated_fmp_plaintext(
-        &peer_addr,
-        new_transport_id,
-        &new_addr,
-        2_000,
-        128,
-        7,
-        true,
-        false,
-        &fmp_plaintext,
-    )
-    .expect("valid authenticated FMP plaintext should build a receive runtime");
+    let receive =
+        PeerRuntimeReceive::from_authenticated_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            peer_identity,
+            new_transport_id,
+            &new_addr,
+            2_000,
+            128,
+            7,
+            FLAG_CE,
+            &fmp_plaintext,
+        ))
+        .expect("valid authenticated FMP plaintext should build a receive runtime");
 
     let dispatch = receive.record_bookkeeping(&mut registry, std::time::Instant::now(), true);
 
+    assert_eq!(dispatch.source_peer(), peer_identity);
     assert_eq!(dispatch.node_addr(), &peer_addr);
     assert!(dispatch.ce_flag());
     assert_eq!(dispatch.link_message(), &[0xaa, 0xbb, 0xcc]);
@@ -7024,17 +7024,16 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     assert!(active.can_send());
     node.peers.insert(peer_node_addr, active);
 
-    node.process_authentic_fmp_plaintext(
-        &peer_node_addr,
+    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+        peer_identity,
         transport_id,
         &public_addr,
         2_000,
         64,
         1,
-        false,
-        false,
+        0,
         &[0, 0, 0, 0],
-    )
+    ))
     .await;
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
@@ -7050,17 +7049,16 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     );
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
-    node.process_authentic_fmp_plaintext(
-        &peer_node_addr,
+    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+        peer_identity,
         transport_id,
         &public_addr,
         3_100,
         64,
         2,
-        false,
-        false,
+        0,
         &[0, 0, 0, 0],
-    )
+    ))
     .await;
 
     let active = node.get_peer(&peer_node_addr).expect("peer");
@@ -7076,17 +7074,16 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     );
 
     node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
-    node.process_authentic_fmp_plaintext(
-        &peer_node_addr,
+    node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+        peer_identity,
         transport_id,
         &public_addr,
         3_200,
         64,
         3,
-        false,
-        false,
+        0,
         &[0, 0, 0, 0],
-    )
+    ))
     .await;
 
     let active = node.get_peer(&peer_node_addr).expect("peer");

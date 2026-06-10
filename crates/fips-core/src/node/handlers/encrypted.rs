@@ -14,10 +14,9 @@
 //! liveness, link stats, path rotation, and MMP receive metrics in
 //! one lifecycle owner.
 
-use crate::node::Node;
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
-use crate::node::{PeerRuntimeReceive, PeerRuntimeReceiveError};
+use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
 use crate::noise::NoiseError;
 use crate::transport::ReceivedPacket;
 use std::time::Instant;
@@ -133,19 +132,21 @@ impl Node {
                     self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
                     self.register_decrypt_worker_session(&node_addr);
                 }
-                let ce_flag = header.flags & crate::node::wire::FLAG_CE != 0;
-                let sp_flag = header.flags & crate::node::wire::FLAG_SP != 0;
-                self.process_authentic_fmp_plaintext(
-                    &node_addr,
+                let Some(source_peer) = self.peers.get(&node_addr).map(|peer| *peer.identity())
+                else {
+                    self.deregister_session_index(key);
+                    return;
+                };
+                self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+                    source_peer,
                     packet.transport_id,
                     &packet.remote_addr,
                     packet.timestamp_ms,
                     packet.data.len(),
                     header.counter,
-                    ce_flag,
-                    sp_flag,
+                    header.flags,
                     &plaintext,
-                )
+                ))
                 .await;
                 return;
             }
@@ -222,8 +223,6 @@ impl Node {
         let ciphertext_offset = header.ciphertext_offset();
         let counter = header.counter;
         let header_bytes = header.header_bytes;
-        let ce_flag = header.flags & crate::node::wire::FLAG_CE != 0;
-        let sp_flag = header.flags & crate::node::wire::FLAG_SP != 0;
         let packet_len = packet.data.len();
         let packet_timestamp_ms = packet.timestamp_ms;
         let packet_transport_id = packet.transport_id;
@@ -234,6 +233,7 @@ impl Node {
             self.deregister_session_index(key);
             return;
         };
+        let source_peer = *peer.identity();
         let Some(session) = peer.noise_session_mut() else {
             warn!(
                 peer = %self.peer_display_name(&node_addr),
@@ -263,17 +263,16 @@ impl Node {
         // is cheap (test-mode path; not the hot bench path).
         let fmp_plaintext: Vec<u8> =
             packet_data[ciphertext_offset..ciphertext_offset + plaintext_len].to_vec();
-        self.process_authentic_fmp_plaintext(
-            &node_addr,
+        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            source_peer,
             packet_transport_id,
             &packet_remote_addr,
             packet_timestamp_ms,
             packet_len,
             counter,
-            ce_flag,
-            sp_flag,
+            header.flags,
             &fmp_plaintext,
-        )
+        ))
         .await;
     }
 
@@ -292,40 +291,24 @@ impl Node {
     /// `fmp_plaintext` is the post-FMP-decrypt buffer with the
     /// 4-byte inner timestamp still at the front (i.e. the same
     /// layout the legacy `strip_inner_header` consumed).
-    #[allow(clippy::too_many_arguments)] // packet facts arrive from both worker and test-mode callers.
     pub(in crate::node) async fn process_authentic_fmp_plaintext(
         &mut self,
-        node_addr: &crate::NodeAddr,
-        transport_id: crate::transport::TransportId,
-        remote_addr: &crate::transport::TransportAddr,
-        packet_timestamp_ms: u64,
-        packet_len: usize,
-        fmp_counter: u64,
-        ce_flag: bool,
-        sp_flag: bool,
-        fmp_plaintext: &[u8],
+        receive: AuthenticatedFmpPlaintext<'_>,
     ) {
-        let runtime_receive = match PeerRuntimeReceive::from_authenticated_fmp_plaintext(
-            node_addr,
+        let source_node_addr = *receive.source_node_addr();
+        let transport_id = receive.transport_id();
+        let packet_timestamp_ms = receive.packet_timestamp_ms();
+        let now = Instant::now();
+        let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
+            &source_node_addr,
             transport_id,
-            remote_addr,
+            receive.remote_addr(),
             packet_timestamp_ms,
-            packet_len,
-            fmp_counter,
-            ce_flag,
-            sp_flag,
-            fmp_plaintext,
-        ) {
+        );
+        let runtime_receive = match PeerRuntimeReceive::from_authenticated_fmp_plaintext(receive) {
             Ok(receive) => receive,
             Err(PeerRuntimeReceiveError::MissingInnerTimestamp) => return,
         };
-        let now = Instant::now();
-        let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
-            node_addr,
-            transport_id,
-            remote_addr,
-            packet_timestamp_ms,
-        );
         let dispatch =
             runtime_receive.record_bookkeeping(&mut self.peers, now, path_bookkeeping_allowed);
         // Address rotation invalidates the per-peer connected UDP

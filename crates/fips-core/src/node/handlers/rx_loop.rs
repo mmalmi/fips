@@ -7,10 +7,9 @@ use crate::node::decrypt_worker::{
     DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
 };
 use crate::node::wire::{
-    COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
-    PHASE_MSG2,
+    COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
-use crate::node::{Node, NodeEndpointCommand, NodeError};
+use crate::node::{AuthenticatedFmpPlaintext, Node, NodeEndpointCommand, NodeError};
 use crate::transport::ReceivedPacket;
 use crate::transport::TransportHandle;
 use crate::upper::tun::TunOutboundRx;
@@ -557,11 +556,9 @@ impl Node {
     }
 
     /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt
-    /// processor. Reconstructs `ce_flag` / `sp_flag` from the FMP header
-    /// flag byte the worker captured into `DecryptFallback::fmp_flags`
-    /// (without this both ECN CE propagation and spin-bit RTT
-    /// observation are dropped on the worker path) and slices the
-    /// plaintext out of the original wire buffer with zero allocation.
+    /// processor as one authenticated receive envelope. The envelope keeps the
+    /// worker-captured source peer, FMP flags, packet facts, and plaintext slice
+    /// together so peer bookkeeping and link dispatch cannot drift apart.
     async fn process_decrypt_worker_event(&mut self, event: DecryptWorkerEvent) {
         match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
@@ -574,21 +571,18 @@ impl Node {
     }
 
     async fn process_decrypt_fallback(&mut self, fallback: DecryptFallback) {
-        let ce_flag = fallback.fmp_flags & FLAG_CE != 0;
-        let sp_flag = fallback.fmp_flags & FLAG_SP != 0;
         let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
             ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
-        self.process_authentic_fmp_plaintext(
-            fallback.source_peer.node_addr(),
+        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            fallback.source_peer,
             fallback.transport_id,
             &fallback.remote_addr,
             fallback.timestamp_ms,
             fallback.packet_len,
             fallback.fmp_counter,
-            ce_flag,
-            sp_flag,
+            fallback.fmp_flags,
             plaintext,
-        )
+        ))
         .await;
     }
 

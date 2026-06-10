@@ -2076,8 +2076,19 @@ pub(in crate::node) enum PeerRuntimeReceiveError {
     MissingInnerTimestamp,
 }
 
+pub(in crate::node) struct AuthenticatedFmpPlaintext<'a> {
+    source_peer: PeerIdentity,
+    transport_id: TransportId,
+    remote_addr: &'a TransportAddr,
+    packet_timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    plaintext: &'a [u8],
+}
+
 pub(in crate::node) struct PeerRuntimeReceive<'a> {
-    node_addr: &'a NodeAddr,
+    source_peer: PeerIdentity,
     transport_id: TransportId,
     remote_addr: &'a TransportAddr,
     packet_timestamp_ms: u64,
@@ -2090,7 +2101,7 @@ pub(in crate::node) struct PeerRuntimeReceive<'a> {
 }
 
 pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
-    node_addr: &'a NodeAddr,
+    source_peer: PeerIdentity,
     ce_flag: bool,
     link_message: &'a [u8],
     bookkeeping: Option<AuthenticatedFmpReceiveBookkeeping>,
@@ -2159,43 +2170,82 @@ pub(in crate::node) struct PeerRuntimeRouteDecision {
     direct_path_blocks_direct_payload: bool,
 }
 
-impl<'a> PeerRuntimeReceive<'a> {
-    const INNER_TIMESTAMP_LEN: usize = 4;
-
+impl<'a> AuthenticatedFmpPlaintext<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::node) fn from_authenticated_fmp_plaintext(
-        node_addr: &'a NodeAddr,
+    pub(in crate::node) fn new(
+        source_peer: PeerIdentity,
         transport_id: TransportId,
         remote_addr: &'a TransportAddr,
         packet_timestamp_ms: u64,
         packet_len: usize,
         fmp_counter: u64,
-        ce_flag: bool,
-        sp_flag: bool,
-        fmp_plaintext: &'a [u8],
+        fmp_flags: u8,
+        plaintext: &'a [u8],
+    ) -> Self {
+        Self {
+            source_peer,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter,
+            fmp_flags,
+            plaintext,
+        }
+    }
+
+    pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    pub(in crate::node) fn transport_id(&self) -> TransportId {
+        self.transport_id
+    }
+
+    pub(in crate::node) fn remote_addr(&self) -> &'a TransportAddr {
+        self.remote_addr
+    }
+
+    pub(in crate::node) fn packet_timestamp_ms(&self) -> u64 {
+        self.packet_timestamp_ms
+    }
+}
+
+impl<'a> PeerRuntimeReceive<'a> {
+    const INNER_TIMESTAMP_LEN: usize = 4;
+
+    pub(in crate::node) fn from_authenticated_fmp_plaintext(
+        receive: AuthenticatedFmpPlaintext<'a>,
     ) -> Result<Self, PeerRuntimeReceiveError> {
-        if fmp_plaintext.len() < Self::INNER_TIMESTAMP_LEN {
+        let AuthenticatedFmpPlaintext {
+            source_peer,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms,
+            packet_len,
+            fmp_counter,
+            fmp_flags,
+            plaintext,
+        } = receive;
+
+        if plaintext.len() < Self::INNER_TIMESTAMP_LEN {
             return Err(PeerRuntimeReceiveError::MissingInnerTimestamp);
         }
 
-        let inner_timestamp_ms = u32::from_le_bytes([
-            fmp_plaintext[0],
-            fmp_plaintext[1],
-            fmp_plaintext[2],
-            fmp_plaintext[3],
-        ]);
-        let link_message = &fmp_plaintext[Self::INNER_TIMESTAMP_LEN..];
+        let inner_timestamp_ms =
+            u32::from_le_bytes([plaintext[0], plaintext[1], plaintext[2], plaintext[3]]);
+        let link_message = &plaintext[Self::INNER_TIMESTAMP_LEN..];
 
         Ok(Self {
-            node_addr,
+            source_peer,
             transport_id,
             remote_addr,
             packet_timestamp_ms,
             packet_len,
             fmp_counter,
             inner_timestamp_ms,
-            ce_flag,
-            sp_flag,
+            ce_flag: fmp_flags & FLAG_CE != 0,
+            sp_flag: fmp_flags & FLAG_SP != 0,
             link_message,
         })
     }
@@ -2206,8 +2256,9 @@ impl<'a> PeerRuntimeReceive<'a> {
         now: std::time::Instant,
         path_bookkeeping_allowed: bool,
     ) -> PeerRuntimeReceiveDispatch<'a> {
+        let node_addr = self.source_peer.node_addr();
         let bookkeeping = peers.record_authenticated_fmp_receive(
-            self.node_addr,
+            node_addr,
             self.transport_id,
             self.remote_addr,
             self.packet_timestamp_ms,
@@ -2221,7 +2272,7 @@ impl<'a> PeerRuntimeReceive<'a> {
         );
 
         PeerRuntimeReceiveDispatch {
-            node_addr: self.node_addr,
+            source_peer: self.source_peer,
             ce_flag: self.ce_flag,
             link_message: self.link_message,
             bookkeeping,
@@ -2230,8 +2281,13 @@ impl<'a> PeerRuntimeReceive<'a> {
 }
 
 impl<'a> PeerRuntimeReceiveDispatch<'a> {
-    pub(in crate::node) fn node_addr(&self) -> &'a NodeAddr {
-        self.node_addr
+    #[cfg(test)]
+    pub(in crate::node) fn source_peer(&self) -> PeerIdentity {
+        self.source_peer
+    }
+
+    pub(in crate::node) fn node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
     }
 
     pub(in crate::node) fn ce_flag(&self) -> bool {
