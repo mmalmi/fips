@@ -117,6 +117,15 @@ impl EndpointReceiveState {
             .map(EndpointQueuedMessage::into_public)
     }
 
+    fn drain_pending_into(&mut self, out: &mut Vec<FipsEndpointMessage>, limit: usize) {
+        while out.len() < limit {
+            let Some(message) = self.pop_pending() else {
+                break;
+            };
+            out.push(message);
+        }
+    }
+
     fn push_event_into(
         &mut self,
         event: NodeEndpointEvent,
@@ -789,12 +798,7 @@ impl FipsEndpoint {
         messages.clear();
 
         let mut state = self.inbound_endpoint_rx.lock().await;
-        while messages.len() < max {
-            let Some(message) = state.pop_pending() else {
-                break;
-            };
-            messages.push(message);
-        }
+        state.drain_pending_into(messages, max);
 
         while messages.len() < max {
             let event = if messages.is_empty() {
@@ -882,6 +886,39 @@ impl FipsEndpoint {
         }
         let event = state.rx.blocking_recv()?;
         state.first_from_event(event)
+    }
+
+    /// Synchronous blocking batch receive into a caller-owned buffer.
+    ///
+    /// This is the blocking-thread counterpart to [`Self::recv_batch_into`]:
+    /// it parks the calling **OS thread** for the first message, then drains
+    /// ready follow-ons while holding the endpoint receiver lock. MUST NOT be
+    /// called from inside a tokio runtime; use this only from a dedicated
+    /// blocking thread.
+    pub fn blocking_recv_batch_into(
+        &self,
+        messages: &mut Vec<FipsEndpointMessage>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        messages.clear();
+
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        state.drain_pending_into(messages, max);
+
+        while messages.len() < max {
+            let event = if messages.is_empty() {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, messages, max);
+        }
+
+        Some(messages.len())
     }
 
     /// Non-blocking receive — returns the next ready endpoint message
@@ -1526,6 +1563,103 @@ mod tests {
             let second = endpoint.blocking_recv().expect("pending message");
             assert_eq!(first.data, b"first");
             assert_eq!(second.data, b"second");
+            endpoint
+        })
+        .await
+        .expect("blocking receiver should join");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn blocking_recv_batch_into_reuses_caller_buffer_and_respects_limit() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_batch_to_peer(
+                local,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+            )
+            .await
+            .expect("loopback batch send should succeed");
+
+        let (endpoint, capacity) = tokio::task::spawn_blocking(move || {
+            let mut messages = Vec::with_capacity(8);
+            let capacity = messages.capacity();
+            let received = endpoint
+                .blocking_recv_batch_into(&mut messages, 2)
+                .expect("messages should arrive");
+            assert_eq!(received, 2);
+            assert_eq!(messages.capacity(), capacity);
+            assert_eq!(messages[0].data, b"first");
+            assert_eq!(messages[1].data, b"second");
+
+            let received = endpoint
+                .blocking_recv_batch_into(&mut messages, 8)
+                .expect("message should arrive");
+            assert_eq!(received, 1);
+            assert_eq!(messages.capacity(), capacity);
+            assert_eq!(messages[0].data, b"third");
+
+            (endpoint, capacity)
+        })
+        .await
+        .expect("blocking receiver should join");
+        assert_eq!(capacity, 8);
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+
+        endpoint
+            .inbound_endpoint_tx
+            .send(NodeEndpointEvent::DataBatch {
+                messages: vec![
+                    EndpointDataDelivery::new(local, b"first".to_vec()),
+                    EndpointDataDelivery::new(local, b"second".to_vec()),
+                    EndpointDataDelivery::new(local, b"third".to_vec()),
+                ],
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .expect("inject internal batch");
+        endpoint
+            .inbound_endpoint_tx
+            .send(NodeEndpointEvent::Data {
+                source_peer: local,
+                payload: b"fourth".to_vec(),
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .expect("inject follow-on message");
+
+        let endpoint = tokio::task::spawn_blocking(move || {
+            let mut messages = Vec::with_capacity(8);
+            let received = endpoint
+                .blocking_recv_batch_into(&mut messages, 2)
+                .expect("messages should arrive");
+            assert_eq!(received, 2);
+            assert_eq!(messages[0].data, b"first");
+            assert_eq!(messages[1].data, b"second");
+
+            let received = endpoint
+                .blocking_recv_batch_into(&mut messages, 8)
+                .expect("messages should arrive");
+            assert_eq!(received, 2);
+            assert_eq!(messages[0].data, b"third");
+            assert_eq!(messages[1].data, b"fourth");
+
             endpoint
         })
         .await
