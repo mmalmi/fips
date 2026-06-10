@@ -97,6 +97,24 @@ enum SessionReceiverReportSkip {
     MmpDisabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionPathMtuChange {
+    old_mtu: u16,
+    new_mtu: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionPathMtuApplyResult {
+    Changed(SessionPathMtuChange),
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionPathMtuApplySkip {
+    UnknownSession,
+    MmpDisabled,
+}
+
 /// Authenticated established-FSP message ready for local dispatch.
 ///
 /// This is the post-open unit the rx loop dispatches today, and the future
@@ -2257,6 +2275,47 @@ impl crate::node::SessionRegistry {
             ),
         })
     }
+
+    fn apply_session_path_mtu_signal(
+        &mut self,
+        dest_addr: &NodeAddr,
+        path_mtu: u16,
+        now: std::time::Instant,
+    ) -> Result<SessionPathMtuApplyResult, SessionPathMtuApplySkip> {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return Err(SessionPathMtuApplySkip::UnknownSession);
+        };
+        let Some(mmp) = entry.mmp_mut() else {
+            return Err(SessionPathMtuApplySkip::MmpDisabled);
+        };
+
+        let old_mtu = mmp.path_mtu.current_mtu();
+        if !mmp.path_mtu.apply_notification(path_mtu, now) {
+            return Ok(SessionPathMtuApplyResult::Unchanged);
+        }
+
+        Ok(SessionPathMtuApplyResult::Changed(SessionPathMtuChange {
+            old_mtu,
+            new_mtu: mmp.path_mtu.current_mtu(),
+        }))
+    }
+
+    fn route_error_can_send_coords_warmup(&self, dest_addr: &NodeAddr) -> bool {
+        self.get(dest_addr)
+            .is_some_and(|entry| entry.is_established())
+    }
+
+    fn reset_route_error_coords_warmup(
+        &mut self,
+        dest_addr: &NodeAddr,
+        warmup_packets: u8,
+    ) -> bool {
+        let Some(entry) = self.get_mut(dest_addr) else {
+            return false;
+        };
+        entry.set_coords_warmup_remaining(warmup_packets);
+        true
+    }
 }
 
 impl Node {
@@ -3271,31 +3330,24 @@ impl Node {
         };
 
         let peer_name = self.peer_display_name(src_addr);
-        let entry = match self.sessions.get_mut(src_addr) {
-            Some(e) => e,
-            None => {
+        let change = match self.sessions.apply_session_path_mtu_signal(
+            src_addr,
+            notif.path_mtu,
+            std::time::Instant::now(),
+        ) {
+            Ok(SessionPathMtuApplyResult::Changed(change)) => change,
+            Ok(SessionPathMtuApplyResult::Unchanged) => return,
+            Err(SessionPathMtuApplySkip::UnknownSession) => {
                 debug!(src = %peer_name, "PathMtuNotification for unknown session");
                 return;
             }
+            Err(SessionPathMtuApplySkip::MmpDisabled) => return,
         };
-
-        let Some(mmp) = entry.mmp_mut() else {
-            return;
-        };
-
-        let old_mtu = mmp.path_mtu.current_mtu();
-        let now = std::time::Instant::now();
-        let changed = mmp.path_mtu.apply_notification(notif.path_mtu, now);
-        let new_mtu = mmp.path_mtu.current_mtu();
-
-        if !changed {
-            return;
-        }
 
         debug!(
             src = %peer_name,
-            old_mtu,
-            new_mtu,
+            old_mtu = change.old_mtu,
+            new_mtu = change.new_mtu,
             "Path MTU changed via notification"
         );
 
@@ -3308,21 +3360,21 @@ impl Node {
         let fips_addr = crate::FipsAddress::from_node_addr(src_addr);
         match self.path_mtu_lookup.write() {
             Ok(mut map) => match map.get(&fips_addr).copied() {
-                Some(existing) if existing <= new_mtu => {
+                Some(existing) if existing <= change.new_mtu => {
                     debug!(
                         dest = %peer_name,
                         fips_addr = %fips_addr,
-                        new_mtu,
+                        new_mtu = change.new_mtu,
                         existing,
                         "PathMtuNotification: keeping tighter existing path_mtu_lookup value"
                     );
                 }
                 other => {
-                    map.insert(fips_addr, new_mtu);
+                    map.insert(fips_addr, change.new_mtu);
                     debug!(
                         dest = %peer_name,
                         fips_addr = %fips_addr,
-                        new_mtu,
+                        new_mtu = change.new_mtu,
                         prior = ?other,
                         map_len = map.len(),
                         "PathMtuNotification: tightened path_mtu_lookup"
@@ -3333,7 +3385,7 @@ impl Node {
                 warn!(
                     dest = %peer_name,
                     fips_addr = %fips_addr,
-                    new_mtu,
+                    new_mtu = change.new_mtu,
                     error = %e,
                     "path_mtu_lookup write lock poisoned; PathMtuNotification not reflected"
                 );
@@ -3369,8 +3421,9 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if let Some(entry) = self.sessions.get(&msg.dest_addr)
-                && entry.is_established()
+            if self
+                .sessions
+                .route_error_can_send_coords_warmup(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -3392,9 +3445,11 @@ impl Node {
 
         // Reset coords warmup counter so the next N packets also include
         // COORDS_PRESENT, re-warming transit caches along the path.
-        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr) {
-            let n = self.config.node.session.coords_warmup_packets;
-            entry.set_coords_warmup_remaining(n);
+        let n = self.config.node.session.coords_warmup_packets;
+        if self
+            .sessions
+            .reset_route_error_coords_warmup(&msg.dest_addr, n)
+        {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -3430,8 +3485,9 @@ impl Node {
             .coords_response_rate_limiter
             .should_send(&msg.dest_addr)
         {
-            if let Some(entry) = self.sessions.get(&msg.dest_addr)
-                && entry.is_established()
+            if self
+                .sessions
+                .route_error_can_send_coords_warmup(&msg.dest_addr)
                 && let Err(e) = self.send_coords_warmup(&msg.dest_addr).await
             {
                 debug!(dest = %msg.dest_addr, error = %e,
@@ -3458,9 +3514,11 @@ impl Node {
 
         // Reset coords warmup counter so the next N packets include
         // COORDS_PRESENT, re-warming transit caches along the new path.
-        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr) {
-            let n = self.config.node.session.coords_warmup_packets;
-            entry.set_coords_warmup_remaining(n);
+        let n = self.config.node.session.coords_warmup_packets;
+        if self
+            .sessions
+            .reset_route_error_coords_warmup(&msg.dest_addr, n)
+        {
             debug!(
                 dest = %msg.dest_addr,
                 warmup_packets = n,
@@ -3494,21 +3552,23 @@ impl Node {
         );
 
         // Apply to PathMtuState: immediate decrease via apply_notification()
-        if let Some(entry) = self.sessions.get_mut(&msg.dest_addr)
-            && let Some(mmp) = entry.mmp_mut()
-        {
-            let old_mtu = mmp.path_mtu.current_mtu();
-            let now = std::time::Instant::now();
-            if mmp.path_mtu.apply_notification(msg.mtu, now) {
-                let new_mtu = mmp.path_mtu.current_mtu();
+        match self.sessions.apply_session_path_mtu_signal(
+            &msg.dest_addr,
+            msg.mtu,
+            std::time::Instant::now(),
+        ) {
+            Ok(SessionPathMtuApplyResult::Changed(change)) => {
                 info!(
                     dest = %peer_name,
-                    old_mtu,
-                    new_mtu,
+                    old_mtu = change.old_mtu,
+                    new_mtu = change.new_mtu,
                     reporter = %msg.reporter,
                     "Path MTU decreased via reactive MtuExceeded signal"
                 );
             }
+            Ok(SessionPathMtuApplyResult::Unchanged)
+            | Err(SessionPathMtuApplySkip::UnknownSession)
+            | Err(SessionPathMtuApplySkip::MmpDisabled) => {}
         }
 
         // Mirror the bottleneck into the FipsAddress-keyed lookup used by
@@ -5230,6 +5290,18 @@ mod tests {
         )
     }
 
+    fn initiating_entry(local: &Identity, peer: &Identity) -> SessionEntry {
+        let mut handshake = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
+        handshake.set_local_epoch([1u8; 8]);
+        SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Initiating(handshake),
+            1000,
+            true,
+        )
+    }
+
     fn receiver_report(
         highest_counter: u64,
         cumulative_packets_recv: u64,
@@ -5349,6 +5421,116 @@ mod tests {
                 std::time::Instant::now()
             ),
             Err(SessionReceiverReportSkip::MmpDisabled)
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_session_path_mtu_signal_application() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut entry = established_entry(&local, &peer);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let now = std::time::Instant::now();
+        assert_eq!(
+            sessions.apply_session_path_mtu_signal(&peer_addr, 1280, now),
+            Ok(SessionPathMtuApplyResult::Changed(SessionPathMtuChange {
+                old_mtu: u16::MAX,
+                new_mtu: 1280
+            }))
+        );
+        assert_eq!(
+            sessions
+                .get(&peer_addr)
+                .and_then(|entry| entry.mmp())
+                .expect("session mmp")
+                .path_mtu
+                .current_mtu(),
+            1280
+        );
+
+        assert_eq!(
+            sessions.apply_session_path_mtu_signal(
+                &peer_addr,
+                1400,
+                now + std::time::Duration::from_secs(1)
+            ),
+            Ok(SessionPathMtuApplyResult::Unchanged),
+            "a single larger PMTU signal must not loosen the source-side MTU"
+        );
+    }
+
+    #[test]
+    fn session_registry_session_path_mtu_signal_reports_skip_reasons() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut sessions = crate::node::SessionRegistry::default();
+        let now = std::time::Instant::now();
+
+        assert_eq!(
+            sessions.apply_session_path_mtu_signal(&peer_addr, 1280, now),
+            Err(SessionPathMtuApplySkip::UnknownSession)
+        );
+
+        assert!(
+            sessions
+                .insert(peer_addr, established_entry(&local, &peer))
+                .is_none()
+        );
+        assert_eq!(
+            sessions.apply_session_path_mtu_signal(&peer_addr, 1280, now),
+            Err(SessionPathMtuApplySkip::MmpDisabled)
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_route_error_coords_warmup_policy() {
+        let local = Identity::generate();
+        let established_peer = Identity::generate();
+        let initiating_peer = Identity::generate();
+        let established_addr = *established_peer.node_addr();
+        let initiating_addr = *initiating_peer.node_addr();
+        let missing_addr = node_addr(0x99);
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(
+            sessions
+                .insert(
+                    established_addr,
+                    established_entry(&local, &established_peer)
+                )
+                .is_none()
+        );
+        assert!(
+            sessions
+                .insert(initiating_addr, initiating_entry(&local, &initiating_peer))
+                .is_none()
+        );
+
+        assert!(sessions.route_error_can_send_coords_warmup(&established_addr));
+        assert!(!sessions.route_error_can_send_coords_warmup(&initiating_addr));
+        assert!(!sessions.route_error_can_send_coords_warmup(&missing_addr));
+
+        assert!(sessions.reset_route_error_coords_warmup(&established_addr, 3));
+        assert!(sessions.reset_route_error_coords_warmup(&initiating_addr, 2));
+        assert!(!sessions.reset_route_error_coords_warmup(&missing_addr, 1));
+        assert_eq!(
+            sessions
+                .get(&established_addr)
+                .expect("established session")
+                .coords_warmup_remaining(),
+            3
+        );
+        assert_eq!(
+            sessions
+                .get(&initiating_addr)
+                .expect("initiating session")
+                .coords_warmup_remaining(),
+            2
         );
     }
 
