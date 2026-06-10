@@ -28,6 +28,78 @@ const FMP_CUTOVER_DELAY_MS: u64 = 250;
 /// XK msg3 to reach the responder before K-bit-flipped data arrives.
 const FSP_CUTOVER_DELAY_MS: u64 = 2000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionRekeyMsg3Resend {
+    dest_addr: NodeAddr,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExhaustedSessionRekeyMsg3 {
+    dest_addr: NodeAddr,
+}
+
+impl crate::node::SessionRegistry {
+    fn exhaust_due_rekey_msg3_resend_budgets(
+        &mut self,
+        now_ms: u64,
+        max_resends: u32,
+    ) -> Vec<ExhaustedSessionRekeyMsg3> {
+        let exhausted: Vec<NodeAddr> = self
+            .iter()
+            .filter(|(_, entry)| {
+                entry.rekey_msg3_payload().is_some()
+                    && entry.rekey_msg3_next_resend_ms() > 0
+                    && now_ms >= entry.rekey_msg3_next_resend_ms()
+                    && entry.rekey_msg3_resend_count() >= max_resends
+            })
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        exhausted
+            .into_iter()
+            .filter_map(|dest_addr| {
+                let entry = self.get_mut(&dest_addr)?;
+                entry.abandon_rekey();
+                Some(ExhaustedSessionRekeyMsg3 { dest_addr })
+            })
+            .collect()
+    }
+
+    fn due_rekey_msg3_resends(&self, now_ms: u64, max_resends: u32) -> Vec<SessionRekeyMsg3Resend> {
+        self.iter()
+            .filter(|(_, entry)| {
+                entry.rekey_msg3_payload().is_some()
+                    && entry.rekey_msg3_next_resend_ms() > 0
+                    && now_ms >= entry.rekey_msg3_next_resend_ms()
+                    && entry.rekey_msg3_resend_count() < max_resends
+            })
+            .filter_map(|(dest_addr, entry)| {
+                entry
+                    .rekey_msg3_payload()
+                    .map(|payload| SessionRekeyMsg3Resend {
+                        dest_addr: *dest_addr,
+                        payload: payload.to_vec(),
+                    })
+            })
+            .collect()
+    }
+
+    fn record_scheduled_rekey_msg3_resend(
+        &mut self,
+        dest_addr: &NodeAddr,
+        now_ms: u64,
+        interval_ms: u64,
+        backoff: f64,
+    ) -> Option<u32> {
+        let entry = self.get_mut(dest_addr)?;
+        let count = entry.rekey_msg3_resend_count() + 1;
+        let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
+        entry.record_rekey_msg3_resend(next);
+        Some(count)
+    }
+}
+
 impl Node {
     /// Periodic rekey check. Called from the tick loop.
     ///
@@ -334,42 +406,24 @@ impl Node {
         let ttl = self.config.node.session.default_ttl;
         let my_addr = *self.node_addr();
 
-        let mut to_resend: Vec<(NodeAddr, Vec<u8>)> = Vec::new();
-        let mut to_abandon: Vec<NodeAddr> = Vec::new();
-
-        for (node_addr, entry) in &self.sessions {
-            let payload = match entry.rekey_msg3_payload() {
-                Some(payload) => payload,
-                None => continue,
-            };
-            if entry.rekey_msg3_next_resend_ms() == 0 || now_ms < entry.rekey_msg3_next_resend_ms()
-            {
-                continue;
-            }
-            if entry.rekey_msg3_resend_count() >= max_resends {
-                to_abandon.push(*node_addr);
-                continue;
-            }
-            to_resend.push((*node_addr, payload.to_vec()));
-        }
-
-        for node_addr in to_abandon {
-            if let Some(entry) = self.sessions.get_mut(&node_addr) {
-                entry.abandon_rekey();
-            }
+        for exhausted in self
+            .sessions
+            .exhaust_due_rekey_msg3_resend_budgets(now_ms, max_resends)
+        {
             warn!(
-                peer = %self.peer_display_name(&node_addr),
+                peer = %self.peer_display_name(&exhausted.dest_addr),
                 "FSP rekey aborted: msg3 unconfirmed after max retransmissions"
             );
         }
 
-        for (node_addr, payload) in to_resend {
-            let mut datagram = SessionDatagram::new(my_addr, node_addr, payload).with_ttl(ttl);
+        for candidate in self.sessions.due_rekey_msg3_resends(now_ms, max_resends) {
+            let mut datagram =
+                SessionDatagram::new(my_addr, candidate.dest_addr, candidate.payload).with_ttl(ttl);
             let sent = match self.send_session_datagram(&mut datagram).await {
                 Ok(_) => true,
                 Err(error) => {
                     debug!(
-                        peer = %self.peer_display_name(&node_addr),
+                        peer = %self.peer_display_name(&candidate.dest_addr),
                         error = %error,
                         "FSP rekey msg3 retransmission failed"
                     );
@@ -377,12 +431,16 @@ impl Node {
                 }
             };
 
-            if sent && let Some(entry) = self.sessions.get_mut(&node_addr) {
-                let count = entry.rekey_msg3_resend_count() + 1;
-                let next = now_ms + (interval_ms as f64 * backoff.powi(count as i32)) as u64;
-                entry.record_rekey_msg3_resend(next);
+            if sent
+                && let Some(count) = self.sessions.record_scheduled_rekey_msg3_resend(
+                    &candidate.dest_addr,
+                    now_ms,
+                    interval_ms,
+                    backoff,
+                )
+            {
                 trace!(
-                    peer = %self.peer_display_name(&node_addr),
+                    peer = %self.peer_display_name(&candidate.dest_addr),
                     resend = count,
                     "Resent FSP rekey msg3"
                 );
@@ -574,5 +632,179 @@ impl Node {
             "FSP rekey initiated, sent SessionSetup"
         );
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::session::{EndToEndState, SessionEntry};
+    use crate::noise::{HandshakeState as NoiseHandshakeState, NoiseSession};
+    use crate::{Identity, NodeAddr};
+
+    fn node_addr(byte: u8) -> NodeAddr {
+        let mut bytes = [0u8; 16];
+        bytes[0] = byte;
+        NodeAddr::from_bytes(bytes)
+    }
+
+    fn make_xk_session_pair(
+        initiator: &Identity,
+        responder: &Identity,
+    ) -> (NoiseSession, NoiseSession) {
+        let mut initiator_hs =
+            NoiseHandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
+        let mut responder_hs = NoiseHandshakeState::new_xk_responder(responder.keypair());
+        initiator_hs.set_local_epoch([1u8; 8]);
+        responder_hs.set_local_epoch([2u8; 8]);
+
+        let msg1 = initiator_hs.write_xk_message_1().unwrap();
+        responder_hs.read_xk_message_1(&msg1).unwrap();
+        let msg2 = responder_hs.write_xk_message_2().unwrap();
+        initiator_hs.read_xk_message_2(&msg2).unwrap();
+        let msg3 = initiator_hs.write_xk_message_3().unwrap();
+        responder_hs.read_xk_message_3(&msg3).unwrap();
+
+        (
+            initiator_hs.into_session().unwrap(),
+            responder_hs.into_session().unwrap(),
+        )
+    }
+
+    fn established_entry(local: &Identity, peer: &Identity, now_ms: u64) -> SessionEntry {
+        let (session, _) = make_xk_session_pair(local, peer);
+        let mut entry = SessionEntry::new(
+            *peer.node_addr(),
+            peer.pubkey_full(),
+            EndToEndState::Established(session),
+            now_ms,
+            true,
+        );
+        entry.mark_established(now_ms);
+        entry
+    }
+
+    #[test]
+    fn session_registry_owns_rekey_msg3_resend_selection_and_accounting() {
+        let local = Identity::generate();
+        let due_peer = Identity::generate();
+        let future_peer = Identity::generate();
+        let no_payload_peer = Identity::generate();
+
+        let mut due = established_entry(&local, &due_peer, 1_000);
+        due.set_rekey_msg3_payload(vec![0x30, 0x31], 1_500);
+
+        let mut future = established_entry(&local, &future_peer, 1_000);
+        future.set_rekey_msg3_payload(vec![0x40], 2_500);
+
+        let no_payload = established_entry(&local, &no_payload_peer, 1_000);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*due_peer.node_addr(), due);
+        sessions.insert(*future_peer.node_addr(), future);
+        sessions.insert(*no_payload_peer.node_addr(), no_payload);
+
+        assert_eq!(
+            sessions.due_rekey_msg3_resends(1_499, 3),
+            Vec::<SessionRekeyMsg3Resend>::new()
+        );
+        assert_eq!(
+            sessions.due_rekey_msg3_resends(1_500, 3),
+            vec![SessionRekeyMsg3Resend {
+                dest_addr: *due_peer.node_addr(),
+                payload: vec![0x30, 0x31],
+            }]
+        );
+
+        let count = sessions
+            .record_scheduled_rekey_msg3_resend(due_peer.node_addr(), 1_500, 1_000, 2.0)
+            .expect("due rekey msg3 session should exist");
+        assert_eq!(count, 1);
+        let due = sessions
+            .get(due_peer.node_addr())
+            .expect("due session should remain");
+        assert_eq!(due.rekey_msg3_resend_count(), 1);
+        assert_eq!(due.rekey_msg3_next_resend_ms(), 3_500);
+        assert_eq!(due.rekey_msg3_payload(), Some(&[0x30, 0x31][..]));
+
+        assert!(
+            sessions
+                .record_scheduled_rekey_msg3_resend(&node_addr(0x77), 1_500, 1_000, 2.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn session_registry_owns_exhausted_rekey_msg3_cleanup() {
+        let local = Identity::generate();
+        let exhausted_peer = Identity::generate();
+        let future_exhausted_peer = Identity::generate();
+        let under_budget_peer = Identity::generate();
+        let pending_peer = Identity::generate();
+
+        let mut exhausted = established_entry(&local, &exhausted_peer, 1_000);
+        exhausted.set_rekey_completed_ms(1_000);
+        exhausted.set_rekey_msg3_payload(vec![0x50], 1_500);
+        exhausted.record_rekey_msg3_resend(1_500);
+
+        let mut future_exhausted = established_entry(&local, &future_exhausted_peer, 1_000);
+        future_exhausted.set_rekey_msg3_payload(vec![0x60], 2_500);
+        future_exhausted.record_rekey_msg3_resend(2_500);
+
+        let mut under_budget = established_entry(&local, &under_budget_peer, 1_000);
+        under_budget.set_rekey_msg3_payload(vec![0x70], 1_500);
+
+        let (pending_session, _) = make_xk_session_pair(&local, &pending_peer);
+        let mut pending = established_entry(&local, &pending_peer, 1_000);
+        pending.set_pending_session(pending_session);
+        pending.set_rekey_completed_ms(1_000);
+        pending.set_rekey_msg3_payload(vec![0x80], 1_500);
+        pending.record_rekey_msg3_resend(1_500);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        sessions.insert(*exhausted_peer.node_addr(), exhausted);
+        sessions.insert(*future_exhausted_peer.node_addr(), future_exhausted);
+        sessions.insert(*under_budget_peer.node_addr(), under_budget);
+        sessions.insert(*pending_peer.node_addr(), pending);
+
+        let mut exhausted = sessions.exhaust_due_rekey_msg3_resend_budgets(1_500, 1);
+        exhausted.sort_by_key(|item| item.dest_addr);
+        let mut expected = vec![
+            ExhaustedSessionRekeyMsg3 {
+                dest_addr: *exhausted_peer.node_addr(),
+            },
+            ExhaustedSessionRekeyMsg3 {
+                dest_addr: *pending_peer.node_addr(),
+            },
+        ];
+        expected.sort_by_key(|item| item.dest_addr);
+        assert_eq!(exhausted, expected);
+
+        let exhausted = sessions
+            .get(exhausted_peer.node_addr())
+            .expect("exhausted session should remain");
+        assert!(exhausted.rekey_msg3_payload().is_none());
+        assert_eq!(exhausted.rekey_msg3_resend_count(), 0);
+        assert_eq!(exhausted.rekey_msg3_next_resend_ms(), 0);
+        assert_eq!(exhausted.rekey_completed_ms(), 0);
+
+        let pending = sessions
+            .get(pending_peer.node_addr())
+            .expect("pending session should remain");
+        assert!(pending.pending_new_session().is_none());
+        assert!(pending.rekey_msg3_payload().is_none());
+        assert_eq!(pending.rekey_completed_ms(), 0);
+
+        let future_exhausted = sessions
+            .get(future_exhausted_peer.node_addr())
+            .expect("future-exhausted session should remain");
+        assert_eq!(future_exhausted.rekey_msg3_payload(), Some(&[0x60][..]));
+        assert_eq!(future_exhausted.rekey_msg3_resend_count(), 1);
+
+        let under_budget = sessions
+            .get(under_budget_peer.node_addr())
+            .expect("under-budget session should remain");
+        assert_eq!(under_budget.rekey_msg3_payload(), Some(&[0x70][..]));
+        assert_eq!(under_budget.rekey_msg3_resend_count(), 0);
     }
 }
