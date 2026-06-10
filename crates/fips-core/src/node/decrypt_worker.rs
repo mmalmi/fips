@@ -14,10 +14,10 @@
 //!
 //! Worker messages travel through two bounded per-worker lanes:
 //!
-//! - **`RegisterSession`** — sent once on the first successful legacy
-//!   decrypt for a session. Hands the worker an owned snapshot of the
-//!   recv cipher + replay window for the FMP layer. It uses the
-//!   priority lane.
+//! - **`RegisterSession`** — sent when an FMP session is promoted or
+//!   rekeyed. Hands the worker an owned snapshot of the recv cipher,
+//!   replay window, and authenticated source peer for the FMP layer.
+//!   It uses the priority lane.
 //! - **`Job`** — per-packet FMP decrypt + bounce. Large packets use
 //!   the bulk lane; small control-shaped packets use the priority lane
 //!   so heartbeats/MMP/rekey-sized traffic is not trapped behind a
@@ -29,11 +29,11 @@
 //!   releases the owned cipher + replay state. It uses the priority
 //!   lane.
 //!
-//! Only the **bulk-data** path (FMP DataPacket → FSP EndpointData) is
-//! handled by the worker. Anything else (handshakes, MMP reports,
-//! routing errors, IPv6-shim packets going to TUN) is bounced back to
-//! the rx_loop via a fallback channel so the existing slow paths
-//! continue to work.
+//! The worker currently owns FMP open + replay only. Every authentic
+//! link-layer message, including endpoint data, is bounced back to the
+//! rx_loop via a fallback channel so the existing FSP/session dispatch
+//! paths remain the only FSP owners until a peer/session runtime can
+//! safely own both FMP and FSP receive state.
 
 // **Unix only at the call sites.** On Windows nothing constructs an
 // `OwnedSessionState` or spawns the pool (see `lifecycle.rs`), so
@@ -41,8 +41,8 @@
 // rather than gate them individually.
 #![cfg_attr(not(unix), allow(dead_code))]
 
-use crate::NodeAddr;
 use crate::transport::{TransportAddr, TransportId};
+use crate::{NodeAddr, PeerIdentity};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
@@ -184,7 +184,7 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 pub(crate) struct OwnedSessionState {
     pub fmp_cipher: LessSafeKey,
     pub fmp_replay: ReplayWindow,
-    pub source_npub: Option<String>,
+    pub source_peer: PeerIdentity,
 }
 
 #[derive(Debug)]
@@ -592,11 +592,10 @@ impl DecryptWorkerPool {
         }
     }
 
-    /// Hand ownership of a session's recv-side state to its assigned
-    /// worker. Called once per session, from the rx_loop, on the
-    /// first authentic legacy-path decrypt — the worker thereafter is
-    /// the sole authority over the replay window and the cipher
-    /// clones for this session.
+    /// Hand ownership of a session's recv-side FMP state to its assigned
+    /// worker. Called when a session is promoted or rekeyed; the worker
+    /// thereafter is the sole authority over the FMP replay window and
+    /// recv cipher clone for this session.
     ///
     /// Returns `true` iff the registration message was actually
     /// queued. Callers MUST gate any "this session is now worker-
@@ -975,7 +974,7 @@ impl DecryptWorkerShard {
         // Suppress unused-variable warnings for the (now-removed) FSP
         // fast path. The `state` lookup is still needed for the FMP
         // cipher + replay window above.
-        let _ = (link_msg_start, link_msg_end, &state.source_npub);
+        let _ = (link_msg_start, link_msg_end, &state.source_peer);
         Ok(())
     }
 
@@ -1082,14 +1081,32 @@ mod tests {
         )
     }
 
+    fn test_source_peer() -> PeerIdentity {
+        PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full())
+    }
+
     fn test_owned_session_state() -> OwnedSessionState {
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
         OwnedSessionState {
             fmp_cipher: LessSafeKey::new(unbound),
             fmp_replay: ReplayWindow::new(),
-            source_npub: None,
+            source_peer: test_source_peer(),
         }
+    }
+
+    #[test]
+    fn owned_session_state_carries_authenticated_source_peer() {
+        let source_peer = test_source_peer();
+        let key_bytes = [8u8; 32];
+        let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
+        let state = OwnedSessionState {
+            fmp_cipher: LessSafeKey::new(unbound),
+            fmp_replay: ReplayWindow::new(),
+            source_peer,
+        };
+
+        assert_eq!(state.source_peer, source_peer);
     }
 
     fn test_session_key(transport_id: u32, receiver_idx: u32) -> DecryptSessionKey {
@@ -1646,7 +1663,7 @@ mod tests {
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
-                source_npub: None,
+                source_peer: test_source_peer(),
             },
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
@@ -1739,7 +1756,7 @@ mod tests {
         let mut state = OwnedSessionState {
             fmp_cipher: open_cipher,
             fmp_replay: ReplayWindow::new(),
-            source_npub: None,
+            source_peer: test_source_peer(),
         };
 
         let (mut invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
@@ -1879,7 +1896,7 @@ mod tests {
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
-                source_npub: None,
+                source_peer: test_source_peer(),
             },
         );
 
@@ -1943,7 +1960,7 @@ mod tests {
             OwnedSessionState {
                 fmp_cipher: open_cipher,
                 fmp_replay: ReplayWindow::new(),
-                source_npub: None,
+                source_peer: test_source_peer(),
             },
         );
 
