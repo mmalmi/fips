@@ -88,11 +88,15 @@ fn fallback_drain_plan(
     transport_priority_packets: usize,
     decrypt_fallback_bulk_packets: usize,
 ) -> FallbackDrainPlan {
-    if transport_priority_packets == 0
-        && decrypt_fallback_bulk_packets >= FALLBACK_PRESSURE_HIGH_WATER
-    {
+    if decrypt_fallback_bulk_packets < FALLBACK_PRESSURE_HIGH_WATER {
+        return FallbackDrainPlan::normal();
+    }
+
+    if transport_priority_packets == 0 {
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFallbackPressureDrain);
         FallbackDrainPlan::pressured()
     } else {
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFallbackPriorityGated);
         FallbackDrainPlan::normal()
     }
 }

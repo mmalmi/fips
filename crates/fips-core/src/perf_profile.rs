@@ -54,7 +54,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 32;
-const N_EVENTS: usize = 31;
+const N_EVENTS: usize = 33;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -256,6 +256,8 @@ pub enum Event {
     DecryptFallbackBacklogHigh = 28,
     RxLoopSlowMaintenanceTimeout = 29,
     RxLoopSlowMaintenanceSkipped = 30,
+    DecryptFallbackPressureDrain = 31,
+    DecryptFallbackPriorityGated = 32,
 }
 
 impl Event {
@@ -292,6 +294,8 @@ impl Event {
             Event::DecryptFallbackBacklogHigh => "decrypt_fallback_backlog_high",
             Event::RxLoopSlowMaintenanceTimeout => "rx_loop_slow_maintenance_timeout",
             Event::RxLoopSlowMaintenanceSkipped => "rx_loop_slow_maintenance_skipped",
+            Event::DecryptFallbackPressureDrain => "decrypt_fallback_pressure_drain",
+            Event::DecryptFallbackPriorityGated => "decrypt_fallback_priority_gated",
         }
     }
 }
@@ -329,6 +333,8 @@ fn event_from_index(idx: usize) -> Event {
         28 => Event::DecryptFallbackBacklogHigh,
         29 => Event::RxLoopSlowMaintenanceTimeout,
         30 => Event::RxLoopSlowMaintenanceSkipped,
+        31 => Event::DecryptFallbackPressureDrain,
+        32 => Event::DecryptFallbackPriorityGated,
         _ => unreachable!(),
     }
 }
@@ -688,7 +694,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 31);
+        assert_eq!(N_EVENTS, 33);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -701,15 +707,27 @@ mod tests {
             event_from_index(Event::RxLoopSlowMaintenanceSkipped as usize).name(),
             "rx_loop_slow_maintenance_skipped"
         );
+        assert_eq!(
+            event_from_index(Event::DecryptFallbackPressureDrain as usize).name(),
+            "decrypt_fallback_pressure_drain"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptFallbackPriorityGated as usize).name(),
+            "decrypt_fallback_priority_gated"
+        );
     }
 
     #[test]
-    fn rx_loop_maintenance_liveness_events_increment_counters() {
+    fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         let timeout_before = EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed);
         let skipped_before = EVENTS[Event::RxLoopSlowMaintenanceSkipped as usize].load(Relaxed);
+        let pressure_before = EVENTS[Event::DecryptFallbackPressureDrain as usize].load(Relaxed);
+        let gated_before = EVENTS[Event::DecryptFallbackPriorityGated as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
+        record_event_count_sample(Event::DecryptFallbackPressureDrain, 7);
+        record_event_count_sample(Event::DecryptFallbackPriorityGated, 11);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -718,6 +736,14 @@ mod tests {
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceSkipped as usize].load(Relaxed) - skipped_before,
             5
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptFallbackPressureDrain as usize].load(Relaxed) - pressure_before,
+            7
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptFallbackPriorityGated as usize].load(Relaxed) - gated_before,
+            11
         );
     }
 }
