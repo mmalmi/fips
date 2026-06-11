@@ -44,7 +44,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 23;
-const N_EVENTS: usize = 24;
+const N_EVENTS: usize = 25;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -200,6 +200,7 @@ pub enum Event {
     EndpointEventBacklogHigh = 21,
     EndpointCommandBulkDropped = 22,
     TransportChannelBacklogHigh = 23,
+    TransportBulkDropped = 24,
 }
 
 impl Event {
@@ -229,6 +230,7 @@ impl Event {
             Event::EndpointEventBacklogHigh => "endpoint_event_backlog_high",
             Event::EndpointCommandBulkDropped => "endpoint_command_bulk_dropped",
             Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
+            Event::TransportBulkDropped => "transport_bulk_dropped",
         }
     }
 }
@@ -259,6 +261,7 @@ fn event_from_index(idx: usize) -> Event {
         21 => Event::EndpointEventBacklogHigh,
         22 => Event::EndpointCommandBulkDropped,
         23 => Event::TransportChannelBacklogHigh,
+        24 => Event::TransportBulkDropped,
         _ => unreachable!(),
     }
 }

@@ -38,7 +38,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 use tcp::TcpTransport;
 use thiserror::Error;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error::TryRecvError};
+use tokio::sync::mpsc::{
+    Sender, UnboundedReceiver, UnboundedSender,
+    error::{TryRecvError, TrySendError},
+};
 use tor::TorTransport;
 use tor::control::TorMonitoringInfo;
 use udp::UdpTransport;
@@ -140,17 +143,14 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 
 /// Channel sender for received packets.
 ///
-/// Internally this is still unbounded mpsc so per-packet send remains a
-/// wait-free linked-list push instead of a semaphore acquisition + `.await`.
-/// The difference from a single FIFO is the reserved progress lane: small,
-/// control-shaped datagrams go to a priority receiver that the rx loop drains
-/// before bulk. That lets liveness/rekey/MMP-sized packets overtake a bulk
-/// backlog at the earliest queue boundary, before decrypt-worker priority can
-/// help.
+/// The priority lane stays unbounded because control-shaped datagrams must keep
+/// making progress even when bulk is saturated. The bulk lane is bounded by the
+/// configured packet-channel capacity and uses nonblocking `try_send`: overload
+/// sheds bulk explicitly instead of hiding unbounded latency behind the rx loop.
 #[derive(Clone, Debug)]
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
-    bulk: UnboundedSender<PacketQueueItem>,
+    bulk: Sender<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
     track_backlog: bool,
 }
@@ -158,7 +158,7 @@ pub struct PacketTx {
 /// Channel receiver for received packets.
 pub struct PacketRx {
     priority: UnboundedReceiver<PacketQueueItem>,
-    bulk: UnboundedReceiver<PacketQueueItem>,
+    bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
     track_backlog: bool,
     pending_priority: Option<IntoIter<ReceivedPacket>>,
@@ -179,11 +179,43 @@ enum PacketLane {
     Bulk,
 }
 
+#[derive(Clone, Copy)]
+enum PacketQueueTx {
+    Priority,
+    Bulk,
+}
+
+enum PacketSendFailure {
+    Closed(PacketQueueItem),
+    DroppedBulk(usize),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct PacketQueueDequeueCounts {
     total: usize,
     priority: usize,
     bulk: usize,
+}
+
+impl PacketQueueTx {
+    fn try_send(self, owner: &PacketTx, item: PacketQueueItem) -> Result<(), PacketSendFailure> {
+        match self {
+            PacketQueueTx::Priority => owner
+                .priority
+                .send(item)
+                .map_err(|error| PacketSendFailure::Closed(error.0)),
+            PacketQueueTx::Bulk => {
+                let packet_count = item.packet_count();
+                match owner.bulk.try_send(item) {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(_item)) => {
+                        Err(PacketSendFailure::DroppedBulk(packet_count))
+                    }
+                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
+                }
+            }
+        }
+    }
 }
 
 impl PacketQueueItem {
@@ -249,12 +281,12 @@ impl PacketTx {
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
         let tx = if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
-            &self.priority
+            PacketQueueTx::Priority
         } else {
-            &self.bulk
+            PacketQueueTx::Bulk
         };
         self.send_item(tx, PacketQueueItem::One(packet))
-            .map_err(|error| match error.0 {
+            .map_err(|item| match item {
                 PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
                 PacketQueueItem::Batch(_) => {
                     unreachable!("single packet send cannot fail with a batch item")
@@ -274,9 +306,9 @@ impl PacketTx {
             .count();
         if priority_count == 0 || priority_count == packet_count {
             let tx = if priority_count == 0 {
-                &self.bulk
+                PacketQueueTx::Bulk
             } else {
-                &self.priority
+                PacketQueueTx::Priority
             };
             return self.send_packet_items(tx, packets);
         }
@@ -291,14 +323,14 @@ impl PacketTx {
             }
         }
 
-        self.send_packet_items(&self.priority, priority_packets)?;
-        self.send_packet_items(&self.bulk, bulk_packets)?;
+        self.send_packet_items(PacketQueueTx::Priority, priority_packets)?;
+        self.send_packet_items(PacketQueueTx::Bulk, bulk_packets)?;
         Ok(())
     }
 
     fn send_packet_items(
         &self,
-        tx: &UnboundedSender<PacketQueueItem>,
+        tx: PacketQueueTx,
         mut packets: Vec<ReceivedPacket>,
     ) -> Result<(), ()> {
         let item = match packets.len() {
@@ -309,20 +341,16 @@ impl PacketTx {
         self.send_item(tx, item).map_err(|_| ())
     }
 
-    fn send_item(
-        &self,
-        tx: &UnboundedSender<PacketQueueItem>,
-        item: PacketQueueItem,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<PacketQueueItem>> {
-        let count = if self.track_backlog {
+    fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
+        let tracked_count = if self.track_backlog {
             Some(item.packet_count())
         } else {
             None
         };
-        let previous = count.map(|count| self.queued_packets.fetch_add(count, Relaxed));
-        match tx.send(item) {
+        let previous = tracked_count.map(|count| self.queued_packets.fetch_add(count, Relaxed));
+        match tx.try_send(self, item) {
             Ok(()) => {
-                if let (Some(count), Some(previous)) = (count, previous) {
+                if let (Some(count), Some(previous)) = (tracked_count, previous) {
                     let queued = previous.saturating_add(count);
                     if previous < TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
                         && queued >= TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
@@ -334,11 +362,21 @@ impl PacketTx {
                 }
                 Ok(())
             }
-            Err(error) => {
-                if let Some(count) = count {
+            Err(PacketSendFailure::Closed(item)) => {
+                if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
                 }
-                Err(error)
+                Err(item)
+            }
+            Err(PacketSendFailure::DroppedBulk(dropped_count)) => {
+                if let Some(count) = tracked_count {
+                    self.queued_packets.fetch_sub(count, Relaxed);
+                }
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::TransportBulkDropped,
+                    dropped_count as u64,
+                );
+                Ok(())
             }
         }
     }
@@ -470,13 +508,12 @@ fn packet_channel_tracks_backlog() -> bool {
 
 /// Create a packet channel.
 ///
-/// The `buffer` argument is kept for API stability with previous
-/// versions of this module (and so call sites don't have to be
-/// touched) but is ignored — the channel is unbounded. See [`PacketTx`]
-/// for the rationale.
-pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
+/// The capacity applies to bulk channel items. Priority traffic is intentionally
+/// unbounded so small control-shaped packets can still wake the rx loop while a
+/// bulk receiver is saturated.
+pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(buffer.max(1));
     let queued_packets = Arc::new(AtomicUsize::new(0));
     let track_backlog = packet_channel_tracks_backlog();
     (
@@ -2336,6 +2373,93 @@ mod tests {
 
         assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    }
+
+    #[tokio::test]
+    async fn packet_channel_bounded_bulk_drops_without_blocking_priority() {
+        let (tx, mut rx) = packet_channel(1);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ))
+        .expect("first bulk packet should fill bounded bulk lane");
+        assert_eq!(tx.queued_packets(), 1);
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ))
+        .expect("full bulk lane should drop overload without closing sender");
+        assert_eq!(
+            tx.queued_packets(),
+            1,
+            "dropped bulk must roll back channel-owned backlog accounting"
+        );
+        assert_eq!(rx.bulk.len(), 1);
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0x11; 32],
+        ))
+        .expect("priority packet should still enter reserve lane");
+        assert_eq!(tx.queued_packets(), 2);
+
+        assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+        assert_eq!(tx.queued_packets(), 1);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+        assert_eq!(tx.queued_packets(), 0);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn packet_channel_bounded_bulk_batch_drop_counts_as_success() {
+        let (tx, mut rx) = packet_channel(1);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xab; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ])
+        .expect("first bulk batch should fill bounded bulk lane");
+        assert_eq!(tx.queued_packets(), 2);
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 3],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xbc; PRIORITY_PACKET_MAX_LEN + 4],
+            ),
+        ])
+        .expect("full bulk lane should drop batch overload without closing sender");
+        assert_eq!(
+            tx.queued_packets(),
+            2,
+            "dropped bulk batch must roll back every packet it accounted"
+        );
+        assert_eq!(rx.bulk.len(), 1);
+
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+        assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xab);
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]
