@@ -1053,6 +1053,7 @@ async fn test_duplicate_msg2_dropped() {
         data: wire_msg2,
         timestamp_ms: 1000,
         trace_enqueued_at: None,
+        trace_rx_loop_owned_at: None,
     };
 
     // Should silently drop — no pending_outbound for this index

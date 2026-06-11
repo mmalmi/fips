@@ -64,6 +64,11 @@ pub struct ReceivedPacket {
     /// Monotonic timestamp for optional pipeline queue-wait profiling.
     #[doc(hidden)]
     pub trace_enqueued_at: Option<Instant>,
+    /// Monotonic timestamp captured when `PacketRx` takes ownership of a
+    /// channel item. Distinguishes mpsc/channel residence from rx-loop-owned
+    /// batch-tail residence in perf traces.
+    #[doc(hidden)]
+    pub trace_rx_loop_owned_at: Option<Instant>,
 }
 
 impl ReceivedPacket {
@@ -113,6 +118,7 @@ impl ReceivedPacket {
             data,
             timestamp_ms,
             trace_enqueued_at,
+            trace_rx_loop_owned_at: None,
         }
     }
 
@@ -529,9 +535,18 @@ impl PacketRx {
                     Some(current.saturating_sub(packet_count))
                 });
         }
+        let rx_loop_owned_at = crate::perf_profile::stamp();
         match item {
-            PacketQueueItem::One(packet) => Some(packet),
-            PacketQueueItem::Batch(packets) => {
+            PacketQueueItem::One(mut packet) => {
+                packet.trace_rx_loop_owned_at = rx_loop_owned_at;
+                Some(packet)
+            }
+            PacketQueueItem::Batch(mut packets) => {
+                if rx_loop_owned_at.is_some() {
+                    for packet in &mut packets {
+                        packet.trace_rx_loop_owned_at = rx_loop_owned_at;
+                    }
+                }
                 let mut packets = packets.into_iter();
                 let packet = packets.next()?;
                 if packets.len() > 0 {

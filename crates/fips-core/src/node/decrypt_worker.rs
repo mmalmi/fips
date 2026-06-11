@@ -286,6 +286,9 @@ pub(crate) struct DecryptJob {
     /// drains this in a select! arm and remains the sole FSP/session-dispatch
     /// owner until a future shard/runtime owns both layers.
     pub fallback_tx: DecryptWorkerFallbackSender,
+    /// Monotonic timestamp captured immediately before rx_loop queues this job
+    /// to the decrypt worker. Used only when pipeline tracing is on.
+    trace_enqueued_at: Option<Instant>,
 }
 
 impl DecryptJob {
@@ -315,11 +318,36 @@ impl DecryptJob {
             fmp_header,
             fmp_ciphertext_offset,
             fallback_tx,
+            trace_enqueued_at: None,
         }
     }
 
     fn lane(&self) -> DecryptWorkerLane {
         self.lane
+    }
+
+    fn set_trace_enqueued_at(&mut self, queued_at: Option<Instant>) {
+        self.trace_enqueued_at = queued_at;
+    }
+
+    fn record_queue_wait(&self) {
+        let queued_at = self.trace_enqueued_at;
+        if queued_at.is_none() {
+            return;
+        }
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::DecryptWorkerQueueWait,
+            queued_at,
+        );
+        crate::perf_profile::record_since(
+            match self.lane() {
+                DecryptWorkerLane::Priority => {
+                    crate::perf_profile::Stage::DecryptWorkerPriorityQueueWait
+                }
+                DecryptWorkerLane::Bulk => crate::perf_profile::Stage::DecryptWorkerBulkQueueWait,
+            },
+            queued_at,
+        );
     }
 }
 
@@ -609,10 +637,11 @@ impl DecryptWorkerPool {
     /// channel is full (sustained rate overrun); the rx_loop's drain
     /// caps inbound at the same scale upstream so the cliff is
     /// bounded.
-    pub fn dispatch_job(&self, job: DecryptJob) {
+    pub fn dispatch_job(&self, mut job: DecryptJob) {
         if self.senders.is_empty() {
             return;
         }
+        job.set_trace_enqueued_at(crate::perf_profile::stamp());
         let idx = self.worker_idx_for(job.session_key);
         match decrypt_job_lane(&job) {
             DecryptWorkerLane::Priority => self.dispatch_priority_job(idx, job),
@@ -887,6 +916,7 @@ impl DecryptWorkerShard {
         &mut self,
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
             lane: _,
@@ -899,6 +929,7 @@ impl DecryptWorkerShard {
             fmp_header,
             fmp_ciphertext_offset,
             fallback_tx,
+            trace_enqueued_at: _,
         } = job;
         // Capture the wire packet length BEFORE decrypt mutates the
         // buffer — it'll be the same number either way (in-place AEAD

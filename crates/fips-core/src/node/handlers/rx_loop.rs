@@ -638,6 +638,18 @@ impl Node {
             },
             packet.trace_enqueued_at,
         );
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::TransportRxLoopWait,
+            packet.trace_rx_loop_owned_at,
+        );
+        crate::perf_profile::record_since(
+            if packet.is_priority_sized() {
+                crate::perf_profile::Stage::TransportPriorityRxLoopWait
+            } else {
+                crate::perf_profile::Stage::TransportBulkRxLoopWait
+            },
+            packet.trace_rx_loop_owned_at,
+        );
         if is_punch_packet(&packet.data) {
             trace!(
                 transport_id = %packet.transport_id,

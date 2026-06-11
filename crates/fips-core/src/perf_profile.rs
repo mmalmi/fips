@@ -32,8 +32,14 @@
 //!   * `TRANSPORT_CHANNEL_WAIT` — UDP/transport receive loop → packet channel dequeue
 //!   * `TRANSPORT_PRIORITY_CHANNEL_WAIT` — priority-sized transport packets → packet channel dequeue
 //!   * `TRANSPORT_BULK_CHANNEL_WAIT` — bulk-sized transport packets → packet channel dequeue
+//!   * `TRANSPORT_RX_LOOP_WAIT` — packet channel dequeue → rx_loop packet processing
+//!   * `TRANSPORT_PRIORITY_RX_LOOP_WAIT` — priority-sized packet channel dequeue → rx_loop packet processing
+//!   * `TRANSPORT_BULK_RX_LOOP_WAIT` — bulk-sized packet channel dequeue → rx_loop packet processing
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
+//!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
+//!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
+//!   * `DECRYPT_WORKER_BULK_QUEUE_WAIT` — bulk FMP decrypt jobs → decrypt worker
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
 //!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
 //!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
@@ -46,7 +52,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 26;
+const N_STAGES: usize = 32;
 const N_EVENTS: usize = 26;
 const HIST_BUCKETS: usize = 48;
 
@@ -121,6 +127,20 @@ pub enum Stage {
     DecryptFallbackPriorityWait = 24,
     /// Bulk decrypt completion wait, split from `decrypt_fallback_wait`.
     DecryptFallbackBulkWait = 25,
+    /// Time spent after `PacketRx` dequeues a transport channel item until the
+    /// rx loop starts processing an individual packet from that owned item.
+    TransportRxLoopWait = 26,
+    /// Priority-sized rx-loop-owned packet residence.
+    TransportPriorityRxLoopWait = 27,
+    /// Bulk-sized rx-loop-owned packet residence.
+    TransportBulkRxLoopWait = 28,
+    /// Time spent after the rx loop queues an FMP decrypt job until the decrypt
+    /// worker starts handling it.
+    DecryptWorkerQueueWait = 29,
+    /// Priority decrypt-worker input residence.
+    DecryptWorkerPriorityQueueWait = 30,
+    /// Bulk decrypt-worker input residence.
+    DecryptWorkerBulkQueueWait = 31,
 }
 
 impl Stage {
@@ -152,6 +172,12 @@ impl Stage {
             Stage::DecryptFallbackWait => "decrypt_fallback_wait",
             Stage::DecryptFallbackPriorityWait => "decrypt_fallback_priority_wait",
             Stage::DecryptFallbackBulkWait => "decrypt_fallback_bulk_wait",
+            Stage::TransportRxLoopWait => "transport_rx_loop_wait",
+            Stage::TransportPriorityRxLoopWait => "transport_priority_rx_loop_wait",
+            Stage::TransportBulkRxLoopWait => "transport_bulk_rx_loop_wait",
+            Stage::DecryptWorkerQueueWait => "decrypt_worker_queue_wait",
+            Stage::DecryptWorkerPriorityQueueWait => "decrypt_worker_priority_queue_wait",
+            Stage::DecryptWorkerBulkQueueWait => "decrypt_worker_bulk_queue_wait",
         }
     }
 }
@@ -184,6 +210,12 @@ fn stage_from_index(idx: usize) -> Stage {
         23 => Stage::DecryptFallbackWait,
         24 => Stage::DecryptFallbackPriorityWait,
         25 => Stage::DecryptFallbackBulkWait,
+        26 => Stage::TransportRxLoopWait,
+        27 => Stage::TransportPriorityRxLoopWait,
+        28 => Stage::TransportBulkRxLoopWait,
+        29 => Stage::DecryptWorkerQueueWait,
+        30 => Stage::DecryptWorkerPriorityQueueWait,
+        31 => Stage::DecryptWorkerBulkQueueWait,
         _ => unreachable!(),
     }
 }
