@@ -72,7 +72,7 @@ const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
-const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 64;
+const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -1672,6 +1672,32 @@ mod tests {
             "priority queue should be fully drained before bulk"
         );
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_drain_budget_matches_receive_batch_width() {
+        assert_eq!(
+            DECRYPT_WORKER_BULK_BURST_BUDGET, 128,
+            "worker burst should track the reference packet-mover receive batch width"
+        );
+
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
+        let session_key = test_session_key(1, 79);
+        for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
+            bulk_tx
+                .try_send(dummy_bulk_decrypt_job(session_key))
+                .expect("test bulk queue should have room");
+        }
+
+        let mut shard = DecryptWorkerShard::new();
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
+
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "one worker drain call must respect the bounded bulk burst budget"
+        );
     }
 
     #[test]
