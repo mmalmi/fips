@@ -276,19 +276,13 @@ impl PacketQueueItem {
             return;
         }
         let counts = self.dequeue_counts(lane);
-        crate::perf_profile::record_since_count(
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::TransportChannelWait,
-            queued_at,
-            counts.total as u64,
-        );
-        crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::TransportPriorityChannelWait,
-            queued_at,
-            counts.priority as u64,
-        );
-        crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::TransportBulkChannelWait,
             queued_at,
+            counts.total as u64,
+            counts.priority as u64,
             counts.bulk as u64,
         );
     }

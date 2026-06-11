@@ -699,29 +699,26 @@ impl Node {
 
     fn begin_process_packet(&mut self, packet: ReceivedPacket) -> PacketProcessAction {
         let timer = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
-        crate::perf_profile::record_since(
+        let priority_sized = packet.is_priority_sized();
+        let priority_count = u64::from(priority_sized);
+        let bulk_count = u64::from(!priority_sized);
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::TransportQueueWait,
+            crate::perf_profile::Stage::TransportPriorityQueueWait,
+            crate::perf_profile::Stage::TransportBulkQueueWait,
             packet.trace_enqueued_at,
+            1,
+            priority_count,
+            bulk_count,
         );
-        crate::perf_profile::record_since(
-            if packet.is_priority_sized() {
-                crate::perf_profile::Stage::TransportPriorityQueueWait
-            } else {
-                crate::perf_profile::Stage::TransportBulkQueueWait
-            },
-            packet.trace_enqueued_at,
-        );
-        crate::perf_profile::record_since(
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::TransportRxLoopWait,
+            crate::perf_profile::Stage::TransportPriorityRxLoopWait,
+            crate::perf_profile::Stage::TransportBulkRxLoopWait,
             packet.trace_rx_loop_owned_at,
-        );
-        crate::perf_profile::record_since(
-            if packet.is_priority_sized() {
-                crate::perf_profile::Stage::TransportPriorityRxLoopWait
-            } else {
-                crate::perf_profile::Stage::TransportBulkRxLoopWait
-            },
-            packet.trace_rx_loop_owned_at,
+            1,
+            priority_count,
+            bulk_count,
         );
         if is_punch_packet(&packet.data) {
             trace!(

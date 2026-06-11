@@ -426,12 +426,55 @@ pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
     if count == 0 {
         return;
     }
-    let idx = stage as usize;
     let elapsed_ns = elapsed_ns.max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(stage, elapsed_ns, count, bucket);
+}
+
+#[inline]
+fn record_count_sample(stage: Stage, elapsed_ns: u64, count: u64, bucket: usize) {
+    let idx = stage as usize;
     TOTAL_NS[idx].fetch_add(elapsed_ns.saturating_mul(count), Relaxed);
     COUNT[idx].fetch_add(count, Relaxed);
     MAX_NS[idx].fetch_max(elapsed_ns, Relaxed);
-    HIST[(idx * HIST_BUCKETS) + bucket_for_ns(elapsed_ns)].fetch_add(count, Relaxed);
+    HIST[(idx * HIST_BUCKETS) + bucket].fetch_add(count, Relaxed);
+}
+
+/// Record one queue wait into aggregate + priority/bulk split counters.
+///
+/// Queue waits are among the hottest tracing points. Compute elapsed time and
+/// histogram bucket once per observed handoff, then fan the same sample into
+/// aggregate and lane counters.
+#[inline]
+pub(crate) fn record_since_split_count(
+    total_stage: Stage,
+    priority_stage: Stage,
+    bulk_stage: Stage,
+    start: Option<TraceStamp>,
+    total_count: u64,
+    priority_count: u64,
+    bulk_count: u64,
+) {
+    debug_assert_eq!(
+        priority_count.saturating_add(bulk_count),
+        total_count,
+        "queue wait split counts should add up to the aggregate count"
+    );
+    if !enabled() || total_count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(total_stage, elapsed_ns, total_count, bucket);
+    if priority_count > 0 {
+        record_count_sample(priority_stage, elapsed_ns, priority_count, bucket);
+    }
+    if bulk_count > 0 {
+        record_count_sample(bulk_stage, elapsed_ns, bulk_count, bucket);
+    }
 }
 
 #[inline]
