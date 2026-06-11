@@ -133,7 +133,7 @@ fn endpoint_event_batch_scope_emits_one_batch_and_keeps_immediate_delivery_outsi
 
 #[test]
 fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
     let mut runtime = EndpointEventRuntime::default();
 
@@ -242,7 +242,7 @@ fn endpoint_event_dequeue_counts_preserve_message_and_lane_counts() {
 
 #[test]
 fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
@@ -268,7 +268,7 @@ fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
 
 #[test]
 fn endpoint_event_queue_keeps_single_lane_batches_grouped() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
@@ -310,8 +310,107 @@ fn endpoint_event_queue_keeps_single_lane_batches_grouped() {
 }
 
 #[test]
+fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("first bulk endpoint event should enqueue");
+    assert_eq!(event_tx.queued_messages(), 1);
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("full bulk endpoint lane should drop rather than fail");
+    assert_eq!(
+        event_tx.queued_messages(),
+        1,
+        "dropped bulk event should roll back queued message accounting"
+    );
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"priority".to_vec(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("priority endpoint event should keep reserved progress");
+    assert_eq!(event_tx.queued_messages(), 2);
+
+    match event_rx.try_recv().expect("priority event") {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"priority"),
+        event => panic!("expected priority data event, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 1);
+
+    match event_rx.try_recv().expect("first bulk event") {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xaa),
+        event => panic!("expected bulk data event, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("first bulk endpoint batch should enqueue");
+    assert_eq!(event_tx.queued_messages(), 2);
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("full bulk endpoint lane should drop batch rather than fail");
+    assert_eq!(
+        event_tx.queued_messages(),
+        2,
+        "dropped bulk batch should roll back all message accounting"
+    );
+
+    match event_rx.try_recv().expect("first bulk batch") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].payload[0], 0xaa);
+            assert_eq!(messages[1].payload[0], 0xab);
+        }
+        event => panic!("expected bulk endpoint event batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
 fn endpoint_event_queue_send_fails_after_receiver_drop() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
@@ -347,7 +446,7 @@ fn endpoint_event_queue_send_fails_after_receiver_drop() {
 
 #[test]
 fn endpoint_event_queue_closes_after_all_senders_drop() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let event_tx_clone = event_tx.clone();
 
     drop(event_tx);
@@ -375,7 +474,7 @@ fn endpoint_event_queue_closes_after_all_senders_drop() {
 
 #[tokio::test]
 async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
 
     let waiter = tokio::spawn(async move { event_rx.recv().await });
     tokio::task::yield_now().await;

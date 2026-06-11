@@ -1121,13 +1121,12 @@ pub(crate) struct EndpointDataIo {
     pub(crate) command_tx: tokio::sync::mpsc::Sender<NodeEndpointCommand>,
     /// Receive endpoint data delivered by FIPS sessions.
     ///
-    /// Unbounded so the rx_loop's send on inbound packet delivery is a
-    /// wait-free push (no semaphore acquire), and so we can drop the
-    /// per-packet cross-task relay that previously sat between the node
-    /// task and the `FipsEndpoint::recv()` consumer. Backpressure is
-    /// still visible through `endpoint_event_wait` latency and the
-    /// `endpoint_event_backlog_high` pipeline event when the consumer falls
-    /// materially behind.
+    /// Priority endpoint events use an unbounded lane so small control-shaped
+    /// packets keep a wait-free push from the rx loop. Bulk endpoint events are
+    /// bounded by the endpoint-data capacity and drop on pressure, with drops
+    /// visible through `endpoint_event_bulk_dropped`. Backpressure is still
+    /// visible through `endpoint_event_wait` latency and
+    /// `endpoint_event_backlog_high` when the consumer falls materially behind.
     pub(crate) event_rx: EndpointEventReceiver,
     /// Clone of the event_tx exposed for in-process loopback (e.g.
     /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
@@ -1141,7 +1140,7 @@ pub(crate) struct EndpointDataIo {
 #[derive(Debug, Clone)]
 pub(crate) struct EndpointEventSender {
     priority: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
-    bulk: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
+    bulk: tokio::sync::mpsc::Sender<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
 }
@@ -1149,7 +1148,7 @@ pub(crate) struct EndpointEventSender {
 #[derive(Debug)]
 pub(crate) struct EndpointEventReceiver {
     priority: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
-    bulk: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    bulk: tokio::sync::mpsc::Receiver<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
     priority_closed: bool,
@@ -1202,6 +1201,10 @@ fn endpoint_event_lane_for_len(len: usize) -> EndpointEventLane {
     }
 }
 
+fn endpoint_event_bulk_capacity(requested: usize) -> usize {
+    requested.max(1)
+}
+
 /// Delivery-side owner for endpoint data emitted by session receive handling.
 ///
 /// The rx loop currently owns this runtime, but keeping sender, batching, and
@@ -1216,9 +1219,9 @@ pub(in crate::node) struct EndpointEventRuntime {
 }
 
 impl EndpointEventSender {
-    fn channel() -> (Self, EndpointEventReceiver) {
+    fn channel(capacity: usize) -> (Self, EndpointEventReceiver) {
         let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(endpoint_event_bulk_capacity(capacity));
         let queued_messages = Arc::new(AtomicUsize::new(0));
         let ready = Arc::new(EndpointEventReady::default());
         (
@@ -1319,28 +1322,54 @@ impl EndpointEventSender {
         let count = event.message_count();
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
-        let send_result = match lane {
-            EndpointEventLane::Priority => self.priority.send(event),
-            EndpointEventLane::Bulk => self.bulk.send(event),
-        };
-        match send_result {
-            Ok(()) => {
-                if previous < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
-                    && queued >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
-                {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::EndpointEventBacklogHigh,
-                    );
+        match lane {
+            EndpointEventLane::Priority => match self.priority.send(event) {
+                Ok(()) => {
+                    self.note_send_success(previous, queued);
+                    Ok(())
                 }
-                self.ready.notify();
-                Ok(())
-            }
-            Err(error) => {
-                self.queued_messages.fetch_sub(count, Relaxed);
-                self.ready.notify();
-                Err(error)
-            }
+                Err(error) => {
+                    self.note_send_rejected(count);
+                    Err(error)
+                }
+            },
+            EndpointEventLane::Bulk => match self.bulk.try_send(event) {
+                Ok(()) => {
+                    self.note_send_success(previous, queued);
+                    Ok(())
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
+                    self.note_send_rejected(count);
+                    crate::perf_profile::record_event_count(
+                        crate::perf_profile::Event::EndpointEventBulkDropped,
+                        count as u64,
+                    );
+                    Ok(())
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
+                    self.note_send_rejected(count);
+                    Err(tokio::sync::mpsc::error::SendError(event))
+                }
+            },
         }
+    }
+
+    fn note_send_success(&self, previous: usize, queued: usize) {
+        if previous < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+            && queued >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+        {
+            crate::perf_profile::record_event(crate::perf_profile::Event::EndpointEventBacklogHigh);
+        }
+        self.ready.notify();
+    }
+
+    fn note_send_rejected(&self, count: usize) {
+        let _ = self
+            .queued_messages
+            .fetch_update(Relaxed, Relaxed, |current| {
+                Some(current.saturating_sub(count))
+            });
+        self.ready.notify();
     }
 
     #[cfg(test)]
@@ -6734,11 +6763,9 @@ impl Node {
         let (priority_command_tx, priority_command_rx) =
             tokio::sync::mpsc::channel(command_capacity);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
-        // Inbound endpoint-data events use an unbounded channel — see
-        // `EndpointDataIo::event_rx` docs for the rationale (kills the
-        // per-packet semaphore + the cross-task relay task that used to
-        // sit on top of this channel).
-        let (event_tx, event_rx) = EndpointEventSender::channel();
+        // Endpoint events keep priority delivery wait-free and bound bulk
+        // backlog by the caller's packet-channel capacity.
+        let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
         self.endpoint_priority_command_rx = Some(priority_command_rx);
         self.endpoint_command_rx = Some(command_rx);
         self.endpoint_events.attach(event_tx.clone());
