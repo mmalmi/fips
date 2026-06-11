@@ -1171,10 +1171,10 @@ pub(crate) struct EndpointDataIo {
     /// Receive endpoint data delivered by FIPS sessions.
     ///
     /// Priority endpoint events use an unbounded lane so small control-shaped
-    /// packets keep a wait-free push from the rx loop. Bulk endpoint events are
-    /// bounded by the endpoint-data capacity and drop on pressure, with drops
-    /// visible through `endpoint_event_bulk_dropped`. Backpressure is still
-    /// visible through `endpoint_event_wait` latency and
+    /// packets keep a wait-free push from the rx loop. Bulk endpoint messages
+    /// are bounded by the endpoint-data capacity and drop on pressure, with
+    /// drops visible through `endpoint_event_bulk_dropped`. Backpressure is
+    /// still visible through `endpoint_event_wait` latency and
     /// `endpoint_event_backlog_high` when the consumer falls materially behind.
     pub(crate) event_rx: EndpointEventReceiver,
     /// Clone of the event_tx exposed for in-process loopback (e.g.
@@ -1191,7 +1191,9 @@ pub(crate) struct EndpointEventSender {
     priority: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
     bulk: tokio::sync::mpsc::Sender<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
+    bulk_queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
+    bulk_message_cap: usize,
 }
 
 #[derive(Debug)]
@@ -1199,6 +1201,7 @@ pub(crate) struct EndpointEventReceiver {
     priority: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
     bulk: tokio::sync::mpsc::Receiver<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
+    bulk_queued_messages: Arc<AtomicUsize>,
     ready: Arc<EndpointEventReady>,
     priority_closed: bool,
     bulk_closed: bool,
@@ -1254,6 +1257,22 @@ fn endpoint_event_bulk_capacity(requested: usize) -> usize {
     requested.max(1)
 }
 
+fn try_reserve_endpoint_event_bulk_messages(
+    counter: &AtomicUsize,
+    capacity: usize,
+    count: usize,
+) -> bool {
+    if count == 0 {
+        return true;
+    }
+
+    counter
+        .fetch_update(Relaxed, Relaxed, |current| {
+            current.checked_add(count).filter(|next| *next <= capacity)
+        })
+        .is_ok()
+}
+
 /// Delivery-side owner for endpoint data emitted by session receive handling.
 ///
 /// The rx loop currently owns this runtime, but keeping sender, batching, and
@@ -1270,20 +1289,25 @@ pub(in crate::node) struct EndpointEventRuntime {
 impl EndpointEventSender {
     fn channel(capacity: usize) -> (Self, EndpointEventReceiver) {
         let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(endpoint_event_bulk_capacity(capacity));
+        let bulk_message_cap = endpoint_event_bulk_capacity(capacity);
+        let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_message_cap);
         let queued_messages = Arc::new(AtomicUsize::new(0));
+        let bulk_queued_messages = Arc::new(AtomicUsize::new(0));
         let ready = Arc::new(EndpointEventReady::default());
         (
             Self {
                 priority: priority_tx,
                 bulk: bulk_tx,
                 queued_messages: Arc::clone(&queued_messages),
+                bulk_queued_messages: Arc::clone(&bulk_queued_messages),
                 ready: Arc::clone(&ready),
+                bulk_message_cap,
             },
             EndpointEventReceiver {
                 priority: priority_rx,
                 bulk: bulk_rx,
                 queued_messages,
+                bulk_queued_messages,
                 ready,
                 priority_closed: false,
                 bulk_closed: false,
@@ -1295,7 +1319,9 @@ impl EndpointEventSender {
         self.priority.same_channel(&other.priority)
             && self.bulk.same_channel(&other.bulk)
             && Arc::ptr_eq(&self.queued_messages, &other.queued_messages)
+            && Arc::ptr_eq(&self.bulk_queued_messages, &other.bulk_queued_messages)
             && Arc::ptr_eq(&self.ready, &other.ready)
+            && self.bulk_message_cap == other.bulk_message_cap
     }
 
     pub(crate) fn send(
@@ -1376,6 +1402,23 @@ impl EndpointEventSender {
         lane: EndpointEventLane,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         let count = event.message_count();
+        let bulk_reserved = if matches!(lane, EndpointEventLane::Bulk) {
+            try_reserve_endpoint_event_bulk_messages(
+                &self.bulk_queued_messages,
+                self.bulk_message_cap,
+                count,
+            )
+        } else {
+            false
+        };
+        if matches!(lane, EndpointEventLane::Bulk) && !bulk_reserved {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::EndpointEventBulkDropped,
+                count as u64,
+            );
+            return Ok(());
+        }
+
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
         match lane {
@@ -1395,7 +1438,7 @@ impl EndpointEventSender {
                     Ok(())
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
-                    self.note_send_rejected(count);
+                    self.note_bulk_send_rejected(count);
                     crate::perf_profile::record_event_count(
                         crate::perf_profile::Event::EndpointEventBulkDropped,
                         count as u64,
@@ -1403,7 +1446,7 @@ impl EndpointEventSender {
                     Ok(())
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
-                    self.note_send_rejected(count);
+                    self.note_bulk_send_rejected(count);
                     Err(tokio::sync::mpsc::error::SendError(event))
                 }
             },
@@ -1424,9 +1467,20 @@ impl EndpointEventSender {
         self.ready.notify();
     }
 
+    fn note_bulk_send_rejected(&self, count: usize) {
+        release_endpoint_event_messages(&self.queued_messages, count);
+        release_endpoint_event_messages(&self.bulk_queued_messages, count);
+        self.ready.notify();
+    }
+
     #[cfg(test)]
     pub(crate) fn queued_messages(&self) -> usize {
         self.queued_messages.load(Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bulk_queued_messages(&self) -> usize {
+        self.bulk_queued_messages.load(Relaxed)
     }
 }
 
@@ -1623,8 +1677,9 @@ impl EndpointEventReceiver {
 
     fn note_dequeued(&self, event: &NodeEndpointEvent) {
         event.record_dequeue_wait();
-        let count = event.message_count();
-        release_endpoint_event_messages(&self.queued_messages, count);
+        let counts = event.dequeue_counts();
+        release_endpoint_event_messages(&self.queued_messages, counts.total);
+        release_endpoint_event_messages(&self.bulk_queued_messages, counts.bulk);
     }
 }
 

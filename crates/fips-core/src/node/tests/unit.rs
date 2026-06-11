@@ -182,26 +182,41 @@ fn endpoint_event_queue_owns_backlog_message_count() {
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 0);
     node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"single".to_vec()))
         .expect("single endpoint event");
     assert_eq!(endpoint_io.event_tx.queued_messages(), 1);
+    assert_eq!(
+        endpoint_io.event_tx.bulk_queued_messages(),
+        0,
+        "priority-sized events must not consume the bulk message budget"
+    );
 
     node.begin_endpoint_event_batch();
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"first".to_vec()))
-        .expect("first batched endpoint event");
-    node.deliver_endpoint_event_message(EndpointDataDelivery::new(source, b"second".to_vec()))
-        .expect("second batched endpoint event");
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(
+        source,
+        vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
+    ))
+    .expect("first batched endpoint event");
+    node.deliver_endpoint_event_message(EndpointDataDelivery::new(
+        source,
+        vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2],
+    ))
+    .expect("second batched endpoint event");
     node.finish_endpoint_event_batch();
     assert_eq!(
         endpoint_io.event_tx.queued_messages(),
         3,
         "backlog count should account for batch payloads, not channel items"
     );
+    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 2);
 
     endpoint_io.event_rx.try_recv().expect("single event");
     assert_eq!(endpoint_io.event_tx.queued_messages(), 2);
+    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 2);
     endpoint_io.event_rx.try_recv().expect("batched event");
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
+    assert_eq!(endpoint_io.event_tx.bulk_queued_messages(), 0);
 }
 
 #[test]
@@ -375,7 +390,7 @@ fn endpoint_event_queue_drops_bulk_when_full_without_blocking_priority() {
 
 #[test]
 fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
-    let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(2);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
 
     event_tx
@@ -388,6 +403,7 @@ fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
         })
         .expect("first bulk endpoint batch should enqueue");
     assert_eq!(event_tx.queued_messages(), 2);
+    assert_eq!(event_tx.bulk_queued_messages(), 2);
 
     event_tx
         .send(NodeEndpointEvent::DataBatch {
@@ -403,6 +419,7 @@ fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
         2,
         "dropped bulk batch should roll back all message accounting"
     );
+    assert_eq!(event_tx.bulk_queued_messages(), 2);
 
     match event_rx.try_recv().expect("first bulk batch") {
         NodeEndpointEvent::DataBatch { messages, .. } => {
@@ -413,10 +430,51 @@ fn endpoint_event_queue_dropped_bulk_batch_counts_as_success() {
         event => panic!("expected bulk endpoint event batch, got {event:?}"),
     }
     assert_eq!(event_tx.queued_messages(), 0);
+    assert_eq!(event_tx.bulk_queued_messages(), 0);
     assert!(matches!(
         event_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
+}
+
+#[test]
+fn endpoint_event_bulk_capacity_counts_messages_not_batches() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("oversized bulk endpoint batch should drop rather than fail");
+    assert_eq!(
+        event_tx.queued_messages(),
+        0,
+        "one channel item may still contain more bulk messages than the message cap"
+    );
+    assert_eq!(event_tx.bulk_queued_messages(), 0);
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"priority".to_vec(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("priority endpoint event should keep reserved progress");
+    assert_eq!(event_tx.queued_messages(), 1);
+    assert_eq!(event_tx.bulk_queued_messages(), 0);
+    match event_rx.try_recv().expect("priority event") {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"priority"),
+        event => panic!("expected priority data event, got {event:?}"),
+    }
 }
 
 #[test]
