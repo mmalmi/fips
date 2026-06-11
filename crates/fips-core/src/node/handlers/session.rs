@@ -9,8 +9,8 @@ use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
 use crate::node::decrypt_worker::{
-    DecryptAuthenticatedSession, DecryptDirectSessionCommit, DecryptDirectSessionData,
-    DecryptDirectSessionDelivery, DecryptFspFailureReport,
+    DecryptAuthenticatedFmpReceive, DecryptAuthenticatedSession, DecryptDirectSessionCommit,
+    DecryptDirectSessionData, DecryptDirectSessionDelivery, DecryptFspFailureReport,
 };
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
@@ -2980,6 +2980,13 @@ impl Node {
         if bookkeeping.is_some_and(|update| update.address_changed) {
             self.clear_connected_udp_for_peer(fmp.source_peer.node_addr());
         }
+    }
+
+    pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(
+        &mut self,
+        receive: DecryptAuthenticatedFmpReceive,
+    ) {
+        self.record_worker_authenticated_fmp_receive(&receive.fmp);
     }
 
     pub(in crate::node) async fn process_authenticated_session_from_worker(

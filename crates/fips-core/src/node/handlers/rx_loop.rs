@@ -754,6 +754,9 @@ impl Node {
                     self.process_decrypt_fallback(fallback).await;
                 }
             }
+            DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
+                self.process_authenticated_fmp_receive_from_worker(receive);
+            }
             DecryptWorkerEvent::AuthenticatedSession(session) => {
                 self.process_authenticated_session_from_worker(session)
                     .await;

@@ -212,13 +212,12 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 /// **inside the worker thread that owns this session** — never
 /// shared, never behind a mutex.
 ///
-/// **FMP only** — the worker exclusively handles the FMP layer
-/// (decrypt + replay accept), then bounces the FMP plaintext back to
-/// rx_loop for FSP-layer dispatch. This split is what makes
-/// register-at-FMP-establishment correct: the worker doesn't need
-/// the FSP cipher / replay window, and can therefore be the
-/// authoritative recv path for a peer the moment FMP is up — well
-/// before the FSP handshake completes.
+/// **FMP first** — the worker owns FMP decrypt + replay accept. It returns
+/// compact receive bookkeeping for timestamp-only frames, decodes direct local
+/// established-session data once FSP state is registered, and only falls back
+/// to authenticated FMP plaintext when rx_loop still owns the link dispatch.
+/// This split is what makes register-at-FMP-establishment correct: the worker
+/// can become authoritative for FMP replay before the FSP handshake completes.
 ///
 /// Built at FMP-session establishment time (`promote_connection`)
 /// and shipped to the assigned worker via `WorkerMsg::RegisterSession`.
@@ -658,6 +657,12 @@ pub(crate) struct DecryptFmpBookkeeping {
     pub fmp_flags: u8,
 }
 
+pub(crate) struct DecryptAuthenticatedFmpReceive {
+    pub fmp: DecryptFmpBookkeeping,
+    lane: DecryptWorkerLane,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
 pub(crate) struct DecryptAuthenticatedSession {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
@@ -902,6 +907,7 @@ pub(crate) struct DecryptFspFailureReport {
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     PlaintextBatch(Vec<DecryptFallback>),
+    AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
     AuthenticatedSession(DecryptAuthenticatedSession),
     DirectSessionCommit(DecryptDirectSessionCommit),
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
@@ -918,6 +924,7 @@ impl DecryptWorkerEvent {
     pub(crate) fn packet_count(&self) -> usize {
         match self {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
+            Self::AuthenticatedFmpReceive(_) => 1,
             Self::AuthenticatedSession(_) => 1,
             Self::DirectSessionCommit(_) => 1,
             Self::DirectSessionCommitBatch(commits) => commits.len(),
@@ -935,6 +942,7 @@ impl DecryptWorkerEvent {
                     fallback.trace_enqueued_at = queued_at;
                 }
             }
+            Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at = queued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at = queued_at,
             Self::DirectSessionCommitBatch(commits) => {
@@ -954,6 +962,7 @@ impl DecryptWorkerEvent {
             Self::PlaintextBatch(fallbacks) => fallbacks
                 .first()
                 .and_then(|fallback| fallback.trace_enqueued_at),
+            Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at,
             Self::DirectSessionCommitBatch(commits) => {
@@ -973,7 +982,8 @@ impl DecryptWorkerEvent {
         crate::perf_profile::Stage,
     ) {
         match self {
-            Self::AuthenticatedSession(_)
+            Self::AuthenticatedFmpReceive(_)
+            | Self::AuthenticatedSession(_)
             | Self::DirectSessionCommit(_)
             | Self::DirectSessionCommitBatch(_)
             | Self::DirectSessionData(_) => (
@@ -1183,6 +1193,7 @@ impl DecryptWorkerFallbackReceivers {
 
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
+        DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => receive.lane,
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
@@ -1204,7 +1215,8 @@ fn decrypt_worker_event_return_bulk_lane(
     event: &DecryptWorkerEvent,
 ) -> DecryptWorkerReturnBulkLane {
     match event {
-        DecryptWorkerEvent::AuthenticatedSession(_)
+        DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_) => DecryptWorkerReturnBulkLane::Authenticated,
@@ -1220,7 +1232,8 @@ fn decrypt_worker_event_drop_event(
     lane: DecryptWorkerLane,
 ) -> crate::perf_profile::Event {
     match event {
-        DecryptWorkerEvent::AuthenticatedSession(_)
+        DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_) => match lane {
@@ -2881,11 +2894,9 @@ impl DecryptWorkerShard {
         let fmp_plaintext_start = fmp_ciphertext_offset;
         let fmp_plaintext_end = fmp_ciphertext_offset + plaintext_len;
         const INNER_TIMESTAMP_LEN: usize = 4;
-        if plaintext_len < INNER_TIMESTAMP_LEN + 1 {
+        if plaintext_len < INNER_TIMESTAMP_LEN {
             return Ok(None);
         }
-        let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
-        let link_msg_end = fmp_plaintext_end;
 
         let inner_timestamp_ms = u32::from_le_bytes([
             packet_data[fmp_plaintext_start],
@@ -2893,6 +2904,32 @@ impl DecryptWorkerShard {
             packet_data[fmp_plaintext_start + 2],
             packet_data[fmp_plaintext_start + 3],
         ]);
+        if plaintext_len == INNER_TIMESTAMP_LEN {
+            let fmp = DecryptFmpBookkeeping {
+                source_peer,
+                transport_id,
+                remote_addr,
+                packet_timestamp_ms: timestamp_ms,
+                packet_len,
+                fmp_counter,
+                inner_timestamp_ms,
+                fmp_flags,
+            };
+            return Ok(Some(DecryptWorkerOutput {
+                fallback_tx,
+                event: DecryptWorkerEvent::AuthenticatedFmpReceive(
+                    DecryptAuthenticatedFmpReceive {
+                        fmp,
+                        lane: DecryptWorkerLane::Priority,
+                        trace_enqueued_at: None,
+                    },
+                ),
+                direct_delivery: None,
+            }));
+        }
+
+        let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
+        let link_msg_end = fmp_plaintext_end;
         let fsp_meta = Self::local_established_fsp_meta(
             &packet_data,
             local_node_addr,
@@ -3961,7 +3998,8 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
                 panic!("FSP AEAD failure must not bounce a possibly mutated packet")
             }
-            DecryptWorkerEvent::AuthenticatedSession(_)
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
@@ -4190,6 +4228,7 @@ mod tests {
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
@@ -4489,6 +4528,7 @@ mod tests {
                 }));
             }
             DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -4635,6 +4675,9 @@ mod tests {
                 assert!(commits.iter().all(|commit| !commit.delivered_ipv6));
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected a commit batch"),
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("expected a direct commit batch")
+            }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
@@ -5127,6 +5170,9 @@ mod tests {
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("invalid bulk job should fail AEAD"),
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
@@ -5285,6 +5331,9 @@ mod tests {
             DecryptWorkerEvent::PlaintextBatch(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -5349,6 +5398,80 @@ mod tests {
         assert!(
             fallback_rx.bulk.is_empty(),
             "replayed counter must not reach the bulk fallback lane"
+        );
+    }
+
+    #[test]
+    fn worker_emits_compact_authenticated_receive_for_timestamp_only_fmp() {
+        let key_bytes = [7u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let session_key = test_session_key(1, 80);
+        let mut shard = test_shard();
+        let source_peer = test_source_peer();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState {
+                fmp_cipher: open_cipher,
+                fmp_replay: ReplayWindow::new(),
+                source_peer,
+            },
+        );
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let counter = 11;
+        let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
+        let inner_timestamp_ms = 0x0102_0304_u32;
+        let (packet, header) = sealed_fmp_test_packet_with_plaintext(
+            &seal_cipher,
+            counter,
+            flags,
+            &inner_timestamp_ms.to_le_bytes(),
+        );
+
+        shard
+            .handle_job(decrypt_job_for_test_packet(
+                packet,
+                header,
+                session_key,
+                counter,
+                flags,
+                fallback_tx,
+            ))
+            .expect("timestamp-only worker job should be handled");
+
+        match fallback_rx
+            .priority
+            .try_recv()
+            .expect("timestamp-only authenticated receive")
+        {
+            DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
+                assert_eq!(receive.fmp.source_peer, source_peer);
+                assert_eq!(receive.fmp.fmp_counter, counter);
+                assert_eq!(receive.fmp.inner_timestamp_ms, inner_timestamp_ms);
+                assert_eq!(receive.fmp.fmp_flags, flags);
+                assert_eq!(receive.lane, DecryptWorkerLane::Priority);
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("timestamp-only receive must not bounce plaintext bytes")
+            }
+            DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("timestamp-only receive should be a compact bookkeeping event")
+            }
+        }
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "timestamp-only receive must not consume the fallback bulk lane"
+        );
+        assert_eq!(
+            shard.fmp_replay_highest(session_key).unwrap(),
+            counter,
+            "successful timestamp-only AEAD must advance the worker-owned replay window"
         );
     }
 
@@ -5530,6 +5653,9 @@ mod tests {
             DecryptWorkerEvent::Plaintext(fallback) => fallback,
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected plaintext fallback event"),
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -5617,6 +5743,9 @@ mod tests {
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("expected decrypt failure report")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected decrypt failure report")
             }

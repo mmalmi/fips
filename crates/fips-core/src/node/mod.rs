@@ -4674,10 +4674,11 @@ pub struct Node {
     /// Off-task FMP + FSP decrypt + delivery worker pool. Mirror of
     /// `encrypt_workers` for the receive side.
     decrypt_workers: Option<decrypt_worker::DecryptWorkerPool>,
-    /// Fallback channel: decrypt worker bounces non-fast-path packets
-    /// (anything that's not bulk EndpointData) back here for rx_loop
-    /// to handle via the legacy path. Drained by rx_loop with a bounded
-    /// priority lane ahead of bounded bulk plaintext fallbacks.
+    /// Decrypt-worker return channel. Compact authenticated receive metadata,
+    /// direct local FSP completions, and fallback plaintext all return here so
+    /// rx_loop can apply node-owned bookkeeping and any remaining legacy link
+    /// dispatch. Drained with a bounded priority lane ahead of bounded
+    /// authenticated and fallback bulk lanes.
     decrypt_fallback_rx: Option<decrypt_worker::DecryptWorkerFallbackReceivers>,
     decrypt_fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     /// TUN reader thread handle.

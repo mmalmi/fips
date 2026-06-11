@@ -8,11 +8,11 @@
 //! shard owns the recv-side state from the moment a peer becomes
 //! reachable.
 //!
-//! The rx_loop's `decrypt_fallback_rx` arm hands authenticated FMP
-//! plaintext back to `process_authentic_fmp_plaintext`; peer receive
-//! bookkeeping then goes through `PeerLifecycleRegistry`, keeping
-//! liveness, link stats, path rotation, and MMP receive metrics in
-//! one lifecycle owner.
+//! The rx_loop's decrypt-worker return arms apply the compact receive
+//! bookkeeping or authenticated FMP plaintext that still needs link dispatch.
+//! Peer receive bookkeeping then goes through `PeerLifecycleRegistry`, keeping
+//! liveness, link stats, path rotation, and MMP receive metrics in one
+//! lifecycle owner.
 
 use crate::node::decrypt_worker::{DecryptFailureReport, DecryptJob, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
@@ -248,7 +248,8 @@ impl Node {
         // dispatches the packet to the worker and returns. All
         // per-peer bookkeeping runs through
         // `PeerLifecycleRegistry::record_authenticated_fmp_receive`
-        // after the worker bounces the FMP plaintext back.
+        // after the worker returns compact receive metadata or an
+        // authenticated FMP plaintext fallback.
         //
         // The in-line decrypt below this is the **synchronous test-
         // mode path**: unit tests construct `Node` instances directly
@@ -265,12 +266,10 @@ impl Node {
         // attaches the endpoint-data API (`endpoint_data_io()`) — in
         // pure TUN mode (the common iperf-bench shape) the field is
         // `None`, so the gate silently bounced every packet to the
-        // legacy in-line decrypt path. The worker doesn't actually
-        // use the endpoint sender after the FMP-only refactor (all
-        // link messages bounce back through `fallback_tx` for FSP
-        // decrypt on rx_loop), so it was a redundant predicate
-        // hiding the bug. The only remaining requirements are: a
-        // worker pool exists, and this session has been handed off
+        // legacy in-line decrypt path. The worker can now decode direct
+        // local FSP data when the needed sinks exist, so the only
+        // remaining requirements are: a worker pool exists, and this
+        // session has been handed off
         // to it.
         if let Some(workers) = self.decrypt_workers.as_ref()
             && self.sessions.is_worker_registered(&session_key)
