@@ -22,6 +22,19 @@ use tokio::task::JoinHandle;
 const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
+#[derive(Debug)]
+enum EndpointPayloadLaneBatches {
+    Empty,
+    Single {
+        lane: EndpointCommandLane,
+        payloads: Vec<EndpointDataPayload>,
+    },
+    Split {
+        priority_payloads: Vec<EndpointDataPayload>,
+        bulk_payloads: Vec<EndpointDataPayload>,
+    },
+}
+
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
     use std::io::Write as _;
@@ -765,31 +778,32 @@ impl FipsEndpoint {
         }
 
         let queued_at = crate::perf_profile::stamp();
-        let mut priority_payloads = Vec::new();
-        let mut bulk_payloads = Vec::new();
-
-        for payload in payloads {
-            let payload = EndpointDataPayload::new(payload);
-            match payload.lane() {
-                EndpointCommandLane::Priority => priority_payloads.push(payload),
-                EndpointCommandLane::Bulk => bulk_payloads.push(payload),
+        match endpoint_payload_lane_batches(payloads) {
+            EndpointPayloadLaneBatches::Empty => {}
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                self.send_endpoint_command_batch(remote, payloads, queued_at, lane)
+                    .await?;
+            }
+            EndpointPayloadLaneBatches::Split {
+                priority_payloads,
+                bulk_payloads,
+            } => {
+                self.send_endpoint_command_batch(
+                    remote,
+                    priority_payloads,
+                    queued_at,
+                    EndpointCommandLane::Priority,
+                )
+                .await?;
+                self.send_endpoint_command_batch(
+                    remote,
+                    bulk_payloads,
+                    queued_at,
+                    EndpointCommandLane::Bulk,
+                )
+                .await?;
             }
         }
-
-        self.send_endpoint_command_batch(
-            remote,
-            priority_payloads,
-            queued_at,
-            EndpointCommandLane::Priority,
-        )
-        .await?;
-        self.send_endpoint_command_batch(
-            remote,
-            bulk_payloads,
-            queued_at,
-            EndpointCommandLane::Bulk,
-        )
-        .await?;
         Ok(())
     }
 
@@ -1228,6 +1242,59 @@ fn endpoint_command_tx_for_command<'a>(
     }
 }
 
+fn endpoint_payload_lane_batches(payloads: Vec<Vec<u8>>) -> EndpointPayloadLaneBatches {
+    let payload_count = payloads.len();
+    let mut raw_payloads = payloads.into_iter();
+    let Some(first) = raw_payloads.next() else {
+        return EndpointPayloadLaneBatches::Empty;
+    };
+
+    let first = EndpointDataPayload::new(first);
+    let mut first_lane_payloads = Vec::with_capacity(payload_count);
+    let first_lane = first.lane();
+    first_lane_payloads.push(first);
+    let mut batches = EndpointPayloadLaneBatches::Single {
+        lane: first_lane,
+        payloads: first_lane_payloads,
+    };
+
+    for payload in raw_payloads.map(EndpointDataPayload::new) {
+        let payload_lane = payload.lane();
+        match &mut batches {
+            EndpointPayloadLaneBatches::Empty => unreachable!("first payload exists"),
+            EndpointPayloadLaneBatches::Single { lane, payloads } if payload_lane == *lane => {
+                payloads.push(payload);
+            }
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                let first_lane_payloads = std::mem::take(payloads);
+                let mut priority_payloads = Vec::new();
+                let mut bulk_payloads = Vec::new();
+                match *lane {
+                    EndpointCommandLane::Priority => priority_payloads = first_lane_payloads,
+                    EndpointCommandLane::Bulk => bulk_payloads = first_lane_payloads,
+                }
+                match payload_lane {
+                    EndpointCommandLane::Priority => priority_payloads.push(payload),
+                    EndpointCommandLane::Bulk => bulk_payloads.push(payload),
+                }
+                batches = EndpointPayloadLaneBatches::Split {
+                    priority_payloads,
+                    bulk_payloads,
+                };
+            }
+            EndpointPayloadLaneBatches::Split {
+                priority_payloads,
+                bulk_payloads,
+            } => match payload_lane {
+                EndpointCommandLane::Priority => priority_payloads.push(payload),
+                EndpointCommandLane::Bulk => bulk_payloads.push(payload),
+            },
+        }
+    }
+
+    batches
+}
+
 async fn send_endpoint_command(
     command: NodeEndpointCommand,
     priority_tx: &mpsc::Sender<NodeEndpointCommand>,
@@ -1558,6 +1625,69 @@ mod tests {
         let opaque_bulk = crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]);
         assert_eq!(opaque_bulk.lane(), EndpointCommandLane::Bulk);
         assert!(opaque_bulk.drop_on_backpressure());
+    }
+
+    #[test]
+    fn endpoint_payload_lane_batches_keep_same_lane_runs_single() {
+        let bulk_tcp = ipv6_tcp_packet(0x18, 512);
+        let opaque_bulk = vec![0, 1, 2, 3];
+        match endpoint_payload_lane_batches(vec![bulk_tcp.clone(), opaque_bulk.clone()]) {
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                assert_eq!(lane, EndpointCommandLane::Bulk);
+                assert_eq!(payloads.len(), 2);
+                assert_eq!(payloads[0].as_slice(), bulk_tcp.as_slice());
+                assert_eq!(payloads[1].as_slice(), opaque_bulk.as_slice());
+            }
+            other => panic!("expected a single bulk run, got {other:?}"),
+        }
+
+        let tcp_ack = ipv6_tcp_packet(0x10, 0);
+        let icmp_ping = ipv4_icmp_echo_packet();
+        match endpoint_payload_lane_batches(vec![tcp_ack.clone(), icmp_ping.clone()]) {
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                assert_eq!(lane, EndpointCommandLane::Priority);
+                assert_eq!(payloads.len(), 2);
+                assert_eq!(payloads[0].as_slice(), tcp_ack.as_slice());
+                assert_eq!(payloads[1].as_slice(), icmp_ping.as_slice());
+            }
+            other => panic!("expected a single priority run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_payload_lane_batches_split_mixed_payloads_by_lane() {
+        let bulk_first = ipv6_tcp_packet(0x18, 512);
+        let priority_first = ipv6_tcp_packet(0x10, 0);
+        let bulk_second = vec![0, 1, 2, 3];
+        let priority_second = ipv4_icmp_echo_packet();
+
+        match endpoint_payload_lane_batches(vec![
+            bulk_first.clone(),
+            priority_first.clone(),
+            bulk_second.clone(),
+            priority_second.clone(),
+        ]) {
+            EndpointPayloadLaneBatches::Split {
+                priority_payloads,
+                bulk_payloads,
+            } => {
+                assert_eq!(priority_payloads.len(), 2);
+                assert_eq!(priority_payloads[0].as_slice(), priority_first.as_slice());
+                assert_eq!(priority_payloads[1].as_slice(), priority_second.as_slice());
+                assert_eq!(bulk_payloads.len(), 2);
+                assert_eq!(bulk_payloads[0].as_slice(), bulk_first.as_slice());
+                assert_eq!(bulk_payloads[1].as_slice(), bulk_second.as_slice());
+            }
+            other => panic!("expected split priority/bulk runs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_payload_lane_batches_accept_empty_batches() {
+        match endpoint_payload_lane_batches(Vec::new()) {
+            EndpointPayloadLaneBatches::Empty => {}
+            other => panic!("expected empty batch, got {other:?}"),
+        }
     }
 
     #[test]
