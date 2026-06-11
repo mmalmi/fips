@@ -566,6 +566,7 @@ impl PendingDestinationTraffic {
 /// Pending traffic waiting for session establishment.
 #[derive(Debug, Default)]
 pub(crate) struct PendingSessionTrafficQueues {
+    pending_destinations: HashSet<NodeAddr>,
     tun_packets: HashMap<NodeAddr, PendingTunPacketQueue>,
     endpoint_data: HashMap<NodeAddr, PendingEndpointDataQueue>,
 }
@@ -591,6 +592,7 @@ impl PendingSessionTrafficQueues {
             .entry(dest_addr)
             .or_default()
             .push_bounded(packet, packets_per_dest);
+        self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
             dropped_oldest: admission.dropped_oldest(),
@@ -618,6 +620,7 @@ impl PendingSessionTrafficQueues {
             .entry(dest_addr)
             .or_default()
             .push_bounded(payload.into(), packets_per_dest);
+        self.pending_destinations.insert(dest_addr);
         PendingSessionTrafficAdmission {
             destination_dropped: false,
             dropped_oldest: admission.dropped_oldest(),
@@ -625,6 +628,7 @@ impl PendingSessionTrafficQueues {
     }
 
     pub(crate) fn remove_destination(&mut self, dest_addr: &NodeAddr) -> PendingDestinationTraffic {
+        self.pending_destinations.remove(dest_addr);
         PendingDestinationTraffic {
             tun_packets: self.tun_packets.remove(dest_addr),
             endpoint_data: self.endpoint_data.remove(dest_addr),
@@ -635,18 +639,26 @@ impl PendingSessionTrafficQueues {
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Option<PendingTunPacketQueue> {
-        self.tun_packets.remove(dest_addr)
+        let packets = self.tun_packets.remove(dest_addr);
+        if packets.is_some() && !self.endpoint_data.contains_key(dest_addr) {
+            self.pending_destinations.remove(dest_addr);
+        }
+        packets
     }
 
     pub(crate) fn take_endpoint_data(
         &mut self,
         dest_addr: &NodeAddr,
     ) -> Option<PendingEndpointDataQueue> {
-        self.endpoint_data.remove(dest_addr)
+        let payloads = self.endpoint_data.remove(dest_addr);
+        if payloads.is_some() && !self.tun_packets.contains_key(dest_addr) {
+            self.pending_destinations.remove(dest_addr);
+        }
+        payloads
     }
 
     pub(crate) fn has_traffic_for(&self, dest_addr: &NodeAddr) -> bool {
-        self.tun_packets.contains_key(dest_addr) || self.endpoint_data.contains_key(dest_addr)
+        self.pending_destinations.contains(dest_addr)
     }
 
     pub(crate) fn tun_packets_for(&self, dest_addr: &NodeAddr) -> Option<&PendingTunPacketQueue> {

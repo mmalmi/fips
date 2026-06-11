@@ -5217,6 +5217,10 @@ impl Node {
 
     /// Flush pending packets for a destination whose session just reached Established.
     pub(in crate::node) async fn flush_pending_packets(&mut self, dest_addr: &NodeAddr) {
+        if !self.pending_session_traffic.has_traffic_for(dest_addr) {
+            return;
+        }
+
         if let Some(packets) = self.pending_session_traffic.take_tun_packets(dest_addr) {
             for packet in packets.into_packets() {
                 if let Err(e) = self.send_ipv6_packet(dest_addr, &packet).await {
@@ -5373,22 +5377,26 @@ mod pending_queue_tests {
                 .push_tun_packet(tun_dest, vec![1], 1, 2)
                 .destination_dropped()
         );
+        assert!(queues.has_traffic_for(&tun_dest));
         assert!(
             queues
                 .push_tun_packet(rejected_tun_dest, vec![2], 1, 2)
                 .destination_dropped()
         );
+        assert!(!queues.has_traffic_for(&rejected_tun_dest));
 
         assert!(
             !queues
                 .push_endpoint_data(endpoint_dest, vec![3], 1, 2)
                 .destination_dropped()
         );
+        assert!(queues.has_traffic_for(&endpoint_dest));
         assert!(
             queues
                 .push_endpoint_data(rejected_endpoint_dest, vec![4], 1, 2)
                 .destination_dropped()
         );
+        assert!(!queues.has_traffic_for(&rejected_endpoint_dest));
 
         assert!(
             !queues
@@ -5412,7 +5420,38 @@ mod pending_queue_tests {
         let removed = queues.remove_destination(&tun_dest);
         assert_eq!(removed.tun_packets().map(|queue| queue.len()), Some(2));
         assert!(queues.tun_packets_for(&tun_dest).is_none());
+        assert!(!queues.has_traffic_for(&tun_dest));
         assert!(queues.endpoint_data_for(&endpoint_dest).is_some());
+        assert!(queues.has_traffic_for(&endpoint_dest));
+    }
+
+    #[test]
+    fn pending_session_traffic_destination_guard_tracks_partial_takes() {
+        let mut queues = crate::node::PendingSessionTrafficQueues::default();
+        let dest = NodeAddr::from_bytes([9u8; 16]);
+
+        assert!(
+            !queues
+                .push_tun_packet(dest, vec![1], 8, 2)
+                .destination_dropped()
+        );
+        assert!(
+            !queues
+                .push_endpoint_data(dest, vec![2], 8, 2)
+                .destination_dropped()
+        );
+        assert!(queues.has_traffic_for(&dest));
+
+        assert!(queues.take_tun_packets(&dest).is_some());
+        assert!(
+            queues.has_traffic_for(&dest),
+            "endpoint payloads should keep the destination guard set"
+        );
+        assert!(queues.take_endpoint_data(&dest).is_some());
+        assert!(
+            !queues.has_traffic_for(&dest),
+            "guard should clear after the final pending queue is removed"
+        );
     }
 
     #[test]
