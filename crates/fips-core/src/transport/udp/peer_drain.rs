@@ -33,13 +33,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, trace, warn};
 
 pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
+    fn batcher(&self) -> Box<dyn ConnectedUdpPacketFastPathBatcher>;
+}
+
+pub(crate) trait ConnectedUdpPacketFastPathBatcher {
     fn try_dispatch(
-        &self,
+        &mut self,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         packet_data: Vec<u8>,
         timestamp_ms: u64,
     ) -> Result<(), Vec<u8>>;
+
+    fn flush(&mut self);
 }
 
 /// Handle to a running per-peer drain thread. Drops the thread (and
@@ -174,6 +180,7 @@ fn drain_loop(
         .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
+    let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
 
     loop {
         if stop.load(Ordering::Acquire) {
@@ -272,7 +279,7 @@ fn drain_loop(
             // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
             let mut data = std::mem::replace(&mut backing[i], super::fresh_recv_buffer(BUF_SIZE));
             data.truncate(len);
-            if let Some(fast_path) = fast_path.as_ref() {
+            if let Some(fast_path) = fast_path_batcher.as_mut() {
                 match fast_path.try_dispatch(transport_id, packet_addr.clone(), data, timestamp_ms)
                 {
                     Ok(()) => continue,
@@ -287,6 +294,9 @@ fn drain_loop(
                 trace_enqueued_at,
             );
             packets.push(packet);
+        }
+        if let Some(fast_path) = fast_path_batcher.as_mut() {
+            fast_path.flush();
         }
         if !packets.is_empty() && packet_tx.send_batch(packets).is_err() {
             trace!("fips-peer-drain: packet channel closed; exiting");
@@ -495,7 +505,49 @@ mod tests {
     use super::*;
     use crate::transport::packet_channel;
     use std::net::UdpSocket;
+    use std::sync::mpsc;
     use std::time::Duration;
+
+    struct RecordingFastPath {
+        flushed_tx: mpsc::Sender<Vec<Vec<u8>>>,
+    }
+
+    struct RecordingFastPathBatcher {
+        pending: Vec<Vec<u8>>,
+        flushed_tx: mpsc::Sender<Vec<Vec<u8>>>,
+    }
+
+    impl ConnectedUdpPacketFastPath for RecordingFastPath {
+        fn batcher(&self) -> Box<dyn ConnectedUdpPacketFastPathBatcher> {
+            Box::new(RecordingFastPathBatcher {
+                pending: Vec::new(),
+                flushed_tx: self.flushed_tx.clone(),
+            })
+        }
+    }
+
+    impl ConnectedUdpPacketFastPathBatcher for RecordingFastPathBatcher {
+        fn try_dispatch(
+            &mut self,
+            _transport_id: TransportId,
+            _remote_addr: TransportAddr,
+            packet_data: Vec<u8>,
+            _timestamp_ms: u64,
+        ) -> Result<(), Vec<u8>> {
+            self.pending.push(packet_data);
+            Ok(())
+        }
+
+        fn flush(&mut self) {
+            if self.pending.is_empty() {
+                return;
+            }
+            let packets = std::mem::take(&mut self.pending);
+            self.flushed_tx
+                .send(packets)
+                .expect("recording fast path receiver should stay alive");
+        }
+    }
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread
     /// on it, send packets at it from a remote, verify they land in
@@ -567,6 +619,70 @@ mod tests {
         }
         // Drop the drain handle — should stop the thread within one
         // poll iteration.
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_flushes_connected_udp_fast_path_batches() {
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        let peer_addr = peer.local_addr().expect("peer local_addr");
+        let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let socket = Arc::new(
+            ConnectedPeerSocket::open(local_addr, peer_addr, 1 << 20, 1 << 20)
+                .expect("ConnectedPeerSocket::open"),
+        );
+        let our_local_addr: SocketAddr = {
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let r = unsafe {
+                libc::getsockname(
+                    socket.as_raw_fd(),
+                    &mut storage as *mut _ as *mut libc::sockaddr,
+                    &mut len,
+                )
+            };
+            assert!(r >= 0, "getsockname failed");
+            assert_eq!(
+                storage.ss_family as i32,
+                libc::AF_INET,
+                "test assumes IPv4 loopback"
+            );
+            let sin: &libc::sockaddr_in =
+                unsafe { &*(&storage as *const _ as *const libc::sockaddr_in) };
+            let port = u16::from_be(sin.sin_port);
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            SocketAddr::from((ip, port))
+        };
+
+        let (flushed_tx, flushed_rx) = mpsc::channel();
+        let fast_path = Arc::new(RecordingFastPath { flushed_tx });
+        let (tx, mut rx) = packet_channel(32);
+        let _drain =
+            PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx, Some(fast_path))
+                .expect("PeerRecvDrain::spawn");
+
+        for i in 0u8..5 {
+            let payload = [i, 0xDD, 0xEE, 0xFF];
+            peer.send_to(&payload, our_local_addr).expect("peer sendto");
+        }
+
+        let mut observed = Vec::new();
+        while observed.len() < 5 {
+            let batch = flushed_rx
+                .recv_timeout(Duration::from_millis(500))
+                .expect("timeout waiting for fast-path batch flush");
+            observed.extend(batch);
+        }
+
+        assert_eq!(observed.len(), 5);
+        for (i, packet) in observed.iter().enumerate() {
+            assert_eq!(packet, &[i as u8, 0xDD, 0xEE, 0xFF]);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "fast-path-consumed packets must not also enter PacketRx"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

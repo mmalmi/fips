@@ -3130,6 +3130,22 @@ pub(crate) struct ConnectedUdpDecryptFastPath {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+struct ConnectedUdpDecryptFastPathBatcher {
+    fast_path: ConnectedUdpDecryptFastPath,
+    jobs: decrypt_worker::DecryptJobBatcher,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ConnectedUdpDecryptFastPathBatcher {
+    fn new(fast_path: ConnectedUdpDecryptFastPath) -> Self {
+        Self {
+            fast_path,
+            jobs: decrypt_worker::DecryptJobBatcher::new(),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ConnectedUdpDecryptFastPath {
     pub(in crate::node) fn new(
         session_key: decrypt_worker::DecryptSessionKey,
@@ -3140,30 +3156,6 @@ impl ConnectedUdpDecryptFastPath {
             session_key,
             workers,
             fallback_tx,
-        }
-    }
-
-    fn dispatch_or_return(
-        &self,
-        transport_id: TransportId,
-        remote_addr: TransportAddr,
-        packet_data: Vec<u8>,
-        timestamp_ms: u64,
-    ) -> Result<(), Vec<u8>> {
-        match self.prepare_job(transport_id, remote_addr, packet_data, timestamp_ms) {
-            Ok(job) => {
-                self.workers.dispatch_job(job);
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::ConnectedUdpDirectDecrypt,
-                );
-                Ok(())
-            }
-            Err(packet_data) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::ConnectedUdpDirectDecryptMiss,
-                );
-                Err(packet_data)
-            }
         }
     }
 
@@ -3200,14 +3192,46 @@ impl ConnectedUdpDecryptFastPath {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPath for ConnectedUdpDecryptFastPath {
-    fn try_dispatch(
+    fn batcher(
         &self,
+    ) -> Box<dyn crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher> {
+        Box::new(ConnectedUdpDecryptFastPathBatcher::new(self.clone()))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher
+    for ConnectedUdpDecryptFastPathBatcher
+{
+    fn try_dispatch(
+        &mut self,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         packet_data: Vec<u8>,
         timestamp_ms: u64,
     ) -> Result<(), Vec<u8>> {
-        self.dispatch_or_return(transport_id, remote_addr, packet_data, timestamp_ms)
+        match self
+            .fast_path
+            .prepare_job(transport_id, remote_addr, packet_data, timestamp_ms)
+        {
+            Ok(job) => {
+                self.jobs.push(&self.fast_path.workers, job);
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::ConnectedUdpDirectDecrypt,
+                );
+                Ok(())
+            }
+            Err(packet_data) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::ConnectedUdpDirectDecryptMiss,
+                );
+                Err(packet_data)
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        self.jobs.flush(&self.fast_path.workers);
     }
 }
 
