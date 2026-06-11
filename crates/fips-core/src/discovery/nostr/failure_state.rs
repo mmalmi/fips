@@ -42,6 +42,10 @@ impl NostrPeerKey {
     }
 
     pub(super) fn from_public_key(pubkey: PublicKey) -> Self {
+        Self::from_public_key_ref(&pubkey)
+    }
+
+    pub(super) fn from_public_key_ref(pubkey: &PublicKey) -> Self {
         Self(pubkey.to_bytes())
     }
 

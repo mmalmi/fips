@@ -231,12 +231,12 @@ pub struct NostrDiscovery {
     npub: String,
     config: NostrDiscoveryConfig,
     relay_config: RwLock<NostrRelayConfig>,
-    advert_cache: RwLock<HashMap<String, CachedOverlayAdvert>>,
+    advert_cache: RwLock<HashMap<NostrPeerKey, CachedOverlayAdvert>>,
     local_advert: RwLock<Option<OverlayAdvert>>,
     current_advert_event_id: RwLock<Option<EventId>>,
     pending_answers: Mutex<HashMap<String, oneshot::Sender<SignalEnvelope<TraversalAnswer>>>>,
-    active_initiators: Mutex<HashSet<String>>,
-    active_refetches: Mutex<HashSet<String>>,
+    active_initiators: Mutex<HashSet<NostrPeerKey>>,
+    active_refetches: Mutex<HashSet<NostrPeerKey>>,
     seen_sessions: Mutex<HashMap<String, u64>>,
     offer_slots: Arc<Semaphore>,
     event_tx: mpsc::Sender<BootstrapEvent>,
@@ -386,6 +386,10 @@ impl NostrDiscovery {
         self.direct_refresh_admission.load(Ordering::Relaxed)
     }
 
+    fn self_peer_key(&self) -> NostrPeerKey {
+        NostrPeerKey::from_public_key_ref(&self.pubkey)
+    }
+
     fn traversal_initiator_admission_allowed(&self, mesh_signaling_allowed: bool) -> bool {
         if mesh_signaling_allowed {
             self.direct_refresh_admission_allowed()
@@ -491,10 +495,10 @@ impl NostrDiscovery {
         peer_config: PeerConfig,
         mesh_signaling_allowed: bool,
     ) -> bool {
-        let peer_npub = peer_config.npub.clone();
-        {
+        let peer_key = NostrPeerKey::parse(&peer_config.npub).ok();
+        if let Some(peer_key) = peer_key {
             let mut active = self.active_initiators.lock().await;
-            if !active.insert(peer_npub.clone()) {
+            if !active.insert(peer_key) {
                 return false;
             }
         }
@@ -512,7 +516,9 @@ impl NostrDiscovery {
                 },
             };
             runtime.emit_event(event).await;
-            runtime.active_initiators.lock().await.remove(&peer_npub);
+            if let Some(peer_key) = peer_key {
+                runtime.active_initiators.lock().await.remove(&peer_key);
+            }
         });
         true
     }
@@ -730,7 +736,7 @@ impl NostrDiscovery {
             Ok(p) => p,
             Err(_) => return NostrRefetchOutcome::Skipped,
         };
-        let peer_key = NostrPeerKey::from_public_key(target_pubkey);
+        let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
         let relay_config = self.relay_config.read().await.clone();
         if relay_config.advert_relays.is_empty() {
             return NostrRefetchOutcome::Skipped;
@@ -739,7 +745,7 @@ impl NostrDiscovery {
             .advert_cache
             .read()
             .await
-            .get(peer_npub)
+            .get(&peer_key)
             .map(|c| c.created_at);
 
         let events = match self
@@ -769,7 +775,7 @@ impl NostrDiscovery {
 
         let Some((relay_created_at, ev)) = newest else {
             // Absent on relays. Evict any stale cache entry.
-            self.advert_cache.write().await.remove(peer_npub);
+            self.advert_cache.write().await.remove(&peer_key);
             self.failure_state.reset_streak_after_refresh(peer_key);
             return NostrRefetchOutcome::Evicted;
         };
@@ -793,10 +799,7 @@ impl NostrDiscovery {
                     created_at: relay_created_at,
                     valid_until_ms,
                 };
-                self.advert_cache
-                    .write()
-                    .await
-                    .insert(peer_npub.to_string(), updated);
+                self.advert_cache.write().await.insert(peer_key, updated);
                 self.failure_state.reset_streak_after_refresh(peer_key);
                 NostrRefetchOutcome::Refreshed
             }
@@ -804,13 +807,16 @@ impl NostrDiscovery {
     }
 
     pub async fn request_advert_stale_check(self: &Arc<Self>, peer_npub: String) -> bool {
+        let Ok(peer_key) = NostrPeerKey::parse(&peer_npub) else {
+            return false;
+        };
         let relay_config = self.relay_config.read().await.clone();
         if relay_config.advert_relays.is_empty() {
             return false;
         }
         {
             let mut active = self.active_refetches.lock().await;
-            if !active.insert(peer_npub.clone()) {
+            if !active.insert(peer_key) {
                 return false;
             }
         }
@@ -836,7 +842,7 @@ impl NostrDiscovery {
                     "stale-advert sweep: skipped"
                 ),
             }
-            runtime.active_refetches.lock().await.remove(&peer_npub);
+            runtime.active_refetches.lock().await.remove(&peer_key);
         });
         true
     }
@@ -945,12 +951,13 @@ impl NostrDiscovery {
         &self,
         peer_npub: &str,
     ) -> Option<Vec<OverlayEndpointAdvert>> {
+        let peer_key = NostrPeerKey::parse(peer_npub).ok()?;
         self.prune_advert_cache().await;
         let now = now_ms();
         self.advert_cache
             .read()
             .await
-            .get(peer_npub)
+            .get(&peer_key)
             .filter(|cached| cached.valid_until_ms > now)
             .map(|cached| cached.advert.endpoints.clone())
     }
@@ -961,10 +968,12 @@ impl NostrDiscovery {
     ) -> Vec<(String, Vec<OverlayEndpointAdvert>, u64)> {
         self.prune_advert_cache().await;
         let now = now_ms();
+        let self_key = self.self_peer_key();
         let cache = self.advert_cache.read().await;
         cache
-            .values()
-            .filter(|entry| entry.author_npub != self.npub)
+            .iter()
+            .filter(|(peer_key, _)| **peer_key != self_key)
+            .map(|(_, entry)| entry)
             .filter(|entry| entry.valid_until_ms > now)
             .map(|entry| {
                 (
@@ -1041,6 +1050,7 @@ impl NostrDiscovery {
                         let Ok(verified_event) = VerifiedEvent::try_from(event.as_ref()) else {
                             continue;
                         };
+                        let author_key = NostrPeerKey::from_public_key_ref(verified_event.pubkey());
                         let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
                         if let Some(valid_until_ms) = self.event_valid_until_ms(&event)
                             && let Ok(advert) =
@@ -1048,10 +1058,10 @@ impl NostrDiscovery {
                         {
                             let mut cache = self.advert_cache.write().await;
                             let should_replace = cache
-                                .get(&author_npub)
+                                .get(&author_key)
                                 .map(|existing| existing.created_at <= event.created_at.as_secs())
                                 .unwrap_or(true);
-                            if should_replace && author_npub != self.npub {
+                            if should_replace && author_key != self.self_peer_key() {
                                 debug!(
                                     peer = %short_npub(&author_npub),
                                     endpoints = %endpoint_summary(&advert.endpoints),
@@ -1061,7 +1071,7 @@ impl NostrDiscovery {
                             }
                             if should_replace {
                                 cache.insert(
-                                    author_npub.clone(),
+                                    author_key,
                                     CachedOverlayAdvert {
                                         author_npub,
                                         advert,
@@ -1425,7 +1435,7 @@ impl NostrDiscovery {
                 npub: peer_config.npub.clone(),
                 reason: e.to_string(),
             })?;
-        let peer_key = NostrPeerKey::from_public_key(target_pubkey);
+        let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
 
         let mut relays = Vec::new();
         let mut nostr_setup_error = None;
@@ -1916,7 +1926,11 @@ impl NostrDiscovery {
             );
         }
 
-        let have_active_initiator = self.active_initiators.lock().await.contains(&sender_npub);
+        let have_active_initiator = if let Ok(sender_key) = NostrPeerKey::parse(&sender_npub) {
+            self.active_initiators.lock().await.contains(&sender_key)
+        } else {
+            false
+        };
         if have_active_initiator {
             match (
                 PeerIdentity::from_npub(&self.npub),
@@ -2043,8 +2057,9 @@ impl NostrDiscovery {
         peer_npub: &str,
         target_pubkey: PublicKey,
     ) -> Result<OverlayAdvert, BootstrapError> {
+        let peer_key = NostrPeerKey::from_public_key_ref(&target_pubkey);
         self.prune_advert_cache().await;
-        if let Some(cached) = self.advert_cache.read().await.get(peer_npub).cloned() {
+        if let Some(cached) = self.advert_cache.read().await.get(&peer_key).cloned() {
             debug!(
                 peer = %short_npub(peer_npub),
                 source = "cache",
@@ -2107,7 +2122,7 @@ impl NostrDiscovery {
         self.advert_cache
             .write()
             .await
-            .insert(peer_npub.to_string(), cached.clone());
+            .insert(peer_key, cached.clone());
         self.prune_advert_cache().await;
         Ok(cached.advert)
     }
@@ -2287,14 +2302,14 @@ impl NostrDiscovery {
 
         let mut oldest = cache
             .iter()
-            .map(|(npub, entry)| (npub.clone(), entry.valid_until_ms))
+            .map(|(peer_key, entry)| (*peer_key, entry.valid_until_ms))
             .collect::<Vec<_>>();
         oldest.sort_by_key(|(_, ts)| *ts);
         let overflow = cache
             .len()
             .saturating_sub(self.config.advert_cache_max_entries);
-        for (npub, _) in oldest.into_iter().take(overflow) {
-            cache.remove(&npub);
+        for (peer_key, _) in oldest.into_iter().take(overflow) {
+            cache.remove(&peer_key);
         }
         debug!(
             evicted = overflow,
@@ -2532,7 +2547,7 @@ impl NostrDiscovery {
     /// unit tests to set up consumer-side state without needing live relays.
     pub(crate) async fn insert_advert_for_test(&self, npub: String, advert: CachedOverlayAdvert) {
         let mut cache = self.advert_cache.write().await;
-        cache.insert(npub, advert);
+        cache.insert(NostrPeerKey::parse(&npub).expect("valid test npub"), advert);
     }
 
     /// Queue a bootstrap event directly for lifecycle tests without live relays
@@ -2566,7 +2581,7 @@ fn event_channel_capacity(config: &NostrDiscoveryConfig) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::nostr::TraversalAddress;
+    use crate::discovery::nostr::{OverlayTransportKind, TraversalAddress};
 
     #[test]
     fn event_channel_capacity_tracks_open_and_inbound_limits() {
@@ -2668,6 +2683,49 @@ mod tests {
             "second request for the same peer should be deduped"
         );
         assert_eq!(discovery.active_initiator_count_for_test().await, 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_connect_request_canonicalizes_hex_and_npub() {
+        let discovery = Arc::new(NostrDiscovery::new_for_test());
+        let peer_pubkey = nostr::Keys::generate().public_key();
+        let peer_npub = peer_pubkey.to_bech32().expect("peer npub");
+        let peer_hex = peer_pubkey.to_hex();
+
+        assert!(
+            discovery
+                .request_connect_with_mesh_signaling(PeerConfig::new(peer_npub, "udp", "nat"), true)
+                .await,
+            "first request should spawn an initiator"
+        );
+        assert!(
+            !discovery
+                .request_connect_with_mesh_signaling(PeerConfig::new(peer_hex, "udp", "nat"), true)
+                .await,
+            "same pubkey with a different edge spelling should be deduped"
+        );
+        assert_eq!(discovery.active_initiator_count_for_test().await, 1);
+    }
+
+    #[tokio::test]
+    async fn advert_cache_lookup_canonicalizes_hex_and_npub() {
+        let discovery = NostrDiscovery::new_for_test();
+        let peer_pubkey = nostr::Keys::generate().public_key();
+        let peer_npub = peer_pubkey.to_bech32().expect("peer npub");
+        let peer_hex = peer_pubkey.to_hex();
+        let endpoint = OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: "nat".to_string(),
+        };
+        let advert =
+            NostrDiscovery::cached_advert_for_test(peer_npub.clone(), endpoint.clone(), 42);
+
+        discovery.insert_advert_for_test(peer_npub, advert).await;
+
+        assert_eq!(
+            discovery.cached_advert_endpoints_for_peer(&peer_hex).await,
+            Some(vec![endpoint])
+        );
     }
 
     #[tokio::test]
