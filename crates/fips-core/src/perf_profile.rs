@@ -47,6 +47,7 @@
 //!   * `DECRYPT_FALLBACK_PRIORITY_WAIT` — priority decrypt completions → rx_loop fallback processing
 //!   * `DECRYPT_FALLBACK_BULK_WAIT` — bulk decrypt completions → rx_loop fallback processing
 
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
@@ -323,6 +324,39 @@ static MAX_NS: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
 static HIST: [AtomicU64; N_STAGES * HIST_BUCKETS] =
     [const { AtomicU64::new(0) }; N_STAGES * HIST_BUCKETS];
 static EVENTS: [AtomicU64; N_EVENTS] = [const { AtomicU64::new(0) }; N_EVENTS];
+static TRACE_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// Compact monotonic timestamp carried by packet/job queue handoffs.
+///
+/// `Instant` is 16 bytes on common targets. Hot-path packets and worker jobs
+/// only need elapsed time relative to this process, so store a non-zero
+/// nanosecond offset from one process-local epoch instead. `Option<TraceStamp>`
+/// stays 8 bytes thanks to `NonZeroU64`'s niche.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TraceStamp(NonZeroU64);
+
+impl TraceStamp {
+    fn now() -> Self {
+        let elapsed = trace_elapsed_ns().saturating_add(1).max(1);
+        Self(NonZeroU64::new(elapsed).unwrap_or(NonZeroU64::MAX))
+    }
+
+    fn elapsed_ns(self) -> u64 {
+        trace_elapsed_ns().saturating_sub(self.0.get().saturating_sub(1))
+    }
+}
+
+fn trace_epoch() -> Instant {
+    *TRACE_EPOCH.get_or_init(Instant::now)
+}
+
+fn trace_elapsed_ns() -> u64 {
+    Instant::now()
+        .saturating_duration_since(trace_epoch())
+        .as_nanos()
+        .min(u64::MAX as u128) as u64
+}
 
 /// True iff perf/pipeline tracing is enabled. Read once at startup so
 /// the per-packet check is a single cached load.
@@ -343,19 +377,24 @@ pub(crate) fn enabled() -> bool {
 /// `None` when tracing is disabled so callers can store it cheaply in
 /// packet/job structs without paying `Instant::now()` in production.
 #[inline]
-pub(crate) fn stamp() -> Option<Instant> {
+pub(crate) fn stamp() -> Option<TraceStamp> {
     if enabled() {
-        Some(Instant::now())
+        Some(TraceStamp::now())
     } else {
         None
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_stamp() -> TraceStamp {
+    TraceStamp::now()
+}
+
 /// Record time elapsed since a previously captured stamp.
 #[inline]
-pub(crate) fn record_since(stage: Stage, start: Option<Instant>) {
+pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
     if let Some(start) = start {
-        record(stage, start.elapsed().as_nanos() as u64);
+        record(stage, start.elapsed_ns());
     }
 }
 
@@ -365,12 +404,12 @@ pub(crate) fn record_since(stage: Stage, start: Option<Instant>) {
 /// Count-weighting keeps the average and sample rate packet/message-shaped
 /// without forcing callers to loop only for accounting.
 #[inline]
-pub(crate) fn record_since_count(stage: Stage, start: Option<Instant>, count: u64) {
+pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
     if count == 0 {
         return;
     }
     if let Some(start) = start {
-        record_count(stage, start.elapsed().as_nanos() as u64, count);
+        record_count(stage, start.elapsed_ns(), count);
     }
 }
 
@@ -569,5 +608,17 @@ fn fmt_ns(ns: u64) -> String {
         format!("{:.1}us", ns as f64 / 1_000.0)
     } else {
         format!("{ns}ns")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TraceStamp;
+    use std::time::Instant;
+
+    #[test]
+    fn trace_stamp_is_compact_for_hot_queue_records() {
+        assert_eq!(std::mem::size_of::<Option<TraceStamp>>(), 8);
+        assert!(std::mem::size_of::<Option<TraceStamp>>() < std::mem::size_of::<Option<Instant>>());
     }
 }

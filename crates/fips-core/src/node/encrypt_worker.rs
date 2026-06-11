@@ -140,7 +140,7 @@ pub(crate) struct FmpSendJob {
     pub scheduling_weight: u8,
     /// Monotonic timestamp captured before dispatch into the worker
     /// queue, used only when pipeline tracing is enabled.
-    pub queued_at: Option<std::time::Instant>,
+    pub queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 pub(crate) struct FspSealJob {

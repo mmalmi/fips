@@ -34,7 +34,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 use tcp::TcpTransport;
 use thiserror::Error;
@@ -63,12 +63,12 @@ pub struct ReceivedPacket {
     pub timestamp_ms: u64,
     /// Monotonic timestamp for optional pipeline queue-wait profiling.
     #[doc(hidden)]
-    pub trace_enqueued_at: Option<Instant>,
+    pub trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
     /// Monotonic timestamp captured when `PacketRx` takes ownership of a
     /// channel item. Distinguishes mpsc/channel residence from rx-loop-owned
     /// batch-tail residence in perf traces.
     #[doc(hidden)]
-    pub trace_rx_loop_owned_at: Option<Instant>,
+    pub trace_rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl ReceivedPacket {
@@ -110,7 +110,7 @@ impl ReceivedPacket {
         remote_addr: TransportAddr,
         data: Vec<u8>,
         timestamp_ms: u64,
-        trace_enqueued_at: Option<Instant>,
+        trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self {
             transport_id,
@@ -206,7 +206,7 @@ enum PacketSendFailure {
 
 struct PendingPackets {
     packets: IntoIter<ReceivedPacket>,
-    rx_loop_owned_at: Option<Instant>,
+    rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -261,7 +261,7 @@ impl PacketQueueItem {
         }
     }
 
-    fn queued_at(&self) -> Option<Instant> {
+    fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
             PacketQueueItem::One(packet) => packet.trace_enqueued_at,
             PacketQueueItem::Batch(packets) => {
@@ -295,7 +295,10 @@ impl PacketQueueItem {
 }
 
 impl PendingPackets {
-    fn new(packets: IntoIter<ReceivedPacket>, rx_loop_owned_at: Option<Instant>) -> Self {
+    fn new(
+        packets: IntoIter<ReceivedPacket>,
+        rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Self {
         Self {
             packets,
             rx_loop_owned_at,
@@ -2520,7 +2523,7 @@ mod tests {
     #[test]
     fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
         let addr = TransportAddr::from_string("test");
-        let rx_loop_owned_at = Some(Instant::now());
+        let rx_loop_owned_at = Some(crate::perf_profile::test_stamp());
         let packets = vec![
             ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0xaa; 32]),
             ReceivedPacket::new(TransportId::new(1), addr, vec![0xbb; 48]),

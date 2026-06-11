@@ -1321,7 +1321,7 @@ impl EndpointEventSender {
     fn send_data_batch(
         &self,
         messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         if messages.is_empty() {
             return Ok(());
@@ -1691,14 +1691,14 @@ pub(crate) enum NodeEndpointCommand {
 #[derive(Debug)]
 pub(crate) struct EndpointSendCommand {
     send: EndpointDataSend,
-    queued_at: Option<std::time::Instant>,
+    queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl EndpointSendCommand {
     pub(crate) fn new(
         remote: PeerIdentity,
         payload: Vec<u8>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self {
             send: EndpointDataSend::new(remote, EndpointDataPayload::new(payload)),
@@ -1714,7 +1714,7 @@ impl EndpointSendCommand {
         self.send.payload().drop_on_backpressure()
     }
 
-    pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<std::time::Instant>) {
+    pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
         (self.send, self.queued_at)
     }
 }
@@ -1724,14 +1724,14 @@ impl EndpointSendCommand {
 pub(crate) struct EndpointSendBatchCommand {
     remote: PeerIdentity,
     payloads: Vec<EndpointDataPayload>,
-    queued_at: Option<std::time::Instant>,
+    queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl EndpointSendBatchCommand {
     pub(crate) fn new(
         remote: PeerIdentity,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Option<Self> {
         if payloads.is_empty() {
             return None;
@@ -1762,7 +1762,7 @@ impl EndpointSendBatchCommand {
     ) -> (
         PeerIdentity,
         Vec<EndpointDataPayload>,
-        Option<std::time::Instant>,
+        Option<crate::perf_profile::TraceStamp>,
     ) {
         (self.remote, self.payloads, self.queued_at)
     }
@@ -1772,7 +1772,7 @@ impl NodeEndpointCommand {
     pub(crate) fn send(
         remote: PeerIdentity,
         payload: Vec<u8>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
         response_tx: tokio::sync::oneshot::Sender<Result<(), NodeError>>,
     ) -> Self {
         Self::Send {
@@ -1784,7 +1784,7 @@ impl NodeEndpointCommand {
     pub(crate) fn send_oneway(
         remote: PeerIdentity,
         payload: Vec<u8>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self::SendOneway {
             command: EndpointSendCommand::new(remote, payload, queued_at),
@@ -1794,7 +1794,7 @@ impl NodeEndpointCommand {
     pub(crate) fn send_batch_oneway(
         remote: PeerIdentity,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
         lane: EndpointCommandLane,
     ) -> Option<Self> {
         debug_assert!(payloads.iter().all(|payload| payload.lane() == lane));
@@ -1885,11 +1885,11 @@ pub(crate) enum NodeEndpointEvent {
     Data {
         source_peer: PeerIdentity,
         payload: Vec<u8>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     },
     DataBatch {
         messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     },
 }
 
@@ -1932,7 +1932,7 @@ impl NodeEndpointEvent {
         }
     }
 
-    fn queued_at(&self) -> Option<std::time::Instant> {
+    fn queued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
             NodeEndpointEvent::Data { queued_at, .. }
             | NodeEndpointEvent::DataBatch { queued_at, .. } => *queued_at,
@@ -1964,7 +1964,7 @@ impl NodeEndpointEvent {
 
     fn from_delivery_messages(
         mut messages: Vec<EndpointDataDelivery>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Option<Self> {
         match messages.len() {
             0 => None,

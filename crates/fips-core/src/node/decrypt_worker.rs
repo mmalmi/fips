@@ -48,7 +48,6 @@ use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
 };
@@ -289,7 +288,7 @@ pub(crate) struct DecryptJob {
     pub fallback_tx: DecryptWorkerFallbackSender,
     /// Monotonic timestamp captured immediately before rx_loop queues this job
     /// to the decrypt worker. Used only when pipeline tracing is on.
-    trace_enqueued_at: Option<Instant>,
+    trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl DecryptJob {
@@ -331,7 +330,7 @@ impl DecryptJob {
         matches!(self.lane(), DecryptWorkerLane::Bulk)
     }
 
-    fn set_trace_enqueued_at(&mut self, queued_at: Option<Instant>) {
+    fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
         self.trace_enqueued_at = queued_at;
     }
 
@@ -406,7 +405,7 @@ pub(crate) struct DecryptFallback {
     pub fmp_plaintext_len: usize,
     /// Monotonic timestamp captured immediately before the worker queues this
     /// completion back to the rx loop. Used only when pipeline tracing is on.
-    pub(crate) trace_enqueued_at: Option<Instant>,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 impl DecryptFallback {
@@ -455,7 +454,7 @@ pub(crate) struct DecryptFailureReport {
     pub fmp_replay_highest: u64,
     /// Monotonic timestamp captured immediately before the worker queues this
     /// failure report back to the rx loop.
-    pub(crate) trace_enqueued_at: Option<Instant>,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 /// Event emitted by the decrypt worker to the rx_loop.
@@ -469,14 +468,14 @@ impl DecryptWorkerEvent {
         decrypt_worker_event_lane(self)
     }
 
-    fn set_trace_enqueued_at(&mut self, queued_at: Option<Instant>) {
+    fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
         match self {
             Self::Plaintext(fallback) => fallback.trace_enqueued_at = queued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
         }
     }
 
-    fn trace_enqueued_at(&self) -> Option<Instant> {
+    fn trace_enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
             Self::Plaintext(fallback) => fallback.trace_enqueued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at,

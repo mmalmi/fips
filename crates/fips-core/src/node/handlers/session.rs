@@ -1092,7 +1092,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         self,
         worker_wire: PipelinedEndpointWorkerWire,
         send_target: crate::node::encrypt_worker::SelectedSendTarget,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> crate::node::encrypt_worker::FmpSendJob {
         worker_wire.into_job(
             send_target,
@@ -1344,7 +1344,7 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         fmp_reservation: crate::node::PreparedFmpWorkerReservation,
         fsp_reservation: crate::node::session::FspSendReservation,
         send_target: PipelinedEndpointSendTarget,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
         debug_assert_eq!(fmp_prepared.payload_len, self.wire_plan.fmp_payload_len());
         let dest_addr = self.wire_plan.dest_addr;
@@ -1486,7 +1486,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         fmp_reservation: crate::node::PreparedFmpWorkerReservation,
         fsp_reservation: crate::node::session::FspSendReservation,
         send_target: PipelinedEndpointSendTarget,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
         let Self {
             send_plan,
@@ -1542,7 +1542,7 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
 
     fn into_prepared_send(
         self,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
         let Self {
             runtime_plan,
@@ -1935,7 +1935,7 @@ impl PipelinedEndpointWorkerWire {
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
         scheduling_weight: u8,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> crate::node::encrypt_worker::FmpSendJob {
         crate::node::encrypt_worker::FmpSendJob {
             cipher: self.fmp_cipher,
@@ -4374,7 +4374,7 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) {
         for payload in payloads {
             crate::perf_profile::record_since(
@@ -4394,7 +4394,7 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) {
         let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
             Ok(route) => route,

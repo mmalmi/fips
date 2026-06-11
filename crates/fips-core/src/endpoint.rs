@@ -871,7 +871,7 @@ impl FipsEndpoint {
         &self,
         remote: PeerIdentity,
         mut payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<std::time::Instant>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
         lane: EndpointCommandLane,
     ) -> Result<(), FipsEndpointError> {
         while !payloads.is_empty() {
@@ -1659,7 +1659,7 @@ mod tests {
     fn endpoint_send_command_owns_payload_lane_and_queue_stamp() {
         let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
         let payload = ipv6_tcp_packet(0x18, 512);
-        let queued_at = Some(std::time::Instant::now());
+        let queued_at = Some(crate::perf_profile::test_stamp());
 
         let command = crate::node::EndpointSendCommand::new(remote, payload.clone(), queued_at);
         assert_eq!(command.lane(), EndpointCommandLane::Bulk);
