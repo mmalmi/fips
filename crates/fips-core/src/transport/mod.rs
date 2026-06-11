@@ -194,8 +194,22 @@ impl PacketTx {
             return Ok(());
         }
 
-        let mut priority_packets = Vec::new();
-        let mut bulk_packets = Vec::new();
+        let packet_count = packets.len();
+        let priority_count = packets
+            .iter()
+            .filter(|packet| packet.is_priority_sized())
+            .count();
+        if priority_count == 0 || priority_count == packet_count {
+            let tx = if priority_count == 0 {
+                &self.bulk
+            } else {
+                &self.priority
+            };
+            return Self::send_packet_items(tx, packets);
+        }
+
+        let mut priority_packets = Vec::with_capacity(priority_count);
+        let mut bulk_packets = Vec::with_capacity(packet_count - priority_count);
         for packet in packets {
             if packet.is_priority_sized() {
                 priority_packets.push(packet);
@@ -2071,6 +2085,58 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xcc);
+    }
+
+    #[test]
+    fn packet_channel_keeps_single_lane_batches_grouped() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ])
+        .expect("priority batch send should succeed");
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ])
+        .expect("bulk batch send should succeed");
+
+        assert_eq!(
+            rx.priority.len(),
+            1,
+            "priority-only receive batch should occupy one channel item"
+        );
+        assert_eq!(
+            rx.bulk.len(),
+            1,
+            "bulk-only receive batch should occupy one channel item"
+        );
+        match rx.priority.try_recv().expect("priority channel item") {
+            PacketQueueItem::Batch(packets) => {
+                assert_eq!(packets.len(), 2);
+                assert_eq!(packets[0].data[0], 0x11);
+                assert_eq!(packets[1].data[0], 0x22);
+            }
+            item => panic!("expected grouped priority batch, got {item:?}"),
+        }
+        match rx.bulk.try_recv().expect("bulk channel item") {
+            PacketQueueItem::Batch(packets) => {
+                assert_eq!(packets.len(), 2);
+                assert_eq!(packets[0].data[0], 0xaa);
+                assert_eq!(packets[1].data[0], 0xbb);
+            }
+            item => panic!("expected grouped bulk batch, got {item:?}"),
+        }
     }
 
     #[tokio::test]
