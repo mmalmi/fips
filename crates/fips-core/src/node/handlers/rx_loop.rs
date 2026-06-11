@@ -322,6 +322,24 @@ impl Node {
                         );
                     }
                 }
+                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv() => {
+                    let fallback_drained = self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        None,
+                        Some(event),
+                        None,
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
@@ -362,6 +380,7 @@ impl Node {
                     );
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
+                        None,
                         None,
                         Some(event),
                         fallback_plan.trailing_budget,
@@ -511,6 +530,7 @@ impl Node {
                             decrypt_fallback_rx,
                             None,
                             None,
+                            None,
                             fallback_plan.interleave_budget,
                         )
                         .await
@@ -558,6 +578,7 @@ impl Node {
             // transport receive work after every hot packet drain.
             self.drain_decrypt_fallback(
                 decrypt_fallback_rx,
+                None,
                 None,
                 None,
                 fallback_plan.trailing_budget.min(budget),
@@ -814,13 +835,20 @@ impl Node {
         &mut self,
         rx: &mut DecryptWorkerFallbackReceivers,
         first_priority_event: Option<DecryptWorkerEvent>,
+        first_authenticated_bulk_event: Option<DecryptWorkerEvent>,
         first_bulk_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
         self.begin_endpoint_event_batch();
-        let mut drain =
-            PriorityBulkDrainCursor::new(first_priority_event, first_bulk_event, budget);
-        while let Some(event) = drain.next(&mut rx.priority, &mut rx.bulk) {
+        let mut drain = DecryptReturnDrainCursor::new(
+            first_priority_event,
+            first_authenticated_bulk_event,
+            first_bulk_event,
+            budget,
+        );
+        while let Some(event) =
+            drain.next(&mut rx.priority, &mut rx.authenticated_bulk, &mut rx.bulk)
+        {
             rx.release_dequeued_event(&event);
             let extra = event.packet_count().saturating_sub(1);
             self.process_decrypt_worker_event(event).await;
@@ -1027,7 +1055,7 @@ struct RxLoopSideQueues<'a> {
 }
 
 fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) -> bool {
-    !rx.priority.is_empty() || !rx.bulk.is_empty()
+    !rx.priority.is_empty() || !rx.authenticated_bulk.is_empty() || !rx.bulk.is_empty()
 }
 
 fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
@@ -1316,6 +1344,67 @@ impl<T> PriorityBulkDrainCursor<T> {
     }
 }
 
+struct DecryptReturnDrainCursor<T> {
+    first_priority: Option<T>,
+    first_authenticated_bulk: Option<T>,
+    first_bulk: Option<T>,
+    remaining: usize,
+    drained: usize,
+}
+
+impl<T> DecryptReturnDrainCursor<T> {
+    fn new(
+        first_priority: Option<T>,
+        first_authenticated_bulk: Option<T>,
+        first_bulk: Option<T>,
+        budget: usize,
+    ) -> Self {
+        Self {
+            first_priority,
+            first_authenticated_bulk,
+            first_bulk,
+            remaining: budget,
+            drained: 0,
+        }
+    }
+
+    fn next(
+        &mut self,
+        priority_rx: &mut Receiver<T>,
+        authenticated_bulk_rx: &mut Receiver<T>,
+        bulk_rx: &mut Receiver<T>,
+    ) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let item = if let Some(item) = self.first_priority.take() {
+            Some(item)
+        } else {
+            priority_rx
+                .try_recv()
+                .ok()
+                .or_else(|| self.first_authenticated_bulk.take())
+                .or_else(|| authenticated_bulk_rx.try_recv().ok())
+                .or_else(|| self.first_bulk.take())
+                .or_else(|| bulk_rx.try_recv().ok())
+        }?;
+
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    fn drained(&self) -> usize {
+        self.drained
+    }
+
+    fn charge_extra(&mut self, extra: usize) {
+        self.remaining = self.remaining.saturating_sub(extra);
+        self.drained = self.drained.saturating_add(extra);
+    }
+}
+
 struct SingleLaneDrainCursor<T> {
     first_item: Option<T>,
     remaining: usize,
@@ -1350,12 +1439,13 @@ impl<T> SingleLaneDrainCursor<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-        FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-        FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-        PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
-        RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
-        fallback_drain_plan, non_packet_drain_budget,
+        DecryptReturnDrainCursor, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
+        FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+        FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
+        NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor,
+        PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
+        RxLoopMaintenanceState, SingleLaneDrainCursor, fallback_drain_plan,
+        non_packet_drain_budget,
     };
     use std::time::{Duration, Instant};
 
@@ -1607,25 +1697,96 @@ mod tests {
     #[tokio::test]
     async fn fallback_drain_prefers_ready_priority_over_selected_bulk() {
         let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (_authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
         let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 
         priority_tx.send("priority-fallback").await.unwrap();
         bulk_tx.send("queued-bulk-fallback").await.unwrap();
-        let mut drain = PriorityBulkDrainCursor::new(None, Some("selected-bulk-fallback"), 4);
+        let mut drain =
+            DecryptReturnDrainCursor::new(None, None, Some("selected-bulk-fallback"), 4);
 
         assert_eq!(
-            drain.next(&mut priority_rx, &mut bulk_rx),
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
             Some("priority-fallback")
         );
         assert_eq!(
-            drain.next(&mut priority_rx, &mut bulk_rx),
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
             Some("selected-bulk-fallback")
         );
         assert_eq!(
-            drain.next(&mut priority_rx, &mut bulk_rx),
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
             Some("queued-bulk-fallback")
         );
-        assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            None
+        );
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn decrypt_return_drain_prefers_authenticated_bulk_over_selected_fallback_bulk() {
+        let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        authenticated_bulk_tx
+            .send("queued-authenticated-bulk")
+            .await
+            .unwrap();
+        bulk_tx.send("queued-fallback-bulk").await.unwrap();
+        let mut drain =
+            DecryptReturnDrainCursor::new(None, None, Some("selected-fallback-bulk"), 4);
+
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("queued-authenticated-bulk")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("selected-fallback-bulk")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("queued-fallback-bulk")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            None
+        );
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn decrypt_return_drain_prefers_priority_over_selected_authenticated_bulk() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (authenticated_bulk_tx, mut authenticated_bulk_rx) = tokio::sync::mpsc::channel(4);
+        let (_bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("queued-priority").await.unwrap();
+        authenticated_bulk_tx
+            .send("queued-authenticated-bulk")
+            .await
+            .unwrap();
+        let mut drain =
+            DecryptReturnDrainCursor::new(None, Some("selected-authenticated-bulk"), None, 4);
+
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("queued-priority")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("selected-authenticated-bulk")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            Some("queued-authenticated-bulk")
+        );
+        assert_eq!(
+            drain.next(&mut priority_rx, &mut authenticated_bulk_rx, &mut bulk_rx),
+            None
+        );
         assert_eq!(drain.drained(), 3);
     }
 
