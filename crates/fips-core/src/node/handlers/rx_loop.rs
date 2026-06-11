@@ -951,11 +951,13 @@ impl<T> PacketDrainCursor<T> {
 
         if self.fallback_interleave_due() {
             self.packets_until_fallback_interleave = self.fallback_interleave_every;
+            self.charge_interleave_turn();
             return Some(PacketDrainAction::InterleaveFallback);
         }
 
         if self.side_queue_interleave_due() {
             self.packets_until_side_queue_interleave = self.side_queue_interleave_every;
+            self.charge_interleave_turn();
             return Some(PacketDrainAction::InterleaveSideQueues);
         }
 
@@ -992,6 +994,10 @@ impl<T> PacketDrainCursor<T> {
         if self.packets_until_side_queue_interleave > 0 {
             self.packets_until_side_queue_interleave -= 1;
         }
+    }
+
+    fn charge_interleave_turn(&mut self) {
+        self.remaining -= 1;
     }
 }
 
@@ -1293,8 +1299,32 @@ mod tests {
 
         packet_tx.send("queued-1").unwrap();
         packet_tx.send("queued-2").unwrap();
-        packet_tx.send("queued-3").unwrap();
         let mut drain = PacketDrainCursor::new(Some("selected"), 3, 2, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("selected"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(packet_rx.try_recv().ok(), Some("queued-2"));
+        assert_eq!(drain.drained(), 2);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_charges_interleaves_against_budget() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        let mut drain = PacketDrainCursor::new(Some("selected"), 4, 2, 0);
 
         assert_eq!(
             drain.next(&mut packet_rx),
@@ -1313,7 +1343,6 @@ mod tests {
             Some(PacketDrainAction::Packet("queued-2"))
         );
         assert_eq!(drain.next(&mut packet_rx), None);
-        assert_eq!(packet_rx.try_recv().ok(), Some("queued-3"));
         assert_eq!(drain.drained(), 3);
     }
 
@@ -1324,7 +1353,7 @@ mod tests {
         packet_tx.send("queued-1").unwrap();
         packet_tx.send("queued-2").unwrap();
         packet_tx.send("queued-3").unwrap();
-        let mut drain = PacketDrainCursor::new(None, 4, 2, 2);
+        let mut drain = PacketDrainCursor::new(None, 5, 2, 2);
 
         assert_eq!(
             drain.next(&mut packet_rx),
