@@ -273,6 +273,85 @@ fn endpoint_event_queue_keeps_single_lane_batches_grouped() {
     assert_eq!(event_tx.queued_messages(), 0);
 }
 
+#[test]
+fn endpoint_event_queue_send_fails_after_receiver_drop() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"queued".to_vec(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("endpoint event should enqueue while receiver is alive");
+    assert_eq!(event_tx.queued_messages(), 1);
+    assert!(event_rx.try_recv().is_ok());
+
+    drop(event_rx);
+    assert_eq!(
+        event_tx.queued_messages(),
+        0,
+        "receiver drop should discard any owned backlog"
+    );
+
+    let error = event_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: source,
+            payload: b"after-drop".to_vec(),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect_err("send should fail once endpoint event receiver is dropped");
+    match error.0 {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, b"after-drop"),
+        event => panic!("expected failed data event, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+}
+
+#[test]
+fn endpoint_event_queue_closes_after_all_senders_drop() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let event_tx_clone = event_tx.clone();
+
+    drop(event_tx);
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "receiver should stay open while a sender clone is alive"
+    );
+
+    drop(event_tx_clone);
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ),
+        "receiver should close once the final sender is dropped"
+    );
+    assert!(
+        event_rx.blocking_recv().is_none(),
+        "blocking receive should return after sender close"
+    );
+}
+
+#[tokio::test]
+async fn endpoint_event_queue_async_recv_closes_when_senders_drop() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+
+    let waiter = tokio::spawn(async move { event_rx.recv().await });
+    tokio::task::yield_now().await;
+    drop(event_tx);
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+        .await
+        .expect("async recv should wake after final sender drops")
+        .expect("async recv task should not panic");
+    assert!(result.is_none());
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn make_test_connected_udp_pair(
     transport_id: TransportId,
