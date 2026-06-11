@@ -158,6 +158,9 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: Sender<PacketQueueItem>,
+    /// Packet-count ready hint for priority lane probes. Bulk batch tails check
+    /// this instead of touching an empty priority mpsc once per data packet.
+    priority_queued_packets: Arc<AtomicUsize>,
     queued_packets: Arc<AtomicUsize>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_capacity: usize,
@@ -168,6 +171,7 @@ pub struct PacketTx {
 pub struct PacketRx {
     priority: UnboundedReceiver<PacketQueueItem>,
     bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
+    priority_queued_packets: Arc<AtomicUsize>,
     queued_packets: Arc<AtomicUsize>,
     bulk_queued_packets: Arc<AtomicUsize>,
     track_backlog: bool,
@@ -382,6 +386,12 @@ impl PacketTx {
         let bulk_reserved = matches!(tx, PacketQueueTx::Bulk)
             .then_some(packet_count)
             .filter(|count| *count > 0);
+        let priority_reserved = matches!(tx, PacketQueueTx::Priority)
+            .then_some(packet_count)
+            .filter(|count| *count > 0);
+        if let Some(count) = priority_reserved {
+            self.priority_queued_packets.fetch_add(count, Relaxed);
+        }
         if let Some(count) = bulk_reserved
             && !self.try_reserve_bulk_packets(count)
         {
@@ -416,6 +426,9 @@ impl PacketTx {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
                 }
+                if let Some(count) = priority_reserved {
+                    release_priority_packets(&self.priority_queued_packets, count);
+                }
                 if let Some(count) = bulk_reserved {
                     self.release_bulk_packets(count);
                 }
@@ -424,6 +437,9 @@ impl PacketTx {
             Err(PacketSendFailure::DroppedBulk(dropped_count)) => {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
+                }
+                if let Some(count) = priority_reserved {
+                    release_priority_packets(&self.priority_queued_packets, count);
                 }
                 if let Some(count) = bulk_reserved {
                     self.release_bulk_packets(count);
@@ -454,6 +470,11 @@ impl PacketTx {
     #[cfg(test)]
     pub(crate) fn queued_packets(&self) -> usize {
         self.queued_packets.load(Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn priority_queued_packets(&self) -> usize {
+        self.priority_queued_packets.load(Relaxed)
     }
 
     #[cfg(test)]
@@ -502,15 +523,17 @@ impl PacketRx {
             return Ok(packet);
         }
 
-        match self.priority.try_recv() {
-            Ok(item) => {
-                if let Some(packet) = self.packet_from_item(item, PacketLane::Priority) {
-                    return Ok(packet);
+        if self.should_probe_priority() {
+            match self.priority.try_recv() {
+                Ok(item) => {
+                    if let Some(packet) = self.packet_from_item(item, PacketLane::Priority) {
+                        return Ok(packet);
+                    }
                 }
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.priority_closed = true;
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.priority_closed = true;
+                }
             }
         }
 
@@ -550,6 +573,9 @@ impl PacketRx {
         if self.track_backlog {
             self.queued_packets.fetch_sub(packet_count, Relaxed);
         }
+        if matches!(lane, PacketLane::Priority) {
+            release_priority_packets(&self.priority_queued_packets, packet_count);
+        }
         if matches!(lane, PacketLane::Bulk) {
             release_reserved_bulk_packets(&self.bulk_queued_packets, packet_count);
         }
@@ -575,6 +601,11 @@ impl PacketRx {
                 Some(packet)
             }
         }
+    }
+
+    fn should_probe_priority(&self) -> bool {
+        !self.priority_closed
+            && (self.priority_queued_packets.load(Relaxed) > 0 || self.bulk_closed)
     }
 
     fn take_pending(pending: &mut Option<PendingPackets>) -> Option<ReceivedPacket> {
@@ -604,6 +635,18 @@ fn release_reserved_bulk_packets(counter: &AtomicUsize, count: usize) {
     );
 }
 
+fn release_priority_packets(counter: &AtomicUsize, count: usize) {
+    if count == 0 {
+        return;
+    }
+
+    let previous = counter.fetch_sub(count, Relaxed);
+    debug_assert!(
+        previous >= count,
+        "transport priority queued packet accounting underflow"
+    );
+}
+
 /// Create a packet channel.
 ///
 /// The capacity applies to bulk packets. Priority traffic is intentionally
@@ -612,6 +655,7 @@ fn release_reserved_bulk_packets(counter: &AtomicUsize, count: usize) {
 pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(buffer.max(1));
+    let priority_queued_packets = Arc::new(AtomicUsize::new(0));
     let queued_packets = Arc::new(AtomicUsize::new(0));
     let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     let track_backlog = packet_channel_tracks_backlog();
@@ -619,6 +663,7 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
+            priority_queued_packets: Arc::clone(&priority_queued_packets),
             queued_packets: Arc::clone(&queued_packets),
             bulk_queued_packets: Arc::clone(&bulk_queued_packets),
             bulk_packet_capacity: buffer.max(1),
@@ -627,6 +672,7 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
+            priority_queued_packets,
             queued_packets,
             bulk_queued_packets,
             track_backlog,
@@ -2483,6 +2529,59 @@ mod tests {
         assert_eq!(counter.load(Relaxed), 2);
     }
 
+    #[test]
+    fn release_priority_packets_subtracts_exact_count() {
+        let counter = AtomicUsize::new(5);
+
+        release_priority_packets(&counter, 0);
+        assert_eq!(counter.load(Relaxed), 5);
+
+        release_priority_packets(&counter, 3);
+        assert_eq!(counter.load(Relaxed), 2);
+    }
+
+    #[test]
+    fn packet_channel_priority_hint_counts_channel_owned_packets() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ])
+        .expect("priority batch send should succeed");
+        assert_eq!(tx.priority_queued_packets(), 2);
+        assert_eq!(tx.bulk_queued_packets(), 0);
+
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+        assert_eq!(
+            tx.priority_queued_packets(),
+            0,
+            "once a priority batch is dequeued, its tail is rx-loop-owned"
+        );
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
+        assert_eq!(tx.priority_queued_packets(), 0);
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ])
+        .expect("bulk batch send should succeed");
+        assert_eq!(
+            tx.priority_queued_packets(),
+            0,
+            "bulk traffic should not make PacketRx probe the priority lane"
+        );
+    }
+
     #[tokio::test]
     async fn packet_channel_priority_overtakes_pending_bulk_batch_tail() {
         let (tx, mut rx) = packet_channel(10);
@@ -2688,6 +2787,15 @@ mod tests {
         let packet = ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]);
         assert!(tx.send(packet).is_err());
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.priority_queued_packets(), 0);
+
+        let packets = vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x33; 64]),
+        ];
+        assert!(tx.send_batch(packets).is_err());
+        assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.priority_queued_packets(), 0);
 
         let packets = vec![
             ReceivedPacket::new(
