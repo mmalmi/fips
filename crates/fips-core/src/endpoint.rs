@@ -453,6 +453,8 @@ pub struct FipsEndpointBuilder {
     packet_channel_capacity: usize,
 }
 
+const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
+
 impl Default for FipsEndpointBuilder {
     fn default() -> Self {
         Self {
@@ -461,7 +463,7 @@ impl Default for FipsEndpointBuilder {
             discovery_scope: None,
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
-            packet_channel_capacity: 1024,
+            packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
         }
     }
 }

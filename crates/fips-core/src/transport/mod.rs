@@ -145,13 +145,16 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 ///
 /// The priority lane stays unbounded because control-shaped datagrams must keep
 /// making progress even when bulk is saturated. The bulk lane is bounded by the
-/// configured packet-channel capacity and uses nonblocking `try_send`: overload
-/// sheds bulk explicitly instead of hiding unbounded latency behind the rx loop.
+/// configured packet-channel capacity in packets, not receive-batch items, and
+/// uses nonblocking `try_send`: overload sheds bulk explicitly instead of
+/// hiding unbounded latency behind the rx loop.
 #[derive(Clone, Debug)]
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: Sender<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
+    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_packet_capacity: usize,
     track_backlog: bool,
 }
 
@@ -160,6 +163,7 @@ pub struct PacketRx {
     priority: UnboundedReceiver<PacketQueueItem>,
     bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
+    bulk_queued_packets: Arc<AtomicUsize>,
     track_backlog: bool,
     pending_priority: Option<IntoIter<ReceivedPacket>>,
     pending_bulk: Option<IntoIter<ReceivedPacket>>,
@@ -342,8 +346,22 @@ impl PacketTx {
     }
 
     fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
+        let packet_count = item.packet_count();
+        let bulk_reserved = matches!(tx, PacketQueueTx::Bulk)
+            .then_some(packet_count)
+            .filter(|count| *count > 0);
+        if let Some(count) = bulk_reserved
+            && !self.try_reserve_bulk_packets(count)
+        {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::TransportBulkDropped,
+                count as u64,
+            );
+            return Ok(());
+        }
+
         let tracked_count = if self.track_backlog {
-            Some(item.packet_count())
+            Some(packet_count)
         } else {
             None
         };
@@ -366,11 +384,17 @@ impl PacketTx {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
                 }
+                if let Some(count) = bulk_reserved {
+                    self.release_bulk_packets(count);
+                }
                 Err(item)
             }
             Err(PacketSendFailure::DroppedBulk(dropped_count)) => {
                 if let Some(count) = tracked_count {
                     self.queued_packets.fetch_sub(count, Relaxed);
+                }
+                if let Some(count) = bulk_reserved {
+                    self.release_bulk_packets(count);
                 }
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::TransportBulkDropped,
@@ -381,9 +405,32 @@ impl PacketTx {
         }
     }
 
+    fn try_reserve_bulk_packets(&self, count: usize) -> bool {
+        self.bulk_queued_packets
+            .fetch_update(Relaxed, Relaxed, |current| {
+                current
+                    .checked_add(count)
+                    .filter(|next| *next <= self.bulk_packet_capacity)
+            })
+            .is_ok()
+    }
+
+    fn release_bulk_packets(&self, count: usize) {
+        let _ = self
+            .bulk_queued_packets
+            .fetch_update(Relaxed, Relaxed, |current| {
+                Some(current.saturating_sub(count))
+            });
+    }
+
     #[cfg(test)]
     pub(crate) fn queued_packets(&self) -> usize {
         self.queued_packets.load(Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bulk_queued_packets(&self) -> usize {
+        self.bulk_queued_packets.load(Relaxed)
     }
 }
 
@@ -471,9 +518,16 @@ impl PacketRx {
         lane: PacketLane,
     ) -> Option<ReceivedPacket> {
         item.record_dequeue_wait(lane);
+        let packet_count = item.packet_count();
         if self.track_backlog {
-            let packet_count = item.packet_count();
             self.queued_packets.fetch_sub(packet_count, Relaxed);
+        }
+        if matches!(lane, PacketLane::Bulk) {
+            let _ = self
+                .bulk_queued_packets
+                .fetch_update(Relaxed, Relaxed, |current| {
+                    Some(current.saturating_sub(packet_count))
+                });
         }
         match item {
             PacketQueueItem::One(packet) => Some(packet),
@@ -508,25 +562,29 @@ fn packet_channel_tracks_backlog() -> bool {
 
 /// Create a packet channel.
 ///
-/// The capacity applies to bulk channel items. Priority traffic is intentionally
+/// The capacity applies to bulk packets. Priority traffic is intentionally
 /// unbounded so small control-shaped packets can still wake the rx loop while a
 /// bulk receiver is saturated.
 pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(buffer.max(1));
     let queued_packets = Arc::new(AtomicUsize::new(0));
+    let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     let track_backlog = packet_channel_tracks_backlog();
     (
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
             queued_packets: Arc::clone(&queued_packets),
+            bulk_queued_packets: Arc::clone(&bulk_queued_packets),
+            bulk_packet_capacity: buffer.max(1),
             track_backlog,
         },
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
             queued_packets,
+            bulk_queued_packets,
             track_backlog,
             pending_priority: None,
             pending_bulk: None,
@@ -2387,6 +2445,7 @@ mod tests {
         ))
         .expect("first bulk packet should fill bounded bulk lane");
         assert_eq!(tx.queued_packets(), 1);
+        assert_eq!(tx.bulk_queued_packets(), 1);
 
         tx.send(ReceivedPacket::new(
             TransportId::new(1),
@@ -2399,6 +2458,7 @@ mod tests {
             1,
             "dropped bulk must roll back channel-owned backlog accounting"
         );
+        assert_eq!(tx.bulk_queued_packets(), 1);
         assert_eq!(rx.bulk.len(), 1);
 
         tx.send(ReceivedPacket::new(
@@ -2408,17 +2468,24 @@ mod tests {
         ))
         .expect("priority packet should still enter reserve lane");
         assert_eq!(tx.queued_packets(), 2);
+        assert_eq!(
+            tx.bulk_queued_packets(),
+            1,
+            "priority packets must not consume bulk packet capacity"
+        );
 
         assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
         assert_eq!(tx.queued_packets(), 1);
+        assert_eq!(tx.bulk_queued_packets(), 1);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.bulk_queued_packets(), 0);
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[tokio::test]
-    async fn packet_channel_bounded_bulk_batch_drop_counts_as_success() {
-        let (tx, mut rx) = packet_channel(1);
+    async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
+        let (tx, mut rx) = packet_channel(2);
         let addr = TransportAddr::from_string("test");
 
         tx.send_batch(vec![
@@ -2435,6 +2502,12 @@ mod tests {
         ])
         .expect("first bulk batch should fill bounded bulk lane");
         assert_eq!(tx.queued_packets(), 2);
+        assert_eq!(tx.bulk_queued_packets(), 2);
+        assert_eq!(
+            rx.bulk.len(),
+            1,
+            "batching should still amortize channel items"
+        );
 
         tx.send_batch(vec![
             ReceivedPacket::new(
@@ -2448,16 +2521,22 @@ mod tests {
                 vec![0xbc; PRIORITY_PACKET_MAX_LEN + 4],
             ),
         ])
-        .expect("full bulk lane should drop batch overload without closing sender");
+        .expect("full bulk packet budget should drop batch overload without closing sender");
         assert_eq!(
             tx.queued_packets(),
             2,
             "dropped bulk batch must roll back every packet it accounted"
         );
+        assert_eq!(
+            tx.bulk_queued_packets(),
+            2,
+            "dropped bulk batch must not expand the packet-count backlog"
+        );
         assert_eq!(rx.bulk.len(), 1);
 
         assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.bulk_queued_packets(), 0);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xab);
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
@@ -2487,12 +2566,18 @@ mod tests {
         ])
         .expect("bulk batch send should succeed");
         assert_eq!(tx.queued_packets(), 3);
+        assert_eq!(tx.bulk_queued_packets(), 3);
 
         assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
         assert_eq!(
             tx.queued_packets(),
             0,
             "once a batch item is dequeued, its tail is rx-loop-owned, not channel-owned"
+        );
+        assert_eq!(
+            tx.bulk_queued_packets(),
+            0,
+            "bulk capacity is released when the rx loop owns the batch tail"
         );
 
         tx.send(ReceivedPacket::new(
@@ -2502,12 +2587,15 @@ mod tests {
         ))
         .expect("priority packet send should succeed");
         assert_eq!(tx.queued_packets(), 1);
+        assert_eq!(tx.bulk_queued_packets(), 0);
 
         assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.bulk_queued_packets(), 0);
         assert_eq!(rx.try_recv().unwrap().data[0], 0xbb);
         assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -2534,6 +2622,7 @@ mod tests {
         ];
         assert!(tx.send_batch(packets).is_err());
         assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(tx.bulk_queued_packets(), 0);
     }
 
     // ========================================================================

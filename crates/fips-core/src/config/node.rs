@@ -941,10 +941,15 @@ impl ControlConfig {
     }
 }
 
+const DEFAULT_PACKET_CHANNEL_CAPACITY: usize = 4096;
+
 /// Internal buffers (`node.buffers.*`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuffersConfig {
-    /// Transport→Node packet channel capacity (`node.buffers.packet_channel`).
+    /// Transport→Node bulk packet capacity (`node.buffers.packet_channel`).
+    ///
+    /// Priority/control packets use a reserved lane. This bounds bulk packet
+    /// backlog in packet units rather than receive-batch channel items.
     #[serde(default = "BuffersConfig::default_packet_channel")]
     pub packet_channel: usize,
     /// TUN→Node outbound channel capacity (`node.buffers.tun_channel`).
@@ -958,7 +963,7 @@ pub struct BuffersConfig {
 impl Default for BuffersConfig {
     fn default() -> Self {
         Self {
-            packet_channel: 1024,
+            packet_channel: DEFAULT_PACKET_CHANNEL_CAPACITY,
             tun_channel: 1024,
             dns_channel: 64,
         }
@@ -967,7 +972,7 @@ impl Default for BuffersConfig {
 
 impl BuffersConfig {
     fn default_packet_channel() -> usize {
-        1024
+        DEFAULT_PACKET_CHANNEL_CAPACITY
     }
     fn default_tun_channel() -> usize {
         1024
