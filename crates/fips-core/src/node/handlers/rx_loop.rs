@@ -453,7 +453,7 @@ impl Node {
         } else {
             0
         };
-        let fallback_plan = fallback_drain_plan(
+        let mut fallback_plan = fallback_drain_plan(
             packet_rx.priority_queued_packets(),
             decrypt_fallback_rx.bulk_queued_packets(),
         );
@@ -483,6 +483,11 @@ impl Node {
                 }
                 PacketDrainAction::InterleaveFallback => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+                    fallback_plan = fallback_drain_plan(
+                        packet_rx.priority_queued_packets(),
+                        decrypt_fallback_rx.bulk_queued_packets(),
+                    );
+                    drain.reset_fallback_interleave_every(fallback_plan.interleave_every);
                     let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
                         self.drain_decrypt_fallback(
                             decrypt_fallback_rx,
@@ -525,6 +530,10 @@ impl Node {
         self.flush_decrypt_job_batcher(&mut decrypt_jobs);
         let drained = drain.drained();
         if drained > 0 {
+            fallback_plan = fallback_drain_plan(
+                packet_rx.priority_queued_packets(),
+                decrypt_fallback_rx.bulk_queued_packets(),
+            );
             // One trailing fallback slice so the last bounced packets of the
             // burst aren't held up by the post-burst send flush. Keep it a
             // non-packet turn: bulk fallback should not convoy ahead of fresh
@@ -1180,6 +1189,11 @@ impl<T> PacketDrainCursor<T> {
     fn refund_empty_interleave_turn(&mut self) {
         self.remaining += 1;
     }
+
+    fn reset_fallback_interleave_every(&mut self, fallback_interleave_every: usize) {
+        self.fallback_interleave_every = fallback_interleave_every;
+        self.packets_until_fallback_interleave = fallback_interleave_every;
+    }
 }
 
 trait PacketDrainReceiver<T> {
@@ -1340,6 +1354,76 @@ mod tests {
                 trailing_budget: NON_PACKET_DRAIN_BUDGET,
             },
             "fresh transport priority packets must keep the normal bulk-fallback cadence"
+        );
+    }
+
+    #[test]
+    fn packet_drain_cursor_can_retime_fallback_interleave_under_pressure() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for packet in 0..64 {
+            tx.send(packet).unwrap();
+        }
+
+        let mut drain = PacketDrainCursor::new(None, 64, FALLBACK_INTERLEAVE_EVERY, 0);
+        for _ in 0..FALLBACK_INTERLEAVE_EVERY {
+            assert!(matches!(
+                drain.next(&mut rx),
+                Some(PacketDrainAction::Packet(_))
+            ));
+        }
+        assert_eq!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+
+        drain.reset_fallback_interleave_every(FALLBACK_PRESSURE_INTERLEAVE_EVERY);
+        for _ in 0..FALLBACK_PRESSURE_INTERLEAVE_EVERY {
+            assert!(matches!(
+                drain.next(&mut rx),
+                Some(PacketDrainAction::Packet(_))
+            ));
+        }
+        assert_eq!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::InterleaveFallback),
+            "new fallback pressure should shorten the next raw-packet interval"
+        );
+    }
+
+    #[test]
+    fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for packet in 0..80 {
+            tx.send(packet).unwrap();
+        }
+
+        let mut drain = PacketDrainCursor::new(None, 80, FALLBACK_PRESSURE_INTERLEAVE_EVERY, 0);
+        for _ in 0..FALLBACK_PRESSURE_INTERLEAVE_EVERY {
+            assert!(matches!(
+                drain.next(&mut rx),
+                Some(PacketDrainAction::Packet(_))
+            ));
+        }
+        assert_eq!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+
+        drain.reset_fallback_interleave_every(FALLBACK_INTERLEAVE_EVERY);
+        for _ in 0..(FALLBACK_INTERLEAVE_EVERY - 1) {
+            assert!(matches!(
+                drain.next(&mut rx),
+                Some(PacketDrainAction::Packet(_))
+            ));
+        }
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_)),
+        ));
+        assert_eq!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::InterleaveFallback),
+            "priority pressure relief should restore the normal fallback cadence"
         );
     }
 
