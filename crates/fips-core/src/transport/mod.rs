@@ -163,6 +163,70 @@ enum PacketLane {
     Bulk,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PacketQueueDequeueCounts {
+    total: usize,
+    priority: usize,
+    bulk: usize,
+}
+
+impl PacketQueueItem {
+    fn packet_count(&self) -> usize {
+        match self {
+            PacketQueueItem::One(_) => 1,
+            PacketQueueItem::Batch(packets) => packets.len(),
+        }
+    }
+
+    fn dequeue_counts(&self, lane: PacketLane) -> PacketQueueDequeueCounts {
+        let total = self.packet_count();
+        match lane {
+            PacketLane::Priority => PacketQueueDequeueCounts {
+                total,
+                priority: total,
+                bulk: 0,
+            },
+            PacketLane::Bulk => PacketQueueDequeueCounts {
+                total,
+                priority: 0,
+                bulk: total,
+            },
+        }
+    }
+
+    fn queued_at(&self) -> Option<Instant> {
+        match self {
+            PacketQueueItem::One(packet) => packet.trace_enqueued_at,
+            PacketQueueItem::Batch(packets) => {
+                packets.first().and_then(|packet| packet.trace_enqueued_at)
+            }
+        }
+    }
+
+    fn record_dequeue_wait(&self, lane: PacketLane) {
+        let queued_at = self.queued_at();
+        if queued_at.is_none() {
+            return;
+        }
+        let counts = self.dequeue_counts(lane);
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::TransportChannelWait,
+            queued_at,
+            counts.total as u64,
+        );
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::TransportPriorityChannelWait,
+            queued_at,
+            counts.priority as u64,
+        );
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::TransportBulkChannelWait,
+            queued_at,
+            counts.bulk as u64,
+        );
+    }
+}
+
 impl PacketTx {
     pub fn send(
         &self,
@@ -322,6 +386,7 @@ impl PacketRx {
         item: PacketQueueItem,
         lane: PacketLane,
     ) -> Option<ReceivedPacket> {
+        item.record_dequeue_wait(lane);
         match item {
             PacketQueueItem::One(packet) => Some(packet),
             PacketQueueItem::Batch(packets) => {
@@ -2126,6 +2191,59 @@ mod tests {
             }
             item => panic!("expected grouped bulk batch, got {item:?}"),
         }
+    }
+
+    #[test]
+    fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
+        let addr = TransportAddr::from_string("test");
+
+        let item = PacketQueueItem::One(ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0x11; 32],
+        ));
+        assert_eq!(
+            item.dequeue_counts(PacketLane::Priority),
+            PacketQueueDequeueCounts {
+                total: 1,
+                priority: 1,
+                bulk: 0,
+            }
+        );
+
+        let item = PacketQueueItem::Batch(vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+        ]);
+        assert_eq!(
+            item.dequeue_counts(PacketLane::Priority),
+            PacketQueueDequeueCounts {
+                total: 2,
+                priority: 2,
+                bulk: 0,
+            }
+        );
+
+        let item = PacketQueueItem::Batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ]);
+        assert_eq!(
+            item.dequeue_counts(PacketLane::Bulk),
+            PacketQueueDequeueCounts {
+                total: 2,
+                priority: 0,
+                bulk: 2,
+            }
+        );
     }
 
     #[tokio::test]

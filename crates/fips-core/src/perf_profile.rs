@@ -26,9 +26,12 @@
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
-//!   * `TRANSPORT_QUEUE_WAIT` — UDP/transport receive loop → rx_loop
-//!   * `TRANSPORT_PRIORITY_QUEUE_WAIT` — priority-sized transport packets → rx_loop
-//!   * `TRANSPORT_BULK_QUEUE_WAIT` — bulk-sized transport packets → rx_loop
+//!   * `TRANSPORT_QUEUE_WAIT` — UDP/transport receive loop → rx_loop packet processing
+//!   * `TRANSPORT_PRIORITY_QUEUE_WAIT` — priority-sized transport packets → rx_loop packet processing
+//!   * `TRANSPORT_BULK_QUEUE_WAIT` — bulk-sized transport packets → rx_loop packet processing
+//!   * `TRANSPORT_CHANNEL_WAIT` — UDP/transport receive loop → packet channel dequeue
+//!   * `TRANSPORT_PRIORITY_CHANNEL_WAIT` — priority-sized transport packets → packet channel dequeue
+//!   * `TRANSPORT_BULK_CHANNEL_WAIT` — bulk-sized transport packets → packet channel dequeue
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
@@ -40,7 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 20;
+const N_STAGES: usize = 23;
 const N_EVENTS: usize = 23;
 const HIST_BUCKETS: usize = 48;
 
@@ -98,6 +101,16 @@ pub enum Stage {
     /// Bulk-sized endpoint event wait, split from the aggregate
     /// `endpoint_event_wait` so bulk pressure cannot hide priority behavior.
     EndpointBulkEventWait = 19,
+    /// Time spent after a transport receives a packet until `PacketRx`
+    /// dequeues its channel item. This isolates scheduler/channel residence
+    /// from per-packet batch-tail residence inside the rx loop.
+    TransportChannelWait = 20,
+    /// Priority-sized transport channel residence, split from
+    /// `transport_channel_wait` so priority reserve stays independently visible.
+    TransportPriorityChannelWait = 21,
+    /// Bulk-sized transport channel residence, split from
+    /// `transport_channel_wait` so bulk pressure stays independently visible.
+    TransportBulkChannelWait = 22,
 }
 
 impl Stage {
@@ -123,6 +136,9 @@ impl Stage {
             Stage::TransportBulkQueueWait => "transport_bulk_queue_wait",
             Stage::EndpointPriorityEventWait => "endpoint_priority_event_wait",
             Stage::EndpointBulkEventWait => "endpoint_bulk_event_wait",
+            Stage::TransportChannelWait => "transport_channel_wait",
+            Stage::TransportPriorityChannelWait => "transport_priority_channel_wait",
+            Stage::TransportBulkChannelWait => "transport_bulk_channel_wait",
         }
     }
 }
@@ -149,6 +165,9 @@ fn stage_from_index(idx: usize) -> Stage {
         17 => Stage::TransportBulkQueueWait,
         18 => Stage::EndpointPriorityEventWait,
         19 => Stage::EndpointBulkEventWait,
+        20 => Stage::TransportChannelWait,
+        21 => Stage::TransportPriorityChannelWait,
+        22 => Stage::TransportBulkChannelWait,
         _ => unreachable!(),
     }
 }
