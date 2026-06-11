@@ -8,7 +8,10 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
-use crate::node::decrypt_worker::{DecryptAuthenticatedSession, DecryptFspFailureReport};
+use crate::node::decrypt_worker::{
+    DecryptAuthenticatedSession, DecryptDirectSessionData, DecryptDirectSessionDelivery,
+    DecryptFspFailureReport,
+};
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -285,7 +288,7 @@ impl AuthenticatedSessionMessage {
         &self.buffer[self.plaintext_offset..self.plaintext_offset + self.plaintext_len]
     }
 
-    fn msg_type(&self) -> u8 {
+    pub(in crate::node) fn msg_type(&self) -> u8 {
         self.msg_type
     }
 
@@ -299,23 +302,23 @@ impl AuthenticatedSessionMessage {
         self.timestamp
     }
 
-    fn body(&self) -> &[u8] {
+    pub(in crate::node) fn body(&self) -> &[u8] {
         let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
         let body_len = self.body_len();
         &self.buffer[body_offset..body_offset + body_len]
     }
 
-    fn body_len(&self) -> usize {
+    pub(in crate::node) fn body_len(&self) -> usize {
         debug_assert!(self.plaintext_len >= FSP_INNER_HEADER_SIZE);
         self.plaintext_len - FSP_INNER_HEADER_SIZE
     }
 
-    fn is_application_data(&self) -> bool {
+    pub(in crate::node) fn is_application_data(&self) -> bool {
         self.msg_type == SessionMessageType::DataPacket.to_byte()
             || self.msg_type == SessionMessageType::EndpointData.to_byte()
     }
 
-    fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
+    pub(in crate::node) fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
         // Keep the receive hot path allocation-free after AEAD open. Slow
         // paths store plaintext at offset 0; worker fast paths may store it
@@ -3012,6 +3015,66 @@ impl Node {
             return;
         }
         dispatch.dispatch(self).await;
+    }
+
+    pub(in crate::node) async fn process_direct_session_data_from_worker(
+        &mut self,
+        direct: DecryptDirectSessionData,
+    ) {
+        let now = Instant::now();
+        self.record_worker_authenticated_fmp_receive(&direct.fmp);
+
+        let source_addr = direct.source_addr;
+        let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
+            entry.apply_fsp_receive_sync(direct.receive_sync, Self::now_ms(), now)
+        });
+        if !receive_applied {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping worker-decoded direct session data for missing or stale session"
+            );
+            return;
+        }
+
+        self.learn_reverse_route(source_addr, *direct.previous_hop_peer.node_addr());
+        let finish = SessionDispatchCommit {
+            source_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr,
+                body_len: direct.body_len,
+            }),
+        }
+        .finish_receive(self);
+
+        match direct.delivery {
+            DecryptDirectSessionDelivery::Ipv6Packet(mut packet) => {
+                if direct.ce_flag {
+                    mark_ipv6_ecn_ce(&mut packet);
+                    self.stats_mut().congestion.record_ce_received();
+                }
+                if self.external_packet_tx.is_some() {
+                    self.deliver_external_ipv6_packet(&source_addr, packet);
+                } else if let Some(tun_tx) = &self.tun_tx {
+                    let _t =
+                        crate::perf_profile::Timer::start(crate::perf_profile::Stage::TunWrite);
+                    if let Err(error) = tun_tx.send(packet) {
+                        debug!(error = %error, "Failed to deliver worker-decoded IPv6 packet to TUN");
+                    }
+                } else {
+                    trace!(
+                        src = %self.peer_display_name(&source_addr),
+                        "Worker-decoded IPv6 packet ready (no TUN interface)"
+                    );
+                }
+            }
+            DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                self.deliver_endpoint_data(delivery);
+            }
+        }
+
+        if let Some(dest_addr) = finish.pending_flush_dest() {
+            self.flush_pending_packets(&dest_addr).await;
+        }
     }
 
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
@@ -7013,6 +7076,79 @@ mod tests {
             node.pending_session_traffic.has_traffic_for(&source_addr),
             "fast dispatch should report, not synchronously drain, pending traffic"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_direct_session_data_commits_before_endpoint_delivery() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let previous_hop = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let endpoint_payload = b"worker decoded endpoint".to_vec();
+        let plaintext_len = FSP_INNER_HEADER_SIZE + endpoint_payload.len();
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+
+        let direct = DecryptDirectSessionData::for_test(
+            crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                source_peer: previous_hop_peer,
+                transport_id: crate::transport::TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 2_000,
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
+            source_addr,
+            previous_hop_peer,
+            false,
+            crate::node::session::FspReceiveSync {
+                counter: 7,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: 0x0102_0304,
+                plaintext_len,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            endpoint_payload.len(),
+            DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                source_peer,
+                endpoint_payload.clone(),
+            )),
+        );
+
+        node.process_direct_session_data_from_worker(direct).await;
+
+        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+            crate::node::NodeEndpointEvent::Data {
+                source_peer: delivered_source,
+                payload,
+                ..
+            } => {
+                assert_eq!(delivered_source, source_peer);
+                assert_eq!(payload, endpoint_payload);
+            }
+            event => panic!("expected worker-decoded endpoint data event, got {event:?}"),
+        }
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(
+            entry.traffic_counters(),
+            (0, 1, 0, endpoint_payload.len() as u64)
+        );
+        assert_eq!(entry.current_highest_counter(), Some(7));
     }
 
     #[test]

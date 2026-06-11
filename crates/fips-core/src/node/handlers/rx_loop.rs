@@ -737,6 +737,9 @@ impl Node {
                 self.process_authenticated_session_from_worker(session)
                     .await;
             }
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                self.process_direct_session_data_from_worker(direct).await;
+            }
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 self.process_fsp_decrypt_failure_from_worker(report).await;
             }

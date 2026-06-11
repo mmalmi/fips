@@ -27,10 +27,10 @@
 //!   releases the owned cipher + replay state. It uses the priority
 //!   lane.
 //!
-//! FSP worker results still return to the rx loop for canonical dispatch. The
-//! worker authenticates and admits replay first, then the rx loop applies a
-//! receive-sync snapshot and performs one final canonical replay guard before
-//! delivery.
+//! FSP worker results still return to the rx loop for canonical commit. The
+//! worker authenticates, admits replay, and decodes local bulk data first; then
+//! the rx loop applies a receive-sync snapshot and performs one final canonical
+//! session-alive/replay guard before delivery.
 
 // **Unix only at the call sites.** On Windows nothing constructs an
 // `OwnedSessionState` or spawns the pool (see `lifecycle.rs`), so
@@ -38,15 +38,17 @@
 // rather than gate them individually.
 #![cfg_attr(not(unix), allow(dead_code))]
 
+use crate::FipsAddress;
 use crate::NodeAddr;
 use crate::PeerIdentity;
+use crate::node::EndpointDataDelivery;
 use crate::node::handlers::session::AuthenticatedSessionMessage;
 use crate::node::session::{EpochSlot, FspReceiveSync, FspRecvSessionSnapshot};
 use crate::node::session_wire::{
-    FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FspCommonPrefix, FspEncryptedHeader,
-    fsp_strip_inner_header,
+    FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM,
+    FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
 };
-use crate::protocol::{LinkMessageType, SessionDatagramRef};
+use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{TransportAddr, TransportId};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
@@ -60,15 +62,12 @@ use tracing::{debug, trace, warn};
 
 // `endpoint_event_tx` used to ride on every `DecryptJob` so the worker
 // could deliver inbound EndpointData straight to the API layer,
-// bypassing rx_loop. After the FMP-only refactor (correctness fix —
-// see the long comment in `handle_job`'s phase-2 block) the worker
-// bounces ALL link messages back to rx_loop, so the sender went
-// unused. It's been removed: it bloated `DecryptJob` (an extra Arc
-// clone per packet on the rx_loop hot path) and — worse — its
-// presence was used as the production-path predicate in
-// `handle_encrypted_frame`, which silently disabled the entire
-// worker for TUN-only configurations that never call
-// `endpoint_data_io()`.
+// bypassing rx_loop. It was removed during the FMP-only refactor: it
+// bloated `DecryptJob` with an extra Arc clone per packet and, worse,
+// it was used as the production-path predicate in `handle_encrypted_frame`,
+// silently disabling the worker for TUN-only configurations that never call
+// `endpoint_data_io()`. The current worker may decode local data, but rx_loop
+// remains the canonical commit gate before final delivery.
 
 use crate::noise::ReplayWindow;
 
@@ -469,10 +468,10 @@ pub(crate) struct DecryptJob {
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
     pub fmp_ciphertext_offset: usize,
 
-    /// Every authenticated link message is bounced back to the rx_loop via
-    /// this channel along with its now-decrypted FMP plaintext. The rx_loop
-    /// drains this in a select! arm and remains the sole FSP/session-dispatch
-    /// owner until a future shard/runtime owns both layers.
+    /// Worker completions return through this channel. Control-shaped link
+    /// plaintext still falls back to rx_loop dispatch; local established FSP
+    /// data can return as a worker-decoded direct-data completion whose final
+    /// commit still runs on rx_loop.
     pub fallback_tx: DecryptWorkerFallbackSender,
     /// Monotonic timestamp captured immediately before rx_loop queues this job
     /// to the decrypt worker. Used only when pipeline tracing is on.
@@ -543,10 +542,10 @@ impl DecryptJob {
     }
 }
 
-/// Result of a successful FMP decrypt + replay accept. The worker currently
-/// bounces every authenticated link message back to rx_loop for FSP/session
-/// dispatch, but the event carries the authenticated source peer so a future
-/// shard/runtime can use the same typed handoff for direct endpoint delivery.
+/// Result of a successful FMP decrypt + replay accept that still needs legacy
+/// link-message dispatch on rx_loop. Local established FSP data takes the
+/// narrower authenticated/direct-data event when the worker can safely decode
+/// it first.
 #[allow(dead_code)] // fmp_counter / fmp_flags retained for future debug paths
 pub(crate) struct DecryptFallback {
     pub source_peer: PeerIdentity,
@@ -667,6 +666,48 @@ pub(crate) struct DecryptAuthenticatedSession {
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+pub(crate) enum DecryptDirectSessionDelivery {
+    Ipv6Packet(Vec<u8>),
+    EndpointData(EndpointDataDelivery),
+}
+
+pub(crate) struct DecryptDirectSessionData {
+    pub fmp: DecryptFmpBookkeeping,
+    pub source_addr: NodeAddr,
+    pub previous_hop_peer: PeerIdentity,
+    pub ce_flag: bool,
+    pub receive_sync: FspReceiveSync,
+    pub body_len: usize,
+    pub delivery: DecryptDirectSessionDelivery,
+    lane: DecryptWorkerLane,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+impl DecryptDirectSessionData {
+    #[cfg(test)]
+    pub(in crate::node) fn for_test(
+        fmp: DecryptFmpBookkeeping,
+        source_addr: NodeAddr,
+        previous_hop_peer: PeerIdentity,
+        ce_flag: bool,
+        receive_sync: FspReceiveSync,
+        body_len: usize,
+        delivery: DecryptDirectSessionDelivery,
+    ) -> Self {
+        Self {
+            fmp,
+            source_addr,
+            previous_hop_peer,
+            ce_flag,
+            receive_sync,
+            body_len,
+            delivery,
+            lane: DecryptWorkerLane::Bulk,
+            trace_enqueued_at: None,
+        }
+    }
+}
+
 pub(crate) struct DecryptFspFailureReport {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
@@ -681,6 +722,7 @@ pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedSession(DecryptAuthenticatedSession),
+    DirectSessionData(DecryptDirectSessionData),
     FspDecryptFailure(DecryptFspFailureReport),
     DecryptFailure(DecryptFailureReport),
 }
@@ -694,6 +736,7 @@ impl DecryptWorkerEvent {
         match self {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
             Self::AuthenticatedSession(_) => 1,
+            Self::DirectSessionData(_) => 1,
             Self::FspDecryptFailure(_) => 1,
             Self::PlaintextBatch(fallbacks) => fallbacks.len(),
         }
@@ -708,6 +751,7 @@ impl DecryptWorkerEvent {
                 }
             }
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
+            Self::DirectSessionData(direct) => direct.trace_enqueued_at = queued_at,
             Self::FspDecryptFailure(report) => report.trace_enqueued_at = queued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
         }
@@ -720,6 +764,7 @@ impl DecryptWorkerEvent {
                 .first()
                 .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
+            Self::DirectSessionData(direct) => direct.trace_enqueued_at,
             Self::FspDecryptFailure(report) => report.trace_enqueued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at,
         }
@@ -733,7 +778,7 @@ impl DecryptWorkerEvent {
         crate::perf_profile::Stage,
     ) {
         match self {
-            Self::AuthenticatedSession(_) => (
+            Self::AuthenticatedSession(_) | Self::DirectSessionData(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
@@ -890,6 +935,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
+        DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
         DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
     }
@@ -943,6 +989,7 @@ impl DecryptWorkerBulkItem {
 struct FspDecryptJob {
     fallback_tx: DecryptWorkerFallbackSender,
     fallback: DecryptFallback,
+    local_node_addr: NodeAddr,
     source_addr: NodeAddr,
     previous_hop_peer: PeerIdentity,
     path_mtu: u16,
@@ -1885,6 +1932,42 @@ impl DecryptWorkerShard {
         })
     }
 
+    fn direct_session_delivery_from_message(
+        source_addr: NodeAddr,
+        local_node_addr: NodeAddr,
+        message: AuthenticatedSessionMessage,
+    ) -> Result<DecryptDirectSessionDelivery, AuthenticatedSessionMessage> {
+        match SessionMessageType::from_byte(message.msg_type()) {
+            Some(SessionMessageType::EndpointData) => Ok(
+                DecryptDirectSessionDelivery::EndpointData(message.into_endpoint_data_delivery()),
+            ),
+            Some(SessionMessageType::DataPacket) => {
+                let body = message.body();
+                if body.len() < FSP_PORT_HEADER_SIZE {
+                    return Err(message);
+                }
+                let dst_port = u16::from_le_bytes([body[2], body[3]]);
+                if dst_port != FSP_PORT_IPV6_SHIM {
+                    return Err(message);
+                }
+
+                let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+                let dst_ipv6 = FipsAddress::from_node_addr(&local_node_addr)
+                    .to_ipv6()
+                    .octets();
+                let Some(packet) = crate::upper::ipv6_shim::decompress_ipv6(
+                    &body[FSP_PORT_HEADER_SIZE..],
+                    src_ipv6,
+                    dst_ipv6,
+                ) else {
+                    return Err(message);
+                };
+                Ok(DecryptDirectSessionDelivery::Ipv6Packet(packet))
+            }
+            _ => Err(message),
+        }
+    }
+
     fn dispatch_or_handle_fsp_job(
         &mut self,
         idx: usize,
@@ -1906,6 +1989,7 @@ impl DecryptWorkerShard {
         let FspDecryptJob {
             fallback_tx,
             mut fallback,
+            local_node_addr,
             source_addr,
             previous_hop_peer,
             path_mtu,
@@ -2016,20 +2100,39 @@ impl DecryptWorkerShard {
                 inner_flags_byte,
                 timestamp,
             );
+            let body_len = message.body_len();
 
-            return Some(DecryptWorkerOutput {
-                fallback_tx,
-                event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+            let event = match Self::direct_session_delivery_from_message(
+                source_addr,
+                local_node_addr,
+                message,
+            ) {
+                Ok(delivery) => DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
                     fmp,
                     source_addr,
                     previous_hop_peer,
                     ce_flag,
-                    message,
+                    body_len,
+                    delivery,
                     receive_sync: sync,
                     lane,
                     trace_enqueued_at: None,
                 }),
-            });
+                Err(message) => {
+                    DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+                        fmp,
+                        source_addr,
+                        previous_hop_peer,
+                        ce_flag,
+                        message,
+                        receive_sync: sync,
+                        lane,
+                        trace_enqueued_at: None,
+                    })
+                }
+            };
+
+            return Some(DecryptWorkerOutput { fallback_tx, event });
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
@@ -2081,20 +2184,37 @@ impl DecryptWorkerShard {
             inner_flags_byte,
             timestamp,
         );
+        let body_len = message.body_len();
 
-        Some(DecryptWorkerOutput {
-            fallback_tx,
-            event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
-                fmp,
-                source_addr,
-                previous_hop_peer,
-                ce_flag,
-                message,
-                receive_sync: sync,
-                lane,
-                trace_enqueued_at: None,
-            }),
-        })
+        let event =
+            match Self::direct_session_delivery_from_message(source_addr, local_node_addr, message)
+            {
+                Ok(delivery) => DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    body_len,
+                    delivery,
+                    receive_sync: sync,
+                    lane,
+                    trace_enqueued_at: None,
+                }),
+                Err(message) => {
+                    DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+                        fmp,
+                        source_addr,
+                        previous_hop_peer,
+                        ce_flag,
+                        message,
+                        receive_sync: sync,
+                        lane,
+                        trace_enqueued_at: None,
+                    })
+                }
+            };
+
+        Some(DecryptWorkerOutput { fallback_tx, event })
     }
 
     fn handle_job_output(
@@ -2210,6 +2330,7 @@ impl DecryptWorkerShard {
             let fsp_job = FspDecryptJob {
                 fallback_tx: fallback_tx.clone(),
                 fallback,
+                local_node_addr,
                 source_addr: meta.source_addr,
                 previous_hop_peer: source_peer,
                 path_mtu: meta.path_mtu,
@@ -2485,6 +2606,7 @@ mod tests {
                 0,
                 1,
             ),
+            local_node_addr: *test_source_peer().node_addr(),
             source_addr: *source_peer.node_addr(),
             previous_hop_peer: test_source_peer(),
             path_mtu: 1_280,
@@ -2684,6 +2806,60 @@ mod tests {
     }
 
     #[test]
+    fn worker_decodes_local_ipv6_shim_data_without_plaintext_bounce() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+        let dst_ipv6 = FipsAddress::from_node_addr(&local_addr).to_ipv6().octets();
+        let payload = b"worker-decompressed-ipv6";
+
+        let mut ipv6 = Vec::with_capacity(40 + payload.len());
+        ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
+        ipv6.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        ipv6.push(59);
+        ipv6.push(64);
+        ipv6.extend_from_slice(&src_ipv6);
+        ipv6.extend_from_slice(&dst_ipv6);
+        ipv6.extend_from_slice(payload);
+
+        let compressed = crate::upper::ipv6_shim::compress_ipv6(&ipv6)
+            .expect("test IPv6 packet should compress");
+        let mut data_packet_body = Vec::with_capacity(FSP_PORT_HEADER_SIZE + compressed.len());
+        data_packet_body.extend_from_slice(&0u16.to_le_bytes());
+        data_packet_body.extend_from_slice(&FSP_PORT_IPV6_SHIM.to_le_bytes());
+        data_packet_body.extend_from_slice(&compressed);
+        let plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::DataPacket.to_byte(),
+            0,
+            &data_packet_body,
+        );
+        let message = AuthenticatedSessionMessage::new(
+            source_peer,
+            plaintext,
+            SessionMessageType::DataPacket.to_byte(),
+            0,
+            0x0102_0304,
+        );
+
+        match DecryptWorkerShard::direct_session_delivery_from_message(
+            source_addr,
+            local_addr,
+            message,
+        )
+        .expect("IPv6 shim data packet should decode in worker")
+        {
+            DecryptDirectSessionDelivery::Ipv6Packet(packet) => assert_eq!(packet, ipv6),
+            DecryptDirectSessionDelivery::EndpointData(_) => {
+                panic!("IPv6 shim data must not become endpoint data")
+            }
+        }
+    }
+
+    #[test]
     fn worker_directs_local_established_session_datagram_to_fsp_owner() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
@@ -2773,20 +2949,30 @@ mod tests {
             .expect("worker job should not fail")
             .expect("direct FSP path should emit an event");
         match output.event {
-            DecryptWorkerEvent::AuthenticatedSession(session) => {
-                assert_eq!(session.source_addr, *source.node_addr());
-                assert_eq!(session.previous_hop_peer, previous_hop_peer);
-                assert_eq!(session.fmp.source_peer, previous_hop_peer);
-                assert_eq!(session.fmp.fmp_counter, fmp_counter);
-                assert_eq!(session.fmp.inner_timestamp_ms, inner_timestamp_ms);
-                assert_eq!(session.receive_sync.counter, fsp_counter);
-                assert_eq!(session.receive_sync.slot, EpochSlot::Current);
-                assert_eq!(session.receive_sync.timestamp, 0x0102_0304);
-                assert_eq!(session.receive_sync.plaintext_len, inner_plaintext.len());
-                assert!(session.receive_sync.spin_bit);
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                assert_eq!(direct.source_addr, *source.node_addr());
+                assert_eq!(direct.previous_hop_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.source_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.fmp_counter, fmp_counter);
+                assert_eq!(direct.fmp.inner_timestamp_ms, inner_timestamp_ms);
+                assert_eq!(direct.receive_sync.counter, fsp_counter);
+                assert_eq!(direct.receive_sync.slot, EpochSlot::Current);
+                assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
+                assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
+                assert_eq!(direct.body_len, b"direct endpoint".len());
+                assert!(direct.receive_sync.spin_bit);
+                match direct.delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.source_peer, source_peer);
+                        assert_eq!(delivery.payload, b"direct endpoint");
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("endpoint data must not become an IPv6 packet")
+                    }
+                }
             }
             other => panic!(
-                "expected authenticated session event, got {:?}",
+                "expected direct session data event, got {:?}",
                 other.packet_count()
             ),
         }
@@ -2897,7 +3083,7 @@ mod tests {
                 .expect("first worker job should not fail")
                 .expect("first FSP frame should authenticate")
                 .event,
-            DecryptWorkerEvent::AuthenticatedSession(_)
+            DecryptWorkerEvent::DirectSessionData(_)
         ));
         assert!(
             shard
@@ -3017,7 +3203,9 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
                 panic!("FSP AEAD failure must not bounce a possibly mutated packet")
             }
-            DecryptWorkerEvent::AuthenticatedSession(_) | DecryptWorkerEvent::DecryptFailure(_) => {
+            DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
             }
         }
@@ -3243,6 +3431,7 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectSessionData(_) => panic!("expected failure report"),
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected failure report"),
         }
     }
@@ -3532,6 +3721,7 @@ mod tests {
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected plaintext fallback batch")
@@ -3879,6 +4069,9 @@ mod tests {
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
+            DecryptWorkerEvent::DirectSessionData(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("invalid bulk job should fail FMP AEAD")
             }
@@ -4022,6 +4215,9 @@ mod tests {
                 panic!("invalid packet must not produce plaintext")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
+            DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
@@ -4260,6 +4456,9 @@ mod tests {
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::DirectSessionData(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -4336,6 +4535,9 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected decrypt failure report"),
