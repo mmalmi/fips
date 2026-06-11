@@ -712,6 +712,14 @@ fn worker_batch_size() -> usize {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
+fn worker_fast_lane_cap(total_cap: usize, per_flow_cap: usize) -> usize {
+    worker_batch_size()
+        .min(per_flow_cap.max(1))
+        .min(total_cap.max(1))
+        .max(1)
+}
+
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -1096,10 +1104,10 @@ fn fair_worker_channel_with_priority_cap(
         not_full: Condvar::new(),
         total_cap,
         per_flow_cap,
-        // Let a freshly idle worker accept one per-flow burst without taking
-        // the fairness mutex, but do not allow the fast path to hide more
-        // backlog than the fair per-flow budget itself.
-        fast_lane_cap: per_flow_cap.min(total_cap),
+        // Let a freshly idle worker accept one syscall-sized worker batch
+        // without taking the fairness mutex, but don't let that mutex bypass
+        // hide a whole extra per-flow queue window.
+        fast_lane_cap: worker_fast_lane_cap(total_cap, per_flow_cap),
     });
     (
         FairWorkerSender {
@@ -4154,6 +4162,67 @@ mod fair_queue_tests {
                     Err(FairWorkerTryPushError::Full(_))
                 ),
                 "tight caps must not hide a third per-flow burst before reporting pressure"
+            );
+        });
+    }
+
+    #[test]
+    fn fast_lane_cap_is_one_worker_batch_not_a_second_queue_window() {
+        assert_eq!(
+            worker_fast_lane_cap(2048, 512),
+            DEFAULT_WORKER_BATCH_SIZE,
+            "default bulk workers may bypass fair admission for one local batch, not one full per-flow queue"
+        );
+        assert_eq!(
+            worker_fast_lane_cap(16, 4),
+            4,
+            "tight test caps still bound the bypass by the fair per-flow cap"
+        );
+        assert_eq!(
+            worker_fast_lane_cap(2, 8),
+            2,
+            "tiny channels cannot grow a fast lane larger than the physical queue"
+        );
+    }
+
+    #[test]
+    fn single_flow_fast_lane_stops_after_batch_plus_fair_budget() {
+        with_test_socket(|socket, cipher| {
+            let total_cap = 128;
+            let per_flow_cap = 64;
+            let (tx, _rx) = fair_worker_channel(total_cap, per_flow_cap, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10034".parse().unwrap();
+            let allowed = worker_fast_lane_cap(total_cap, per_flow_cap) + per_flow_cap;
+
+            assert!(
+                allowed < total_cap,
+                "test should prove per-flow pressure before the physical queue is full"
+            );
+            for _ in 0..allowed {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("single flow should get one fast batch plus its fair budget");
+            }
+
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket,
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "single flow must report pressure before a hidden second per-flow queue window"
             );
         });
     }

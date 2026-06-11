@@ -68,9 +68,8 @@ use tracing::{debug, trace, warn};
 
 // `endpoint_event_tx` used to ride on every `DecryptJob`, bloating the hot
 // packet shape with an extra Arc clone and accidentally gating TUN-only worker
-// use. Keep it pool-owned instead: workers may deliver priority-sized endpoint
-// data after the direct-session commit is accepted, while bulk endpoint payloads
-// stay on the rx-loop batched path that benchmarks better for sustained traffic.
+// use. Keep it pool-owned instead: workers may deliver direct-hop endpoint data
+// after the direct-session commit is accepted by the rx-loop bookkeeping lane.
 
 use crate::noise::ReplayWindow;
 
@@ -86,6 +85,7 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
+const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -696,9 +696,7 @@ impl DecryptDirectSessionDeliverySink {
 
     fn can_deliver(&self, delivery: &DecryptDirectSessionDelivery) -> bool {
         match delivery {
-            DecryptDirectSessionDelivery::EndpointData(delivery) => {
-                self.endpoint_event_tx.is_some() && delivery.is_priority_sized()
-            }
+            DecryptDirectSessionDelivery::EndpointData(_) => self.endpoint_event_tx.is_some(),
             DecryptDirectSessionDelivery::Ipv6Packet(_) => {
                 self.external_packet_tx.is_some() || self.tun_tx.is_some()
             }
@@ -794,8 +792,8 @@ impl PendingDirectSessionDelivery {
 
     fn is_endpoint_data(&self) -> bool {
         match &self.delivery {
-            DecryptDirectSessionDelivery::EndpointData(delivery) => {
-                self.sink.endpoint_event_sender().is_some() && delivery.is_priority_sized()
+            DecryptDirectSessionDelivery::EndpointData(_) => {
+                self.sink.endpoint_event_sender().is_some()
             }
             DecryptDirectSessionDelivery::Ipv6Packet(_) => false,
         }
@@ -1829,7 +1827,9 @@ fn run_worker(
                 match item {
                     Ok(item) => {
                         release_bulk_packets(&bulk_queued_packets, item.packet_count());
-                        handle_bulk_item(idx, &mut shard, &priority_rx, item);
+                        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+                        handle_bulk_item(idx, &mut shard, &priority_rx, item, &mut plaintext_batch);
+                        plaintext_batch.flush();
                     }
                     Err(_) => {
                         drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
@@ -1853,19 +1853,23 @@ fn drain_worker_queues(
         shard.handle_msg(idx, msg);
     }
     let mut drained_bulk_jobs = 0;
+    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
     while drained_bulk_jobs < DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = priority_rx.try_recv() {
+            plaintext_batch.flush();
             shard.handle_msg(idx, msg);
             continue;
         }
         match bulk_rx.try_recv() {
             Ok(item) => {
                 release_bulk_packets(bulk_queued_packets, item.packet_count());
-                drained_bulk_jobs += handle_bulk_item(idx, shard, priority_rx, item);
+                drained_bulk_jobs +=
+                    handle_bulk_item(idx, shard, priority_rx, item, &mut plaintext_batch);
             }
             Err(_) => break,
         }
     }
+    plaintext_batch.flush();
 }
 
 fn handle_bulk_item(
@@ -1873,27 +1877,26 @@ fn handle_bulk_item(
     shard: &mut DecryptWorkerShard,
     priority_rx: &Receiver<WorkerMsg>,
     item: DecryptWorkerBulkItem,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
 ) -> usize {
     match item {
         DecryptWorkerBulkItem::Job(job) => {
-            shard.handle_job_msg(idx, job);
+            shard.handle_bulk_job_msg(idx, job, plaintext_batch);
             1
         }
         DecryptWorkerBulkItem::FspJob(job) => {
-            shard.handle_fsp_job_msg(idx, job);
+            shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             1
         }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let count = jobs.len();
-            let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
                     plaintext_batch.flush();
                     shard.handle_msg(idx, msg);
                 }
-                shard.handle_bulk_job_msg(idx, job, &mut plaintext_batch);
+                shard.handle_bulk_job_msg(idx, job, plaintext_batch);
             }
-            plaintext_batch.flush();
             count
         }
     }
@@ -1952,8 +1955,8 @@ impl DecryptPlaintextFallbackBatch {
             fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_fallback_tx: None,
             endpoint_sink: None,
-            endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
+            endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
         }
     }
 
@@ -1961,6 +1964,13 @@ impl DecryptPlaintextFallbackBatch {
         fallback_tx
             .bulk_packet_cap
             .min(DECRYPT_WORKER_BULK_BATCH_MAX)
+            .max(1)
+    }
+
+    fn endpoint_batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
+        fallback_tx
+            .bulk_packet_cap
+            .min(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX)
             .max(1)
     }
 
@@ -2031,7 +2041,7 @@ impl DecryptPlaintextFallbackBatch {
             if self.endpoint_sink.is_none() {
                 self.endpoint_sink = Some(sink);
             }
-            let batch_max = Self::batch_max_for(
+            let batch_max = Self::endpoint_batch_max_for(
                 self.endpoint_fallback_tx
                     .as_ref()
                     .expect("fallback sender set before batching direct endpoint completions"),
@@ -2098,7 +2108,7 @@ impl DecryptPlaintextFallbackBatch {
         } else {
             let commits = std::mem::replace(
                 &mut self.endpoint_commits,
-                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+                Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             );
             DecryptWorkerEvent::DirectSessionCommitBatch(commits)
         };
@@ -2126,7 +2136,7 @@ impl DecryptPlaintextFallbackBatch {
         } else {
             let messages = std::mem::replace(
                 &mut self.endpoint_deliveries,
-                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+                Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             );
             NodeEndpointEvent::DataBatch {
                 messages,
@@ -2220,6 +2230,20 @@ impl DecryptWorkerShard {
             None => {}
         }
         trace!(worker = idx, "processed FSP decrypt worker job");
+    }
+
+    fn handle_bulk_fsp_job_msg(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        job.record_queue_wait();
+        match self.handle_fsp_job_output(job) {
+            Some(output) => plaintext_batch.push_output(output),
+            None => {}
+        }
+        trace!(worker = idx, "processed bulk FSP decrypt worker job");
     }
 
     fn register_session(
@@ -4277,6 +4301,7 @@ mod tests {
         let (packet_two, header_two) =
             sealed_fmp_test_packet_with_link_body(&cipher, 2, 0, bulk_body_len);
 
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let processed = handle_bulk_item(
             0,
             &mut shard,
@@ -4292,7 +4317,13 @@ mod tests {
                 ),
                 decrypt_job_for_test_packet(packet_two, header_two, session_key, 2, 0, fallback_tx),
             ]),
+            &mut plaintext_batch,
         );
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "shared output batch should wait for an explicit flush"
+        );
+        plaintext_batch.flush();
 
         assert_eq!(processed, 2);
         assert_eq!(
@@ -4529,19 +4560,86 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_worker_keeps_bulk_endpoint_payloads_on_rx_loop_batched_path() {
-        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(8);
+    fn decrypt_worker_direct_endpoint_delivery_accepts_bulk_payloads() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
+        let bulk_payload = vec![0xAB; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1];
         let delivery = DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
             source_peer,
-            vec![0; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
+            bulk_payload.clone(),
         ));
 
         assert!(
-            !sink.can_deliver(&delivery),
-            "bulk endpoint payloads stay on the rx-loop batched path until worker-side delivery no longer regresses throughput"
+            sink.can_deliver(&delivery),
+            "direct-hop bulk endpoint payloads should not bounce through rx_loop after worker decrypt"
         );
+
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+        batch.push_output(dummy_direct_endpoint_output(
+            fallback_tx,
+            sink,
+            source_peer,
+            1,
+            &bulk_payload,
+        ));
+        batch.flush();
+
+        let event = fallback_rx.bulk.try_recv().expect("direct commit");
+        assert_eq!(event.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&event);
+
+        match endpoint_rx.try_recv().expect("bulk endpoint event") {
+            NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, bulk_payload),
+            event => panic!("expected direct bulk endpoint data event, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn decrypt_worker_direct_endpoint_batch_can_span_one_worker_burst() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(
+            8,
+            DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX + 1,
+        );
+        let (endpoint_tx, mut endpoint_rx) =
+            EndpointEventSender::channel(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX + 1);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let bulk_payload = vec![0xCD; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1];
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        for idx in 0..DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX {
+            batch.push_output(dummy_direct_endpoint_output(
+                fallback_tx.clone(),
+                sink.clone(),
+                source_peer,
+                idx as u64,
+                &bulk_payload,
+            ));
+        }
+
+        let event = fallback_rx
+            .bulk
+            .try_recv()
+            .expect("burst-sized commit batch");
+        assert_eq!(
+            event.packet_count(),
+            DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX
+        );
+        fallback_rx.release_dequeued_event(&event);
+
+        match endpoint_rx.try_recv().expect("burst-sized endpoint batch") {
+            NodeEndpointEvent::DataBatch { messages, .. } => {
+                assert_eq!(messages.len(), DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX);
+                assert!(
+                    messages
+                        .iter()
+                        .all(|message| message.payload == bulk_payload)
+                );
+            }
+            event => panic!("expected burst-sized endpoint data batch, got {event:?}"),
+        }
     }
 
     #[test]
@@ -4890,6 +4988,10 @@ mod tests {
         assert!(
             DECRYPT_WORKER_BULK_BATCH_MAX <= DECRYPT_WORKER_BULK_BURST_BUDGET / 4,
             "one worker burst should still contain several bounded bulk batches"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BURST_BUDGET,
+            "direct endpoint delivery may coalesce one bounded worker turn after payload bytes leave the rx-loop bounce"
         );
 
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
