@@ -388,11 +388,16 @@ impl Node {
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
         self.begin_endpoint_event_batch();
+        let side_queue_interleave_every = if side_queues.is_some() {
+            SIDE_QUEUE_INTERLEAVE_EVERY
+        } else {
+            0
+        };
         let mut drain = PacketDrainCursor::new(
             first_packet,
             budget,
             FALLBACK_INTERLEAVE_EVERY,
-            SIDE_QUEUE_INTERLEAVE_EVERY,
+            side_queue_interleave_every,
         );
         while let Some(action) = drain.next(packet_rx) {
             match action {
@@ -403,23 +408,39 @@ impl Node {
                     }
                 }
                 PacketDrainAction::InterleaveFallback => {
-                    self.drain_decrypt_fallback(
-                        decrypt_fallback_rx,
-                        None,
-                        None,
-                        FALLBACK_INTERLEAVE_BUDGET,
-                    )
-                    .await;
+                    let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
+                        self.drain_decrypt_fallback(
+                            decrypt_fallback_rx,
+                            None,
+                            None,
+                            FALLBACK_INTERLEAVE_BUDGET,
+                        )
+                        .await
+                    } else {
+                        0
+                    };
+                    if drained == 0 {
+                        drain.refund_empty_interleave_turn();
+                    }
                 }
                 PacketDrainAction::InterleaveSideQueues => {
-                    if let Some(side_queues) = side_queues.as_mut() {
-                        self.drain_rx_loop_side_queues(
-                            side_queues.tun_outbound_rx,
-                            side_queues.endpoint_priority_command_rx,
-                            side_queues.endpoint_command_rx,
-                            SIDE_QUEUE_INTERLEAVE_BUDGET,
-                        )
-                        .await;
+                    let drained = if let Some(side_queues) = side_queues.as_mut() {
+                        if rx_loop_side_queues_have_ready(side_queues) {
+                            self.drain_rx_loop_side_queues(
+                                side_queues.tun_outbound_rx,
+                                side_queues.endpoint_priority_command_rx,
+                                side_queues.endpoint_command_rx,
+                                SIDE_QUEUE_INTERLEAVE_BUDGET,
+                            )
+                            .await
+                        } else {
+                            RxLoopDataDrainStats::default()
+                        }
+                    } else {
+                        RxLoopDataDrainStats::default()
+                    };
+                    if !drained.has_drained() {
+                        drain.refund_empty_interleave_turn();
                     }
                 }
             }
@@ -844,6 +865,16 @@ struct RxLoopSideQueues<'a> {
     endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
 }
 
+fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) -> bool {
+    !rx.priority.is_empty() || !rx.bulk.is_empty()
+}
+
+fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
+    !side_queues.tun_outbound_rx.is_empty()
+        || !side_queues.endpoint_priority_command_rx.is_empty()
+        || !side_queues.endpoint_command_rx.is_empty()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RxLoopDataDrainStats {
     packets: usize,
@@ -1049,6 +1080,10 @@ impl<T> PacketDrainCursor<T> {
 
     fn charge_interleave_turn(&mut self) {
         self.remaining -= 1;
+    }
+
+    fn refund_empty_interleave_turn(&mut self) {
+        self.remaining += 1;
     }
 }
 
@@ -1425,6 +1460,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn packet_drain_cursor_refunds_empty_interleave_turns() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(None, 3, 1, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+        drain.refund_empty_interleave_turn();
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::InterleaveFallback)
+        );
+        drain.refund_empty_interleave_turn();
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-3"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
     async fn packet_drain_cursor_interleaves_side_queues_after_fallback() {
         let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1448,6 +1518,31 @@ mod tests {
         assert_eq!(
             drain.next(&mut packet_rx),
             Some(PacketDrainAction::InterleaveSideQueues)
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-3"))
+        );
+        assert_eq!(drain.next(&mut packet_rx), None);
+        assert_eq!(drain.drained(), 3);
+    }
+
+    #[tokio::test]
+    async fn packet_drain_cursor_can_disable_side_queue_interleaves() {
+        let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        packet_tx.send("queued-1").unwrap();
+        packet_tx.send("queued-2").unwrap();
+        packet_tx.send("queued-3").unwrap();
+        let mut drain = PacketDrainCursor::new(None, 3, 0, 0);
+
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-1"))
+        );
+        assert_eq!(
+            drain.next(&mut packet_rx),
+            Some(PacketDrainAction::Packet("queued-2"))
         );
         assert_eq!(
             drain.next(&mut packet_rx),
