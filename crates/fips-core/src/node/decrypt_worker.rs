@@ -460,6 +460,7 @@ pub(crate) struct DecryptFailureReport {
 /// Event emitted by the decrypt worker to the rx_loop.
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
+    PlaintextBatch(Vec<DecryptFallback>),
     DecryptFailure(DecryptFailureReport),
 }
 
@@ -468,9 +469,21 @@ impl DecryptWorkerEvent {
         decrypt_worker_event_lane(self)
     }
 
+    pub(crate) fn packet_count(&self) -> usize {
+        match self {
+            Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
+            Self::PlaintextBatch(fallbacks) => fallbacks.len(),
+        }
+    }
+
     fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
         match self {
             Self::Plaintext(fallback) => fallback.trace_enqueued_at = queued_at,
+            Self::PlaintextBatch(fallbacks) => {
+                for fallback in fallbacks {
+                    fallback.trace_enqueued_at = queued_at;
+                }
+            }
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
         }
     }
@@ -478,6 +491,9 @@ impl DecryptWorkerEvent {
     fn trace_enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
         match self {
             Self::Plaintext(fallback) => fallback.trace_enqueued_at,
+            Self::PlaintextBatch(fallbacks) => fallbacks
+                .first()
+                .and_then(|fallback| fallback.trace_enqueued_at),
             Self::DecryptFailure(report) => report.trace_enqueued_at,
         }
     }
@@ -487,11 +503,13 @@ impl DecryptWorkerEvent {
         if queued_at.is_none() {
             return;
         }
-        crate::perf_profile::record_since(
+        let count = self.packet_count() as u64;
+        crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::DecryptFallbackWait,
             queued_at,
+            count,
         );
-        crate::perf_profile::record_since(
+        crate::perf_profile::record_since_count(
             match self.lane() {
                 DecryptWorkerLane::Priority => {
                     crate::perf_profile::Stage::DecryptFallbackPriorityWait
@@ -499,6 +517,7 @@ impl DecryptWorkerEvent {
                 DecryptWorkerLane::Bulk => crate::perf_profile::Stage::DecryptFallbackBulkWait,
             },
             queued_at,
+            count,
         );
     }
 }
@@ -507,11 +526,14 @@ impl DecryptWorkerEvent {
 pub(crate) struct DecryptWorkerFallbackSender {
     priority: TokioSender<DecryptWorkerEvent>,
     bulk: TokioSender<DecryptWorkerEvent>,
+    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_packet_cap: usize,
 }
 
 pub(crate) struct DecryptWorkerFallbackReceivers {
     pub(crate) priority: TokioReceiver<DecryptWorkerEvent>,
     pub(crate) bulk: TokioReceiver<DecryptWorkerEvent>,
+    bulk_queued_packets: Arc<AtomicUsize>,
 }
 
 pub(crate) fn decrypt_worker_fallback_channels()
@@ -528,22 +550,44 @@ fn decrypt_worker_fallback_channels_with_caps(
 ) -> (DecryptWorkerFallbackSender, DecryptWorkerFallbackReceivers) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::channel(priority_cap.max(1));
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::channel(bulk_cap.max(1));
+    let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     (
         DecryptWorkerFallbackSender {
             priority: priority_tx,
             bulk: bulk_tx,
+            bulk_queued_packets: Arc::clone(&bulk_queued_packets),
+            bulk_packet_cap: bulk_cap.max(1),
         },
         DecryptWorkerFallbackReceivers {
             priority: priority_rx,
             bulk: bulk_rx,
+            bulk_queued_packets,
         },
     )
 }
 
 impl DecryptWorkerFallbackSender {
+    fn same_channels(&self, other: &Self) -> bool {
+        self.priority.same_channel(&other.priority)
+            && self.bulk.same_channel(&other.bulk)
+            && Arc::ptr_eq(&self.bulk_queued_packets, &other.bulk_queued_packets)
+            && self.bulk_packet_cap == other.bulk_packet_cap
+    }
+
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
+        let packet_count = event.packet_count();
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
+        if matches!(lane, DecryptWorkerLane::Bulk)
+            && !try_reserve_bulk_packets(
+                &self.bulk_queued_packets,
+                self.bulk_packet_cap,
+                packet_count,
+            )
+        {
+            record_decrypt_fallback_drop_count(lane, packet_count);
+            return false;
+        }
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
             DecryptWorkerLane::Bulk => self.bulk.try_send(event),
@@ -551,10 +595,16 @@ impl DecryptWorkerFallbackSender {
         match result {
             Ok(()) => true,
             Err(TokioTrySendError::Full(_)) => {
-                record_decrypt_fallback_drop(lane);
+                if matches!(lane, DecryptWorkerLane::Bulk) {
+                    release_bulk_packets(&self.bulk_queued_packets, packet_count);
+                }
+                record_decrypt_fallback_drop_count(lane, packet_count);
                 false
             }
             Err(TokioTrySendError::Closed(_)) => {
+                if matches!(lane, DecryptWorkerLane::Bulk) {
+                    release_bulk_packets(&self.bulk_queued_packets, packet_count);
+                }
                 debug!(
                     ?lane,
                     "decrypt fallback receiver gone; dropping worker event"
@@ -565,9 +615,23 @@ impl DecryptWorkerFallbackSender {
     }
 }
 
+impl DecryptWorkerFallbackReceivers {
+    pub(crate) fn release_dequeued_event(&self, event: &DecryptWorkerEvent) {
+        if matches!(event.lane(), DecryptWorkerLane::Bulk) {
+            release_bulk_packets(&self.bulk_queued_packets, event.packet_count());
+        }
+    }
+
+    #[cfg(test)]
+    fn bulk_queued_packets(&self) -> usize {
+        self.bulk_queued_packets.load(Ordering::Relaxed)
+    }
+}
+
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
+        DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
     }
 }
@@ -951,18 +1015,19 @@ fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
     }
 }
 
-fn record_decrypt_fallback_drop(lane: DecryptWorkerLane) {
+fn record_decrypt_fallback_drop_count(lane: DecryptWorkerLane, count: usize) {
     let event = match lane {
         DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptFallbackPriorityDropped,
         DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFallbackBulkDropped,
     };
-    crate::perf_profile::record_event(event);
+    crate::perf_profile::record_event_count(event, count as u64);
     static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
-    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    let n = FULL_COUNT.fetch_add(count as u64, Ordering::Relaxed);
     if n < 8 || n.is_multiple_of(10000) {
         warn!(
             ?lane,
-            drops = n + 1,
+            drops = n + count as u64,
+            dropped = count,
             "DecryptWorker fallback channel full; dropping worker event"
         );
     }
@@ -1052,14 +1117,88 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let count = jobs.len();
+            let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
+                    plaintext_batch.flush();
                     shard.handle_msg(idx, msg);
                 }
-                shard.handle_job_msg(idx, job);
+                shard.handle_bulk_job_msg(idx, job, &mut plaintext_batch);
             }
+            plaintext_batch.flush();
             count
         }
+    }
+}
+
+struct DecryptWorkerOutput {
+    fallback_tx: DecryptWorkerFallbackSender,
+    event: DecryptWorkerEvent,
+}
+
+impl DecryptWorkerOutput {
+    fn send(self) -> bool {
+        self.fallback_tx.send(self.event)
+    }
+}
+
+struct DecryptPlaintextFallbackBatch {
+    fallback_tx: Option<DecryptWorkerFallbackSender>,
+    fallbacks: Vec<DecryptFallback>,
+}
+
+impl DecryptPlaintextFallbackBatch {
+    fn new() -> Self {
+        Self {
+            fallback_tx: None,
+            fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        }
+    }
+
+    fn push_output(&mut self, output: DecryptWorkerOutput) {
+        match output.event {
+            DecryptWorkerEvent::Plaintext(fallback)
+                if matches!(fallback.lane(), DecryptWorkerLane::Bulk) =>
+            {
+                if self
+                    .fallback_tx
+                    .as_ref()
+                    .is_some_and(|fallback_tx| !fallback_tx.same_channels(&output.fallback_tx))
+                {
+                    self.flush();
+                }
+                if self.fallback_tx.is_none() {
+                    self.fallback_tx = Some(output.fallback_tx);
+                }
+                self.fallbacks.push(fallback);
+                if self.fallbacks.len() >= DECRYPT_WORKER_BULK_BATCH_MAX {
+                    self.flush();
+                }
+            }
+            event => {
+                self.flush();
+                let _ = output.fallback_tx.send(event);
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.fallbacks.is_empty() {
+            return;
+        }
+        let Some(fallback_tx) = self.fallback_tx.take() else {
+            return;
+        };
+        let event = if self.fallbacks.len() == 1 {
+            DecryptWorkerEvent::Plaintext(self.fallbacks.pop().expect("checked single fallback"))
+        } else {
+            let fallbacks = std::mem::replace(
+                &mut self.fallbacks,
+                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            );
+            DecryptWorkerEvent::PlaintextBatch(fallbacks)
+        };
+        let _ = fallback_tx.send(event);
     }
 }
 
@@ -1090,8 +1229,29 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
-        if let Err(err) = self.handle_job(job) {
-            debug!(worker = idx, error = %err, "decrypt worker job failed");
+        match self.handle_job_output(job) {
+            Ok(Some(output)) => {
+                let _ = output.send();
+            }
+            Ok(None) => {}
+            Err(err) => {
+                debug!(worker = idx, error = %err, "decrypt worker job failed");
+            }
+        }
+    }
+
+    fn handle_bulk_job_msg(
+        &mut self,
+        idx: usize,
+        job: DecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        match self.handle_job_output(job) {
+            Ok(Some(output)) => plaintext_batch.push_output(output),
+            Ok(None) => {}
+            Err(err) => {
+                debug!(worker = idx, error = %err, "decrypt worker job failed");
+            }
         }
     }
 
@@ -1118,10 +1278,21 @@ impl DecryptWorkerShard {
         self.sessions.remove(&session_key);
     }
 
+    #[cfg(test)]
     fn handle_job(
         &mut self,
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(output) = self.handle_job_output(job)? {
+            let _ = output.send();
+        }
+        Ok(())
+    }
+
+    fn handle_job_output(
+        &mut self,
+        job: DecryptJob,
+    ) -> Result<Option<DecryptWorkerOutput>, Box<dyn std::error::Error + Send + Sync>> {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -1151,7 +1322,7 @@ impl DecryptWorkerShard {
             None => {
                 let _ = fallback_tx; // explicitly ignore — drop path
                 let _ = packet_data;
-                return Ok(());
+                return Ok(None);
             }
         };
         let source_peer = state.source_peer;
@@ -1170,16 +1341,17 @@ impl DecryptWorkerShard {
             &fmp_header,
         ) {
             Ok(outcome) => outcome.plaintext_len,
-            Err(FmpOpenError::Replay) => return Ok(()),
+            Err(FmpOpenError::Replay) => return Ok(None),
             Err(FmpOpenError::Aead { fmp_replay_highest }) => {
-                let _ =
-                    fallback_tx.send(DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+                return Ok(Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                         source_peer,
                         fmp_counter,
                         fmp_replay_highest,
                         trace_enqueued_at: None,
-                    }));
-                return Ok(());
+                    }),
+                }));
             }
         };
         drop(_t_fmp);
@@ -1191,7 +1363,7 @@ impl DecryptWorkerShard {
         let fmp_plaintext_end = fmp_ciphertext_offset + plaintext_len;
         const INNER_TIMESTAMP_LEN: usize = 4;
         if plaintext_len < INNER_TIMESTAMP_LEN + 1 {
-            return Ok(());
+            return Ok(None);
         }
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
         let link_msg_end = fmp_plaintext_end;
@@ -1242,7 +1414,7 @@ impl DecryptWorkerShard {
         // Pass the buffer through by ownership + offset/length. No
         // per-packet allocation; rx_loop slices into `packet_data`.
         let _ = link_msg; // sanity-check borrow before sending buffer onward
-        let _ = fallback_tx.send(DecryptWorkerEvent::Plaintext(DecryptFallback::new(
+        let event = DecryptWorkerEvent::Plaintext(DecryptFallback::new(
             source_peer,
             transport_id,
             remote_addr,
@@ -1253,12 +1425,12 @@ impl DecryptWorkerShard {
             packet_data,
             fmp_plaintext_start,
             plaintext_len,
-        )));
+        ));
         // Suppress unused-variable warnings for the (now-removed) FSP
         // fast path. The `state` lookup is still needed for the FMP
         // cipher + replay window above.
         let _ = (link_msg_start, link_msg_end, &state.source_peer);
-        Ok(())
+        Ok(Some(DecryptWorkerOutput { fallback_tx, event }))
     }
 
     #[cfg(test)]
@@ -1467,6 +1639,27 @@ mod tests {
         ))
     }
 
+    fn dummy_plaintext_batch_event(count: usize, packet_len: usize) -> DecryptWorkerEvent {
+        DecryptWorkerEvent::PlaintextBatch(
+            (0..count)
+                .map(|idx| {
+                    DecryptFallback::new(
+                        test_source_peer(),
+                        TransportId::new(1),
+                        crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                        1_000,
+                        packet_len,
+                        idx as u64,
+                        0,
+                        vec![0; packet_len.max(1)],
+                        0,
+                        1,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn dummy_failure_event() -> DecryptWorkerEvent {
         DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
             source_peer: test_source_peer(),
@@ -1486,13 +1679,24 @@ mod tests {
         counter: u64,
         flags: u8,
     ) -> (Vec<u8>, [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]) {
+        sealed_fmp_test_packet_with_link_body(cipher, counter, flags, 1)
+    }
+
+    fn sealed_fmp_test_packet_with_link_body(
+        cipher: &LessSafeKey,
+        counter: u64,
+        flags: u8,
+        link_body_len: usize,
+    ) -> (Vec<u8>, [u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]) {
         const HDR: usize = crate::node::wire::ESTABLISHED_HEADER_SIZE;
         let mut header = [0u8; HDR];
         header[1] = flags;
-        let mut wire = Vec::with_capacity(HDR + 4 + 1 + 16);
+        let link_body_len = link_body_len.max(1);
+        let mut wire = Vec::with_capacity(HDR + 4 + link_body_len + 16);
         wire.extend_from_slice(&header);
         wire.extend_from_slice(&[0u8; 4]);
         wire.push(0xAB);
+        wire.resize(HDR + 4 + link_body_len, 0xCD);
 
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
@@ -1648,6 +1852,9 @@ mod tests {
             decrypt_worker_event_lane(&dummy_failure_event()),
             DecryptWorkerLane::Priority
         );
+        let batch = dummy_plaintext_batch_event(3, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        assert_eq!(decrypt_worker_event_lane(&batch), DecryptWorkerLane::Bulk);
+        assert_eq!(batch.packet_count(), 3);
     }
 
     #[test]
@@ -1667,6 +1874,7 @@ mod tests {
                 );
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
         }
     }
 
@@ -1742,6 +1950,39 @@ mod tests {
             fallback_rx.bulk.try_recv().expect("bulk event"),
             DecryptWorkerEvent::Plaintext(_)
         ));
+    }
+
+    #[test]
+    fn decrypt_worker_fallback_bulk_capacity_counts_batch_packets() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 2);
+
+        assert!(fallback_tx.send(dummy_plaintext_batch_event(
+            2,
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+        )));
+        assert_eq!(
+            fallback_rx.bulk_queued_packets(),
+            2,
+            "batch should reserve one bulk slot per packet, not per mpsc item"
+        );
+        assert!(
+            !fallback_tx.send(dummy_plaintext_event(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+            )),
+            "bulk packet cap should reject another packet while the two-packet batch is queued"
+        );
+        assert!(
+            fallback_tx.send(dummy_failure_event()),
+            "priority fallback must not consume bulk packet capacity"
+        );
+
+        let event = fallback_rx.bulk.try_recv().expect("bulk batch event");
+        assert!(matches!(event, DecryptWorkerEvent::PlaintextBatch(_)));
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        assert!(fallback_tx.send(dummy_plaintext_event(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+        )));
     }
 
     #[test]
@@ -1855,6 +2096,73 @@ mod tests {
                 assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
             }
             DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
+        }
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_batch_emits_one_plaintext_fallback_batch() {
+        let session_key = test_session_key(1, 106);
+        let source_peer = test_source_peer();
+        let cipher = test_chacha_key([0x42; 32]);
+        let mut shard = DecryptWorkerShard::new();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState {
+                fmp_cipher: cipher.clone(),
+                fmp_replay: ReplayWindow::new(),
+                source_peer,
+            },
+        );
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        drop(priority_tx);
+        let bulk_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 64;
+        let (packet_one, header_one) =
+            sealed_fmp_test_packet_with_link_body(&cipher, 1, 0, bulk_body_len);
+        let (packet_two, header_two) =
+            sealed_fmp_test_packet_with_link_body(&cipher, 2, 0, bulk_body_len);
+
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &priority_rx,
+            DecryptWorkerBulkItem::Batch(vec![
+                decrypt_job_for_test_packet(
+                    packet_one,
+                    header_one,
+                    session_key,
+                    1,
+                    0,
+                    fallback_tx.clone(),
+                ),
+                decrypt_job_for_test_packet(packet_two, header_two, session_key, 2, 0, fallback_tx),
+            ]),
+        );
+
+        assert_eq!(processed, 2);
+        assert_eq!(
+            fallback_rx.bulk_queued_packets(),
+            2,
+            "one fallback batch should still reserve two bulk packet slots"
+        );
+        let event = fallback_rx.bulk.try_recv().expect("bulk fallback batch");
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        match event {
+            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
+                assert_eq!(fallbacks.len(), 2);
+                assert_eq!(fallbacks[0].source_peer, source_peer);
+                assert_eq!(fallbacks[1].source_peer, source_peer);
+                assert_eq!(fallbacks[0].fmp_counter, 1);
+                assert_eq!(fallbacks[1].fmp_counter, 2);
+                assert!(fallbacks.iter().all(|fallback| {
+                    fallback.packet_len > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN
+                }));
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected plaintext fallback batch")
+            }
         }
     }
 
@@ -2119,6 +2427,7 @@ mod tests {
                 assert_eq!(report.fmp_counter, 1);
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
+            DecryptWorkerEvent::PlaintextBatch(_) => panic!("invalid bulk job should fail AEAD"),
         }
         assert!(
             priority_rx.is_empty(),
@@ -2242,6 +2551,9 @@ mod tests {
                 );
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid packet must not produce plaintext"),
+            DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
         }
         assert_eq!(
             shard.fmp_replay_highest(session_key).unwrap(),
@@ -2470,6 +2782,7 @@ mod tests {
         let fallback = match event {
             DecryptWorkerEvent::Plaintext(fallback) => fallback,
             DecryptWorkerEvent::DecryptFailure(_) => panic!("expected plaintext fallback event"),
+            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected plaintext fallback event"),
         };
         assert_eq!(
             fallback.source_peer, source_peer,
@@ -2540,6 +2853,7 @@ mod tests {
                 assert_eq!(report.fmp_counter, counter);
             }
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
+            DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
         }
     }
 }

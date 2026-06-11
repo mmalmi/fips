@@ -611,6 +611,11 @@ impl Node {
             DecryptWorkerEvent::Plaintext(fallback) => {
                 self.process_decrypt_fallback(fallback).await;
             }
+            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
+                for fallback in fallbacks {
+                    self.process_decrypt_fallback(fallback).await;
+                }
+            }
             DecryptWorkerEvent::DecryptFailure(report) => {
                 self.process_decrypt_failure_report(report).await;
             }
@@ -681,7 +686,10 @@ impl Node {
         let mut drain =
             PriorityBulkDrainCursor::new(first_priority_event, first_bulk_event, budget);
         while let Some(event) = drain.next(&mut rx.priority, &mut rx.bulk) {
+            rx.release_dequeued_event(&event);
+            let extra = event.packet_count().saturating_sub(1);
             self.process_decrypt_worker_event(event).await;
+            drain.charge_extra(extra);
         }
         let drained = drain.drained();
         self.finish_endpoint_event_batch();
