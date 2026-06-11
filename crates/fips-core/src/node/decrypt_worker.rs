@@ -916,37 +916,24 @@ fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize
     if count == 0 {
         return true;
     }
-    let mut current = counter.load(Ordering::Relaxed);
-    loop {
-        let Some(next) = current.checked_add(count) else {
-            return false;
-        };
-        if next > capacity {
-            return false;
-        }
-        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
-            Ok(_) => return true,
-            Err(observed) => current = observed,
-        }
-    }
+
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(count).filter(|next| *next <= capacity)
+        })
+        .is_ok()
 }
 
 fn release_bulk_packets(counter: &AtomicUsize, count: usize) {
     if count == 0 {
         return;
     }
-    let mut current = counter.load(Ordering::Relaxed);
-    loop {
-        debug_assert!(
-            current >= count,
-            "decrypt worker bulk job accounting underflow: current={current}, release={count}"
-        );
-        let next = current.saturating_sub(count);
-        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
-            Ok(_) => return,
-            Err(observed) => current = observed,
-        }
-    }
+
+    let previous = counter.fetch_sub(count, Ordering::Relaxed);
+    debug_assert!(
+        previous >= count,
+        "decrypt worker bulk job accounting underflow: previous={previous}, release={count}"
+    );
 }
 
 fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
