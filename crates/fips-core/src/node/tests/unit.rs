@@ -2427,19 +2427,31 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     let dispatch = receive.record_bookkeeping(&mut registry, std::time::Instant::now(), true);
 
     assert_eq!(dispatch.source_peer(), peer_identity);
-    assert_eq!(dispatch.node_addr(), &peer_addr);
     assert!(dispatch.ce_flag());
     assert_eq!(
         dispatch.link_message(),
         &[LinkMessageType::SessionDatagram.to_byte(), 0xbb, 0xcc]
     );
-    assert!(dispatch.address_changed());
     let bookkeeping = dispatch
         .bookkeeping()
         .expect("authenticated receive should find the active peer");
     assert!(bookkeeping.path_bookkeeping_recorded);
     assert!(bookkeeping.mmp_recorded);
-    let link_message = dispatch
+
+    let action = dispatch.into_action();
+    assert_eq!(action.node_addr(), &peer_addr);
+    assert!(action.address_changed());
+    let link_message = action
+        .link_message()
+        .expect("non-empty FMP link message should parse");
+    assert_eq!(link_message.source_node_addr(), &peer_addr);
+    assert_eq!(
+        link_message.msg_type(),
+        LinkMessageType::SessionDatagram.to_byte()
+    );
+    assert_eq!(link_message.payload(), &[0xbb, 0xcc]);
+    assert!(link_message.ce_flag());
+    let link_message = action
         .into_link_message()
         .expect("non-empty FMP link message should parse");
     assert_eq!(link_message.source_node_addr(), &peer_addr);
@@ -2465,6 +2477,28 @@ fn peer_runtime_receive_owns_bookkeeping_and_dispatch_metadata() {
     assert_eq!(encrypted_payload.payload(), &[0xdd, 0xee]);
     assert_eq!(encrypted_payload.path_mtu(), 1_280);
     assert!(encrypted_payload.ce_flag());
+
+    let empty_receive =
+        PeerRuntimeReceive::from_authenticated_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            peer_identity,
+            new_transport_id,
+            &new_addr,
+            2_100,
+            64,
+            8,
+            0,
+            &[0, 0, 0, 0],
+        ))
+        .expect("timestamp-only authenticated FMP plaintext should parse");
+    let mut empty_registry = PeerLifecycleRegistry::default();
+    let empty_action = empty_receive
+        .record_bookkeeping(&mut empty_registry, std::time::Instant::now(), true)
+        .into_action();
+    assert_eq!(empty_action.node_addr(), &peer_addr);
+    assert!(
+        empty_action.link_message().is_none(),
+        "timestamp-only authenticated FMP plaintext should not leave Node to split dispatch bytes"
+    );
 
     let peer = registry
         .get(&peer_addr)

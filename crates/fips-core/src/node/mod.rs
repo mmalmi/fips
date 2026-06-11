@@ -2448,6 +2448,12 @@ pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
     bookkeeping: Option<AuthenticatedFmpReceiveBookkeeping>,
 }
 
+pub(in crate::node) struct PeerRuntimeReceiveAction<'a> {
+    source_peer: PeerIdentity,
+    address_changed: bool,
+    link_message: Option<AuthenticatedLinkMessage<'a>>,
+}
+
 pub(in crate::node) struct AuthenticatedLinkMessage<'a> {
     source_peer: PeerIdentity,
     msg_type: u8,
@@ -2656,10 +2662,6 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
         self.source_peer
     }
 
-    pub(in crate::node) fn node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
     #[cfg(test)]
     pub(in crate::node) fn ce_flag(&self) -> bool {
         self.ce_flag
@@ -2670,24 +2672,47 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
         self.link_message
     }
 
-    pub(in crate::node) fn into_link_message(self) -> Option<AuthenticatedLinkMessage<'a>> {
-        let (&msg_type, payload) = self.link_message.split_first()?;
-        Some(AuthenticatedLinkMessage {
-            source_peer: self.source_peer,
-            msg_type,
-            payload,
-            ce_flag: self.ce_flag,
-        })
-    }
-
-    pub(in crate::node) fn address_changed(&self) -> bool {
-        self.bookkeeping
-            .is_some_and(|update| update.address_changed)
-    }
-
     #[cfg(test)]
     pub(in crate::node) fn bookkeeping(&self) -> Option<AuthenticatedFmpReceiveBookkeeping> {
         self.bookkeeping
+    }
+
+    pub(in crate::node) fn into_action(self) -> PeerRuntimeReceiveAction<'a> {
+        let link_message =
+            self.link_message
+                .split_first()
+                .map(|(&msg_type, payload)| AuthenticatedLinkMessage {
+                    source_peer: self.source_peer,
+                    msg_type,
+                    payload,
+                    ce_flag: self.ce_flag,
+                });
+        PeerRuntimeReceiveAction {
+            source_peer: self.source_peer,
+            address_changed: self
+                .bookkeeping
+                .is_some_and(|update| update.address_changed),
+            link_message,
+        }
+    }
+}
+
+impl<'a> PeerRuntimeReceiveAction<'a> {
+    pub(in crate::node) fn node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    pub(in crate::node) fn address_changed(&self) -> bool {
+        self.address_changed
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn link_message(&self) -> Option<&AuthenticatedLinkMessage<'a>> {
+        self.link_message.as_ref()
+    }
+
+    pub(in crate::node) fn into_link_message(self) -> Option<AuthenticatedLinkMessage<'a>> {
+        self.link_message
     }
 }
 

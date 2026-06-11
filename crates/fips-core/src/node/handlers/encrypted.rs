@@ -385,6 +385,7 @@ impl Node {
         };
         let dispatch =
             runtime_receive.record_bookkeeping(&mut self.peers, now, path_bookkeeping_allowed);
+        let action = dispatch.into_action();
         // Address rotation invalidates the per-peer connected UDP
         // socket: it's `connect(2)`-ed to the old kernel 5-tuple
         // (cached route + neighbour entry), and continuing to
@@ -396,14 +397,14 @@ impl Node {
         // the borrow on `self.peers` is released — `clear_connected_
         // udp_for_peer` may need to traverse other peer state.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if dispatch.address_changed() {
-            self.clear_connected_udp_for_peer(dispatch.node_addr());
+        if action.address_changed() {
+            self.clear_connected_udp_for_peer(action.node_addr());
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = dispatch.address_changed();
+            let _ = action.address_changed();
         }
-        let Some(link_message) = dispatch.into_link_message() else {
+        let Some(link_message) = action.into_link_message() else {
             return;
         };
         self.dispatch_link_message(link_message).await;
