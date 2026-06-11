@@ -80,4 +80,7 @@ pub use peer::{
 
 // Re-export node types
 pub use endpoint::{FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage};
-pub use node::{ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState};
+pub use node::{
+    ExternalPacketIo, Node, NodeDeliveredPacket, NodeError, NodeState,
+    endpoint_payload_is_latency_sensitive,
+};

@@ -338,8 +338,12 @@ fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
+/// Return true when an app-owned endpoint payload should retain priority-lane progress.
+///
+/// Embedders that stage packets before calling `FipsEndpoint::send*_to_peer`
+/// can use this to apply the same priority/bulk policy as the FIPS endpoint
+/// command queue without duplicating IP/TCP parsing.
+pub fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
     !classify_endpoint_payload(payload).bulk_endpoint_data
 }
 
