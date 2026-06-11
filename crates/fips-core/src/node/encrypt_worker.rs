@@ -650,11 +650,12 @@ impl QueuedFmpSendJob {
 /// opted into the ordered sender. Live Wi-Fi sender tests showed the
 /// worker-owned path beats the per-flow ordered sender handoff when the
 /// Darwin UDP syscall/pacer path, not FMP AEAD, is the limiting stage.
-/// Per-flow bounded queue cap. Keep this near wireguard-go's outbound
-/// queue size: a much deeper queue hides a saturated sender from TCP
-/// for tens of milliseconds, inflating RTT/retransmits instead of
-/// pushing back to TUN promptly.
-const DEFAULT_WORKER_CHANNEL_CAP: usize = 1024;
+/// Per-flow bounded bulk queue cap. Keep this shallower than wireguard-go's
+/// 1024-slot outbound queue because this worker also has a 4x total Linux
+/// bulk lane and a separate control reserve. A deeper queue hides a saturated
+/// sender from TCP for tens of milliseconds, inflating RTT/retransmits instead
+/// of pushing back to TUN promptly.
+const DEFAULT_WORKER_CHANNEL_CAP: usize = 512;
 // Keep the control/ACK-shaped reserve independent from synthetic bulk-pressure
 // tests that deliberately shrink `FIPS_WORKER_CHANNEL_CAP`.
 #[cfg(not(target_os = "macos"))]
@@ -3243,6 +3244,33 @@ mod unix_tests {
             parse_worker_batch_size(Some("not-a-number"), 31),
             31,
             "invalid env values should keep the supplied platform default"
+        );
+    }
+
+    #[test]
+    fn worker_bulk_channel_default_is_latency_bounded() {
+        assert_eq!(
+            parse_worker_channel_cap(None, DEFAULT_WORKER_CHANNEL_CAP),
+            512
+        );
+        assert_eq!(
+            parse_worker_channel_cap(Some("not-a-number"), DEFAULT_WORKER_CHANNEL_CAP),
+            512,
+            "invalid env values should keep the tuned default"
+        );
+        assert_eq!(
+            parse_worker_channel_cap(Some("0"), DEFAULT_WORKER_CHANNEL_CAP),
+            1
+        );
+        assert_eq!(
+            parse_worker_channel_cap(Some("999999"), DEFAULT_WORKER_CHANNEL_CAP),
+            32768
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            parse_worker_channel_cap(None, DEFAULT_WORKER_PRIORITY_CHANNEL_CAP),
+            1024,
+            "control reserve must remain independent from bulk queue tuning"
         );
     }
 
