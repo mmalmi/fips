@@ -170,10 +170,9 @@ impl Node {
                 // turns every few dozen packets to keep that progress
                 // reserve while avoiding a bulk-fallback convoy.
                 Some(event) = decrypt_fallback_rx.priority.recv() => {
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
+                    let fallback_drained = self.drain_decrypt_priority_fallback(
+                        &mut decrypt_fallback_rx.priority,
                         Some(event),
-                        None,
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
@@ -457,7 +456,7 @@ impl Node {
         first_packet: Option<Vec<u8>>,
         budget: usize,
     ) -> usize {
-        let mut drain = TunOutboundDrainCursor::new(first_packet, budget);
+        let mut drain = SingleLaneDrainCursor::new(first_packet, budget);
         while let Some(packet) = drain.next(tun_outbound_rx) {
             self.handle_tun_outbound(packet).await;
         }
@@ -590,11 +589,33 @@ impl Node {
         self.handle_decrypt_failure_report(&report).await;
     }
 
+    /// Drain only the priority decrypt-worker fallback lane.
+    ///
+    /// This is the top-level reserved-progress arm: priority plaintext and
+    /// decrypt failures get first service, but bulk fallback stays behind
+    /// `packet_rx` unless it is explicitly interleaved inside a packet drain
+    /// or selected by its own lower-priority branch.
+    async fn drain_decrypt_priority_fallback(
+        &mut self,
+        priority_rx: &mut Receiver<DecryptWorkerEvent>,
+        first_event: Option<DecryptWorkerEvent>,
+        budget: usize,
+    ) -> usize {
+        self.begin_endpoint_event_batch();
+        let mut drain = SingleLaneDrainCursor::new(first_event, budget);
+        while let Some(event) = drain.next(priority_rx) {
+            self.process_decrypt_worker_event(event).await;
+        }
+        let drained = drain.drained();
+        self.finish_endpoint_event_batch();
+        drained
+    }
+
     /// Drain up to `budget` queued fallbacks without yielding back to
     /// `select!`. Returns the number processed. Called both from the
-    /// promoted-fallback select arm (after the head item) and
-    /// interleaved inside the packet_rx drain loop so bounced FMP
-    /// plaintexts can't accumulate behind a 256-packet inbound burst.
+    /// bulk-fallback select arm (after the selected head item) and interleaved
+    /// inside the packet_rx drain loop so bounced FMP plaintexts can't
+    /// accumulate behind a 256-packet inbound burst.
     async fn drain_decrypt_fallback(
         &mut self,
         rx: &mut DecryptWorkerFallbackReceivers,
@@ -1075,16 +1096,16 @@ impl<T> PriorityBulkDrainCursor<T> {
     }
 }
 
-struct TunOutboundDrainCursor<T> {
-    first_packet: Option<T>,
+struct SingleLaneDrainCursor<T> {
+    first_item: Option<T>,
     remaining: usize,
     drained: usize,
 }
 
-impl<T> TunOutboundDrainCursor<T> {
-    fn new(first_packet: Option<T>, budget: usize) -> Self {
+impl<T> SingleLaneDrainCursor<T> {
+    fn new(first_item: Option<T>, budget: usize) -> Self {
         Self {
-            first_packet,
+            first_item,
             remaining: budget,
             drained: 0,
         }
@@ -1095,7 +1116,7 @@ impl<T> TunOutboundDrainCursor<T> {
             return None;
         }
 
-        let packet = self.first_packet.take().or_else(|| rx.try_recv().ok())?;
+        let packet = self.first_item.take().or_else(|| rx.try_recv().ok())?;
         self.remaining -= 1;
         self.drained += 1;
         Some(packet)
@@ -1110,7 +1131,7 @@ impl<T> TunOutboundDrainCursor<T> {
 mod tests {
     use super::{
         PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats,
-        RxLoopMaintenancePlan, RxLoopMaintenanceState, TunOutboundDrainCursor,
+        RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
     };
     use std::time::{Duration, Instant};
 
@@ -1259,6 +1280,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn priority_fallback_drain_leaves_bulk_for_lower_priority_turn() {
+        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+        priority_tx.send("queued-priority").await.unwrap();
+        bulk_tx.send("queued-bulk").await.unwrap();
+        let mut drain = SingleLaneDrainCursor::new(Some("selected-priority"), 4);
+
+        assert_eq!(drain.next(&mut priority_rx), Some("selected-priority"));
+        assert_eq!(drain.next(&mut priority_rx), Some("queued-priority"));
+        assert_eq!(drain.next(&mut priority_rx), None);
+        assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
+        assert_eq!(drain.drained(), 2);
+    }
+
+    #[tokio::test]
     async fn priority_bulk_drain_cursor_owns_selected_head_and_budget() {
         let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
         let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
@@ -1391,13 +1428,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tun_outbound_drain_cursor_owns_first_packet_and_budget() {
+    async fn single_lane_drain_cursor_owns_first_item_and_budget() {
         let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(4);
 
         tun_tx.send("queued-1").await.unwrap();
         tun_tx.send("queued-2").await.unwrap();
         tun_tx.send("queued-3").await.unwrap();
-        let mut drain = TunOutboundDrainCursor::new(Some("selected"), 3);
+        let mut drain = SingleLaneDrainCursor::new(Some("selected"), 3);
 
         assert_eq!(drain.next(&mut tun_rx), Some("selected"));
         assert_eq!(drain.next(&mut tun_rx), Some("queued-1"));
