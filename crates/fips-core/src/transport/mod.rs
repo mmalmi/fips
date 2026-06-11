@@ -1025,23 +1025,26 @@ impl fmt::Display for LinkDirection {
 /// Each transport type interprets this differently:
 /// - UDP/TCP: "host:port" (IP address or DNS hostname)
 /// - Ethernet: MAC address (6 bytes)
+///
+/// The bytes are immutable and shared so hot-path clones can carry path
+/// evidence through receive/session bookkeeping without copying address bytes.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TransportAddr(Vec<u8>);
+pub struct TransportAddr(Arc<[u8]>);
 
 impl TransportAddr {
     /// Create a transport address from raw bytes.
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+        Self(bytes.into())
     }
 
     /// Create a transport address from a byte slice.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self(bytes.to_vec())
+        Self(Arc::from(bytes))
     }
 
     /// Create a transport address from a string.
     pub fn from_string(s: &str) -> Self {
-        Self(s.as_bytes().to_vec())
+        Self(Arc::from(s.as_bytes()))
     }
 
     /// Create a transport address from a `SocketAddr` without going
@@ -1065,7 +1068,7 @@ impl TransportAddr {
         // `Write` impl is infallible for in-memory buffers), so the
         // expect is for shape only.
         write!(&mut buf, "{addr}").expect("Vec<u8>::write_fmt is infallible");
-        Self(buf)
+        Self(buf.into())
     }
 
     /// Get the raw bytes.
@@ -1104,7 +1107,7 @@ impl fmt::Display for TransportAddr {
         match self.as_str() {
             Some(s) => write!(f, "{}", s),
             None => {
-                for byte in &self.0 {
+                for byte in self.0.iter() {
                     write!(f, "{:02x}", byte)?;
                 }
                 Ok(())
@@ -1121,7 +1124,7 @@ impl From<&str> for TransportAddr {
 
 impl From<String> for TransportAddr {
     fn from(s: String) -> Self {
-        Self(s.into_bytes())
+        Self(s.into_bytes().into())
     }
 }
 
@@ -2067,6 +2070,28 @@ mod tests {
         let addr = TransportAddr::from_string("192.168.1.1:2121");
         assert_eq!(format!("{}", addr), "192.168.1.1:2121");
         assert_eq!(addr.as_str(), Some("192.168.1.1:2121"));
+    }
+
+    #[test]
+    fn transport_addr_clone_shares_immutable_bytes() {
+        let addr = TransportAddr::from_string("192.168.1.1:2121");
+        let cloned = addr.clone();
+
+        assert_eq!(addr, cloned);
+        assert!(Arc::ptr_eq(&addr.0, &cloned.0));
+    }
+
+    #[test]
+    fn transport_addr_hashes_by_value_not_pointer() {
+        use std::collections::HashSet;
+
+        let original = TransportAddr::from_string("192.168.1.1:2121");
+        let same_value = TransportAddr::from_bytes(b"192.168.1.1:2121");
+        let mut addrs = HashSet::new();
+
+        addrs.insert(original);
+
+        assert!(addrs.contains(&same_value));
     }
 
     #[test]
