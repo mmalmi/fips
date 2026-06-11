@@ -485,6 +485,13 @@ impl PacketRx {
         self.priority_queued_packets.load(Relaxed)
     }
 
+    pub(crate) fn priority_ready_packets(&self) -> usize {
+        self.pending_priority
+            .as_ref()
+            .map_or(0, PendingPackets::len)
+            .saturating_add(self.priority_queued_packets())
+    }
+
     pub async fn recv(&mut self) -> Option<ReceivedPacket> {
         loop {
             match self.try_recv() {
@@ -2606,6 +2613,36 @@ mod tests {
             0,
             "bulk traffic should not make PacketRx probe the priority lane"
         );
+    }
+
+    #[test]
+    fn packet_rx_priority_ready_includes_pending_batch_tail() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
+            ReceivedPacket::new(TransportId::new(1), addr, vec![0x33; 64]),
+        ])
+        .expect("priority batch send should succeed");
+
+        assert_eq!(rx.priority_ready_packets(), 3);
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+        assert_eq!(
+            tx.priority_queued_packets(),
+            0,
+            "sender-side channel hint should clear once PacketRx owns the batch"
+        );
+        assert_eq!(
+            rx.priority_ready_packets(),
+            2,
+            "rx-loop scheduling must still see the priority batch tail"
+        );
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
+        assert_eq!(rx.priority_ready_packets(), 1);
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x33);
+        assert_eq!(rx.priority_ready_packets(), 0);
     }
 
     #[tokio::test]

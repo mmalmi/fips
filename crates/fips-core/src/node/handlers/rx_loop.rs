@@ -115,6 +115,10 @@ fn fallback_drain_plan(
     }
 }
 
+fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
+    transport_priority_packets == 0
+}
+
 fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
     let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
     let ms = raw
@@ -322,7 +326,9 @@ impl Node {
                         );
                     }
                 }
-                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv() => {
+                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv(),
+                    if authenticated_bulk_preempts_packet_rx(packet_rx.priority_ready_packets()) =>
+                {
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
                         None,
@@ -375,7 +381,7 @@ impl Node {
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
                     let fallback_plan = fallback_drain_plan(
-                        packet_rx.priority_queued_packets(),
+                        packet_rx.priority_ready_packets(),
                         decrypt_fallback_rx.bulk_queued_packets(),
                     );
                     let fallback_drained = self.drain_decrypt_fallback(
@@ -491,7 +497,7 @@ impl Node {
             0
         };
         let mut fallback_plan = fallback_drain_plan(
-            packet_rx.priority_queued_packets(),
+            packet_rx.priority_ready_packets(),
             decrypt_fallback_rx.bulk_queued_packets(),
         );
         let mut drain = PacketDrainCursor::new(
@@ -521,7 +527,7 @@ impl Node {
                 PacketDrainAction::InterleaveFallback => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
                     fallback_plan = fallback_drain_plan(
-                        packet_rx.priority_queued_packets(),
+                        packet_rx.priority_ready_packets(),
                         decrypt_fallback_rx.bulk_queued_packets(),
                     );
                     drain.reset_fallback_interleave_every(fallback_plan.interleave_every);
@@ -569,7 +575,7 @@ impl Node {
         let drained = drain.drained();
         if drained > 0 {
             fallback_plan = fallback_drain_plan(
-                packet_rx.priority_queued_packets(),
+                packet_rx.priority_ready_packets(),
                 decrypt_fallback_rx.bulk_queued_packets(),
             );
             // One trailing fallback slice so the last bounced packets of the
@@ -1447,8 +1453,8 @@ mod tests {
         FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
         NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor,
         PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
-        RxLoopMaintenanceState, SingleLaneDrainCursor, fallback_drain_plan,
-        non_packet_drain_budget,
+        RxLoopMaintenanceState, SingleLaneDrainCursor, authenticated_bulk_preempts_packet_rx,
+        fallback_drain_plan, non_packet_drain_budget,
     };
     use std::time::{Duration, Instant};
 
@@ -1505,6 +1511,15 @@ mod tests {
                 trailing_budget: NON_PACKET_DRAIN_BUDGET,
             },
             "fresh transport priority packets must keep the normal bulk-fallback cadence"
+        );
+    }
+
+    #[test]
+    fn authenticated_bulk_yields_to_ready_transport_priority() {
+        assert!(authenticated_bulk_preempts_packet_rx(0));
+        assert!(
+            !authenticated_bulk_preempts_packet_rx(1),
+            "bulk endpoint delivery should not preempt a ready control-sized transport packet"
         );
     }
 
