@@ -1431,7 +1431,7 @@ impl Node {
                     if self.peers.contains_key(&node_addr) {
                         if self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
                             let decision =
-                                bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
+                                bootstrap.record_traversal_failure_for_peer(peer_identity, now_ms);
                             if decision.should_warn {
                                 warn!(
                                     npub = %peer_config.npub,
@@ -1474,7 +1474,8 @@ impl Node {
                         continue;
                     }
 
-                    let decision = bootstrap.record_traversal_failure(&peer_config.npub, now_ms);
+                    let decision =
+                        bootstrap.record_traversal_failure_for_peer(peer_identity, now_ms);
                     if decision.should_warn {
                         warn!(
                             npub = %peer_config.npub,
@@ -3211,7 +3212,7 @@ impl Node {
                 // beyond schedule timing.
                 if let Ok(identity) = PeerIdentity::from_npub(&npub) {
                     let configured_addr = *identity.node_addr();
-                    if bootstrap.cooldown_until(&npub, now_ms).is_some() {
+                    if bootstrap.cooldown_until_peer(identity, now_ms).is_some() {
                         skipped_cooldown = skipped_cooldown.saturating_add(1);
                         skipped_configured = skipped_configured.saturating_add(1);
                         continue;
@@ -3252,7 +3253,10 @@ impl Node {
                 skipped_retry_pending = skipped_retry_pending.saturating_add(1);
                 continue;
             }
-            if bootstrap.cooldown_until(&npub, now_ms).is_some() {
+            if bootstrap
+                .cooldown_until_peer(peer_identity, now_ms)
+                .is_some()
+            {
                 skipped_cooldown = skipped_cooldown.saturating_add(1);
                 continue;
             }

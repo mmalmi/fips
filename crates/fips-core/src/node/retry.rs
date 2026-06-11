@@ -530,16 +530,17 @@ impl Node {
         node_addr: &NodeAddr,
         now_ms: u64,
     ) {
-        let peer_config = self
+        let peer = self
             .config
             .auto_connect_peers()
-            .find(|pc| {
+            .filter_map(|pc| {
                 PeerIdentity::from_npub(&pc.npub)
-                    .map(|id| id.node_addr() == node_addr)
-                    .unwrap_or(false)
+                    .ok()
+                    .map(|identity| (pc, identity))
             })
-            .cloned();
-        let Some(peer_config) = peer_config else {
+            .find(|(_, identity)| identity.node_addr() == node_addr)
+            .map(|(pc, identity)| (pc.clone(), identity));
+        let Some((peer_config, peer_identity)) = peer else {
             return;
         };
 
@@ -560,7 +561,7 @@ impl Node {
             return;
         };
 
-        let decision = bootstrap.record_unstable_path(&peer_config.npub, now_ms);
+        let decision = bootstrap.record_unstable_path_for_peer(peer_identity, now_ms);
         let cooldown_secs = decision
             .cooldown_until_ms
             .map(|t| t.saturating_sub(now_ms) / 1000);

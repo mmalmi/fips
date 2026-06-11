@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use super::failure_state::FailureState;
+use super::failure_state::{FailureDecision, FailureState, NostrPeerKey};
 use super::signal::{
     FreshnessOutcome, SignalEnvelope, build_signal_event, create_traversal_answer,
     create_traversal_offer, estimate_clock_skew, unwrap_signal_event, validate_offer_freshness,
@@ -264,6 +264,24 @@ pub struct NostrDiscovery {
 }
 
 impl NostrDiscovery {
+    fn empty_failure_decision() -> NostrFailureDecision {
+        NostrFailureDecision {
+            consecutive_failures: 0,
+            should_warn: false,
+            cooldown_until_ms: None,
+            crossed_threshold: false,
+        }
+    }
+
+    fn failure_decision_from(decision: FailureDecision) -> NostrFailureDecision {
+        NostrFailureDecision {
+            consecutive_failures: decision.consecutive_failures,
+            should_warn: decision.should_warn,
+            cooldown_until_ms: decision.cooldown_until_ms,
+            crossed_threshold: decision.crossed_threshold,
+        }
+    }
+
     pub async fn start(
         identity: &crate::Identity,
         config: NostrDiscoveryConfig,
@@ -503,13 +521,21 @@ impl NostrDiscovery {
     /// resulting decision (WARN suppression + extended cooldown +
     /// threshold-crossing flag for the B6 re-fetch).
     pub fn record_traversal_failure(&self, npub: &str, now_ms: u64) -> NostrFailureDecision {
-        let d = self.failure_state.record_failure(npub, now_ms);
-        NostrFailureDecision {
-            consecutive_failures: d.consecutive_failures,
-            should_warn: d.should_warn,
-            cooldown_until_ms: d.cooldown_until_ms,
-            crossed_threshold: d.crossed_threshold,
-        }
+        let Ok(peer) = NostrPeerKey::parse(npub) else {
+            return Self::empty_failure_decision();
+        };
+        Self::failure_decision_from(self.failure_state.record_failure(peer, now_ms))
+    }
+
+    pub(crate) fn record_traversal_failure_for_peer(
+        &self,
+        peer: PeerIdentity,
+        now_ms: u64,
+    ) -> NostrFailureDecision {
+        Self::failure_decision_from(
+            self.failure_state
+                .record_failure(NostrPeerKey::from_peer_identity(peer), now_ms),
+        )
     }
 
     /// Mark a traversal-backed path as unstable after it completed but later
@@ -517,24 +543,42 @@ impl NostrDiscovery {
     /// crossing without creating a new peer-wide cooldown; direct probing is
     /// paced by the node retry loop.
     pub fn record_unstable_path(&self, npub: &str, now_ms: u64) -> NostrFailureDecision {
-        let d = self.failure_state.record_unstable_path(npub, now_ms);
-        NostrFailureDecision {
-            consecutive_failures: d.consecutive_failures,
-            should_warn: d.should_warn,
-            cooldown_until_ms: d.cooldown_until_ms,
-            crossed_threshold: d.crossed_threshold,
-        }
+        let Ok(peer) = NostrPeerKey::parse(npub) else {
+            return Self::empty_failure_decision();
+        };
+        Self::failure_decision_from(self.failure_state.record_unstable_path(peer, now_ms))
+    }
+
+    pub(crate) fn record_unstable_path_for_peer(
+        &self,
+        peer: PeerIdentity,
+        now_ms: u64,
+    ) -> NostrFailureDecision {
+        Self::failure_decision_from(
+            self.failure_state
+                .record_unstable_path(NostrPeerKey::from_peer_identity(peer), now_ms),
+        )
     }
 
     /// Record a successful traversal — clears the streak/cooldown.
     pub fn record_traversal_success(&self, npub: &str, now_ms: u64) {
-        self.failure_state.record_success(npub, now_ms);
+        if let Ok(peer) = NostrPeerKey::parse(npub) {
+            self.failure_state.record_success(peer, now_ms);
+        }
     }
 
     /// Cooldown wall-clock ms if the peer is currently suppressed,
     /// else None. Used by the open-discovery sweep to skip enqueue.
     pub fn cooldown_until(&self, npub: &str, now_ms: u64) -> Option<u64> {
-        self.failure_state.cooldown_until(npub, now_ms)
+        let Ok(peer) = NostrPeerKey::parse(npub) else {
+            return None;
+        };
+        self.failure_state.cooldown_until(peer, now_ms)
+    }
+
+    pub(crate) fn cooldown_until_peer(&self, peer: PeerIdentity, now_ms: u64) -> Option<u64> {
+        self.failure_state
+            .cooldown_until(NostrPeerKey::from_peer_identity(peer), now_ms)
     }
 
     /// Record a fatal protocol mismatch (e.g. `Unknown FMP version` on a
@@ -547,12 +591,15 @@ impl NostrDiscovery {
     /// structural (only resolves when one side upgrades) rather than
     /// transient.
     pub fn record_protocol_mismatch(&self, npub: &str, now_ms: u64) -> bool {
+        let Ok(peer) = NostrPeerKey::parse(npub) else {
+            return false;
+        };
         let cooldown_ms = self
             .config
             .protocol_mismatch_cooldown_secs
             .saturating_mul(1000);
         self.failure_state
-            .record_protocol_mismatch(npub, now_ms, cooldown_ms)
+            .record_protocol_mismatch(peer, now_ms, cooldown_ms)
     }
 
     /// Configured protocol-mismatch cooldown in seconds. Exposed so log
@@ -566,8 +613,8 @@ impl NostrDiscovery {
         self.failure_state
             .snapshot()
             .into_iter()
-            .map(|(npub, rec)| NostrPeerFailureView {
-                npub,
+            .map(|(peer, rec)| NostrPeerFailureView {
+                npub: peer.npub(),
                 consecutive_failures: rec.consecutive_failures,
                 cooldown_until_ms: rec.cooldown_until_ms,
                 last_observed_skew_ms: rec.last_observed_skew_ms,
@@ -683,6 +730,7 @@ impl NostrDiscovery {
             Ok(p) => p,
             Err(_) => return NostrRefetchOutcome::Skipped,
         };
+        let peer_key = NostrPeerKey::from_public_key(target_pubkey);
         let relay_config = self.relay_config.read().await.clone();
         if relay_config.advert_relays.is_empty() {
             return NostrRefetchOutcome::Skipped;
@@ -722,7 +770,7 @@ impl NostrDiscovery {
         let Some((relay_created_at, ev)) = newest else {
             // Absent on relays. Evict any stale cache entry.
             self.advert_cache.write().await.remove(peer_npub);
-            self.failure_state.reset_streak_after_refresh(peer_npub);
+            self.failure_state.reset_streak_after_refresh(peer_key);
             return NostrRefetchOutcome::Evicted;
         };
 
@@ -749,7 +797,7 @@ impl NostrDiscovery {
                     .write()
                     .await
                     .insert(peer_npub.to_string(), updated);
-                self.failure_state.reset_streak_after_refresh(peer_npub);
+                self.failure_state.reset_streak_after_refresh(peer_key);
                 NostrRefetchOutcome::Refreshed
             }
         }
@@ -1377,6 +1425,7 @@ impl NostrDiscovery {
                 npub: peer_config.npub.clone(),
                 reason: e.to_string(),
             })?;
+        let peer_key = NostrPeerKey::from_public_key(target_pubkey);
 
         let mut relays = Vec::new();
         let mut nostr_setup_error = None;
@@ -1532,11 +1581,8 @@ impl NostrDiscovery {
         if let Some(observed_skew_ms) =
             estimate_clock_skew(&offer, &answer.payload, answer_received_at)
         {
-            self.failure_state.note_observed_skew(
-                &peer_config.npub,
-                observed_skew_ms,
-                answer_received_at,
-            );
+            self.failure_state
+                .note_observed_skew(peer_key, observed_skew_ms, answer_received_at);
             let abs_skew = observed_skew_ms.unsigned_abs();
             // 30s threshold: well below the 60s SKEW_TOLERANCE wall but loud
             // enough to surface a real clock problem on either side.
@@ -1615,8 +1661,7 @@ impl NostrDiscovery {
             let _ = self.publish_delete(&relays, delete_ids).await;
         }
 
-        self.failure_state
-            .record_success(&peer_config.npub, now_ms());
+        self.failure_state.record_success(peer_key, now_ms());
 
         let transport_name = if answer_via_nostr {
             "nostr-nat"
@@ -2031,21 +2076,20 @@ impl NostrDiscovery {
             let Ok(verified_event) = VerifiedEvent::try_from(event) else {
                 continue;
             };
-            let author_npub = verified_event.pubkey().to_bech32().expect("infallible");
+            if *verified_event.pubkey() != target_pubkey {
+                continue;
+            }
             let Ok(advert) = Self::parse_overlay_advert_event(verified_event, &self.config.app)
             else {
                 continue;
             };
-            if author_npub != peer_npub {
-                continue;
-            }
             let replace = best
                 .as_ref()
                 .map(|current| event.created_at.as_secs() >= current.created_at)
                 .unwrap_or(true);
             if replace {
                 best = Some(CachedOverlayAdvert {
-                    author_npub,
+                    author_npub: peer_npub.to_string(),
                     advert,
                     created_at: event.created_at.as_secs(),
                     valid_until_ms,
