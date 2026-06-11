@@ -9,8 +9,8 @@ use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
 use crate::node::decrypt_worker::{
-    DecryptAuthenticatedSession, DecryptDirectSessionData, DecryptDirectSessionDelivery,
-    DecryptFspFailureReport,
+    DecryptAuthenticatedSession, DecryptDirectSessionCommit, DecryptDirectSessionData,
+    DecryptDirectSessionDelivery, DecryptFspFailureReport,
 };
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
@@ -3021,31 +3021,17 @@ impl Node {
         &mut self,
         direct: DecryptDirectSessionData,
     ) {
-        let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(&direct.fmp);
+        let Some(finish) = self.commit_direct_session_data_from_worker(
+            &direct.fmp,
+            direct.source_addr,
+            direct.previous_hop_peer,
+            direct.receive_sync,
+            direct.body_len,
+        ) else {
+            return;
+        };
 
         let source_addr = direct.source_addr;
-        let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
-            entry.apply_fsp_receive_sync(direct.receive_sync, Self::now_ms(), now)
-        });
-        if !receive_applied {
-            debug!(
-                src = %self.peer_display_name(&source_addr),
-                "Dropping worker-decoded direct session data for missing or stale session"
-            );
-            return;
-        }
-
-        self.learn_reverse_route(source_addr, *direct.previous_hop_peer.node_addr());
-        let finish = SessionDispatchCommit {
-            source_addr,
-            receive_completion: Some(SessionReceiveCompletion {
-                source_addr,
-                body_len: direct.body_len,
-            }),
-        }
-        .finish_receive(self);
-
         match direct.delivery {
             DecryptDirectSessionDelivery::Ipv6Packet(mut packet) => {
                 if direct.ce_flag {
@@ -3075,6 +3061,65 @@ impl Node {
         if let Some(dest_addr) = finish.pending_flush_dest() {
             self.flush_pending_packets(&dest_addr).await;
         }
+    }
+
+    pub(in crate::node) async fn process_direct_session_commit_from_worker(
+        &mut self,
+        commit: DecryptDirectSessionCommit,
+    ) {
+        let Some(finish) = self.commit_direct_session_data_from_worker(
+            &commit.fmp,
+            commit.source_addr,
+            commit.previous_hop_peer,
+            commit.receive_sync,
+            commit.body_len,
+        ) else {
+            return;
+        };
+
+        if commit.ce_flag && commit.delivered_ipv6 {
+            self.stats_mut().congestion.record_ce_received();
+        }
+
+        if let Some(dest_addr) = finish.pending_flush_dest() {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
+    fn commit_direct_session_data_from_worker(
+        &mut self,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        source_addr: NodeAddr,
+        previous_hop_peer: PeerIdentity,
+        receive_sync: crate::node::session::FspReceiveSync,
+        body_len: usize,
+    ) -> Option<SessionDispatchFinish> {
+        let now = Instant::now();
+        self.record_worker_authenticated_fmp_receive(fmp);
+
+        let receive_applied = self
+            .sessions
+            .get_mut(&source_addr)
+            .is_some_and(|entry| entry.apply_fsp_receive_sync(receive_sync, Self::now_ms(), now));
+        if !receive_applied {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping worker-decoded direct session data for missing or stale session"
+            );
+            return None;
+        }
+
+        self.learn_reverse_route(source_addr, *previous_hop_peer.node_addr());
+        let finish = SessionDispatchCommit {
+            source_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr,
+                body_len,
+            }),
+        }
+        .finish_receive(self);
+
+        Some(finish)
     }
 
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
@@ -7148,6 +7193,64 @@ mod tests {
             entry.traffic_counters(),
             (0, 1, 0, endpoint_payload.len() as u64)
         );
+        assert_eq!(entry.current_highest_counter(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn worker_direct_session_commit_updates_metadata_without_payload_bounce() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let body_len = b"already delivered".len();
+        let plaintext_len = FSP_INNER_HEADER_SIZE + body_len;
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+
+        let commit = DecryptDirectSessionCommit::for_test(
+            crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                source_peer,
+                transport_id: crate::transport::TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 2_000,
+                packet_len: 256,
+                fmp_counter: 11,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
+            source_addr,
+            source_peer,
+            false,
+            crate::node::session::FspReceiveSync {
+                counter: 7,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: 0x0102_0304,
+                plaintext_len,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            body_len,
+            false,
+        );
+
+        node.process_direct_session_commit_from_worker(commit).await;
+
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "compact direct commit must not bounce payload bytes through rx_loop"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.traffic_counters(), (0, 1, 0, body_len as u64));
         assert_eq!(entry.current_highest_counter(), Some(7));
     }
 

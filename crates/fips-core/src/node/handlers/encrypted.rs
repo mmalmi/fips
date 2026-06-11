@@ -272,7 +272,7 @@ impl Node {
         // hiding the bug. The only remaining requirements are: a
         // worker pool exists, and this session has been handed off
         // to it.
-        if let Some(workers) = self.decrypt_workers.as_ref().cloned()
+        if let Some(workers) = self.decrypt_workers.as_ref()
             && self.sessions.is_worker_registered(&session_key)
         {
             let job = super::super::decrypt_worker::DecryptJob::new(

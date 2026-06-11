@@ -2276,9 +2276,13 @@ impl Node {
                 if decrypt_worker_count == 0 {
                     info!("FIPS_DECRYPT_WORKERS=0 → in-line decrypt in rx_loop (no worker pool)");
                 } else {
-                    self.decrypt_workers = Some(super::decrypt_worker::DecryptWorkerPool::spawn(
-                        decrypt_worker_count,
-                    ));
+                    let direct_delivery_sink = self.decrypt_direct_session_delivery_sink();
+                    self.decrypt_workers = Some(
+                        super::decrypt_worker::DecryptWorkerPool::spawn_with_direct_delivery_sink(
+                            decrypt_worker_count,
+                            direct_delivery_sink,
+                        ),
+                    );
                     info!(
                         workers = decrypt_worker_count,
                         "Spawned FMP+FSP-decrypt worker pool"

@@ -6958,6 +6958,15 @@ impl Node {
         self.endpoint_events.deliver_endpoint_data(message)
     }
 
+    pub(in crate::node) fn decrypt_direct_session_delivery_sink(
+        &self,
+    ) -> decrypt_worker::DecryptDirectSessionDeliverySink {
+        decrypt_worker::DecryptDirectSessionDeliverySink::new(
+            self.tun_tx.clone(),
+            self.external_packet_tx.clone(),
+        )
+    }
+
     pub(crate) fn pubkey_for_node_addr(&self, addr: &NodeAddr) -> Option<secp256k1::PublicKey> {
         self.identity_cache.pubkey_for_node_addr(addr)
     }

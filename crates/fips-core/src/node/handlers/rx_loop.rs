@@ -737,6 +737,9 @@ impl Node {
                 self.process_authenticated_session_from_worker(session)
                     .await;
             }
+            DecryptWorkerEvent::DirectSessionCommit(commit) => {
+                self.process_direct_session_commit_from_worker(commit).await;
+            }
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 self.process_direct_session_data_from_worker(direct).await;
             }
