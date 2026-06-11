@@ -26,11 +26,11 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
-/// Once decrypt completions are already queued at this scale, continuing to
-/// feed more bulk ciphertext into workers before draining plaintext adds
-/// latency without improving liveness. The pressure path is gated off whenever
-/// raw priority packets are queued.
-const FALLBACK_PRESSURE_HIGH_WATER: usize = 1024;
+/// Once a raw receive turn's worth of decrypt completions is already queued,
+/// continuing to feed more bulk ciphertext into workers before draining
+/// plaintext adds latency without improving liveness. The pressure path is
+/// gated off whenever raw priority packets are queued.
+const FALLBACK_PRESSURE_HIGH_WATER: usize = PACKET_DRAIN_BUDGET;
 const FALLBACK_PRESSURE_INTERLEAVE_EVERY: usize = 16;
 const FALLBACK_PRESSURE_DRAIN_BUDGET: usize = 256;
 const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;
@@ -1301,6 +1301,11 @@ mod tests {
 
     #[test]
     fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
+        assert_eq!(
+            FALLBACK_PRESSURE_HIGH_WATER, PACKET_DRAIN_BUDGET,
+            "bulk fallback pressure should start once already-decrypted backlog spans one raw receive turn"
+        );
+
         let normal = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1);
         let pressured = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER);
 
