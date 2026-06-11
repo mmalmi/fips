@@ -344,18 +344,16 @@ impl DecryptJob {
         if queued_at.is_none() {
             return;
         }
-        crate::perf_profile::record_since(
+        let priority_count = u64::from(matches!(self.lane(), DecryptWorkerLane::Priority));
+        let bulk_count = u64::from(matches!(self.lane(), DecryptWorkerLane::Bulk));
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::DecryptWorkerQueueWait,
+            crate::perf_profile::Stage::DecryptWorkerPriorityQueueWait,
+            crate::perf_profile::Stage::DecryptWorkerBulkQueueWait,
             queued_at,
-        );
-        crate::perf_profile::record_since(
-            match self.lane() {
-                DecryptWorkerLane::Priority => {
-                    crate::perf_profile::Stage::DecryptWorkerPriorityQueueWait
-                }
-                DecryptWorkerLane::Bulk => crate::perf_profile::Stage::DecryptWorkerBulkQueueWait,
-            },
-            queued_at,
+            1,
+            priority_count,
+            bulk_count,
         );
     }
 }
@@ -509,20 +507,18 @@ impl DecryptWorkerEvent {
             return;
         }
         let count = self.packet_count() as u64;
-        crate::perf_profile::record_since_count(
+        let (priority_count, bulk_count) = match self.lane() {
+            DecryptWorkerLane::Priority => (count, 0),
+            DecryptWorkerLane::Bulk => (0, count),
+        };
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::DecryptFallbackWait,
+            crate::perf_profile::Stage::DecryptFallbackPriorityWait,
+            crate::perf_profile::Stage::DecryptFallbackBulkWait,
             queued_at,
             count,
-        );
-        crate::perf_profile::record_since_count(
-            match self.lane() {
-                DecryptWorkerLane::Priority => {
-                    crate::perf_profile::Stage::DecryptFallbackPriorityWait
-                }
-                DecryptWorkerLane::Bulk => crate::perf_profile::Stage::DecryptFallbackBulkWait,
-            },
-            queued_at,
-            count,
+            priority_count,
+            bulk_count,
         );
     }
 }

@@ -429,21 +429,6 @@ pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
     }
 }
 
-/// Record one elapsed wait sample for `count` equivalent items.
-///
-/// Batch handoffs often dequeue one channel item that represents many packets.
-/// Count-weighting keeps the average and sample rate packet/message-shaped
-/// without forcing callers to loop only for accounting.
-#[inline]
-pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
-    if count == 0 {
-        return;
-    }
-    if let Some(start) = start {
-        record_count(stage, start.elapsed_ns(), count);
-    }
-}
-
 /// Record `elapsed_ns` for the given stage. No-op when disabled.
 pub fn record(stage: Stage, elapsed_ns: u64) {
     record_count(stage, elapsed_ns, 1);

@@ -1945,19 +1945,13 @@ impl NodeEndpointEvent {
             return;
         }
         let counts = self.dequeue_counts();
-        crate::perf_profile::record_since_count(
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::EndpointEventWait,
-            queued_at,
-            counts.total as u64,
-        );
-        crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::EndpointPriorityEventWait,
-            queued_at,
-            counts.priority as u64,
-        );
-        crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::EndpointBulkEventWait,
             queued_at,
+            counts.total as u64,
+            counts.priority as u64,
             counts.bulk as u64,
         );
     }
