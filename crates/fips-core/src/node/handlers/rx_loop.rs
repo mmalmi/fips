@@ -628,6 +628,9 @@ impl Node {
         self.sample_transport_congestion();
 
         let Some(slow_timeout) = plan.slow_timeout() else {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::RxLoopSlowMaintenanceSkipped,
+            );
             return false;
         };
 
@@ -635,6 +638,9 @@ impl Node {
             .await
             .is_err()
         {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+            );
             self.mark_rx_loop_maintenance_timeout();
             warn!(
                 timeout_ms = slow_timeout.as_millis() as u64,

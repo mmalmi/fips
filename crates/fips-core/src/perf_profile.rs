@@ -54,7 +54,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 32;
-const N_EVENTS: usize = 29;
+const N_EVENTS: usize = 31;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -254,6 +254,8 @@ pub enum Event {
     ConnectedUdpDirectDecrypt = 26,
     ConnectedUdpDirectDecryptMiss = 27,
     DecryptFallbackBacklogHigh = 28,
+    RxLoopSlowMaintenanceTimeout = 29,
+    RxLoopSlowMaintenanceSkipped = 30,
 }
 
 impl Event {
@@ -288,6 +290,8 @@ impl Event {
             Event::ConnectedUdpDirectDecrypt => "connected_udp_direct_decrypt",
             Event::ConnectedUdpDirectDecryptMiss => "connected_udp_direct_decrypt_miss",
             Event::DecryptFallbackBacklogHigh => "decrypt_fallback_backlog_high",
+            Event::RxLoopSlowMaintenanceTimeout => "rx_loop_slow_maintenance_timeout",
+            Event::RxLoopSlowMaintenanceSkipped => "rx_loop_slow_maintenance_skipped",
         }
     }
 }
@@ -323,6 +327,8 @@ fn event_from_index(idx: usize) -> Event {
         26 => Event::ConnectedUdpDirectDecrypt,
         27 => Event::ConnectedUdpDirectDecryptMiss,
         28 => Event::DecryptFallbackBacklogHigh,
+        29 => Event::RxLoopSlowMaintenanceTimeout,
+        30 => Event::RxLoopSlowMaintenanceSkipped,
         _ => unreachable!(),
     }
 }
@@ -495,6 +501,11 @@ pub fn record_event_count(event: Event, count: u64) {
     if !enabled() || count == 0 {
         return;
     }
+    record_event_count_sample(event, count);
+}
+
+#[inline]
+fn record_event_count_sample(event: Event, count: u64) {
     EVENTS[event as usize].fetch_add(count, Relaxed);
 }
 
@@ -665,12 +676,44 @@ fn fmt_ns(ns: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::TraceStamp;
+    use super::{EVENTS, Event, N_EVENTS, TraceStamp, event_from_index, record_event_count_sample};
+    use std::sync::atomic::Ordering::Relaxed;
     use std::time::Instant;
 
     #[test]
     fn trace_stamp_is_compact_for_hot_queue_records() {
         assert_eq!(std::mem::size_of::<Option<TraceStamp>>(), 8);
         assert!(std::mem::size_of::<Option<TraceStamp>>() < std::mem::size_of::<Option<Instant>>());
+    }
+
+    #[test]
+    fn event_table_exposes_rx_loop_maintenance_liveness_events() {
+        assert_eq!(N_EVENTS, 31);
+        assert_eq!(
+            event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
+            "rx_loop_slow_maintenance_timeout"
+        );
+        assert_eq!(
+            event_from_index(Event::RxLoopSlowMaintenanceSkipped as usize).name(),
+            "rx_loop_slow_maintenance_skipped"
+        );
+    }
+
+    #[test]
+    fn rx_loop_maintenance_liveness_events_increment_counters() {
+        let timeout_before = EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed);
+        let skipped_before = EVENTS[Event::RxLoopSlowMaintenanceSkipped as usize].load(Relaxed);
+
+        record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
+        record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
+
+        assert_eq!(
+            EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
+            3
+        );
+        assert_eq!(
+            EVENTS[Event::RxLoopSlowMaintenanceSkipped as usize].load(Relaxed) - skipped_before,
+            5
+        );
     }
 }
