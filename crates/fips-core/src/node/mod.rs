@@ -3121,6 +3121,96 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) predicted_bytes: usize,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone)]
+pub(crate) struct ConnectedUdpDecryptFastPath {
+    session_key: decrypt_worker::DecryptSessionKey,
+    workers: decrypt_worker::DecryptWorkerPool,
+    fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ConnectedUdpDecryptFastPath {
+    pub(in crate::node) fn new(
+        session_key: decrypt_worker::DecryptSessionKey,
+        workers: decrypt_worker::DecryptWorkerPool,
+        fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
+    ) -> Self {
+        Self {
+            session_key,
+            workers,
+            fallback_tx,
+        }
+    }
+
+    fn dispatch_or_return(
+        &self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        packet_data: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> Result<(), Vec<u8>> {
+        match self.prepare_job(transport_id, remote_addr, packet_data, timestamp_ms) {
+            Ok(job) => {
+                self.workers.dispatch_job(job);
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::ConnectedUdpDirectDecrypt,
+                );
+                Ok(())
+            }
+            Err(packet_data) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::ConnectedUdpDirectDecryptMiss,
+                );
+                Err(packet_data)
+            }
+        }
+    }
+
+    pub(in crate::node) fn prepare_job(
+        &self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        packet_data: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> Result<decrypt_worker::DecryptJob, Vec<u8>> {
+        let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
+            return Err(packet_data);
+        };
+        let packet_session_key =
+            decrypt_worker::DecryptSessionKey::new(transport_id, header.receiver_idx.as_u32());
+        if packet_session_key != self.session_key {
+            return Err(packet_data);
+        }
+
+        Ok(decrypt_worker::DecryptJob::new(
+            packet_data,
+            self.session_key,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            header.counter,
+            header.flags,
+            header.header_bytes,
+            header.ciphertext_offset(),
+            self.fallback_tx.clone(),
+        ))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPath for ConnectedUdpDecryptFastPath {
+    fn try_dispatch(
+        &self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        packet_data: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> Result<(), Vec<u8>> {
+        self.dispatch_or_return(transport_id, remote_addr, packet_data, timestamp_ms)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::node) struct ConnectedUdpActivationPlan {
     pub(in crate::node) candidates: Vec<NodeAddr>,

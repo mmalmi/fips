@@ -522,6 +522,7 @@ fn make_test_connected_udp_pair(
         transport_id,
         peer_socket_addr,
         packet_tx,
+        None,
     )
     .expect("connected peer drain");
     (socket, drain)
@@ -3067,6 +3068,51 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
         vec![configured_addr, discovered_addr],
         "configured peers should be activated before discovered peers, while stale and already-connected peers are skipped"
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() {
+    let transport_id = TransportId::new(7);
+    let receiver_idx = SessionIndex::new(0x0a0b_0c0d);
+    let session_key =
+        crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, receiver_idx.as_u32());
+    let workers = crate::node::decrypt_worker::DecryptWorkerPool::spawn(1);
+    let (fallback_tx, _fallback_rx) =
+        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let fast_path = ConnectedUdpDecryptFastPath::new(session_key, workers, fallback_tx);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:2121");
+
+    let header = build_established_header(receiver_idx, 99, FLAG_CE | FLAG_SP, 0);
+    let packet = build_encrypted(&header, &[0u8; 16]);
+    let job = fast_path
+        .prepare_job(transport_id, remote_addr.clone(), packet.clone(), 1_234)
+        .expect("matching established packet should prepare a decrypt job");
+    assert_eq!(job.packet_data, packet);
+    assert_eq!(job.session_key, session_key);
+    assert_eq!(job.fmp_counter, 99);
+    assert_eq!(job.fmp_flags, FLAG_CE | FLAG_SP);
+    assert_eq!(job.fmp_header, header);
+    assert_eq!(job.fmp_ciphertext_offset, ESTABLISHED_HEADER_SIZE);
+
+    let wrong_header = build_established_header(SessionIndex::new(0x0102_0304), 100, 0, 0);
+    let wrong_packet = build_encrypted(&wrong_header, &[0u8; 16]);
+    match fast_path.prepare_job(
+        transport_id,
+        remote_addr.clone(),
+        wrong_packet.clone(),
+        1_235,
+    ) {
+        Ok(_) => panic!("wrong receiver index must not bypass rx_loop"),
+        Err(returned) => assert_eq!(returned, wrong_packet),
+    }
+
+    let mut non_established = vec![0u8; ESTABLISHED_HEADER_SIZE + 16];
+    non_established[0] = 0x01;
+    match fast_path.prepare_job(transport_id, remote_addr, non_established.clone(), 1_236) {
+        Ok(_) => panic!("non-established packets must stay on the packet channel"),
+        Err(returned) => assert_eq!(returned, non_established),
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

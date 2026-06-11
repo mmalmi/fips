@@ -32,6 +32,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, trace, warn};
 
+pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
+    fn try_dispatch(
+        &self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        packet_data: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> Result<(), Vec<u8>>;
+}
+
 /// Handle to a running per-peer drain thread. Drops the thread (and
 /// closes its self-pipe) on drop; the thread exits next time it
 /// returns from `poll(2)`.
@@ -63,6 +73,7 @@ impl PeerRecvDrain {
         transport_id: TransportId,
         peer_addr: SocketAddr,
         packet_tx: PacketTx,
+        fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     ) -> io::Result<Self> {
         // Self-pipe for shutdown signaling. The drain thread polls
         // (socket_fd | pipe_rx) so a write to pipe_tx wakes it.
@@ -80,6 +91,7 @@ impl PeerRecvDrain {
                     transport_id,
                     peer_addr,
                     packet_tx,
+                    fast_path,
                     pipe_rx,
                     stop_clone,
                 );
@@ -144,6 +156,7 @@ fn drain_loop(
     transport_id: TransportId,
     peer_addr: SocketAddr,
     packet_tx: PacketTx,
+    fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     stop_pipe_rx: RawFd,
     stop: Arc<AtomicBool>,
 ) {
@@ -259,6 +272,13 @@ fn drain_loop(
             // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
             let mut data = std::mem::replace(&mut backing[i], super::fresh_recv_buffer(BUF_SIZE));
             data.truncate(len);
+            if let Some(fast_path) = fast_path.as_ref() {
+                match fast_path.try_dispatch(transport_id, packet_addr.clone(), data, timestamp_ms)
+                {
+                    Ok(()) => continue,
+                    Err(returned) => data = returned,
+                }
+            }
             let packet = ReceivedPacket::with_trace_timestamp(
                 transport_id,
                 packet_addr.clone(),
@@ -526,7 +546,7 @@ mod tests {
         };
 
         // Spawn the drain.
-        let _drain = PeerRecvDrain::spawn(socket.clone(), transport_id, peer_addr, tx)
+        let _drain = PeerRecvDrain::spawn(socket.clone(), transport_id, peer_addr, tx, None)
             .expect("PeerRecvDrain::spawn");
 
         // Send a couple of packets from the peer to our socket.
@@ -558,7 +578,7 @@ mod tests {
                 .expect("ConnectedPeerSocket::open"),
         );
         let (tx, _rx) = packet_channel(32);
-        let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx)
+        let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx, None)
             .expect("PeerRecvDrain::spawn");
 
         let started = std::time::Instant::now();

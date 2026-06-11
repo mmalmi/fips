@@ -40,9 +40,15 @@
 use crate::NodeAddr;
 use crate::node::Node;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::node::{ConnectedUdpClearResult, ConnectedUdpInstallResult};
+use crate::node::{
+    ConnectedUdpClearResult, ConnectedUdpDecryptFastPath, ConnectedUdpInstallResult,
+};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::TransportHandle;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::transport::udp::peer_drain::ConnectedUdpPacketFastPath;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::Arc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -167,7 +173,7 @@ impl Node {
         installed_count: usize,
     ) -> Result<bool, String> {
         // Read-only pass: figure out which transport + remote addr we need.
-        let (transport_id, peer_transport_addr) = {
+        let (transport_id, peer_transport_addr, decrypt_fast_path) = {
             let Some(peer) = self.peers.get(node_addr) else {
                 return Ok(false);
             };
@@ -180,7 +186,8 @@ impl Node {
             let Some(addr) = peer.current_addr().cloned() else {
                 return Ok(false);
             };
-            (tid, addr)
+            let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
+            (tid, addr, fast_path)
         };
 
         // Resolve the peer's TransportAddr → kernel SocketAddr via
@@ -247,6 +254,7 @@ impl Node {
             transport_id,
             peer_socket_addr,
             packet_tx,
+            decrypt_fast_path,
         )
         .map_err(|e| format!("PeerRecvDrain::spawn: {e}"))?;
 
@@ -283,6 +291,27 @@ impl Node {
         if self.peers.clear_connected_udp_for_peer(node_addr) == ConnectedUdpClearResult::Cleared {
             debug!(peer = %self.peer_display_name(node_addr), "connected UDP socket cleared");
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn connected_udp_decrypt_fast_path_for_peer(
+        &self,
+        node_addr: &NodeAddr,
+        transport_id: crate::transport::TransportId,
+    ) -> Option<Arc<dyn ConnectedUdpPacketFastPath>> {
+        let workers = self.decrypt_workers.as_ref()?.clone();
+        let peer = self.peers.get(node_addr)?;
+        let our_index = peer.our_index()?;
+        let session_key =
+            crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
+        if !self.sessions.is_worker_registered(&session_key) {
+            return None;
+        }
+        Some(Arc::new(ConnectedUdpDecryptFastPath::new(
+            session_key,
+            workers,
+            self.decrypt_fallback_tx.clone(),
+        )))
     }
 
     /// No-op shim for non-Linux builds so the rx_loop tick site can
