@@ -71,6 +71,7 @@ const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 4096;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 16;
@@ -578,15 +579,23 @@ impl DecryptWorkerFallbackSender {
         let lane = decrypt_worker_event_lane(&event);
         let packet_count = event.packet_count();
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
-        if matches!(lane, DecryptWorkerLane::Bulk)
-            && !try_reserve_bulk_packets(
+        if matches!(lane, DecryptWorkerLane::Bulk) {
+            let Some(previous) = try_reserve_bulk_packets_with_previous(
                 &self.bulk_queued_packets,
                 self.bulk_packet_cap,
                 packet_count,
-            )
-        {
-            record_decrypt_fallback_drop_count(lane, packet_count);
-            return false;
+            ) else {
+                record_decrypt_fallback_drop_count(lane, packet_count);
+                return false;
+            };
+            let queued = previous.saturating_add(packet_count);
+            if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+                && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+            {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFallbackBacklogHigh,
+                );
+            }
         }
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
@@ -622,8 +631,7 @@ impl DecryptWorkerFallbackReceivers {
         }
     }
 
-    #[cfg(test)]
-    fn bulk_queued_packets(&self) -> usize {
+    pub(crate) fn bulk_queued_packets(&self) -> usize {
         self.bulk_queued_packets.load(Ordering::Relaxed)
     }
 }
@@ -976,16 +984,24 @@ fn record_decrypt_worker_bulk_drop_count(worker: usize, count: usize) {
     }
 }
 
-fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize) -> bool {
+fn try_reserve_bulk_packets_with_previous(
+    counter: &AtomicUsize,
+    capacity: usize,
+    count: usize,
+) -> Option<usize> {
     if count == 0 {
-        return true;
+        return Some(counter.load(Ordering::Relaxed));
     }
 
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(count).filter(|next| *next <= capacity)
         })
-        .is_ok()
+        .ok()
+}
+
+fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize) -> bool {
+    try_reserve_bulk_packets_with_previous(counter, capacity, count).is_some()
 }
 
 fn release_bulk_packets(counter: &AtomicUsize, count: usize) {

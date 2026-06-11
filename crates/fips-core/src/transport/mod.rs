@@ -481,6 +481,10 @@ impl PacketTx {
 }
 
 impl PacketRx {
+    pub(crate) fn priority_queued_packets(&self) -> usize {
+        self.priority_queued_packets.load(Relaxed)
+    }
+
     pub async fn recv(&mut self) -> Option<ReceivedPacket> {
         loop {
             match self.try_recv() {

@@ -26,6 +26,14 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
+/// Once decrypt completions are already queued at this scale, continuing to
+/// feed more bulk ciphertext into workers before draining plaintext adds
+/// latency without improving liveness. The pressure path is gated off whenever
+/// raw priority packets are queued.
+const FALLBACK_PRESSURE_HIGH_WATER: usize = 1024;
+const FALLBACK_PRESSURE_INTERLEAVE_EVERY: usize = 16;
+const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = 128;
+const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = 128;
 /// How often a hot inbound packet drain gives outbound side queues a bounded
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
@@ -49,6 +57,44 @@ const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
 
 fn non_packet_drain_budget(packet_budget: usize) -> usize {
     packet_budget.min(NON_PACKET_DRAIN_BUDGET)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FallbackDrainPlan {
+    interleave_every: usize,
+    interleave_budget: usize,
+    trailing_budget: usize,
+}
+
+impl FallbackDrainPlan {
+    const fn normal() -> Self {
+        Self {
+            interleave_every: FALLBACK_INTERLEAVE_EVERY,
+            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
+            trailing_budget: NON_PACKET_DRAIN_BUDGET,
+        }
+    }
+
+    const fn pressured() -> Self {
+        Self {
+            interleave_every: FALLBACK_PRESSURE_INTERLEAVE_EVERY,
+            interleave_budget: FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+            trailing_budget: FALLBACK_PRESSURE_TRAILING_BUDGET,
+        }
+    }
+}
+
+fn fallback_drain_plan(
+    transport_priority_packets: usize,
+    decrypt_fallback_bulk_packets: usize,
+) -> FallbackDrainPlan {
+    if transport_priority_packets == 0
+        && decrypt_fallback_bulk_packets >= FALLBACK_PRESSURE_HIGH_WATER
+    {
+        FallbackDrainPlan::pressured()
+    } else {
+        FallbackDrainPlan::normal()
+    }
 }
 
 fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
@@ -217,11 +263,15 @@ impl Node {
                     }
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
+                    let fallback_plan = fallback_drain_plan(
+                        packet_rx.priority_queued_packets(),
+                        decrypt_fallback_rx.bulk_queued_packets(),
+                    );
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
                         None,
                         Some(event),
-                        NON_PACKET_DRAIN_BUDGET,
+                        fallback_plan.trailing_budget,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut tun_outbound_rx,
@@ -394,10 +444,14 @@ impl Node {
         } else {
             0
         };
+        let fallback_plan = fallback_drain_plan(
+            packet_rx.priority_queued_packets(),
+            decrypt_fallback_rx.bulk_queued_packets(),
+        );
         let mut drain = PacketDrainCursor::new(
             first_packet,
             budget,
-            FALLBACK_INTERLEAVE_EVERY,
+            fallback_plan.interleave_every,
             side_queue_interleave_every,
         );
         let mut decrypt_jobs = DecryptJobBatcher::new();
@@ -425,7 +479,7 @@ impl Node {
                             decrypt_fallback_rx,
                             None,
                             None,
-                            FALLBACK_INTERLEAVE_BUDGET,
+                            fallback_plan.interleave_budget,
                         )
                         .await
                     } else {
@@ -470,7 +524,7 @@ impl Node {
                 decrypt_fallback_rx,
                 None,
                 None,
-                non_packet_drain_budget(budget),
+                fallback_plan.trailing_budget.min(budget),
             )
             .await;
             self.finish_endpoint_event_batch();
@@ -1210,9 +1264,12 @@ impl<T> SingleLaneDrainCursor<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor,
-        PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
-        RxLoopMaintenanceState, SingleLaneDrainCursor, non_packet_drain_budget,
+        FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
+        FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
+        FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
+        PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
+        RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
+        fallback_drain_plan, non_packet_drain_budget,
     };
     use std::time::{Duration, Instant};
 
@@ -1223,6 +1280,35 @@ mod tests {
         assert_eq!(
             non_packet_drain_budget(PACKET_DRAIN_BUDGET),
             NON_PACKET_DRAIN_BUDGET
+        );
+    }
+
+    #[test]
+    fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
+        assert_eq!(
+            fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER),
+            FallbackDrainPlan {
+                interleave_every: FALLBACK_PRESSURE_INTERLEAVE_EVERY,
+                interleave_budget: FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+                trailing_budget: FALLBACK_PRESSURE_TRAILING_BUDGET,
+            }
+        );
+        assert_eq!(
+            fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1),
+            FallbackDrainPlan {
+                interleave_every: FALLBACK_INTERLEAVE_EVERY,
+                interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
+                trailing_budget: NON_PACKET_DRAIN_BUDGET,
+            }
+        );
+        assert_eq!(
+            fallback_drain_plan(1, FALLBACK_PRESSURE_HIGH_WATER),
+            FallbackDrainPlan {
+                interleave_every: FALLBACK_INTERLEAVE_EVERY,
+                interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
+                trailing_budget: NON_PACKET_DRAIN_BUDGET,
+            },
+            "fresh transport priority packets must keep the normal bulk-fallback cadence"
         );
     }
 
