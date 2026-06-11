@@ -48,6 +48,7 @@ use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
 };
@@ -370,6 +371,9 @@ pub(crate) struct DecryptFallback {
     pub packet_data: Vec<u8>,
     pub fmp_plaintext_offset: usize,
     pub fmp_plaintext_len: usize,
+    /// Monotonic timestamp captured immediately before the worker queues this
+    /// completion back to the rx loop. Used only when pipeline tracing is on.
+    pub(crate) trace_enqueued_at: Option<Instant>,
 }
 
 impl DecryptFallback {
@@ -399,6 +403,7 @@ impl DecryptFallback {
             packet_data,
             fmp_plaintext_offset,
             fmp_plaintext_len,
+            trace_enqueued_at: None,
         }
     }
 
@@ -415,12 +420,55 @@ pub(crate) struct DecryptFailureReport {
     pub source_peer: PeerIdentity,
     pub fmp_counter: u64,
     pub fmp_replay_highest: u64,
+    /// Monotonic timestamp captured immediately before the worker queues this
+    /// failure report back to the rx loop.
+    pub(crate) trace_enqueued_at: Option<Instant>,
 }
 
 /// Event emitted by the decrypt worker to the rx_loop.
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     DecryptFailure(DecryptFailureReport),
+}
+
+impl DecryptWorkerEvent {
+    fn lane(&self) -> DecryptWorkerLane {
+        decrypt_worker_event_lane(self)
+    }
+
+    fn set_trace_enqueued_at(&mut self, queued_at: Option<Instant>) {
+        match self {
+            Self::Plaintext(fallback) => fallback.trace_enqueued_at = queued_at,
+            Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
+        }
+    }
+
+    fn trace_enqueued_at(&self) -> Option<Instant> {
+        match self {
+            Self::Plaintext(fallback) => fallback.trace_enqueued_at,
+            Self::DecryptFailure(report) => report.trace_enqueued_at,
+        }
+    }
+
+    pub(crate) fn record_queue_wait(&self) {
+        let queued_at = self.trace_enqueued_at();
+        if queued_at.is_none() {
+            return;
+        }
+        crate::perf_profile::record_since(
+            crate::perf_profile::Stage::DecryptFallbackWait,
+            queued_at,
+        );
+        crate::perf_profile::record_since(
+            match self.lane() {
+                DecryptWorkerLane::Priority => {
+                    crate::perf_profile::Stage::DecryptFallbackPriorityWait
+                }
+                DecryptWorkerLane::Bulk => crate::perf_profile::Stage::DecryptFallbackBulkWait,
+            },
+            queued_at,
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -461,8 +509,9 @@ fn decrypt_worker_fallback_channels_with_caps(
 }
 
 impl DecryptWorkerFallbackSender {
-    fn send(&self, event: DecryptWorkerEvent) -> bool {
+    fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
+        event.set_trace_enqueued_at(crate::perf_profile::stamp());
         let result = match lane {
             DecryptWorkerLane::Priority => self.priority.try_send(event),
             DecryptWorkerLane::Bulk => self.bulk.try_send(event),
@@ -891,6 +940,7 @@ impl DecryptWorkerShard {
                         source_peer,
                         fmp_counter,
                         fmp_replay_highest,
+                        trace_enqueued_at: None,
                     }));
                 return Ok(());
             }
@@ -1154,6 +1204,7 @@ mod tests {
             source_peer: test_source_peer(),
             fmp_counter: 2,
             fmp_replay_highest: 1,
+            trace_enqueued_at: None,
         })
     }
 
@@ -1329,6 +1380,26 @@ mod tests {
             decrypt_worker_event_lane(&dummy_failure_event()),
             DecryptWorkerLane::Priority
         );
+    }
+
+    #[test]
+    fn decrypt_worker_fallback_sender_stamps_queue_wait_origin() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+
+        assert!(fallback_tx.send(dummy_failure_event()));
+        match fallback_rx
+            .priority
+            .try_recv()
+            .expect("priority event should enqueue")
+        {
+            DecryptWorkerEvent::DecryptFailure(report) => {
+                assert!(
+                    report.trace_enqueued_at.is_none() || crate::perf_profile::enabled(),
+                    "trace stamps should only appear when pipeline tracing is enabled"
+                );
+            }
+            DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
+        }
     }
 
     #[test]

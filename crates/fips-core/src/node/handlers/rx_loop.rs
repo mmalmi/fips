@@ -555,6 +555,7 @@ impl Node {
     /// worker-captured source peer, FMP flags, packet facts, and plaintext slice
     /// together so peer bookkeeping and link dispatch cannot drift apart.
     async fn process_decrypt_worker_event(&mut self, event: DecryptWorkerEvent) {
+        event.record_queue_wait();
         match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
                 self.process_decrypt_fallback(fallback).await;

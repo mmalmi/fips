@@ -190,6 +190,7 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
             source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -230,6 +231,7 @@ async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_
             source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -266,6 +268,7 @@ async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
             source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -298,6 +301,7 @@ async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
             source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
+            trace_enqueued_at: None,
         })
         .await;
     }

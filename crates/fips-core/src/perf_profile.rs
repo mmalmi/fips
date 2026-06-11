@@ -37,13 +37,16 @@
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
 //!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
 //!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
+//!   * `DECRYPT_FALLBACK_WAIT` — decrypt worker completion → rx_loop fallback processing
+//!   * `DECRYPT_FALLBACK_PRIORITY_WAIT` — priority decrypt completions → rx_loop fallback processing
+//!   * `DECRYPT_FALLBACK_BULK_WAIT` — bulk decrypt completions → rx_loop fallback processing
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 23;
+const N_STAGES: usize = 26;
 const N_EVENTS: usize = 26;
 const HIST_BUCKETS: usize = 48;
 
@@ -111,6 +114,13 @@ pub enum Stage {
     /// Bulk-sized transport channel residence, split from
     /// `transport_channel_wait` so bulk pressure stays independently visible.
     TransportBulkChannelWait = 22,
+    /// Time spent after a decrypt worker finishes FMP open until the rx loop
+    /// starts processing the bounced authenticated plaintext/failure event.
+    DecryptFallbackWait = 23,
+    /// Priority decrypt completion wait, split from `decrypt_fallback_wait`.
+    DecryptFallbackPriorityWait = 24,
+    /// Bulk decrypt completion wait, split from `decrypt_fallback_wait`.
+    DecryptFallbackBulkWait = 25,
 }
 
 impl Stage {
@@ -139,6 +149,9 @@ impl Stage {
             Stage::TransportChannelWait => "transport_channel_wait",
             Stage::TransportPriorityChannelWait => "transport_priority_channel_wait",
             Stage::TransportBulkChannelWait => "transport_bulk_channel_wait",
+            Stage::DecryptFallbackWait => "decrypt_fallback_wait",
+            Stage::DecryptFallbackPriorityWait => "decrypt_fallback_priority_wait",
+            Stage::DecryptFallbackBulkWait => "decrypt_fallback_bulk_wait",
         }
     }
 }
@@ -168,6 +181,9 @@ fn stage_from_index(idx: usize) -> Stage {
         20 => Stage::TransportChannelWait,
         21 => Stage::TransportPriorityChannelWait,
         22 => Stage::TransportBulkChannelWait,
+        23 => Stage::DecryptFallbackWait,
+        24 => Stage::DecryptFallbackPriorityWait,
+        25 => Stage::DecryptFallbackBulkWait,
         _ => unreachable!(),
     }
 }
