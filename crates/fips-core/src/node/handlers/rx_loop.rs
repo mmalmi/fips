@@ -211,6 +211,10 @@ impl Node {
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
         crate::perf_profile::maybe_spawn_reporter();
+        // Tokio intervals tick immediately on first poll. Consume that startup
+        // tick so the reserved-progress branch below represents a due periodic
+        // maintenance turn, not an eager pre-data maintenance pass.
+        tick.tick().await;
 
         loop {
             tokio::select! {
@@ -241,48 +245,11 @@ impl Node {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
-                packet = packet_rx.recv() => {
-                    match packet {
-                        Some(p) => {
-                            let drained = self.drain_packet_rx(
-                                &mut packet_rx,
-                                &mut decrypt_fallback_rx,
-                                Some(RxLoopSideQueues {
-                                    tun_outbound_rx: &mut tun_outbound_rx,
-                                    endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
-                                    endpoint_command_rx: &mut endpoint_command_rx,
-                                }),
-                                Some(p),
-                                PACKET_DRAIN_BUDGET,
-                            ).await;
-                            if drained > 0 {
-                                maintenance_state.record_data_activity(Instant::now());
-                            }
-                        }
-                        None => break, // channel closed
-                    }
-                }
-                Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    let fallback_plan = fallback_drain_plan(
-                        packet_rx.priority_queued_packets(),
-                        decrypt_fallback_rx.bulk_queued_packets(),
-                    );
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
-                        None,
-                        Some(event),
-                        fallback_plan.trailing_budget,
-                    ).await;
-                    let side_drained = self.drain_rx_loop_side_queues(
-                        &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
-                    ).await;
-                    if fallback_drained > 0 || side_drained.has_drained() {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
-                }
+                // Timer-driven liveness is a reserved-progress branch. It
+                // performs bounded pre/post data drains and timeboxes slow
+                // discovery/status work, so hot packet or bulk-fallback
+                // queues cannot indefinitely postpone heartbeat, rekey, MMP,
+                // route aging, or path maintenance.
                 _ = tick.tick() => {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
@@ -337,6 +304,60 @@ impl Node {
                         );
                     }
                 }
+                packet = packet_rx.recv() => {
+                    match packet {
+                        Some(p) => {
+                            let drained = self.drain_packet_rx(
+                                &mut packet_rx,
+                                &mut decrypt_fallback_rx,
+                                Some(RxLoopSideQueues {
+                                    tun_outbound_rx: &mut tun_outbound_rx,
+                                    endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
+                                    endpoint_command_rx: &mut endpoint_command_rx,
+                                }),
+                                Some(p),
+                                PACKET_DRAIN_BUDGET,
+                            ).await;
+                            if drained > 0 {
+                                maintenance_state.record_data_activity(Instant::now());
+                            }
+                        }
+                        None => break, // channel closed
+                    }
+                }
+                Some(command) = endpoint_priority_command_rx.recv() => {
+                    let drained = self.drain_endpoint_commands(
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        Some(command),
+                        None,
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
+                Some(event) = decrypt_fallback_rx.bulk.recv() => {
+                    let fallback_plan = fallback_drain_plan(
+                        packet_rx.priority_queued_packets(),
+                        decrypt_fallback_rx.bulk_queued_packets(),
+                    );
+                    let fallback_drained = self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        None,
+                        Some(event),
+                        fallback_plan.trailing_budget,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     let drained = self.drain_tun_outbound(
                         &mut tun_outbound_rx,
@@ -353,18 +374,6 @@ impl Node {
                         "Registering identity from DNS resolution"
                     );
                     self.register_identity(identity.node_addr, identity.pubkey);
-                }
-                Some(command) = endpoint_priority_command_rx.recv() => {
-                    let drained = self.drain_endpoint_commands(
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        Some(command),
-                        None,
-                        NON_PACKET_DRAIN_BUDGET,
-                    ).await;
-                    if drained > 0 {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
                 }
                 Some(command) = endpoint_command_rx.recv() => {
                     let drained = self.drain_endpoint_commands(
