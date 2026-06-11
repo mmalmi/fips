@@ -171,8 +171,8 @@ pub struct PacketRx {
     queued_packets: Arc<AtomicUsize>,
     bulk_queued_packets: Arc<AtomicUsize>,
     track_backlog: bool,
-    pending_priority: Option<IntoIter<ReceivedPacket>>,
-    pending_bulk: Option<IntoIter<ReceivedPacket>>,
+    pending_priority: Option<PendingPackets>,
+    pending_bulk: Option<PendingPackets>,
     priority_closed: bool,
     bulk_closed: bool,
 }
@@ -198,6 +198,11 @@ enum PacketQueueTx {
 enum PacketSendFailure {
     Closed(PacketQueueItem),
     DroppedBulk(usize),
+}
+
+struct PendingPackets {
+    packets: IntoIter<ReceivedPacket>,
+    rx_loop_owned_at: Option<Instant>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -282,6 +287,27 @@ impl PacketQueueItem {
             queued_at,
             counts.bulk as u64,
         );
+    }
+}
+
+impl PendingPackets {
+    fn new(packets: IntoIter<ReceivedPacket>, rx_loop_owned_at: Option<Instant>) -> Self {
+        Self {
+            packets,
+            rx_loop_owned_at,
+        }
+    }
+
+    fn next(&mut self) -> Option<ReceivedPacket> {
+        let mut packet = self.packets.next()?;
+        if let Some(rx_loop_owned_at) = self.rx_loop_owned_at {
+            packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
+        }
+        Some(packet)
+    }
+
+    fn len(&self) -> usize {
+        self.packets.len()
     }
 }
 
@@ -541,18 +567,17 @@ impl PacketRx {
                 packet.trace_rx_loop_owned_at = rx_loop_owned_at;
                 Some(packet)
             }
-            PacketQueueItem::Batch(mut packets) => {
-                if rx_loop_owned_at.is_some() {
-                    for packet in &mut packets {
-                        packet.trace_rx_loop_owned_at = rx_loop_owned_at;
-                    }
-                }
+            PacketQueueItem::Batch(packets) => {
                 let mut packets = packets.into_iter();
-                let packet = packets.next()?;
+                let mut packet = packets.next()?;
+                if let Some(rx_loop_owned_at) = rx_loop_owned_at {
+                    packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
+                }
                 if packets.len() > 0 {
+                    let pending = PendingPackets::new(packets, rx_loop_owned_at);
                     match lane {
-                        PacketLane::Priority => self.pending_priority = Some(packets),
-                        PacketLane::Bulk => self.pending_bulk = Some(packets),
+                        PacketLane::Priority => self.pending_priority = Some(pending),
+                        PacketLane::Bulk => self.pending_bulk = Some(pending),
                     }
                 }
                 Some(packet)
@@ -560,7 +585,7 @@ impl PacketRx {
         }
     }
 
-    fn take_pending(pending: &mut Option<IntoIter<ReceivedPacket>>) -> Option<ReceivedPacket> {
+    fn take_pending(pending: &mut Option<PendingPackets>) -> Option<ReceivedPacket> {
         let packets = pending.as_mut()?;
         let packet = packets.next();
         if packets.len() == 0 {
@@ -2414,6 +2439,32 @@ mod tests {
                 priority: 0,
                 bulk: 2,
             }
+        );
+    }
+
+    #[test]
+    fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
+        let addr = TransportAddr::from_string("test");
+        let rx_loop_owned_at = Some(Instant::now());
+        let packets = vec![
+            ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0xaa; 32]),
+            ReceivedPacket::new(TransportId::new(1), addr, vec![0xbb; 48]),
+        ]
+        .into_iter();
+        let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at));
+
+        let first = PacketRx::take_pending(&mut pending).expect("first pending packet");
+        assert_eq!(first.trace_rx_loop_owned_at, rx_loop_owned_at);
+        assert!(
+            pending.is_some(),
+            "one packet should remain after taking the first pending packet"
+        );
+
+        let second = PacketRx::take_pending(&mut pending).expect("second pending packet");
+        assert_eq!(second.trace_rx_loop_owned_at, rx_loop_owned_at);
+        assert!(
+            pending.is_none(),
+            "pending batch should clear after the last packet is taken"
         );
     }
 
