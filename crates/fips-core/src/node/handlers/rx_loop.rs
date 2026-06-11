@@ -1319,8 +1319,9 @@ mod tests {
     #[test]
     fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
         assert_eq!(
-            FALLBACK_PRESSURE_HIGH_WATER, PACKET_DRAIN_BUDGET,
-            "bulk fallback pressure should start once already-decrypted backlog spans one raw receive turn"
+            FALLBACK_PRESSURE_HIGH_WATER,
+            PACKET_DRAIN_BUDGET / 2,
+            "bulk fallback pressure should start before already-decrypted backlog spans a full raw receive turn"
         );
 
         let normal = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1);

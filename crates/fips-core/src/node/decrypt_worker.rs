@@ -71,11 +71,11 @@ const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
-/// Fallback completions are now pressure-drained by rx_loop once a raw
-/// receive turn's worth of already-decrypted bulk packets is queued. Emit the
-/// backlog-high event at that same point so long-run soak evidence reports the
-/// pressure signal when the adaptive path first matters.
-pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 512;
+/// Fallback completions are pressure-drained by rx_loop before a full raw
+/// receive turn's worth of already-decrypted bulk packets can accumulate. Emit
+/// the backlog-high event at that same point so long-run soak evidence reports
+/// the pressure signal when the adaptive path first matters.
+pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
