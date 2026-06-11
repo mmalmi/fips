@@ -528,6 +528,21 @@ fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWor
     }
 }
 
+fn fmp_worker_queue_wait_stage_for_lane(lane: EncryptWorkerLane) -> crate::perf_profile::Stage {
+    match lane {
+        EncryptWorkerLane::Priority => crate::perf_profile::Stage::FmpWorkerPriorityQueueWait,
+        EncryptWorkerLane::Bulk => crate::perf_profile::Stage::FmpWorkerBulkQueueWait,
+    }
+}
+
+fn record_fmp_worker_queue_wait(
+    lane: EncryptWorkerLane,
+    queued_at: Option<crate::perf_profile::TraceStamp>,
+) {
+    crate::perf_profile::record_since(crate::perf_profile::Stage::FmpWorkerQueueWait, queued_at);
+    crate::perf_profile::record_since(fmp_worker_queue_wait_stage_for_lane(lane), queued_at);
+}
+
 struct QueuedFmpSendJob {
     job: FmpSendJob,
     lane: EncryptWorkerLane,
@@ -2005,7 +2020,7 @@ impl SealedSendPacket {
             mut wire_buf,
             fsp_seal,
             send_target,
-            bulk_endpoint_data: _,
+            bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: _,
             queued_at,
@@ -2015,8 +2030,8 @@ impl SealedSendPacket {
             target_key,
             "sealed packet must keep the queued target key"
         );
-        crate::perf_profile::record_since(
-            crate::perf_profile::Stage::FmpWorkerQueueWait,
+        record_fmp_worker_queue_wait(
+            encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data),
             queued_at,
         );
 
@@ -2039,13 +2054,13 @@ impl SealedSendPacket {
             mut wire_buf,
             fsp_seal,
             send_target,
-            bulk_endpoint_data: _,
+            bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: _,
             queued_at,
         } = job;
-        crate::perf_profile::record_since(
-            crate::perf_profile::Stage::FmpWorkerQueueWait,
+        record_fmp_worker_queue_wait(
+            encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data),
             queued_at,
         );
 
@@ -3204,6 +3219,18 @@ mod unix_tests {
         assert_eq!(
             encrypt_worker_lane_for_endpoint_data(true),
             EncryptWorkerLane::Bulk
+        );
+    }
+
+    #[test]
+    fn encrypt_worker_queue_wait_stage_follows_lane_policy() {
+        assert_eq!(
+            fmp_worker_queue_wait_stage_for_lane(EncryptWorkerLane::Priority),
+            crate::perf_profile::Stage::FmpWorkerPriorityQueueWait
+        );
+        assert_eq!(
+            fmp_worker_queue_wait_stage_for_lane(EncryptWorkerLane::Bulk),
+            crate::perf_profile::Stage::FmpWorkerBulkQueueWait
         );
     }
 

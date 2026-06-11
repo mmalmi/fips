@@ -39,6 +39,8 @@
 //!   * `ENDPOINT_PRIORITY_COMMAND_WAIT` — priority endpoint command → node command loop
 //!   * `ENDPOINT_BULK_COMMAND_WAIT` — bulk endpoint command → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
+//!   * `FMP_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP encrypt jobs → worker
+//!   * `FMP_WORKER_BULK_QUEUE_WAIT` — bulk FMP encrypt jobs → worker
 //!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
 //!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
 //!   * `DECRYPT_WORKER_BULK_QUEUE_WAIT` — bulk FMP decrypt jobs → decrypt worker
@@ -61,7 +63,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 40;
+const N_STAGES: usize = 42;
 const N_EVENTS: usize = 36;
 const HIST_BUCKETS: usize = 48;
 
@@ -168,6 +170,10 @@ pub enum Stage {
     DecryptFspWorkerPriorityQueueWait = 38,
     /// Bulk FSP owner-worker input residence.
     DecryptFspWorkerBulkQueueWait = 39,
+    /// Priority FMP encrypt-worker input residence.
+    FmpWorkerPriorityQueueWait = 40,
+    /// Bulk FMP encrypt-worker input residence.
+    FmpWorkerBulkQueueWait = 41,
 }
 
 impl Stage {
@@ -215,6 +221,8 @@ impl Stage {
             Stage::DecryptFspWorkerQueueWait => "decrypt_fsp_worker_queue_wait",
             Stage::DecryptFspWorkerPriorityQueueWait => "decrypt_fsp_worker_priority_queue_wait",
             Stage::DecryptFspWorkerBulkQueueWait => "decrypt_fsp_worker_bulk_queue_wait",
+            Stage::FmpWorkerPriorityQueueWait => "fmp_worker_priority_queue_wait",
+            Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
         }
     }
 }
@@ -261,6 +269,8 @@ fn stage_from_index(idx: usize) -> Stage {
         37 => Stage::DecryptFspWorkerQueueWait,
         38 => Stage::DecryptFspWorkerPriorityQueueWait,
         39 => Stage::DecryptFspWorkerBulkQueueWait,
+        40 => Stage::FmpWorkerPriorityQueueWait,
+        41 => Stage::FmpWorkerBulkQueueWait,
         _ => unreachable!(),
     }
 }
@@ -774,7 +784,7 @@ mod tests {
 
     #[test]
     fn stage_table_exposes_endpoint_command_lane_waits() {
-        assert_eq!(N_STAGES, 40);
+        assert_eq!(N_STAGES, 42);
         assert_eq!(
             stage_from_index(Stage::EndpointCommandWait as usize).name(),
             "endpoint_command_wait"
@@ -810,6 +820,14 @@ mod tests {
         assert_eq!(
             stage_from_index(Stage::DecryptFspWorkerBulkQueueWait as usize).name(),
             "decrypt_fsp_worker_bulk_queue_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::FmpWorkerPriorityQueueWait as usize).name(),
+            "fmp_worker_priority_queue_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::FmpWorkerBulkQueueWait as usize).name(),
+            "fmp_worker_bulk_queue_wait"
         );
     }
 
