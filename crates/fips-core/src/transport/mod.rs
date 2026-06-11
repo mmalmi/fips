@@ -31,6 +31,7 @@ use sim::SimTransport;
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::vec::IntoIter;
 use tcp::TcpTransport;
 use thiserror::Error;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, error::TryRecvError};
@@ -136,16 +137,30 @@ const PRIORITY_PACKET_MAX_LEN: usize = 512;
 /// help.
 #[derive(Clone, Debug)]
 pub struct PacketTx {
-    priority: UnboundedSender<ReceivedPacket>,
-    bulk: UnboundedSender<ReceivedPacket>,
+    priority: UnboundedSender<PacketQueueItem>,
+    bulk: UnboundedSender<PacketQueueItem>,
 }
 
 /// Channel receiver for received packets.
 pub struct PacketRx {
-    priority: UnboundedReceiver<ReceivedPacket>,
-    bulk: UnboundedReceiver<ReceivedPacket>,
+    priority: UnboundedReceiver<PacketQueueItem>,
+    bulk: UnboundedReceiver<PacketQueueItem>,
+    pending_priority: Option<IntoIter<ReceivedPacket>>,
+    pending_bulk: Option<IntoIter<ReceivedPacket>>,
     priority_closed: bool,
     bulk_closed: bool,
+}
+
+#[derive(Debug)]
+enum PacketQueueItem {
+    One(ReceivedPacket),
+    Batch(Vec<ReceivedPacket>),
+}
+
+#[derive(Clone, Copy)]
+enum PacketLane {
+    Priority,
+    Bulk,
 }
 
 impl PacketTx {
@@ -154,9 +169,58 @@ impl PacketTx {
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
         if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
-            self.priority.send(packet)
+            self.priority
+                .send(PacketQueueItem::One(packet))
+                .map_err(|error| match error.0 {
+                    PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
+                    PacketQueueItem::Batch(_) => {
+                        unreachable!("single packet send cannot fail with a batch item")
+                    }
+                })
         } else {
-            self.bulk.send(packet)
+            self.bulk
+                .send(PacketQueueItem::One(packet))
+                .map_err(|error| match error.0 {
+                    PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
+                    PacketQueueItem::Batch(_) => {
+                        unreachable!("single packet send cannot fail with a batch item")
+                    }
+                })
+        }
+    }
+
+    pub(crate) fn send_batch(&self, packets: Vec<ReceivedPacket>) -> Result<(), ()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        let mut priority_packets = Vec::new();
+        let mut bulk_packets = Vec::new();
+        for packet in packets {
+            if packet.is_priority_sized() {
+                priority_packets.push(packet);
+            } else {
+                bulk_packets.push(packet);
+            }
+        }
+
+        Self::send_packet_items(&self.priority, priority_packets)?;
+        Self::send_packet_items(&self.bulk, bulk_packets)?;
+        Ok(())
+    }
+
+    fn send_packet_items(
+        tx: &UnboundedSender<PacketQueueItem>,
+        mut packets: Vec<ReceivedPacket>,
+    ) -> Result<(), ()> {
+        match packets.len() {
+            0 => Ok(()),
+            1 => tx
+                .send(PacketQueueItem::One(
+                    packets.pop().expect("one packet should be present"),
+                ))
+                .map_err(|_| ()),
+            _ => tx.send(PacketQueueItem::Batch(packets)).map_err(|_| ()),
         }
     }
 }
@@ -172,15 +236,23 @@ impl PacketRx {
 
             tokio::select! {
                 biased;
-                packet = self.priority.recv(), if !self.priority_closed => {
-                    match packet {
-                        Some(packet) => return Some(packet),
+                item = self.priority.recv(), if !self.priority_closed => {
+                    match item {
+                        Some(item) => {
+                            if let Some(packet) = self.packet_from_item(item, PacketLane::Priority) {
+                                return Some(packet);
+                            }
+                        }
                         None => self.priority_closed = true,
                     }
                 }
-                packet = self.bulk.recv(), if !self.bulk_closed => {
-                    match packet {
-                        Some(packet) => return Some(packet),
+                item = self.bulk.recv(), if !self.bulk_closed => {
+                    match item {
+                        Some(item) => {
+                            if let Some(packet) = self.packet_from_item(item, PacketLane::Bulk) {
+                                return Some(packet);
+                            }
+                        }
                         None => self.bulk_closed = true,
                     }
                 }
@@ -189,16 +261,30 @@ impl PacketRx {
     }
 
     pub fn try_recv(&mut self) -> Result<ReceivedPacket, TryRecvError> {
+        if let Some(packet) = Self::take_pending(&mut self.pending_priority) {
+            return Ok(packet);
+        }
+
         match self.priority.try_recv() {
-            Ok(packet) => return Ok(packet),
+            Ok(item) => {
+                if let Some(packet) = self.packet_from_item(item, PacketLane::Priority) {
+                    return Ok(packet);
+                }
+            }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
                 self.priority_closed = true;
             }
         }
 
+        if let Some(packet) = Self::take_pending(&mut self.pending_bulk) {
+            return Ok(packet);
+        }
+
         match self.bulk.try_recv() {
-            Ok(packet) => Ok(packet),
+            Ok(item) => self
+                .packet_from_item(item, PacketLane::Bulk)
+                .ok_or(TryRecvError::Empty),
             Err(TryRecvError::Empty) => {
                 if self.priority_closed && self.bulk_closed {
                     Err(TryRecvError::Disconnected)
@@ -215,6 +301,36 @@ impl PacketRx {
                 }
             }
         }
+    }
+
+    fn packet_from_item(
+        &mut self,
+        item: PacketQueueItem,
+        lane: PacketLane,
+    ) -> Option<ReceivedPacket> {
+        match item {
+            PacketQueueItem::One(packet) => Some(packet),
+            PacketQueueItem::Batch(packets) => {
+                let mut packets = packets.into_iter();
+                let packet = packets.next()?;
+                if packets.len() > 0 {
+                    match lane {
+                        PacketLane::Priority => self.pending_priority = Some(packets),
+                        PacketLane::Bulk => self.pending_bulk = Some(packets),
+                    }
+                }
+                Some(packet)
+            }
+        }
+    }
+
+    fn take_pending(pending: &mut Option<IntoIter<ReceivedPacket>>) -> Option<ReceivedPacket> {
+        let mut packets = pending.take()?;
+        let packet = packets.next();
+        if packets.len() > 0 {
+            *pending = Some(packets);
+        }
+        packet
     }
 }
 
@@ -235,6 +351,8 @@ pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
+            pending_priority: None,
+            pending_bulk: None,
             priority_closed: false,
             bulk_closed: false,
         },
@@ -1919,6 +2037,71 @@ mod tests {
 
         assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
         assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
+    }
+
+    #[tokio::test]
+    async fn packet_channel_batch_send_amortizes_bulk_channel_items() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
+            ),
+        ])
+        .expect("bulk batch send should succeed");
+
+        assert_eq!(
+            rx.bulk.len(),
+            1,
+            "bulk kernel receive batch should occupy one channel item"
+        );
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xcc);
+    }
+
+    #[tokio::test]
+    async fn packet_channel_priority_overtakes_pending_bulk_batch_tail() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ])
+        .expect("bulk batch send should succeed");
+
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0x11; 32],
+        ))
+        .expect("priority packet send should succeed");
+
+        assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+        assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
     }
 
     // ========================================================================

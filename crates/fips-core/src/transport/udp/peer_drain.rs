@@ -235,6 +235,7 @@ fn drain_loop(
 
         let timestamp_ms = received_timestamp_ms();
         let trace_enqueued_at = crate::perf_profile::stamp();
+        let mut packets = Vec::with_capacity(count);
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
@@ -261,10 +262,11 @@ fn drain_loop(
                 timestamp_ms,
                 trace_enqueued_at,
             );
-            if packet_tx.send(packet).is_err() {
-                trace!("fips-peer-drain: packet channel closed; exiting");
-                return;
-            }
+            packets.push(packet);
+        }
+        if !packets.is_empty() && packet_tx.send_batch(packets).is_err() {
+            trace!("fips-peer-drain: packet channel closed; exiting");
+            return;
         }
     }
 

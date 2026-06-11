@@ -567,6 +567,7 @@ async fn udp_receive_loop(
                     stats.set_kernel_drops(kernel_drops as u64);
                     let timestamp_ms = received_timestamp_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
+                    let mut packets = Vec::with_capacity(count);
                     for i in 0..count {
                         let len = lens[i];
                         let Some(remote_addr) = addrs[i] else {
@@ -608,13 +609,15 @@ async fn udp_receive_loop(
                             "UDP packet received"
                         );
 
-                        if packet_tx.send(packet).is_err() {
-                            debug!(
-                                transport_id = %transport_id,
-                                "Packet channel closed, stopping receive loop"
-                            );
-                            return;
-                        }
+                        packets.push(packet);
+                    }
+
+                    if !packets.is_empty() && packet_tx.send_batch(packets).is_err() {
+                        debug!(
+                            transport_id = %transport_id,
+                            "Packet channel closed, stopping receive loop"
+                        );
+                        return;
                     }
                 }
                 Err(e) => {
