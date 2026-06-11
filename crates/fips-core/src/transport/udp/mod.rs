@@ -42,6 +42,24 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
+#[cfg(target_os = "linux")]
+pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
+    Vec::with_capacity(size)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
+    vec![0u8; size]
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
+    buffer.clear();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn reset_recv_buffer(_buffer: &mut Vec<u8>) {}
+
 fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {
     matches!(
         (local, remote),
@@ -519,10 +537,10 @@ impl Drop for UdpTransport {
 
 /// UDP receive loop - runs as a spawned task.
 ///
-/// On Linux, drains the kernel UDP queue in 32-packet bursts via `recvmmsg`
-/// to amortise the per-syscall + per-task-wakeup overhead. macOS / Windows
-/// fall through to single-packet `recv_from`. Either way every datagram
-/// is forwarded to `packet_tx` in arrival order.
+/// On Linux, drains the kernel UDP queue in `UDP_RECV_BATCH_SIZE` bursts via
+/// `recvmmsg` to amortise the per-syscall + per-task-wakeup overhead. macOS /
+/// Windows fall through to single-packet `recv_from`. Either way every
+/// datagram is forwarded to `packet_tx` in arrival order.
 async fn udp_receive_loop(
     socket: AsyncUdpSocket,
     transport_id: TransportId,
@@ -539,31 +557,24 @@ async fn udp_receive_loop(
         // Backing pool: one Vec<u8> per recvmmsg slot. We **own** each
         // slot here — when a packet lands, we `mem::replace` the filled
         // Vec out (handing the buffer directly to rx_loop via mpsc) and
-        // drop in a fresh Vec to refill that slot on the next call.
+        // drop in a fresh capacity-only Vec to refill that slot on the
+        // next call.
         //
         // Previous code did `let data = buf.to_vec();` per packet,
         // which was 1 alloc + 1 memcpy of the entire packet (~1.5 KB)
         // for every received UDP datagram. At 100 kpps that's
         // ~150 MB/sec of avoidable memory bandwidth on the RX hot path.
         // The new code does the same alloc count (one fresh Vec to
-        // refill the slot) but zero per-packet memcpy — the receive
-        // buffer becomes the packet buffer in one move.
-        let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; buf_size]).collect();
+        // refill the slot) but zero per-packet memcpy and no per-refill
+        // memset on Linux — the receive buffer becomes the packet buffer
+        // in one move.
+        let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| fresh_recv_buffer(buf_size)).collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
-        let mut lens: [usize; BATCH] = [0; BATCH];
 
         loop {
-            // Build mutable slice references for the syscall layer.
-            // Drawing from a single `iter_mut()` keeps the borrows disjoint
-            // without `MaybeUninit`/`transmute`.
-            let mut bufs: [&mut [u8]; BATCH] = {
-                let mut iter = backing.iter_mut();
-                std::array::from_fn(|_| iter.next().unwrap().as_mut_slice())
-            };
-
             let recv_result = {
                 let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpRecv);
-                socket.recv_batch(&mut bufs, &mut addrs, &mut lens).await
+                socket.recv_batch(&mut backing, &mut addrs).await
             };
             match recv_result {
                 Ok((count, kernel_drops)) => {
@@ -572,8 +583,9 @@ async fn udp_receive_loop(
                     let trace_enqueued_at = crate::perf_profile::stamp();
                     let mut packets = Vec::with_capacity(count);
                     for i in 0..count {
-                        let len = lens[i];
-                        let Some(remote_addr) = addrs[i] else {
+                        let len = backing[i].len();
+                        let Some(remote_addr) = addrs[i].take() else {
+                            reset_recv_buffer(&mut backing[i]);
                             continue;
                         };
                         stats.record_recv(len);
@@ -587,6 +599,7 @@ async fn udp_receive_loop(
                                 bytes = len,
                                 "Dropping stray punch probe/ack on UDP transport"
                             );
+                            reset_recv_buffer(&mut backing[i]);
                             continue;
                         }
 
@@ -594,8 +607,7 @@ async fn udp_receive_loop(
                         // refill with a fresh one. `mem::replace`
                         // returns the OLD value and writes the new one
                         // — single pointer swap, no copy.
-                        let mut data = std::mem::replace(&mut backing[i], vec![0u8; buf_size]);
-                        data.truncate(len);
+                        let data = std::mem::replace(&mut backing[i], fresh_recv_buffer(buf_size));
                         let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::with_trace_timestamp(
                             transport_id,

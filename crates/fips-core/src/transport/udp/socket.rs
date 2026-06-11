@@ -471,9 +471,10 @@ mod platform {
         /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
         /// (Linux only — macOS falls through to per-packet recvmsg).
         ///
-        /// Returns `(count, kernel_drops)`. Caller pre-sizes `bufs` (each
-        /// must be at least the configured MTU) and the matching `addrs` /
-        /// `lens` slices; on return, slots `[0..count)` are valid.
+        /// Returns `(count, kernel_drops)`. Caller provides receive buffers
+        /// with enough spare capacity for one datagram and the matching
+        /// `addrs` slice; on return, `bufs[0..count]` have their lengths set
+        /// to the initialized bytes received from the kernel.
         ///
         /// `kernel_drops` is the `SO_RXQ_OVFL` cumulative counter sampled
         /// from the cmsg chain of the FIRST datagram in the batch. The
@@ -484,11 +485,10 @@ mod platform {
         #[cfg(target_os = "linux")]
         pub fn recv_batch(
             &self,
-            bufs: &mut [&mut [u8]],
+            bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
-            lens: &mut [usize],
         ) -> std::io::Result<(usize, u32)> {
-            let n = bufs.len().min(addrs.len()).min(lens.len()).min(BATCH_SIZE);
+            let n = bufs.len().min(addrs.len()).min(BATCH_SIZE);
             if n == 0 {
                 return Ok((0, 0));
             }
@@ -507,8 +507,16 @@ mod platform {
             let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                iovs[i].iov_base = bufs[i].as_mut_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = bufs[i].len();
+                bufs[i].clear();
+                let spare = bufs[i].spare_capacity_mut();
+                if spare.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "UDP receive buffer has no spare capacity",
+                    ));
+                }
+                iovs[i].iov_base = spare.as_mut_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = spare.len();
                 msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
                 msgs[i].msg_hdr.msg_namelen =
                     std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -535,7 +543,19 @@ mod platform {
             }
             let count = r as usize;
             for i in 0..count {
-                lens[i] = msgs[i].msg_len as usize;
+                let len = msgs[i].msg_len as usize;
+                if len > bufs[i].capacity() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "recvmmsg reported a datagram larger than the receive buffer",
+                    ));
+                }
+                // SAFETY: `recvmmsg` wrote `len` initialized bytes into
+                // `bufs[i]`'s spare capacity through the iovec above, and
+                // `len <= capacity` was checked before extending the Vec.
+                unsafe {
+                    bufs[i].set_len(len);
+                }
                 addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
             }
 
@@ -694,13 +714,12 @@ mod platform {
 
         /// Drain up to `BATCH_SIZE` datagrams from the kernel via
         /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
-        /// buffer / addr / len contract as `UdpRawSocket::recv_batch`.
+        /// buffer / addr contract as `UdpRawSocket::recv_batch`.
         #[cfg(target_os = "linux")]
         pub async fn recv_batch(
             &self,
-            bufs: &mut [&mut [u8]],
+            bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
-            lens: &mut [usize],
         ) -> Result<(usize, u32), TransportError> {
             loop {
                 let mut guard = self
@@ -709,7 +728,7 @@ mod platform {
                     .await
                     .map_err(|e| TransportError::RecvFailed(format!("readable wait: {}", e)))?;
 
-                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs, lens)) {
+                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs)) {
                     Ok(Ok((0, _))) => {
                         // Spurious wakeup or no datagrams ready — yield
                         // back to the reactor instead of busy-looping.
@@ -1016,5 +1035,49 @@ mod tests {
         assert_eq!(n, payload.len());
         assert_eq!(&buf[..n], payload);
         assert_eq!(src, addr1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn recv_batch_writes_into_vec_spare_capacity() {
+        let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+            .expect("failed to bind socket 1");
+        let addr1 = sock1.local_addr();
+        let async1 = sock1.into_async().expect("into_async 1");
+
+        let sock2 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
+            .expect("failed to bind socket 2");
+        let addr2 = sock2.local_addr();
+        let async2 = sock2.into_async().expect("into_async 2");
+
+        let mut bufs: Vec<Vec<u8>> = (0..RECV_BATCH_SIZE)
+            .map(|_| Vec::with_capacity(64))
+            .collect();
+        let mut addrs: [Option<SocketAddr>; RECV_BATCH_SIZE] = std::array::from_fn(|_| None);
+
+        async1
+            .send_to(b"first-packet", &addr2)
+            .await
+            .expect("send first");
+        let (count, _drops) = async2
+            .recv_batch(&mut bufs, &mut addrs)
+            .await
+            .expect("recv first batch");
+        assert_eq!(count, 1);
+        assert_eq!(bufs[0], b"first-packet");
+        assert_eq!(addrs[0], Some(addr1));
+        assert_eq!(bufs[1].len(), 0);
+
+        async1.send_to(b"2", &addr2).await.expect("send second");
+        let (count, _drops) = async2
+            .recv_batch(&mut bufs, &mut addrs)
+            .await
+            .expect("recv second batch");
+        assert_eq!(count, 1);
+        assert_eq!(
+            bufs[0], b"2",
+            "recv_batch should clear and refill the Vec rather than append"
+        );
+        assert_eq!(addrs[0], Some(addr1));
     }
 }

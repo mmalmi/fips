@@ -156,7 +156,9 @@ fn drain_loop(
 
     const BATCH: usize = super::UDP_RECV_BATCH_SIZE;
     const BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
-    let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; BUF_SIZE]).collect();
+    let mut backing: Vec<Vec<u8>> = (0..BATCH)
+        .map(|_| super::fresh_recv_buffer(BUF_SIZE))
+        .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
 
@@ -239,22 +241,24 @@ fn drain_loop(
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
+                super::reset_recv_buffer(&mut backing[i]);
                 continue;
             }
-            // Move the filled buffer out, refill the slot with a
-            // fresh one. Same zero-copy pattern the wildcard listen
-            // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
-            let mut data = std::mem::replace(&mut backing[i], vec![0u8; BUF_SIZE]);
-            data.truncate(len);
-            if is_punch_packet(&data) {
+            if is_punch_packet(&backing[i][..len]) {
                 trace!(
                     transport_id = %transport_id,
                     peer_addr = %peer_addr,
                     bytes = len,
                     "fips-peer-drain: dropping stray punch probe/ack"
                 );
+                super::reset_recv_buffer(&mut backing[i]);
                 continue;
             }
+            // Move the filled buffer out, refill the slot with a
+            // fresh one. Same zero-copy pattern the wildcard listen
+            // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
+            let mut data = std::mem::replace(&mut backing[i], super::fresh_recv_buffer(BUF_SIZE));
+            data.truncate(len);
             let packet = ReceivedPacket::with_trace_timestamp(
                 transport_id,
                 packet_addr.clone(),
@@ -380,8 +384,16 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
     let mut storages: [libc::sockaddr_storage; BATCH] = unsafe { std::mem::zeroed() };
     let mut msgs: [libc::mmsghdr; BATCH] = unsafe { std::mem::zeroed() };
     for i in 0..n {
-        iovs[i].iov_base = backing[i].as_mut_ptr() as *mut libc::c_void;
-        iovs[i].iov_len = backing[i].len();
+        backing[i].clear();
+        let spare = backing[i].spare_capacity_mut();
+        if spare.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UDP receive buffer has no spare capacity",
+            ));
+        }
+        iovs[i].iov_base = spare.as_mut_ptr() as *mut libc::c_void;
+        iovs[i].iov_len = spare.len();
         msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
         msgs[i].msg_hdr.msg_namelen =
             std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -407,7 +419,20 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
     }
     let count = r as usize;
     for i in 0..count {
-        lens[i] = msgs[i].msg_len as usize;
+        let len = msgs[i].msg_len as usize;
+        if len > backing[i].capacity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recvmmsg reported a datagram larger than the receive buffer",
+            ));
+        }
+        // SAFETY: `recvmmsg` wrote `len` initialized bytes into
+        // `backing[i]`'s spare capacity through the iovec above, and
+        // `len <= capacity` was checked before extending the Vec.
+        unsafe {
+            backing[i].set_len(len);
+        }
+        lens[i] = len;
     }
     Ok(count)
 }
