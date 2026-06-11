@@ -4182,6 +4182,7 @@ impl Node {
                         let direct_probe_pending = retry_state.is_some();
                         NodeEndpointPeer {
                             npub,
+                            node_addr: *peer.node_addr(),
                             connected: true,
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
@@ -4233,6 +4234,7 @@ impl Node {
                         nostr_state.and_then(|state| state.cooldown_until_ms);
                     peers.push(NodeEndpointPeer {
                         npub,
+                        node_addr: *node_addr,
                         connected: false,
                         transport_addr: None,
                         transport_type: None,

@@ -326,6 +326,8 @@ impl From<crate::node::UpdatePeersOutcome> for UpdatePeersOutcome {
 pub struct FipsEndpointPeer {
     /// Peer Nostr public key.
     pub npub: String,
+    /// Peer FIPS node address, derived from the public key and stable across npub encodings.
+    pub node_addr: NodeAddr,
     /// Whether an authenticated link-layer peer is currently active.
     pub connected: bool,
     /// Current underlay transport address, when a link has authenticated.
@@ -1257,6 +1259,7 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
     fn from(peer: NodeEndpointPeer) -> Self {
         Self {
             npub: peer.npub,
+            node_addr: peer.node_addr,
             connected: peer.connected,
             transport_addr: peer.transport_addr,
             transport_type: peer.transport_type,
@@ -1321,6 +1324,7 @@ mod tests {
     fn endpoint_peer_conversion_preserves_rekey_state() {
         let peer = FipsEndpointPeer::from(NodeEndpointPeer {
             npub: "npub1peer".to_string(),
+            node_addr: NodeAddr::from_bytes([7; 16]),
             connected: true,
             transport_addr: Some("127.0.0.1:9000".to_string()),
             transport_type: Some("udp".to_string()),

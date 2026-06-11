@@ -1894,6 +1894,7 @@ impl NodeEndpointEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NodeEndpointPeer {
     pub(crate) npub: String,
+    pub(crate) node_addr: NodeAddr,
     pub(crate) connected: bool,
     pub(crate) transport_addr: Option<String>,
     pub(crate) transport_type: Option<String>,
