@@ -30,6 +30,10 @@ use secp256k1::XOnlyPublicKey;
 use sim::SimTransport;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering::Relaxed},
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 use tcp::TcpTransport;
@@ -126,6 +130,14 @@ pub(crate) fn received_timestamp_ms() -> u64 {
 /// comfortably below this; full-size endpoint payloads are not.
 const PRIORITY_PACKET_MAX_LEN: usize = 512;
 
+/// Packet count at which the transport receive channel is visibly backlogged.
+///
+/// This tracks packets still owned by the priority/bulk mpsc channels. Once a
+/// batched item is dequeued into `PacketRx`'s pending iterator, it no longer
+/// contributes to this counter; those packets are already inside the rx-loop
+/// owner's drain budget rather than waiting behind the transport channel.
+const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
+
 /// Channel sender for received packets.
 ///
 /// Internally this is still unbounded mpsc so per-packet send remains a
@@ -139,12 +151,14 @@ const PRIORITY_PACKET_MAX_LEN: usize = 512;
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: UnboundedSender<PacketQueueItem>,
+    queued_packets: Arc<AtomicUsize>,
 }
 
 /// Channel receiver for received packets.
 pub struct PacketRx {
     priority: UnboundedReceiver<PacketQueueItem>,
     bulk: UnboundedReceiver<PacketQueueItem>,
+    queued_packets: Arc<AtomicUsize>,
     pending_priority: Option<IntoIter<ReceivedPacket>>,
     pending_bulk: Option<IntoIter<ReceivedPacket>>,
     priority_closed: bool,
@@ -232,25 +246,18 @@ impl PacketTx {
         &self,
         packet: ReceivedPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ReceivedPacket>> {
-        if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
-            self.priority
-                .send(PacketQueueItem::One(packet))
-                .map_err(|error| match error.0 {
-                    PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
-                    PacketQueueItem::Batch(_) => {
-                        unreachable!("single packet send cannot fail with a batch item")
-                    }
-                })
+        let tx = if packet.data.len() <= PRIORITY_PACKET_MAX_LEN {
+            &self.priority
         } else {
-            self.bulk
-                .send(PacketQueueItem::One(packet))
-                .map_err(|error| match error.0 {
-                    PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
-                    PacketQueueItem::Batch(_) => {
-                        unreachable!("single packet send cannot fail with a batch item")
-                    }
-                })
-        }
+            &self.bulk
+        };
+        self.send_item(tx, PacketQueueItem::One(packet))
+            .map_err(|error| match error.0 {
+                PacketQueueItem::One(packet) => tokio::sync::mpsc::error::SendError(packet),
+                PacketQueueItem::Batch(_) => {
+                    unreachable!("single packet send cannot fail with a batch item")
+                }
+            })
     }
 
     pub(crate) fn send_batch(&self, packets: Vec<ReceivedPacket>) -> Result<(), ()> {
@@ -269,7 +276,7 @@ impl PacketTx {
             } else {
                 &self.priority
             };
-            return Self::send_packet_items(tx, packets);
+            return self.send_packet_items(tx, packets);
         }
 
         let mut priority_packets = Vec::with_capacity(priority_count);
@@ -282,24 +289,53 @@ impl PacketTx {
             }
         }
 
-        Self::send_packet_items(&self.priority, priority_packets)?;
-        Self::send_packet_items(&self.bulk, bulk_packets)?;
+        self.send_packet_items(&self.priority, priority_packets)?;
+        self.send_packet_items(&self.bulk, bulk_packets)?;
         Ok(())
     }
 
     fn send_packet_items(
+        &self,
         tx: &UnboundedSender<PacketQueueItem>,
         mut packets: Vec<ReceivedPacket>,
     ) -> Result<(), ()> {
-        match packets.len() {
-            0 => Ok(()),
-            1 => tx
-                .send(PacketQueueItem::One(
-                    packets.pop().expect("one packet should be present"),
-                ))
-                .map_err(|_| ()),
-            _ => tx.send(PacketQueueItem::Batch(packets)).map_err(|_| ()),
+        let item = match packets.len() {
+            0 => return Ok(()),
+            1 => PacketQueueItem::One(packets.pop().expect("one packet should be present")),
+            _ => PacketQueueItem::Batch(packets),
+        };
+        self.send_item(tx, item).map_err(|_| ())
+    }
+
+    fn send_item(
+        &self,
+        tx: &UnboundedSender<PacketQueueItem>,
+        item: PacketQueueItem,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<PacketQueueItem>> {
+        let count = item.packet_count();
+        let previous = self.queued_packets.fetch_add(count, Relaxed);
+        match tx.send(item) {
+            Ok(()) => {
+                let queued = previous.saturating_add(count);
+                if previous < TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+                    && queued >= TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+                {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::TransportChannelBacklogHigh,
+                    );
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.queued_packets.fetch_sub(count, Relaxed);
+                Err(error)
+            }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_packets(&self) -> usize {
+        self.queued_packets.load(Relaxed)
     }
 }
 
@@ -386,7 +422,9 @@ impl PacketRx {
         item: PacketQueueItem,
         lane: PacketLane,
     ) -> Option<ReceivedPacket> {
+        let packet_count = item.packet_count();
         item.record_dequeue_wait(lane);
+        self.queued_packets.fetch_sub(packet_count, Relaxed);
         match item {
             PacketQueueItem::One(packet) => Some(packet),
             PacketQueueItem::Batch(packets) => {
@@ -422,14 +460,17 @@ impl PacketRx {
 pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
+    let queued_packets = Arc::new(AtomicUsize::new(0));
     (
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
+            queued_packets: Arc::clone(&queued_packets),
         },
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
+            queued_packets,
             pending_priority: None,
             pending_bulk: None,
             priority_closed: false,
@@ -2275,6 +2316,80 @@ mod tests {
 
         assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
         assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    }
+
+    #[test]
+    fn packet_channel_counts_channel_owned_packet_backlog() {
+        let (tx, mut rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+
+        assert_eq!(tx.queued_packets(), 0);
+        tx.send_batch(vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xcc; PRIORITY_PACKET_MAX_LEN + 3],
+            ),
+        ])
+        .expect("bulk batch send should succeed");
+        assert_eq!(tx.queued_packets(), 3);
+
+        assert_eq!(rx.try_recv().unwrap().data[0], 0xaa);
+        assert_eq!(
+            tx.queued_packets(),
+            0,
+            "once a batch item is dequeued, its tail is rx-loop-owned, not channel-owned"
+        );
+
+        tx.send(ReceivedPacket::new(
+            TransportId::new(1),
+            addr,
+            vec![0x11; 32],
+        ))
+        .expect("priority packet send should succeed");
+        assert_eq!(tx.queued_packets(), 1);
+
+        assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
+        assert_eq!(tx.queued_packets(), 0);
+        assert_eq!(rx.try_recv().unwrap().data[0], 0xbb);
+        assert_eq!(rx.try_recv().unwrap().data[0], 0xcc);
+        assert_eq!(tx.queued_packets(), 0);
+    }
+
+    #[test]
+    fn packet_channel_send_failure_rolls_back_backlog() {
+        let (tx, rx) = packet_channel(10);
+        let addr = TransportAddr::from_string("test");
+        drop(rx);
+
+        let packet = ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]);
+        assert!(tx.send(packet).is_err());
+        assert_eq!(tx.queued_packets(), 0);
+
+        let packets = vec![
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr.clone(),
+                vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+            ),
+            ReceivedPacket::new(
+                TransportId::new(1),
+                addr,
+                vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+            ),
+        ];
+        assert!(tx.send_batch(packets).is_err());
+        assert_eq!(tx.queued_packets(), 0);
     }
 
     // ========================================================================
