@@ -1413,11 +1413,7 @@ impl EndpointEventSender {
     }
 
     fn note_send_rejected(&self, count: usize) {
-        let _ = self
-            .queued_messages
-            .fetch_update(Relaxed, Relaxed, |current| {
-                Some(current.saturating_sub(count))
-            });
+        release_endpoint_event_messages(&self.queued_messages, count);
         self.ready.notify();
     }
 
@@ -1617,12 +1613,20 @@ impl EndpointEventReceiver {
     fn note_dequeued(&self, event: &NodeEndpointEvent) {
         event.record_dequeue_wait();
         let count = event.message_count();
-        let _ = self
-            .queued_messages
-            .fetch_update(Relaxed, Relaxed, |current| {
-                Some(current.saturating_sub(count))
-            });
+        release_endpoint_event_messages(&self.queued_messages, count);
     }
+}
+
+fn release_endpoint_event_messages(counter: &AtomicUsize, count: usize) {
+    if count == 0 {
+        return;
+    }
+
+    let previous = counter.fetch_sub(count, Relaxed);
+    debug_assert!(
+        previous >= count,
+        "endpoint event queued message accounting underflow"
+    );
 }
 
 fn endpoint_data_command_capacity(requested: usize) -> usize {

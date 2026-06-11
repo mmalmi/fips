@@ -241,6 +241,17 @@ fn endpoint_event_dequeue_counts_preserve_message_and_lane_counts() {
 }
 
 #[test]
+fn release_endpoint_event_messages_subtracts_exact_count() {
+    let counter = AtomicUsize::new(5);
+
+    release_endpoint_event_messages(&counter, 0);
+    assert_eq!(counter.load(Relaxed), 5);
+
+    release_endpoint_event_messages(&counter, 3);
+    assert_eq!(counter.load(Relaxed), 2);
+}
+
+#[test]
 fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());

@@ -448,11 +448,7 @@ impl PacketTx {
     }
 
     fn release_bulk_packets(&self, count: usize) {
-        let _ = self
-            .bulk_queued_packets
-            .fetch_update(Relaxed, Relaxed, |current| {
-                Some(current.saturating_sub(count))
-            });
+        release_reserved_bulk_packets(&self.bulk_queued_packets, count);
     }
 
     #[cfg(test)]
@@ -555,11 +551,7 @@ impl PacketRx {
             self.queued_packets.fetch_sub(packet_count, Relaxed);
         }
         if matches!(lane, PacketLane::Bulk) {
-            let _ = self
-                .bulk_queued_packets
-                .fetch_update(Relaxed, Relaxed, |current| {
-                    Some(current.saturating_sub(packet_count))
-                });
+            release_reserved_bulk_packets(&self.bulk_queued_packets, packet_count);
         }
         let rx_loop_owned_at = crate::perf_profile::stamp();
         match item {
@@ -598,6 +590,18 @@ impl PacketRx {
 #[inline]
 fn packet_channel_tracks_backlog() -> bool {
     cfg!(test) || crate::perf_profile::enabled()
+}
+
+fn release_reserved_bulk_packets(counter: &AtomicUsize, count: usize) {
+    if count == 0 {
+        return;
+    }
+
+    let previous = counter.fetch_sub(count, Relaxed);
+    debug_assert!(
+        previous >= count,
+        "transport bulk queued packet accounting underflow"
+    );
 }
 
 /// Create a packet channel.
@@ -2466,6 +2470,17 @@ mod tests {
             pending.is_none(),
             "pending batch should clear after the last packet is taken"
         );
+    }
+
+    #[test]
+    fn release_reserved_bulk_packets_subtracts_exact_count() {
+        let counter = AtomicUsize::new(5);
+
+        release_reserved_bulk_packets(&counter, 0);
+        assert_eq!(counter.load(Relaxed), 5);
+
+        release_reserved_bulk_packets(&counter, 3);
+        assert_eq!(counter.load(Relaxed), 2);
     }
 
     #[tokio::test]
