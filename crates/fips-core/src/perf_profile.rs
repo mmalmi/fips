@@ -45,9 +45,15 @@
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
 //!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
 //!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
-//!   * `DECRYPT_FALLBACK_WAIT` — decrypt worker completion → rx_loop fallback processing
-//!   * `DECRYPT_FALLBACK_PRIORITY_WAIT` — priority decrypt completions → rx_loop fallback processing
-//!   * `DECRYPT_FALLBACK_BULK_WAIT` — bulk decrypt completions → rx_loop fallback processing
+//!   * `DECRYPT_FALLBACK_WAIT` — plaintext/failure worker completion → rx_loop fallback processing
+//!   * `DECRYPT_FALLBACK_PRIORITY_WAIT` — priority plaintext/failure completions → rx_loop
+//!   * `DECRYPT_FALLBACK_BULK_WAIT` — bulk plaintext completions → rx_loop
+//!   * `DECRYPT_AUTHENTICATED_SESSION_WAIT` — FSP-authenticated worker completion → rx_loop dispatch
+//!   * `DECRYPT_AUTHENTICATED_SESSION_PRIORITY_WAIT` — priority FSP-authenticated completions
+//!   * `DECRYPT_AUTHENTICATED_SESSION_BULK_WAIT` — bulk FSP-authenticated completions
+//!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
+//!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
+//!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -55,12 +61,12 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 34;
-const N_EVENTS: usize = 33;
+const N_STAGES: usize = 40;
+const N_EVENTS: usize = 36;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Stage {
     UdpRecv = 0,
@@ -148,6 +154,20 @@ pub enum Stage {
     EndpointPriorityCommandWait = 32,
     /// Bulk endpoint command residence, split from `endpoint_command_wait`.
     EndpointBulkCommandWait = 33,
+    /// Time spent after a decrypt worker authenticates an established FSP
+    /// session frame until the rx loop applies receive-sync and dispatches it.
+    DecryptAuthenticatedSessionWait = 34,
+    /// Priority authenticated-session completion residence.
+    DecryptAuthenticatedSessionPriorityWait = 35,
+    /// Bulk authenticated-session completion residence.
+    DecryptAuthenticatedSessionBulkWait = 36,
+    /// Time spent after an FMP worker queues a local established FSP job to the
+    /// FSP owner worker until that worker starts handling it.
+    DecryptFspWorkerQueueWait = 37,
+    /// Priority FSP owner-worker input residence.
+    DecryptFspWorkerPriorityQueueWait = 38,
+    /// Bulk FSP owner-worker input residence.
+    DecryptFspWorkerBulkQueueWait = 39,
 }
 
 impl Stage {
@@ -187,6 +207,14 @@ impl Stage {
             Stage::DecryptWorkerBulkQueueWait => "decrypt_worker_bulk_queue_wait",
             Stage::EndpointPriorityCommandWait => "endpoint_priority_command_wait",
             Stage::EndpointBulkCommandWait => "endpoint_bulk_command_wait",
+            Stage::DecryptAuthenticatedSessionWait => "decrypt_authenticated_session_wait",
+            Stage::DecryptAuthenticatedSessionPriorityWait => {
+                "decrypt_authenticated_session_priority_wait"
+            }
+            Stage::DecryptAuthenticatedSessionBulkWait => "decrypt_authenticated_session_bulk_wait",
+            Stage::DecryptFspWorkerQueueWait => "decrypt_fsp_worker_queue_wait",
+            Stage::DecryptFspWorkerPriorityQueueWait => "decrypt_fsp_worker_priority_queue_wait",
+            Stage::DecryptFspWorkerBulkQueueWait => "decrypt_fsp_worker_bulk_queue_wait",
         }
     }
 }
@@ -227,6 +255,12 @@ fn stage_from_index(idx: usize) -> Stage {
         31 => Stage::DecryptWorkerBulkQueueWait,
         32 => Stage::EndpointPriorityCommandWait,
         33 => Stage::EndpointBulkCommandWait,
+        34 => Stage::DecryptAuthenticatedSessionWait,
+        35 => Stage::DecryptAuthenticatedSessionPriorityWait,
+        36 => Stage::DecryptAuthenticatedSessionBulkWait,
+        37 => Stage::DecryptFspWorkerQueueWait,
+        38 => Stage::DecryptFspWorkerPriorityQueueWait,
+        39 => Stage::DecryptFspWorkerBulkQueueWait,
         _ => unreachable!(),
     }
 }
@@ -268,6 +302,9 @@ pub enum Event {
     RxLoopSlowMaintenanceSkipped = 30,
     DecryptFallbackPressureDrain = 31,
     DecryptFallbackPriorityGated = 32,
+    DecryptFspPriorityQueueFullFallback = 33,
+    DecryptFspBulkQueueFullFallback = 34,
+    DecryptFspWorkerReplayDropped = 35,
 }
 
 impl Event {
@@ -306,6 +343,11 @@ impl Event {
             Event::RxLoopSlowMaintenanceSkipped => "rx_loop_slow_maintenance_skipped",
             Event::DecryptFallbackPressureDrain => "decrypt_fallback_pressure_drain",
             Event::DecryptFallbackPriorityGated => "decrypt_fallback_priority_gated",
+            Event::DecryptFspPriorityQueueFullFallback => {
+                "decrypt_fsp_priority_queue_full_fallback"
+            }
+            Event::DecryptFspBulkQueueFullFallback => "decrypt_fsp_bulk_queue_full_fallback",
+            Event::DecryptFspWorkerReplayDropped => "decrypt_fsp_worker_replay_dropped",
         }
     }
 }
@@ -345,6 +387,9 @@ fn event_from_index(idx: usize) -> Event {
         30 => Event::RxLoopSlowMaintenanceSkipped,
         31 => Event::DecryptFallbackPressureDrain,
         32 => Event::DecryptFallbackPriorityGated,
+        33 => Event::DecryptFspPriorityQueueFullFallback,
+        34 => Event::DecryptFspBulkQueueFullFallback,
+        35 => Event::DecryptFspWorkerReplayDropped,
         _ => unreachable!(),
     }
 }
@@ -692,7 +737,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 33);
+        assert_eq!(N_EVENTS, 36);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -713,11 +758,23 @@ mod tests {
             event_from_index(Event::DecryptFallbackPriorityGated as usize).name(),
             "decrypt_fallback_priority_gated"
         );
+        assert_eq!(
+            event_from_index(Event::DecryptFspPriorityQueueFullFallback as usize).name(),
+            "decrypt_fsp_priority_queue_full_fallback"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptFspBulkQueueFullFallback as usize).name(),
+            "decrypt_fsp_bulk_queue_full_fallback"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptFspWorkerReplayDropped as usize).name(),
+            "decrypt_fsp_worker_replay_dropped"
+        );
     }
 
     #[test]
     fn stage_table_exposes_endpoint_command_lane_waits() {
-        assert_eq!(N_STAGES, 34);
+        assert_eq!(N_STAGES, 40);
         assert_eq!(
             stage_from_index(Stage::EndpointCommandWait as usize).name(),
             "endpoint_command_wait"
@@ -729,6 +786,30 @@ mod tests {
         assert_eq!(
             stage_from_index(Stage::EndpointBulkCommandWait as usize).name(),
             "endpoint_bulk_command_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptAuthenticatedSessionWait as usize).name(),
+            "decrypt_authenticated_session_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptAuthenticatedSessionPriorityWait as usize).name(),
+            "decrypt_authenticated_session_priority_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptAuthenticatedSessionBulkWait as usize).name(),
+            "decrypt_authenticated_session_bulk_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptFspWorkerQueueWait as usize).name(),
+            "decrypt_fsp_worker_queue_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptFspWorkerPriorityQueueWait as usize).name(),
+            "decrypt_fsp_worker_priority_queue_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::DecryptFspWorkerBulkQueueWait as usize).name(),
+            "decrypt_fsp_worker_bulk_queue_wait"
         );
     }
 

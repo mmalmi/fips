@@ -735,6 +735,7 @@ impl Node {
                         );
 
                         if remote_epoch_changed {
+                            self.unregister_decrypt_worker_fsp_session(&peer_node_addr);
                             if self.sessions.remove(&peer_node_addr).is_some() {
                                 debug!(
                                     peer = %display_name,
@@ -984,6 +985,7 @@ impl Node {
                 self.register_decrypt_worker_session(&peer_node_addr);
 
                 if remote_epoch_changed {
+                    self.unregister_decrypt_worker_fsp_session(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %display_name,
@@ -1344,6 +1346,7 @@ impl Node {
                 }
 
                 if remote_epoch_changed {
+                    self.unregister_decrypt_worker_fsp_session(&peer_node_addr);
                     if self.sessions.remove(&peer_node_addr).is_some() {
                         debug!(
                             peer = %self.peer_display_name(&peer_node_addr),

@@ -12,6 +12,8 @@ use crate::mmp::MmpSessionState;
 use crate::node::REKEY_JITTER_SECS;
 #[cfg(unix)]
 use crate::node::session_wire::{FSP_HEADER_SIZE, build_fsp_header};
+#[cfg(unix)]
+use crate::noise::ReplayWindow;
 use crate::noise::{HandshakeState, NoiseSession};
 use crate::{NodeAddr, PeerIdentity};
 use rand::RngExt;
@@ -67,6 +69,40 @@ pub(crate) struct FspSendReservation {
     pub(crate) counter: u64,
     pub(crate) header: [u8; FSP_HEADER_SIZE],
     pub(crate) cipher: LessSafeKey,
+}
+
+/// Recv-side epoch state exported to the decrypt worker.
+#[cfg(unix)]
+pub(crate) struct FspRecvEpochSnapshot {
+    pub(crate) cipher: LessSafeKey,
+    pub(crate) replay: ReplayWindow,
+}
+
+/// Recv-side established-FSP state exported to the decrypt worker.
+///
+/// The worker owns replay admission for packet auth, while the rx-loop mirrors
+/// successful counters via [`FspReceiveSync`] and keeps a final canonical replay
+/// guard so slow paths, rekey cutover, and observability stay coherent.
+#[cfg(unix)]
+pub(crate) struct FspRecvSessionSnapshot {
+    pub(crate) source_peer: PeerIdentity,
+    pub(crate) current_k_bit: bool,
+    pub(crate) current: FspRecvEpochSnapshot,
+    pub(crate) pending: Option<FspRecvEpochSnapshot>,
+    pub(crate) previous: Option<FspRecvEpochSnapshot>,
+}
+
+/// Authenticated FSP receive metadata produced by the decrypt worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FspReceiveSync {
+    pub(crate) counter: u64,
+    pub(crate) slot: EpochSlot,
+    pub(crate) received_k_bit: bool,
+    pub(crate) timestamp: u32,
+    pub(crate) plaintext_len: usize,
+    pub(crate) ce_flag: bool,
+    pub(crate) path_mtu: u16,
+    pub(crate) spin_bit: bool,
 }
 
 impl EndToEndState {
@@ -469,6 +505,13 @@ impl SessionEntry {
         self.pending_new_session.as_ref()
     }
 
+    fn current_noise_session(&self) -> Option<&NoiseSession> {
+        match self.state.as_ref() {
+            Some(EndToEndState::Established(session)) => Some(session),
+            _ => None,
+        }
+    }
+
     /// Get the previous session for decryption fallback during drain.
     #[cfg(test)]
     pub(crate) fn previous_noise_session_mut(&mut self) -> Option<&mut NoiseSession> {
@@ -481,6 +524,32 @@ impl SessionEntry {
             Some(EndToEndState::Established(session)) => Some(session),
             _ => None,
         }
+    }
+
+    #[cfg(unix)]
+    fn fsp_recv_epoch_snapshot(session: &NoiseSession) -> Option<FspRecvEpochSnapshot> {
+        Some(FspRecvEpochSnapshot {
+            cipher: session.recv_cipher_clone()?,
+            replay: session.recv_replay_snapshot_owned(),
+        })
+    }
+
+    /// Export established-FSP recv state for an owning decrypt-worker shard.
+    #[cfg(unix)]
+    pub(crate) fn fsp_recv_snapshot(&self) -> Option<FspRecvSessionSnapshot> {
+        Some(FspRecvSessionSnapshot {
+            source_peer: self.remote_identity?,
+            current_k_bit: self.current_k_bit,
+            current: Self::fsp_recv_epoch_snapshot(self.current_noise_session()?)?,
+            pending: self
+                .pending_new_session
+                .as_ref()
+                .and_then(Self::fsp_recv_epoch_snapshot),
+            previous: self
+                .previous_noise_session
+                .as_ref()
+                .and_then(Self::fsp_recv_epoch_snapshot),
+        })
     }
 
     /// Whether we initiated the current rekey.
@@ -641,6 +710,101 @@ impl SessionEntry {
             }
         }
         Err(FspOpenError::NoLiveEpochAccepted)
+    }
+
+    /// Mirror a frame authenticated by the decrypt worker into rx-loop-owned
+    /// session metadata.
+    ///
+    /// The worker already performed AEAD verification and replay admission
+    /// against its owned snapshot. This method keeps the canonical
+    /// `SessionEntry` coherent and performs the final rx-loop replay guard:
+    /// replay windows are advanced for slow paths, pending epochs are
+    /// promoted, MMP receive state is updated, and idle counters observe
+    /// application data.
+    pub(crate) fn apply_fsp_receive_sync(
+        &mut self,
+        sync: FspReceiveSync,
+        now_ms: u64,
+        now: Instant,
+    ) -> bool {
+        if !self.is_established() {
+            return false;
+        }
+
+        match sync.slot {
+            EpochSlot::Current => {
+                let Some(session) = self.current_noise_session_mut() else {
+                    return false;
+                };
+                if session.check_replay(sync.counter).is_err() {
+                    return false;
+                }
+                session.accept_replay(sync.counter);
+                if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
+                    self.confirm_peer_new_epoch();
+                }
+            }
+            EpochSlot::Pending => {
+                if let Some(session) = self.pending_new_session.as_mut() {
+                    if session.check_replay(sync.counter).is_err() {
+                        return false;
+                    }
+                    session.accept_replay(sync.counter);
+                    if self.rekey_msg3_payload().is_some() {
+                        self.confirm_peer_new_epoch();
+                    }
+                    self.handle_peer_kbit_flip(now_ms);
+                } else if sync.received_k_bit == self.current_k_bit {
+                    // A second pending-epoch event can reach rx_loop after an
+                    // earlier event already promoted the pending session. The
+                    // worker authenticated it before promotion; mirror it into
+                    // the now-current slot instead of dropping good data.
+                    let Some(session) = self.current_noise_session_mut() else {
+                        return false;
+                    };
+                    if session.check_replay(sync.counter).is_err() {
+                        return false;
+                    }
+                    session.accept_replay(sync.counter);
+                } else {
+                    return false;
+                }
+            }
+            EpochSlot::Previous => {
+                let Some(session) = self.previous_noise_session.as_mut() else {
+                    return false;
+                };
+                if session.check_replay(sync.counter).is_err() {
+                    return false;
+                }
+                session.accept_replay(sync.counter);
+                self.refresh_previous_use(now_ms);
+            }
+        }
+
+        self.reset_decrypt_failures();
+        if self.handshake_payload().is_some()
+            && self.pending_new_session().is_none()
+            && !self.has_rekey_in_progress()
+            && sync.slot == EpochSlot::Current
+            && sync.received_k_bit == self.current_k_bit()
+        {
+            self.clear_handshake_payload();
+        }
+
+        if let Some(mmp) = self.mmp_mut() {
+            mmp.receiver.record_recv(
+                sync.counter,
+                sync.timestamp,
+                sync.plaintext_len,
+                sync.ce_flag,
+                now,
+            );
+            let _spin_rtt = mmp.spin_bit.rx_observe(sync.spin_bit, sync.counter, now);
+            mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
+        }
+        self.touch_inbound_frame(now_ms);
+        true
     }
 
     /// Store a completed rekey session.
@@ -962,6 +1126,34 @@ mod overlapping_epoch_tests {
             .expect("pending frame must decrypt despite current replay overlap");
         assert_eq!(pt, b"pending-c0");
         assert_eq!(slot, EpochSlot::Pending);
+    }
+
+    #[test]
+    fn apply_fsp_receive_sync_rejects_rx_loop_seen_counter() {
+        let (mut cur_send, cur_recv) = xk_pair(1, 2);
+        let mut entry = entry_with_current(cur_recv);
+        let k_bit = entry.current_k_bit();
+        let (ct, counter, hdr) = seal(&mut cur_send, b"slow-path-first", k_bit);
+
+        entry
+            .open_fsp_established_frame(&ct, counter, &hdr, k_bit, 2_000)
+            .expect("slow path receive should consume replay counter");
+
+        let sync = FspReceiveSync {
+            counter,
+            slot: EpochSlot::Current,
+            received_k_bit: k_bit,
+            timestamp: 0x0102_0304,
+            plaintext_len: b"slow-path-first".len(),
+            ce_flag: false,
+            path_mtu: 1_280,
+            spin_bit: false,
+        };
+
+        assert!(
+            !entry.apply_fsp_receive_sync(sync, 2_100, Instant::now()),
+            "rx-loop mirror must not dispatch a worker-authenticated replay"
+        );
     }
 
     #[test]

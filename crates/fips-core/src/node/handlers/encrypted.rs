@@ -99,6 +99,7 @@ impl Node {
             session_key,
             packet.transport_id,
             packet.remote_addr,
+            *self.node_addr(),
             packet.timestamp_ms,
             header.counter,
             header.flags,
@@ -279,6 +280,7 @@ impl Node {
                 session_key,
                 packet.transport_id,
                 packet.remote_addr,
+                *self.node_addr(),
                 packet.timestamp_ms,
                 header.counter,
                 header.flags,
@@ -465,18 +467,42 @@ impl Node {
             .record_worker_registration(session_key, accepted);
     }
 
+    pub(in crate::node) fn register_decrypt_worker_fsp_session(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
+        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
+            return;
+        };
+        let Some(snapshot) = self
+            .sessions
+            .get(node_addr)
+            .and_then(|entry| entry.fsp_recv_snapshot())
+        else {
+            return;
+        };
+        let _accepted = workers.register_fsp_session(*node_addr, snapshot);
+    }
+
+    pub(in crate::node) fn unregister_decrypt_worker_fsp_session(
+        &mut self,
+        node_addr: &crate::NodeAddr,
+    ) {
+        if let Some(workers) = self.decrypt_workers.as_ref() {
+            let _ = workers.unregister_fsp_session(*node_addr);
+        }
+    }
+
     /// Build the **owned FMP recv state** handed off to the decrypt
     /// shard worker. Returns `None` if the peer is gone or the FMP
     /// session isn't ready. After registration the worker is the
     /// sole FMP replay-window writer for this session.
     ///
-    /// Note: only FMP state is captured. The worker bounces all
-    /// link-layer messages back to rx_loop for FSP dispatch, so the
-    /// FSP cipher / replay window don't need to live worker-side.
-    /// This lets us register at FMP establishment (i.e. as soon as
-    /// the Noise handshake completes), eliminating the legacy
-    /// in-line decrypt path that used to handle the FMP-established-
-    /// but-FSP-not-yet window.
+    /// Note: only FMP state is captured here. Established FSP receive
+    /// snapshots are registered separately, keyed by end-to-end source, after
+    /// the session handshake/rekey reaches an FSP-ready state. This lets FMP
+    /// registration happen as soon as the link Noise handshake completes
+    /// without pretending the end-to-end receive state is available yet.
     fn build_owned_session_state(
         &self,
         node_addr: &crate::NodeAddr,

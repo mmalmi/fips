@@ -3080,7 +3080,8 @@ fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() 
     let workers = crate::node::decrypt_worker::DecryptWorkerPool::spawn(1);
     let (fallback_tx, _fallback_rx) =
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let fast_path = ConnectedUdpDecryptFastPath::new(session_key, workers, fallback_tx);
+    let fast_path =
+        ConnectedUdpDecryptFastPath::new(session_key, make_node_addr(0x77), workers, fallback_tx);
     let remote_addr = TransportAddr::from_string("127.0.0.1:2121");
 
     let header = build_established_header(receiver_idx, 99, FLAG_CE | FLAG_SP, 0);

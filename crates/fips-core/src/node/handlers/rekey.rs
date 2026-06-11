@@ -786,6 +786,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP rekey cutover complete (initiator), K-bit flipped"
                 );
+                self.register_decrypt_worker_fsp_session(&node_addr);
             }
         }
 
@@ -799,6 +800,7 @@ impl Node {
                     peer = %self.peer_display_name(&node_addr),
                     "FSP drain complete, previous session erased"
                 );
+                self.register_decrypt_worker_fsp_session(&node_addr);
             }
         }
 

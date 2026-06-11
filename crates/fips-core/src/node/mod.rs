@@ -3119,6 +3119,7 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
 #[derive(Clone)]
 pub(crate) struct ConnectedUdpDecryptFastPath {
     session_key: decrypt_worker::DecryptSessionKey,
+    local_node_addr: NodeAddr,
     workers: decrypt_worker::DecryptWorkerPool,
     fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
 }
@@ -3143,11 +3144,13 @@ impl ConnectedUdpDecryptFastPathBatcher {
 impl ConnectedUdpDecryptFastPath {
     pub(in crate::node) fn new(
         session_key: decrypt_worker::DecryptSessionKey,
+        local_node_addr: NodeAddr,
         workers: decrypt_worker::DecryptWorkerPool,
         fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     ) -> Self {
         Self {
             session_key,
+            local_node_addr,
             workers,
             fallback_tx,
         }
@@ -3174,6 +3177,7 @@ impl ConnectedUdpDecryptFastPath {
             self.session_key,
             transport_id,
             remote_addr,
+            self.local_node_addr,
             timestamp_ms,
             header.counter,
             header.flags,

@@ -8,6 +8,7 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
+use crate::node::decrypt_worker::DecryptAuthenticatedSession;
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -17,6 +18,7 @@ use crate::node::session_wire::{
 };
 #[cfg(unix)]
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
+use crate::node::wire::{FLAG_CE, FLAG_SP};
 use crate::node::{
     EncryptedSessionPayload, EndpointCommandLane, EndpointDataDelivery, EndpointDataPayload,
     EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
@@ -41,6 +43,7 @@ use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
+use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
 /// Output of the single-borrow steady-state block in
@@ -212,7 +215,7 @@ enum DiscoveryRetrySessionDecision {
 /// inner-header metadata, and payload move together instead of returning to
 /// loose msg_type/plaintext/source arguments.
 #[derive(Debug)]
-struct AuthenticatedSessionMessage {
+pub(in crate::node) struct AuthenticatedSessionMessage {
     source_peer: PeerIdentity,
     plaintext: Vec<u8>,
     msg_type: u8,
@@ -223,7 +226,7 @@ struct AuthenticatedSessionMessage {
 }
 
 impl AuthenticatedSessionMessage {
-    fn new(
+    pub(in crate::node) fn new(
         source_peer: PeerIdentity,
         plaintext: Vec<u8>,
         msg_type: u8,
@@ -2889,11 +2892,70 @@ impl Node {
                 return;
             }
         };
+        self.register_decrypt_worker_fsp_session(src_addr);
         let dispatch = AuthenticatedSessionDispatch::new(
             *src_addr,
             *delivery.previous_hop_addr(),
             delivery.ce_flag(),
             session_message,
+        );
+        if dispatch.is_endpoint_data() {
+            let finish = dispatch.dispatch_endpoint_data_fast(self);
+            if let Some(dest_addr) = finish.pending_flush_dest() {
+                self.flush_pending_packets(&dest_addr).await;
+            }
+            return;
+        }
+        dispatch.dispatch(self).await;
+    }
+
+    pub(in crate::node) async fn process_authenticated_session_from_worker(
+        &mut self,
+        authenticated: DecryptAuthenticatedSession,
+    ) {
+        let now = Instant::now();
+        let fmp = &authenticated.fmp;
+        let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
+            fmp.source_peer.node_addr(),
+            fmp.transport_id,
+            &fmp.remote_addr,
+            fmp.packet_timestamp_ms,
+        );
+        let bookkeeping = self.peers.record_authenticated_fmp_receive(
+            fmp.source_peer.node_addr(),
+            fmp.transport_id,
+            &fmp.remote_addr,
+            fmp.packet_timestamp_ms,
+            fmp.packet_len,
+            fmp.fmp_counter,
+            fmp.inner_timestamp_ms,
+            fmp.fmp_flags & FLAG_CE != 0,
+            fmp.fmp_flags & FLAG_SP != 0,
+            now,
+            path_bookkeeping_allowed,
+        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if bookkeeping.is_some_and(|update| update.address_changed) {
+            self.clear_connected_udp_for_peer(fmp.source_peer.node_addr());
+        }
+
+        let source_addr = authenticated.source_addr;
+        let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
+            entry.apply_fsp_receive_sync(authenticated.receive_sync, Self::now_ms(), now)
+        });
+        if !receive_applied {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping worker-authenticated session message for missing or stale session"
+            );
+            return;
+        }
+
+        let dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            *authenticated.previous_hop_peer.node_addr(),
+            authenticated.ce_flag,
+            authenticated.message,
         );
         if dispatch.is_endpoint_data() {
             let finish = dispatch.dispatch_endpoint_data_fast(self);
@@ -3327,6 +3389,7 @@ impl Node {
                 now_ms,
                 resend_interval,
             );
+            self.register_decrypt_worker_fsp_session(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -3431,6 +3494,7 @@ impl Node {
             self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
+        self.register_decrypt_worker_fsp_session(src_addr);
         self.coord_cache.insert(*src_addr, ack.src_coords, now_ms);
 
         // Flush any queued outbound packets for this destination
@@ -3545,6 +3609,7 @@ impl Node {
 
             self.sessions
                 .install_rekey_responder_pending_session(*src_addr, entry, session);
+            self.register_decrypt_worker_fsp_session(src_addr);
 
             debug!(
                 src = %self.peer_display_name(src_addr),
@@ -3601,6 +3666,7 @@ impl Node {
             self.config.node.session.coords_warmup_packets,
             &self.config.node.session_mmp,
         );
+        self.register_decrypt_worker_fsp_session(src_addr);
 
         // Flush any pending packets
         self.flush_pending_packets(src_addr).await;

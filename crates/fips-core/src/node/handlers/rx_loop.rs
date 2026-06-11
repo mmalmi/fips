@@ -59,6 +59,20 @@ fn non_packet_drain_budget(packet_budget: usize) -> usize {
     packet_budget.min(NON_PACKET_DRAIN_BUDGET)
 }
 
+fn split_side_queue_budget(budget: usize) -> (usize, usize) {
+    if budget == 0 {
+        return (0, 0);
+    }
+
+    let endpoint_budget = (budget / 2).max(1);
+    let tun_budget = budget.saturating_sub(endpoint_budget).max(1);
+    (endpoint_budget, tun_budget)
+}
+
+fn remaining_side_queue_budget(budget: usize, drained: usize) -> usize {
+    budget.saturating_sub(drained)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FallbackDrainPlan {
     interleave_every: usize,
@@ -563,9 +577,8 @@ impl Node {
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let endpoint_budget = (budget / 2).max(1);
-        let tun_budget = budget.saturating_sub(endpoint_budget).max(1);
-        let drained_endpoint = self
+        let (endpoint_budget, tun_budget) = split_side_queue_budget(budget);
+        let mut drained_endpoint = self
             .drain_endpoint_commands(
                 endpoint_priority_command_rx,
                 endpoint_command_rx,
@@ -574,9 +587,31 @@ impl Node {
                 endpoint_budget,
             )
             .await;
-        let drained_tun = self
+        let mut drained_tun = self
             .drain_tun_outbound(tun_outbound_rx, None, tun_budget)
             .await;
+
+        let endpoint_remainder = remaining_side_queue_budget(endpoint_budget, drained_endpoint);
+        let tun_remainder = remaining_side_queue_budget(tun_budget, drained_tun);
+        if endpoint_remainder > 0 && !tun_outbound_rx.is_empty() {
+            drained_tun += self
+                .drain_tun_outbound(tun_outbound_rx, None, endpoint_remainder)
+                .await;
+        }
+        if tun_remainder > 0
+            && (!endpoint_priority_command_rx.is_empty() || !endpoint_command_rx.is_empty())
+        {
+            drained_endpoint += self
+                .drain_endpoint_commands(
+                    endpoint_priority_command_rx,
+                    endpoint_command_rx,
+                    None,
+                    None,
+                    tun_remainder,
+                )
+                .await;
+        }
+
         RxLoopDataDrainStats::new(0, drained_tun, drained_endpoint)
     }
 
@@ -697,6 +732,10 @@ impl Node {
                 for fallback in fallbacks {
                     self.process_decrypt_fallback(fallback).await;
                 }
+            }
+            DecryptWorkerEvent::AuthenticatedSession(session) => {
+                self.process_authenticated_session_from_worker(session)
+                    .await;
             }
             DecryptWorkerEvent::DecryptFailure(report) => {
                 self.process_decrypt_failure_report(report).await;

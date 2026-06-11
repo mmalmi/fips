@@ -309,6 +309,7 @@ impl Node {
         }
         Some(Arc::new(ConnectedUdpDecryptFastPath::new(
             session_key,
+            *self.node_addr(),
             workers,
             self.decrypt_fallback_tx.clone(),
         )))
