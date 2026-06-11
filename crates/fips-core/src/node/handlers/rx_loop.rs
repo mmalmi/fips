@@ -159,40 +159,21 @@ impl Node {
         loop {
             tokio::select! {
                 biased;
-                // Decrypt-worker fallback drains FIRST. The previous
-                // ordering put `packet_rx` first, which under sustained
-                // inbound bursts let the raw-packet drain (up to 256
-                // packets + flush) starve fallback work for tens of
-                // milliseconds. UDP throughput tolerates that; TCP
-                // doesn't — late FMP plaintexts mean late ACKs,
-                // dup-ACK fast retransmits, and cwnd collapse.
-                // Reproduced on native macOS / Wi-Fi where TCP fell to
-                // ~10 Mb/s while UDP cleared ~100 Mb/s on the same
-                // tunnel. Promoting fallback gives the kernel-side
-                // TCP machinery a fair chance to see its ACKs and
-                // keep cwnd growing.
+                // Priority decrypt-worker fallback drains first. The
+                // previous packet-first ordering could hold small ACK,
+                // heartbeat, and failure-report plaintexts behind a hot
+                // raw-packet drain long enough to collapse TCP. Bulk
+                // fallback is intentionally below `packet_rx`: bulk
+                // plaintext must keep making bounded progress, but it
+                // should not stop fresh transport priority packets from
+                // being dequeued. `drain_packet_rx` interleaves fallback
+                // turns every few dozen packets to keep that progress
+                // reserve while avoiding a bulk-fallback convoy.
                 Some(event) = decrypt_fallback_rx.priority.recv() => {
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
                         Some(event),
                         None,
-                        PACKET_DRAIN_BUDGET,
-                    ).await;
-                    let side_drained = self.drain_rx_loop_side_queues(
-                        &mut tun_outbound_rx,
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
-                    ).await;
-                    if fallback_drained > 0 || side_drained.has_drained() {
-                        maintenance_state.record_data_activity(Instant::now());
-                    }
-                }
-                Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    let fallback_drained = self.drain_decrypt_fallback(
-                        &mut decrypt_fallback_rx,
-                        None,
-                        Some(event),
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
@@ -224,6 +205,23 @@ impl Node {
                             }
                         }
                         None => break, // channel closed
+                    }
+                }
+                Some(event) = decrypt_fallback_rx.bulk.recv() => {
+                    let fallback_drained = self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        None,
+                        Some(event),
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 _ = tick.tick() => {
