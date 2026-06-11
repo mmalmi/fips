@@ -326,6 +326,10 @@ impl AuthenticatedSessionDispatch {
         self.message.msg_type()
     }
 
+    fn is_endpoint_data(&self) -> bool {
+        self.msg_type() == SessionMessageType::EndpointData.to_byte()
+    }
+
     fn body(&self) -> &[u8] {
         self.message.body()
     }
@@ -463,6 +467,18 @@ impl AuthenticatedSessionDispatch {
 
         commit.finalize(node).await;
     }
+
+    fn dispatch_endpoint_data_fast(self, node: &mut Node) -> Option<NodeAddr> {
+        debug_assert!(self.is_endpoint_data());
+
+        // Reverse-route learning still belongs to the authenticated dispatch
+        // edge; the endpoint-data fast branch only avoids the async dispatcher.
+        node.learn_reverse_route(*self.source_addr(), *self.previous_hop_addr());
+
+        let commit = self.commit();
+        node.deliver_endpoint_data(self.into_endpoint_data_delivery());
+        commit.finish_receive(node)
+    }
 }
 
 impl SessionDispatchCommit {
@@ -483,14 +499,22 @@ impl SessionDispatchCommit {
         sessions.record_receive_completion(completion, now_ms)
     }
 
-    async fn finalize(self, node: &mut Node) {
+    fn finish_receive(&self, node: &mut Node) -> Option<NodeAddr> {
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
         self.record_receive(&mut node.sessions, Node::now_ms());
 
+        node.pending_session_traffic
+            .has_traffic_for(&self.source_addr)
+            .then_some(self.source_addr)
+    }
+
+    async fn finalize(self, node: &mut Node) {
         // Flush any pending outbound packets (e.g., simultaneous initiation
         // where responder also had queued outbound packets).
-        node.flush_pending_packets(&self.source_addr).await;
+        if let Some(dest_addr) = self.finish_receive(node) {
+            node.flush_pending_packets(&dest_addr).await;
+        }
     }
 }
 
@@ -2836,6 +2860,12 @@ impl Node {
             delivery.ce_flag(),
             session_message,
         );
+        if dispatch.is_endpoint_data() {
+            if let Some(dest_addr) = dispatch.dispatch_endpoint_data_fast(self) {
+                self.flush_pending_packets(&dest_addr).await;
+            }
+            return;
+        }
         dispatch.dispatch(self).await;
     }
 
@@ -6662,6 +6692,66 @@ mod tests {
             (0, 1, 0, endpoint_payload.len() as u64)
         );
         assert_eq!(entry.last_activity(), 0x0bad_cafe);
+    }
+
+    #[test]
+    fn endpoint_data_fast_dispatch_finishes_receive_without_pending_flush() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let previous_hop_addr = node_addr(0x55);
+        let endpoint_payload = b"fast endpoint delivery".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+        let dispatch = AuthenticatedSessionDispatch::new(
+            source_addr,
+            previous_hop_addr,
+            false,
+            AuthenticatedSessionMessage::new(
+                source_peer,
+                plaintext,
+                SessionMessageType::EndpointData.to_byte(),
+                0,
+                0x0102_0304,
+            ),
+        );
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+
+        assert_eq!(dispatch.dispatch_endpoint_data_fast(&mut node), None);
+        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+            crate::node::NodeEndpointEvent::Data {
+                source_peer: delivered_source,
+                payload,
+                ..
+            } => {
+                assert_eq!(delivered_source, source_peer);
+                assert_eq!(payload, endpoint_payload);
+            }
+            event => panic!("expected single endpoint data event, got {event:?}"),
+        }
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(
+            entry.traffic_counters(),
+            (0, 1, 0, endpoint_payload.len() as u64)
+        );
+        assert!(
+            !node.pending_session_traffic.has_traffic_for(&source_addr),
+            "empty pending guard should keep the fast path synchronous"
+        );
     }
 
     #[test]
