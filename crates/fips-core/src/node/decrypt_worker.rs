@@ -107,6 +107,22 @@ impl From<(TransportId, u32)> for DecryptSessionKey {
     }
 }
 
+#[inline]
+fn decrypt_session_fast_hash(session_key: DecryptSessionKey) -> u64 {
+    let packed =
+        (u64::from(session_key.transport_id.as_u32()) << 32) | u64::from(session_key.receiver_idx);
+    mix_decrypt_session_hash(packed ^ 0x9e37_79b9_7f4a_7c15)
+}
+
+#[inline]
+fn mix_decrypt_session_hash(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
 fn parse_channel_cap(primary: Option<&str>, fallback: Option<&str>, default: usize) -> usize {
     primary
         .and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -537,10 +553,7 @@ impl DecryptWorkerPool {
     /// for session registration and per-packet dispatch so packets and
     /// registration arrive at the same shard.
     fn worker_idx_for(&self, session_key: DecryptSessionKey) -> usize {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        session_key.hash(&mut h);
-        (h.finish() as usize) % self.senders.len()
+        (decrypt_session_fast_hash(session_key) as usize) % self.senders.len()
     }
 
     /// Dispatch a per-packet decrypt job. Drops if the per-worker
@@ -1207,6 +1220,36 @@ mod tests {
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         )
+    }
+
+    #[test]
+    fn decrypt_session_fast_hash_distinguishes_transport_and_receiver() {
+        let baseline = test_session_key(7, 42);
+        assert_ne!(
+            decrypt_session_fast_hash(baseline),
+            decrypt_session_fast_hash(test_session_key(8, 42)),
+            "transport id must participate in worker routing"
+        );
+        assert_ne!(
+            decrypt_session_fast_hash(baseline),
+            decrypt_session_fast_hash(test_session_key(7, 43)),
+            "receiver index must participate in worker routing"
+        );
+
+        let mut buckets = [0usize; 8];
+        for transport_id in 1..=8 {
+            for receiver_idx in 1..=64 {
+                let worker =
+                    (decrypt_session_fast_hash(test_session_key(transport_id, receiver_idx))
+                        as usize)
+                        % buckets.len();
+                buckets[worker] += 1;
+            }
+        }
+        assert!(
+            buckets.iter().all(|count| *count > 0),
+            "common session keys should spread across all workers: {buckets:?}"
+        );
     }
 
     #[test]
