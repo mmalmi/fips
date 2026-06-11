@@ -1241,8 +1241,19 @@ impl EndpointEventSender {
             return Ok(());
         }
 
-        let mut priority_messages = Vec::new();
-        let mut bulk_messages = Vec::new();
+        let message_count = messages.len();
+        let priority_count = messages
+            .iter()
+            .filter(|message| message.is_priority_sized())
+            .count();
+        if priority_count == 0 || priority_count == message_count {
+            let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
+                .expect("non-empty endpoint event batch should produce event");
+            return self.send_lane(event);
+        }
+
+        let mut priority_messages = Vec::with_capacity(priority_count);
+        let mut bulk_messages = Vec::with_capacity(message_count - priority_count);
         for message in messages {
             if message.is_priority_sized() {
                 priority_messages.push(message);

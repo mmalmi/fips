@@ -230,6 +230,49 @@ fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
     assert_eq!(event_tx.queued_messages(), 0);
 }
 
+#[test]
+fn endpoint_event_queue_keeps_single_lane_batches_grouped() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("bulk endpoint event batch should enqueue");
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, b"first".to_vec()),
+                EndpointDataDelivery::new(source, b"second".to_vec()),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("priority endpoint event batch should enqueue");
+
+    match event_rx.try_recv().expect("priority batch") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].payload, b"first");
+            assert_eq!(messages[1].payload, b"second");
+        }
+        event => panic!("expected priority endpoint event batch, got {event:?}"),
+    }
+    match event_rx.try_recv().expect("bulk batch") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].payload[0], 0xaa);
+            assert_eq!(messages[1].payload[0], 0xbb);
+        }
+        event => panic!("expected bulk endpoint event batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn make_test_connected_udp_pair(
     transport_id: TransportId,
