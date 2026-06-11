@@ -36,6 +36,8 @@
 //!   * `TRANSPORT_PRIORITY_RX_LOOP_WAIT` — priority-sized packet channel dequeue → rx_loop packet processing
 //!   * `TRANSPORT_BULK_RX_LOOP_WAIT` — bulk-sized packet channel dequeue → rx_loop packet processing
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
+//!   * `ENDPOINT_PRIORITY_COMMAND_WAIT` — priority endpoint command → node command loop
+//!   * `ENDPOINT_BULK_COMMAND_WAIT` — bulk endpoint command → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
 //!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
@@ -53,7 +55,7 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 32;
+const N_STAGES: usize = 34;
 const N_EVENTS: usize = 33;
 const HIST_BUCKETS: usize = 48;
 
@@ -142,6 +144,10 @@ pub enum Stage {
     DecryptWorkerPriorityQueueWait = 30,
     /// Bulk decrypt-worker input residence.
     DecryptWorkerBulkQueueWait = 31,
+    /// Priority endpoint command residence, split from `endpoint_command_wait`.
+    EndpointPriorityCommandWait = 32,
+    /// Bulk endpoint command residence, split from `endpoint_command_wait`.
+    EndpointBulkCommandWait = 33,
 }
 
 impl Stage {
@@ -179,6 +185,8 @@ impl Stage {
             Stage::DecryptWorkerQueueWait => "decrypt_worker_queue_wait",
             Stage::DecryptWorkerPriorityQueueWait => "decrypt_worker_priority_queue_wait",
             Stage::DecryptWorkerBulkQueueWait => "decrypt_worker_bulk_queue_wait",
+            Stage::EndpointPriorityCommandWait => "endpoint_priority_command_wait",
+            Stage::EndpointBulkCommandWait => "endpoint_bulk_command_wait",
         }
     }
 }
@@ -217,6 +225,8 @@ fn stage_from_index(idx: usize) -> Stage {
         29 => Stage::DecryptWorkerQueueWait,
         30 => Stage::DecryptWorkerPriorityQueueWait,
         31 => Stage::DecryptWorkerBulkQueueWait,
+        32 => Stage::EndpointPriorityCommandWait,
+        33 => Stage::EndpointBulkCommandWait,
         _ => unreachable!(),
     }
 }
@@ -682,7 +692,10 @@ fn fmt_ns(ns: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EVENTS, Event, N_EVENTS, TraceStamp, event_from_index, record_event_count_sample};
+    use super::{
+        EVENTS, Event, N_EVENTS, N_STAGES, Stage, TraceStamp, event_from_index,
+        record_event_count_sample, stage_from_index,
+    };
     use std::sync::atomic::Ordering::Relaxed;
     use std::time::Instant;
 
@@ -714,6 +727,23 @@ mod tests {
         assert_eq!(
             event_from_index(Event::DecryptFallbackPriorityGated as usize).name(),
             "decrypt_fallback_priority_gated"
+        );
+    }
+
+    #[test]
+    fn stage_table_exposes_endpoint_command_lane_waits() {
+        assert_eq!(N_STAGES, 34);
+        assert_eq!(
+            stage_from_index(Stage::EndpointCommandWait as usize).name(),
+            "endpoint_command_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::EndpointPriorityCommandWait as usize).name(),
+            "endpoint_priority_command_wait"
+        );
+        assert_eq!(
+            stage_from_index(Stage::EndpointBulkCommandWait as usize).name(),
+            "endpoint_bulk_command_wait"
         );
     }
 

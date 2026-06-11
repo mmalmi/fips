@@ -18,10 +18,10 @@ use crate::node::session_wire::{
 #[cfg(unix)]
 use crate::node::wire::ESTABLISHED_HEADER_SIZE;
 use crate::node::{
-    EncryptedSessionPayload, EndpointDataDelivery, EndpointDataPayload, EndpointDataSend,
-    EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput, LocalSessionPayload,
-    Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus, NodeError,
-    SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
+    EncryptedSessionPayload, EndpointCommandLane, EndpointDataDelivery, EndpointDataPayload,
+    EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
+    LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
+    NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
     SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
 use crate::noise::{
@@ -81,6 +81,26 @@ enum FspFrameOutcome {
     /// either. This is normally replayed or very stale post-cutover traffic,
     /// not evidence that the current session diverged.
     StaleEpochDrainFailure { counter: u64 },
+}
+
+fn record_endpoint_command_wait(
+    queued_at: Option<crate::perf_profile::TraceStamp>,
+    lane: EndpointCommandLane,
+    count: u64,
+) {
+    let (priority_count, bulk_count) = match lane {
+        EndpointCommandLane::Priority => (count, 0),
+        EndpointCommandLane::Bulk => (0, count),
+    };
+    crate::perf_profile::record_since_split_count(
+        crate::perf_profile::Stage::EndpointCommandWait,
+        crate::perf_profile::Stage::EndpointPriorityCommandWait,
+        crate::perf_profile::Stage::EndpointBulkCommandWait,
+        queued_at,
+        count,
+        priority_count,
+        bulk_count,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -4349,25 +4369,21 @@ impl Node {
         &mut self,
         command: EndpointSendCommand,
     ) -> Result<(), NodeError> {
+        let lane = command.lane();
         let (send, queued_at) = command.into_parts();
-        crate::perf_profile::record_since(
-            crate::perf_profile::Stage::EndpointCommandWait,
-            queued_at,
-        );
+        record_endpoint_command_wait(queued_at, lane, 1);
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
         self.send_endpoint_data_send(send).await
     }
 
     async fn handle_endpoint_send_batch_command(&mut self, command: EndpointSendBatchCommand) {
+        let lane = command.lane();
+        let count = command.len() as u64;
         let (remote, payloads, queued_at) = command.into_parts();
         // The command queue wait ends when rx_loop starts handling the batch.
         // Count one sample per payload without charging earlier payload send
         // work to later payloads' queue residence.
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::EndpointCommandWait,
-            queued_at,
-            payloads.len() as u64,
-        );
+        record_endpoint_command_wait(queued_at, lane, count);
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
