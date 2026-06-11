@@ -32,8 +32,9 @@ const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
 /// raw priority packets are queued.
 const FALLBACK_PRESSURE_HIGH_WATER: usize = 1024;
 const FALLBACK_PRESSURE_INTERLEAVE_EVERY: usize = 16;
-const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = 128;
-const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = 128;
+const FALLBACK_PRESSURE_DRAIN_BUDGET: usize = 256;
+const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;
+const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;
 /// How often a hot inbound packet drain gives outbound side queues a bounded
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
@@ -1300,8 +1301,11 @@ mod tests {
 
     #[test]
     fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
+        let normal = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1);
+        let pressured = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER);
+
         assert_eq!(
-            fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER),
+            pressured,
             FallbackDrainPlan {
                 interleave_every: FALLBACK_PRESSURE_INTERLEAVE_EVERY,
                 interleave_budget: FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
@@ -1309,12 +1313,20 @@ mod tests {
             }
         );
         assert_eq!(
-            fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1),
+            normal,
             FallbackDrainPlan {
                 interleave_every: FALLBACK_INTERLEAVE_EVERY,
                 interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
                 trailing_budget: NON_PACKET_DRAIN_BUDGET,
             }
+        );
+        assert!(
+            pressured.interleave_budget > normal.interleave_budget,
+            "pressure mode should drain already-decrypted bulk faster than the normal cadence"
+        );
+        assert!(
+            pressured.trailing_budget <= PACKET_DRAIN_BUDGET / 2,
+            "pressure mode stays bounded so endpoint/timer progress returns within a packet turn"
         );
         assert_eq!(
             fallback_drain_plan(1, FALLBACK_PRESSURE_HIGH_WATER),
