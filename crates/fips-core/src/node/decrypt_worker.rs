@@ -85,7 +85,8 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
-const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
+const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
+const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -802,6 +803,10 @@ impl PendingDirectSessionDelivery {
             }
             DecryptDirectSessionDelivery::Ipv6Packet(_) => false,
         }
+    }
+
+    fn is_ipv6_packet(&self) -> bool {
+        matches!(&self.delivery, DecryptDirectSessionDelivery::Ipv6Packet(_))
     }
 
     fn into_endpoint_data(
@@ -2052,6 +2057,16 @@ impl DecryptWorkerOutput {
             ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_endpoint_data()
         )
     }
+
+    fn is_batchable_direct_ipv6(&self) -> bool {
+        matches!(
+            (&self.event, &self.direct_delivery),
+            (
+                DecryptWorkerEvent::DirectSessionCommit(commit),
+                Some(delivery),
+            ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_ipv6_packet()
+        )
+    }
 }
 
 struct DecryptPlaintextFallbackBatch {
@@ -2061,6 +2076,9 @@ struct DecryptPlaintextFallbackBatch {
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
     endpoint_commits: Vec<DecryptDirectSessionCommit>,
     endpoint_deliveries: Vec<EndpointDataDelivery>,
+    direct_fallback_tx: Option<DecryptWorkerFallbackSender>,
+    direct_commits: Vec<DecryptDirectSessionCommit>,
+    direct_deliveries: Vec<PendingDirectSessionDelivery>,
 }
 
 impl DecryptPlaintextFallbackBatch {
@@ -2072,6 +2090,9 @@ impl DecryptPlaintextFallbackBatch {
             endpoint_sink: None,
             endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
+            direct_fallback_tx: None,
+            direct_commits: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
+            direct_deliveries: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
         }
     }
 
@@ -2089,9 +2110,17 @@ impl DecryptPlaintextFallbackBatch {
             .max(1)
     }
 
+    fn direct_batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
+        fallback_tx
+            .bulk_packet_cap
+            .min(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX)
+            .max(1)
+    }
+
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_bulk_plaintext() {
             self.flush_endpoint();
+            self.flush_direct();
             let DecryptWorkerOutput {
                 fallback_tx,
                 event,
@@ -2124,6 +2153,7 @@ impl DecryptPlaintextFallbackBatch {
         }
         if output.is_batchable_direct_endpoint() {
             self.flush_plaintext();
+            self.flush_direct();
             let DecryptWorkerOutput {
                 fallback_tx,
                 event,
@@ -2168,6 +2198,43 @@ impl DecryptPlaintextFallbackBatch {
             }
             return;
         }
+        if output.is_batchable_direct_ipv6() {
+            self.flush_plaintext();
+            self.flush_endpoint();
+            let DecryptWorkerOutput {
+                fallback_tx,
+                event,
+                direct_delivery,
+            } = output;
+            let DecryptWorkerEvent::DirectSessionCommit(commit) = event else {
+                unreachable!("checked batchable direct IPv6 commit output")
+            };
+            let Some(direct_delivery) = direct_delivery else {
+                unreachable!("checked batchable direct IPv6 delivery")
+            };
+
+            if self
+                .direct_fallback_tx
+                .as_ref()
+                .is_some_and(|current| !current.same_channels(&fallback_tx))
+            {
+                self.flush_direct();
+            }
+            if self.direct_fallback_tx.is_none() {
+                self.direct_fallback_tx = Some(fallback_tx);
+            }
+            let batch_max = Self::direct_batch_max_for(
+                self.direct_fallback_tx
+                    .as_ref()
+                    .expect("fallback sender set before batching direct completions"),
+            );
+            self.direct_commits.push(commit);
+            self.direct_deliveries.push(direct_delivery);
+            if self.direct_commits.len() >= batch_max {
+                self.flush_direct();
+            }
+            return;
+        }
         self.flush();
         let _ = output.send();
     }
@@ -2175,6 +2242,7 @@ impl DecryptPlaintextFallbackBatch {
     fn flush(&mut self) {
         self.flush_plaintext();
         self.flush_endpoint();
+        self.flush_direct();
     }
 
     fn flush_plaintext(&mut self) {
@@ -2266,6 +2334,40 @@ impl DecryptPlaintextFallbackBatch {
                 messages = count,
                 "Failed to deliver worker-decoded endpoint data batch"
             );
+        }
+    }
+
+    fn flush_direct(&mut self) {
+        if self.direct_commits.is_empty() {
+            return;
+        }
+        let Some(fallback_tx) = self.direct_fallback_tx.take() else {
+            self.direct_commits.clear();
+            self.direct_deliveries.clear();
+            return;
+        };
+
+        let event = if self.direct_commits.len() == 1 {
+            DecryptWorkerEvent::DirectSessionCommit(
+                self.direct_commits
+                    .pop()
+                    .expect("checked single direct commit"),
+            )
+        } else {
+            let commits = std::mem::replace(
+                &mut self.direct_commits,
+                Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
+            );
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits)
+        };
+
+        if !fallback_tx.send(event) {
+            self.direct_deliveries.clear();
+            return;
+        }
+
+        for delivery in self.direct_deliveries.drain(..) {
+            delivery.deliver();
         }
     }
 }
@@ -3274,6 +3376,61 @@ mod tests {
         }
     }
 
+    fn dummy_direct_tun_output(
+        fallback_tx: DecryptWorkerFallbackSender,
+        tun_tx: TunTx,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        mut ipv6: Vec<u8>,
+        ce_flag: bool,
+    ) -> DecryptWorkerOutput {
+        let source_addr = *source_peer.node_addr();
+        let payload_len = ipv6.len();
+        let commit = DecryptDirectSessionCommit::for_test(
+            DecryptFmpBookkeeping {
+                source_peer,
+                transport_id: TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 1_000,
+                packet_len: payload_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_counter as u32,
+                fmp_flags: 0,
+            },
+            source_addr,
+            source_peer,
+            ce_flag,
+            FspReceiveSync {
+                counter: fmp_counter,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: fmp_counter as u32,
+                plaintext_len: payload_len,
+                ce_flag,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            payload_len,
+            true,
+        );
+        if ipv6.is_empty() {
+            ipv6.resize(48, 0);
+            ipv6[0] = 0x60;
+        }
+
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::DirectSessionCommit(commit),
+            direct_delivery: Some(PendingDirectSessionDelivery {
+                sink: DecryptDirectSessionDeliverySink::new(Some(tun_tx), None, None),
+                source_addr,
+                source_peer,
+                ce_flag,
+                delivery: DecryptDirectSessionDelivery::Ipv6Packet(ipv6),
+            }),
+        }
+    }
+
     #[test]
     fn decrypt_worker_return_drop_metric_splits_fallback_and_authenticated_outputs() {
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
@@ -3771,6 +3928,138 @@ mod tests {
         }
         let delivered = tun_rx.try_recv().expect("TUN packet delivered");
         assert_eq!(delivered[1] & 0x30, 0x30, "CE mark should be applied");
+    }
+
+    #[test]
+    fn decrypt_worker_direct_tun_batch_waits_for_commit_queue_acceptance() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        let mut first = vec![0u8; 48];
+        first[0] = 0x60;
+        first[1] = 0x20;
+        let mut second = vec![0u8; 48];
+        second[0] = 0x60;
+
+        batch.push_output(dummy_direct_tun_output(
+            fallback_tx.clone(),
+            tun_tx.clone(),
+            source_peer,
+            1,
+            first,
+            true,
+        ));
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "first direct TUN completion should wait for a batch flush"
+        );
+        assert!(
+            tun_rx.try_recv().is_err(),
+            "direct TUN bytes must not release before the commit is queued"
+        );
+
+        batch.push_output(dummy_direct_tun_output(
+            fallback_tx,
+            tun_tx,
+            source_peer,
+            2,
+            second,
+            false,
+        ));
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "second direct TUN completion should still wait below batch cap"
+        );
+        assert!(
+            tun_rx.try_recv().is_err(),
+            "direct TUN bytes must still wait below batch cap"
+        );
+        batch.flush();
+
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("direct TUN commit batch");
+        assert_eq!(event.packet_count(), 2);
+        match &event {
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
+                assert_eq!(commits.len(), 2);
+                assert_eq!(commits[0].source_addr, source_addr);
+                assert_eq!(commits[1].source_addr, source_addr);
+                assert_eq!(commits[0].fmp.fmp_counter, 1);
+                assert_eq!(commits[1].fmp.fmp_counter, 2);
+                assert!(commits.iter().all(|commit| commit.delivered_ipv6));
+            }
+            DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected a commit batch"),
+            _ => panic!("expected a direct TUN commit batch"),
+        }
+        fallback_rx.release_dequeued_event(&event);
+
+        let delivered_first = tun_rx.try_recv().expect("first TUN packet delivered");
+        assert_eq!(
+            delivered_first[1] & 0x30,
+            0x30,
+            "CE mark should be applied to first packet"
+        );
+        let delivered_second = tun_rx.try_recv().expect("second TUN packet delivered");
+        assert_eq!(
+            delivered_second[1] & 0x30,
+            0x00,
+            "non-CE packet should not be marked"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_direct_tun_batch_drops_delivery_when_authenticated_lane_is_full() {
+        let source_peer = test_source_peer();
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 1);
+        let (tun_tx, tun_rx) = std::sync::mpsc::channel();
+
+        let mut first_batch = DecryptPlaintextFallbackBatch::new();
+        first_batch.push_output(dummy_direct_tun_output(
+            fallback_tx.clone(),
+            tun_tx.clone(),
+            source_peer,
+            1,
+            vec![0x60; 48],
+            false,
+        ));
+        first_batch.flush();
+        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 1);
+        tun_rx
+            .try_recv()
+            .expect("first accepted direct TUN delivery");
+
+        let mut second_batch = DecryptPlaintextFallbackBatch::new();
+        second_batch.push_output(dummy_direct_tun_output(
+            fallback_tx,
+            tun_tx,
+            source_peer,
+            2,
+            vec![0x60; 48],
+            false,
+        ));
+        second_batch.flush();
+
+        assert!(
+            tun_rx.try_recv().is_err(),
+            "direct TUN bytes must not release when their authenticated commit lane is full"
+        );
+
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("first accepted direct TUN commit");
+        assert_eq!(event.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "rejected direct TUN commit must not enqueue after pressure rejection"
+        );
     }
 
     #[test]
@@ -5256,6 +5545,10 @@ mod tests {
         assert!(
             DECRYPT_WORKER_BULK_BATCH_MAX <= DECRYPT_WORKER_BULK_BURST_BUDGET / 4,
             "one worker burst should still contain several bounded bulk batches"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BURST_BUDGET,
+            "direct delivery may coalesce one bounded worker turn after payload bytes leave the rx-loop bounce"
         );
         assert_eq!(
             DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BURST_BUDGET,
