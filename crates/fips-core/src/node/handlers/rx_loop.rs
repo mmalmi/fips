@@ -427,10 +427,17 @@ impl Node {
 
         let drained = drain.drained();
         if drained > 0 {
-            // One trailing fallback drain so the last bounced packets of the
-            // burst aren't held up by the post-burst send flush.
-            self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, PACKET_DRAIN_BUDGET)
-                .await;
+            // One trailing fallback slice so the last bounced packets of the
+            // burst aren't held up by the post-burst send flush. Keep it a
+            // non-packet turn: bulk fallback should not convoy ahead of fresh
+            // transport receive work after every hot packet drain.
+            self.drain_decrypt_fallback(
+                decrypt_fallback_rx,
+                None,
+                None,
+                non_packet_drain_budget(budget),
+            )
+            .await;
             self.finish_endpoint_event_batch();
         } else {
             self.finish_endpoint_event_batch();
@@ -627,7 +634,7 @@ impl Node {
     /// `select!`. Returns the number processed. Called both from the
     /// bulk-fallback select arm (after the selected head item) and interleaved
     /// inside the packet_rx drain loop so bounced FMP plaintexts can't
-    /// accumulate behind a 256-packet inbound burst.
+    /// accumulate behind a hot inbound packet turn.
     async fn drain_decrypt_fallback(
         &mut self,
         rx: &mut DecryptWorkerFallbackReceivers,
