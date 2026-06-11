@@ -150,6 +150,42 @@ impl EndpointReceiveState {
         }
     }
 
+    fn drain_priority_pending_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> bool {
+        while *drained < limit {
+            let Some(message) = self.pop_pending_priority() else {
+                break;
+            };
+            *drained += 1;
+            if !handle_message(message) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn drain_bulk_pending_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> bool {
+        while *drained < limit {
+            let Some(message) = self.pop_pending_bulk() else {
+                break;
+            };
+            *drained += 1;
+            if !handle_message(message) {
+                return false;
+            }
+        }
+        true
+    }
+
     fn push_event_into(
         &mut self,
         event: NodeEndpointEvent,
@@ -193,6 +229,72 @@ impl EndpointReceiveState {
             self.pending_priority.push_back(message);
         } else {
             self.pending_bulk.push_back(message);
+        }
+    }
+
+    fn push_pending(&mut self, message: EndpointQueuedMessage) {
+        if message.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
+            self.pending_priority.push_back(message);
+        } else {
+            self.pending_bulk.push_back(message);
+        }
+    }
+
+    fn push_event_for_each(
+        &mut self,
+        event: NodeEndpointEvent,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> bool {
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                queued_at,
+            } => self.push_queued_for_each(
+                EndpointQueuedMessage::new(source_peer, payload, queued_at),
+                drained,
+                limit,
+                handle_message,
+            ),
+            NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            } => {
+                let mut iter = messages.into_iter();
+                while let Some(message) = iter.next() {
+                    let queued =
+                        EndpointQueuedMessage::new(message.source_peer, message.payload, queued_at);
+                    if !self.push_queued_for_each(queued, drained, limit, handle_message) {
+                        for message in iter {
+                            self.push_pending(EndpointQueuedMessage::new(
+                                message.source_peer,
+                                message.payload,
+                                queued_at,
+                            ));
+                        }
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    fn push_queued_for_each(
+        &mut self,
+        message: EndpointQueuedMessage,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> bool {
+        if *drained < limit {
+            *drained += 1;
+            handle_message(message.into_public())
+        } else {
+            self.push_pending(message);
+            false
         }
     }
 
@@ -939,21 +1041,51 @@ impl FipsEndpoint {
         messages: &mut Vec<FipsEndpointMessage>,
         max: usize,
     ) -> Option<usize> {
-        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
         messages.clear();
+        self.blocking_recv_batch_for_each(max, |message| {
+            messages.push(message);
+            true
+        })
+    }
+
+    /// Synchronous blocking batch receive that invokes a callback for each
+    /// delivered endpoint message without staging them in a caller-owned
+    /// `Vec`.
+    ///
+    /// This is for dedicated packet-mover threads that immediately forward
+    /// messages onward. It preserves the same priority-before-bulk ordering,
+    /// internal batch-tail handling, and receive limit as
+    /// [`Self::blocking_recv_batch_into`]. Returning `false` from the callback
+    /// stops the current drain after that message; any unconsumed messages from
+    /// the current internal batch are retained for the next receive.
+    pub fn blocking_recv_batch_for_each(
+        &self,
+        max: usize,
+        mut handle_message: impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut drained = 0usize;
 
         let mut state = self.inbound_endpoint_rx.blocking_lock();
-        state.drain_priority_pending_into(messages, max);
-        while messages.len() < max {
+        if !state.drain_priority_pending_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+        while drained < max {
             match state.rx.try_recv_priority() {
-                Ok(event) => state.push_event_into(event, messages, max),
+                Ok(event) => {
+                    if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                        return Some(drained);
+                    }
+                }
                 Err(_) => break,
             }
         }
-        state.drain_bulk_pending_into(messages, max);
+        if !state.drain_bulk_pending_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
 
-        while messages.len() < max {
-            let event = if messages.is_empty() {
+        while drained < max {
+            let event = if drained == 0 {
                 state.rx.blocking_recv()?
             } else {
                 match state.rx.try_recv() {
@@ -961,10 +1093,12 @@ impl FipsEndpoint {
                     Err(_) => break,
                 }
             };
-            state.push_event_into(event, messages, max);
+            if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                return Some(drained);
+            }
         }
 
-        Some(messages.len())
+        Some(drained)
     }
 
     /// Non-blocking receive — returns the next ready endpoint message
@@ -1913,6 +2047,104 @@ mod tests {
         .await
         .expect("blocking receiver should join");
         assert_eq!(capacity, 8);
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn blocking_recv_batch_for_each_respects_limit_without_message_vec_staging() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+        endpoint
+            .send_batch_to_peer(
+                local,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+            )
+            .await
+            .expect("loopback batch send should succeed");
+
+        let endpoint = tokio::task::spawn_blocking(move || {
+            let mut messages = Vec::with_capacity(3);
+            let received = endpoint
+                .blocking_recv_batch_for_each(2, |message| {
+                    messages.push(message.data);
+                    true
+                })
+                .expect("messages should arrive");
+            assert_eq!(received, 2);
+            assert_eq!(messages, vec![b"first".to_vec(), b"second".to_vec()]);
+
+            let received = endpoint
+                .blocking_recv_batch_for_each(8, |message| {
+                    messages.push(message.data);
+                    true
+                })
+                .expect("message should arrive");
+            assert_eq!(received, 1);
+            assert_eq!(
+                messages,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+            );
+            endpoint
+        })
+        .await
+        .expect("blocking receiver should join");
+
+        endpoint.shutdown().await.expect("shutdown should succeed");
+    }
+
+    #[tokio::test]
+    async fn blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail() {
+        let endpoint = FipsEndpoint::builder()
+            .without_system_tun()
+            .bind()
+            .await
+            .expect("endpoint should bind");
+        let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+
+        endpoint
+            .inbound_endpoint_tx
+            .send(NodeEndpointEvent::DataBatch {
+                messages: vec![
+                    EndpointDataDelivery::new(local, b"first".to_vec()),
+                    EndpointDataDelivery::new(local, b"second".to_vec()),
+                    EndpointDataDelivery::new(local, b"third".to_vec()),
+                ],
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .expect("inject internal batch");
+
+        let endpoint = tokio::task::spawn_blocking(move || {
+            let mut messages = Vec::with_capacity(3);
+            let received = endpoint
+                .blocking_recv_batch_for_each(8, |message| {
+                    messages.push(message.data);
+                    false
+                })
+                .expect("message should arrive");
+            assert_eq!(received, 1);
+            assert_eq!(messages, vec![b"first".to_vec()]);
+
+            let received = endpoint
+                .blocking_recv_batch_for_each(8, |message| {
+                    messages.push(message.data);
+                    true
+                })
+                .expect("pending messages should arrive");
+            assert_eq!(received, 2);
+            assert_eq!(
+                messages,
+                vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+            );
+            endpoint
+        })
+        .await
+        .expect("blocking receiver should join");
 
         endpoint.shutdown().await.expect("shutdown should succeed");
     }
