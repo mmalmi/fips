@@ -74,7 +74,7 @@ const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 4096;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
-const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 16;
+const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -1171,6 +1171,13 @@ impl DecryptPlaintextFallbackBatch {
         }
     }
 
+    fn batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
+        fallback_tx
+            .bulk_packet_cap
+            .min(DECRYPT_WORKER_BULK_BATCH_MAX)
+            .max(1)
+    }
+
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         match output.event {
             DecryptWorkerEvent::Plaintext(fallback)
@@ -1186,8 +1193,13 @@ impl DecryptPlaintextFallbackBatch {
                 if self.fallback_tx.is_none() {
                     self.fallback_tx = Some(output.fallback_tx);
                 }
+                let batch_max = Self::batch_max_for(
+                    self.fallback_tx
+                        .as_ref()
+                        .expect("fallback sender set before batching plaintext"),
+                );
                 self.fallbacks.push(fallback);
-                if self.fallbacks.len() >= DECRYPT_WORKER_BULK_BATCH_MAX {
+                if self.fallbacks.len() >= batch_max {
                     self.flush();
                 }
             }
@@ -2183,6 +2195,80 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_worker_plaintext_batch_never_exceeds_fallback_packet_cap() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(DecryptWorkerOutput {
+            fallback_tx: fallback_tx.clone(),
+            event: dummy_plaintext_event(bulk_len),
+        });
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "first packet should stay buffered until the fallback cap-width batch is full"
+        );
+        batch.push_output(DecryptWorkerOutput {
+            fallback_tx: fallback_tx.clone(),
+            event: dummy_plaintext_event(bulk_len),
+        });
+
+        let event = fallback_rx.bulk.try_recv().expect("two-packet batch");
+        assert_eq!(
+            event.packet_count(),
+            2,
+            "plaintext batch should fill, but not exceed, the fallback packet cap"
+        );
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+
+        batch.push_output(DecryptWorkerOutput {
+            fallback_tx,
+            event: dummy_plaintext_event(bulk_len),
+        });
+        batch.flush();
+
+        let event = fallback_rx.bulk.try_recv().expect("single trailing packet");
+        assert_eq!(event.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
+    #[test]
+    fn decrypt_worker_plaintext_batch_flushes_at_batch_width() {
+        let cap = DECRYPT_WORKER_BULK_BATCH_MAX + 1;
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, cap);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        for _ in 0..DECRYPT_WORKER_BULK_BATCH_MAX {
+            batch.push_output(DecryptWorkerOutput {
+                fallback_tx: fallback_tx.clone(),
+                event: dummy_plaintext_event(bulk_len),
+            });
+        }
+
+        let event = fallback_rx.bulk.try_recv().expect("full-width batch");
+        assert_eq!(
+            event.packet_count(),
+            DECRYPT_WORKER_BULK_BATCH_MAX,
+            "plaintext completion batches should use the configured bounded width"
+        );
+        fallback_rx.release_dequeued_event(&event);
+
+        batch.push_output(DecryptWorkerOutput {
+            fallback_tx,
+            event: dummy_plaintext_event(bulk_len),
+        });
+        batch.flush();
+
+        let event = fallback_rx.bulk.try_recv().expect("single trailing packet");
+        assert_eq!(event.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
+    #[test]
     fn decrypt_job_batcher_flushes_bulk_before_priority_job() {
         let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 102);
@@ -2499,6 +2585,19 @@ mod tests {
         assert_eq!(
             DECRYPT_WORKER_BULK_BURST_BUDGET, 128,
             "worker burst should track the reference packet-mover receive batch width"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_BULK_BATCH_MAX, 32,
+            "bulk batches should amortize handoff churn without becoming a whole worker turn"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_BULK_BURST_BUDGET % DECRYPT_WORKER_BULK_BATCH_MAX,
+            0,
+            "bulk batch width should divide the worker burst budget cleanly"
+        );
+        assert!(
+            DECRYPT_WORKER_BULK_BATCH_MAX <= DECRYPT_WORKER_BULK_BURST_BUDGET / 4,
+            "one worker burst should still contain several bounded bulk batches"
         );
 
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
