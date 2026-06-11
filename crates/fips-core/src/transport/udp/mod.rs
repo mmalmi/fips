@@ -60,9 +60,8 @@ fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> boo
 /// `send_async` is left handling only low-rate handshakes, MMP
 /// reports, control messages, and rekeys (typical aggregate < 100
 /// pps). The buffered version silently dropped packets in those
-/// paths: nothing called `flush_pending_send` from the tick /
-/// decrypt-fallback / control branches of rx_loop, so a heartbeat
-/// could sit in the buffer until the next inbound batch arrived.
+/// paths: idle tick / decrypt-fallback / control branches could leave
+/// a heartbeat in the buffer until the next inbound batch arrived.
 /// Result was MMP link-dead timeouts on idle peers + 60+ failing
 /// integration tests (which construct `UdpTransport` outside the
 /// rx_loop entirely). One sendmmsg-with-1 ≈ one sendto in kernel
@@ -425,13 +424,6 @@ impl UdpTransport {
             }
         }
     }
-
-    /// Backwards-compatible no-op. The per-transport send buffer was
-    /// removed; the rx_loop's `flush_pending_sends()` calls are
-    /// retained to keep the call sites stable for any future
-    /// batched-transport reintroduction, but for `UdpTransport`
-    /// today there is nothing to flush.
-    pub async fn flush_pending_send(&self) {}
 }
 
 impl Transport for UdpTransport {

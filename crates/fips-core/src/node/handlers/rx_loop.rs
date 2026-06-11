@@ -12,7 +12,6 @@ use crate::node::wire::{
 use crate::node::{AuthenticatedFmpPlaintext, Node, NodeEndpointCommand, NodeError};
 use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
-use crate::transport::TransportHandle;
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
@@ -187,7 +186,6 @@ impl Node {
                     if fallback_drained > 0 || side_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
-                    self.flush_pending_sends().await;
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
                     let fallback_drained = self.drain_decrypt_fallback(
@@ -205,7 +203,6 @@ impl Node {
                     if fallback_drained > 0 || side_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
-                    self.flush_pending_sends().await;
                 }
                 packet = packet_rx.recv() => {
                     match packet {
@@ -422,9 +419,6 @@ impl Node {
             self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, PACKET_DRAIN_BUDGET)
                 .await;
             self.finish_endpoint_event_batch();
-            // Flush any batched sends triggered by inbound packets (e.g.
-            // forwarded SessionDatagrams, MMP reports, tree announces).
-            self.flush_pending_sends().await;
         } else {
             self.finish_endpoint_event_batch();
         }
@@ -467,9 +461,6 @@ impl Node {
         }
 
         let drained = drain.drained();
-        if drained > 0 {
-            self.flush_pending_sends().await;
-        }
         drained
     }
 
@@ -490,9 +481,6 @@ impl Node {
         }
 
         let drained = drain.drained();
-        if drained > 0 {
-            self.flush_pending_sends().await;
-        }
         drained
     }
 
@@ -620,22 +608,6 @@ impl Node {
         let drained = drain.drained();
         self.finish_endpoint_event_batch();
         drained
-    }
-
-    /// Flush any pending batched sends across all transports. Today
-    /// every transport's `flush_pending_send` is a no-op — the UDP
-    /// transport's per-transport `pending_send` buffer was removed
-    /// when the bulk data path moved into `encrypt_worker` (which
-    /// does its own target-grouped `sendmmsg(2)` directly). The
-    /// call sites are retained so any future batched transport can
-    /// opt in by overriding `flush_pending_send` without touching
-    /// the rx_loop.
-    async fn flush_pending_sends(&self) {
-        for transport in self.transports.values() {
-            if matches!(transport, TransportHandle::Udp(_)) {
-                transport.flush_pending_send().await;
-            }
-        }
     }
 
     /// Process a single received packet.
