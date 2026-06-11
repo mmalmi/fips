@@ -388,7 +388,10 @@ impl Node {
         while let Some(action) = drain.next(packet_rx) {
             match action {
                 PacketDrainAction::Packet(packet) => {
-                    self.process_packet(packet).await;
+                    let action = self.begin_process_packet(packet);
+                    if !action.is_done() {
+                        self.finish_packet_process(action).await;
+                    }
                 }
                 PacketDrainAction::InterleaveFallback => {
                     self.drain_decrypt_fallback(
@@ -614,8 +617,14 @@ impl Node {
     /// Process a single received packet.
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
+    #[cfg(test)]
     pub(in crate::node) async fn process_packet(&mut self, packet: ReceivedPacket) {
-        let _t_total = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
+        let action = self.begin_process_packet(packet);
+        self.finish_packet_process(action).await;
+    }
+
+    fn begin_process_packet(&mut self, packet: ReceivedPacket) -> PacketProcessAction {
+        let timer = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
         crate::perf_profile::record_since(
             crate::perf_profile::Stage::TransportQueueWait,
             packet.trace_enqueued_at,
@@ -635,15 +644,15 @@ impl Node {
                 bytes = packet.data.len(),
                 "Dropping stray punch probe/ack in FMP rx loop"
             );
-            return;
+            return PacketProcessAction::Done;
         }
         if packet.data.len() < COMMON_PREFIX_SIZE {
-            return; // Drop packets too short for common prefix
+            return PacketProcessAction::Done; // Drop packets too short for common prefix
         }
 
         let prefix = match CommonPrefix::parse(&packet.data) {
             Some(p) => p,
-            None => return, // Malformed prefix
+            None => return PacketProcessAction::Done, // Malformed prefix
         };
         if matches!(prefix.phase, PHASE_MSG1 | PHASE_MSG2) {
             debug!(
@@ -699,30 +708,75 @@ impl Node {
                     );
                 }
             }
-            return;
+            return PacketProcessAction::Done;
         }
 
         match prefix.phase {
             PHASE_ESTABLISHED => match self.try_dispatch_encrypted_frame_to_worker(packet) {
-                EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => {}
+                EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => {
+                    PacketProcessAction::Done
+                }
                 EncryptedFrameFastPath::Slow(packet) => {
-                    self.handle_encrypted_frame_slow(packet).await;
+                    PacketProcessAction::EncryptedSlow { packet, timer }
                 }
             },
-            PHASE_MSG1 => {
-                self.handle_msg1(packet).await;
-            }
-            PHASE_MSG2 => {
-                self.handle_msg2(packet).await;
-            }
+            PHASE_MSG1 => PacketProcessAction::Msg1 { packet, timer },
+            PHASE_MSG2 => PacketProcessAction::Msg2 { packet, timer },
             _ => {
                 debug!(
                     phase = prefix.phase,
                     transport_id = %packet.transport_id,
                     "Unknown FMP phase, dropping"
                 );
+                PacketProcessAction::Done
             }
         }
+    }
+
+    async fn finish_packet_process(&mut self, action: PacketProcessAction) {
+        match action {
+            PacketProcessAction::Done => {}
+            PacketProcessAction::EncryptedSlow {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_encrypted_frame_slow(packet).await;
+            }
+            PacketProcessAction::Msg1 {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_msg1(packet).await;
+            }
+            PacketProcessAction::Msg2 {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_msg2(packet).await;
+            }
+        }
+    }
+}
+
+enum PacketProcessAction {
+    Done,
+    EncryptedSlow {
+        packet: ReceivedPacket,
+        timer: crate::perf_profile::Timer,
+    },
+    Msg1 {
+        packet: ReceivedPacket,
+        timer: crate::perf_profile::Timer,
+    },
+    Msg2 {
+        packet: ReceivedPacket,
+        timer: crate::perf_profile::Timer,
+    },
+}
+
+impl PacketProcessAction {
+    fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
     }
 }
 
@@ -865,8 +919,8 @@ struct PacketDrainCursor<T> {
     drained: usize,
     fallback_interleave_every: usize,
     side_queue_interleave_every: usize,
-    last_fallback_interleave_at: usize,
-    last_side_queue_interleave_at: usize,
+    packets_until_fallback_interleave: usize,
+    packets_until_side_queue_interleave: usize,
 }
 
 impl<T> PacketDrainCursor<T> {
@@ -882,8 +936,8 @@ impl<T> PacketDrainCursor<T> {
             drained: 0,
             fallback_interleave_every,
             side_queue_interleave_every,
-            last_fallback_interleave_at: 0,
-            last_side_queue_interleave_at: 0,
+            packets_until_fallback_interleave: fallback_interleave_every,
+            packets_until_side_queue_interleave: side_queue_interleave_every,
         }
     }
 
@@ -896,12 +950,12 @@ impl<T> PacketDrainCursor<T> {
         }
 
         if self.fallback_interleave_due() {
-            self.last_fallback_interleave_at = self.drained;
+            self.packets_until_fallback_interleave = self.fallback_interleave_every;
             return Some(PacketDrainAction::InterleaveFallback);
         }
 
         if self.side_queue_interleave_due() {
-            self.last_side_queue_interleave_at = self.drained;
+            self.packets_until_side_queue_interleave = self.side_queue_interleave_every;
             return Some(PacketDrainAction::InterleaveSideQueues);
         }
 
@@ -909,8 +963,7 @@ impl<T> PacketDrainCursor<T> {
             .first_packet
             .take()
             .or_else(|| packet_rx.try_recv_packet())?;
-        self.remaining -= 1;
-        self.drained += 1;
+        self.charge_packet();
         Some(PacketDrainAction::Packet(packet))
     }
 
@@ -921,17 +974,24 @@ impl<T> PacketDrainCursor<T> {
     fn fallback_interleave_due(&self) -> bool {
         self.drained > 0
             && self.fallback_interleave_every > 0
-            && self.drained.is_multiple_of(self.fallback_interleave_every)
-            && self.last_fallback_interleave_at != self.drained
+            && self.packets_until_fallback_interleave == 0
     }
 
     fn side_queue_interleave_due(&self) -> bool {
         self.drained > 0
             && self.side_queue_interleave_every > 0
-            && self
-                .drained
-                .is_multiple_of(self.side_queue_interleave_every)
-            && self.last_side_queue_interleave_at != self.drained
+            && self.packets_until_side_queue_interleave == 0
+    }
+
+    fn charge_packet(&mut self) {
+        self.remaining -= 1;
+        self.drained += 1;
+        if self.packets_until_fallback_interleave > 0 {
+            self.packets_until_fallback_interleave -= 1;
+        }
+        if self.packets_until_side_queue_interleave > 0 {
+            self.packets_until_side_queue_interleave -= 1;
+        }
     }
 }
 
