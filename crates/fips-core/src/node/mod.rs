@@ -251,10 +251,47 @@ struct FmpPlaintextTrafficClass {
     drop_on_backpressure: bool,
 }
 
+/// Priority/bulk lane selected for an app-owned endpoint payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndpointPayloadLane {
+    Priority,
+    Bulk,
+}
+
+impl Default for EndpointPayloadLane {
+    fn default() -> Self {
+        Self::Priority
+    }
+}
+
+impl EndpointPayloadLane {
+    fn command_lane(self) -> EndpointCommandLane {
+        match self {
+            Self::Priority => EndpointCommandLane::Priority,
+            Self::Bulk => EndpointCommandLane::Bulk,
+        }
+    }
+}
+
+/// Traffic policy selected for an app-owned endpoint payload.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct EndpointPayloadTrafficClass {
-    bulk_endpoint_data: bool,
+pub struct EndpointPayloadClass {
+    lane: EndpointPayloadLane,
     drop_on_backpressure: bool,
+}
+
+impl EndpointPayloadClass {
+    pub fn lane(self) -> EndpointPayloadLane {
+        self.lane
+    }
+
+    pub fn is_latency_sensitive(self) -> bool {
+        self.lane == EndpointPayloadLane::Priority
+    }
+
+    pub fn drop_on_backpressure(self) -> bool {
+        self.drop_on_backpressure
+    }
 }
 
 #[cfg(unix)]
@@ -316,23 +353,28 @@ fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) -> bool {
     })
 }
 
-fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
+/// Classify an app-owned endpoint payload for queue admission and pressure policy.
+pub fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadClass {
     const IPPROTO_ICMP: u8 = 1;
     const IPPROTO_TCP: u8 = 6;
     const IPPROTO_ICMPV6: u8 = 58;
 
     match parse_endpoint_payload_ip_proto(payload) {
-        Some((IPPROTO_ICMP, _)) => EndpointPayloadTrafficClass::default(),
-        Some((IPPROTO_ICMPV6, _)) => EndpointPayloadTrafficClass::default(),
+        Some((IPPROTO_ICMP, _)) => EndpointPayloadClass::default(),
+        Some((IPPROTO_ICMPV6, _)) => EndpointPayloadClass::default(),
         Some((IPPROTO_TCP, offset)) => {
             let latency_sensitive = endpoint_tcp_payload_is_latency_sensitive(payload, offset);
-            EndpointPayloadTrafficClass {
-                bulk_endpoint_data: !latency_sensitive,
+            EndpointPayloadClass {
+                lane: if latency_sensitive {
+                    EndpointPayloadLane::Priority
+                } else {
+                    EndpointPayloadLane::Bulk
+                },
                 drop_on_backpressure: false,
             }
         }
-        _ => EndpointPayloadTrafficClass {
-            bulk_endpoint_data: true,
+        _ => EndpointPayloadClass {
+            lane: EndpointPayloadLane::Bulk,
             drop_on_backpressure: true,
         },
     }
@@ -344,7 +386,7 @@ fn classify_endpoint_payload(payload: &[u8]) -> EndpointPayloadTrafficClass {
 /// can use this to apply the same priority/bulk policy as the FIPS endpoint
 /// command queue without duplicating IP/TCP parsing.
 pub fn endpoint_payload_is_latency_sensitive(payload: &[u8]) -> bool {
-    !classify_endpoint_payload(payload).bulk_endpoint_data
+    classify_endpoint_payload(payload).is_latency_sensitive()
 }
 
 #[cfg(test)]
@@ -360,7 +402,7 @@ pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointComma
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
-    traffic_class: EndpointPayloadTrafficClass,
+    traffic_class: EndpointPayloadClass,
 }
 
 impl EndpointDataPayload {
@@ -372,20 +414,23 @@ impl EndpointDataPayload {
         }
     }
 
-    pub(crate) fn lane(&self) -> EndpointCommandLane {
-        if self.traffic_class.bulk_endpoint_data {
-            EndpointCommandLane::Bulk
-        } else {
-            EndpointCommandLane::Priority
+    pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
+        Self {
+            bytes,
+            traffic_class,
         }
     }
 
+    pub(crate) fn lane(&self) -> EndpointCommandLane {
+        self.traffic_class.lane().command_lane()
+    }
+
     pub(crate) fn bulk_endpoint_data(&self) -> bool {
-        self.traffic_class.bulk_endpoint_data
+        self.traffic_class.lane() == EndpointPayloadLane::Bulk
     }
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {
-        self.traffic_class.drop_on_backpressure
+        self.traffic_class.drop_on_backpressure()
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {

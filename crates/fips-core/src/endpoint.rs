@@ -6,8 +6,8 @@
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 use crate::node::{
     ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointCommandLane, EndpointDataPayload,
-    EndpointEventReceiver, EndpointEventSender, NodeEndpointCommand, NodeEndpointEvent,
-    NodeEndpointPeer, NodeEndpointRelayStatus,
+    EndpointEventReceiver, EndpointEventSender, EndpointPayloadClass, NodeEndpointCommand,
+    NodeEndpointEvent, NodeEndpointPeer, NodeEndpointRelayStatus,
 };
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -21,6 +21,55 @@ use tokio::task::JoinHandle;
 
 const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
+
+/// App-owned endpoint payload plus its queue/pressure policy.
+///
+/// `FipsEndpointPayload::new` classifies raw packet bytes once. Embedders that
+/// already classified a packet while staging their own priority/bulk queues can
+/// use `from_classified` to carry the same class into FIPS without parsing the
+/// packet a second time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FipsEndpointPayload {
+    bytes: Vec<u8>,
+    class: EndpointPayloadClass,
+}
+
+impl FipsEndpointPayload {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        let class = crate::node::classify_endpoint_payload(&bytes);
+        Self { bytes, class }
+    }
+
+    pub fn from_classified(bytes: Vec<u8>, class: EndpointPayloadClass) -> Self {
+        Self { bytes, class }
+    }
+
+    pub fn class(&self) -> EndpointPayloadClass {
+        self.class
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl From<FipsEndpointPayload> for EndpointDataPayload {
+    fn from(payload: FipsEndpointPayload) -> Self {
+        EndpointDataPayload::from_classified(payload.bytes, payload.class)
+    }
+}
 
 #[derive(Debug)]
 enum EndpointPayloadLaneBatches {
@@ -761,18 +810,27 @@ impl FipsEndpoint {
 
     /// Send a burst of application-owned endpoint payloads to one resolved peer.
     ///
-    /// The endpoint still classifies each payload as priority or bulk, but it
-    /// enqueues bounded lane batches instead of one command per packet.
-    /// This is the dataplane fast path for callers that already route and batch
-    /// packets by peer.
+    /// Raw payloads are classified once, then enqueued as bounded lane batches
+    /// instead of one command per packet. Callers that already classified packets
+    /// while staging their own queues can use [`Self::send_classified_batch_to_peer`].
     pub async fn send_batch_to_peer(
         &self,
         remote: PeerIdentity,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), FipsEndpointError> {
+        let payloads = payloads.into_iter().map(FipsEndpointPayload::new).collect();
+        self.send_classified_batch_to_peer(remote, payloads).await
+    }
+
+    /// Send a burst of already-classified endpoint payloads to one resolved peer.
+    pub async fn send_classified_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<FipsEndpointPayload>,
+    ) -> Result<(), FipsEndpointError> {
         if *remote.node_addr() == self.node_addr {
             for payload in payloads {
-                self.send_loopback(payload)?;
+                self.send_loopback(payload.into_bytes())?;
             }
             return Ok(());
         }
@@ -1242,14 +1300,14 @@ fn endpoint_command_tx_for_command<'a>(
     }
 }
 
-fn endpoint_payload_lane_batches(payloads: Vec<Vec<u8>>) -> EndpointPayloadLaneBatches {
+fn endpoint_payload_lane_batches(payloads: Vec<FipsEndpointPayload>) -> EndpointPayloadLaneBatches {
     let payload_count = payloads.len();
     let mut raw_payloads = payloads.into_iter();
     let Some(first) = raw_payloads.next() else {
         return EndpointPayloadLaneBatches::Empty;
     };
 
-    let first = EndpointDataPayload::new(first);
+    let first = EndpointDataPayload::from(first);
     let mut first_lane_payloads = Vec::with_capacity(payload_count);
     let first_lane = first.lane();
     first_lane_payloads.push(first);
@@ -1258,7 +1316,7 @@ fn endpoint_payload_lane_batches(payloads: Vec<Vec<u8>>) -> EndpointPayloadLaneB
         payloads: first_lane_payloads,
     };
 
-    for payload in raw_payloads.map(EndpointDataPayload::new) {
+    for payload in raw_payloads.map(EndpointDataPayload::from) {
         let payload_lane = payload.lane();
         match &mut batches {
             EndpointPayloadLaneBatches::Empty => unreachable!("first payload exists"),
@@ -1631,7 +1689,12 @@ mod tests {
     fn endpoint_payload_lane_batches_keep_same_lane_runs_single() {
         let bulk_tcp = ipv6_tcp_packet(0x18, 512);
         let opaque_bulk = vec![0, 1, 2, 3];
-        match endpoint_payload_lane_batches(vec![bulk_tcp.clone(), opaque_bulk.clone()]) {
+        match endpoint_payload_lane_batches(
+            vec![bulk_tcp.clone(), opaque_bulk.clone()]
+                .into_iter()
+                .map(FipsEndpointPayload::new)
+                .collect(),
+        ) {
             EndpointPayloadLaneBatches::Single { lane, payloads } => {
                 assert_eq!(lane, EndpointCommandLane::Bulk);
                 assert_eq!(payloads.len(), 2);
@@ -1643,7 +1706,12 @@ mod tests {
 
         let tcp_ack = ipv6_tcp_packet(0x10, 0);
         let icmp_ping = ipv4_icmp_echo_packet();
-        match endpoint_payload_lane_batches(vec![tcp_ack.clone(), icmp_ping.clone()]) {
+        match endpoint_payload_lane_batches(
+            vec![tcp_ack.clone(), icmp_ping.clone()]
+                .into_iter()
+                .map(FipsEndpointPayload::new)
+                .collect(),
+        ) {
             EndpointPayloadLaneBatches::Single { lane, payloads } => {
                 assert_eq!(lane, EndpointCommandLane::Priority);
                 assert_eq!(payloads.len(), 2);
@@ -1661,12 +1729,17 @@ mod tests {
         let bulk_second = vec![0, 1, 2, 3];
         let priority_second = ipv4_icmp_echo_packet();
 
-        match endpoint_payload_lane_batches(vec![
-            bulk_first.clone(),
-            priority_first.clone(),
-            bulk_second.clone(),
-            priority_second.clone(),
-        ]) {
+        match endpoint_payload_lane_batches(
+            vec![
+                bulk_first.clone(),
+                priority_first.clone(),
+                bulk_second.clone(),
+                priority_second.clone(),
+            ]
+            .into_iter()
+            .map(FipsEndpointPayload::new)
+            .collect(),
+        ) {
             EndpointPayloadLaneBatches::Split {
                 priority_payloads,
                 bulk_payloads,
@@ -1688,6 +1761,18 @@ mod tests {
             EndpointPayloadLaneBatches::Empty => {}
             other => panic!("expected empty batch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classified_endpoint_payload_preserves_supplied_class() {
+        let priority_class = crate::node::classify_endpoint_payload(&ipv6_tcp_packet(0x10, 0));
+        let opaque_bytes = vec![0, 1, 2, 3];
+        let payload = FipsEndpointPayload::from_classified(opaque_bytes.clone(), priority_class);
+        let endpoint_payload = EndpointDataPayload::from(payload.clone());
+
+        assert_eq!(payload.as_slice(), opaque_bytes.as_slice());
+        assert_eq!(endpoint_payload.lane(), EndpointCommandLane::Priority);
+        assert!(!endpoint_payload.drop_on_backpressure());
     }
 
     #[test]
