@@ -454,10 +454,10 @@ impl PacketRx {
     }
 
     fn take_pending(pending: &mut Option<IntoIter<ReceivedPacket>>) -> Option<ReceivedPacket> {
-        let mut packets = pending.take()?;
+        let packets = pending.as_mut()?;
         let packet = packets.next();
-        if packets.len() > 0 {
-            *pending = Some(packets);
+        if packets.len() == 0 {
+            *pending = None;
         }
         packet
     }
