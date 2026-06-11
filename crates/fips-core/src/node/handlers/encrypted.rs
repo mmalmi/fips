@@ -14,7 +14,7 @@
 //! liveness, link stats, path rotation, and MMP receive metrics in
 //! one lifecycle owner.
 
-use crate::node::decrypt_worker::{DecryptFailureReport, DecryptSessionKey};
+use crate::node::decrypt_worker::{DecryptFailureReport, DecryptJob, DecryptSessionKey};
 use crate::node::wire::{EncryptedHeader, FLAG_KEY_EPOCH};
 use crate::node::{AuthenticatedFmpPlaintext, Node, PeerRuntimeReceive, PeerRuntimeReceiveError};
 use crate::noise::NoiseError;
@@ -44,13 +44,13 @@ enum DecryptFailureAction {
 }
 
 pub(in crate::node) enum EncryptedFrameFastPath {
-    Dispatched,
+    Dispatch(DecryptJob),
     Dropped,
     Slow(ReceivedPacket),
 }
 
 impl Node {
-    pub(in crate::node) fn try_dispatch_encrypted_frame_to_worker(
+    pub(in crate::node) fn try_prepare_encrypted_frame_for_worker(
         &mut self,
         packet: ReceivedPacket,
     ) -> EncryptedFrameFastPath {
@@ -87,9 +87,9 @@ impl Node {
         }
 
         let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
-        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
+        if self.decrypt_workers.is_none() {
             return EncryptedFrameFastPath::Slow(packet);
-        };
+        }
         if !self.sessions.is_worker_registered(&session_key) {
             return EncryptedFrameFastPath::Slow(packet);
         }
@@ -106,8 +106,7 @@ impl Node {
             header.ciphertext_offset(),
             self.decrypt_fallback_tx.clone(),
         );
-        workers.dispatch_job(job);
-        EncryptedFrameFastPath::Dispatched
+        EncryptedFrameFastPath::Dispatch(job)
     }
 
     /// Handle an encrypted frame (phase 0x0).
@@ -121,8 +120,13 @@ impl Node {
     /// current session first, then fall back to the previous session.
     #[cfg(test)]
     pub(in crate::node) async fn handle_encrypted_frame(&mut self, packet: ReceivedPacket) {
-        match self.try_dispatch_encrypted_frame_to_worker(packet) {
-            EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => return,
+        match self.try_prepare_encrypted_frame_for_worker(packet) {
+            EncryptedFrameFastPath::Dispatch(job) => {
+                if let Some(workers) = self.decrypt_workers.as_ref() {
+                    workers.dispatch_job(job);
+                }
+            }
+            EncryptedFrameFastPath::Dropped => return,
             EncryptedFrameFastPath::Slow(packet) => self.handle_encrypted_frame_slow(packet).await,
         }
     }

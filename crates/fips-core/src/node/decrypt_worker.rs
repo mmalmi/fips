@@ -47,7 +47,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
@@ -74,6 +74,7 @@ const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
+const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -324,6 +325,10 @@ impl DecryptJob {
 
     fn lane(&self) -> DecryptWorkerLane {
         self.lane
+    }
+
+    fn is_bulk_lane(&self) -> bool {
+        matches!(self.lane(), DecryptWorkerLane::Bulk)
     }
 
     fn set_trace_enqueued_at(&mut self, queued_at: Option<Instant>) {
@@ -589,6 +594,70 @@ pub(crate) enum WorkerMsg {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
+enum DecryptWorkerBulkItem {
+    Job(DecryptJob),
+    Batch(Vec<DecryptJob>),
+}
+
+impl DecryptWorkerBulkItem {
+    fn packet_count(&self) -> usize {
+        match self {
+            Self::Job(_) => 1,
+            Self::Batch(jobs) => jobs.len(),
+        }
+    }
+}
+
+pub(crate) struct DecryptJobBatcher {
+    worker_idx: Option<usize>,
+    jobs: Vec<DecryptJob>,
+}
+
+impl DecryptJobBatcher {
+    pub(crate) fn new() -> Self {
+        Self {
+            worker_idx: None,
+            jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        }
+    }
+
+    pub(crate) fn push(&mut self, workers: &DecryptWorkerPool, job: DecryptJob) {
+        if !job.is_bulk_lane() {
+            self.flush(workers);
+            workers.dispatch_job(job);
+            return;
+        }
+
+        let worker_idx = workers.worker_idx_for(job.session_key);
+        let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
+        if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
+            self.flush(workers);
+        }
+        self.worker_idx = Some(worker_idx);
+        self.jobs.push(job);
+
+        if self.jobs.len() >= batch_max {
+            self.flush(workers);
+        }
+    }
+
+    pub(crate) fn flush(&mut self, workers: &DecryptWorkerPool) {
+        let Some(worker_idx) = self.worker_idx.take() else {
+            return;
+        };
+        if self.jobs.is_empty() {
+            return;
+        }
+
+        let jobs = std::mem::replace(
+            &mut self.jobs,
+            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        );
+        workers.dispatch_bulk_job_batch(worker_idx, jobs);
+    }
+}
+
 /// Handle to the decrypt worker pool. Shard-style: each worker is one
 /// OS thread that owns its sessions outright. Dispatch is
 /// deterministic on `session_key` so a session always reaches the same
@@ -600,7 +669,9 @@ pub(crate) struct DecryptWorkerPool {
 
 struct DecryptWorkerSender {
     priority: Sender<WorkerMsg>,
-    bulk: Sender<DecryptJob>,
+    bulk: Sender<DecryptWorkerBulkItem>,
+    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_packet_cap: usize,
 }
 
 impl DecryptWorkerPool {
@@ -611,14 +682,18 @@ impl DecryptWorkerPool {
         let mut senders = Vec::with_capacity(n);
         for i in 0..n {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
-            let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(bulk_channel_cap);
+            let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
+            let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+            let worker_bulk_queued_packets = Arc::clone(&bulk_queued_packets);
             std::thread::Builder::new()
                 .name(format!("fips-decrypt-{i}"))
-                .spawn(move || run_worker(i, priority_rx, bulk_rx))
+                .spawn(move || run_worker(i, priority_rx, bulk_rx, worker_bulk_queued_packets))
                 .expect("failed to spawn fips-decrypt OS thread");
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                bulk_queued_packets,
+                bulk_packet_cap: bulk_channel_cap,
             });
         }
         Self {
@@ -631,6 +706,13 @@ impl DecryptWorkerPool {
     /// registration arrive at the same shard.
     fn worker_idx_for(&self, session_key: DecryptSessionKey) -> usize {
         (decrypt_session_fast_hash(session_key) as usize) % self.senders.len()
+    }
+
+    fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
+        self.senders[idx]
+            .bulk_packet_cap
+            .min(DECRYPT_WORKER_BULK_BATCH_MAX)
+            .max(1)
     }
 
     /// Dispatch a per-packet decrypt job. Drops if the per-worker
@@ -665,12 +747,48 @@ impl DecryptWorkerPool {
     }
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
-        match self.senders[idx].bulk.try_send(job) {
+        self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
+    }
+
+    fn dispatch_bulk_job_batch(&self, idx: usize, mut jobs: Vec<DecryptJob>) {
+        debug_assert!(!jobs.is_empty());
+        debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
+        debug_assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
+
+        let queued_at = crate::perf_profile::stamp();
+        for job in &mut jobs {
+            job.set_trace_enqueued_at(queued_at);
+        }
+
+        if jobs.len() == 1 {
+            let job = jobs.pop().expect("checked non-empty batch");
+            self.dispatch_bulk_job(idx, job);
+            return;
+        }
+
+        self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Batch(jobs));
+    }
+
+    fn dispatch_bulk_item(&self, idx: usize, item: DecryptWorkerBulkItem) {
+        let packet_count = item.packet_count();
+        let sender = &self.senders[idx];
+        if !try_reserve_bulk_packets(
+            &sender.bulk_queued_packets,
+            sender.bulk_packet_cap,
+            packet_count,
+        ) {
+            record_decrypt_worker_bulk_drop_count(idx, packet_count);
+            return;
+        }
+
+        match sender.bulk.try_send(item) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                record_decrypt_worker_bulk_drop(idx);
+                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
+                record_decrypt_worker_bulk_drop_count(idx, packet_count);
             }
             Err(TrySendError::Disconnected(_)) => {
+                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
                 debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
             }
         }
@@ -763,17 +881,61 @@ impl DecryptWorkerPool {
     }
 }
 
-fn record_decrypt_worker_bulk_drop(worker: usize) {
-    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
-    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerBulkDropped);
+fn record_decrypt_worker_bulk_drop_count(worker: usize, count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptWorkerQueueFull,
+        count as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptWorkerBulkDropped,
+        count as u64,
+    );
     static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
-    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    let n = FULL_COUNT.fetch_add(count as u64, Ordering::Relaxed);
     if n < 8 || n.is_multiple_of(10000) {
         warn!(
             worker,
-            drops = n + 1,
-            "DecryptWorker bulk channel full; dropping inbound packet"
+            drops = n + count as u64,
+            dropped = count,
+            "DecryptWorker bulk channel full; dropping inbound packets"
         );
+    }
+}
+
+fn try_reserve_bulk_packets(counter: &AtomicUsize, capacity: usize, count: usize) -> bool {
+    if count == 0 {
+        return true;
+    }
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let Some(next) = current.checked_add(count) else {
+            return false;
+        };
+        if next > capacity {
+            return false;
+        }
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn release_bulk_packets(counter: &AtomicUsize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        debug_assert!(
+            current >= count,
+            "decrypt worker bulk job accounting underflow: current={current}, release={count}"
+        );
+        let next = current.saturating_sub(count);
+        match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -809,28 +971,42 @@ fn record_decrypt_fallback_drop(lane: DecryptWorkerLane) {
     }
 }
 
-fn run_worker(idx: usize, priority_rx: Receiver<WorkerMsg>, bulk_rx: Receiver<DecryptJob>) {
+fn run_worker(
+    idx: usize,
+    priority_rx: Receiver<WorkerMsg>,
+    bulk_rx: Receiver<DecryptWorkerBulkItem>,
+    bulk_queued_packets: Arc<AtomicUsize>,
+) {
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
     let mut shard = DecryptWorkerShard::new();
 
     loop {
-        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
+        drain_worker_queues(
+            idx,
+            &mut shard,
+            &priority_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
         crossbeam_channel::select! {
             recv(priority_rx) -> msg => {
                 match msg {
                     Ok(msg) => shard.handle_msg(idx, msg),
                     Err(_) => {
-                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
+                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
                         break;
                     }
                 }
             }
-            recv(bulk_rx) -> job => {
-                match job {
-                    Ok(job) => shard.handle_msg(idx, WorkerMsg::Job(job)),
+            recv(bulk_rx) -> item => {
+                match item {
+                    Ok(item) => {
+                        release_bulk_packets(&bulk_queued_packets, item.packet_count());
+                        handle_bulk_item(idx, &mut shard, &priority_rx, item);
+                    }
                     Err(_) => {
-                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx);
+                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
                         break;
                     }
                 }
@@ -844,19 +1020,48 @@ fn drain_worker_queues(
     idx: usize,
     shard: &mut DecryptWorkerShard,
     priority_rx: &Receiver<WorkerMsg>,
-    bulk_rx: &Receiver<DecryptJob>,
+    bulk_rx: &Receiver<DecryptWorkerBulkItem>,
+    bulk_queued_packets: &AtomicUsize,
 ) {
     while let Ok(msg) = priority_rx.try_recv() {
         shard.handle_msg(idx, msg);
     }
-    for _ in 0..DECRYPT_WORKER_BULK_BURST_BUDGET {
+    let mut drained_bulk_jobs = 0;
+    while drained_bulk_jobs < DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = priority_rx.try_recv() {
             shard.handle_msg(idx, msg);
             continue;
         }
         match bulk_rx.try_recv() {
-            Ok(job) => shard.handle_msg(idx, WorkerMsg::Job(job)),
+            Ok(item) => {
+                release_bulk_packets(bulk_queued_packets, item.packet_count());
+                drained_bulk_jobs += handle_bulk_item(idx, shard, priority_rx, item);
+            }
             Err(_) => break,
+        }
+    }
+}
+
+fn handle_bulk_item(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    priority_rx: &Receiver<WorkerMsg>,
+    item: DecryptWorkerBulkItem,
+) -> usize {
+    match item {
+        DecryptWorkerBulkItem::Job(job) => {
+            shard.handle_job_msg(idx, job);
+            1
+        }
+        DecryptWorkerBulkItem::Batch(jobs) => {
+            let count = jobs.len();
+            for job in jobs {
+                while let Ok(msg) = priority_rx.try_recv() {
+                    shard.handle_msg(idx, msg);
+                }
+                shard.handle_job_msg(idx, job);
+            }
+            count
         }
     }
 }
@@ -876,9 +1081,7 @@ impl DecryptWorkerShard {
     fn handle_msg(&mut self, idx: usize, msg: WorkerMsg) {
         match msg {
             WorkerMsg::Job(job) => {
-                if let Err(err) = self.handle_job(job) {
-                    debug!(worker = idx, error = %err, "decrypt worker job failed");
-                }
+                self.handle_job_msg(idx, job);
             }
             WorkerMsg::RegisterSession { session_key, state } => {
                 self.register_session(idx, session_key, state);
@@ -886,6 +1089,12 @@ impl DecryptWorkerShard {
             WorkerMsg::UnregisterSession { session_key } => {
                 self.unregister_session(idx, session_key);
             }
+        }
+    }
+
+    fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
+        if let Err(err) = self.handle_job(job) {
+            debug!(worker = idx, error = %err, "decrypt worker job failed");
         }
     }
 
@@ -1110,15 +1319,22 @@ mod tests {
         );
     }
 
-    fn one_slot_worker_pool() -> (DecryptWorkerPool, Receiver<WorkerMsg>, Receiver<DecryptJob>) {
+    fn one_slot_worker_pool() -> (
+        DecryptWorkerPool,
+        Receiver<WorkerMsg>,
+        Receiver<DecryptWorkerBulkItem>,
+    ) {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(
                     vec![DecryptWorkerSender {
                         priority: priority_tx,
                         bulk: bulk_tx,
+                        bulk_queued_packets,
+                        bulk_packet_cap: 1,
                     }]
                     .into_boxed_slice(),
                 ),
@@ -1134,17 +1350,20 @@ mod tests {
     ) -> (
         DecryptWorkerPool,
         Vec<Receiver<WorkerMsg>>,
-        Vec<Receiver<DecryptJob>>,
+        Vec<Receiver<DecryptWorkerBulkItem>>,
     ) {
         let mut senders = Vec::with_capacity(worker_count);
         let mut priority_receivers = Vec::with_capacity(worker_count);
         let mut bulk_receivers = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
-            let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(cap);
+            let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+            let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                bulk_queued_packets,
+                bulk_packet_cap: cap,
             });
             priority_receivers.push(priority_rx);
             bulk_receivers.push(bulk_rx);
@@ -1156,6 +1375,27 @@ mod tests {
             priority_receivers,
             bulk_receivers,
         )
+    }
+
+    fn test_bulk_lane(
+        cap: usize,
+    ) -> (
+        Sender<DecryptWorkerBulkItem>,
+        Receiver<DecryptWorkerBulkItem>,
+        Arc<AtomicUsize>,
+    ) {
+        let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+        (bulk_tx, bulk_rx, bulk_queued_packets)
+    }
+
+    fn queue_bulk_item_for_test(
+        tx: &Sender<DecryptWorkerBulkItem>,
+        queued_packets: &AtomicUsize,
+        item: DecryptWorkerBulkItem,
+    ) {
+        queued_packets.fetch_add(item.packet_count(), Ordering::Relaxed);
+        tx.try_send(item).expect("test bulk queue should have room");
     }
 
     fn test_source_peer() -> PeerIdentity {
@@ -1597,6 +1837,134 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_job_batcher_groups_consecutive_bulk_jobs_for_one_worker() {
+        let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let session_key = test_session_key(1, 101);
+        let mut batcher = DecryptJobBatcher::new();
+
+        for _ in 0..3 {
+            batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        }
+        batcher.flush(&pool);
+
+        assert_eq!(
+            bulk_rx[0].len(),
+            1,
+            "three same-worker bulk packets should consume one channel slot"
+        );
+        match bulk_rx[0].try_recv().expect("batched bulk item") {
+            DecryptWorkerBulkItem::Batch(jobs) => {
+                assert_eq!(jobs.len(), 3);
+                assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
+            }
+            DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
+        }
+    }
+
+    #[test]
+    fn decrypt_job_batcher_flushes_bulk_before_priority_job() {
+        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+        let session_key = test_session_key(1, 102);
+        let mut batcher = DecryptJobBatcher::new();
+
+        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        batcher.push(&pool, dummy_priority_decrypt_job(session_key));
+
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "pending bulk should be flushed before the priority job is queued"
+        );
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "priority jobs must keep their reserved lane"
+        );
+        assert!(matches!(
+            priority_rx.try_recv().expect("priority item"),
+            WorkerMsg::Job(_)
+        ));
+        assert!(matches!(
+            bulk_rx.try_recv().expect("bulk item"),
+            DecryptWorkerBulkItem::Job(_)
+        ));
+    }
+
+    #[test]
+    fn decrypt_job_batcher_keeps_bulk_capacity_in_packet_units() {
+        let (pool, _priority_rx, bulk_rx) = one_slot_worker_pool();
+        let session_key = test_session_key(1, 103);
+        let mut batcher = DecryptJobBatcher::new();
+
+        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        batcher.flush(&pool);
+
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "a one-packet bulk capacity should enqueue exactly one packet"
+        );
+        assert!(
+            matches!(
+                bulk_rx.try_recv().expect("single packet bulk item"),
+                DecryptWorkerBulkItem::Job(_)
+            ),
+            "single-packet capacity must not be inflated into a wider batch"
+        );
+    }
+
+    #[test]
+    fn decrypt_job_batcher_limits_batch_width_to_worker_packet_capacity() {
+        const WORKER_PACKET_CAP: usize = 8;
+
+        let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, WORKER_PACKET_CAP);
+        let session_key = test_session_key(1, 104);
+        let mut batcher = DecryptJobBatcher::new();
+
+        for _ in 0..=WORKER_PACKET_CAP {
+            batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        }
+        batcher.flush(&pool);
+
+        assert_eq!(
+            bulk_rx[0].len(),
+            1,
+            "worker packet capacity should be consumed by one bounded batch"
+        );
+        match bulk_rx[0].try_recv().expect("bounded bulk batch") {
+            DecryptWorkerBulkItem::Batch(jobs) => assert_eq!(
+                jobs.len(),
+                WORKER_PACKET_CAP,
+                "batch width should stop at the worker packet capacity"
+            ),
+            DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
+        }
+        assert!(
+            bulk_rx[0].is_empty(),
+            "the ninth packet should be rejected while eight packets remain queued"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_accounting_reserves_and_releases_exact_counts() {
+        let counter = AtomicUsize::new(0);
+
+        assert!(try_reserve_bulk_packets(&counter, 4, 3));
+        assert_eq!(counter.load(Ordering::Relaxed), 3);
+        assert!(
+            !try_reserve_bulk_packets(&counter, 4, 2),
+            "bulk packet capacity must be counted in jobs, not channel items"
+        );
+        release_bulk_packets(&counter, 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert!(try_reserve_bulk_packets(&counter, 4, 3));
+        assert_eq!(counter.load(Ordering::Relaxed), 4);
+        release_bulk_packets(&counter, 4);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn decrypt_worker_register_uses_priority_lane_when_bulk_queue_is_full() {
         let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
@@ -1696,7 +2064,7 @@ mod tests {
     #[test]
     fn decrypt_worker_drain_registers_priority_before_bulk_jobs() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 77);
         priority_tx
             .try_send(WorkerMsg::RegisterSession {
@@ -1708,12 +2076,14 @@ mod tests {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut bulk_job = dummy_bulk_decrypt_job(session_key);
         bulk_job.fallback_tx = fallback_tx;
-        bulk_tx
-            .try_send(bulk_job)
-            .expect("bulk decrypt job should enqueue");
+        queue_bulk_item_for_test(
+            &bulk_tx,
+            &bulk_queued_packets,
+            DecryptWorkerBulkItem::Job(bulk_job),
+        );
 
         let mut shard = DecryptWorkerShard::new();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
 
         assert!(
             shard.contains_session(session_key),
@@ -1739,7 +2109,7 @@ mod tests {
     #[test]
     fn decrypt_worker_drain_unregisters_priority_before_bulk_jobs() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 78);
 
         priority_tx
@@ -1749,13 +2119,15 @@ mod tests {
         let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut bulk_job = dummy_bulk_decrypt_job(session_key);
         bulk_job.fallback_tx = fallback_tx;
-        bulk_tx
-            .try_send(bulk_job)
-            .expect("bulk decrypt job should enqueue");
+        queue_bulk_item_for_test(
+            &bulk_tx,
+            &bulk_queued_packets,
+            DecryptWorkerBulkItem::Job(bulk_job),
+        );
 
         let mut shard = DecryptWorkerShard::new();
         shard.register_session(0, session_key, test_owned_session_state());
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
 
         assert!(
             !shard.contains_session(session_key),
@@ -1784,16 +2156,19 @@ mod tests {
         );
 
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx) = bounded::<DecryptJob>(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) =
+            test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
         let session_key = test_session_key(1, 79);
         for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
-            bulk_tx
-                .try_send(dummy_bulk_decrypt_job(session_key))
-                .expect("test bulk queue should have room");
+            queue_bulk_item_for_test(
+                &bulk_tx,
+                &bulk_queued_packets,
+                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+            );
         }
 
         let mut shard = DecryptWorkerShard::new();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx);
+        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
 
         assert_eq!(
             bulk_rx.len(),

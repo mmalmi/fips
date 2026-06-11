@@ -4,7 +4,8 @@ use crate::control::queries;
 use crate::control::{ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
-    DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
+    DecryptFailureReport, DecryptFallback, DecryptJob, DecryptJobBatcher, DecryptWorkerEvent,
+    DecryptWorkerFallbackReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
@@ -399,15 +400,26 @@ impl Node {
             FALLBACK_INTERLEAVE_EVERY,
             side_queue_interleave_every,
         );
+        let mut decrypt_jobs = DecryptJobBatcher::new();
         while let Some(action) = drain.next(packet_rx) {
             match action {
                 PacketDrainAction::Packet(packet) => {
                     let action = self.begin_process_packet(packet);
-                    if !action.is_done() {
-                        self.finish_packet_process(action).await;
+                    match action {
+                        PacketProcessAction::DecryptJob { job } => {
+                            if let Some(workers) = self.decrypt_workers.as_ref() {
+                                decrypt_jobs.push(workers, job);
+                            }
+                        }
+                        PacketProcessAction::Done => {}
+                        action => {
+                            self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+                            self.finish_packet_process(action).await;
+                        }
                     }
                 }
                 PacketDrainAction::InterleaveFallback => {
+                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
                     let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
                         self.drain_decrypt_fallback(
                             decrypt_fallback_rx,
@@ -424,6 +436,7 @@ impl Node {
                     }
                 }
                 PacketDrainAction::InterleaveSideQueues => {
+                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
                     let drained = if let Some(side_queues) = side_queues.as_mut() {
                         if rx_loop_side_queues_have_ready(side_queues) {
                             self.drain_rx_loop_side_queues(
@@ -446,6 +459,7 @@ impl Node {
             }
         }
 
+        self.flush_decrypt_job_batcher(&mut decrypt_jobs);
         let drained = drain.drained();
         if drained > 0 {
             // One trailing fallback slice so the last bounced packets of the
@@ -784,10 +798,9 @@ impl Node {
         }
 
         match prefix.phase {
-            PHASE_ESTABLISHED => match self.try_dispatch_encrypted_frame_to_worker(packet) {
-                EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => {
-                    PacketProcessAction::Done
-                }
+            PHASE_ESTABLISHED => match self.try_prepare_encrypted_frame_for_worker(packet) {
+                EncryptedFrameFastPath::Dispatch(job) => PacketProcessAction::DecryptJob { job },
+                EncryptedFrameFastPath::Dropped => PacketProcessAction::Done,
                 EncryptedFrameFastPath::Slow(packet) => {
                     PacketProcessAction::EncryptedSlow { packet, timer }
                 }
@@ -808,6 +821,11 @@ impl Node {
     async fn finish_packet_process(&mut self, action: PacketProcessAction) {
         match action {
             PacketProcessAction::Done => {}
+            PacketProcessAction::DecryptJob { job } => {
+                if let Some(workers) = self.decrypt_workers.as_ref() {
+                    workers.dispatch_job(job);
+                }
+            }
             PacketProcessAction::EncryptedSlow {
                 packet,
                 timer: _timer,
@@ -828,10 +846,19 @@ impl Node {
             }
         }
     }
+
+    fn flush_decrypt_job_batcher(&self, batcher: &mut DecryptJobBatcher) {
+        if let Some(workers) = self.decrypt_workers.as_ref() {
+            batcher.flush(workers);
+        }
+    }
 }
 
 enum PacketProcessAction {
     Done,
+    DecryptJob {
+        job: DecryptJob,
+    },
     EncryptedSlow {
         packet: ReceivedPacket,
         timer: crate::perf_profile::Timer,
@@ -844,12 +871,6 @@ enum PacketProcessAction {
         packet: ReceivedPacket,
         timer: crate::perf_profile::Timer,
     },
-}
-
-impl PacketProcessAction {
-    fn is_done(&self) -> bool {
-        matches!(self, Self::Done)
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
