@@ -8,7 +8,7 @@
 use crate::discovery::nostr::{TraversalAnswer, TraversalOffer};
 use crate::mmp::report::ReceiverReport;
 use crate::mmp::{MAX_SESSION_REPORT_INTERVAL_MS, MIN_SESSION_REPORT_INTERVAL_MS, MmpMode};
-use crate::node::decrypt_worker::DecryptAuthenticatedSession;
+use crate::node::decrypt_worker::{DecryptAuthenticatedSession, DecryptFspFailureReport};
 use crate::node::session::{EndToEndState, EpochSlot, FspOpenError, SessionEntry};
 use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_FLAG_CP, FSP_FLAG_K, FSP_HEADER_SIZE, FSP_INNER_HEADER_SIZE,
@@ -217,7 +217,9 @@ enum DiscoveryRetrySessionDecision {
 #[derive(Debug)]
 pub(in crate::node) struct AuthenticatedSessionMessage {
     source_peer: PeerIdentity,
-    plaintext: Vec<u8>,
+    buffer: Vec<u8>,
+    plaintext_offset: usize,
+    plaintext_len: usize,
     msg_type: u8,
     #[allow(dead_code)]
     inner_flags_byte: u8,
@@ -234,9 +236,38 @@ impl AuthenticatedSessionMessage {
         timestamp: u32,
     ) -> Self {
         debug_assert!(plaintext.len() >= FSP_INNER_HEADER_SIZE);
+        let plaintext_len = plaintext.len();
         Self {
             source_peer,
-            plaintext,
+            buffer: plaintext,
+            plaintext_offset: 0,
+            plaintext_len,
+            msg_type,
+            inner_flags_byte,
+            timestamp,
+        }
+    }
+
+    pub(in crate::node) fn from_buffer(
+        source_peer: PeerIdentity,
+        buffer: Vec<u8>,
+        plaintext_offset: usize,
+        plaintext_len: usize,
+        msg_type: u8,
+        inner_flags_byte: u8,
+        timestamp: u32,
+    ) -> Self {
+        debug_assert!(plaintext_len >= FSP_INNER_HEADER_SIZE);
+        debug_assert!(
+            plaintext_offset
+                .checked_add(plaintext_len)
+                .is_some_and(|end| end <= buffer.len())
+        );
+        Self {
+            source_peer,
+            buffer,
+            plaintext_offset,
+            plaintext_len,
             msg_type,
             inner_flags_byte,
             timestamp,
@@ -250,7 +281,8 @@ impl AuthenticatedSessionMessage {
 
     #[cfg(test)]
     fn plaintext(&self) -> &[u8] {
-        &self.plaintext
+        debug_assert!(self.plaintext_len >= FSP_INNER_HEADER_SIZE);
+        &self.buffer[self.plaintext_offset..self.plaintext_offset + self.plaintext_len]
     }
 
     fn msg_type(&self) -> u8 {
@@ -268,13 +300,14 @@ impl AuthenticatedSessionMessage {
     }
 
     fn body(&self) -> &[u8] {
-        debug_assert!(self.plaintext.len() >= FSP_INNER_HEADER_SIZE);
-        &self.plaintext[FSP_INNER_HEADER_SIZE..]
+        let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
+        let body_len = self.body_len();
+        &self.buffer[body_offset..body_offset + body_len]
     }
 
     fn body_len(&self) -> usize {
-        debug_assert!(self.plaintext.len() >= FSP_INNER_HEADER_SIZE);
-        self.plaintext.len() - FSP_INNER_HEADER_SIZE
+        debug_assert!(self.plaintext_len >= FSP_INNER_HEADER_SIZE);
+        self.plaintext_len - FSP_INNER_HEADER_SIZE
     }
 
     fn is_application_data(&self) -> bool {
@@ -284,11 +317,18 @@ impl AuthenticatedSessionMessage {
 
     fn into_endpoint_data_delivery(mut self) -> EndpointDataDelivery {
         debug_assert_eq!(self.msg_type, SessionMessageType::EndpointData.to_byte());
-        // Keep the receive hot path allocation-free after AEAD open: draining
-        // the inner header trims the existing plaintext Vec in place instead
-        // of copying the endpoint payload into a new Vec.
-        self.plaintext.drain(..FSP_INNER_HEADER_SIZE);
-        EndpointDataDelivery::new(self.source_peer, self.plaintext)
+        // Keep the receive hot path allocation-free after AEAD open. Slow
+        // paths store plaintext at offset 0; worker fast paths may store it
+        // inside the original FMP packet buffer. In both cases, move the
+        // endpoint body to the front of the existing Vec and truncate the
+        // trailing wire bytes instead of allocating a fresh payload Vec.
+        let body_offset = self.plaintext_offset + FSP_INNER_HEADER_SIZE;
+        let body_len = self.body_len();
+        if body_offset > 0 {
+            self.buffer.drain(..body_offset);
+        }
+        self.buffer.truncate(body_len);
+        EndpointDataDelivery::new(self.source_peer, self.buffer)
     }
 }
 
@@ -2909,12 +2949,11 @@ impl Node {
         dispatch.dispatch(self).await;
     }
 
-    pub(in crate::node) async fn process_authenticated_session_from_worker(
+    fn record_worker_authenticated_fmp_receive(
         &mut self,
-        authenticated: DecryptAuthenticatedSession,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
     ) {
         let now = Instant::now();
-        let fmp = &authenticated.fmp;
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
             fmp.source_peer.node_addr(),
             fmp.transport_id,
@@ -2938,6 +2977,14 @@ impl Node {
         if bookkeeping.is_some_and(|update| update.address_changed) {
             self.clear_connected_udp_for_peer(fmp.source_peer.node_addr());
         }
+    }
+
+    pub(in crate::node) async fn process_authenticated_session_from_worker(
+        &mut self,
+        authenticated: DecryptAuthenticatedSession,
+    ) {
+        let now = Instant::now();
+        self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
 
         let source_addr = authenticated.source_addr;
         let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
@@ -2965,6 +3012,51 @@ impl Node {
             return;
         }
         dispatch.dispatch(self).await;
+    }
+
+    pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
+        &mut self,
+        report: DecryptFspFailureReport,
+    ) {
+        self.record_worker_authenticated_fmp_receive(&report.fmp);
+        let src_addr = report.source_addr;
+        let Some(entry) = self.sessions.get_mut(&src_addr) else {
+            debug!(
+                src = %self.peer_display_name(&src_addr),
+                counter = report.counter,
+                "Worker FSP AEAD failure for unknown session"
+            );
+            return;
+        };
+        if should_ignore_stale_epoch_drain_failure(entry, report.received_k_bit) {
+            trace!(
+                src = %self.peer_display_name(&src_addr),
+                counter = report.counter,
+                "Ignoring worker FSP AEAD failure from stale previous key epoch during drain"
+            );
+            return;
+        }
+        let consecutive = entry.record_decrypt_failure();
+        let recover_session = should_start_decrypt_failure_rekey(entry, consecutive);
+        debug!(
+            src = %self.peer_display_name(&src_addr),
+            counter = report.counter,
+            consecutive_failures = consecutive,
+            "Worker FSP AEAD decryption failed"
+        );
+        if recover_session {
+            warn!(
+                peer = %self.peer_display_name(&src_addr),
+                consecutive_failures = consecutive,
+                "Session AEAD failures exceeded threshold; starting recovery rekey"
+            );
+            if !self.initiate_session_rekey(&src_addr).await {
+                debug!(
+                    peer = %self.peer_display_name(&src_addr),
+                    "Failed to start recovery rekey after worker FSP decrypt-failure threshold"
+                );
+            }
+        }
     }
 
     async fn handle_mesh_traversal_offer(&mut self, src_addr: &NodeAddr, body: &[u8]) {
@@ -6670,6 +6762,39 @@ mod tests {
             0x0102_0304,
         );
 
+        assert_eq!(message.body(), endpoint_payload);
+        let delivery = message.into_endpoint_data_delivery();
+        assert_eq!(delivery.source_peer, source_peer);
+        assert_eq!(delivery.payload, endpoint_payload);
+    }
+
+    #[test]
+    fn authenticated_session_message_can_own_plaintext_inside_wire_buffer() {
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let endpoint_payload = b"buffer endpoint delivery".to_vec();
+        let plaintext = fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            &endpoint_payload,
+        );
+        let mut buffer = b"outer-fmp-prefix".to_vec();
+        let plaintext_offset = buffer.len();
+        buffer.extend_from_slice(&plaintext);
+        buffer.extend_from_slice(b"outer-fmp-trailer");
+
+        let message = AuthenticatedSessionMessage::from_buffer(
+            source_peer,
+            buffer,
+            plaintext_offset,
+            plaintext.len(),
+            SessionMessageType::EndpointData.to_byte(),
+            0,
+            0x0102_0304,
+        );
+
+        assert_eq!(message.plaintext(), plaintext);
         assert_eq!(message.body(), endpoint_payload);
         let delivery = message.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);

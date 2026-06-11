@@ -737,6 +737,9 @@ impl Node {
                 self.process_authenticated_session_from_worker(session)
                     .await;
             }
+            DecryptWorkerEvent::FspDecryptFailure(report) => {
+                self.process_fsp_decrypt_failure_from_worker(report).await;
+            }
             DecryptWorkerEvent::DecryptFailure(report) => {
                 self.process_decrypt_failure_report(report).await;
             }

@@ -244,6 +244,11 @@ struct FspOpenSuccess {
     slot: EpochSlot,
 }
 
+struct FspOpenInPlaceSuccess {
+    plaintext_len: usize,
+    slot: EpochSlot,
+}
+
 enum FspOpenError {
     Replay,
     Aead,
@@ -293,9 +298,34 @@ impl OwnedFspEpochState {
         self.replay.accept(counter);
         Ok(plaintext)
     }
+
+    fn open_in_place(
+        &mut self,
+        ciphertext: &mut [u8],
+        counter: u64,
+        aad: &[u8],
+    ) -> Result<usize, FspOpenError> {
+        if !self.replay.check(counter) {
+            return Err(FspOpenError::Replay);
+        }
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let plaintext_len = self
+            .cipher
+            .open_in_place(nonce, Aad::from(aad), ciphertext)
+            .map_err(|_| FspOpenError::Aead)?
+            .len();
+        self.replay.accept(counter);
+        Ok(plaintext_len)
+    }
 }
 
 impl OwnedFspSessionState {
+    fn has_single_current_epoch(&self) -> bool {
+        self.pending.is_none() && self.previous.is_none()
+    }
+
     fn open_established_frame(
         &mut self,
         header: &FspEncryptedHeader,
@@ -343,6 +373,21 @@ impl OwnedFspSessionState {
         } else {
             Err(FspOpenError::Aead)
         }
+    }
+
+    fn open_current_established_frame_in_place(
+        &mut self,
+        header: &FspEncryptedHeader,
+        ciphertext: &mut [u8],
+    ) -> Result<FspOpenInPlaceSuccess, FspOpenError> {
+        debug_assert!(self.has_single_current_epoch());
+        let plaintext_len =
+            self.current
+                .open_in_place(ciphertext, header.counter, &header.header_bytes)?;
+        Ok(FspOpenInPlaceSuccess {
+            plaintext_len,
+            slot: EpochSlot::Current,
+        })
     }
 }
 
@@ -622,11 +667,21 @@ pub(crate) struct DecryptAuthenticatedSession {
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+pub(crate) struct DecryptFspFailureReport {
+    pub fmp: DecryptFmpBookkeeping,
+    pub source_addr: NodeAddr,
+    pub counter: u64,
+    pub received_k_bit: bool,
+    lane: DecryptWorkerLane,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
 /// Event emitted by the decrypt worker to the rx_loop.
 pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedSession(DecryptAuthenticatedSession),
+    FspDecryptFailure(DecryptFspFailureReport),
     DecryptFailure(DecryptFailureReport),
 }
 
@@ -639,6 +694,7 @@ impl DecryptWorkerEvent {
         match self {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
             Self::AuthenticatedSession(_) => 1,
+            Self::FspDecryptFailure(_) => 1,
             Self::PlaintextBatch(fallbacks) => fallbacks.len(),
         }
     }
@@ -652,6 +708,7 @@ impl DecryptWorkerEvent {
                 }
             }
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
+            Self::FspDecryptFailure(report) => report.trace_enqueued_at = queued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
         }
     }
@@ -663,6 +720,7 @@ impl DecryptWorkerEvent {
                 .first()
                 .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
+            Self::FspDecryptFailure(report) => report.trace_enqueued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at,
         }
     }
@@ -680,7 +738,10 @@ impl DecryptWorkerEvent {
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
             ),
-            Self::Plaintext(_) | Self::PlaintextBatch(_) | Self::DecryptFailure(_) => (
+            Self::Plaintext(_)
+            | Self::PlaintextBatch(_)
+            | Self::FspDecryptFailure(_)
+            | Self::DecryptFailure(_) => (
                 crate::perf_profile::Stage::DecryptFallbackWait,
                 crate::perf_profile::Stage::DecryptFallbackPriorityWait,
                 crate::perf_profile::Stage::DecryptFallbackBulkWait,
@@ -829,6 +890,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
+        DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
     }
 }
@@ -1843,7 +1905,7 @@ impl DecryptWorkerShard {
     fn handle_fsp_job_output(&mut self, job: FspDecryptJob) -> Option<DecryptWorkerOutput> {
         let FspDecryptJob {
             fallback_tx,
-            fallback,
+            mut fallback,
             source_addr,
             previous_hop_peer,
             path_mtu,
@@ -1861,13 +1923,116 @@ impl DecryptWorkerShard {
             });
         };
         let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
-        let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
+        let header = {
+            let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
+                return Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event: DecryptWorkerEvent::Plaintext(fallback),
+                });
+            };
+            let Some(header) = FspEncryptedHeader::parse(payload) else {
+                return Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event: DecryptWorkerEvent::Plaintext(fallback),
+                });
+            };
+            header
+        };
+        let lane = fallback.lane();
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr.clone(),
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
+        };
+
+        if state.has_single_current_epoch() {
+            let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
+            let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end)
+            else {
+                return Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event: DecryptWorkerEvent::Plaintext(fallback),
+                });
+            };
+            let received_k_bit = header.flags & FSP_FLAG_K != 0;
+            let FspOpenInPlaceSuccess {
+                plaintext_len,
+                slot,
+            } = match state.open_current_established_frame_in_place(&header, ciphertext) {
+                Ok(success) => success,
+                Err(FspOpenError::Replay) => {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
+                    );
+                    return None;
+                }
+                Err(FspOpenError::Aead) => {
+                    return Some(DecryptWorkerOutput {
+                        fallback_tx,
+                        event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
+                            fmp,
+                            source_addr,
+                            counter: header.counter,
+                            received_k_bit,
+                            lane,
+                            trace_enqueued_at: None,
+                        }),
+                    });
+                }
+            };
+            let Some(plaintext) = fallback
+                .packet_data
+                .get(ciphertext_offset..ciphertext_offset + plaintext_len)
+            else {
+                return None;
+            };
+            let Some((timestamp, msg_type, inner_flags_byte, _body)) =
+                fsp_strip_inner_header(plaintext)
+            else {
+                return None;
+            };
+            let spin_bit = inner_flags_byte & 0x01 != 0;
+            let sync = FspReceiveSync {
+                counter: header.counter,
+                slot,
+                received_k_bit,
+                timestamp,
+                plaintext_len,
+                ce_flag,
+                path_mtu,
+                spin_bit,
+            };
+            let message = AuthenticatedSessionMessage::from_buffer(
+                state.source_peer,
+                fallback.packet_data,
+                ciphertext_offset,
+                plaintext_len,
+                msg_type,
+                inner_flags_byte,
+                timestamp,
+            );
+
             return Some(DecryptWorkerOutput {
                 fallback_tx,
-                event: DecryptWorkerEvent::Plaintext(fallback),
+                event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    message,
+                    receive_sync: sync,
+                    lane,
+                    trace_enqueued_at: None,
+                }),
             });
-        };
-        let Some(header) = FspEncryptedHeader::parse(payload) else {
+        }
+
+        let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
             return Some(DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
@@ -1916,16 +2081,6 @@ impl DecryptWorkerShard {
             inner_flags_byte,
             timestamp,
         );
-        let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr,
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
-        };
 
         Some(DecryptWorkerOutput {
             fallback_tx,
@@ -2759,6 +2914,116 @@ mod tests {
     }
 
     #[test]
+    fn worker_reports_fsp_aead_failure_without_plaintext_fallback() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0x01,
+            b"bad inner tag",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            0,
+            inner_plaintext.len() as u16,
+        );
+        let mut fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .unwrap();
+        let last = fsp_ciphertext
+            .last_mut()
+            .expect("ciphertext includes authentication tag");
+        *last ^= 0x80;
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut fmp_plaintext = Vec::new();
+        fmp_plaintext.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        fmp_plaintext.extend_from_slice(&datagram.encode());
+
+        let fmp_key_bytes = [0x55; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let fmp_counter = 77;
+        let (wire, fmp_header) =
+            sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        let session_key = test_session_key(1, 9);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let job = DecryptJob::new(
+            wire,
+            session_key,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            *local.node_addr(),
+            1_000,
+            fmp_counter,
+            0,
+            fmp_header,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fallback_tx,
+        );
+
+        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState {
+                fmp_cipher: fmp_open,
+                fmp_replay: ReplayWindow::new(),
+                source_peer: previous_hop_peer,
+            },
+        );
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        shard.register_fsp_session(
+            0,
+            *source.node_addr(),
+            OwnedFspSessionState::from(fsp_snapshot),
+        );
+
+        let output = shard
+            .handle_job_output(0, job)
+            .expect("worker job should not fail")
+            .expect("FSP AEAD failure should report to rx_loop");
+        match output.event {
+            DecryptWorkerEvent::FspDecryptFailure(report) => {
+                assert_eq!(report.source_addr, *source.node_addr());
+                assert_eq!(report.counter, fsp_counter);
+                assert_eq!(report.fmp.source_peer, previous_hop_peer);
+                assert_eq!(report.fmp.fmp_counter, fmp_counter);
+                assert_eq!(report.fmp.inner_timestamp_ms, inner_timestamp_ms);
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("FSP AEAD failure must not bounce a possibly mutated packet")
+            }
+            DecryptWorkerEvent::AuthenticatedSession(_) | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected FSP decrypt failure report")
+            }
+        }
+    }
+
+    #[test]
     fn decrypt_session_key_routes_registration_jobs_and_unregister_to_same_worker() {
         let (pool, priority_receivers, bulk_receivers) = test_worker_pool(4, 4);
         let session_key = test_session_key(7, 42);
@@ -2978,6 +3243,7 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected failure report"),
         }
     }
 
@@ -3266,6 +3532,7 @@ mod tests {
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected plaintext fallback batch")
             }
@@ -3612,6 +3879,9 @@ mod tests {
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
+            DecryptWorkerEvent::FspDecryptFailure(_) => {
+                panic!("invalid bulk job should fail FMP AEAD")
+            }
         }
         assert!(
             priority_rx.is_empty(),
@@ -3753,6 +4023,9 @@ mod tests {
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid packet must not produce plaintext")
+            }
+            DecryptWorkerEvent::FspDecryptFailure(_) => {
+                panic!("invalid packet must fail FMP AEAD")
             }
         }
         assert_eq!(
@@ -3987,6 +4260,9 @@ mod tests {
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::FspDecryptFailure(_) => {
+                panic!("expected plaintext fallback event")
+            }
         };
         assert_eq!(
             fallback.source_peer, source_peer,
@@ -4062,6 +4338,7 @@ mod tests {
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected decrypt failure report")
             }
+            DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected decrypt failure report"),
         }
     }
 }
