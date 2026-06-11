@@ -64,7 +64,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 36;
+const N_EVENTS: usize = 38;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -276,7 +276,7 @@ fn stage_from_index(idx: usize) -> Stage {
 }
 
 /// Count-only events that clarify which hot-path variant is active.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Event {
     UdpSendConnected = 0,
@@ -315,6 +315,8 @@ pub enum Event {
     DecryptFspPriorityQueueFullFallback = 33,
     DecryptFspBulkQueueFullFallback = 34,
     DecryptFspWorkerReplayDropped = 35,
+    DecryptAuthenticatedSessionPriorityDropped = 36,
+    DecryptAuthenticatedSessionBulkDropped = 37,
 }
 
 impl Event {
@@ -358,6 +360,12 @@ impl Event {
             }
             Event::DecryptFspBulkQueueFullFallback => "decrypt_fsp_bulk_queue_full_fallback",
             Event::DecryptFspWorkerReplayDropped => "decrypt_fsp_worker_replay_dropped",
+            Event::DecryptAuthenticatedSessionPriorityDropped => {
+                "decrypt_authenticated_session_priority_dropped"
+            }
+            Event::DecryptAuthenticatedSessionBulkDropped => {
+                "decrypt_authenticated_session_bulk_dropped"
+            }
         }
     }
 }
@@ -400,6 +408,8 @@ fn event_from_index(idx: usize) -> Event {
         33 => Event::DecryptFspPriorityQueueFullFallback,
         34 => Event::DecryptFspBulkQueueFullFallback,
         35 => Event::DecryptFspWorkerReplayDropped,
+        36 => Event::DecryptAuthenticatedSessionPriorityDropped,
+        37 => Event::DecryptAuthenticatedSessionBulkDropped,
         _ => unreachable!(),
     }
 }
@@ -747,7 +757,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 36);
+        assert_eq!(N_EVENTS, 38);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -779,6 +789,14 @@ mod tests {
         assert_eq!(
             event_from_index(Event::DecryptFspWorkerReplayDropped as usize).name(),
             "decrypt_fsp_worker_replay_dropped"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptAuthenticatedSessionPriorityDropped as usize).name(),
+            "decrypt_authenticated_session_priority_dropped"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptAuthenticatedSessionBulkDropped as usize).name(),
+            "decrypt_authenticated_session_bulk_dropped"
         );
     }
 
@@ -837,11 +855,17 @@ mod tests {
         let skipped_before = EVENTS[Event::RxLoopSlowMaintenanceSkipped as usize].load(Relaxed);
         let pressure_before = EVENTS[Event::DecryptFallbackPressureDrain as usize].load(Relaxed);
         let gated_before = EVENTS[Event::DecryptFallbackPriorityGated as usize].load(Relaxed);
+        let auth_priority_before =
+            EVENTS[Event::DecryptAuthenticatedSessionPriorityDropped as usize].load(Relaxed);
+        let auth_bulk_before =
+            EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
         record_event_count_sample(Event::DecryptFallbackPressureDrain, 7);
         record_event_count_sample(Event::DecryptFallbackPriorityGated, 11);
+        record_event_count_sample(Event::DecryptAuthenticatedSessionPriorityDropped, 13);
+        record_event_count_sample(Event::DecryptAuthenticatedSessionBulkDropped, 17);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -858,6 +882,16 @@ mod tests {
         assert_eq!(
             EVENTS[Event::DecryptFallbackPriorityGated as usize].load(Relaxed) - gated_before,
             11
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptAuthenticatedSessionPriorityDropped as usize].load(Relaxed)
+                - auth_priority_before,
+            13
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed)
+                - auth_bulk_before,
+            17
         );
     }
 }

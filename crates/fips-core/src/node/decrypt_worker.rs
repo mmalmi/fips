@@ -1070,6 +1070,7 @@ impl DecryptWorkerFallbackSender {
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
         let packet_count = event.packet_count();
+        let drop_event = decrypt_worker_event_drop_event(&event, lane);
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
         if matches!(lane, DecryptWorkerLane::Bulk) {
             let Some(previous) = try_reserve_bulk_packets_with_previous(
@@ -1077,7 +1078,7 @@ impl DecryptWorkerFallbackSender {
                 self.bulk_packet_cap,
                 packet_count,
             ) else {
-                record_decrypt_fallback_drop_count(lane, packet_count);
+                record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 return false;
             };
             let queued = previous.saturating_add(packet_count);
@@ -1099,7 +1100,7 @@ impl DecryptWorkerFallbackSender {
                 if matches!(lane, DecryptWorkerLane::Bulk) {
                     release_bulk_packets(&self.bulk_queued_packets, packet_count);
                 }
-                record_decrypt_fallback_drop_count(lane, packet_count);
+                record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
                 false
             }
             Err(TokioTrySendError::Closed(_)) => {
@@ -1138,6 +1139,34 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
         DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
+    }
+}
+
+fn decrypt_worker_event_drop_event(
+    event: &DecryptWorkerEvent,
+    lane: DecryptWorkerLane,
+) -> crate::perf_profile::Event {
+    match event {
+        DecryptWorkerEvent::AuthenticatedSession(_)
+        | DecryptWorkerEvent::DirectSessionCommit(_)
+        | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+        | DecryptWorkerEvent::DirectSessionData(_) => match lane {
+            DecryptWorkerLane::Priority => {
+                crate::perf_profile::Event::DecryptAuthenticatedSessionPriorityDropped
+            }
+            DecryptWorkerLane::Bulk => {
+                crate::perf_profile::Event::DecryptAuthenticatedSessionBulkDropped
+            }
+        },
+        DecryptWorkerEvent::Plaintext(_)
+        | DecryptWorkerEvent::PlaintextBatch(_)
+        | DecryptWorkerEvent::FspDecryptFailure(_)
+        | DecryptWorkerEvent::DecryptFailure(_) => match lane {
+            DecryptWorkerLane::Priority => {
+                crate::perf_profile::Event::DecryptFallbackPriorityDropped
+            }
+            DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFallbackBulkDropped,
+        },
     }
 }
 
@@ -1776,11 +1805,11 @@ fn record_decrypt_worker_priority_drop(worker: usize, kind: &'static str) {
     }
 }
 
-fn record_decrypt_fallback_drop_count(lane: DecryptWorkerLane, count: usize) {
-    let event = match lane {
-        DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptFallbackPriorityDropped,
-        DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFallbackBulkDropped,
-    };
+fn record_decrypt_worker_return_drop_count(
+    event: crate::perf_profile::Event,
+    lane: DecryptWorkerLane,
+    count: usize,
+) {
     crate::perf_profile::record_event_count(event, count as u64);
     static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
     let n = FULL_COUNT.fetch_add(count as u64, Ordering::Relaxed);
@@ -1789,7 +1818,7 @@ fn record_decrypt_fallback_drop_count(lane: DecryptWorkerLane, count: usize) {
             ?lane,
             drops = n + count as u64,
             dropped = count,
-            "DecryptWorker fallback channel full; dropping worker event"
+            "DecryptWorker return channel full; dropping worker event"
         );
     }
 }
@@ -3133,6 +3162,43 @@ mod tests {
                 )),
             }),
         }
+    }
+
+    #[test]
+    fn decrypt_worker_return_drop_metric_splits_fallback_and_authenticated_outputs() {
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        let plaintext = dummy_plaintext_event(bulk_len);
+        assert_eq!(
+            decrypt_worker_event_drop_event(&plaintext, plaintext.lane()),
+            crate::perf_profile::Event::DecryptFallbackBulkDropped
+        );
+
+        let failure = dummy_failure_event();
+        assert_eq!(
+            decrypt_worker_event_drop_event(&failure, failure.lane()),
+            crate::perf_profile::Event::DecryptFallbackPriorityDropped
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(1);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let bulk_payload = vec![0x55; bulk_len];
+        let output = dummy_direct_endpoint_output(fallback_tx, sink, source_peer, 7, &bulk_payload);
+        assert_eq!(
+            decrypt_worker_event_drop_event(&output.event, output.event.lane()),
+            crate::perf_profile::Event::DecryptAuthenticatedSessionBulkDropped
+        );
+
+        let DecryptWorkerEvent::DirectSessionCommit(mut commit) = output.event else {
+            panic!("expected direct session commit");
+        };
+        commit.lane = DecryptWorkerLane::Priority;
+        let priority_commit = DecryptWorkerEvent::DirectSessionCommit(commit);
+        assert_eq!(
+            decrypt_worker_event_drop_event(&priority_commit, priority_commit.lane()),
+            crate::perf_profile::Event::DecryptAuthenticatedSessionPriorityDropped
+        );
     }
 
     fn dummy_fsp_job(packet_len: usize) -> FspDecryptJob {
