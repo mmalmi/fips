@@ -4344,6 +4344,14 @@ impl Node {
 
     async fn handle_endpoint_send_batch_command(&mut self, command: EndpointSendBatchCommand) {
         let (remote, payloads, queued_at) = command.into_parts();
+        // The command queue wait ends when rx_loop starts handling the batch.
+        // Count one sample per payload without charging earlier payload send
+        // work to later payloads' queue residence.
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::EndpointCommandWait,
+            queued_at,
+            payloads.len() as u64,
+        );
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
@@ -4355,17 +4363,12 @@ impl Node {
                 .get(&dest_addr)
                 .is_some_and(|entry| entry.is_established())
         {
-            self.handle_established_endpoint_send_batch(
-                dest_addr,
-                dest_pubkey,
-                payloads,
-                queued_at,
-            )
-            .await;
+            self.handle_established_endpoint_send_batch(dest_addr, dest_pubkey, payloads)
+                .await;
             return;
         }
 
-        self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads, queued_at)
+        self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
             .await;
     }
 
@@ -4374,13 +4377,8 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) {
         for payload in payloads {
-            crate::perf_profile::record_since(
-                crate::perf_profile::Stage::EndpointCommandWait,
-                queued_at,
-            );
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
             let _ = self
                 .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
@@ -4394,18 +4392,12 @@ impl Node {
         dest_addr: NodeAddr,
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
     ) {
         let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
             Ok(route) => route,
             Err(_) => {
-                self.handle_endpoint_send_batch_slow_path(
-                    dest_addr,
-                    dest_pubkey,
-                    payloads,
-                    queued_at,
-                )
-                .await;
+                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
+                    .await;
                 return;
             }
         };
@@ -4413,10 +4405,6 @@ impl Node {
         let mut use_reused_route = true;
 
         for payload in payloads {
-            crate::perf_profile::record_since(
-                crate::perf_profile::Stage::EndpointCommandWait,
-                queued_at,
-            );
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
 
             if !use_reused_route {
