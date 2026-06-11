@@ -204,6 +204,32 @@ fn endpoint_event_queue_owns_backlog_message_count() {
     assert_eq!(endpoint_io.event_tx.queued_messages(), 0);
 }
 
+#[test]
+fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel();
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0x11; 32]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("mixed endpoint event batch should enqueue");
+
+    match event_rx.try_recv().expect("priority event") {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0x11),
+        event => panic!("expected priority data event, got {event:?}"),
+    }
+    match event_rx.try_recv().expect("bulk event") {
+        NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload[0], 0xaa),
+        event => panic!("expected bulk data event, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn make_test_connected_udp_pair(
     transport_id: TransportId,

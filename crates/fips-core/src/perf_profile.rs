@@ -32,13 +32,15 @@
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
+//!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
+//!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 18;
+const N_STAGES: usize = 20;
 const N_EVENTS: usize = 23;
 const HIST_BUCKETS: usize = 48;
 
@@ -90,6 +92,12 @@ pub enum Stage {
     /// Bulk-sized transport receive wait, split from the aggregate
     /// `transport_queue_wait` so bulk pressure cannot hide priority behavior.
     TransportBulkQueueWait = 17,
+    /// Priority-sized endpoint event wait, split from the aggregate
+    /// `endpoint_event_wait` so app/control reserve can be verified.
+    EndpointPriorityEventWait = 18,
+    /// Bulk-sized endpoint event wait, split from the aggregate
+    /// `endpoint_event_wait` so bulk pressure cannot hide priority behavior.
+    EndpointBulkEventWait = 19,
 }
 
 impl Stage {
@@ -113,6 +121,8 @@ impl Stage {
             Stage::EndpointEventWait => "endpoint_event_wait",
             Stage::TransportPriorityQueueWait => "transport_priority_queue_wait",
             Stage::TransportBulkQueueWait => "transport_bulk_queue_wait",
+            Stage::EndpointPriorityEventWait => "endpoint_priority_event_wait",
+            Stage::EndpointBulkEventWait => "endpoint_bulk_event_wait",
         }
     }
 }
@@ -137,6 +147,8 @@ fn stage_from_index(idx: usize) -> Stage {
         15 => Stage::EndpointEventWait,
         16 => Stage::TransportPriorityQueueWait,
         17 => Stage::TransportBulkQueueWait,
+        18 => Stage::EndpointPriorityEventWait,
+        19 => Stage::EndpointBulkEventWait,
         _ => unreachable!(),
     }
 }

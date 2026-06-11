@@ -66,13 +66,14 @@ use crate::{
 use rand::Rng;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use std::thread::JoinHandle;
 use thiserror::Error;
 use tracing::{debug, warn};
 
 const LOCAL_SEND_FAILURE_FAST_DEAD_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+pub(crate) const ENDPOINT_EVENT_PRIORITY_MAX_LEN: usize = 512;
 const SESSION_DIRECT_DEGRADED_HOLD_MS: u64 = 20_000;
 const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
 const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
@@ -1127,14 +1128,58 @@ pub(crate) struct EndpointDataIo {
 /// Observable owner for endpoint events delivered to embedded applications.
 #[derive(Debug, Clone)]
 pub(crate) struct EndpointEventSender {
-    tx: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
+    priority: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
+    bulk: tokio::sync::mpsc::UnboundedSender<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
+    ready: Arc<EndpointEventReady>,
 }
 
 #[derive(Debug)]
 pub(crate) struct EndpointEventReceiver {
-    rx: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    priority: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
+    bulk: tokio::sync::mpsc::UnboundedReceiver<NodeEndpointEvent>,
     queued_messages: Arc<AtomicUsize>,
+    ready: Arc<EndpointEventReady>,
+    priority_closed: bool,
+    bulk_closed: bool,
+}
+
+#[derive(Debug, Default)]
+struct EndpointEventReady {
+    sequence: StdMutex<u64>,
+    changed: Condvar,
+}
+
+impl EndpointEventReady {
+    fn notify(&self) {
+        if let Ok(mut sequence) = self.sequence.lock() {
+            *sequence = sequence.wrapping_add(1);
+            self.changed.notify_one();
+        }
+    }
+
+    fn snapshot(&self) -> u64 {
+        self.sequence.lock().map(|sequence| *sequence).unwrap_or(0)
+    }
+
+    fn wait_for_change(&self, observed: &mut u64) {
+        let Ok(mut sequence) = self.sequence.lock() else {
+            return;
+        };
+        while *sequence == *observed {
+            match self.changed.wait(sequence) {
+                Ok(next) => sequence = next,
+                Err(_) => return,
+            }
+        }
+        *observed = *sequence;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EndpointEventLane {
+    Priority,
+    Bulk,
 }
 
 /// Delivery-side owner for endpoint data emitted by session receive handling.
@@ -1152,16 +1197,24 @@ pub(in crate::node) struct EndpointEventRuntime {
 
 impl EndpointEventSender {
     fn channel() -> (Self, EndpointEventReceiver) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
         let queued_messages = Arc::new(AtomicUsize::new(0));
+        let ready = Arc::new(EndpointEventReady::default());
         (
             Self {
-                tx,
+                priority: priority_tx,
+                bulk: bulk_tx,
                 queued_messages: Arc::clone(&queued_messages),
+                ready: Arc::clone(&ready),
             },
             EndpointEventReceiver {
-                rx,
+                priority: priority_rx,
+                bulk: bulk_rx,
                 queued_messages,
+                ready,
+                priority_closed: false,
+                bulk_closed: false,
             },
         )
     }
@@ -1170,10 +1223,56 @@ impl EndpointEventSender {
         &self,
         event: NodeEndpointEvent,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        match event {
+            NodeEndpointEvent::Data { .. } => self.send_lane(event),
+            NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            } => self.send_data_batch(messages, queued_at),
+        }
+    }
+
+    fn send_data_batch(
+        &self,
+        messages: Vec<EndpointDataDelivery>,
+        queued_at: Option<std::time::Instant>,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let mut priority_messages = Vec::new();
+        let mut bulk_messages = Vec::new();
+        for message in messages {
+            if message.is_priority_sized() {
+                priority_messages.push(message);
+            } else {
+                bulk_messages.push(message);
+            }
+        }
+
+        if let Some(event) = NodeEndpointEvent::from_delivery_messages(priority_messages, queued_at)
+        {
+            self.send_lane(event)?;
+        }
+        if let Some(event) = NodeEndpointEvent::from_delivery_messages(bulk_messages, queued_at) {
+            self.send_lane(event)?;
+        }
+        Ok(())
+    }
+
+    fn send_lane(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         let count = event.message_count();
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
-        match self.tx.send(event) {
+        let send_result = match event.lane() {
+            EndpointEventLane::Priority => self.priority.send(event),
+            EndpointEventLane::Bulk => self.bulk.send(event),
+        };
+        match send_result {
             Ok(()) => {
                 if previous < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
                     && queued >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
@@ -1182,10 +1281,12 @@ impl EndpointEventSender {
                         crate::perf_profile::Event::EndpointEventBacklogHigh,
                     );
                 }
+                self.ready.notify();
                 Ok(())
             }
             Err(error) => {
                 self.queued_messages.fetch_sub(count, Relaxed);
+                self.ready.notify();
                 Err(error)
             }
         }
@@ -1194,6 +1295,12 @@ impl EndpointEventSender {
     #[cfg(test)]
     pub(crate) fn queued_messages(&self) -> usize {
         self.queued_messages.load(Relaxed)
+    }
+}
+
+impl Drop for EndpointEventSender {
+    fn drop(&mut self) {
+        self.ready.notify();
     }
 }
 
@@ -1285,21 +1392,95 @@ impl EndpointEventRuntime {
 
 impl EndpointEventReceiver {
     pub(crate) async fn recv(&mut self) -> Option<NodeEndpointEvent> {
-        let event = self.rx.recv().await?;
-        self.note_dequeued(&event);
-        Some(event)
+        loop {
+            match self.try_recv() {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+
+            tokio::select! {
+                biased;
+                event = self.priority.recv(), if !self.priority_closed => {
+                    match event {
+                        Some(event) => {
+                            self.note_dequeued(&event);
+                            return Some(event);
+                        }
+                        None => self.priority_closed = true,
+                    }
+                }
+                event = self.bulk.recv(), if !self.bulk_closed => {
+                    match event {
+                        Some(event) => {
+                            self.note_dequeued(&event);
+                            return Some(event);
+                        }
+                        None => self.bulk_closed = true,
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn blocking_recv(&mut self) -> Option<NodeEndpointEvent> {
-        let event = self.rx.blocking_recv()?;
-        self.note_dequeued(&event);
-        Some(event)
+        let mut observed = self.ready.snapshot();
+        loop {
+            match self.try_recv() {
+                Ok(event) => return Some(event),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    self.ready.wait_for_change(&mut observed);
+                }
+            }
+        }
     }
 
     pub(crate) fn try_recv(
         &mut self,
     ) -> Result<NodeEndpointEvent, tokio::sync::mpsc::error::TryRecvError> {
-        let event = self.rx.try_recv()?;
+        match self.try_recv_priority() {
+            Ok(event) => return Ok(event),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+        }
+
+        match self.bulk.try_recv() {
+            Ok(event) => {
+                self.note_dequeued(&event);
+                Ok(event)
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                if self.priority_closed && self.bulk_closed {
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                } else {
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.bulk_closed = true;
+                if self.priority_closed {
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                } else {
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn try_recv_priority(
+        &mut self,
+    ) -> Result<NodeEndpointEvent, tokio::sync::mpsc::error::TryRecvError> {
+        let event = match self.priority.try_recv() {
+            Ok(event) => event,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                return Err(tokio::sync::mpsc::error::TryRecvError::Empty);
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.priority_closed = true;
+                return Err(tokio::sync::mpsc::error::TryRecvError::Disconnected);
+            }
+        };
         self.note_dequeued(&event);
         Ok(event)
     }
@@ -1555,6 +1736,10 @@ impl EndpointDataDelivery {
             payload,
         }
     }
+
+    fn is_priority_sized(&self) -> bool {
+        self.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN
+    }
 }
 
 /// Endpoint data events emitted by the node session receive path.
@@ -1576,6 +1761,46 @@ impl NodeEndpointEvent {
         match self {
             NodeEndpointEvent::Data { .. } => 1,
             NodeEndpointEvent::DataBatch { messages, .. } => messages.len(),
+        }
+    }
+
+    fn lane(&self) -> EndpointEventLane {
+        match self {
+            NodeEndpointEvent::Data { payload, .. } => {
+                if payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
+                    EndpointEventLane::Priority
+                } else {
+                    EndpointEventLane::Bulk
+                }
+            }
+            NodeEndpointEvent::DataBatch { messages, .. } => {
+                if messages.iter().all(EndpointDataDelivery::is_priority_sized) {
+                    EndpointEventLane::Priority
+                } else {
+                    EndpointEventLane::Bulk
+                }
+            }
+        }
+    }
+
+    fn from_delivery_messages(
+        mut messages: Vec<EndpointDataDelivery>,
+        queued_at: Option<std::time::Instant>,
+    ) -> Option<Self> {
+        match messages.len() {
+            0 => None,
+            1 => {
+                let message = messages.pop().expect("one endpoint message should exist");
+                Some(NodeEndpointEvent::Data {
+                    source_peer: message.source_peer,
+                    payload: message.payload,
+                    queued_at,
+                })
+            }
+            _ => Some(NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            }),
         }
     }
 }
