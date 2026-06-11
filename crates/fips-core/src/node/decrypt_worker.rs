@@ -50,7 +50,9 @@ use crate::node::session_wire::{
     FSP_FLAG_K, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PORT_HEADER_SIZE, FSP_PORT_IPV6_SHIM,
     FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
 };
-use crate::node::{EndpointDataDelivery, NodeDeliveredPacket};
+use crate::node::{
+    EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
+};
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
@@ -64,14 +66,11 @@ use tokio::sync::mpsc::{
 };
 use tracing::{debug, trace, warn};
 
-// `endpoint_event_tx` used to ride on every `DecryptJob` so the worker
-// could deliver inbound EndpointData straight to the API layer,
-// bypassing rx_loop. It was removed during the FMP-only refactor: it
-// bloated `DecryptJob` with an extra Arc clone per packet and, worse,
-// it was used as the production-path predicate in `handle_encrypted_frame`,
-// silently disabling the worker for TUN-only configurations that never call
-// `endpoint_data_io()`. The current worker may decode local data, but rx_loop
-// remains the canonical commit gate before final delivery.
+// `endpoint_event_tx` used to ride on every `DecryptJob`, bloating the hot
+// packet shape with an extra Arc clone and accidentally gating TUN-only worker
+// use. Keep it pool-owned instead: workers may deliver priority-sized endpoint
+// data after the direct-session commit is accepted, while bulk endpoint payloads
+// stay on the rx-loop batched path that benchmarks better for sustained traffic.
 
 use crate::noise::ReplayWindow;
 
@@ -679,30 +678,43 @@ pub(crate) enum DecryptDirectSessionDelivery {
 pub(crate) struct DecryptDirectSessionDeliverySink {
     tun_tx: Option<TunTx>,
     external_packet_tx: Option<TokioSender<NodeDeliveredPacket>>,
+    endpoint_event_tx: Option<EndpointEventSender>,
 }
 
 impl DecryptDirectSessionDeliverySink {
     pub(crate) fn new(
         tun_tx: Option<TunTx>,
         external_packet_tx: Option<TokioSender<NodeDeliveredPacket>>,
+        endpoint_event_tx: Option<EndpointEventSender>,
     ) -> Self {
         Self {
             tun_tx,
             external_packet_tx,
+            endpoint_event_tx,
         }
     }
 
     fn can_deliver(&self, delivery: &DecryptDirectSessionDelivery) -> bool {
         match delivery {
-            // Endpoint delivery relies on rx-loop batching today. Sending
-            // per-packet endpoint events from worker threads regressed nvpn
-            // embedded-throughput evidence; keep it on the old batched path
-            // until commit+event batching moves with it.
-            DecryptDirectSessionDelivery::EndpointData(_) => false,
+            DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                self.endpoint_event_tx.is_some() && delivery.is_priority_sized()
+            }
             DecryptDirectSessionDelivery::Ipv6Packet(_) => {
                 self.external_packet_tx.is_some() || self.tun_tx.is_some()
             }
         }
+    }
+
+    fn same_endpoint_event_channel(&self, other: &Self) -> bool {
+        match (&self.endpoint_event_tx, &other.endpoint_event_tx) {
+            (Some(lhs), Some(rhs)) => lhs.same_channels(rhs),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn endpoint_event_sender(&self) -> Option<&EndpointEventSender> {
+        self.endpoint_event_tx.as_ref()
     }
 
     fn deliver(
@@ -713,7 +725,21 @@ impl DecryptDirectSessionDeliverySink {
         delivery: DecryptDirectSessionDelivery,
     ) {
         match delivery {
-            DecryptDirectSessionDelivery::EndpointData(_) => {}
+            DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                let Some(endpoint_event_tx) = &self.endpoint_event_tx else {
+                    return;
+                };
+                let _t_deliver =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
+                let event = NodeEndpointEvent::Data {
+                    source_peer: delivery.source_peer,
+                    payload: delivery.payload,
+                    queued_at: crate::perf_profile::stamp(),
+                };
+                if let Err(error) = endpoint_event_tx.send(event) {
+                    debug!(error = %error, "Failed to deliver worker-decoded endpoint data");
+                }
+            }
             DecryptDirectSessionDelivery::Ipv6Packet(mut packet) => {
                 if ce_flag {
                     mark_ipv6_ecn_ce(&mut packet);
@@ -764,6 +790,30 @@ impl PendingDirectSessionDelivery {
             self.ce_flag,
             self.delivery,
         );
+    }
+
+    fn is_endpoint_data(&self) -> bool {
+        match &self.delivery {
+            DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                self.sink.endpoint_event_sender().is_some() && delivery.is_priority_sized()
+            }
+            DecryptDirectSessionDelivery::Ipv6Packet(_) => false,
+        }
+    }
+
+    fn into_endpoint_data(
+        self,
+    ) -> Result<(DecryptDirectSessionDeliverySink, EndpointDataDelivery), Self> {
+        match self.delivery {
+            DecryptDirectSessionDelivery::EndpointData(delivery) => Ok((self.sink, delivery)),
+            delivery => Err(Self {
+                sink: self.sink,
+                source_addr: self.source_addr,
+                source_peer: self.source_peer,
+                ce_flag: self.ce_flag,
+                delivery,
+            }),
+        }
     }
 }
 
@@ -856,6 +906,7 @@ pub(crate) enum DecryptWorkerEvent {
     PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedSession(DecryptAuthenticatedSession),
     DirectSessionCommit(DecryptDirectSessionCommit),
+    DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
     DirectSessionData(DecryptDirectSessionData),
     FspDecryptFailure(DecryptFspFailureReport),
     DecryptFailure(DecryptFailureReport),
@@ -871,6 +922,7 @@ impl DecryptWorkerEvent {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
             Self::AuthenticatedSession(_) => 1,
             Self::DirectSessionCommit(_) => 1,
+            Self::DirectSessionCommitBatch(commits) => commits.len(),
             Self::DirectSessionData(_) => 1,
             Self::FspDecryptFailure(_) => 1,
             Self::PlaintextBatch(fallbacks) => fallbacks.len(),
@@ -887,6 +939,11 @@ impl DecryptWorkerEvent {
             }
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at = queued_at,
+            Self::DirectSessionCommitBatch(commits) => {
+                for commit in commits {
+                    commit.trace_enqueued_at = queued_at;
+                }
+            }
             Self::DirectSessionData(direct) => direct.trace_enqueued_at = queued_at,
             Self::FspDecryptFailure(report) => report.trace_enqueued_at = queued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
@@ -901,6 +958,9 @@ impl DecryptWorkerEvent {
                 .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at,
+            Self::DirectSessionCommitBatch(commits) => {
+                commits.first().and_then(|commit| commit.trace_enqueued_at)
+            }
             Self::DirectSessionData(direct) => direct.trace_enqueued_at,
             Self::FspDecryptFailure(report) => report.trace_enqueued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at,
@@ -917,6 +977,7 @@ impl DecryptWorkerEvent {
         match self {
             Self::AuthenticatedSession(_)
             | Self::DirectSessionCommit(_)
+            | Self::DirectSessionCommitBatch(_)
             | Self::DirectSessionData(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
@@ -1075,6 +1136,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
         DecryptWorkerEvent::DirectSessionCommit(commit) => commit.lane,
+        DecryptWorkerEvent::DirectSessionCommitBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
         DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
@@ -1862,11 +1924,25 @@ impl DecryptWorkerOutput {
                 if matches!(fallback.lane(), DecryptWorkerLane::Bulk)
         )
     }
+
+    fn is_batchable_direct_endpoint(&self) -> bool {
+        matches!(
+            (&self.event, &self.direct_delivery),
+            (
+                DecryptWorkerEvent::DirectSessionCommit(commit),
+                Some(delivery),
+            ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_endpoint_data()
+        )
+    }
 }
 
 struct DecryptPlaintextFallbackBatch {
     fallback_tx: Option<DecryptWorkerFallbackSender>,
     fallbacks: Vec<DecryptFallback>,
+    endpoint_fallback_tx: Option<DecryptWorkerFallbackSender>,
+    endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
+    endpoint_commits: Vec<DecryptDirectSessionCommit>,
+    endpoint_deliveries: Vec<EndpointDataDelivery>,
 }
 
 impl DecryptPlaintextFallbackBatch {
@@ -1874,6 +1950,10 @@ impl DecryptPlaintextFallbackBatch {
         Self {
             fallback_tx: None,
             fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            endpoint_fallback_tx: None,
+            endpoint_sink: None,
+            endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -1886,6 +1966,7 @@ impl DecryptPlaintextFallbackBatch {
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_bulk_plaintext() {
+            self.flush_endpoint();
             let DecryptWorkerOutput {
                 fallback_tx,
                 event,
@@ -1916,11 +1997,62 @@ impl DecryptPlaintextFallbackBatch {
             }
             return;
         }
+        if output.is_batchable_direct_endpoint() {
+            self.flush_plaintext();
+            let DecryptWorkerOutput {
+                fallback_tx,
+                event,
+                direct_delivery,
+            } = output;
+            let DecryptWorkerEvent::DirectSessionCommit(commit) = event else {
+                unreachable!("checked batchable direct endpoint commit output")
+            };
+            let Some(direct_delivery) = direct_delivery else {
+                unreachable!("checked batchable direct endpoint delivery")
+            };
+            let Ok((sink, delivery)) = direct_delivery.into_endpoint_data() else {
+                unreachable!("checked batchable endpoint delivery")
+            };
+
+            let same_fallback = self
+                .endpoint_fallback_tx
+                .as_ref()
+                .map_or(true, |current| current.same_channels(&fallback_tx));
+            let same_endpoint = self
+                .endpoint_sink
+                .as_ref()
+                .map_or(true, |current| current.same_endpoint_event_channel(&sink));
+            if !same_fallback || !same_endpoint {
+                self.flush_endpoint();
+            }
+            if self.endpoint_fallback_tx.is_none() {
+                self.endpoint_fallback_tx = Some(fallback_tx);
+            }
+            if self.endpoint_sink.is_none() {
+                self.endpoint_sink = Some(sink);
+            }
+            let batch_max = Self::batch_max_for(
+                self.endpoint_fallback_tx
+                    .as_ref()
+                    .expect("fallback sender set before batching direct endpoint completions"),
+            );
+            self.endpoint_commits.push(commit);
+            self.endpoint_deliveries.push(delivery);
+            if self.endpoint_commits.len() >= batch_max {
+                self.flush_endpoint();
+            }
+            return;
+        }
         self.flush();
         let _ = output.send();
     }
 
     fn flush(&mut self) {
+        self.flush_plaintext();
+        self.flush_endpoint();
+    }
+
+    fn flush_plaintext(&mut self) {
         if self.fallbacks.is_empty() {
             return;
         }
@@ -1937,6 +2069,79 @@ impl DecryptPlaintextFallbackBatch {
             DecryptWorkerEvent::PlaintextBatch(fallbacks)
         };
         let _ = fallback_tx.send(event);
+    }
+
+    fn flush_endpoint(&mut self) {
+        if self.endpoint_commits.is_empty() {
+            return;
+        }
+        let Some(fallback_tx) = self.endpoint_fallback_tx.take() else {
+            return;
+        };
+        let Some(sink) = self.endpoint_sink.take() else {
+            self.endpoint_commits.clear();
+            self.endpoint_deliveries.clear();
+            return;
+        };
+        let Some(endpoint_event_tx) = sink.endpoint_event_sender().cloned() else {
+            self.endpoint_commits.clear();
+            self.endpoint_deliveries.clear();
+            return;
+        };
+
+        let event = if self.endpoint_commits.len() == 1 {
+            DecryptWorkerEvent::DirectSessionCommit(
+                self.endpoint_commits
+                    .pop()
+                    .expect("checked single direct endpoint commit"),
+            )
+        } else {
+            let commits = std::mem::replace(
+                &mut self.endpoint_commits,
+                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            );
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits)
+        };
+
+        if !fallback_tx.send(event) {
+            self.endpoint_deliveries.clear();
+            return;
+        }
+
+        let count = self.endpoint_deliveries.len();
+        if count == 0 {
+            return;
+        }
+        let queued_at = crate::perf_profile::stamp();
+        let endpoint_event = if count == 1 {
+            let delivery = self
+                .endpoint_deliveries
+                .pop()
+                .expect("checked single endpoint delivery");
+            NodeEndpointEvent::Data {
+                source_peer: delivery.source_peer,
+                payload: delivery.payload,
+                queued_at,
+            }
+        } else {
+            let messages = std::mem::replace(
+                &mut self.endpoint_deliveries,
+                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            );
+            NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            }
+        };
+        let _t_deliver =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
+        if let Err(error) = endpoint_event_tx.send(endpoint_event) {
+            debug!(
+                error = %error,
+                messages = count,
+                "Failed to deliver worker-decoded endpoint data batch"
+            );
+        }
     }
 }
 
@@ -2853,6 +3058,59 @@ mod tests {
         })
     }
 
+    fn dummy_direct_endpoint_output(
+        fallback_tx: DecryptWorkerFallbackSender,
+        sink: DecryptDirectSessionDeliverySink,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        payload: &[u8],
+    ) -> DecryptWorkerOutput {
+        let source_addr = *source_peer.node_addr();
+        let payload_len = payload.len();
+        let commit = DecryptDirectSessionCommit::for_test(
+            DecryptFmpBookkeeping {
+                source_peer,
+                transport_id: TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 1_000,
+                packet_len: payload_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_counter as u32,
+                fmp_flags: 0,
+            },
+            source_addr,
+            source_peer,
+            false,
+            FspReceiveSync {
+                counter: fmp_counter,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: fmp_counter as u32,
+                plaintext_len: payload_len,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            payload_len,
+            false,
+        );
+
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::DirectSessionCommit(commit),
+            direct_delivery: Some(PendingDirectSessionDelivery {
+                sink,
+                source_addr,
+                source_peer,
+                ce_flag: false,
+                delivery: DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                    source_peer,
+                    payload.to_vec(),
+                )),
+            }),
+        }
+    }
+
     fn dummy_fsp_job(packet_len: usize) -> FspDecryptJob {
         let source_peer = test_source_peer();
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
@@ -3283,7 +3541,7 @@ mod tests {
             fallback_tx,
             event: DecryptWorkerEvent::DirectSessionCommit(commit),
             direct_delivery: Some(PendingDirectSessionDelivery {
-                sink: DecryptDirectSessionDeliverySink::new(Some(tun_tx), None),
+                sink: DecryptDirectSessionDeliverySink::new(Some(tun_tx), None, None),
                 source_addr,
                 source_peer,
                 ce_flag: true,
@@ -3538,6 +3796,7 @@ mod tests {
             }
             DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
@@ -3766,6 +4025,7 @@ mod tests {
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionData(_) => panic!("expected failure report"),
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected failure report"),
         }
@@ -4057,6 +4317,7 @@ mod tests {
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
@@ -4142,6 +4403,145 @@ mod tests {
         assert_eq!(event.packet_count(), 1);
         fallback_rx.release_dequeued_event(&event);
         assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
+    #[test]
+    fn decrypt_worker_direct_endpoint_batch_waits_for_commit_queue_acceptance() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(dummy_direct_endpoint_output(
+            fallback_tx.clone(),
+            sink.clone(),
+            source_peer,
+            1,
+            b"direct-one",
+        ));
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "first endpoint completion should wait for a batch flush"
+        );
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "endpoint bytes must not release before the commit is queued"
+        );
+
+        batch.push_output(dummy_direct_endpoint_output(
+            fallback_tx,
+            sink,
+            source_peer,
+            2,
+            b"direct-two",
+        ));
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "second endpoint completion should still wait below batch cap"
+        );
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "endpoint bytes must still wait below batch cap"
+        );
+        batch.flush();
+
+        let event = fallback_rx.bulk.try_recv().expect("direct commit batch");
+        assert_eq!(event.packet_count(), 2);
+        match &event {
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
+                assert_eq!(commits.len(), 2);
+                assert_eq!(commits[0].source_addr, *source_peer.node_addr());
+                assert_eq!(commits[1].source_addr, *source_peer.node_addr());
+                assert_eq!(commits[0].fmp.fmp_counter, 1);
+                assert_eq!(commits[1].fmp.fmp_counter, 2);
+                assert!(commits.iter().all(|commit| !commit.delivered_ipv6));
+            }
+            DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected a commit batch"),
+            DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected a direct commit batch"),
+        }
+        fallback_rx.release_dequeued_event(&event);
+
+        match endpoint_rx.try_recv().expect("endpoint batch") {
+            NodeEndpointEvent::DataBatch { messages, .. } => {
+                assert_eq!(messages.len(), 2);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[1].source_peer, source_peer);
+                assert_eq!(messages[0].payload, b"direct-one");
+                assert_eq!(messages[1].payload, b"direct-two");
+            }
+            NodeEndpointEvent::Data { .. } => panic!("expected endpoint data batch"),
+        }
+    }
+
+    #[test]
+    fn decrypt_worker_direct_endpoint_batch_drops_delivery_when_commit_queue_is_full() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 2);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        assert!(fallback_tx.send(dummy_plaintext_event(bulk_len)));
+        assert_eq!(
+            fallback_rx.bulk_queued_packets(),
+            1,
+            "test precondition should reserve one bulk packet slot"
+        );
+
+        let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(dummy_direct_endpoint_output(
+            fallback_tx.clone(),
+            sink.clone(),
+            source_peer,
+            1,
+            b"drop-one",
+        ));
+        batch.push_output(dummy_direct_endpoint_output(
+            fallback_tx,
+            sink,
+            source_peer,
+            2,
+            b"drop-two",
+        ));
+
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "endpoint bytes must not release when their commit batch cannot reserve fallback space"
+        );
+
+        let event = fallback_rx.bulk.try_recv().expect("pre-filled bulk event");
+        assert!(
+            matches!(event, DecryptWorkerEvent::Plaintext(_)),
+            "failed endpoint commit batch must not enqueue after pressure rejection"
+        );
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "only the pre-filled event should have reached the bulk fallback lane"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_keeps_bulk_endpoint_payloads_on_rx_loop_batched_path() {
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(8);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let source_peer = test_source_peer();
+        let delivery = DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+            source_peer,
+            vec![0; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1],
+        ));
+
+        assert!(
+            !sink.can_deliver(&delivery),
+            "bulk endpoint payloads stay on the rx-loop batched path until worker-side delivery no longer regresses throughput"
+        );
     }
 
     #[test]
@@ -4413,6 +4813,9 @@ mod tests {
             DecryptWorkerEvent::DirectSessionCommit(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
@@ -4562,6 +4965,9 @@ mod tests {
                 panic!("invalid packet must not produce plaintext")
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
             DecryptWorkerEvent::DirectSessionData(_) => {
@@ -4806,6 +5212,9 @@ mod tests {
             DecryptWorkerEvent::DirectSessionCommit(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -4888,6 +5297,9 @@ mod tests {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::DirectSessionData(_) => {

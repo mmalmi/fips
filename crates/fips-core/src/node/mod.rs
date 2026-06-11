@@ -1291,6 +1291,13 @@ impl EndpointEventSender {
         )
     }
 
+    pub(in crate::node) fn same_channels(&self, other: &Self) -> bool {
+        self.priority.same_channel(&other.priority)
+            && self.bulk.same_channel(&other.bulk)
+            && Arc::ptr_eq(&self.queued_messages, &other.queued_messages)
+            && Arc::ptr_eq(&self.ready, &other.ready)
+    }
+
     pub(crate) fn send(
         &self,
         event: NodeEndpointEvent,
@@ -1438,6 +1445,10 @@ impl EndpointEventRuntime {
 
     pub(in crate::node) fn is_attached(&self) -> bool {
         self.sender.is_some()
+    }
+
+    pub(in crate::node) fn sender(&self) -> Option<EndpointEventSender> {
+        self.sender.clone()
     }
 
     pub(in crate::node) fn begin_batch(&mut self) {
@@ -6964,6 +6975,7 @@ impl Node {
         decrypt_worker::DecryptDirectSessionDeliverySink::new(
             self.tun_tx.clone(),
             self.external_packet_tx.clone(),
+            self.endpoint_events.sender(),
         )
     }
 

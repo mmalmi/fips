@@ -740,6 +740,11 @@ impl Node {
             DecryptWorkerEvent::DirectSessionCommit(commit) => {
                 self.process_direct_session_commit_from_worker(commit).await;
             }
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
+                for commit in commits {
+                    self.process_direct_session_commit_from_worker(commit).await;
+                }
+            }
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 self.process_direct_session_data_from_worker(direct).await;
             }
