@@ -4,8 +4,8 @@ use crate::control::queries;
 use crate::control::{ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
-    DecryptFailureReport, DecryptFallback, DecryptJob, DecryptJobBatcher, DecryptWorkerEvent,
-    DecryptWorkerFallbackReceivers,
+    DECRYPT_FALLBACK_BACKLOG_HIGH_WATER, DecryptFailureReport, DecryptFallback, DecryptJob,
+    DecryptJobBatcher, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
@@ -26,11 +26,10 @@ const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
-/// Once a raw receive turn's worth of decrypt completions is already queued,
-/// continuing to feed more bulk ciphertext into workers before draining
-/// plaintext adds latency without improving liveness. The pressure path is
-/// gated off whenever raw priority packets are queued.
-const FALLBACK_PRESSURE_HIGH_WATER: usize = PACKET_DRAIN_BUDGET;
+/// Start the pressure drain at the same point where the decrypt fallback lane
+/// emits its backlog-high event. The pressure path is gated off whenever raw
+/// priority packets are queued.
+const FALLBACK_PRESSURE_HIGH_WATER: usize = DECRYPT_FALLBACK_BACKLOG_HIGH_WATER;
 const FALLBACK_PRESSURE_INTERLEAVE_EVERY: usize = 16;
 const FALLBACK_PRESSURE_DRAIN_BUDGET: usize = 256;
 const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;

@@ -690,6 +690,10 @@ mod tests {
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
         assert_eq!(N_EVENTS, 31);
         assert_eq!(
+            event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
+            "decrypt_fallback_backlog_high"
+        );
+        assert_eq!(
             event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
             "rx_loop_slow_maintenance_timeout"
         );
