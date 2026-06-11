@@ -621,6 +621,11 @@ impl DecryptJobBatcher {
         }
     }
 
+    #[cfg(test)]
+    fn pending_buffer_ptr(&self) -> *const DecryptJob {
+        self.jobs.as_ptr()
+    }
+
     pub(crate) fn push(&mut self, workers: &DecryptWorkerPool, job: DecryptJob) {
         if !job.is_bulk_lane() {
             self.flush(workers);
@@ -646,6 +651,12 @@ impl DecryptJobBatcher {
             return;
         };
         if self.jobs.is_empty() {
+            return;
+        }
+
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single pending job");
+            workers.dispatch_bulk_job(worker_idx, job);
             return;
         }
 
@@ -1914,11 +1925,35 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_job_batcher_reuses_pending_buffer_for_single_bulk_flush() {
+        let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let session_key = test_session_key(1, 104);
+        let mut batcher = DecryptJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+
+        batcher.push(&pool, dummy_bulk_decrypt_job(session_key));
+        batcher.flush(&pool);
+
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single-job flushes should not allocate a replacement pending buffer"
+        );
+        assert!(
+            matches!(
+                bulk_rx[0].try_recv().expect("single bulk item"),
+                DecryptWorkerBulkItem::Job(_)
+            ),
+            "single-job flush should still dispatch a single job, not a batch"
+        );
+    }
+
+    #[test]
     fn decrypt_job_batcher_limits_batch_width_to_worker_packet_capacity() {
         const WORKER_PACKET_CAP: usize = 8;
 
         let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, WORKER_PACKET_CAP);
-        let session_key = test_session_key(1, 104);
+        let session_key = test_session_key(1, 105);
         let mut batcher = DecryptJobBatcher::new();
 
         for _ in 0..=WORKER_PACKET_CAP {
