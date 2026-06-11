@@ -152,6 +152,7 @@ pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: UnboundedSender<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
+    track_backlog: bool,
 }
 
 /// Channel receiver for received packets.
@@ -159,6 +160,7 @@ pub struct PacketRx {
     priority: UnboundedReceiver<PacketQueueItem>,
     bulk: UnboundedReceiver<PacketQueueItem>,
     queued_packets: Arc<AtomicUsize>,
+    track_backlog: bool,
     pending_priority: Option<IntoIter<ReceivedPacket>>,
     pending_bulk: Option<IntoIter<ReceivedPacket>>,
     priority_closed: bool,
@@ -312,22 +314,30 @@ impl PacketTx {
         tx: &UnboundedSender<PacketQueueItem>,
         item: PacketQueueItem,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<PacketQueueItem>> {
-        let count = item.packet_count();
-        let previous = self.queued_packets.fetch_add(count, Relaxed);
+        let count = if self.track_backlog {
+            Some(item.packet_count())
+        } else {
+            None
+        };
+        let previous = count.map(|count| self.queued_packets.fetch_add(count, Relaxed));
         match tx.send(item) {
             Ok(()) => {
-                let queued = previous.saturating_add(count);
-                if previous < TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
-                    && queued >= TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
-                {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::TransportChannelBacklogHigh,
-                    );
+                if let (Some(count), Some(previous)) = (count, previous) {
+                    let queued = previous.saturating_add(count);
+                    if previous < TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+                        && queued >= TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER
+                    {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::TransportChannelBacklogHigh,
+                        );
+                    }
                 }
                 Ok(())
             }
             Err(error) => {
-                self.queued_packets.fetch_sub(count, Relaxed);
+                if let Some(count) = count {
+                    self.queued_packets.fetch_sub(count, Relaxed);
+                }
                 Err(error)
             }
         }
@@ -422,9 +432,11 @@ impl PacketRx {
         item: PacketQueueItem,
         lane: PacketLane,
     ) -> Option<ReceivedPacket> {
-        let packet_count = item.packet_count();
         item.record_dequeue_wait(lane);
-        self.queued_packets.fetch_sub(packet_count, Relaxed);
+        if self.track_backlog {
+            let packet_count = item.packet_count();
+            self.queued_packets.fetch_sub(packet_count, Relaxed);
+        }
         match item {
             PacketQueueItem::One(packet) => Some(packet),
             PacketQueueItem::Batch(packets) => {
@@ -451,6 +463,11 @@ impl PacketRx {
     }
 }
 
+#[inline]
+fn packet_channel_tracks_backlog() -> bool {
+    cfg!(test) || crate::perf_profile::enabled()
+}
+
 /// Create a packet channel.
 ///
 /// The `buffer` argument is kept for API stability with previous
@@ -461,16 +478,19 @@ pub fn packet_channel(_buffer: usize) -> (PacketTx, PacketRx) {
     let (priority_tx, priority_rx) = tokio::sync::mpsc::unbounded_channel();
     let (bulk_tx, bulk_rx) = tokio::sync::mpsc::unbounded_channel();
     let queued_packets = Arc::new(AtomicUsize::new(0));
+    let track_backlog = packet_channel_tracks_backlog();
     (
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
             queued_packets: Arc::clone(&queued_packets),
+            track_backlog,
         },
         PacketRx {
             priority: priority_rx,
             bulk: bulk_rx,
             queued_packets,
+            track_backlog,
             pending_priority: None,
             pending_bulk: None,
             priority_closed: false,
