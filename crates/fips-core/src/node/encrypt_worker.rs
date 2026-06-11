@@ -1137,7 +1137,7 @@ impl FairWorkerSender {
             };
         }
 
-        let job = if self.bulk_tx.len() < self.admission.fast_lane_cap {
+        let job = if self.admission.is_idle() && self.bulk_tx.len() < self.admission.fast_lane_cap {
             match self.bulk_tx.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(job)) => job,
@@ -1151,7 +1151,8 @@ impl FairWorkerSender {
         };
 
         let key = job.flow_key();
-        match self.admission.try_reserve(key, job.scheduling_weight()) {
+        let weight = job.scheduling_weight();
+        match self.admission.try_reserve(key, weight) {
             FairReserve::Reserved(reservation) => {
                 let mut job = job;
                 job.mark_fair_reserved(reservation);
@@ -1251,6 +1252,14 @@ impl FairAdmission {
         }
     }
 
+    fn is_idle(&self) -> bool {
+        self.state
+            .lock()
+            .expect("encrypt worker fair admission poisoned")
+            .total_len
+            == 0
+    }
+
     fn release(&self, reservation: FairAdmissionReservation) {
         let key = reservation.key();
         let mut state = self
@@ -1288,11 +1297,10 @@ impl FairAdmission {
         key: SendTargetKey,
         weight: usize,
     ) -> bool {
-        if state.total_len >= total_cap {
+        if state.total_len.saturating_add(1) > total_cap {
             return false;
         }
         let weight = weight.clamp(MIN_SEND_WEIGHT as usize, MAX_SEND_WEIGHT as usize);
-        let flow_cap = per_flow_cap.saturating_mul(weight).min(total_cap).max(1);
         match state.flows.entry(key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let flow = entry.get_mut();
@@ -1301,16 +1309,13 @@ impl FairAdmission {
                     .saturating_mul(flow.weight)
                     .min(total_cap)
                     .max(1);
-                if flow.queued >= cap {
+                if flow.queued.saturating_add(1) > cap {
                     return false;
                 }
                 flow.queued += 1;
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let mut flow = FairFlowQueue::new(weight);
-                if flow.queued >= flow_cap {
-                    return false;
-                }
                 flow.queued = 1;
                 entry.insert(flow);
             }
@@ -1329,7 +1334,7 @@ impl Drop for FairWorkerSender {
 
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerReceiver {
-    fn recv_batch(&self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
+    fn recv_batch(&mut self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
         debug_assert!(batch.is_empty());
         let Some(first) = self.recv_next_blocking() else {
             return false;
@@ -1348,14 +1353,18 @@ impl FairWorkerReceiver {
         true
     }
 
-    fn recv_next_blocking(&self) -> Option<QueuedFmpSendJob> {
+    fn recv_next_blocking(&mut self) -> Option<QueuedFmpSendJob> {
         if let Ok(job) = self.priority_rx.try_recv() {
             return Some(job);
         }
         crossbeam_channel::select! {
-            recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.bulk_rx.recv().ok()),
+            recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.recv_bulk_blocking()),
             recv(self.bulk_rx) -> msg => msg.ok().or_else(|| self.priority_rx.recv().ok()),
         }
+    }
+
+    fn recv_bulk_blocking(&mut self) -> Option<QueuedFmpSendJob> {
+        self.bulk_rx.recv().ok()
     }
 
     fn push_received(&self, batch: &mut Vec<QueuedFmpSendJob>, mut job: QueuedFmpSendJob) {
@@ -1457,6 +1466,12 @@ impl EncryptWorkerPool {
         }
         let (idx, job) = self.prepare_dispatch(job);
         self.dispatch_to_worker(idx, job);
+    }
+
+    pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        for job in jobs {
+            self.dispatch(job);
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2167,7 +2182,7 @@ enum SealPacketError {
 /// drains follow-on packets into a fixed-size local batch, then issues
 /// one `sendmmsg(2)` per drain cycle.
 #[cfg(not(target_os = "macos"))]
-fn run_worker(idx: usize, rx: FairWorkerReceiver) {
+fn run_worker(idx: usize, mut rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
 
     let mut shard = EncryptWorkerShard::new(idx, worker_batch_size());
@@ -4230,7 +4245,7 @@ mod fair_queue_tests {
     #[test]
     fn new_flow_can_enter_when_hot_flow_reaches_per_flow_cap() {
         with_test_socket(|socket, cipher| {
-            let (tx, rx) = fair_worker_channel(4, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let (tx, mut rx) = fair_worker_channel(4, 2, WORKER_FAIR_QUANTUM_BYTES);
             let hot: SocketAddr = "127.0.0.1:10001".parse().unwrap();
             let quiet: SocketAddr = "127.0.0.1:10002".parse().unwrap();
 
@@ -4278,7 +4293,7 @@ mod fair_queue_tests {
     #[test]
     fn priority_flow_enters_when_bulk_flow_reaches_per_flow_cap() {
         with_test_socket(|socket, cipher| {
-            let (tx, rx) = fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let (tx, mut rx) = fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES);
             let warmup: SocketAddr = "127.0.0.1:10022".parse().unwrap();
             let hot: SocketAddr = "127.0.0.1:10023".parse().unwrap();
 
@@ -4348,7 +4363,7 @@ mod fair_queue_tests {
     #[test]
     fn priority_flow_enters_when_bulk_worker_queue_is_full() {
         with_test_socket(|socket, cipher| {
-            let (tx, rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let (tx, mut rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
             let addr: SocketAddr = "127.0.0.1:10024".parse().unwrap();
 
             for _ in 0..2 {
@@ -4390,7 +4405,7 @@ mod fair_queue_tests {
     #[test]
     fn priority_reserve_does_not_shrink_with_tight_bulk_channel_cap() {
         with_test_socket(|socket, cipher| {
-            let (tx, rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let (tx, mut rx) = fair_worker_channel(2, 1, WORKER_FAIR_QUANTUM_BYTES);
             let addr: SocketAddr = "127.0.0.1:10025".parse().unwrap();
 
             for _ in 0..2 {
@@ -4435,7 +4450,7 @@ mod fair_queue_tests {
     #[test]
     fn single_flow_drains_full_batch() {
         with_test_socket(|socket, cipher| {
-            let (tx, rx) = fair_worker_channel(16, 16, 2048);
+            let (tx, mut rx) = fair_worker_channel(16, 16, 2048);
             let addr: SocketAddr = "127.0.0.1:10005".parse().unwrap();
 
             for _ in 0..8 {
@@ -4490,7 +4505,7 @@ mod fair_queue_tests {
                 }
             }
 
-            let (tx, rx) = fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES);
+            let (tx, mut rx) = fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES);
             for counter in 0..8 {
                 let mut queued = queued_job(
                     socket.clone(),
