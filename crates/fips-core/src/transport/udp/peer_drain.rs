@@ -154,7 +154,7 @@ fn drain_loop(
         "fips-peer-drain: starting"
     );
 
-    const BATCH: usize = 32;
+    const BATCH: usize = super::UDP_RECV_BATCH_SIZE;
     const BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
     let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; BUF_SIZE]).collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
@@ -370,7 +370,7 @@ fn drain_packets(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::
 /// kernel-wide UDP socket-buffer accounting already).
 #[cfg(target_os = "linux")]
 fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
-    const BATCH: usize = 32;
+    const BATCH: usize = super::UDP_RECV_BATCH_SIZE;
     let n = backing.len().min(lens.len()).min(BATCH);
     if n == 0 {
         return Ok(0);

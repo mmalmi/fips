@@ -31,6 +31,17 @@ use tracing::{debug, info, trace, warn};
 /// DNS cache TTL for hostname resolution (60 seconds).
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// Datagrams drained per UDP receive syscall / connected-peer poll cycle.
+///
+/// Keep one receive-batch width across the wildcard socket, connected peer
+/// drain threads, and Linux recvmmsg wrapper. WireGuard-go and Tailscale use
+/// 128 as their ideal userspace packet batch, and the current measured
+/// bottleneck is pre-`PacketRx` dequeue backlog, so a wider receive batch
+/// reduces syscall/channel-item churn without changing the priority/bulk lane
+/// contract at the packet channel boundary.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
+
 fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {
     matches!(
         (local, remote),
@@ -523,7 +534,7 @@ async fn udp_receive_loop(
 
     #[cfg(target_os = "linux")]
     {
-        const BATCH: usize = 32;
+        const BATCH: usize = UDP_RECV_BATCH_SIZE;
         let buf_size = mtu as usize + 100;
         // Backing pool: one Vec<u8> per recvmmsg slot. We **own** each
         // slot here — when a packet lands, we `mem::replace` the filled
@@ -692,6 +703,12 @@ mod tests {
             mtu: Some(1280),
             ..Default::default()
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn udp_receive_batch_width_matches_reference_packet_movers() {
+        assert_eq!(UDP_RECV_BATCH_SIZE, 128);
     }
 
     #[tokio::test]

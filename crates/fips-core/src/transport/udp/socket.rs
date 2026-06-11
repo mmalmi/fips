@@ -19,6 +19,12 @@ use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
 
+/// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
+/// kernel queue. Shared with the higher-level UDP receive loops so all Linux
+/// packet ingress paths use the same batch width.
+#[cfg(target_os = "linux")]
+const RECV_BATCH_SIZE: usize = super::UDP_RECV_BATCH_SIZE;
+
 // ============================================================================
 // Unix implementation
 // ============================================================================
@@ -28,14 +34,6 @@ mod platform {
     use super::*;
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
-
-    /// Maximum number of datagrams a single `recvmmsg` syscall pulls
-    /// from the kernel queue. Tuned to amortise syscall + per-task-wakeup
-    /// overhead across a useful burst without blowing the stack (each
-    /// slot owns an mmsghdr + sockaddr_storage + iovec) and without
-    /// inflating tail latency on a quiet line.
-    #[cfg(target_os = "linux")]
-    const RECV_BATCH_SIZE: usize = 32;
 
     /// Maximum number of datagrams a single `sendmmsg` syscall pushes to
     /// the kernel. Larger than `RECV_BATCH_SIZE` because the rx_loop can
