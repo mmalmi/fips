@@ -205,6 +205,42 @@ fn endpoint_event_queue_owns_backlog_message_count() {
 }
 
 #[test]
+fn endpoint_event_dequeue_counts_preserve_message_and_lane_counts() {
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    let event = NodeEndpointEvent::Data {
+        source_peer: source,
+        payload: vec![0x11; ENDPOINT_EVENT_PRIORITY_MAX_LEN],
+        queued_at: None,
+    };
+    assert_eq!(
+        event.dequeue_counts(),
+        EndpointEventDequeueCounts {
+            total: 1,
+            priority: 1,
+            bulk: 0,
+        }
+    );
+
+    let event = NodeEndpointEvent::DataBatch {
+        messages: vec![
+            EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+            EndpointDataDelivery::new(source, vec![0x11; 32]),
+            EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+        ],
+        queued_at: None,
+    };
+    assert_eq!(
+        event.dequeue_counts(),
+        EndpointEventDequeueCounts {
+            total: 3,
+            priority: 1,
+            bulk: 2,
+        }
+    );
+}
+
+#[test]
 fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel();
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());

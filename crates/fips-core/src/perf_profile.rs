@@ -283,17 +283,40 @@ pub(crate) fn record_since(stage: Stage, start: Option<Instant>) {
     }
 }
 
+/// Record one elapsed wait sample for `count` equivalent items.
+///
+/// Batch handoffs often dequeue one channel item that represents many packets.
+/// Count-weighting keeps the average and sample rate packet/message-shaped
+/// without forcing callers to loop only for accounting.
+#[inline]
+pub(crate) fn record_since_count(stage: Stage, start: Option<Instant>, count: u64) {
+    if count == 0 {
+        return;
+    }
+    if let Some(start) = start {
+        record_count(stage, start.elapsed().as_nanos() as u64, count);
+    }
+}
+
 /// Record `elapsed_ns` for the given stage. No-op when disabled.
 pub fn record(stage: Stage, elapsed_ns: u64) {
+    record_count(stage, elapsed_ns, 1);
+}
+
+/// Record `elapsed_ns` for `count` equivalent stage samples. No-op when disabled.
+pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
     if !enabled() {
+        return;
+    }
+    if count == 0 {
         return;
     }
     let idx = stage as usize;
     let elapsed_ns = elapsed_ns.max(1);
-    TOTAL_NS[idx].fetch_add(elapsed_ns, Relaxed);
-    COUNT[idx].fetch_add(1, Relaxed);
+    TOTAL_NS[idx].fetch_add(elapsed_ns.saturating_mul(count), Relaxed);
+    COUNT[idx].fetch_add(count, Relaxed);
     MAX_NS[idx].fetch_max(elapsed_ns, Relaxed);
-    HIST[(idx * HIST_BUCKETS) + bucket_for_ns(elapsed_ns)].fetch_add(1, Relaxed);
+    HIST[(idx * HIST_BUCKETS) + bucket_for_ns(elapsed_ns)].fetch_add(count, Relaxed);
 }
 
 #[inline]

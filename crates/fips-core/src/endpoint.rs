@@ -71,33 +71,17 @@ pub struct FipsEndpointMessage {
 struct EndpointQueuedMessage {
     source_peer: PeerIdentity,
     payload: Vec<u8>,
-    queued_at: Option<std::time::Instant>,
 }
 
 impl EndpointQueuedMessage {
-    fn new(
-        source_peer: PeerIdentity,
-        payload: Vec<u8>,
-        queued_at: Option<std::time::Instant>,
-    ) -> Self {
+    fn new(source_peer: PeerIdentity, payload: Vec<u8>) -> Self {
         Self {
             source_peer,
             payload,
-            queued_at,
         }
     }
 
     fn into_public(self) -> FipsEndpointMessage {
-        let lane_wait_stage = if self.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
-            crate::perf_profile::Stage::EndpointPriorityEventWait
-        } else {
-            crate::perf_profile::Stage::EndpointBulkEventWait
-        };
-        crate::perf_profile::record_since(
-            crate::perf_profile::Stage::EndpointEventWait,
-            self.queued_at,
-        );
-        crate::perf_profile::record_since(lane_wait_stage, self.queued_at);
         FipsEndpointMessage {
             source_peer: self.source_peer,
             data: self.payload,
@@ -196,19 +180,14 @@ impl EndpointReceiveState {
             NodeEndpointEvent::Data {
                 source_peer,
                 payload,
-                queued_at,
-            } => self.push_queued_into(
-                EndpointQueuedMessage::new(source_peer, payload, queued_at),
-                out,
-                limit,
-            ),
-            NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
+                ..
             } => {
+                self.push_queued_into(EndpointQueuedMessage::new(source_peer, payload), out, limit)
+            }
+            NodeEndpointEvent::DataBatch { messages, .. } => {
                 for message in messages {
                     self.push_queued_into(
-                        EndpointQueuedMessage::new(message.source_peer, message.payload, queued_at),
+                        EndpointQueuedMessage::new(message.source_peer, message.payload),
                         out,
                         limit,
                     );
@@ -251,27 +230,22 @@ impl EndpointReceiveState {
             NodeEndpointEvent::Data {
                 source_peer,
                 payload,
-                queued_at,
+                ..
             } => self.push_queued_for_each(
-                EndpointQueuedMessage::new(source_peer, payload, queued_at),
+                EndpointQueuedMessage::new(source_peer, payload),
                 drained,
                 limit,
                 handle_message,
             ),
-            NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
-            } => {
+            NodeEndpointEvent::DataBatch { messages, .. } => {
                 let mut iter = messages.into_iter();
                 while let Some(message) = iter.next() {
-                    let queued =
-                        EndpointQueuedMessage::new(message.source_peer, message.payload, queued_at);
+                    let queued = EndpointQueuedMessage::new(message.source_peer, message.payload);
                     if !self.push_queued_for_each(queued, drained, limit, handle_message) {
                         for message in iter {
                             self.push_pending(EndpointQueuedMessage::new(
                                 message.source_peer,
                                 message.payload,
-                                queued_at,
                             ));
                         }
                         return false;

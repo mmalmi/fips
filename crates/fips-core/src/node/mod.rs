@@ -1525,6 +1525,7 @@ impl EndpointEventReceiver {
     }
 
     fn note_dequeued(&self, event: &NodeEndpointEvent) {
+        event.record_dequeue_wait();
         let count = event.message_count();
         let _ = self
             .queued_messages
@@ -1798,12 +1799,73 @@ pub(crate) enum NodeEndpointEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::node) struct EndpointEventDequeueCounts {
+    total: usize,
+    priority: usize,
+    bulk: usize,
+}
+
 impl NodeEndpointEvent {
     fn message_count(&self) -> usize {
         match self {
             NodeEndpointEvent::Data { .. } => 1,
             NodeEndpointEvent::DataBatch { messages, .. } => messages.len(),
         }
+    }
+
+    pub(in crate::node) fn dequeue_counts(&self) -> EndpointEventDequeueCounts {
+        match self {
+            NodeEndpointEvent::Data { payload, .. } => {
+                let priority = usize::from(payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN);
+                EndpointEventDequeueCounts {
+                    total: 1,
+                    priority,
+                    bulk: 1 - priority,
+                }
+            }
+            NodeEndpointEvent::DataBatch { messages, .. } => {
+                let priority = messages
+                    .iter()
+                    .filter(|message| message.is_priority_sized())
+                    .count();
+                EndpointEventDequeueCounts {
+                    total: messages.len(),
+                    priority,
+                    bulk: messages.len().saturating_sub(priority),
+                }
+            }
+        }
+    }
+
+    fn queued_at(&self) -> Option<std::time::Instant> {
+        match self {
+            NodeEndpointEvent::Data { queued_at, .. }
+            | NodeEndpointEvent::DataBatch { queued_at, .. } => *queued_at,
+        }
+    }
+
+    fn record_dequeue_wait(&self) {
+        let queued_at = self.queued_at();
+        if queued_at.is_none() {
+            return;
+        }
+        let counts = self.dequeue_counts();
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::EndpointEventWait,
+            queued_at,
+            counts.total as u64,
+        );
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::EndpointPriorityEventWait,
+            queued_at,
+            counts.priority as u64,
+        );
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::EndpointBulkEventWait,
+            queued_at,
+            counts.bulk as u64,
+        );
     }
 
     fn from_delivery_messages(
