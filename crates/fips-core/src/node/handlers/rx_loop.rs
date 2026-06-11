@@ -33,6 +33,11 @@ const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
 const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
+/// Top-level non-packet queues get shorter turns than raw packet receive.
+/// Returning to the biased select loop after a small slice lets ready
+/// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
+/// without adding a second packet-drain path inside those handlers.
+const NON_PACKET_DRAIN_BUDGET: usize = 64;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
 /// transport queue; fallback/side interleaves reserve progress before the cap.
 const PACKET_DRAIN_BUDGET: usize = 512;
@@ -40,6 +45,10 @@ const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(10
 const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
 const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
+
+fn non_packet_drain_budget(packet_budget: usize) -> usize {
+    packet_budget.min(NON_PACKET_DRAIN_BUDGET)
+}
 
 fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
     let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
@@ -211,7 +220,7 @@ impl Node {
                         &mut decrypt_fallback_rx,
                         None,
                         Some(event),
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut tun_outbound_rx,
@@ -230,7 +239,7 @@ impl Node {
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -281,7 +290,7 @@ impl Node {
                     let drained = self.drain_tun_outbound(
                         &mut tun_outbound_rx,
                         Some(ipv6_packet),
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -300,7 +309,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         Some(command),
                         None,
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -312,7 +321,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         None,
                         Some(command),
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -349,14 +358,17 @@ impl Node {
         let drained_packets = self
             .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
             .await;
-        let drained_tun = self.drain_tun_outbound(tun_outbound_rx, None, budget).await;
+        let non_packet_budget = non_packet_drain_budget(budget);
+        let drained_tun = self
+            .drain_tun_outbound(tun_outbound_rx, None, non_packet_budget)
+            .await;
         let drained_endpoint = self
             .drain_endpoint_commands(
                 endpoint_priority_command_rx,
                 endpoint_command_rx,
                 None,
                 None,
-                budget,
+                non_packet_budget,
             )
             .await;
         RxLoopDataDrainStats::new(drained_packets, drained_tun, drained_endpoint)
@@ -1130,10 +1142,21 @@ impl<T> SingleLaneDrainCursor<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor, RxLoopDataDrainStats,
-        RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
+        NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PacketDrainAction, PacketDrainCursor,
+        PriorityBulkDrainCursor, RxLoopDataDrainStats, RxLoopMaintenancePlan,
+        RxLoopMaintenanceState, SingleLaneDrainCursor, non_packet_drain_budget,
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn non_packet_drain_budget_caps_large_packet_turns() {
+        assert_eq!(non_packet_drain_budget(0), 0);
+        assert_eq!(non_packet_drain_budget(8), 8);
+        assert_eq!(
+            non_packet_drain_budget(PACKET_DRAIN_BUDGET),
+            NON_PACKET_DRAIN_BUDGET
+        );
+    }
 
     #[test]
     fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
