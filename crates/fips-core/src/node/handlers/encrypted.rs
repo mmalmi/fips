@@ -43,7 +43,73 @@ enum DecryptFailureAction {
     RemovePeer { consecutive_failures: u32 },
 }
 
+pub(in crate::node) enum EncryptedFrameFastPath {
+    Dispatched,
+    Dropped,
+    Slow(ReceivedPacket),
+}
+
 impl Node {
+    pub(in crate::node) fn try_dispatch_encrypted_frame_to_worker(
+        &mut self,
+        packet: ReceivedPacket,
+    ) -> EncryptedFrameFastPath {
+        let header = match EncryptedHeader::parse(&packet.data) {
+            Some(h) => h,
+            None => return EncryptedFrameFastPath::Dropped,
+        };
+
+        let key = (packet.transport_id, header.receiver_idx.as_u32());
+        let node_addr = match self.peers.lookup_session_index(key) {
+            Some(id) => id,
+            None => {
+                trace!(
+                    receiver_idx = %header.receiver_idx,
+                    transport_id = %packet.transport_id,
+                    "Unknown session index, dropping"
+                );
+                return EncryptedFrameFastPath::Dropped;
+            }
+        };
+
+        let received_k_bit = header.flags & FLAG_KEY_EPOCH != 0;
+        let need_kbit_flip = match self.peers.get(&node_addr) {
+            Some(peer) => {
+                received_k_bit != peer.current_k_bit() && peer.pending_new_session().is_some()
+            }
+            None => {
+                self.deregister_session_index(key);
+                return EncryptedFrameFastPath::Dropped;
+            }
+        };
+        if need_kbit_flip {
+            return EncryptedFrameFastPath::Slow(packet);
+        }
+
+        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
+        let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
+            return EncryptedFrameFastPath::Slow(packet);
+        };
+        if !self.sessions.is_worker_registered(&session_key) {
+            return EncryptedFrameFastPath::Slow(packet);
+        }
+
+        let job = super::super::decrypt_worker::DecryptJob::new(
+            packet.data,
+            session_key,
+            packet.transport_id,
+            packet.remote_addr,
+            packet.timestamp_ms,
+            header.counter,
+            header.flags,
+            header.header_bytes,
+            header.ciphertext_offset(),
+            self.decrypt_fallback_tx.clone(),
+        );
+        workers.dispatch_job(job);
+        EncryptedFrameFastPath::Dispatched
+    }
+
     /// Handle an encrypted frame (phase 0x0).
     ///
     /// This is the hot path for established sessions. We use O(1)
@@ -53,7 +119,15 @@ impl Node {
     /// we promote the pending new session to current and demote the old
     /// session to previous for a drain window. During drain, we try the
     /// current session first, then fall back to the previous session.
+    #[cfg(test)]
     pub(in crate::node) async fn handle_encrypted_frame(&mut self, packet: ReceivedPacket) {
+        match self.try_dispatch_encrypted_frame_to_worker(packet) {
+            EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => return,
+            EncryptedFrameFastPath::Slow(packet) => self.handle_encrypted_frame_slow(packet).await,
+        }
+    }
+
+    pub(in crate::node) async fn handle_encrypted_frame_slow(&mut self, packet: ReceivedPacket) {
         // Parse header (fail fast)
         let header = match EncryptedHeader::parse(&packet.data) {
             Some(h) => h,

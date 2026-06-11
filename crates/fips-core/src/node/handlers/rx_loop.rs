@@ -6,6 +6,7 @@ use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
     DecryptFailureReport, DecryptFallback, DecryptWorkerEvent, DecryptWorkerFallbackReceivers,
 };
+use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
@@ -702,9 +703,12 @@ impl Node {
         }
 
         match prefix.phase {
-            PHASE_ESTABLISHED => {
-                self.handle_encrypted_frame(packet).await;
-            }
+            PHASE_ESTABLISHED => match self.try_dispatch_encrypted_frame_to_worker(packet) {
+                EncryptedFrameFastPath::Dispatched | EncryptedFrameFastPath::Dropped => {}
+                EncryptedFrameFastPath::Slow(packet) => {
+                    self.handle_encrypted_frame_slow(packet).await;
+                }
+            },
             PHASE_MSG1 => {
                 self.handle_msg1(packet).await;
             }
