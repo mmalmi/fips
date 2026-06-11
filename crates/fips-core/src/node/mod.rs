@@ -1182,6 +1182,14 @@ enum EndpointEventLane {
     Bulk,
 }
 
+fn endpoint_event_lane_for_len(len: usize) -> EndpointEventLane {
+    if len <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
+        EndpointEventLane::Priority
+    } else {
+        EndpointEventLane::Bulk
+    }
+}
+
 /// Delivery-side owner for endpoint data emitted by session receive handling.
 ///
 /// The rx loop currently owns this runtime, but keeping sender, batching, and
@@ -1224,7 +1232,21 @@ impl EndpointEventSender {
         event: NodeEndpointEvent,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         match event {
-            NodeEndpointEvent::Data { .. } => self.send_lane(event),
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                queued_at,
+            } => {
+                let lane = endpoint_event_lane_for_len(payload.len());
+                self.send_to_lane(
+                    NodeEndpointEvent::Data {
+                        source_peer,
+                        payload,
+                        queued_at,
+                    },
+                    lane,
+                )
+            }
             NodeEndpointEvent::DataBatch {
                 messages,
                 queued_at,
@@ -1247,9 +1269,14 @@ impl EndpointEventSender {
             .filter(|message| message.is_priority_sized())
             .count();
         if priority_count == 0 || priority_count == message_count {
+            let lane = if priority_count == 0 {
+                EndpointEventLane::Bulk
+            } else {
+                EndpointEventLane::Priority
+            };
             let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
                 .expect("non-empty endpoint event batch should produce event");
-            return self.send_lane(event);
+            return self.send_to_lane(event, lane);
         }
 
         let mut priority_messages = Vec::with_capacity(priority_count);
@@ -1264,22 +1291,23 @@ impl EndpointEventSender {
 
         if let Some(event) = NodeEndpointEvent::from_delivery_messages(priority_messages, queued_at)
         {
-            self.send_lane(event)?;
+            self.send_to_lane(event, EndpointEventLane::Priority)?;
         }
         if let Some(event) = NodeEndpointEvent::from_delivery_messages(bulk_messages, queued_at) {
-            self.send_lane(event)?;
+            self.send_to_lane(event, EndpointEventLane::Bulk)?;
         }
         Ok(())
     }
 
-    fn send_lane(
+    fn send_to_lane(
         &self,
         event: NodeEndpointEvent,
+        lane: EndpointEventLane,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         let count = event.message_count();
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
-        let send_result = match event.lane() {
+        let send_result = match lane {
             EndpointEventLane::Priority => self.priority.send(event),
             EndpointEventLane::Bulk => self.bulk.send(event),
         };
@@ -1749,7 +1777,10 @@ impl EndpointDataDelivery {
     }
 
     fn is_priority_sized(&self) -> bool {
-        self.payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN
+        matches!(
+            endpoint_event_lane_for_len(self.payload.len()),
+            EndpointEventLane::Priority
+        )
     }
 }
 
@@ -1772,25 +1803,6 @@ impl NodeEndpointEvent {
         match self {
             NodeEndpointEvent::Data { .. } => 1,
             NodeEndpointEvent::DataBatch { messages, .. } => messages.len(),
-        }
-    }
-
-    fn lane(&self) -> EndpointEventLane {
-        match self {
-            NodeEndpointEvent::Data { payload, .. } => {
-                if payload.len() <= ENDPOINT_EVENT_PRIORITY_MAX_LEN {
-                    EndpointEventLane::Priority
-                } else {
-                    EndpointEventLane::Bulk
-                }
-            }
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                if messages.iter().all(EndpointDataDelivery::is_priority_sized) {
-                    EndpointEventLane::Priority
-                } else {
-                    EndpointEventLane::Bulk
-                }
-            }
         }
     }
 
