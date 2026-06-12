@@ -10,7 +10,6 @@ use super::{
     TransportError, TransportId, TransportState, TransportType,
 };
 use crate::config::{NostrDiscoveryConfig, WebRtcConfig};
-use crate::discovery::nostr::{SIGNAL_KIND, build_signal_event, unwrap_signal_event};
 use ::webrtc::api::APIBuilder;
 use ::webrtc::api::media_engine::MediaEngine;
 use ::webrtc::data_channel::RTCDataChannel;
@@ -22,13 +21,12 @@ use ::webrtc::peer_connection::configuration::RTCConfiguration;
 use ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use ::webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use bytes::Bytes;
-use nostr::prelude::{EventBuilder, Filter, Kind, PublicKey, Timestamp};
-use nostr_sdk::{Client, ClientOptions, prelude::RelayPoolNotification};
+use nostr::prelude::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -37,6 +35,10 @@ const WEBRTC_SIGNAL_VERSION: u32 = 1;
 const SIGNAL_TTL_MS: u64 = 60_000;
 const WEBRTC_READY_FRAME: &[u8] = &[0xff, 0x46, 0x57, 0x52, 0x31]; // FWR1
 const WEBRTC_READY_FALLBACK_MS: u64 = 250;
+
+mod signaling;
+
+use signaling::{NostrSignalSender, NostrWebRtcSignaling};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -727,179 +729,6 @@ impl WebRtcRuntime {
     }
 }
 
-#[derive(Clone)]
-struct NostrSignalSender {
-    client: Client,
-    keys: nostr::Keys,
-    local_pubkey: PublicKey,
-}
-
-impl NostrSignalSender {
-    async fn send_signal(
-        &self,
-        relays: &[String],
-        receiver: PublicKey,
-        signal: &WebRtcSignal,
-    ) -> Result<(), TransportError> {
-        let rumor = EventBuilder::private_msg_rumor(
-            receiver,
-            serde_json::to_string(signal).map_err(|e| TransportError::SendFailed(e.to_string()))?,
-        )
-        .build(self.local_pubkey);
-        let event = build_signal_event(
-            &self.keys,
-            receiver,
-            rumor,
-            Timestamp::from((now_ms() + SIGNAL_TTL_MS) / 1000),
-        )
-        .await
-        .map_err(|e| TransportError::SendFailed(e.to_string()))?;
-        self.client
-            .send_event_to(relays.to_vec(), &event)
-            .await
-            .map_err(|e| TransportError::SendFailed(e.to_string()))?;
-        debug!(
-            receiver = %receiver,
-            relays = relays.len(),
-            event = %event.id,
-            kind = ?signal.kind,
-            session = %signal.session_id,
-            "WebRTC signal published"
-        );
-        Ok(())
-    }
-}
-
-struct NostrWebRtcSignaling {
-    sender: NostrSignalSender,
-    relays: Vec<String>,
-    signal_tx: mpsc::UnboundedSender<IncomingSignal>,
-    notify_task: Option<JoinHandle<()>>,
-    connect_task: Option<JoinHandle<()>>,
-}
-
-impl NostrWebRtcSignaling {
-    fn new(
-        keys: nostr::Keys,
-        relays: Vec<String>,
-        signal_tx: mpsc::UnboundedSender<IncomingSignal>,
-    ) -> Self {
-        let client = Client::builder()
-            .signer(keys.clone())
-            .opts(ClientOptions::new().autoconnect(false))
-            .build();
-        let local_pubkey = keys.public_key();
-        Self {
-            sender: NostrSignalSender {
-                client,
-                keys,
-                local_pubkey,
-            },
-            relays,
-            signal_tx,
-            notify_task: None,
-            connect_task: None,
-        }
-    }
-
-    fn sender(&self) -> NostrSignalSender {
-        self.sender.clone()
-    }
-
-    async fn start(&mut self, local_pubkey: PublicKey) -> Result<(), TransportError> {
-        let mut unique_relays = HashSet::new();
-        for relay in &self.relays {
-            if unique_relays.insert(relay.clone()) {
-                self.sender
-                    .client
-                    .add_relay(relay)
-                    .await
-                    .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-            }
-        }
-        let notifications = self.sender.client.notifications();
-        let keys = self.sender.keys.clone();
-        let signal_tx = self.signal_tx.clone();
-        self.notify_task = Some(spawn_notify_loop(keys, notifications, signal_tx));
-
-        for relay in &self.relays {
-            if let Err(error) = self.sender.client.connect_relay(relay.clone()).await {
-                warn!(relay = %relay, error = %error, "failed to connect WebRTC signal relay");
-            }
-        }
-        self.sender
-            .client
-            .subscribe_to(
-                self.relays.clone(),
-                Filter::new()
-                    .kind(Kind::Custom(SIGNAL_KIND))
-                    .pubkey(local_pubkey)
-                    .limit(100),
-                None,
-            )
-            .await
-            .map_err(|e| TransportError::StartFailed(e.to_string()))?;
-        let client = self.sender.client.clone();
-        self.connect_task = Some(tokio::spawn(async move {
-            client.connect().await;
-        }));
-        Ok(())
-    }
-
-    async fn stop(&mut self) {
-        if let Some(task) = self.notify_task.take() {
-            task.abort();
-        }
-        if let Some(task) = self.connect_task.take() {
-            task.abort();
-        }
-    }
-}
-
-fn spawn_notify_loop(
-    keys: nostr::Keys,
-    mut notifications: broadcast::Receiver<RelayPoolNotification>,
-    signal_tx: mpsc::UnboundedSender<IncomingSignal>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            let notification = match notifications.recv().await {
-                Ok(notification) => notification,
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    warn!(skipped, "WebRTC Nostr signal notifications lagged");
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            };
-            let RelayPoolNotification::Event { event, .. } = notification else {
-                continue;
-            };
-            if event.kind != Kind::Custom(SIGNAL_KIND) {
-                continue;
-            }
-            let unwrapped = match unwrap_signal_event(&keys, &event).await {
-                Ok(unwrapped) => unwrapped,
-                Err(err) => {
-                    debug!(error = %err, event = %event.id, "failed to unwrap WebRTC signal");
-                    continue;
-                }
-            };
-            let signal = match serde_json::from_str::<WebRtcSignal>(&unwrapped.rumor.content) {
-                Ok(signal) if signal.protocol == WEBRTC_PROTOCOL => signal,
-                Ok(_) => continue,
-                Err(err) => {
-                    debug!(error = %err, event = %event.id, "failed to parse WebRTC signal");
-                    continue;
-                }
-            };
-            let _ = signal_tx.send(IncomingSignal {
-                signal,
-                sender: unwrapped.sender,
-            });
-        }
-    })
-}
-
 fn wire_peer_connection_state(
     transport_id: TransportId,
     remote_addr: TransportAddr,
@@ -1168,41 +997,4 @@ impl Transport for WebRtcTransport {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_compressed_pubkey_addresses() {
-        let good = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        assert!(validate_compressed_pubkey_hex(good).is_ok());
-        assert!(validate_compressed_pubkey_hex(&good[2..]).is_err());
-        assert!(
-            validate_compressed_pubkey_hex(
-                "04aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn webrtc_signal_serializes_like_ts_transport() {
-        let signal = WebRtcSignal {
-            protocol: WEBRTC_PROTOCOL.to_string(),
-            version: WEBRTC_SIGNAL_VERSION,
-            session_id: "abc".to_string(),
-            kind: WebRtcSignalKind::Offer,
-            sender: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
-            recipient: "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                .to_string(),
-            sdp: Some("v=0".to_string()),
-            candidates: None,
-            created_at_ms: 1,
-            expires_at_ms: 2,
-        };
-        let json = serde_json::to_string(&signal).unwrap();
-        assert!(json.contains(r#""sessionId":"abc""#));
-        assert!(json.contains(r#""createdAtMs":1"#));
-        assert!(json.contains(r#""expiresAtMs":2"#));
-    }
-}
+mod tests;

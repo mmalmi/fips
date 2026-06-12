@@ -34,7 +34,7 @@ impl LearnedRouteFallbackExploration {
         selected_count: u64,
         interval: u64,
     ) -> bool {
-        if interval == 0 || selected_count == 0 || selected_count % interval != 0 {
+        if interval == 0 || selected_count == 0 || !selected_count.is_multiple_of(interval) {
             return false;
         }
 

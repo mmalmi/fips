@@ -127,7 +127,7 @@ impl Node {
                     workers.dispatch_job(job);
                 }
             }
-            EncryptedFrameFastPath::Dropped => return,
+            EncryptedFrameFastPath::Dropped => (),
             EncryptedFrameFastPath::Slow(packet) => self.handle_encrypted_frame_slow(packet).await,
         }
     }

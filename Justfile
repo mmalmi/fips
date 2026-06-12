@@ -4,6 +4,9 @@ default:
 fmt:
     cargo fmt --check
 
+rust-file-lines:
+    ./scripts/check-rust-file-lines.sh
+
 test-core:
     cargo test -p fips-core -- --nocapture
 
@@ -23,7 +26,7 @@ clippy-sim:
 
 clippy: clippy-core clippy-sim
 
-check: fmt test clippy
+check: rust-file-lines fmt test clippy
 
 sim-smoke:
     cargo run -p fips-sim --release --example production_mesh -- --compare --nodes 60 --route-probes 100 --stream-probes 2 --stream-bytes 1048576 --background-packets 1000 --summary-only --no-progress

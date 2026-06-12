@@ -30,6 +30,13 @@ env:
 # Builds on Linux x86_64, Linux aarch64, and macOS.
 # ─────────────────────────────────────────────────────────────────────────────
 jobs:
+  rust-file-lines:
+    name: Rust file line check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-rust-file-lines.sh
+
   fmt:
     name: Format check
     runs-on: ubuntu-latest
