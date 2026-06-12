@@ -3017,6 +3017,8 @@ impl Node {
         if bookkeeping.is_some_and(|update| update.address_changed) {
             self.clear_connected_udp_for_peer(fmp.source_peer.node_addr());
         }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = bookkeeping;
     }
 
     pub(in crate::node) fn process_authenticated_fmp_receive_from_worker(

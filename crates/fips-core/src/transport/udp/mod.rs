@@ -47,7 +47,7 @@ pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
     Vec::with_capacity(size)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
     vec![0u8; size]
 }
@@ -57,7 +57,7 @@ pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
     buffer.clear();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 pub(crate) fn reset_recv_buffer(_buffer: &mut Vec<u8>) {}
 
 fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {

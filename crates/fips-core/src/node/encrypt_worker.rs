@@ -432,6 +432,7 @@ impl DirectSendBatchAttempt {
         &self.wire_packets[self.sent..]
     }
 
+    #[cfg(target_os = "macos")]
     fn current_packet_len(&self) -> Option<usize> {
         self.wire_packets.get(self.sent).map(Vec::len)
     }

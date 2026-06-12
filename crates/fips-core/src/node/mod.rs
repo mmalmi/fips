@@ -2604,6 +2604,7 @@ pub(in crate::node) struct PeerRuntimeReceiveDispatch<'a> {
 }
 
 pub(in crate::node) struct PeerRuntimeReceiveAction<'a> {
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     source_peer: PeerIdentity,
     address_changed: bool,
     link_message: Option<AuthenticatedLinkMessage<'a>>,
@@ -2843,6 +2844,7 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
                     ce_flag: self.ce_flag,
                 });
         PeerRuntimeReceiveAction {
+            #[cfg(any(test, target_os = "linux", target_os = "macos"))]
             source_peer: self.source_peer,
             address_changed: self
                 .bookkeeping
@@ -2853,6 +2855,7 @@ impl<'a> PeerRuntimeReceiveDispatch<'a> {
 }
 
 impl<'a> PeerRuntimeReceiveAction<'a> {
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn node_addr(&self) -> &NodeAddr {
         self.source_peer.node_addr()
     }
@@ -3300,6 +3303,7 @@ impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::node) struct ConnectedUdpActivationPlan {
     pub(in crate::node) candidates: Vec<NodeAddr>,
@@ -4514,6 +4518,7 @@ impl ConfiguredPeerSendWeights {
             .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
         self.entries.contains_key(peer_addr)
     }

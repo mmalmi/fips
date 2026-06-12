@@ -184,6 +184,7 @@ pub struct PacketRx {
 #[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     Batch(Vec<ReceivedPacket>),
 }
 
@@ -331,6 +332,7 @@ impl PacketTx {
             })
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     pub(crate) fn send_batch(&self, packets: Vec<ReceivedPacket>) -> Result<(), ()> {
         if packets.is_empty() {
             return Ok(());
@@ -365,6 +367,7 @@ impl PacketTx {
         Ok(())
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     fn send_packet_items(
         &self,
         tx: PacketQueueTx,
