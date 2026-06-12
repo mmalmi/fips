@@ -59,7 +59,10 @@
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicU64,
+    Ordering::{Acquire, Relaxed, Release},
+};
 use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
@@ -534,9 +537,9 @@ pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
 fn record_count_sample(stage: Stage, elapsed_ns: u64, count: u64, bucket: usize) {
     let idx = stage as usize;
     TOTAL_NS[idx].fetch_add(elapsed_ns.saturating_mul(count), Relaxed);
-    COUNT[idx].fetch_add(count, Relaxed);
     MAX_NS[idx].fetch_max(elapsed_ns, Relaxed);
     HIST[(idx * HIST_BUCKETS) + bucket].fetch_add(count, Relaxed);
+    COUNT[idx].fetch_add(count, Release);
 }
 
 /// Record one queue wait into aggregate + priority/bulk split counters.
@@ -686,10 +689,13 @@ pub fn maybe_spawn_reporter() {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let mut line = format!("[pipe {}s]", interval);
             for i in 0..N_STAGES {
-                let t = TOTAL_NS[i].load(Relaxed);
-                let c = COUNT[i].load(Relaxed);
-                let dt = t.saturating_sub(prev_total[i]);
+                let c = COUNT[i].load(Acquire);
                 let dc = c.saturating_sub(prev_count[i]);
+                if dc == 0 {
+                    continue;
+                }
+                let t = TOTAL_NS[i].load(Relaxed);
+                let dt = t.saturating_sub(prev_total[i]);
                 prev_total[i] = t;
                 prev_count[i] = c;
 
@@ -700,9 +706,6 @@ pub fn maybe_spawn_reporter() {
                     let current = HIST[idx].load(Relaxed);
                     *delta = current.saturating_sub(prev_hist[idx]);
                     prev_hist[idx] = current;
-                }
-                if dc == 0 {
-                    continue;
                 }
                 let stage = stage_from_index(i);
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };
@@ -764,6 +767,8 @@ fn bucket_upper_ns(bucket: usize) -> u64 {
 }
 
 fn percentile_ns(hist_delta: &[u64; HIST_BUCKETS], total: u64, pct: u64) -> u64 {
+    let observed_total = hist_delta.iter().copied().sum::<u64>();
+    let total = total.min(observed_total);
     if total == 0 {
         return 0;
     }
@@ -775,7 +780,7 @@ fn percentile_ns(hist_delta: &[u64; HIST_BUCKETS], total: u64, pct: u64) -> u64 
             return bucket_upper_ns(idx);
         }
     }
-    bucket_upper_ns(HIST_BUCKETS - 1)
+    interval_max_ns(hist_delta)
 }
 
 fn interval_max_ns(hist_delta: &[u64; HIST_BUCKETS]) -> u64 {
@@ -815,8 +820,9 @@ fn fmt_rate_per_sec(count: u64, interval_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EVENTS, Event, N_EVENTS, N_STAGES, Stage, TraceStamp, event_from_index, fmt_rate_per_sec,
-        record_event_count_sample, stage_from_index,
+        EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
+        event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample,
+        stage_from_index,
     };
     use std::sync::atomic::Ordering::Relaxed;
     use std::time::Instant;
@@ -833,6 +839,15 @@ mod tests {
         assert_eq!(fmt_rate_per_sec(1, 5), "0.2");
         assert_eq!(fmt_rate_per_sec(1, 60), "0.017");
         assert_eq!(fmt_rate_per_sec(1_234_567, 10), "123456.7");
+    }
+
+    #[test]
+    fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
+        let mut hist = [0u64; HIST_BUCKETS];
+        hist[10] = 1;
+
+        assert_eq!(percentile_ns(&hist, 2, 99), bucket_upper_ns(10));
+        assert_eq!(percentile_ns(&[0u64; HIST_BUCKETS], 1, 99), 0);
     }
 
     #[test]
