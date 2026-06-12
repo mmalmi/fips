@@ -835,8 +835,10 @@ const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
+// Keep the Linux worker turn close to the packet-mover receive width; larger
+// turns amortize sends but make tail service less predictable under pressure.
 #[cfg(target_os = "linux")]
-const DEFAULT_WORKER_BATCH_SIZE: usize = 48;
+const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
 #[cfg(target_os = "linux")]
 const LINUX_UDP_SEND_BATCH_MAX: usize = 64;
 #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
