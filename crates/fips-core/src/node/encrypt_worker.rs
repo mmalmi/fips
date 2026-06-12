@@ -1988,6 +1988,7 @@ impl EncryptWorkerShard {
         if !recv_batch(&mut self.batch, self.max_batch) {
             return false;
         }
+        prioritize_worker_batch(&mut self.batch);
         crate::perf_profile::record_fmp_worker_batch(self.batch.len(), self.max_batch);
         if let Err(err) = flush_batch(&mut self.batch) {
             debug!(
@@ -2003,6 +2004,27 @@ impl EncryptWorkerShard {
     #[cfg(test)]
     fn batch_len(&self) -> usize {
         self.batch.len()
+    }
+}
+
+fn prioritize_worker_batch(batch: &mut [QueuedFmpSendJob]) {
+    let mut saw_bulk = false;
+    let mut priority_behind_bulk = false;
+    for job in batch.iter() {
+        match job.queue_lane() {
+            EncryptWorkerLane::Priority if saw_bulk => {
+                priority_behind_bulk = true;
+                break;
+            }
+            EncryptWorkerLane::Bulk => saw_bulk = true,
+            EncryptWorkerLane::Priority => {}
+        }
+    }
+    if priority_behind_bulk {
+        batch.sort_by_key(|job| match job.queue_lane() {
+            EncryptWorkerLane::Priority => 0u8,
+            EncryptWorkerLane::Bulk => 1u8,
+        });
     }
 }
 
@@ -3081,11 +3103,12 @@ mod unix_tests {
         LessSafeKey::new(unbound)
     }
 
-    fn queued_test_job(
+    fn queued_test_job_classified(
         socket: AsyncUdpSocket,
         cipher: &LessSafeKey,
         dest_addr: SocketAddr,
         payload_len: usize,
+        bulk_endpoint_data: bool,
     ) -> QueuedFmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
@@ -3101,11 +3124,20 @@ mod unix_tests {
                 None,
                 dest_addr,
             ),
-            bulk_endpoint_data: true,
-            drop_on_backpressure: true,
+            bulk_endpoint_data,
+            drop_on_backpressure: bulk_endpoint_data,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
         })
+    }
+
+    fn queued_test_job(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        payload_len: usize,
+    ) -> QueuedFmpSendJob {
+        queued_test_job_classified(socket, cipher, dest_addr, payload_len, true)
     }
 
     #[test]
@@ -3157,6 +3189,74 @@ mod unix_tests {
                     false
                 },
                 |_batch| panic!("flush must not run when receive returns closed"),
+            ));
+        });
+    }
+
+    #[test]
+    fn encrypt_worker_shard_prioritizes_local_batch_without_reordering_lanes() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let cipher = test_cipher(7);
+            let dest: SocketAddr = "127.0.0.1:10035".parse().unwrap();
+            let mut shard = EncryptWorkerShard::new(3, 4);
+
+            assert!(shard.drain_and_flush_once(
+                |batch, _max| {
+                    batch.push(queued_test_job_classified(
+                        socket.clone(),
+                        &cipher,
+                        dest,
+                        101,
+                        true,
+                    ));
+                    batch.push(queued_test_job_classified(
+                        socket.clone(),
+                        &cipher,
+                        dest,
+                        11,
+                        false,
+                    ));
+                    batch.push(queued_test_job_classified(
+                        socket.clone(),
+                        &cipher,
+                        dest,
+                        102,
+                        true,
+                    ));
+                    batch.push(queued_test_job_classified(socket, &cipher, dest, 12, false));
+                    true
+                },
+                |batch| {
+                    let lanes: Vec<_> = batch.iter().map(QueuedFmpSendJob::queue_lane).collect();
+                    assert_eq!(
+                        lanes,
+                        vec![
+                            EncryptWorkerLane::Priority,
+                            EncryptWorkerLane::Priority,
+                            EncryptWorkerLane::Bulk,
+                            EncryptWorkerLane::Bulk,
+                        ],
+                        "priority work should not sit behind bulk inside a worker-owned batch"
+                    );
+                    let payload_lens: Vec<_> = batch
+                        .iter()
+                        .map(|job| job.job.wire_buf.len() - ESTABLISHED_HEADER_SIZE)
+                        .collect();
+                    assert_eq!(
+                        payload_lens,
+                        vec![11, 12, 101, 102],
+                        "stable lane ordering must preserve FIFO within priority and bulk lanes"
+                    );
+                    batch.clear();
+                    Ok(())
+                },
             ));
         });
     }
