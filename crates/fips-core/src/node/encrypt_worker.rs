@@ -792,7 +792,19 @@ fn worker_batch_size() -> usize {
 
 #[cfg(not(target_os = "macos"))]
 fn worker_fast_lane_cap(total_cap: usize, per_flow_cap: usize) -> usize {
-    worker_batch_size()
+    worker_fast_lane_cap_for_batch(total_cap, per_flow_cap, worker_batch_size())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn worker_fast_lane_cap_for_batch(
+    total_cap: usize,
+    per_flow_cap: usize,
+    batch_size: usize,
+) -> usize {
+    batch_size
+        // Larger experimental drain batches should not also widen the hidden
+        // admission bypass before fair per-flow backpressure can engage.
+        .min(DEFAULT_WORKER_BATCH_SIZE)
         .min(per_flow_cap.max(1))
         .min(total_cap.max(1))
         .max(1)
@@ -4502,6 +4514,16 @@ mod fair_queue_tests {
             worker_fast_lane_cap(2048, 512),
             DEFAULT_WORKER_BATCH_SIZE,
             "default bulk workers may bypass fair admission for one local batch, not one full per-flow queue"
+        );
+        assert_eq!(
+            worker_fast_lane_cap_for_batch(2048, 512, DEFAULT_WORKER_BATCH_SIZE + 16),
+            DEFAULT_WORKER_BATCH_SIZE,
+            "larger experimental drain batches must not widen the fair-admission fast lane"
+        );
+        assert_eq!(
+            worker_fast_lane_cap_for_batch(2048, 512, 16),
+            16,
+            "smaller experimental drain batches should keep pressure tests tight"
         );
         assert_eq!(
             worker_fast_lane_cap(16, 4),
