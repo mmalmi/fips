@@ -1295,6 +1295,7 @@ enum DecryptWorkerBulkItem {
     Job(DecryptJob),
     FspJob(FspDecryptJob),
     Batch(Vec<DecryptJob>),
+    FspBatch(Vec<FspDecryptJob>),
 }
 
 impl DecryptWorkerBulkItem {
@@ -1302,6 +1303,7 @@ impl DecryptWorkerBulkItem {
         match self {
             Self::Job(_) | Self::FspJob(_) => 1,
             Self::Batch(jobs) => jobs.len(),
+            Self::FspBatch(jobs) => jobs.len(),
         }
     }
 }
@@ -1372,9 +1374,10 @@ impl DecryptWorkerBatchStats {
             DecryptWorkerBulkItem::Job(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::FspJob(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::Batch(jobs) => {
-                for job in jobs {
-                    self.add_lane(job.lane(), 1);
-                }
+                self.add_lane(DecryptWorkerLane::Bulk, jobs.len());
+            }
+            DecryptWorkerBulkItem::FspBatch(jobs) => {
+                self.add_lane(DecryptWorkerLane::Bulk, jobs.len());
             }
         }
     }
@@ -1500,6 +1503,78 @@ impl DecryptJobBatcher {
             Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         );
         workers.dispatch_bulk_job_batch(worker_idx, jobs);
+    }
+}
+
+struct FspDecryptJobBatcher {
+    worker_idx: Option<usize>,
+    jobs: Vec<FspDecryptJob>,
+}
+
+impl FspDecryptJobBatcher {
+    fn new() -> Self {
+        Self {
+            worker_idx: None,
+            jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        }
+    }
+
+    fn push(
+        &mut self,
+        workers: &DecryptWorkerPool,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
+            self.flush(workers, plaintext_batch);
+            if let Err(job) = workers.dispatch_fsp_job_or_return(job) {
+                plaintext_batch.push_fsp_job_fallback(job);
+            }
+            return;
+        }
+
+        let worker_idx = workers.worker_idx_for_fsp(&job.source_addr);
+        let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
+        if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
+            self.flush(workers, plaintext_batch);
+        }
+        self.worker_idx = Some(worker_idx);
+        self.jobs.push(job);
+
+        if self.jobs.len() >= batch_max {
+            self.flush(workers, plaintext_batch);
+        }
+    }
+
+    fn flush(
+        &mut self,
+        workers: &DecryptWorkerPool,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let Some(worker_idx) = self.worker_idx.take() else {
+            return;
+        };
+        if self.jobs.is_empty() {
+            return;
+        }
+
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single pending FSP job");
+            if let Err(job) = workers.dispatch_bulk_fsp_job_or_return(worker_idx, job) {
+                plaintext_batch.push_fsp_job_fallback(job);
+            }
+            return;
+        }
+
+        let jobs = std::mem::replace(
+            &mut self.jobs,
+            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        );
+        if let Err(jobs) = workers.dispatch_bulk_fsp_job_batch_or_return(worker_idx, jobs) {
+            for job in jobs {
+                plaintext_batch.push_fsp_job_fallback(job);
+            }
+        }
     }
 }
 
@@ -1672,9 +1747,18 @@ impl DecryptWorkerPool {
     fn dispatch_bulk_fsp_job_or_return(
         &self,
         idx: usize,
-        mut job: FspDecryptJob,
+        job: FspDecryptJob,
     ) -> Result<(), FspDecryptJob> {
-        job.set_trace_enqueued_at(crate::perf_profile::stamp());
+        self.dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, crate::perf_profile::stamp())
+    }
+
+    fn dispatch_bulk_fsp_job_with_stamp_or_return(
+        &self,
+        idx: usize,
+        mut job: FspDecryptJob,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Result<(), FspDecryptJob> {
+        job.set_trace_enqueued_at(queued_at);
         let sender = &self.senders[idx];
         if !try_reserve_bulk_packets(&sender.bulk_queued_packets, sender.bulk_packet_cap, 1) {
             crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
@@ -1706,6 +1790,79 @@ impl DecryptWorkerPool {
             }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 unreachable!("bulk FSP dispatch only sends FSP jobs")
+            }
+        }
+    }
+
+    fn dispatch_bulk_fsp_jobs_individually_or_return(
+        &self,
+        idx: usize,
+        jobs: Vec<FspDecryptJob>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Result<(), Vec<FspDecryptJob>> {
+        let mut returned = Vec::new();
+        for job in jobs {
+            if let Err(job) = self.dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, queued_at) {
+                returned.push(job);
+            }
+        }
+        if returned.is_empty() {
+            Ok(())
+        } else {
+            Err(returned)
+        }
+    }
+
+    fn dispatch_bulk_fsp_job_batch_or_return(
+        &self,
+        idx: usize,
+        mut jobs: Vec<FspDecryptJob>,
+    ) -> Result<(), Vec<FspDecryptJob>> {
+        debug_assert!(!jobs.is_empty());
+        debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
+        debug_assert!(
+            jobs.iter()
+                .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
+        );
+
+        let queued_at = crate::perf_profile::stamp();
+        for job in &mut jobs {
+            job.set_trace_enqueued_at(queued_at);
+        }
+
+        if jobs.len() == 1 {
+            let job = jobs.pop().expect("checked non-empty FSP batch");
+            return self
+                .dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, queued_at)
+                .map_err(|job| vec![job]);
+        }
+
+        let packet_count = jobs.len();
+        let sender = &self.senders[idx];
+        if !try_reserve_bulk_packets(
+            &sender.bulk_queued_packets,
+            sender.bulk_packet_cap,
+            packet_count,
+        ) {
+            return self.dispatch_bulk_fsp_jobs_individually_or_return(idx, jobs, queued_at);
+        }
+
+        match sender.bulk.try_send(DecryptWorkerBulkItem::FspBatch(jobs)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DecryptWorkerBulkItem::FspBatch(jobs))) => {
+                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
+                self.dispatch_bulk_fsp_jobs_individually_or_return(idx, jobs, queued_at)
+            }
+            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspBatch(jobs))) => {
+                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
+                debug!(
+                    worker = idx,
+                    "DecryptWorker thread gone; falling FSP bulk job batch back to rx_loop"
+                );
+                Err(jobs)
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                unreachable!("bulk FSP batch dispatch only sends FSP batches")
             }
         }
     }
@@ -2139,13 +2296,41 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let count = jobs.len();
+            let mut fsp_batcher = FspDecryptJobBatcher::new();
+            for job in jobs {
+                while let Ok(msg) = priority_rx.try_recv() {
+                    fsp_batcher.flush(&shard.pool, plaintext_batch);
+                    plaintext_batch.flush();
+                    batch_stats.add_msg(&msg);
+                    shard.handle_msg(idx, msg);
+                }
+                match shard.handle_job_action(idx, job) {
+                    Ok(Some(action)) => {
+                        shard.push_job_action_output(
+                            idx,
+                            action,
+                            plaintext_batch,
+                            Some(&mut fsp_batcher),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        debug!(worker = idx, error = %err, "decrypt worker job failed");
+                    }
+                }
+            }
+            fsp_batcher.flush(&shard.pool, plaintext_batch);
+            count
+        }
+        DecryptWorkerBulkItem::FspBatch(jobs) => {
+            let count = jobs.len();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
                     plaintext_batch.flush();
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                shard.handle_bulk_job_msg(idx, job, plaintext_batch);
+                shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             }
             count
         }
@@ -2156,6 +2341,11 @@ struct DecryptWorkerOutput {
     fallback_tx: DecryptWorkerFallbackSender,
     event: DecryptWorkerEvent,
     direct_delivery: Option<PendingDirectSessionDelivery>,
+}
+
+enum DecryptWorkerJobAction {
+    Output(DecryptWorkerOutput),
+    FspJob(FspDecryptJob),
 }
 
 impl DecryptWorkerOutput {
@@ -2369,6 +2559,14 @@ impl DecryptPlaintextFallbackBatch {
         let _ = output.send();
     }
 
+    fn push_fsp_job_fallback(&mut self, job: FspDecryptJob) {
+        self.push_output(DecryptWorkerOutput {
+            fallback_tx: job.fallback_tx,
+            event: DecryptWorkerEvent::Plaintext(job.fallback),
+            direct_delivery: None,
+        });
+    }
+
     fn flush(&mut self) {
         self.flush_plaintext();
         self.flush_endpoint();
@@ -2542,10 +2740,8 @@ impl DecryptWorkerShard {
     }
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
-        match self.handle_job_output(idx, job) {
-            Ok(Some(output)) => {
-                let _ = output.send();
-            }
+        match self.handle_job_action(idx, job) {
+            Ok(Some(action)) => self.handle_job_action_immediate(idx, action),
             Ok(None) => {}
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
@@ -2559,8 +2755,10 @@ impl DecryptWorkerShard {
         job: DecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        match self.handle_job_output(idx, job) {
-            Ok(Some(output)) => plaintext_batch.push_output(output),
+        match self.handle_job_action(idx, job) {
+            Ok(Some(action)) => {
+                self.push_job_action_output(idx, action, plaintext_batch, None);
+            }
             Ok(None) => {}
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
@@ -2648,6 +2846,47 @@ impl DecryptWorkerShard {
             let _ = output.send();
         }
         Ok(())
+    }
+
+    fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
+        match action {
+            DecryptWorkerJobAction::Output(output) => {
+                let _ = output.send();
+            }
+            DecryptWorkerJobAction::FspJob(job) => {
+                if let Some(output) = self.dispatch_or_handle_fsp_job(idx, job) {
+                    let _ = output.send();
+                }
+            }
+        }
+    }
+
+    fn push_job_action_output(
+        &mut self,
+        idx: usize,
+        action: DecryptWorkerJobAction,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+    ) {
+        match action {
+            DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
+            DecryptWorkerJobAction::FspJob(job) => {
+                if self.pool.worker_idx_for_fsp(&job.source_addr) == idx {
+                    if let Some(output) = self.handle_fsp_job_output(job) {
+                        plaintext_batch.push_output(output);
+                    }
+                    return;
+                }
+                if let Some(fsp_batcher) = fsp_batcher {
+                    fsp_batcher.push(&self.pool, job, plaintext_batch);
+                    return;
+                }
+                match self.pool.dispatch_fsp_job_or_return(job) {
+                    Ok(()) => {}
+                    Err(job) => plaintext_batch.push_fsp_job_fallback(job),
+                }
+            }
+        }
     }
 
     fn local_established_fsp_meta(
@@ -3050,11 +3289,11 @@ impl DecryptWorkerShard {
         })
     }
 
-    fn handle_job_output(
+    fn handle_job_action(
         &mut self,
-        idx: usize,
+        _idx: usize,
         job: DecryptJob,
-    ) -> Result<Option<DecryptWorkerOutput>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -3106,7 +3345,7 @@ impl DecryptWorkerShard {
             Ok(outcome) => outcome.plaintext_len,
             Err(FmpOpenError::Replay) => return Ok(None),
             Err(FmpOpenError::Aead { fmp_replay_highest }) => {
-                return Ok(Some(DecryptWorkerOutput {
+                return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                     fallback_tx,
                     event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                         source_peer,
@@ -3115,7 +3354,7 @@ impl DecryptWorkerShard {
                         trace_enqueued_at: None,
                     }),
                     direct_delivery: None,
-                }));
+                })));
             }
         };
         drop(_t_fmp);
@@ -3147,7 +3386,7 @@ impl DecryptWorkerShard {
                 inner_timestamp_ms,
                 fmp_flags,
             };
-            return Ok(Some(DecryptWorkerOutput {
+            return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::AuthenticatedFmpReceive(
                     DecryptAuthenticatedFmpReceive {
@@ -3157,7 +3396,7 @@ impl DecryptWorkerShard {
                     },
                 ),
                 direct_delivery: None,
-            }));
+            })));
         }
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
@@ -3198,15 +3437,30 @@ impl DecryptWorkerShard {
                 fsp_payload_len: meta.fsp_payload_len,
                 trace_enqueued_at: None,
             };
-            return Ok(self.dispatch_or_handle_fsp_job(idx, fsp_job));
+            return Ok(Some(DecryptWorkerJobAction::FspJob(fsp_job)));
         }
 
         let event = DecryptWorkerEvent::Plaintext(fallback);
-        Ok(Some(DecryptWorkerOutput {
+        Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
             fallback_tx,
             event,
             direct_delivery: None,
-        }))
+        })))
+    }
+
+    #[cfg(test)]
+    fn handle_job_output(
+        &mut self,
+        idx: usize,
+        job: DecryptJob,
+    ) -> Result<Option<DecryptWorkerOutput>, Box<dyn std::error::Error + Send + Sync>> {
+        match self.handle_job_action(idx, job)? {
+            Some(DecryptWorkerJobAction::Output(output)) => Ok(Some(output)),
+            Some(DecryptWorkerJobAction::FspJob(job)) => {
+                Ok(self.dispatch_or_handle_fsp_job(idx, job))
+            }
+            None => Ok(None),
+        }
     }
 
     #[cfg(test)]
@@ -4567,8 +4821,105 @@ mod tests {
             .expect("bulk FSP job should use bulk lane")
         {
             DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Bulk),
-            DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::Batch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => {
                 panic!("expected bulk FSP job")
+            }
+        }
+    }
+
+    #[test]
+    fn fsp_job_batcher_groups_consecutive_bulk_jobs_for_one_owner() {
+        let (pool, _priority_receivers, bulk_receivers) =
+            test_worker_pool(4, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = *test_source_peer().node_addr();
+        let owner = pool.worker_idx_for_fsp(&source_addr);
+        let mut batcher = FspDecryptJobBatcher::new();
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+
+        for _ in 0..3 {
+            let mut job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+            job.source_addr = source_addr;
+            batcher.push(&pool, job, &mut plaintext_batch);
+        }
+        batcher.flush(&pool, &mut plaintext_batch);
+
+        assert_eq!(
+            bulk_receivers[owner].len(),
+            1,
+            "three same-owner FSP bulk packets should consume one channel slot"
+        );
+        match bulk_receivers[owner]
+            .try_recv()
+            .expect("batched FSP bulk item")
+        {
+            DecryptWorkerBulkItem::FspBatch(jobs) => {
+                assert_eq!(jobs.len(), 3);
+                assert!(
+                    jobs.iter()
+                        .all(|job| matches!(job.lane(), DecryptWorkerLane::Bulk))
+                );
+                assert!(jobs.iter().all(|job| job.source_addr == source_addr));
+            }
+            DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job FSP batch"),
+            DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
+                panic!("expected a multi-job FSP batch")
+            }
+        }
+        for (idx, rx) in bulk_receivers.iter().enumerate() {
+            if idx != owner {
+                assert!(
+                    rx.is_empty(),
+                    "other worker {idx} must not receive this FSP owner batch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_fsp_batch_dispatch_uses_partial_worker_capacity() {
+        let (pool, _priority_receivers, bulk_receivers) = test_worker_pool(1, 2);
+        let existing_job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        assert!(
+            pool.dispatch_bulk_fsp_job_or_return(0, existing_job)
+                .is_ok(),
+            "first packet should reserve one of two bulk packet slots"
+        );
+
+        let batch = vec![
+            dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
+            dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
+        ];
+        let returned = pool
+            .dispatch_bulk_fsp_job_batch_or_return(0, batch)
+            .expect_err("only one packet slot remains for the two-packet batch");
+
+        assert_eq!(
+            returned.len(),
+            1,
+            "partial worker capacity should admit one packet and return only overflow"
+        );
+        assert_eq!(
+            bulk_receivers[0].len(),
+            2,
+            "the existing packet plus one batch packet should remain queued"
+        );
+        assert_eq!(
+            pool.senders[0].bulk_queued_packets.load(Ordering::Relaxed),
+            2,
+            "bulk packet accounting should match the admitted packet count"
+        );
+        for item in bulk_receivers[0].try_iter() {
+            match item {
+                DecryptWorkerBulkItem::FspJob(job) => {
+                    assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
+                }
+                DecryptWorkerBulkItem::Job(_)
+                | DecryptWorkerBulkItem::Batch(_)
+                | DecryptWorkerBulkItem::FspBatch(_) => {
+                    panic!("partial-capacity retry should fall back to single FSP jobs")
+                }
             }
         }
     }
@@ -4904,6 +5255,7 @@ mod tests {
             }
             DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job bulk batch"),
+            DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a multi-job bulk batch"),
         }
     }
 
@@ -5460,6 +5812,7 @@ mod tests {
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
+            DecryptWorkerBulkItem::FspBatch(_) => panic!("expected an eight-packet bulk batch"),
         }
         assert!(
             bulk_rx[0].is_empty(),
