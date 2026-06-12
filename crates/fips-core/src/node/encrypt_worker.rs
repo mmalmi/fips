@@ -264,6 +264,14 @@ struct SelectedSendBatch {
     target_key: SendTargetKey,
     wire_packets: Vec<Vec<u8>>,
     drop_on_backpressure: bool,
+    #[cfg(target_os = "linux")]
+    gso_segment_len: usize,
+    #[cfg(target_os = "linux")]
+    gso_last_len: usize,
+    #[cfg(target_os = "linux")]
+    gso_prefix_uniform: bool,
+    #[cfg(target_os = "linux")]
+    gso_eligible_sizes: bool,
 }
 
 #[cfg(unix)]
@@ -296,6 +304,8 @@ impl SelectedSendBatch {
             target_key,
             "selected send batch must keep the queued target key"
         );
+        #[cfg(target_os = "linux")]
+        let gso_segment_len = wire_packet.len();
         let mut wire_packets = Vec::with_capacity(packet_capacity.max(1));
         wire_packets.push(wire_packet);
         Self {
@@ -303,6 +313,14 @@ impl SelectedSendBatch {
             target_key,
             wire_packets,
             drop_on_backpressure,
+            #[cfg(target_os = "linux")]
+            gso_segment_len,
+            #[cfg(target_os = "linux")]
+            gso_last_len: gso_segment_len,
+            #[cfg(target_os = "linux")]
+            gso_prefix_uniform: gso_segment_len > 0,
+            #[cfg(target_os = "linux")]
+            gso_eligible_sizes: false,
         }
     }
 
@@ -315,6 +333,13 @@ impl SelectedSendBatch {
             self.drop_on_backpressure, drop_on_backpressure,
             "send batches keep one backpressure policy so bulk remains droppable"
         );
+        #[cfg(target_os = "linux")]
+        {
+            let packet_len = wire_packet.len();
+            self.gso_prefix_uniform &= self.gso_last_len == self.gso_segment_len;
+            self.gso_last_len = packet_len;
+            self.gso_eligible_sizes = self.gso_prefix_uniform && packet_len <= self.gso_segment_len;
+        }
         self.wire_packets.push(wire_packet);
     }
 
@@ -324,6 +349,11 @@ impl SelectedSendBatch {
 
     fn packet_count(&self) -> usize {
         self.wire_packets.len()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn gso_eligible_sizes(&self) -> bool {
+        self.gso_eligible_sizes
     }
 
     #[cfg(test)]
@@ -344,6 +374,7 @@ impl SelectedSendBatch {
 struct LinuxSendBatchAttempt {
     send_target: SelectedSendTarget,
     wire_packets: Vec<Vec<u8>>,
+    gso_eligible_sizes: bool,
     drop_on_backpressure: bool,
     backpressure: SendBackpressurePacer,
     sent: usize,
@@ -352,10 +383,16 @@ struct LinuxSendBatchAttempt {
 #[cfg(target_os = "linux")]
 impl LinuxSendBatchAttempt {
     fn from_batch(batch: SelectedSendBatch) -> Self {
+        let gso_eligible_sizes = batch.gso_eligible_sizes();
+        debug_assert_eq!(
+            gso_eligible_sizes,
+            gso_eligible_sizes_ref(&batch.wire_packets)
+        );
         let (send_target, wire_packets, drop_on_backpressure) = batch.into_parts();
         Self {
             send_target,
             wire_packets,
+            gso_eligible_sizes,
             drop_on_backpressure,
             backpressure: SendBackpressurePacer::default(),
             sent: 0,
@@ -374,6 +411,10 @@ impl LinuxSendBatchAttempt {
 
     fn packets(&self) -> &[Vec<u8>] {
         &self.wire_packets
+    }
+
+    fn gso_eligible_sizes(&self) -> bool {
+        self.gso_eligible_sizes
     }
 
     fn remaining_packets(&self) -> &[Vec<u8>] {
@@ -2571,7 +2612,7 @@ fn flush_batch_sync(
         // Within a group, destination is uniform by construction —
         // GSO needs only the size check now.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
-            && gso_eligible_sizes(send_attempt.packets())
+            && send_attempt.gso_eligible_sizes()
         {
             match send_batch_gso(fd, send_attempt.packets(), dest_addr, connected) {
                 Ok(()) => {
@@ -3082,7 +3123,7 @@ static GSO_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// behaviour). Real-world TCP-over-FIPS traffic at line rate is
 /// almost entirely MTU-sized packets, so this hits on >99% of groups.
 #[cfg(target_os = "linux")]
-fn gso_eligible_sizes(packets: &[Vec<u8>]) -> bool {
+fn gso_eligible_sizes_ref(packets: &[Vec<u8>]) -> bool {
     if packets.len() < 2 {
         // Single-packet groups don't benefit from GSO (no segmentation
         // saving) and just add cmsg overhead.
@@ -5462,20 +5503,20 @@ mod tests {
 
     #[test]
     fn gso_eligible_rejects_single_packet() {
-        assert!(!gso_eligible_sizes(&[pkt(1500)]));
+        assert!(!gso_eligible_sizes_ref(&[pkt(1500)]));
     }
 
     #[test]
     fn gso_eligible_accepts_uniform_batch() {
         let batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
-        assert!(gso_eligible_sizes(&batch));
+        assert!(gso_eligible_sizes_ref(&batch));
     }
 
     #[test]
     fn gso_eligible_accepts_short_trailer() {
         let mut batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
         batch.push(pkt(900)); // last shorter — kernel handles this
-        assert!(gso_eligible_sizes(&batch));
+        assert!(gso_eligible_sizes_ref(&batch));
     }
 
     #[test]
@@ -5483,7 +5524,64 @@ mod tests {
         let mut batch: Vec<_> = (0..18).map(|_| pkt(1500)).collect();
         batch[3] = pkt(800); // mid-batch short packet
         batch.push(pkt(1500));
-        assert!(!gso_eligible_sizes(&batch));
+        assert!(!gso_eligible_sizes_ref(&batch));
+    }
+
+    #[test]
+    fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let target_key = target.key();
+
+            let mut batch = SelectedSendBatch::new(target, target_key, pkt(1500), true);
+            assert_eq!(
+                batch.gso_eligible_sizes(),
+                gso_eligible_sizes_ref(&batch.wire_packets)
+            );
+            assert!(
+                !batch.gso_eligible_sizes(),
+                "single packet groups should stay on the plain send path"
+            );
+
+            batch.push(pkt(1500), true);
+            assert_eq!(
+                batch.gso_eligible_sizes(),
+                gso_eligible_sizes_ref(&batch.wire_packets)
+            );
+            assert!(batch.gso_eligible_sizes());
+
+            batch.push(pkt(900), true);
+            assert_eq!(
+                batch.gso_eligible_sizes(),
+                gso_eligible_sizes_ref(&batch.wire_packets)
+            );
+            assert!(
+                batch.gso_eligible_sizes(),
+                "one short final segment is valid UDP_GSO input"
+            );
+
+            batch.push(pkt(1500), true);
+            assert_eq!(
+                batch.gso_eligible_sizes(),
+                gso_eligible_sizes_ref(&batch.wire_packets)
+            );
+            assert!(
+                !batch.gso_eligible_sizes(),
+                "a short packet stops being GSO-safe once it is no longer the final segment"
+            );
+        });
     }
 
     /// End-to-end: bind a real UDP socket pair on loopback, fire
