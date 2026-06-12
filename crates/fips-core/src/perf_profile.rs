@@ -67,7 +67,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 54;
+const N_EVENTS: usize = 60;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -336,6 +336,12 @@ pub enum Event {
     DecryptWorkerBatchSingle = 51,
     DecryptWorkerBatchPriorityPackets = 52,
     DecryptWorkerBatchBulkPackets = 53,
+    UdpSendGsoBatchGe32 = 54,
+    UdpSendGsoBatchGe48 = 55,
+    UdpSendGsoBatchEq64 = 56,
+    UdpSendSendmmsgBatchGe32 = 57,
+    UdpSendSendmmsgBatchGe48 = 58,
+    UdpSendSendmmsgBatchEq64 = 59,
 }
 
 impl Event {
@@ -401,6 +407,12 @@ impl Event {
             Event::DecryptWorkerBatchSingle => "decrypt_worker_batch_single",
             Event::DecryptWorkerBatchPriorityPackets => "decrypt_worker_batch_priority_packets",
             Event::DecryptWorkerBatchBulkPackets => "decrypt_worker_batch_bulk_packets",
+            Event::UdpSendGsoBatchGe32 => "udp_send_gso_batch_ge32",
+            Event::UdpSendGsoBatchGe48 => "udp_send_gso_batch_ge48",
+            Event::UdpSendGsoBatchEq64 => "udp_send_gso_batch_eq64",
+            Event::UdpSendSendmmsgBatchGe32 => "udp_send_sendmmsg_batch_ge32",
+            Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
+            Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
         }
     }
 }
@@ -461,6 +473,12 @@ fn event_from_index(idx: usize) -> Event {
         51 => Event::DecryptWorkerBatchSingle,
         52 => Event::DecryptWorkerBatchPriorityPackets,
         53 => Event::DecryptWorkerBatchBulkPackets,
+        54 => Event::UdpSendGsoBatchGe32,
+        55 => Event::UdpSendGsoBatchGe48,
+        56 => Event::UdpSendGsoBatchEq64,
+        57 => Event::UdpSendSendmmsgBatchGe32,
+        58 => Event::UdpSendSendmmsgBatchGe48,
+        59 => Event::UdpSendSendmmsgBatchEq64,
         _ => unreachable!(),
     }
 }
@@ -702,6 +720,12 @@ pub(crate) fn record_decrypt_worker_batch(
 #[cfg(target_os = "linux")]
 pub(crate) fn record_udp_send_gso_batch(packets: usize) {
     record_udp_send_batch(Event::UdpSendGsoBatch, Event::UdpSendGsoPackets, packets);
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendGsoBatchGe32,
+        Event::UdpSendGsoBatchGe48,
+        Event::UdpSendGsoBatchEq64,
+    );
 }
 
 #[inline]
@@ -711,6 +735,12 @@ pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {
         Event::UdpSendSendmmsgBatch,
         Event::UdpSendSendmmsgPackets,
         packets,
+    );
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendSendmmsgBatchGe32,
+        Event::UdpSendSendmmsgBatchGe48,
+        Event::UdpSendSendmmsgBatchEq64,
     );
 }
 
@@ -722,6 +752,35 @@ fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize
     }
     record_event_count_sample(batch_event, 1);
     record_event_count_sample(packet_event, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn record_udp_send_batch_tail_buckets(
+    packets: usize,
+    ge32_event: Event,
+    ge48_event: Event,
+    eq64_event: Event,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    let (ge32, ge48, eq64) = udp_send_batch_tail_bucket_flags(packets);
+    if ge32 {
+        record_event_count_sample(ge32_event, 1);
+    }
+    if ge48 {
+        record_event_count_sample(ge48_event, 1);
+    }
+    if eq64 {
+        record_event_count_sample(eq64_event, 1);
+    }
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn udp_send_batch_tail_bucket_flags(packets: usize) -> (bool, bool, bool) {
+    (packets >= 32, packets >= 48, packets >= 64)
 }
 
 #[inline]
@@ -916,6 +975,8 @@ fn fmt_rate_per_sec(count: u64, interval_secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::udp_send_batch_tail_bucket_flags;
     use super::{
         EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
         event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample,
@@ -949,7 +1010,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_liveness_and_send_path_events() {
-        assert_eq!(N_EVENTS, 54);
+        assert_eq!(N_EVENTS, 60);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -1054,6 +1115,42 @@ mod tests {
             event_from_index(Event::DecryptWorkerBatchBulkPackets as usize).name(),
             "decrypt_worker_batch_bulk_packets"
         );
+        assert_eq!(
+            event_from_index(Event::UdpSendGsoBatchGe32 as usize).name(),
+            "udp_send_gso_batch_ge32"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendGsoBatchGe48 as usize).name(),
+            "udp_send_gso_batch_ge48"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendGsoBatchEq64 as usize).name(),
+            "udp_send_gso_batch_eq64"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendSendmmsgBatchGe32 as usize).name(),
+            "udp_send_sendmmsg_batch_ge32"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendSendmmsgBatchGe48 as usize).name(),
+            "udp_send_sendmmsg_batch_ge48"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendSendmmsgBatchEq64 as usize).name(),
+            "udp_send_sendmmsg_batch_eq64"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn udp_send_batch_buckets_classify_large_bursts() {
+        assert_eq!(udp_send_batch_tail_bucket_flags(0), (false, false, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(31), (false, false, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(32), (true, false, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(47), (true, false, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(48), (true, true, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(63), (true, true, false));
+        assert_eq!(udp_send_batch_tail_bucket_flags(64), (true, true, true));
     }
 
     #[test]
