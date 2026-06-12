@@ -292,8 +292,15 @@ impl SelectedSendBatch {
     }
 
     fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
+        debug_assert_eq!(
+            self.drop_on_backpressure, drop_on_backpressure,
+            "send batches keep one backpressure policy so bulk remains droppable"
+        );
         self.wire_packets.push(wire_packet);
-        self.drop_on_backpressure &= drop_on_backpressure;
+    }
+
+    fn drop_on_backpressure(&self) -> bool {
+        self.drop_on_backpressure
     }
 
     fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool) {
@@ -499,19 +506,22 @@ fn push_selected_send_batch(
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 ) {
-    if let Some(group) = groups
-        .iter_mut()
-        .find(|group| group.target_key() == target_key)
+    if let Some(idx) = groups
+        .iter()
+        .rposition(|group| group.target_key() == target_key)
     {
-        group.push(wire_packet, drop_on_backpressure);
-    } else {
-        groups.push(SelectedSendBatch::new(
-            send_target,
-            target_key,
-            wire_packet,
-            drop_on_backpressure,
-        ));
+        if groups[idx].drop_on_backpressure() == drop_on_backpressure {
+            groups[idx].push(wire_packet, drop_on_backpressure);
+            return;
+        }
     }
+
+    groups.push(SelectedSendBatch::new(
+        send_target,
+        target_key,
+        wire_packet,
+        drop_on_backpressure,
+    ));
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3560,6 +3570,18 @@ mod unix_tests {
                 None,
                 dest_a,
             );
+            let same_target_a_droppable_again = SelectedSendTarget::new(
+                socket_a.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_a,
+            );
+            let same_target_a_droppable_after_control = SelectedSendTarget::new(
+                socket_a.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_a,
+            );
             let same_dest_different_socket = SelectedSendTarget::new(
                 socket_b,
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3587,35 +3609,58 @@ mod unix_tests {
 
             let mut groups = Vec::new();
             push_selected_send_batch(&mut groups, target_a, key_a, vec![1], true);
-            push_selected_send_batch(&mut groups, same_target_a, key_a, vec![2], false);
             push_selected_send_batch(
                 &mut groups,
                 same_dest_different_socket,
                 key_other_socket,
+                vec![2],
+                true,
+            );
+            push_selected_send_batch(
+                &mut groups,
+                same_target_a_droppable_again,
+                key_a,
                 vec![3],
+                true,
+            );
+            push_selected_send_batch(&mut groups, same_target_a, key_a, vec![4], false);
+            push_selected_send_batch(
+                &mut groups,
+                same_target_a_droppable_after_control,
+                key_a,
+                vec![5],
                 true,
             );
             push_selected_send_batch(
                 &mut groups,
                 same_socket_different_dest,
                 key_other_dest,
-                vec![4],
+                vec![6],
                 true,
             );
 
-            assert_eq!(groups.len(), 3);
+            assert_eq!(groups.len(), 5);
             assert_eq!(groups[0].target_key(), key_a);
-            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![2]]);
+            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![3]]);
             assert!(
-                !groups[0].drop_on_backpressure,
-                "one non-droppable packet makes the whole target batch retry"
+                groups[0].drop_on_backpressure,
+                "droppable packets for the same target may still coalesce across unrelated targets"
             );
             assert_eq!(groups[1].target_key(), key_other_socket);
-            assert_eq!(groups[1].wire_packets, vec![vec![3]]);
+            assert_eq!(groups[1].wire_packets, vec![vec![2]]);
             assert!(groups[1].drop_on_backpressure);
-            assert_eq!(groups[2].target_key(), key_other_dest);
+            assert_eq!(groups[2].target_key(), key_a);
             assert_eq!(groups[2].wire_packets, vec![vec![4]]);
-            assert!(groups[2].drop_on_backpressure);
+            assert!(
+                !groups[2].drop_on_backpressure,
+                "non-droppable control-shaped packets get their own retry policy"
+            );
+            assert_eq!(groups[3].target_key(), key_a);
+            assert_eq!(groups[3].wire_packets, vec![vec![5]]);
+            assert!(groups[3].drop_on_backpressure);
+            assert_eq!(groups[4].target_key(), key_other_dest);
+            assert_eq!(groups[4].wire_packets, vec![vec![6]]);
+            assert!(groups[4].drop_on_backpressure);
         });
     }
 
