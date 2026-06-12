@@ -706,7 +706,7 @@ pub fn maybe_spawn_reporter() {
                 }
                 let stage = stage_from_index(i);
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };
-                let pps = if interval > 0 { dc / interval } else { 0 };
+                let rate_per_sec = fmt_rate_per_sec(dc, interval);
                 let p50 = percentile_ns(&hist_delta, dc, 50);
                 let p95 = percentile_ns(&hist_delta, dc, 95);
                 let p99 = percentile_ns(&hist_delta, dc, 99);
@@ -715,7 +715,7 @@ pub fn maybe_spawn_reporter() {
                 line.push_str(&format!(
                     " {}={}/s avg={} p50<={} p95<={} p99<={} max<={} allmax={}",
                     stage.name(),
-                    pps,
+                    rate_per_sec,
                     fmt_ns(avg_ns),
                     fmt_ns(p50),
                     fmt_ns(p95),
@@ -732,8 +732,13 @@ pub fn maybe_spawn_reporter() {
                     continue;
                 }
                 let event = event_from_index(i);
-                let per_sec = delta / interval;
-                line.push_str(&format!(" {}={}/s", event.name(), per_sec));
+                let rate_per_sec = fmt_rate_per_sec(delta, interval);
+                line.push_str(&format!(
+                    " {}={}/s total={}",
+                    event.name(),
+                    rate_per_sec,
+                    current
+                ));
             }
             // eprintln so it always lands regardless of RUST_LOG.
             eprintln!("{}", line);
@@ -794,10 +799,23 @@ fn fmt_ns(ns: u64) -> String {
     }
 }
 
+fn fmt_rate_per_sec(count: u64, interval_secs: u64) -> String {
+    let interval_secs = interval_secs.max(1);
+    if count % interval_secs == 0 {
+        return (count / interval_secs).to_string();
+    }
+    let rate = count as f64 / interval_secs as f64;
+    let formatted = format!("{rate:.3}");
+    formatted
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        EVENTS, Event, N_EVENTS, N_STAGES, Stage, TraceStamp, event_from_index,
+        EVENTS, Event, N_EVENTS, N_STAGES, Stage, TraceStamp, event_from_index, fmt_rate_per_sec,
         record_event_count_sample, stage_from_index,
     };
     use std::sync::atomic::Ordering::Relaxed;
@@ -807,6 +825,14 @@ mod tests {
     fn trace_stamp_is_compact_for_hot_queue_records() {
         assert_eq!(std::mem::size_of::<Option<TraceStamp>>(), 8);
         assert!(std::mem::size_of::<Option<TraceStamp>>() < std::mem::size_of::<Option<Instant>>());
+    }
+
+    #[test]
+    fn reporter_rate_format_preserves_sub_one_hz_samples() {
+        assert_eq!(fmt_rate_per_sec(10, 5), "2");
+        assert_eq!(fmt_rate_per_sec(1, 5), "0.2");
+        assert_eq!(fmt_rate_per_sec(1, 60), "0.017");
+        assert_eq!(fmt_rate_per_sec(1_234_567, 10), "123456.7");
     }
 
     #[test]
