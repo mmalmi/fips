@@ -1988,6 +1988,7 @@ impl EncryptWorkerShard {
         if !recv_batch(&mut self.batch, self.max_batch) {
             return false;
         }
+        crate::perf_profile::record_fmp_worker_batch(self.batch.len(), self.max_batch);
         if let Err(err) = flush_batch(&mut self.batch) {
             debug!(
                 worker = self.idx,

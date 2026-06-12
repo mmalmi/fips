@@ -64,7 +64,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 38;
+const N_EVENTS: usize = 42;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -317,6 +317,10 @@ pub enum Event {
     DecryptFspWorkerReplayDropped = 35,
     DecryptAuthenticatedSessionPriorityDropped = 36,
     DecryptAuthenticatedSessionBulkDropped = 37,
+    FmpWorkerBatchFlush = 38,
+    FmpWorkerBatchPackets = 39,
+    FmpWorkerBatchFull = 40,
+    FmpWorkerBatchSingle = 41,
 }
 
 impl Event {
@@ -366,6 +370,10 @@ impl Event {
             Event::DecryptAuthenticatedSessionBulkDropped => {
                 "decrypt_authenticated_session_bulk_dropped"
             }
+            Event::FmpWorkerBatchFlush => "fmp_worker_batch_flush",
+            Event::FmpWorkerBatchPackets => "fmp_worker_batch_packets",
+            Event::FmpWorkerBatchFull => "fmp_worker_batch_full",
+            Event::FmpWorkerBatchSingle => "fmp_worker_batch_single",
         }
     }
 }
@@ -410,6 +418,10 @@ fn event_from_index(idx: usize) -> Event {
         35 => Event::DecryptFspWorkerReplayDropped,
         36 => Event::DecryptAuthenticatedSessionPriorityDropped,
         37 => Event::DecryptAuthenticatedSessionBulkDropped,
+        38 => Event::FmpWorkerBatchFlush,
+        39 => Event::FmpWorkerBatchPackets,
+        40 => Event::FmpWorkerBatchFull,
+        41 => Event::FmpWorkerBatchSingle,
         _ => unreachable!(),
     }
 }
@@ -568,6 +580,26 @@ pub fn record_event_count(event: Event, count: u64) {
         return;
     }
     record_event_count_sample(event, count);
+}
+
+/// Record how much work an FMP encrypt worker drained before one flush.
+///
+/// These count-only metrics make `fmp_worker_*_queue_wait` easier to interpret:
+/// full batches point at a saturated worker/send path, while frequent single
+/// batches point at wakeup or producer cadence rather than backlog.
+#[inline]
+pub(crate) fn record_fmp_worker_batch(packets: usize, max_batch: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FmpWorkerBatchFlush, 1);
+    record_event_count_sample(Event::FmpWorkerBatchPackets, packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::FmpWorkerBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::FmpWorkerBatchSingle, 1);
+    }
 }
 
 #[inline]
@@ -757,7 +789,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 38);
+        assert_eq!(N_EVENTS, 42);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -797,6 +829,22 @@ mod tests {
         assert_eq!(
             event_from_index(Event::DecryptAuthenticatedSessionBulkDropped as usize).name(),
             "decrypt_authenticated_session_bulk_dropped"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchFlush as usize).name(),
+            "fmp_worker_batch_flush"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchPackets as usize).name(),
+            "fmp_worker_batch_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchFull as usize).name(),
+            "fmp_worker_batch_full"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchSingle as usize).name(),
+            "fmp_worker_batch_single"
         );
     }
 
@@ -859,6 +907,10 @@ mod tests {
             EVENTS[Event::DecryptAuthenticatedSessionPriorityDropped as usize].load(Relaxed);
         let auth_bulk_before =
             EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed);
+        let batch_flush_before = EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed);
+        let batch_packets_before = EVENTS[Event::FmpWorkerBatchPackets as usize].load(Relaxed);
+        let batch_full_before = EVENTS[Event::FmpWorkerBatchFull as usize].load(Relaxed);
+        let batch_single_before = EVENTS[Event::FmpWorkerBatchSingle as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -866,6 +918,10 @@ mod tests {
         record_event_count_sample(Event::DecryptFallbackPriorityGated, 11);
         record_event_count_sample(Event::DecryptAuthenticatedSessionPriorityDropped, 13);
         record_event_count_sample(Event::DecryptAuthenticatedSessionBulkDropped, 17);
+        record_event_count_sample(Event::FmpWorkerBatchFlush, 19);
+        record_event_count_sample(Event::FmpWorkerBatchPackets, 23);
+        record_event_count_sample(Event::FmpWorkerBatchFull, 29);
+        record_event_count_sample(Event::FmpWorkerBatchSingle, 31);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -892,6 +948,22 @@ mod tests {
             EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed)
                 - auth_bulk_before,
             17
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed) - batch_flush_before,
+            19
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchPackets as usize].load(Relaxed) - batch_packets_before,
+            23
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchFull as usize].load(Relaxed) - batch_full_before,
+            29
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchSingle as usize].load(Relaxed) - batch_single_before,
+            31
         );
     }
 }
