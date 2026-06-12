@@ -742,6 +742,8 @@ const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
 const DEFAULT_WORKER_BATCH_SIZE: usize = 48;
+#[cfg(target_os = "linux")]
+const LINUX_UDP_SEND_BATCH_MAX: usize = 64;
 #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
 pub(crate) const DEFAULT_SEND_WEIGHT: u8 = 1;
@@ -800,7 +802,7 @@ fn worker_fast_lane_cap(total_cap: usize, per_flow_cap: usize) -> usize {
 fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(default)
-        // Linux UDP_GSO submission in this module is capped at 64 iovecs.
+        // Linux UDP submission in this module is capped at 64 iovecs.
         // Keep the worker drain cap aligned so a same-target group never asks
         // the GSO path to submit a prefix while accounting the whole group.
         .clamp(1, 64)
@@ -3054,8 +3056,7 @@ fn send_batch_gso(
     connected: bool,
 ) -> std::io::Result<()> {
     debug_assert!(!packets.is_empty());
-    const MAX_BATCH: usize = 64;
-    let n = packets.len().min(MAX_BATCH);
+    let n = packets.len().min(LINUX_UDP_SEND_BATCH_MAX);
     if n == 0 {
         return Ok(());
     }
@@ -3064,7 +3065,7 @@ fn send_batch_gso(
     let sa: socket2::SockAddr = dest.into();
 
     // Stack-allocated arrays sized for the worst case in this batch.
-    let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    let mut iovs: [libc::iovec; LINUX_UDP_SEND_BATCH_MAX] = unsafe { std::mem::zeroed() };
     for (i, data) in packets[..n].iter().enumerate() {
         iovs[i].iov_base = data.as_ptr() as *mut libc::c_void;
         iovs[i].iov_len = data.len();
@@ -3148,15 +3149,14 @@ fn send_batch_raw(
     dest: SocketAddr,
     connected: bool,
 ) -> std::io::Result<usize> {
-    const MAX_BATCH: usize = 32;
-    let n = packets.len().min(MAX_BATCH);
+    let n = packets.len().min(LINUX_UDP_SEND_BATCH_MAX);
     if n == 0 {
         return Ok(0);
     }
-    let mut iovs: [libc::iovec; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    let mut iovs: [libc::iovec; LINUX_UDP_SEND_BATCH_MAX] = unsafe { std::mem::zeroed() };
     let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
     let mut storage_len: libc::socklen_t = 0;
-    let mut msgs: [libc::mmsghdr; MAX_BATCH] = unsafe { std::mem::zeroed() };
+    let mut msgs: [libc::mmsghdr; LINUX_UDP_SEND_BATCH_MAX] = unsafe { std::mem::zeroed() };
 
     // Within one group, every packet shares the destination — build
     // the sockaddr once and point every mmsghdr at it. (kernel copies
@@ -5440,7 +5440,8 @@ mod tests {
         let send_sock = UdpSocket::bind("127.0.0.1:0").expect("bind send");
         send_sock.set_nonblocking(true).unwrap();
 
-        let packets: Vec<Vec<u8>> = (0..4)
+        const N: usize = 48;
+        let packets: Vec<Vec<u8>> = (0..N)
             .map(|i| {
                 let mut v = vec![0u8; 16];
                 v[0] = i as u8;
@@ -5449,17 +5450,18 @@ mod tests {
             .collect();
         let n =
             send_batch_raw(send_sock.as_raw_fd(), &packets, recv_addr, false).expect("sendmmsg ok");
-        assert_eq!(n, 4);
+        assert_eq!(n, N);
 
         let mut buf = [0u8; 64];
-        let mut stamps: Vec<u8> = Vec::new();
-        for _ in 0..4 {
+        let mut stamps: Vec<u8> = Vec::with_capacity(N);
+        for _ in 0..N {
             let (len, _) = recv_sock.recv_from(&mut buf).expect("recv");
             assert_eq!(len, 16);
             stamps.push(buf[0]);
         }
         stamps.sort();
-        assert_eq!(stamps, vec![0, 1, 2, 3]);
+        let expected: Vec<u8> = (0..N).map(|i| i as u8).collect();
+        assert_eq!(stamps, expected);
     }
 
     /// Mixed-destination batch dispatched to a single worker. The
