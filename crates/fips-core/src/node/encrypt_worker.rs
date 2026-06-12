@@ -2093,7 +2093,9 @@ impl EncryptWorkerShard {
         if !recv_batch(&mut self.batch, self.max_batch) {
             return false;
         }
-        prioritize_worker_batch(&mut self.batch);
+        // Preserve dequeue order once the worker owns a local batch. Priority
+        // queues act before dequeue; sorting here can move small endpoint-data
+        // packets ahead of earlier bulk packets for the same TCP-shaped flow.
         let (priority_packets, bulk_packets) = worker_batch_lane_counts(&self.batch);
         crate::perf_profile::record_fmp_worker_batch(
             self.batch.len(),
@@ -2128,27 +2130,6 @@ fn worker_batch_lane_counts(batch: &[QueuedFmpSendJob]) -> (usize, usize) {
         }
     }
     (priority_packets, bulk_packets)
-}
-
-fn prioritize_worker_batch(batch: &mut [QueuedFmpSendJob]) {
-    let mut saw_bulk = false;
-    let mut priority_behind_bulk = false;
-    for job in batch.iter() {
-        match job.queue_lane() {
-            EncryptWorkerLane::Priority if saw_bulk => {
-                priority_behind_bulk = true;
-                break;
-            }
-            EncryptWorkerLane::Bulk => saw_bulk = true,
-            EncryptWorkerLane::Priority => {}
-        }
-    }
-    if priority_behind_bulk {
-        batch.sort_by_key(|job| match job.queue_lane() {
-            EncryptWorkerLane::Priority => 0u8,
-            EncryptWorkerLane::Bulk => 1u8,
-        });
-    }
 }
 
 struct SealedSendPacket {
@@ -3320,7 +3301,7 @@ mod unix_tests {
     }
 
     #[test]
-    fn encrypt_worker_shard_prioritizes_local_batch_without_reordering_lanes() {
+    fn encrypt_worker_shard_preserves_dequeue_order_inside_local_batch() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
             .build()
@@ -3364,12 +3345,12 @@ mod unix_tests {
                     assert_eq!(
                         lanes,
                         vec![
-                            EncryptWorkerLane::Priority,
+                            EncryptWorkerLane::Bulk,
                             EncryptWorkerLane::Priority,
                             EncryptWorkerLane::Bulk,
-                            EncryptWorkerLane::Bulk,
+                            EncryptWorkerLane::Priority,
                         ],
-                        "priority work should not sit behind bulk inside a worker-owned batch"
+                        "once a worker owns a local batch it must preserve dequeue order for TCP-shaped flows"
                     );
                     let payload_lens: Vec<_> = batch
                         .iter()
@@ -3377,8 +3358,8 @@ mod unix_tests {
                         .collect();
                     assert_eq!(
                         payload_lens,
-                        vec![11, 12, 101, 102],
-                        "stable lane ordering must preserve FIFO within priority and bulk lanes"
+                        vec![101, 11, 102, 12],
+                        "local worker batching must not reorder small endpoint-data packets ahead of earlier bulk packets"
                     );
                     assert_eq!(
                         worker_batch_lane_counts(batch),
