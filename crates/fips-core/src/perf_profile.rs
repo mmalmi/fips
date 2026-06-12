@@ -67,7 +67,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 48;
+const N_EVENTS: usize = 54;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -330,6 +330,12 @@ pub enum Event {
     UdpSendGsoPackets = 45,
     UdpSendSendmmsgBatch = 46,
     UdpSendSendmmsgPackets = 47,
+    DecryptWorkerBatchFlush = 48,
+    DecryptWorkerBatchPackets = 49,
+    DecryptWorkerBatchFull = 50,
+    DecryptWorkerBatchSingle = 51,
+    DecryptWorkerBatchPriorityPackets = 52,
+    DecryptWorkerBatchBulkPackets = 53,
 }
 
 impl Event {
@@ -389,6 +395,12 @@ impl Event {
             Event::UdpSendGsoPackets => "udp_send_gso_packets",
             Event::UdpSendSendmmsgBatch => "udp_send_sendmmsg_batch",
             Event::UdpSendSendmmsgPackets => "udp_send_sendmmsg_packets",
+            Event::DecryptWorkerBatchFlush => "decrypt_worker_batch_flush",
+            Event::DecryptWorkerBatchPackets => "decrypt_worker_batch_packets",
+            Event::DecryptWorkerBatchFull => "decrypt_worker_batch_full",
+            Event::DecryptWorkerBatchSingle => "decrypt_worker_batch_single",
+            Event::DecryptWorkerBatchPriorityPackets => "decrypt_worker_batch_priority_packets",
+            Event::DecryptWorkerBatchBulkPackets => "decrypt_worker_batch_bulk_packets",
         }
     }
 }
@@ -443,6 +455,12 @@ fn event_from_index(idx: usize) -> Event {
         45 => Event::UdpSendGsoPackets,
         46 => Event::UdpSendSendmmsgBatch,
         47 => Event::UdpSendSendmmsgPackets,
+        48 => Event::DecryptWorkerBatchFlush,
+        49 => Event::DecryptWorkerBatchPackets,
+        50 => Event::DecryptWorkerBatchFull,
+        51 => Event::DecryptWorkerBatchSingle,
+        52 => Event::DecryptWorkerBatchPriorityPackets,
+        53 => Event::DecryptWorkerBatchBulkPackets,
         _ => unreachable!(),
     }
 }
@@ -636,6 +654,42 @@ pub(crate) fn record_fmp_worker_batch(
     }
     if packets == 1 {
         record_event_count_sample(Event::FmpWorkerBatchSingle, 1);
+    }
+}
+
+/// Record how much packet work a decrypt worker handled before yielding.
+///
+/// Mirroring the FMP worker batch counters makes `decrypt_worker_*_queue_wait`
+/// easier to interpret in stressed runs: full turns imply a saturated worker,
+/// single turns point at wakeup/producer cadence, and lane packet counts show
+/// whether priority traffic is still getting mixed in under bulk pressure.
+#[inline]
+pub(crate) fn record_decrypt_worker_batch(
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+    max_batch: usize,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        packets,
+        priority_packets.saturating_add(bulk_packets),
+        "decrypt worker batch lane counts should cover every packet"
+    );
+    record_event_count_sample(Event::DecryptWorkerBatchFlush, 1);
+    record_event_count_sample(Event::DecryptWorkerBatchPackets, packets as u64);
+    record_event_count_sample(
+        Event::DecryptWorkerBatchPriorityPackets,
+        priority_packets as u64,
+    );
+    record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, bulk_packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::DecryptWorkerBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
     }
 }
 
@@ -895,7 +949,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_liveness_and_send_path_events() {
-        assert_eq!(N_EVENTS, 48);
+        assert_eq!(N_EVENTS, 54);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -976,6 +1030,30 @@ mod tests {
             event_from_index(Event::UdpSendSendmmsgPackets as usize).name(),
             "udp_send_sendmmsg_packets"
         );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchFlush as usize).name(),
+            "decrypt_worker_batch_flush"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchPackets as usize).name(),
+            "decrypt_worker_batch_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchFull as usize).name(),
+            "decrypt_worker_batch_full"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchSingle as usize).name(),
+            "decrypt_worker_batch_single"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchPriorityPackets as usize).name(),
+            "decrypt_worker_batch_priority_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::DecryptWorkerBatchBulkPackets as usize).name(),
+            "decrypt_worker_batch_bulk_packets"
+        );
     }
 
     #[test]
@@ -1048,6 +1126,18 @@ mod tests {
         let gso_packets_before = EVENTS[Event::UdpSendGsoPackets as usize].load(Relaxed);
         let sendmmsg_batch_before = EVENTS[Event::UdpSendSendmmsgBatch as usize].load(Relaxed);
         let sendmmsg_packets_before = EVENTS[Event::UdpSendSendmmsgPackets as usize].load(Relaxed);
+        let decrypt_batch_flush_before =
+            EVENTS[Event::DecryptWorkerBatchFlush as usize].load(Relaxed);
+        let decrypt_batch_packets_before =
+            EVENTS[Event::DecryptWorkerBatchPackets as usize].load(Relaxed);
+        let decrypt_batch_full_before =
+            EVENTS[Event::DecryptWorkerBatchFull as usize].load(Relaxed);
+        let decrypt_batch_single_before =
+            EVENTS[Event::DecryptWorkerBatchSingle as usize].load(Relaxed);
+        let decrypt_batch_priority_before =
+            EVENTS[Event::DecryptWorkerBatchPriorityPackets as usize].load(Relaxed);
+        let decrypt_batch_bulk_before =
+            EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -1065,6 +1155,12 @@ mod tests {
         record_event_count_sample(Event::UdpSendGsoPackets, 47);
         record_event_count_sample(Event::UdpSendSendmmsgBatch, 53);
         record_event_count_sample(Event::UdpSendSendmmsgPackets, 59);
+        record_event_count_sample(Event::DecryptWorkerBatchFlush, 2);
+        record_event_count_sample(Event::DecryptWorkerBatchPackets, 65);
+        record_event_count_sample(Event::DecryptWorkerBatchFull, 1);
+        record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
+        record_event_count_sample(Event::DecryptWorkerBatchPriorityPackets, 3);
+        record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, 62);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -1132,6 +1228,36 @@ mod tests {
         assert_eq!(
             EVENTS[Event::UdpSendSendmmsgPackets as usize].load(Relaxed) - sendmmsg_packets_before,
             59
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchFlush as usize].load(Relaxed)
+                - decrypt_batch_flush_before,
+            2
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchPackets as usize].load(Relaxed)
+                - decrypt_batch_packets_before,
+            65
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchFull as usize].load(Relaxed)
+                - decrypt_batch_full_before,
+            1
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchSingle as usize].load(Relaxed)
+                - decrypt_batch_single_before,
+            1
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchPriorityPackets as usize].load(Relaxed)
+                - decrypt_batch_priority_before,
+            3
+        );
+        assert_eq!(
+            EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed)
+                - decrypt_batch_bulk_before,
+            62
         );
     }
 }

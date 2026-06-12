@@ -1306,6 +1306,92 @@ impl DecryptWorkerBulkItem {
     }
 }
 
+struct DecryptWorkerBatchStats {
+    enabled: bool,
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+}
+
+impl Default for DecryptWorkerBatchStats {
+    fn default() -> Self {
+        Self {
+            enabled: crate::perf_profile::enabled(),
+            packets: 0,
+            priority_packets: 0,
+            bulk_packets: 0,
+        }
+    }
+}
+
+impl DecryptWorkerBatchStats {
+    #[cfg(test)]
+    fn enabled_for_test() -> Self {
+        Self {
+            enabled: true,
+            packets: 0,
+            priority_packets: 0,
+            bulk_packets: 0,
+        }
+    }
+
+    fn add_lane(&mut self, lane: DecryptWorkerLane, count: usize) {
+        if !self.enabled || count == 0 {
+            return;
+        }
+        self.packets = self.packets.saturating_add(count);
+        match lane {
+            DecryptWorkerLane::Priority => {
+                self.priority_packets = self.priority_packets.saturating_add(count);
+            }
+            DecryptWorkerLane::Bulk => {
+                self.bulk_packets = self.bulk_packets.saturating_add(count);
+            }
+        }
+    }
+
+    fn add_msg(&mut self, msg: &WorkerMsg) {
+        if !self.enabled {
+            return;
+        }
+        match msg {
+            WorkerMsg::Job(job) => self.add_lane(job.lane(), 1),
+            WorkerMsg::FspJob(job) => self.add_lane(job.lane(), 1),
+            WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::RegisterFspSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {}
+        }
+    }
+
+    fn add_bulk_item(&mut self, item: &DecryptWorkerBulkItem) {
+        if !self.enabled {
+            return;
+        }
+        match item {
+            DecryptWorkerBulkItem::Job(job) => self.add_lane(job.lane(), 1),
+            DecryptWorkerBulkItem::FspJob(job) => self.add_lane(job.lane(), 1),
+            DecryptWorkerBulkItem::Batch(jobs) => {
+                for job in jobs {
+                    self.add_lane(job.lane(), 1);
+                }
+            }
+        }
+    }
+
+    fn record(&self) {
+        if !self.enabled {
+            return;
+        }
+        crate::perf_profile::record_decrypt_worker_batch(
+            self.packets,
+            self.priority_packets,
+            self.bulk_packets,
+            DECRYPT_WORKER_BULK_BURST_BUDGET,
+        );
+    }
+}
+
 struct FspDecryptJob {
     fallback_tx: DecryptWorkerFallbackSender,
     fallback: DecryptFallback,
@@ -1936,7 +2022,12 @@ fn run_worker(
         crossbeam_channel::select! {
             recv(priority_rx) -> msg => {
                 match msg {
-                    Ok(msg) => shard.handle_msg(idx, msg),
+                    Ok(msg) => {
+                        let mut batch_stats = DecryptWorkerBatchStats::default();
+                        batch_stats.add_msg(&msg);
+                        shard.handle_msg(idx, msg);
+                        batch_stats.record();
+                    }
                     Err(_) => {
                         drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
                         break;
@@ -1947,9 +2038,19 @@ fn run_worker(
                 match item {
                     Ok(item) => {
                         release_bulk_packets(&bulk_queued_packets, item.packet_count());
+                        let mut batch_stats = DecryptWorkerBatchStats::default();
+                        batch_stats.add_bulk_item(&item);
                         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-                        handle_bulk_item(idx, &mut shard, &priority_rx, item, &mut plaintext_batch);
+                        handle_bulk_item(
+                            idx,
+                            &mut shard,
+                            &priority_rx,
+                            item,
+                            &mut plaintext_batch,
+                            &mut batch_stats,
+                        );
                         plaintext_batch.flush();
+                        batch_stats.record();
                     }
                     Err(_) => {
                         drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
@@ -1969,7 +2070,9 @@ fn drain_worker_queues(
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: &AtomicUsize,
 ) {
+    let mut batch_stats = DecryptWorkerBatchStats::default();
     while let Ok(msg) = priority_rx.try_recv() {
+        batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
     }
     let mut drained_bulk_jobs = 0;
@@ -1977,19 +2080,28 @@ fn drain_worker_queues(
     while drained_bulk_jobs < DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = priority_rx.try_recv() {
             plaintext_batch.flush();
+            batch_stats.add_msg(&msg);
             shard.handle_msg(idx, msg);
             continue;
         }
         match bulk_rx.try_recv() {
             Ok(item) => {
                 release_bulk_packets(bulk_queued_packets, item.packet_count());
-                drained_bulk_jobs +=
-                    handle_bulk_item(idx, shard, priority_rx, item, &mut plaintext_batch);
+                batch_stats.add_bulk_item(&item);
+                drained_bulk_jobs += handle_bulk_item(
+                    idx,
+                    shard,
+                    priority_rx,
+                    item,
+                    &mut plaintext_batch,
+                    &mut batch_stats,
+                );
             }
             Err(_) => break,
         }
     }
     plaintext_batch.flush();
+    batch_stats.record();
 }
 
 fn handle_bulk_item(
@@ -1998,6 +2110,7 @@ fn handle_bulk_item(
     priority_rx: &Receiver<WorkerMsg>,
     item: DecryptWorkerBulkItem,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    batch_stats: &mut DecryptWorkerBatchStats,
 ) -> usize {
     match item {
         DecryptWorkerBulkItem::Job(job) => {
@@ -2013,6 +2126,7 @@ fn handle_bulk_item(
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
                     plaintext_batch.flush();
+                    batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
                 shard.handle_bulk_job_msg(idx, job, plaintext_batch);
@@ -3132,6 +3246,35 @@ mod tests {
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
             DecryptWorkerLane::Bulk
         );
+    }
+
+    #[test]
+    fn decrypt_worker_batch_stats_counts_packet_work_without_control_messages() {
+        let session_key = test_session_key(1, 17);
+        let mut stats = DecryptWorkerBatchStats::enabled_for_test();
+        let register = WorkerMsg::RegisterSession {
+            session_key,
+            state: test_owned_session_state(),
+        };
+        stats.add_msg(&register);
+        assert_eq!(stats.packets, 0);
+        assert_eq!(stats.priority_packets, 0);
+        assert_eq!(stats.bulk_packets, 0);
+
+        let priority_job = WorkerMsg::Job(dummy_priority_decrypt_job(session_key));
+        stats.add_msg(&priority_job);
+        let bulk_fsp_job =
+            WorkerMsg::FspJob(dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1));
+        stats.add_msg(&bulk_fsp_job);
+        let bulk_batch = DecryptWorkerBulkItem::Batch(vec![
+            dummy_bulk_decrypt_job(session_key),
+            dummy_bulk_decrypt_job(session_key),
+        ]);
+        stats.add_bulk_item(&bulk_batch);
+
+        assert_eq!(stats.packets, 4);
+        assert_eq!(stats.priority_packets, 1);
+        assert_eq!(stats.bulk_packets, 3);
     }
 
     fn one_slot_worker_pool() -> (
@@ -4773,6 +4916,7 @@ mod tests {
             sealed_fmp_test_packet_with_link_body(&cipher, 2, 0, bulk_body_len);
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::default();
         let processed = handle_bulk_item(
             0,
             &mut shard,
@@ -4789,6 +4933,7 @@ mod tests {
                 decrypt_job_for_test_packet(packet_two, header_two, session_key, 2, 0, fallback_tx),
             ]),
             &mut plaintext_batch,
+            &mut batch_stats,
         );
         assert!(
             fallback_rx.bulk.try_recv().is_err(),
