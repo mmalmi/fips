@@ -607,6 +607,36 @@ enum EncryptWorkerLane {
     Bulk,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FmpWorkerBatchStats {
+    priority_packets: usize,
+    bulk_packets: usize,
+}
+
+impl FmpWorkerBatchStats {
+    fn record_lane(&mut self, lane: EncryptWorkerLane) {
+        match lane {
+            EncryptWorkerLane::Priority => {
+                self.priority_packets = self.priority_packets.saturating_add(1)
+            }
+            EncryptWorkerLane::Bulk => self.bulk_packets = self.bulk_packets.saturating_add(1),
+        }
+    }
+
+    fn packet_count(&self) -> usize {
+        self.priority_packets.saturating_add(self.bulk_packets)
+    }
+
+    #[cfg(test)]
+    fn from_batch(batch: &[QueuedFmpSendJob]) -> Self {
+        let mut stats = Self::default();
+        for job in batch {
+            stats.record_lane(job.queue_lane());
+        }
+        stats
+    }
+}
+
 fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWorkerLane {
     if bulk_endpoint_data {
         EncryptWorkerLane::Bulk
@@ -1068,15 +1098,21 @@ impl Drop for MacWorkerSender {
 
 #[cfg(target_os = "macos")]
 impl MacWorkerReceiver {
-    fn recv_batch(&self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
+    fn recv_batch(
+        &self,
+        batch: &mut Vec<QueuedFmpSendJob>,
+        max: usize,
+    ) -> Option<FmpWorkerBatchStats> {
         debug_assert!(batch.is_empty());
         let mut state = self
             .inner
             .state
             .lock()
             .expect("encrypt worker queue poisoned");
+        let mut stats = FmpWorkerBatchStats::default();
         loop {
             while let Some(job) = state.pop_job() {
+                stats.record_lane(job.queue_lane());
                 batch.push(job);
                 if batch.len() >= max {
                     break;
@@ -1084,10 +1120,10 @@ impl MacWorkerReceiver {
             }
             if !batch.is_empty() {
                 self.inner.not_full.notify_one();
-                return true;
+                return Some(stats);
             }
             if state.closed {
-                return false;
+                return None;
             }
             state.waiting = true;
             state = self
@@ -1463,25 +1499,30 @@ impl Drop for FairWorkerSender {
 
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerReceiver {
-    fn recv_batch(&mut self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
+    fn recv_batch(
+        &mut self,
+        batch: &mut Vec<QueuedFmpSendJob>,
+        max: usize,
+    ) -> Option<FmpWorkerBatchStats> {
         debug_assert!(batch.is_empty());
         debug_assert!(self.release_buffer.is_empty());
         let Some(first) = self.recv_next_blocking() else {
-            return false;
+            return None;
         };
-        self.push_received(batch, first);
+        let mut stats = FmpWorkerBatchStats::default();
+        self.push_received(batch, first, &mut stats);
         while batch.len() < max {
             if let Ok(job) = self.priority_rx.try_recv() {
-                self.push_received(batch, job);
+                self.push_received(batch, job, &mut stats);
                 continue;
             }
             match self.bulk_rx.try_recv() {
-                Ok(job) => self.push_received(batch, job),
+                Ok(job) => self.push_received(batch, job, &mut stats),
                 Err(_) => break,
             }
         }
         self.release_batch_reservations();
-        true
+        Some(stats)
     }
 
     fn recv_next_blocking(&mut self) -> Option<QueuedFmpSendJob> {
@@ -1502,7 +1543,13 @@ impl FairWorkerReceiver {
         self.bulk_rx.recv().ok()
     }
 
-    fn push_received(&mut self, batch: &mut Vec<QueuedFmpSendJob>, mut job: QueuedFmpSendJob) {
+    fn push_received(
+        &mut self,
+        batch: &mut Vec<QueuedFmpSendJob>,
+        mut job: QueuedFmpSendJob,
+        stats: &mut FmpWorkerBatchStats,
+    ) {
+        stats.record_lane(job.queue_lane());
         if let Some(reservation) = job.take_fair_reservation() {
             self.release_buffer.push(reservation);
         }
@@ -2112,23 +2159,23 @@ impl EncryptWorkerShard {
 
     fn drain_and_flush_once<R, F>(&mut self, recv_batch: R, flush_batch: F) -> bool
     where
-        R: FnOnce(&mut Vec<QueuedFmpSendJob>, usize) -> bool,
+        R: FnOnce(&mut Vec<QueuedFmpSendJob>, usize) -> Option<FmpWorkerBatchStats>,
         F: FnOnce(
             &mut Vec<QueuedFmpSendJob>,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
     {
         debug_assert!(self.batch.is_empty());
-        if !recv_batch(&mut self.batch, self.max_batch) {
+        let Some(stats) = recv_batch(&mut self.batch, self.max_batch) else {
             return false;
-        }
+        };
+        debug_assert_eq!(stats.packet_count(), self.batch.len());
         // Preserve dequeue order once the worker owns a local batch. Priority
         // queues act before dequeue; sorting here can move small endpoint-data
         // packets ahead of earlier bulk packets for the same TCP-shaped flow.
-        let (priority_packets, bulk_packets) = worker_batch_lane_counts(&self.batch);
         crate::perf_profile::record_fmp_worker_batch(
             self.batch.len(),
-            priority_packets,
-            bulk_packets,
+            stats.priority_packets,
+            stats.bulk_packets,
             self.max_batch,
         );
         if let Err(err) = flush_batch(&mut self.batch) {
@@ -2146,18 +2193,6 @@ impl EncryptWorkerShard {
     fn batch_len(&self) -> usize {
         self.batch.len()
     }
-}
-
-fn worker_batch_lane_counts(batch: &[QueuedFmpSendJob]) -> (usize, usize) {
-    let mut priority_packets = 0usize;
-    let mut bulk_packets = 0usize;
-    for job in batch {
-        match job.queue_lane() {
-            EncryptWorkerLane::Priority => priority_packets += 1,
-            EncryptWorkerLane::Bulk => bulk_packets += 1,
-        }
-    }
-    (priority_packets, bulk_packets)
 }
 
 struct SealedSendPacket {
@@ -3302,7 +3337,7 @@ mod unix_tests {
                     assert!(batch.is_empty());
                     batch.push(queued_test_job(socket.clone(), &cipher, dest, 32));
                     batch.push(queued_test_job(socket.clone(), &cipher, dest, 48));
-                    true
+                    Some(FmpWorkerBatchStats::from_batch(batch))
                 },
                 |batch| {
                     flush_count += 1;
@@ -3326,7 +3361,7 @@ mod unix_tests {
                 |batch, max| {
                     assert_eq!(max, 2);
                     assert!(batch.is_empty());
-                    false
+                    None
                 },
                 |_batch| panic!("flush must not run when receive returns closed"),
             ));
@@ -3371,7 +3406,7 @@ mod unix_tests {
                         true,
                     ));
                     batch.push(queued_test_job_classified(socket, &cipher, dest, 12, false));
-                    true
+                    Some(FmpWorkerBatchStats::from_batch(batch))
                 },
                 |batch| {
                     let lanes: Vec<_> = batch.iter().map(QueuedFmpSendJob::queue_lane).collect();
@@ -3394,11 +3429,9 @@ mod unix_tests {
                         vec![101, 11, 102, 12],
                         "local worker batching must not reorder small endpoint-data packets ahead of earlier bulk packets"
                     );
-                    assert_eq!(
-                        worker_batch_lane_counts(batch),
-                        (2, 2),
-                        "FMP worker batch telemetry should preserve priority/bulk mix"
-                    );
+                    let stats = FmpWorkerBatchStats::from_batch(batch);
+                    assert_eq!(stats.priority_packets, 2);
+                    assert_eq!(stats.bulk_packets, 2);
                     batch.clear();
                     Ok(())
                 },
@@ -4137,8 +4170,12 @@ mod mac_queue_tests {
             );
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 3));
+            let stats = rx
+                .recv_batch(&mut batch, 3)
+                .expect("worker should drain queued jobs");
             assert_eq!(batch.len(), 3);
+            assert_eq!(stats.priority_packets, 1);
+            assert_eq!(stats.bulk_packets, 2);
             assert!(!batch[0].job.drop_on_backpressure);
             assert!(batch[1].job.drop_on_backpressure);
             assert!(batch[2].job.drop_on_backpressure);
@@ -4268,8 +4305,12 @@ mod mac_queue_tests {
             );
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 3));
+            let stats = rx
+                .recv_batch(&mut batch, 3)
+                .expect("worker should drain queued jobs");
             assert_eq!(batch.len(), 3);
+            assert_eq!(stats.priority_packets, 1);
+            assert_eq!(stats.bulk_packets, 2);
             assert_eq!(batch[0].queue_lane(), EncryptWorkerLane::Priority);
             assert!(!batch[0].job.drop_on_backpressure);
             assert_eq!(batch[1].queue_lane(), EncryptWorkerLane::Bulk);
@@ -4352,7 +4393,7 @@ mod mac_queue_tests {
             );
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 1));
+            assert!(rx.recv_batch(&mut batch, 1).is_some());
             assert_eq!(batch.len(), 1);
             assert!(batch[0].job.drop_on_backpressure);
 
@@ -4360,7 +4401,7 @@ mod mac_queue_tests {
             assert!(queued.load(std::sync::atomic::Ordering::Acquire));
 
             batch.clear();
-            assert!(rx.recv_batch(&mut batch, 1));
+            assert!(rx.recv_batch(&mut batch, 1).is_some());
             assert_eq!(batch.len(), 1);
             assert!(batch[0].job.drop_on_backpressure);
         });
@@ -4624,7 +4665,7 @@ mod fair_queue_tests {
                 .unwrap();
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 4));
+            assert!(rx.recv_batch(&mut batch, 4).is_some());
             let dests: Vec<_> = batch.iter().map(|job| job.flow_key().dest_addr).collect();
             assert_eq!(dests.len(), 3);
             assert_eq!(dests.iter().filter(|addr| **addr == hot).count(), 2);
@@ -4717,7 +4758,7 @@ mod fair_queue_tests {
             .expect("priority job must bypass bulk per-flow pressure");
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 8));
+            assert!(rx.recv_batch(&mut batch, 8).is_some());
             assert_eq!(batch.len(), 7);
             assert!(
                 batch.iter().any(|job| job.flow_key().dest_addr == hot
@@ -4758,8 +4799,12 @@ mod fair_queue_tests {
             .expect("priority job must keep its reserve when bulk is full");
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 3));
+            let stats = rx
+                .recv_batch(&mut batch, 3)
+                .expect("worker should drain queued jobs");
             assert_eq!(batch.len(), 3);
+            assert_eq!(stats.priority_packets, 1);
+            assert_eq!(stats.bulk_packets, 2);
             assert_eq!(batch[0].queue_lane(), EncryptWorkerLane::Priority);
             assert!(
                 batch[1..]
@@ -4840,7 +4885,7 @@ mod fair_queue_tests {
             }
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 5));
+            assert!(rx.recv_batch(&mut batch, 5).is_some());
             assert_eq!(batch.len(), 5);
             assert_eq!(
                 batch
@@ -4871,7 +4916,7 @@ mod fair_queue_tests {
             }
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 8));
+            assert!(rx.recv_batch(&mut batch, 8).is_some());
             assert_eq!(batch.len(), 8);
             assert!(batch.iter().all(|job| job.flow_key().dest_addr == addr));
         });
@@ -4925,7 +4970,7 @@ mod fair_queue_tests {
             }
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 8));
+            assert!(rx.recv_batch(&mut batch, 8).is_some());
             let counters: Vec<_> = batch.iter().map(|job| job.job.counter).collect();
             assert_eq!(
                 counters,
@@ -5166,7 +5211,7 @@ mod fair_queue_tests {
             );
 
             let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 2));
+            assert!(rx.recv_batch(&mut batch, 2).is_some());
             assert_eq!(batch.len(), 2);
             assert!(
                 rx.release_buffer.is_empty(),
