@@ -2620,11 +2620,7 @@ fn flush_batch_sync(
                     send_attempt.mark_all_sent();
                     continue;
                 }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::InvalidInput
-                        || err.raw_os_error() == Some(libc::EOPNOTSUPP)
-                        || err.raw_os_error() == Some(libc::ENOPROTOOPT) =>
-                {
+                Err(err) if is_gso_capability_error(&err) => {
                     GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                     warn!(
                         error = %err,
@@ -3115,6 +3111,13 @@ impl MacSendRatePacer {
 /// a UDP_GSO send, we stop trying. Set lazily, never reset.
 #[cfg(target_os = "linux")]
 static GSO_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+fn is_gso_capability_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::InvalidInput
+        || matches!(err.raw_os_error(), Some(code)
+            if code == libc::EOPNOTSUPP || code == libc::ENOPROTOOPT || code == libc::EIO)
+}
 
 /// Size-only GSO eligibility check. Callers MUST ensure all packets
 /// share one destination + send target — `flush_batch_sync` does this
@@ -5525,6 +5528,28 @@ mod tests {
         batch[3] = pkt(800); // mid-batch short packet
         batch.push(pkt(1500));
         assert!(!gso_eligible_sizes_ref(&batch));
+    }
+
+    #[test]
+    fn gso_capability_errors_disable_gso() {
+        assert!(is_gso_capability_error(&std::io::Error::from(
+            std::io::ErrorKind::InvalidInput
+        )));
+        assert!(is_gso_capability_error(&std::io::Error::from_raw_os_error(
+            libc::EOPNOTSUPP
+        )));
+        assert!(is_gso_capability_error(&std::io::Error::from_raw_os_error(
+            libc::ENOPROTOOPT
+        )));
+        assert!(is_gso_capability_error(&std::io::Error::from_raw_os_error(
+            libc::EIO
+        )));
+        assert!(!is_gso_capability_error(
+            &std::io::Error::from_raw_os_error(libc::ENOBUFS)
+        ));
+        assert!(!is_gso_capability_error(&std::io::Error::from(
+            std::io::ErrorKind::WouldBlock
+        )));
     }
 
     #[test]
