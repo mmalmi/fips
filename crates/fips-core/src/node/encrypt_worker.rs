@@ -322,6 +322,10 @@ impl SelectedSendBatch {
         self.drop_on_backpressure
     }
 
+    fn packet_count(&self) -> usize {
+        self.wire_packets.len()
+    }
+
     #[cfg(test)]
     fn wire_packet_capacity(&self) -> usize {
         self.wire_packets.capacity()
@@ -575,6 +579,26 @@ fn push_selected_send_batch_with_capacity(
         drop_on_backpressure,
         packet_capacity,
     ));
+}
+
+#[cfg(unix)]
+fn selected_send_group_stats(groups: &[SelectedSendBatch]) -> (usize, usize, usize) {
+    let mut packets = 0usize;
+    let mut single_groups = 0usize;
+    for group in groups {
+        let count = group.packet_count();
+        packets = packets.saturating_add(count);
+        if count == 1 {
+            single_groups = single_groups.saturating_add(1);
+        }
+    }
+    (groups.len(), packets, single_groups)
+}
+
+#[cfg(unix)]
+fn record_selected_send_groups(groups: &[SelectedSendBatch]) {
+    let (group_count, packets, single_groups) = selected_send_group_stats(groups);
+    crate::perf_profile::record_fmp_send_groups(group_count, packets, single_groups);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2460,6 +2484,9 @@ fn flush_batch_sync(
         group.complete();
     }
 
+    #[cfg(unix)]
+    record_selected_send_groups(&groups);
+
     drop(_t); // close the encrypt timer before we open the send timer
 
     // 2) Bulk send each group via its own raw FD.
@@ -3870,6 +3897,11 @@ mod unix_tests {
             assert_eq!(groups[5].target_key(), key_other_dest);
             assert_eq!(groups[5].wire_packets, vec![vec![6]]);
             assert!(groups[5].drop_on_backpressure);
+            assert_eq!(
+                selected_send_group_stats(&groups),
+                (6, 6, 6),
+                "send-group telemetry counts adjacent target/policy groups without merging backward"
+            );
         });
     }
 
@@ -3919,6 +3951,11 @@ mod unix_tests {
             assert!(
                 groups[0].wire_packet_capacity() >= 48,
                 "coalescing should keep the pre-sized worker-drain capacity"
+            );
+            assert_eq!(
+                selected_send_group_stats(&groups),
+                (1, 2, 0),
+                "coalesced same-target groups report one multi-packet send group"
             );
         });
     }

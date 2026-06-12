@@ -67,7 +67,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 60;
+const N_EVENTS: usize = 63;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -342,6 +342,9 @@ pub enum Event {
     UdpSendSendmmsgBatchGe32 = 57,
     UdpSendSendmmsgBatchGe48 = 58,
     UdpSendSendmmsgBatchEq64 = 59,
+    FmpSendGroup = 60,
+    FmpSendGroupPackets = 61,
+    FmpSendGroupSingle = 62,
 }
 
 impl Event {
@@ -413,6 +416,9 @@ impl Event {
             Event::UdpSendSendmmsgBatchGe32 => "udp_send_sendmmsg_batch_ge32",
             Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
             Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
+            Event::FmpSendGroup => "fmp_send_group",
+            Event::FmpSendGroupPackets => "fmp_send_group_packets",
+            Event::FmpSendGroupSingle => "fmp_send_group_single",
         }
     }
 }
@@ -479,6 +485,9 @@ fn event_from_index(idx: usize) -> Event {
         57 => Event::UdpSendSendmmsgBatchGe32,
         58 => Event::UdpSendSendmmsgBatchGe48,
         59 => Event::UdpSendSendmmsgBatchEq64,
+        60 => Event::FmpSendGroup,
+        61 => Event::FmpSendGroupPackets,
+        62 => Event::FmpSendGroupSingle,
         _ => unreachable!(),
     }
 }
@@ -672,6 +681,29 @@ pub(crate) fn record_fmp_worker_batch(
     }
     if packets == 1 {
         record_event_count_sample(Event::FmpWorkerBatchSingle, 1);
+    }
+}
+
+/// Record how the worker's drained packet batch was split into adjacent
+/// send-target groups before Linux GSO/sendmmsg or direct sends.
+///
+/// This sits between producer batch metrics and UDP syscall batch metrics:
+/// if worker batches are wide but selected send groups are tiny, the packet
+/// mover is preserving dequeue order across mixed targets/policies rather than
+/// handing the kernel one large contiguous flow-shaped group.
+#[inline]
+pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_groups: usize) {
+    if !enabled() || groups == 0 || packets == 0 {
+        return;
+    }
+    debug_assert!(
+        single_groups <= groups,
+        "single-packet send groups cannot exceed total groups"
+    );
+    record_event_count_sample(Event::FmpSendGroup, groups as u64);
+    record_event_count_sample(Event::FmpSendGroupPackets, packets as u64);
+    if single_groups > 0 {
+        record_event_count_sample(Event::FmpSendGroupSingle, single_groups as u64);
     }
 }
 
@@ -1010,7 +1042,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_liveness_and_send_path_events() {
-        assert_eq!(N_EVENTS, 60);
+        assert_eq!(N_EVENTS, 63);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -1138,6 +1170,18 @@ mod tests {
         assert_eq!(
             event_from_index(Event::UdpSendSendmmsgBatchEq64 as usize).name(),
             "udp_send_sendmmsg_batch_eq64"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpSendGroup as usize).name(),
+            "fmp_send_group"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpSendGroupPackets as usize).name(),
+            "fmp_send_group_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpSendGroupSingle as usize).name(),
+            "fmp_send_group_single"
         );
     }
 
