@@ -1014,6 +1014,7 @@ struct FairWorkerReceiver {
 struct FairAdmission {
     state: Mutex<FairAdmissionState>,
     not_full: Condvar,
+    reserved_len: std::sync::atomic::AtomicUsize,
     total_cap: usize,
     per_flow_cap: usize,
     fast_lane_cap: usize,
@@ -1112,6 +1113,7 @@ fn fair_worker_channel_with_priority_cap(
     let admission = Arc::new(FairAdmission {
         state: Mutex::new(FairAdmissionState::default()),
         not_full: Condvar::new(),
+        reserved_len: std::sync::atomic::AtomicUsize::new(0),
         total_cap,
         per_flow_cap,
         // Let a freshly idle worker accept one syscall-sized worker batch
@@ -1232,6 +1234,8 @@ impl FairAdmission {
             return FairReserve::Closed;
         }
         if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+            self.reserved_len
+                .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
             return FairReserve::Reserved(FairAdmissionReservation::new(key));
         }
         FairReserve::Full
@@ -1251,6 +1255,8 @@ impl FairAdmission {
                 return Err(FairWorkerPushError);
             }
             if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+                self.reserved_len
+                    .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
                 return Ok(FairAdmissionReservation::new(key));
             }
             state.full_waiters += 1;
@@ -1263,11 +1269,7 @@ impl FairAdmission {
     }
 
     fn is_idle(&self) -> bool {
-        self.state
-            .lock()
-            .expect("encrypt worker fair admission poisoned")
-            .total_len
-            == 0
+        self.reserved_len.load(std::sync::atomic::Ordering::Relaxed) == 0
     }
 
     fn release(&self, reservation: FairAdmissionReservation) {
@@ -1283,6 +1285,8 @@ impl FairAdmission {
             }
         }
         state.total_len = state.total_len.saturating_sub(1);
+        self.reserved_len
+            .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
         let should_notify = state.full_waiters > 0;
         drop(state);
         if should_notify {
@@ -4777,16 +4781,25 @@ mod fair_queue_tests {
             let admission = FairAdmission {
                 state: Mutex::new(FairAdmissionState::default()),
                 not_full: Condvar::new(),
+                reserved_len: std::sync::atomic::AtomicUsize::new(0),
                 total_cap: 2,
                 per_flow_cap: 1,
                 fast_lane_cap: 1,
             };
+            assert!(
+                admission.is_idle(),
+                "fresh admission should let the sender use the lock-free fast lane"
+            );
             let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
                 FairReserve::Reserved(reservation) => reservation,
                 FairReserve::Full => panic!("first key should reserve"),
                 FairReserve::Closed => panic!("admission should be open"),
             };
             assert_eq!(reservation_a.key(), key_a);
+            assert!(
+                !admission.is_idle(),
+                "active fair reservation must disable the fast lane"
+            );
             assert!(
                 matches!(
                     admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize),
@@ -4800,8 +4813,16 @@ mod fair_queue_tests {
                 FairReserve::Closed => panic!("admission should be open"),
             };
             assert_eq!(reservation_b.key(), key_b);
+            assert!(
+                !admission.is_idle(),
+                "any active reservation should keep the fast lane disabled"
+            );
 
             admission.release(reservation_a);
+            assert!(
+                !admission.is_idle(),
+                "other active reservations should keep the fast lane disabled"
+            );
             let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
                 FairReserve::Reserved(reservation) => reservation,
                 FairReserve::Full => panic!("released key should reserve again"),
@@ -4810,6 +4831,10 @@ mod fair_queue_tests {
             assert_eq!(reservation_a.key(), key_a);
             admission.release(reservation_a);
             admission.release(reservation_b);
+            assert!(
+                admission.is_idle(),
+                "releasing all fair reservations should re-enable the fast lane"
+            );
         });
     }
 
