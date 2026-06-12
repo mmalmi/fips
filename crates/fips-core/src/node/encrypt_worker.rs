@@ -1641,9 +1641,7 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::EncryptWorkerQueueFull,
-                );
+                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
@@ -1674,9 +1672,7 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::EncryptWorkerQueueFull,
-                );
+                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
                     return;
@@ -1700,6 +1696,10 @@ impl EncryptWorkerPool {
             }
         }
     }
+}
+
+fn record_encrypt_worker_queue_full(lane: EncryptWorkerLane) {
+    crate::perf_profile::record_encrypt_worker_queue_full(lane == EncryptWorkerLane::Priority);
 }
 
 fn record_encrypt_worker_backpressure_drop(worker: usize) {

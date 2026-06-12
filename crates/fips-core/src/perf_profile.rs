@@ -67,7 +67,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 63;
+const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -345,6 +345,8 @@ pub enum Event {
     FmpSendGroup = 60,
     FmpSendGroupPackets = 61,
     FmpSendGroupSingle = 62,
+    EncryptWorkerPriorityQueueFull = 63,
+    EncryptWorkerBulkQueueFull = 64,
 }
 
 impl Event {
@@ -419,6 +421,8 @@ impl Event {
             Event::FmpSendGroup => "fmp_send_group",
             Event::FmpSendGroupPackets => "fmp_send_group_packets",
             Event::FmpSendGroupSingle => "fmp_send_group_single",
+            Event::EncryptWorkerPriorityQueueFull => "encrypt_worker_priority_queue_full",
+            Event::EncryptWorkerBulkQueueFull => "encrypt_worker_bulk_queue_full",
         }
     }
 }
@@ -488,6 +492,8 @@ fn event_from_index(idx: usize) -> Event {
         60 => Event::FmpSendGroup,
         61 => Event::FmpSendGroupPackets,
         62 => Event::FmpSendGroupSingle,
+        63 => Event::EncryptWorkerPriorityQueueFull,
+        64 => Event::EncryptWorkerBulkQueueFull,
         _ => unreachable!(),
     }
 }
@@ -646,6 +652,16 @@ pub fn record_event_count(event: Event, count: u64) {
         return;
     }
     record_event_count_sample(event, count);
+}
+
+#[inline]
+pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
+    record_event(Event::EncryptWorkerQueueFull);
+    record_event(if priority {
+        Event::EncryptWorkerPriorityQueueFull
+    } else {
+        Event::EncryptWorkerBulkQueueFull
+    });
 }
 
 /// Record how much work an FMP encrypt worker drained before one flush.
@@ -1042,7 +1058,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_liveness_and_send_path_events() {
-        assert_eq!(N_EVENTS, 63);
+        assert_eq!(N_EVENTS, 65);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -1183,6 +1199,14 @@ mod tests {
             event_from_index(Event::FmpSendGroupSingle as usize).name(),
             "fmp_send_group_single"
         );
+        assert_eq!(
+            event_from_index(Event::EncryptWorkerPriorityQueueFull as usize).name(),
+            "encrypt_worker_priority_queue_full"
+        );
+        assert_eq!(
+            event_from_index(Event::EncryptWorkerBulkQueueFull as usize).name(),
+            "encrypt_worker_bulk_queue_full"
+        );
     }
 
     #[test]
@@ -1256,6 +1280,12 @@ mod tests {
             EVENTS[Event::DecryptAuthenticatedSessionPriorityDropped as usize].load(Relaxed);
         let auth_bulk_before =
             EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed);
+        let encrypt_queue_full_before =
+            EVENTS[Event::EncryptWorkerQueueFull as usize].load(Relaxed);
+        let encrypt_priority_full_before =
+            EVENTS[Event::EncryptWorkerPriorityQueueFull as usize].load(Relaxed);
+        let encrypt_bulk_full_before =
+            EVENTS[Event::EncryptWorkerBulkQueueFull as usize].load(Relaxed);
         let batch_flush_before = EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed);
         let batch_packets_before = EVENTS[Event::FmpWorkerBatchPackets as usize].load(Relaxed);
         let batch_full_before = EVENTS[Event::FmpWorkerBatchFull as usize].load(Relaxed);
@@ -1286,6 +1316,9 @@ mod tests {
         record_event_count_sample(Event::DecryptFallbackPriorityGated, 11);
         record_event_count_sample(Event::DecryptAuthenticatedSessionPriorityDropped, 13);
         record_event_count_sample(Event::DecryptAuthenticatedSessionBulkDropped, 17);
+        record_event_count_sample(Event::EncryptWorkerQueueFull, 3);
+        record_event_count_sample(Event::EncryptWorkerPriorityQueueFull, 1);
+        record_event_count_sample(Event::EncryptWorkerBulkQueueFull, 2);
         record_event_count_sample(Event::FmpWorkerBatchFlush, 19);
         record_event_count_sample(Event::FmpWorkerBatchPackets, 23);
         record_event_count_sample(Event::FmpWorkerBatchFull, 29);
@@ -1328,6 +1361,21 @@ mod tests {
             EVENTS[Event::DecryptAuthenticatedSessionBulkDropped as usize].load(Relaxed)
                 - auth_bulk_before,
             17
+        );
+        assert_eq!(
+            EVENTS[Event::EncryptWorkerQueueFull as usize].load(Relaxed)
+                - encrypt_queue_full_before,
+            3
+        );
+        assert_eq!(
+            EVENTS[Event::EncryptWorkerPriorityQueueFull as usize].load(Relaxed)
+                - encrypt_priority_full_before,
+            1
+        );
+        assert_eq!(
+            EVENTS[Event::EncryptWorkerBulkQueueFull as usize].load(Relaxed)
+                - encrypt_bulk_full_before,
+            2
         );
         assert_eq!(
             EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed) - batch_flush_before,
