@@ -615,6 +615,7 @@ fn encrypt_worker_lane_for_endpoint_data(bulk_endpoint_data: bool) -> EncryptWor
     }
 }
 
+#[cfg(test)]
 fn fmp_worker_queue_wait_stage_for_lane(lane: EncryptWorkerLane) -> crate::perf_profile::Stage {
     match lane {
         EncryptWorkerLane::Priority => crate::perf_profile::Stage::FmpWorkerPriorityQueueWait,
@@ -626,8 +627,19 @@ fn record_fmp_worker_queue_wait(
     lane: EncryptWorkerLane,
     queued_at: Option<crate::perf_profile::TraceStamp>,
 ) {
-    crate::perf_profile::record_since(crate::perf_profile::Stage::FmpWorkerQueueWait, queued_at);
-    crate::perf_profile::record_since(fmp_worker_queue_wait_stage_for_lane(lane), queued_at);
+    let (priority_count, bulk_count) = match lane {
+        EncryptWorkerLane::Priority => (1, 0),
+        EncryptWorkerLane::Bulk => (0, 1),
+    };
+    crate::perf_profile::record_since_split_count(
+        crate::perf_profile::Stage::FmpWorkerQueueWait,
+        crate::perf_profile::Stage::FmpWorkerPriorityQueueWait,
+        crate::perf_profile::Stage::FmpWorkerBulkQueueWait,
+        queued_at,
+        1,
+        priority_count,
+        bulk_count,
+    );
 }
 
 struct QueuedFmpSendJob {

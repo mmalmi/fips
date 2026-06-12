@@ -570,14 +570,6 @@ pub(crate) fn test_stamp() -> TraceStamp {
     TraceStamp::now()
 }
 
-/// Record time elapsed since a previously captured stamp.
-#[inline]
-pub(crate) fn record_since(stage: Stage, start: Option<TraceStamp>) {
-    if let Some(start) = start {
-        record(stage, start.elapsed_ns());
-    }
-}
-
 /// Record `elapsed_ns` for the given stage. No-op when disabled.
 pub fn record(stage: Stage, elapsed_ns: u64) {
     record_count(stage, elapsed_ns, 1);
