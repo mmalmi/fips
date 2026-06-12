@@ -2512,6 +2512,7 @@ fn flush_batch_sync(
         {
             match send_batch_gso(fd, send_attempt.packets(), dest_addr, connected) {
                 Ok(()) => {
+                    crate::perf_profile::record_udp_send_gso_batch(send_attempt.packets().len());
                     send_attempt.mark_all_sent();
                     continue;
                 }
@@ -2552,6 +2553,7 @@ fn flush_batch_sync(
             if n == 0 {
                 break;
             }
+            crate::perf_profile::record_udp_send_sendmmsg_batch(n);
             send_attempt.mark_sent(n);
         }
     }

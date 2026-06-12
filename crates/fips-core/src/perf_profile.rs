@@ -67,7 +67,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 44;
+const N_EVENTS: usize = 48;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -326,6 +326,10 @@ pub enum Event {
     FmpWorkerBatchSingle = 41,
     FmpWorkerBatchPriorityPackets = 42,
     FmpWorkerBatchBulkPackets = 43,
+    UdpSendGsoBatch = 44,
+    UdpSendGsoPackets = 45,
+    UdpSendSendmmsgBatch = 46,
+    UdpSendSendmmsgPackets = 47,
 }
 
 impl Event {
@@ -381,6 +385,10 @@ impl Event {
             Event::FmpWorkerBatchSingle => "fmp_worker_batch_single",
             Event::FmpWorkerBatchPriorityPackets => "fmp_worker_batch_priority_packets",
             Event::FmpWorkerBatchBulkPackets => "fmp_worker_batch_bulk_packets",
+            Event::UdpSendGsoBatch => "udp_send_gso_batch",
+            Event::UdpSendGsoPackets => "udp_send_gso_packets",
+            Event::UdpSendSendmmsgBatch => "udp_send_sendmmsg_batch",
+            Event::UdpSendSendmmsgPackets => "udp_send_sendmmsg_packets",
         }
     }
 }
@@ -431,6 +439,10 @@ fn event_from_index(idx: usize) -> Event {
         41 => Event::FmpWorkerBatchSingle,
         42 => Event::FmpWorkerBatchPriorityPackets,
         43 => Event::FmpWorkerBatchBulkPackets,
+        44 => Event::UdpSendGsoBatch,
+        45 => Event::UdpSendGsoPackets,
+        46 => Event::UdpSendSendmmsgBatch,
+        47 => Event::UdpSendSendmmsgPackets,
         _ => unreachable!(),
     }
 }
@@ -625,6 +637,37 @@ pub(crate) fn record_fmp_worker_batch(
     if packets == 1 {
         record_event_count_sample(Event::FmpWorkerBatchSingle, 1);
     }
+}
+
+/// Record which Linux UDP batch primitive actually submitted packets.
+///
+/// FMP worker batch metrics expose producer-side fullness; these counters
+/// expose whether the send side turned that work into UDP_GSO super-skbs or
+/// fell back to plain `sendmmsg(2)` batches.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_send_gso_batch(packets: usize) {
+    record_udp_send_batch(Event::UdpSendGsoBatch, Event::UdpSendGsoPackets, packets);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {
+    record_udp_send_batch(
+        Event::UdpSendSendmmsgBatch,
+        Event::UdpSendSendmmsgPackets,
+        packets,
+    );
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(batch_event, 1);
+    record_event_count_sample(packet_event, packets as u64);
 }
 
 #[inline]
@@ -851,8 +894,8 @@ mod tests {
     }
 
     #[test]
-    fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 44);
+    fn event_table_exposes_liveness_and_send_path_events() {
+        assert_eq!(N_EVENTS, 48);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -916,6 +959,22 @@ mod tests {
         assert_eq!(
             event_from_index(Event::FmpWorkerBatchBulkPackets as usize).name(),
             "fmp_worker_batch_bulk_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendGsoBatch as usize).name(),
+            "udp_send_gso_batch"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendGsoPackets as usize).name(),
+            "udp_send_gso_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendSendmmsgBatch as usize).name(),
+            "udp_send_sendmmsg_batch"
+        );
+        assert_eq!(
+            event_from_index(Event::UdpSendSendmmsgPackets as usize).name(),
+            "udp_send_sendmmsg_packets"
         );
     }
 
@@ -985,6 +1044,10 @@ mod tests {
         let batch_priority_before =
             EVENTS[Event::FmpWorkerBatchPriorityPackets as usize].load(Relaxed);
         let batch_bulk_before = EVENTS[Event::FmpWorkerBatchBulkPackets as usize].load(Relaxed);
+        let gso_batch_before = EVENTS[Event::UdpSendGsoBatch as usize].load(Relaxed);
+        let gso_packets_before = EVENTS[Event::UdpSendGsoPackets as usize].load(Relaxed);
+        let sendmmsg_batch_before = EVENTS[Event::UdpSendSendmmsgBatch as usize].load(Relaxed);
+        let sendmmsg_packets_before = EVENTS[Event::UdpSendSendmmsgPackets as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -998,6 +1061,10 @@ mod tests {
         record_event_count_sample(Event::FmpWorkerBatchSingle, 31);
         record_event_count_sample(Event::FmpWorkerBatchPriorityPackets, 37);
         record_event_count_sample(Event::FmpWorkerBatchBulkPackets, 41);
+        record_event_count_sample(Event::UdpSendGsoBatch, 43);
+        record_event_count_sample(Event::UdpSendGsoPackets, 47);
+        record_event_count_sample(Event::UdpSendSendmmsgBatch, 53);
+        record_event_count_sample(Event::UdpSendSendmmsgPackets, 59);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -1049,6 +1116,22 @@ mod tests {
         assert_eq!(
             EVENTS[Event::FmpWorkerBatchBulkPackets as usize].load(Relaxed) - batch_bulk_before,
             41
+        );
+        assert_eq!(
+            EVENTS[Event::UdpSendGsoBatch as usize].load(Relaxed) - gso_batch_before,
+            43
+        );
+        assert_eq!(
+            EVENTS[Event::UdpSendGsoPackets as usize].load(Relaxed) - gso_packets_before,
+            47
+        );
+        assert_eq!(
+            EVENTS[Event::UdpSendSendmmsgBatch as usize].load(Relaxed) - sendmmsg_batch_before,
+            53
+        );
+        assert_eq!(
+            EVENTS[Event::UdpSendSendmmsgPackets as usize].load(Relaxed) - sendmmsg_packets_before,
+            59
         );
     }
 }
