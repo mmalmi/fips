@@ -665,8 +665,9 @@ impl QueuedFmpSendJob {
 /// 1024-slot outbound queue because this worker also has a 4x total Linux
 /// bulk lane and a separate control reserve. A deeper queue hides a saturated
 /// sender from TCP for tens of milliseconds, inflating RTT/retransmits instead
-/// of pushing back to TUN promptly.
-const DEFAULT_WORKER_CHANNEL_CAP: usize = 512;
+/// of pushing back to TUN promptly. Local clean-underlay A/Bs showed 256 keeps
+/// the same ~3 Gbps class while cutting hot FMP bulk queue residence in half.
+const DEFAULT_WORKER_CHANNEL_CAP: usize = 256;
 // Keep the control/ACK-shaped reserve independent from synthetic bulk-pressure
 // tests that deliberately shrink `FIPS_WORKER_CHANNEL_CAP`.
 #[cfg(not(target_os = "macos"))]
@@ -3413,11 +3414,11 @@ mod unix_tests {
     fn worker_bulk_channel_default_is_latency_bounded() {
         assert_eq!(
             parse_worker_channel_cap(None, DEFAULT_WORKER_CHANNEL_CAP),
-            512
+            256
         );
         assert_eq!(
             parse_worker_channel_cap(Some("not-a-number"), DEFAULT_WORKER_CHANNEL_CAP),
-            512,
+            256,
             "invalid env values should keep the tuned default"
         );
         assert_eq!(
