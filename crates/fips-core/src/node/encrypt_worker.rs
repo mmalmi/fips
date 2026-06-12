@@ -268,21 +268,40 @@ struct SelectedSendBatch {
 
 #[cfg(unix)]
 impl SelectedSendBatch {
+    #[cfg(test)]
     fn new(
         send_target: SelectedSendTarget,
         target_key: SendTargetKey,
         wire_packet: Vec<u8>,
         drop_on_backpressure: bool,
     ) -> Self {
+        Self::new_with_capacity(
+            send_target,
+            target_key,
+            wire_packet,
+            drop_on_backpressure,
+            1,
+        )
+    }
+
+    fn new_with_capacity(
+        send_target: SelectedSendTarget,
+        target_key: SendTargetKey,
+        wire_packet: Vec<u8>,
+        drop_on_backpressure: bool,
+        packet_capacity: usize,
+    ) -> Self {
         debug_assert_eq!(
             send_target.key(),
             target_key,
             "selected send batch must keep the queued target key"
         );
+        let mut wire_packets = Vec::with_capacity(packet_capacity.max(1));
+        wire_packets.push(wire_packet);
         Self {
             send_target,
             target_key,
-            wire_packets: vec![wire_packet],
+            wire_packets,
             drop_on_backpressure,
         }
     }
@@ -301,6 +320,11 @@ impl SelectedSendBatch {
 
     fn drop_on_backpressure(&self) -> bool {
         self.drop_on_backpressure
+    }
+
+    #[cfg(test)]
+    fn wire_packet_capacity(&self) -> usize {
+        self.wire_packets.capacity()
     }
 
     fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool) {
@@ -500,6 +524,7 @@ impl DirectSendBatchAttempt {
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn push_selected_send_batch(
     groups: &mut Vec<SelectedSendBatch>,
     send_target: SelectedSendTarget,
@@ -507,21 +532,60 @@ fn push_selected_send_batch(
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 ) {
-    if let Some(idx) = groups
-        .iter()
-        .rposition(|group| group.target_key() == target_key)
-    {
-        if groups[idx].drop_on_backpressure() == drop_on_backpressure {
-            groups[idx].push(wire_packet, drop_on_backpressure);
-            return;
-        }
-    }
-
-    groups.push(SelectedSendBatch::new(
+    push_selected_send_batch_with_capacity(
+        groups,
         send_target,
         target_key,
         wire_packet,
         drop_on_backpressure,
+        1,
+    )
+}
+
+#[cfg(unix)]
+fn push_selected_send_batch_with_capacity(
+    groups: &mut Vec<SelectedSendBatch>,
+    send_target: SelectedSendTarget,
+    target_key: SendTargetKey,
+    wire_packet: Vec<u8>,
+    drop_on_backpressure: bool,
+    packet_capacity: usize,
+) {
+    if let Some(group) = groups.last_mut() {
+        if group.target_key() == target_key {
+            if group.drop_on_backpressure() == drop_on_backpressure {
+                group.push(wire_packet, drop_on_backpressure);
+            } else {
+                groups.push(SelectedSendBatch::new_with_capacity(
+                    send_target,
+                    target_key,
+                    wire_packet,
+                    drop_on_backpressure,
+                    packet_capacity,
+                ));
+            }
+            return;
+        }
+    }
+
+    if groups.len() > 1 {
+        if let Some(idx) = groups[..groups.len() - 1]
+            .iter()
+            .rposition(|group| group.target_key() == target_key)
+        {
+            if groups[idx].drop_on_backpressure() == drop_on_backpressure {
+                groups[idx].push(wire_packet, drop_on_backpressure);
+                return;
+            }
+        }
+    }
+
+    groups.push(SelectedSendBatch::new_with_capacity(
+        send_target,
+        target_key,
+        wire_packet,
+        drop_on_backpressure,
+        packet_capacity,
     ));
 }
 
@@ -2327,6 +2391,8 @@ fn flush_batch_sync(
     // hashing for that range and keeps insertion order stable, so
     // the bursty peer's tail packets flush first.
     #[cfg(unix)]
+    let group_packet_capacity = batch.len();
+    #[cfg(unix)]
     let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
     #[cfg(target_os = "macos")]
     let mut macos_completions: Vec<MacCompletionGroup> = Vec::with_capacity(1);
@@ -2386,12 +2452,13 @@ fn flush_batch_sync(
         #[cfg(unix)]
         {
             let (send_target, target_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
-            push_selected_send_batch(
+            push_selected_send_batch_with_capacity(
                 &mut groups,
                 send_target,
                 target_key,
                 wire_packet,
                 drop_on_backpressure,
+                group_packet_capacity,
             );
         }
         #[cfg(not(unix))]
@@ -3812,6 +3879,56 @@ mod unix_tests {
             assert_eq!(groups[4].target_key(), key_other_dest);
             assert_eq!(groups[4].wire_packets, vec![vec![6]]);
             assert!(groups[4].drop_on_backpressure);
+        });
+    }
+
+    #[test]
+    fn selected_send_batch_capacity_tracks_worker_drain() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10039".parse().unwrap();
+            let target = SelectedSendTarget::new(
+                socket.clone(),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let same_target = SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let key = target.key();
+
+            let mut groups = Vec::new();
+            push_selected_send_batch_with_capacity(&mut groups, target, key, vec![1], true, 48);
+            assert_eq!(groups.len(), 1);
+            assert!(
+                groups[0].wire_packet_capacity() >= 48,
+                "hot single-target worker batches should not grow their packet vector one flush at a time"
+            );
+
+            push_selected_send_batch_with_capacity(
+                &mut groups,
+                same_target,
+                key,
+                vec![2],
+                true,
+                48,
+            );
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![2]]);
+            assert!(
+                groups[0].wire_packet_capacity() >= 48,
+                "coalescing should keep the pre-sized worker-drain capacity"
+            );
         });
     }
 
