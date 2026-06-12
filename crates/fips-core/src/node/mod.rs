@@ -2054,6 +2054,7 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) transport_type: Option<String>,
     pub(crate) link_id: u64,
     pub(crate) srtt_ms: Option<u64>,
+    pub(crate) srtt_age_ms: Option<u64>,
     pub(crate) packets_sent: u64,
     pub(crate) packets_recv: u64,
     pub(crate) bytes_sent: u64,

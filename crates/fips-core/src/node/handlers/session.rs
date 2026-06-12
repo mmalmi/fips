@@ -4531,6 +4531,7 @@ impl Node {
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
+                let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self
                     .nostr_discovery_handle()
                     .map(|discovery| {
@@ -4556,6 +4557,11 @@ impl Node {
                         });
                         let stats = peer.link_stats();
                         let direct_probe_pending = retry_state.is_some();
+                        let srtt = peer.mmp().and_then(|mmp| {
+                            mmp.metrics.srtt_ms().map(|value| {
+                                (value.round() as u64, mmp.metrics.srtt_age_ms(snapshot_now))
+                            })
+                        });
                         NodeEndpointPeer {
                             npub,
                             node_addr: *peer.node_addr(),
@@ -4563,10 +4569,8 @@ impl Node {
                             transport_addr: peer.current_addr().map(|addr| addr.to_string()),
                             transport_type,
                             link_id: link_id.as_u64(),
-                            srtt_ms: peer
-                                .mmp()
-                                .and_then(|mmp| mmp.metrics.srtt_ms())
-                                .map(|srtt| srtt.round() as u64),
+                            srtt_ms: srtt.map(|(value, _)| value),
+                            srtt_age_ms: srtt.and_then(|(_, age)| age),
                             packets_sent: stats.packets_sent,
                             packets_recv: stats.packets_recv,
                             bytes_sent: stats.bytes_sent,
@@ -4616,6 +4620,7 @@ impl Node {
                         transport_type: None,
                         link_id: 0,
                         srtt_ms: None,
+                        srtt_age_ms: None,
                         packets_sent: 0,
                         packets_recv: 0,
                         bytes_sent: 0,

@@ -400,6 +400,8 @@ pub struct FipsEndpointPeer {
     pub link_id: u64,
     /// Smoothed RTT in milliseconds, once measured by FIPS MMP.
     pub srtt_ms: Option<u64>,
+    /// Age of the current SRTT sample in milliseconds.
+    pub srtt_age_ms: Option<u64>,
     /// Link packets sent.
     pub packets_sent: u64,
     /// Link packets received.
@@ -1392,6 +1394,7 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             transport_type: peer.transport_type,
             link_id: peer.link_id,
             srtt_ms: peer.srtt_ms,
+            srtt_age_ms: peer.srtt_age_ms,
             packets_sent: peer.packets_sent,
             packets_recv: peer.packets_recv,
             bytes_sent: peer.bytes_sent,
@@ -1457,6 +1460,7 @@ mod tests {
             transport_type: Some("udp".to_string()),
             link_id: 7,
             srtt_ms: Some(12),
+            srtt_age_ms: Some(34),
             packets_sent: 3,
             packets_recv: 4,
             bytes_sent: 120,
@@ -1478,6 +1482,8 @@ mod tests {
         assert!(peer.rekey_in_progress);
         assert!(peer.rekey_draining);
         assert_eq!(peer.current_k_bit, Some(true));
+        assert_eq!(peer.srtt_ms, Some(12));
+        assert_eq!(peer.srtt_age_ms, Some(34));
         assert_eq!(peer.nostr_traversal_consecutive_failures, 2);
         assert!(peer.nostr_traversal_in_cooldown);
         assert_eq!(peer.nostr_traversal_cooldown_until_ms, Some(1_234));

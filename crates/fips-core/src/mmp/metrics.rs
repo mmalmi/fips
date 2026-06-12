@@ -45,6 +45,8 @@ pub struct MmpMetrics {
     prev_rr_reorder: u32,
     /// Time of previous ReceiverReport (for goodput rate computation).
     prev_rr_time: Option<Instant>,
+    /// Time of the most recent accepted RTT sample.
+    last_srtt_update: Option<Instant>,
     /// Whether we have a previous ReceiverReport for delta computation.
     has_prev_rr: bool,
     /// Counter span in the most recent ReceiverReport delta.
@@ -81,7 +83,7 @@ impl MmpMetrics {
         self.prev_reverse_packets = 0;
         self.prev_reverse_highest = 0;
         self.has_prev_reverse = false;
-        // Keep srtt, etx, trends, goodput_bps — they'll refresh from data
+        // Keep srtt, srtt freshness, etx, trends, goodput_bps — they'll refresh from data.
     }
 
     pub fn new() -> Self {
@@ -102,6 +104,7 @@ impl MmpMetrics {
             prev_rr_ecn_ce: 0,
             prev_rr_reorder: 0,
             prev_rr_time: None,
+            last_srtt_update: None,
             has_prev_rr: false,
             last_forward_counter_span: 0,
             last_forward_loss_rate: None,
@@ -172,6 +175,7 @@ impl MmpMetrics {
                         "RTT sample from timestamp echo"
                     );
                     self.srtt.update(rtt_us);
+                    self.last_srtt_update = Some(now);
                     self.rtt_trend.update(rtt_us as f64);
                 }
                 _ => {
@@ -278,6 +282,15 @@ impl MmpMetrics {
         }
     }
 
+    /// Age of the current SRTT sample in milliseconds.
+    pub fn srtt_age_ms(&self, now: Instant) -> Option<u64> {
+        self.last_srtt_update.map(|updated_at| {
+            now.saturating_duration_since(updated_at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        })
+    }
+
     /// Current loss rate (0.0 = no loss, 1.0 = total loss).
     pub fn loss_rate(&self) -> f64 {
         1.0 - self.delivery_ratio_forward
@@ -381,6 +394,7 @@ mod tests {
         let valid_rr = make_rr(10, 10, 5000, 1000, 5, 0);
         m.process_receiver_report(&valid_rr, 1050, now);
         let baseline_srtt_ms = m.srtt_ms().unwrap();
+        assert_eq!(m.srtt_age_ms(now), Some(0));
 
         // A duplicate of the same counters arriving later would be a 5s RTT
         // sample if accepted. It is stale and must not move SRTT.
@@ -388,6 +402,7 @@ mod tests {
 
         let srtt_ms = m.srtt_ms().unwrap();
         assert_eq!(srtt_ms, baseline_srtt_ms);
+        assert_eq!(m.srtt_age_ms(now + Duration::from_secs(5)), Some(5000));
     }
 
     #[test]
