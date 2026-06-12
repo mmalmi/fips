@@ -1010,6 +1010,7 @@ struct FairWorkerReceiver {
     priority_rx: Receiver<QueuedFmpSendJob>,
     bulk_rx: Receiver<QueuedFmpSendJob>,
     admission: Arc<FairAdmission>,
+    release_buffer: Vec<FairAdmissionReservation>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1133,6 +1134,7 @@ fn fair_worker_channel_with_priority_cap(
             priority_rx,
             bulk_rx,
             admission,
+            release_buffer: Vec::new(),
         },
     )
 }
@@ -1275,18 +1277,27 @@ impl FairAdmission {
     }
 
     fn release(&self, reservation: FairAdmissionReservation) {
-        let key = reservation.key();
+        self.release_many(std::slice::from_ref(&reservation));
+    }
+
+    fn release_many(&self, reservations: &[FairAdmissionReservation]) {
+        if reservations.is_empty() {
+            return;
+        }
         let mut state = self
             .state
             .lock()
             .expect("encrypt worker fair admission poisoned");
-        if let Some(flow) = state.flows.get_mut(&key) {
-            flow.queued = flow.queued.saturating_sub(1);
-            if flow.queued == 0 {
-                state.flows.remove(&key);
+        for reservation in reservations {
+            let key = reservation.key();
+            if let Some(flow) = state.flows.get_mut(&key) {
+                flow.queued = flow.queued.saturating_sub(1);
+                if flow.queued == 0 {
+                    state.flows.remove(&key);
+                }
             }
+            state.total_len = state.total_len.saturating_sub(1);
         }
-        state.total_len = state.total_len.saturating_sub(1);
         self.reserved_len
             .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
         let should_notify = state.full_waiters > 0;
@@ -1352,6 +1363,7 @@ impl Drop for FairWorkerSender {
 impl FairWorkerReceiver {
     fn recv_batch(&mut self, batch: &mut Vec<QueuedFmpSendJob>, max: usize) -> bool {
         debug_assert!(batch.is_empty());
+        debug_assert!(self.release_buffer.is_empty());
         let Some(first) = self.recv_next_blocking() else {
             return false;
         };
@@ -1366,6 +1378,7 @@ impl FairWorkerReceiver {
                 Err(_) => break,
             }
         }
+        self.release_batch_reservations();
         true
     }
 
@@ -1383,11 +1396,19 @@ impl FairWorkerReceiver {
         self.bulk_rx.recv().ok()
     }
 
-    fn push_received(&self, batch: &mut Vec<QueuedFmpSendJob>, mut job: QueuedFmpSendJob) {
+    fn push_received(&mut self, batch: &mut Vec<QueuedFmpSendJob>, mut job: QueuedFmpSendJob) {
         if let Some(reservation) = job.take_fair_reservation() {
-            self.admission.release(reservation);
+            self.release_buffer.push(reservation);
         }
         batch.push(job);
+    }
+
+    fn release_batch_reservations(&mut self) {
+        if self.release_buffer.is_empty() {
+            return;
+        }
+        self.admission.release_many(&self.release_buffer);
+        self.release_buffer.clear();
     }
 }
 
@@ -4837,6 +4858,121 @@ mod fair_queue_tests {
                 admission.is_idle(),
                 "releasing all fair reservations should re-enable the fast lane"
             );
+        });
+    }
+
+    #[test]
+    fn fair_admission_releases_reserved_batch_together() {
+        with_test_socket(|socket_a, cipher| {
+            let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open second send socket");
+            let socket_b = raw_b.into_async().expect("into_async second socket");
+            let dest: SocketAddr = "127.0.0.1:10035".parse().unwrap();
+            let key_a =
+                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+            let key_b =
+                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+            let admission = FairAdmission {
+                state: Mutex::new(FairAdmissionState::default()),
+                not_full: Condvar::new(),
+                reserved_len: std::sync::atomic::AtomicUsize::new(0),
+                total_cap: 2,
+                per_flow_cap: 1,
+                fast_lane_cap: 1,
+            };
+
+            let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("first key should reserve"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            let reservation_b = match admission.try_reserve(key_b, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("different key should reserve independently"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            assert!(
+                !admission.is_idle(),
+                "active reservations should disable the fast lane"
+            );
+
+            let reservations = vec![reservation_a, reservation_b];
+            admission.release_many(&reservations);
+            assert!(
+                admission.is_idle(),
+                "batch release should reopen the whole fair-admission window"
+            );
+
+            let reservation_a = match admission.try_reserve(key_a, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("released key should reserve again"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            let reservation_b = match admission.try_reserve(key_b, DEFAULT_SEND_WEIGHT as usize) {
+                FairReserve::Reserved(reservation) => reservation,
+                FairReserve::Full => panic!("released key should reserve again"),
+                FairReserve::Closed => panic!("admission should be open"),
+            };
+            admission.release_many(&[reservation_a, reservation_b]);
+        });
+    }
+
+    #[test]
+    fn fair_worker_receiver_releases_batch_reservations_after_drain() {
+        with_test_socket(|socket, cipher| {
+            let (tx, mut rx) = fair_worker_channel(4, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10036".parse().unwrap();
+
+            tx.try_push(queued_job(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("first packet should enter the lock-free fast lane");
+            tx.try_push(queued_job(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("second packet should consume the fair per-flow budget");
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "same flow should be backpressured until the receiver owns the reserved packet"
+            );
+
+            let mut batch = Vec::new();
+            assert!(rx.recv_batch(&mut batch, 2));
+            assert_eq!(batch.len(), 2);
+            assert!(
+                rx.release_buffer.is_empty(),
+                "reservation release buffer must be reusable across worker batches"
+            );
+
+            tx.try_push(queued_job(
+                socket,
+                &cipher,
+                addr,
+                128,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("draining the worker batch should release fair capacity");
         });
     }
 
