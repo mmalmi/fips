@@ -1989,7 +1989,13 @@ impl EncryptWorkerShard {
             return false;
         }
         prioritize_worker_batch(&mut self.batch);
-        crate::perf_profile::record_fmp_worker_batch(self.batch.len(), self.max_batch);
+        let (priority_packets, bulk_packets) = worker_batch_lane_counts(&self.batch);
+        crate::perf_profile::record_fmp_worker_batch(
+            self.batch.len(),
+            priority_packets,
+            bulk_packets,
+            self.max_batch,
+        );
         if let Err(err) = flush_batch(&mut self.batch) {
             debug!(
                 worker = self.idx,
@@ -2005,6 +2011,18 @@ impl EncryptWorkerShard {
     fn batch_len(&self) -> usize {
         self.batch.len()
     }
+}
+
+fn worker_batch_lane_counts(batch: &[QueuedFmpSendJob]) -> (usize, usize) {
+    let mut priority_packets = 0usize;
+    let mut bulk_packets = 0usize;
+    for job in batch {
+        match job.queue_lane() {
+            EncryptWorkerLane::Priority => priority_packets += 1,
+            EncryptWorkerLane::Bulk => bulk_packets += 1,
+        }
+    }
+    (priority_packets, bulk_packets)
 }
 
 fn prioritize_worker_batch(batch: &mut [QueuedFmpSendJob]) {
@@ -3253,6 +3271,11 @@ mod unix_tests {
                         payload_lens,
                         vec![11, 12, 101, 102],
                         "stable lane ordering must preserve FIFO within priority and bulk lanes"
+                    );
+                    assert_eq!(
+                        worker_batch_lane_counts(batch),
+                        (2, 2),
+                        "FMP worker batch telemetry should preserve priority/bulk mix"
                     );
                     batch.clear();
                     Ok(())

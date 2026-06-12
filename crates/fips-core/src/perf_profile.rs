@@ -64,7 +64,7 @@ use std::time::Instant;
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 42;
-const N_EVENTS: usize = 42;
+const N_EVENTS: usize = 44;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -321,6 +321,8 @@ pub enum Event {
     FmpWorkerBatchPackets = 39,
     FmpWorkerBatchFull = 40,
     FmpWorkerBatchSingle = 41,
+    FmpWorkerBatchPriorityPackets = 42,
+    FmpWorkerBatchBulkPackets = 43,
 }
 
 impl Event {
@@ -374,6 +376,8 @@ impl Event {
             Event::FmpWorkerBatchPackets => "fmp_worker_batch_packets",
             Event::FmpWorkerBatchFull => "fmp_worker_batch_full",
             Event::FmpWorkerBatchSingle => "fmp_worker_batch_single",
+            Event::FmpWorkerBatchPriorityPackets => "fmp_worker_batch_priority_packets",
+            Event::FmpWorkerBatchBulkPackets => "fmp_worker_batch_bulk_packets",
         }
     }
 }
@@ -422,6 +426,8 @@ fn event_from_index(idx: usize) -> Event {
         39 => Event::FmpWorkerBatchPackets,
         40 => Event::FmpWorkerBatchFull,
         41 => Event::FmpWorkerBatchSingle,
+        42 => Event::FmpWorkerBatchPriorityPackets,
+        43 => Event::FmpWorkerBatchBulkPackets,
         _ => unreachable!(),
     }
 }
@@ -585,15 +591,31 @@ pub fn record_event_count(event: Event, count: u64) {
 /// Record how much work an FMP encrypt worker drained before one flush.
 ///
 /// These count-only metrics make `fmp_worker_*_queue_wait` easier to interpret:
-/// full batches point at a saturated worker/send path, while frequent single
-/// batches point at wakeup or producer cadence rather than backlog.
+/// full batches point at a saturated worker/send path, frequent single batches
+/// point at wakeup or producer cadence rather than backlog, and lane packet
+/// counts show whether a hot turn was bulk-dominated or carrying priority work.
 #[inline]
-pub(crate) fn record_fmp_worker_batch(packets: usize, max_batch: usize) {
+pub(crate) fn record_fmp_worker_batch(
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+    max_batch: usize,
+) {
     if !enabled() || packets == 0 {
         return;
     }
+    debug_assert_eq!(
+        packets,
+        priority_packets.saturating_add(bulk_packets),
+        "FMP worker batch lane counts should cover every packet"
+    );
     record_event_count_sample(Event::FmpWorkerBatchFlush, 1);
     record_event_count_sample(Event::FmpWorkerBatchPackets, packets as u64);
+    record_event_count_sample(
+        Event::FmpWorkerBatchPriorityPackets,
+        priority_packets as u64,
+    );
+    record_event_count_sample(Event::FmpWorkerBatchBulkPackets, bulk_packets as u64);
     if packets >= max_batch.max(1) {
         record_event_count_sample(Event::FmpWorkerBatchFull, 1);
     }
@@ -789,7 +811,7 @@ mod tests {
 
     #[test]
     fn event_table_exposes_rx_loop_maintenance_liveness_events() {
-        assert_eq!(N_EVENTS, 42);
+        assert_eq!(N_EVENTS, 44);
         assert_eq!(
             event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
             "decrypt_fallback_backlog_high"
@@ -845,6 +867,14 @@ mod tests {
         assert_eq!(
             event_from_index(Event::FmpWorkerBatchSingle as usize).name(),
             "fmp_worker_batch_single"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchPriorityPackets as usize).name(),
+            "fmp_worker_batch_priority_packets"
+        );
+        assert_eq!(
+            event_from_index(Event::FmpWorkerBatchBulkPackets as usize).name(),
+            "fmp_worker_batch_bulk_packets"
         );
     }
 
@@ -911,6 +941,9 @@ mod tests {
         let batch_packets_before = EVENTS[Event::FmpWorkerBatchPackets as usize].load(Relaxed);
         let batch_full_before = EVENTS[Event::FmpWorkerBatchFull as usize].load(Relaxed);
         let batch_single_before = EVENTS[Event::FmpWorkerBatchSingle as usize].load(Relaxed);
+        let batch_priority_before =
+            EVENTS[Event::FmpWorkerBatchPriorityPackets as usize].load(Relaxed);
+        let batch_bulk_before = EVENTS[Event::FmpWorkerBatchBulkPackets as usize].load(Relaxed);
 
         record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
         record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -922,6 +955,8 @@ mod tests {
         record_event_count_sample(Event::FmpWorkerBatchPackets, 23);
         record_event_count_sample(Event::FmpWorkerBatchFull, 29);
         record_event_count_sample(Event::FmpWorkerBatchSingle, 31);
+        record_event_count_sample(Event::FmpWorkerBatchPriorityPackets, 37);
+        record_event_count_sample(Event::FmpWorkerBatchBulkPackets, 41);
 
         assert_eq!(
             EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -964,6 +999,15 @@ mod tests {
         assert_eq!(
             EVENTS[Event::FmpWorkerBatchSingle as usize].load(Relaxed) - batch_single_before,
             31
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchPriorityPackets as usize].load(Relaxed)
+                - batch_priority_before,
+            37
+        );
+        assert_eq!(
+            EVENTS[Event::FmpWorkerBatchBulkPackets as usize].load(Relaxed) - batch_bulk_before,
+            41
         );
     }
 }
