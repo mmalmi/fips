@@ -568,18 +568,6 @@ fn push_selected_send_batch_with_capacity(
         }
     }
 
-    if groups.len() > 1 {
-        if let Some(idx) = groups[..groups.len() - 1]
-            .iter()
-            .rposition(|group| group.target_key() == target_key)
-        {
-            if groups[idx].drop_on_backpressure() == drop_on_backpressure {
-                groups[idx].push(wire_packet, drop_on_backpressure);
-                return;
-            }
-        }
-    }
-
     groups.push(SelectedSendBatch::new_with_capacity(
         send_target,
         target_key,
@@ -2365,10 +2353,11 @@ fn run_worker_macos(idx: usize, rx: MacWorkerReceiver) {
 ///   but we group anyway for code symmetry and to keep GSO
 ///   eligibility checks simple.
 ///
-/// **Order preservation:** within one target group the iteration
-/// order is the channel-drain order, which is FIFO from the
-/// rx_loop. TCP's fast-retransmit logic only cares about per-flow
-/// ordering, and a single flow lives entirely inside one group.
+/// **Order preservation:** adjacent packets for the same target keep
+/// channel-drain order inside one group, and interleaved targets stay
+/// as separate groups in that same drain order. TCP-shaped flows need
+/// FIFO within a target, while control/liveness packets for another
+/// target must not be pushed behind a later same-target bulk packet.
 fn flush_batch_sync(
     batch: &mut Vec<QueuedFmpSendJob>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2382,9 +2371,10 @@ fn flush_batch_sync(
 
     // Per-target encrypted-packet group. Vec layout (not HashMap)
     // because the typical batch has 1 target (hash-by-dest dispatch),
-    // 2-3 worst-case under hash collisions — linear lookup beats
-    // hashing for that range and keeps insertion order stable, so
-    // the bursty peer's tail packets flush first.
+    // 2-3 worst-case under hash collisions. Merge only adjacent packets:
+    // reaching backward across an intervening group would turn dequeue
+    // order A,B,A into send order A,A,B and can delay a control/liveness
+    // packet that arrived between bulk packets.
     #[cfg(unix)]
     let group_packet_capacity = batch.len();
     #[cfg(unix)]
@@ -3852,28 +3842,34 @@ mod unix_tests {
                 true,
             );
 
-            assert_eq!(groups.len(), 5);
+            assert_eq!(groups.len(), 6);
             assert_eq!(groups[0].target_key(), key_a);
-            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![3]]);
+            assert_eq!(groups[0].wire_packets, vec![vec![1]]);
             assert!(
                 groups[0].drop_on_backpressure,
-                "droppable packets for the same target may still coalesce across unrelated targets"
+                "droppable packets keep their own retry policy"
             );
             assert_eq!(groups[1].target_key(), key_other_socket);
             assert_eq!(groups[1].wire_packets, vec![vec![2]]);
             assert!(groups[1].drop_on_backpressure);
             assert_eq!(groups[2].target_key(), key_a);
-            assert_eq!(groups[2].wire_packets, vec![vec![4]]);
+            assert_eq!(groups[2].wire_packets, vec![vec![3]]);
             assert!(
-                !groups[2].drop_on_backpressure,
-                "non-droppable control-shaped packets get their own retry policy"
+                groups[2].drop_on_backpressure,
+                "same-target packets do not merge backward across an intervening target"
             );
             assert_eq!(groups[3].target_key(), key_a);
-            assert_eq!(groups[3].wire_packets, vec![vec![5]]);
-            assert!(groups[3].drop_on_backpressure);
-            assert_eq!(groups[4].target_key(), key_other_dest);
-            assert_eq!(groups[4].wire_packets, vec![vec![6]]);
+            assert_eq!(groups[3].wire_packets, vec![vec![4]]);
+            assert!(
+                !groups[3].drop_on_backpressure,
+                "non-droppable control-shaped packets get their own retry policy"
+            );
+            assert_eq!(groups[4].target_key(), key_a);
+            assert_eq!(groups[4].wire_packets, vec![vec![5]]);
             assert!(groups[4].drop_on_backpressure);
+            assert_eq!(groups[5].target_key(), key_other_dest);
+            assert_eq!(groups[5].wire_packets, vec![vec![6]]);
+            assert!(groups[5].drop_on_backpressure);
         });
     }
 
