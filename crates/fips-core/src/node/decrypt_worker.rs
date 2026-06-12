@@ -2019,48 +2019,64 @@ fn run_worker(
             &bulk_rx,
             &bulk_queued_packets,
         );
-        crossbeam_channel::select! {
-            recv(priority_rx) -> msg => {
-                match msg {
-                    Ok(msg) => {
-                        let mut batch_stats = DecryptWorkerBatchStats::default();
-                        batch_stats.add_msg(&msg);
-                        shard.handle_msg(idx, msg);
-                        batch_stats.record();
-                    }
-                    Err(_) => {
-                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
-                        break;
-                    }
-                }
+        match recv_worker_item_biased(&priority_rx, &bulk_rx) {
+            DecryptWorkerQueueItem::Priority(msg) => {
+                let mut batch_stats = DecryptWorkerBatchStats::default();
+                batch_stats.add_msg(&msg);
+                shard.handle_msg(idx, msg);
+                batch_stats.record();
             }
-            recv(bulk_rx) -> item => {
-                match item {
-                    Ok(item) => {
-                        release_bulk_packets(&bulk_queued_packets, item.packet_count());
-                        let mut batch_stats = DecryptWorkerBatchStats::default();
-                        batch_stats.add_bulk_item(&item);
-                        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-                        handle_bulk_item(
-                            idx,
-                            &mut shard,
-                            &priority_rx,
-                            item,
-                            &mut plaintext_batch,
-                            &mut batch_stats,
-                        );
-                        plaintext_batch.flush();
-                        batch_stats.record();
-                    }
-                    Err(_) => {
-                        drain_worker_queues(idx, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
-                        break;
-                    }
-                }
+            DecryptWorkerQueueItem::Bulk(item) => {
+                release_bulk_packets(&bulk_queued_packets, item.packet_count());
+                let mut batch_stats = DecryptWorkerBatchStats::default();
+                batch_stats.add_bulk_item(&item);
+                let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+                handle_bulk_item(
+                    idx,
+                    &mut shard,
+                    &priority_rx,
+                    item,
+                    &mut plaintext_batch,
+                    &mut batch_stats,
+                );
+                plaintext_batch.flush();
+                batch_stats.record();
+            }
+            DecryptWorkerQueueItem::Closed => {
+                drain_worker_queues(
+                    idx,
+                    &mut shard,
+                    &priority_rx,
+                    &bulk_rx,
+                    &bulk_queued_packets,
+                );
+                break;
             }
         }
     }
     trace!(worker = idx, "FMP+FSP decrypt worker thread exiting");
+}
+
+enum DecryptWorkerQueueItem {
+    Priority(WorkerMsg),
+    Bulk(DecryptWorkerBulkItem),
+    Closed,
+}
+
+fn recv_worker_item_biased(
+    priority_rx: &Receiver<WorkerMsg>,
+    bulk_rx: &Receiver<DecryptWorkerBulkItem>,
+) -> DecryptWorkerQueueItem {
+    crossbeam_channel::select_biased! {
+        recv(priority_rx) -> msg => match msg {
+            Ok(msg) => DecryptWorkerQueueItem::Priority(msg),
+            Err(_) => DecryptWorkerQueueItem::Closed,
+        },
+        recv(bulk_rx) -> item => match item {
+            Ok(item) => DecryptWorkerQueueItem::Bulk(item),
+            Err(_) => DecryptWorkerQueueItem::Closed,
+        },
+    }
 }
 
 fn drain_worker_queues(
@@ -5670,6 +5686,43 @@ mod tests {
             "priority queue should be fully drained before bulk"
         );
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
+    }
+
+    #[test]
+    fn decrypt_worker_blocking_receive_prefers_ready_priority_over_bulk() {
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
+        let session_key = test_session_key(1, 79);
+        priority_tx
+            .try_send(WorkerMsg::RegisterSession {
+                session_key,
+                state: test_owned_session_state(),
+            })
+            .expect("priority registration should enqueue");
+        queue_bulk_item_for_test(
+            &bulk_tx,
+            &bulk_queued_packets,
+            DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+        );
+
+        match recv_worker_item_biased(&priority_rx, &bulk_rx) {
+            DecryptWorkerQueueItem::Priority(WorkerMsg::RegisterSession {
+                session_key: got,
+                ..
+            }) => assert_eq!(got, session_key),
+            DecryptWorkerQueueItem::Priority(_) => {
+                panic!("expected priority registration item")
+            }
+            DecryptWorkerQueueItem::Bulk(_) => {
+                panic!("blocking receive must not select bulk while priority is ready")
+            }
+            DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
+        }
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "bulk work should remain queued for the next bounded drain"
+        );
     }
 
     #[test]

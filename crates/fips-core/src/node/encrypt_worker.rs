@@ -1476,7 +1476,11 @@ impl FairWorkerReceiver {
         if let Ok(job) = self.priority_rx.try_recv() {
             return Some(job);
         }
-        crossbeam_channel::select! {
+        self.recv_next_biased_blocking()
+    }
+
+    fn recv_next_biased_blocking(&mut self) -> Option<QueuedFmpSendJob> {
+        crossbeam_channel::select_biased! {
             recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.recv_bulk_blocking()),
             recv(self.bulk_rx) -> msg => msg.ok().or_else(|| self.priority_rx.recv().ok()),
         }
@@ -4749,6 +4753,44 @@ mod fair_queue_tests {
                 batch[1..]
                     .iter()
                     .all(|job| job.queue_lane() == EncryptWorkerLane::Bulk)
+            );
+        });
+    }
+
+    #[test]
+    fn fair_worker_blocking_receive_prefers_ready_priority_over_bulk() {
+        with_test_socket(|socket, cipher| {
+            let (tx, mut rx) = fair_worker_channel(4, 2, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10040".parse().unwrap();
+
+            tx.try_push(queued_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("bulk job should enqueue");
+            tx.try_push(queued_job_classified(
+                socket,
+                &cipher,
+                addr,
+                64,
+                false,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("priority job should enqueue");
+
+            let job = rx
+                .recv_next_biased_blocking()
+                .expect("receiver should select a ready lane");
+            assert_eq!(
+                job.queue_lane(),
+                EncryptWorkerLane::Priority,
+                "the blocking worker wake must prefer ready control/rekey work over bulk"
             );
         });
     }
