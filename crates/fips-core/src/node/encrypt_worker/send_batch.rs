@@ -124,7 +124,6 @@ pub(crate) struct SelectedSendTarget {
     /// Ignored when `connected_socket` is `Some` (the kernel knows
     /// the destination already).
     dest_addr: SocketAddr,
-    #[cfg(unix)]
     key: SendTargetKey,
 }
 
@@ -136,7 +135,6 @@ impl SelectedSendTarget {
         >,
         dest_addr: SocketAddr,
     ) -> Self {
-        #[cfg(unix)]
         let key = SendTargetKey::from_parts(
             &socket,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -148,12 +146,10 @@ impl SelectedSendTarget {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_socket,
             dest_addr,
-            #[cfg(unix)]
             key,
         }
     }
 
-    #[cfg(unix)]
     fn key(&self) -> SendTargetKey {
         self.key
     }
@@ -173,18 +169,18 @@ impl SelectedSendTarget {
     }
 }
 
-#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct SendTargetKey {
+    #[cfg(unix)]
     socket_fd: RawFd,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     connected_fd: Option<RawFd>,
     dest_addr: SocketAddr,
 }
 
-#[cfg(unix)]
 impl SendTargetKey {
     fn from_parts(
+        #[cfg_attr(not(unix), allow(unused_variables))]
         socket: &AsyncUdpSocket,
         #[cfg(any(target_os = "linux", target_os = "macos"))] connected_socket: Option<
             &std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>,
@@ -192,6 +188,7 @@ impl SendTargetKey {
         dest_addr: SocketAddr,
     ) -> Self {
         Self {
+            #[cfg(unix)]
             socket_fd: socket.as_raw_fd(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             connected_fd: connected_socket.map(|socket| socket.as_raw_fd()),
@@ -201,7 +198,6 @@ impl SendTargetKey {
 }
 
 impl FmpSendJob {
-    #[cfg(unix)]
     fn send_target_key(&self) -> SendTargetKey {
         self.send_target.key()
     }

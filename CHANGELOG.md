@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.56] - 2026-06-12
+
+### Fixed
+
+- Fixed Windows builds after the dataplane worker split by making shared send
+  target identity and FSP receive snapshot state available on non-Unix targets
+  while keeping Unix raw-socket batching platform-gated.
+- Bumped `fips-endpoint` to 0.3.32 so app-facing consumers pick up the
+  Windows-buildable `fips-core` 0.3.56 patch.
+
 ## [0.3.55] - 2026-06-12
 
 ### Changed

@@ -72,7 +72,6 @@ fn record_fmp_worker_queue_wait(
 struct QueuedFmpSendJob {
     job: FmpSendJob,
     lane: EncryptWorkerLane,
-    #[cfg(unix)]
     target_key: SendTargetKey,
     #[cfg(not(target_os = "macos"))]
     scheduling_weight: usize,
@@ -88,14 +87,12 @@ impl QueuedFmpSendJob {
     #[allow(dead_code)] // used on non-macOS and by tests; macOS production uses sequenced flows.
     fn direct(job: FmpSendJob) -> Self {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
-        #[cfg(unix)]
         let target_key = job.send_target_key();
         #[cfg(not(target_os = "macos"))]
         let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
         Self {
             job,
             lane,
-            #[cfg(unix)]
             target_key,
             #[cfg(not(target_os = "macos"))]
             scheduling_weight,
@@ -122,7 +119,6 @@ impl QueuedFmpSendJob {
         }
     }
 
-    #[cfg(unix)]
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     fn target_key(&self) -> SendTargetKey {
         self.target_key
