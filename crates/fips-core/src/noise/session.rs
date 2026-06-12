@@ -214,6 +214,11 @@ impl NoiseSession {
         self.send_cipher.cipher_clone()
     }
 
+    /// Whether the send-side cipher is keyed for worker-side encryption.
+    pub fn has_send_cipher(&self) -> bool {
+        self.send_cipher.has_key()
+    }
+
     /// Reserve and return the next send counter, advancing the internal
     /// nonce. For pipelined encrypt paths that call `encrypt_with_counter`
     /// on a cloned cipher: the dispatcher pre-assigns the counter here

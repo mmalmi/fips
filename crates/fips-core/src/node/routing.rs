@@ -18,7 +18,51 @@ const MAX_ROUTE_WEIGHT: f64 = 512.0;
 #[derive(Debug, Default)]
 pub(crate) struct LearnedRouteTable {
     routes: HashMap<NodeAddr, Vec<LearnedRoute>>,
-    last_fallback_explore_at: HashMap<NodeAddr, u64>,
+    fallback_exploration: LearnedRouteFallbackExploration,
+}
+
+/// Pacing state for periodically exploring non-learned fallback routes.
+#[derive(Debug, Default)]
+pub(crate) struct LearnedRouteFallbackExploration {
+    explored_at_selected: HashMap<NodeAddr, u64>,
+}
+
+impl LearnedRouteFallbackExploration {
+    pub(crate) fn should_explore(
+        &mut self,
+        destination: &NodeAddr,
+        selected_count: u64,
+        interval: u64,
+    ) -> bool {
+        if interval == 0 || selected_count == 0 || !selected_count.is_multiple_of(interval) {
+            return false;
+        }
+
+        if self
+            .explored_at_selected
+            .get(destination)
+            .is_some_and(|last_selected| *last_selected == selected_count)
+        {
+            return false;
+        }
+
+        self.explored_at_selected
+            .insert(*destination, selected_count);
+        true
+    }
+
+    pub(crate) fn retain_destinations<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&NodeAddr) -> bool,
+    {
+        self.explored_at_selected
+            .retain(|destination, _| keep(destination));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_destination(&self, destination: &NodeAddr) -> bool {
+        self.explored_at_selected.contains_key(destination)
+    }
 }
 
 impl LearnedRouteTable {
@@ -138,20 +182,8 @@ impl LearnedRouteTable {
         }
 
         let selected = routes.iter().map(|route| route.selected).sum::<u64>();
-        if selected == 0 || selected % interval != 0 {
-            return false;
-        }
-
-        if self
-            .last_fallback_explore_at
-            .get(destination)
-            .is_some_and(|last_selected| *last_selected == selected)
-        {
-            return false;
-        }
-
-        self.last_fallback_explore_at.insert(*destination, selected);
-        true
+        self.fallback_exploration
+            .should_explore(destination, selected, interval)
     }
 
     pub(crate) fn purge_expired(&mut self, now_ms: u64) {
@@ -159,8 +191,9 @@ impl LearnedRouteTable {
             routes.retain(|route| route.expires_at_ms > now_ms);
             !routes.is_empty()
         });
-        self.last_fallback_explore_at
-            .retain(|destination, _| self.routes.contains_key(destination));
+        let live_destinations = self.routes.keys().copied().collect::<Vec<_>>();
+        self.fallback_exploration
+            .retain_destinations(|destination| live_destinations.contains(destination));
     }
 
     pub(crate) fn snapshot(&self, now_ms: u64) -> LearnedRouteTableSnapshot {
@@ -325,6 +358,36 @@ mod tests {
         assert!(
             faster_count > slower_count,
             "higher-score route should carry most traffic"
+        );
+    }
+
+    #[test]
+    fn learned_route_fallback_exploration_owns_interval_dedup_and_expiry() {
+        let dest = addr(100);
+        let other = addr(200);
+        let mut exploration = LearnedRouteFallbackExploration::default();
+
+        assert!(!exploration.should_explore(&dest, 0, 2));
+        assert!(!exploration.should_explore(&dest, 1, 2));
+        assert!(exploration.should_explore(&dest, 2, 2));
+        assert!(
+            !exploration.should_explore(&dest, 2, 2),
+            "one selected-count boundary should trigger fallback exploration at most once"
+        );
+        assert!(exploration.should_explore(&dest, 4, 2));
+        assert!(
+            !exploration.should_explore(&other, 4, 0),
+            "disabled exploration interval should never mark a destination explored"
+        );
+
+        exploration.retain_destinations(|destination| *destination == other);
+        assert!(
+            !exploration.contains_destination(&dest),
+            "exploration state for expired learned routes must be purged"
+        );
+        assert!(
+            exploration.should_explore(&dest, 4, 2),
+            "a relearned destination should not inherit stale exploration pacing"
         );
     }
 

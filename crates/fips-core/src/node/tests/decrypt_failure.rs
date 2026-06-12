@@ -28,11 +28,11 @@ async fn make_started_udp_transport(id: u32) -> TransportHandle {
 
 /// Drive a fully-promoted peer to the decrypt-failure threshold with no usable
 /// transport and verify the old force-removal fallback still cleans up both
-/// `peers` and `peers_by_index`.
+/// active peer storage and session-index dispatch.
 ///
 /// Setup uses the `make_completed_connection` harness so the peer has a
 /// real `our_index`/`transport_id`, ensuring `remove_active_peer` exercises
-/// the full `peers_by_index` cleanup path (not just the bare `peers` table).
+/// the full active peer registry cleanup path.
 #[tokio::test]
 async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable() {
     // Threshold constant in node/handlers/encrypted.rs (kept in sync with
@@ -44,7 +44,7 @@ async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable()
     let link_id = LinkId::new(1);
 
     // Build a fully-promoted active peer with our_index/transport_id set
-    // so peers_by_index is populated by promote_connection.
+    // so session-index dispatch is populated by promote_connection.
     let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1_000);
     let node_addr = *identity.node_addr();
 
@@ -58,9 +58,10 @@ async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable()
         .and_then(|p| p.our_index())
         .expect("promoted peer must have our_index");
     assert_eq!(
-        node.peers_by_index.get(&(transport_id, our_index.as_u32())),
+        node.peers
+            .get_session_index(&(transport_id, our_index.as_u32())),
         Some(&node_addr),
-        "peers_by_index must be populated after promote"
+        "active peer registry session-index dispatch must be populated after promote"
     );
     assert_eq!(
         node.get_peer(&node_addr)
@@ -104,9 +105,9 @@ async fn test_decrypt_failure_threshold_removes_peer_when_recovery_unavailable()
     );
     assert!(
         !node
-            .peers_by_index
-            .contains_key(&(transport_id, our_index.as_u32())),
-        "peers_by_index entry must be cleaned up at threshold"
+            .peers
+            .contains_session_index(&(transport_id, our_index.as_u32())),
+        "active peer registry session-index entry must be cleaned up at threshold"
     );
 }
 
@@ -186,9 +187,10 @@ async fn test_worker_decrypt_failures_suppressed_during_fresh_session_drain() {
 
     for counter in 1..=THRESHOLD + 5 {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -226,9 +228,10 @@ async fn test_worker_decrypt_failures_suppressed_during_post_auth_fresh_session_
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -262,9 +265,10 @@ async fn test_worker_decrypt_failures_count_after_post_auth_grace() {
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 1,
+            trace_enqueued_at: None,
         })
         .await;
     }
@@ -294,9 +298,10 @@ async fn test_worker_decrypt_failures_count_after_fresh_session_grace() {
 
     for counter in 1..=THRESHOLD {
         node.handle_decrypt_failure_report(&DecryptFailureReport {
-            source_node_addr: node_addr,
+            source_peer: identity,
             fmp_counter: counter as u64,
             fmp_replay_highest: 0,
+            trace_enqueued_at: None,
         })
         .await;
     }

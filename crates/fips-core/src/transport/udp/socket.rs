@@ -19,6 +19,12 @@ use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
 
+/// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
+/// kernel queue. Shared with the higher-level UDP receive loops so all Linux
+/// packet ingress paths use the same batch width.
+#[cfg(target_os = "linux")]
+const RECV_BATCH_SIZE: usize = super::UDP_RECV_BATCH_SIZE;
+
 // ============================================================================
 // Unix implementation
 // ============================================================================
@@ -28,14 +34,6 @@ mod platform {
     use super::*;
     use std::os::unix::io::{AsRawFd, RawFd};
     use tokio::io::unix::AsyncFd;
-
-    /// Maximum number of datagrams a single `recvmmsg` syscall pulls
-    /// from the kernel queue. Tuned to amortise syscall + per-task-wakeup
-    /// overhead across a useful burst without blowing the stack (each
-    /// slot owns an mmsghdr + sockaddr_storage + iovec) and without
-    /// inflating tail latency on a quiet line.
-    #[cfg(target_os = "linux")]
-    const RECV_BATCH_SIZE: usize = 32;
 
     /// Maximum number of datagrams a single `sendmmsg` syscall pushes to
     /// the kernel. Larger than `RECV_BATCH_SIZE` because the rx_loop can
@@ -473,9 +471,10 @@ mod platform {
         /// Receive up to `BATCH_SIZE` datagrams in a single recvmmsg syscall
         /// (Linux only — macOS falls through to per-packet recvmsg).
         ///
-        /// Returns `(count, kernel_drops)`. Caller pre-sizes `bufs` (each
-        /// must be at least the configured MTU) and the matching `addrs` /
-        /// `lens` slices; on return, slots `[0..count)` are valid.
+        /// Returns `(count, kernel_drops)`. Caller provides receive buffers
+        /// with enough spare capacity for one datagram and the matching
+        /// `addrs` slice; on return, `bufs[0..count]` have their lengths set
+        /// to the initialized bytes received from the kernel.
         ///
         /// `kernel_drops` is the `SO_RXQ_OVFL` cumulative counter sampled
         /// from the cmsg chain of the FIRST datagram in the batch. The
@@ -486,11 +485,10 @@ mod platform {
         #[cfg(target_os = "linux")]
         pub fn recv_batch(
             &self,
-            bufs: &mut [&mut [u8]],
+            bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
-            lens: &mut [usize],
         ) -> std::io::Result<(usize, u32)> {
-            let n = bufs.len().min(addrs.len()).min(lens.len()).min(BATCH_SIZE);
+            let n = bufs.len().min(addrs.len()).min(BATCH_SIZE);
             if n == 0 {
                 return Ok((0, 0));
             }
@@ -509,8 +507,16 @@ mod platform {
             let mut msgs: [libc::mmsghdr; BATCH_SIZE] = unsafe { std::mem::zeroed() };
 
             for i in 0..n {
-                iovs[i].iov_base = bufs[i].as_mut_ptr() as *mut libc::c_void;
-                iovs[i].iov_len = bufs[i].len();
+                bufs[i].clear();
+                let spare = bufs[i].spare_capacity_mut();
+                if spare.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "UDP receive buffer has no spare capacity",
+                    ));
+                }
+                iovs[i].iov_base = spare.as_mut_ptr() as *mut libc::c_void;
+                iovs[i].iov_len = spare.len();
                 msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
                 msgs[i].msg_hdr.msg_namelen =
                     std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -537,7 +543,19 @@ mod platform {
             }
             let count = r as usize;
             for i in 0..count {
-                lens[i] = msgs[i].msg_len as usize;
+                let len = msgs[i].msg_len as usize;
+                if len > bufs[i].capacity() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "recvmmsg reported a datagram larger than the receive buffer",
+                    ));
+                }
+                // SAFETY: `recvmmsg` wrote `len` initialized bytes into
+                // `bufs[i]`'s spare capacity through the iovec above, and
+                // `len <= capacity` was checked before extending the Vec.
+                unsafe {
+                    bufs[i].set_len(len);
+                }
                 addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
             }
 
@@ -696,13 +714,12 @@ mod platform {
 
         /// Drain up to `BATCH_SIZE` datagrams from the kernel via
         /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
-        /// buffer / addr / len contract as `UdpRawSocket::recv_batch`.
+        /// buffer / addr contract as `UdpRawSocket::recv_batch`.
         #[cfg(target_os = "linux")]
         pub async fn recv_batch(
             &self,
-            bufs: &mut [&mut [u8]],
+            bufs: &mut [Vec<u8>],
             addrs: &mut [Option<SocketAddr>],
-            lens: &mut [usize],
         ) -> Result<(usize, u32), TransportError> {
             loop {
                 let mut guard = self
@@ -711,7 +728,7 @@ mod platform {
                     .await
                     .map_err(|e| TransportError::RecvFailed(format!("readable wait: {}", e)))?;
 
-                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs, lens)) {
+                match guard.try_io(|inner| inner.get_ref().recv_batch(bufs, addrs)) {
                     Ok(Ok((0, _))) => {
                         // Spurious wakeup or no datagrams ready — yield
                         // back to the reactor instead of busy-looping.
@@ -970,53 +987,4 @@ mod platform {
 pub use platform::{AsyncUdpSocket, UdpRawSocket};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_udp_socket_bind() {
-        // Bind to an ephemeral port
-        let sock = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
-            .expect("failed to bind UDP socket");
-
-        let addr = sock.local_addr();
-        assert!(addr.port() > 0, "should be assigned an ephemeral port");
-        assert!(addr.ip().is_loopback());
-    }
-
-    #[test]
-    fn test_udp_socket_buffer_sizes() {
-        let sock = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
-            .expect("failed to bind UDP socket");
-
-        let recv_buf = sock.recv_buffer_size().expect("get recv buffer");
-        let send_buf = sock.send_buffer_size().expect("get send buffer");
-        assert!(recv_buf > 0, "recv buffer should be non-zero");
-        assert!(send_buf > 0, "send buffer should be non-zero");
-    }
-
-    #[tokio::test]
-    async fn test_async_udp_socket_send_recv() {
-        let sock1 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
-            .expect("failed to bind socket 1");
-        let addr1 = sock1.local_addr();
-        let async1 = sock1.into_async().expect("into_async 1");
-
-        let sock2 = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 65536, 65536)
-            .expect("failed to bind socket 2");
-        let addr2 = sock2.local_addr();
-        let async2 = sock2.into_async().expect("into_async 2");
-
-        // Send from socket 1 to socket 2
-        let payload = b"hello fips";
-        let sent = async1.send_to(payload, &addr2).await.expect("send_to");
-        assert_eq!(sent, payload.len());
-
-        // Receive on socket 2
-        let mut buf = [0u8; 1024];
-        let (n, src, _drops) = async2.recv_from(&mut buf).await.expect("recv_from");
-        assert_eq!(n, payload.len());
-        assert_eq!(&buf[..n], payload);
-        assert_eq!(src, addr1);
-    }
-}
+mod tests;

@@ -16,14 +16,22 @@ use spanning_tree::{
 // Unit Tests
 // ============================================================================
 
+fn authenticated_session_datagram<'a>(
+    payload: &'a [u8],
+    incoming_ce: bool,
+) -> AuthenticatedSessionDatagram<'a> {
+    AuthenticatedSessionDatagram::new(make_peer_identity(), payload, incoming_ce)
+}
+
 // --- Decode errors ---
 
 #[tokio::test]
 async fn test_forwarding_decode_error() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     // Too-short payload: should log error and return without panic
-    node.handle_session_datagram(&from, &[0x00; 5], false).await;
+    let payload = [0x00; 5];
+    node.handle_session_datagram(authenticated_session_datagram(&payload, false))
+        .await;
 }
 
 // --- TTL ---
@@ -31,13 +39,12 @@ async fn test_forwarding_decode_error() {
 #[tokio::test]
 async fn test_forwarding_hop_limit_exhausted() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src = make_node_addr(0x01);
     let dest = make_node_addr(0x02);
     let dg = SessionDatagram::new(src, dest, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(0);
     let encoded = dg.encode();
     // Dispatch with payload after msg_type byte
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
     // No panic, no send (node has no peers)
 }
@@ -48,13 +55,12 @@ async fn test_forwarding_hop_limit_one_drops_at_transit() {
     // still be delivered this hop but would be dropped at the next.
     // decrement_ttl returns true (1 > 0), so the handler proceeds.
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let my_addr = *node.node_addr();
     let src = make_node_addr(0x01);
     let dg = SessionDatagram::new(src, my_addr, vec![0x10, 0x00, 0x00, 0x00]).with_ttl(1);
     let encoded = dg.encode();
     // Should succeed — ttl=1 decrements to 0 but packet is still processed
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 }
 
@@ -64,11 +70,11 @@ async fn test_forwarding_hop_limit_one_drops_at_transit() {
 async fn test_forwarding_local_delivery() {
     let mut node = make_node();
     let my_addr = *node.node_addr();
-    let from = make_node_addr(0xAA);
+    let from = make_node_addr(0x01);
     let dg = SessionDatagram::new(from, my_addr, vec![0x10, 0x00, 0x00, 0x00]);
     let encoded = dg.encode();
     // Should detect local delivery and return without forwarding
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 }
 
@@ -81,7 +87,6 @@ async fn test_forwarding_direct_peer() {
     let edges = vec![(0, 1)];
     let mut nodes = run_tree_test(2, &edges, false).await;
 
-    let node0_addr = *nodes[0].node.node_addr();
     let node1_addr = *nodes[1].node.node_addr();
 
     // Build a datagram from some external source destined for node 1
@@ -92,7 +97,7 @@ async fn test_forwarding_direct_peer() {
     // Handle on node 0: should forward to node 1 (direct peer)
     nodes[0]
         .node
-        .handle_session_datagram(&node0_addr, &encoded[1..], false)
+        .handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // Process packets — node 1 should receive the forwarded datagram
@@ -110,7 +115,6 @@ async fn test_forwarding_direct_peer() {
 #[tokio::test]
 async fn test_coord_cache_warming_session_setup() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -135,7 +139,7 @@ async fn test_coord_cache_warming_session_setup() {
 
     // Handle the datagram (will be local delivery or no-route, but cache warming
     // happens before routing decision)
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // After: both src and dest coords should be cached
@@ -154,7 +158,6 @@ async fn test_coord_cache_warming_session_setup() {
 #[tokio::test]
 async fn test_coord_cache_warming_session_ack() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -176,7 +179,7 @@ async fn test_coord_cache_warming_session_ack() {
     assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
     assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     // SessionAck caches both src_coords and dest_coords
@@ -198,7 +201,6 @@ async fn test_coord_cache_warming_session_ack() {
 #[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
     let root_addr = make_node_addr(0xF0);
@@ -225,7 +227,7 @@ async fn test_coord_cache_warming_encrypted_msg_with_coords() {
     assert!(node.coord_cache().get(&src_addr, now_ms).is_none());
     assert!(node.coord_cache().get(&dest_addr, now_ms).is_none());
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     assert!(
@@ -241,7 +243,6 @@ async fn test_coord_cache_warming_encrypted_msg_with_coords() {
 #[tokio::test]
 async fn test_coord_cache_warming_encrypted_msg_no_coords() {
     let mut node = make_node();
-    let from = make_node_addr(0xAA);
     let src_addr = make_node_addr(0x01);
     let dest_addr = make_node_addr(0x02);
 
@@ -259,7 +260,7 @@ async fn test_coord_cache_warming_encrypted_msg_no_coords() {
         .unwrap()
         .as_millis() as u64;
 
-    node.handle_session_datagram(&from, &encoded[1..], false)
+    node.handle_session_datagram(authenticated_session_datagram(&encoded[1..], false))
         .await;
 
     assert!(
@@ -590,7 +591,6 @@ async fn test_forwarding_with_cache_warming_enables_routing() {
 // ECN Tests
 // ============================================================================
 
-use crate::node::TransportDropState;
 use crate::node::handlers::session::mark_ipv6_ecn_ce;
 use crate::transport::TransportId;
 
@@ -739,20 +739,41 @@ fn test_detect_congestion_with_transport_drops() {
 
     // Simulate transport kernel drops
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 100,
-            dropping: true,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 100, true);
 
     // Now detect_congestion should return true (local transport congestion)
     assert!(node.detect_congestion(&fake_addr));
 
     // Clear the dropping flag — should return false again
-    node.transport_drops.get_mut(&tid).unwrap().dropping = false;
+    node.transport_drops.set_for_test(tid, 100, false);
     assert!(!node.detect_congestion(&fake_addr));
+}
+
+#[test]
+fn transport_drop_tracker_owns_rising_edge_state_and_cleanup() {
+    let tid = TransportId::new(1);
+    let other_tid = TransportId::new(2);
+    let mut drops = TransportDropTracker::default();
+
+    assert!(!drops.any_dropping());
+    assert!(
+        drops.sample(tid, Some(10)),
+        "first observed drops should be a rising edge"
+    );
+    assert!(drops.any_dropping());
+    assert!(
+        !drops.sample(tid, Some(12)),
+        "continued dropping should stay observable without duplicating rising-edge events"
+    );
+    assert!(drops.any_dropping());
+    assert!(!drops.sample(tid, Some(12)));
+    assert!(!drops.any_dropping());
+
+    assert!(drops.sample(tid, Some(13)));
+    drops.sample(other_tid, None);
+    assert!(drops.any_dropping());
+    drops.remove(&tid);
+    assert!(!drops.any_dropping());
 }
 
 #[test]
@@ -762,13 +783,7 @@ fn test_detect_congestion_disabled_ecn() {
 
     // Even with transport drops, disabled ECN should return false
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 50,
-            dropping: true,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 50, true);
 
     let fake_addr = NodeAddr::from_bytes([1; 16]);
     assert!(!node.detect_congestion(&fake_addr));
@@ -780,16 +795,10 @@ fn test_sample_transport_congestion() {
 
     // Insert a transport drop state with a baseline
     let tid = TransportId::new(1);
-    node.transport_drops.insert(
-        tid,
-        TransportDropState {
-            prev_drops: 0,
-            dropping: false,
-        },
-    );
+    node.transport_drops.set_for_test(tid, 0, false);
 
     // No transports registered — sample_transport_congestion is a no-op
     // (transport_drops entry stays unchanged)
     node.sample_transport_congestion();
-    assert!(!node.transport_drops[&tid].dropping);
+    assert!(!node.transport_drops.any_dropping());
 }

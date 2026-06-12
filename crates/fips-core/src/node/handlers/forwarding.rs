@@ -10,7 +10,7 @@ use crate::node::session_wire::{
     FSP_COMMON_PREFIX_SIZE, FSP_HEADER_SIZE, FSP_PHASE_ESTABLISHED, FSP_PHASE_MSG1, FSP_PHASE_MSG2,
     FspCommonPrefix, parse_encrypted_coords,
 };
-use crate::node::{Node, NodeError};
+use crate::node::{AuthenticatedSessionDatagram, Node, NodeError};
 use crate::protocol::{
     CoordsRequired, MtuExceeded, PathBroken, SessionAck, SessionDatagram, SessionDatagramRef,
     SessionSetup,
@@ -21,8 +21,9 @@ use tracing::{debug, warn};
 impl Node {
     /// Handle an incoming SessionDatagram from a peer.
     ///
-    /// Called by `dispatch_link_message` for msg_type 0x00. The payload
-    /// has already had its msg_type byte stripped by dispatch.
+    /// Called by `dispatch_link_message` for msg_type 0x00. The payload has
+    /// already had its msg_type byte stripped by dispatch, and the previous
+    /// hop is the authenticated peer that sent the enclosing link message.
     ///
     /// Hot path: borrows `payload` via `SessionDatagramRef` (zero copy)
     /// for the common local-delivery case. The owning `SessionDatagram`
@@ -30,10 +31,12 @@ impl Node {
     /// direct peers).
     pub(in crate::node) async fn handle_session_datagram(
         &mut self,
-        from: &NodeAddr,
-        payload: &[u8],
-        incoming_ce: bool,
+        datagram: AuthenticatedSessionDatagram<'_>,
     ) {
+        let previous_hop = *datagram.previous_hop_addr();
+        let payload = datagram.payload();
+        let incoming_ce = datagram.ce_flag();
+
         self.stats_mut().forwarding.record_received(payload.len());
 
         let datagram_ref = match SessionDatagramRef::decode(payload) {
@@ -70,13 +73,11 @@ impl Node {
         // no copy — `handle_session_payload` takes `payload` by borrow.
         if datagram_ref.dest_addr == *self.node_addr() {
             self.stats_mut().forwarding.record_delivered(payload.len());
-            self.handle_session_payload(
-                &datagram_ref.src_addr,
+            self.handle_session_payload(datagram.local_session_payload(
+                datagram_ref.src_addr,
                 datagram_ref.payload,
                 datagram_ref.path_mtu,
-                incoming_ce,
-                Some(*from),
-            )
+            ))
             .await;
             return;
         }
@@ -97,7 +98,7 @@ impl Node {
         // Find next hop toward destination. Transit forwarding must not send
         // a non-local datagram back to the hop it arrived from; learned
         // reverse routes are observations, not loop-free source routes.
-        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, from) {
+        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, &previous_hop) {
             Some(next_hop_addr) => next_hop_addr,
             None => {
                 self.stats_mut()
@@ -407,7 +408,7 @@ impl Node {
             }
         }
         // Local transport congestion (kernel drops)
-        self.transport_drops.values().any(|s| s.dropping)
+        self.transport_drops.any_dropping()
     }
 
     /// Sample transport congestion indicators.
@@ -419,14 +420,8 @@ impl Node {
         let mut new_drop_events = Vec::new();
         for (&tid, transport) in &self.transports {
             let congestion = transport.congestion();
-            let state = self.transport_drops.entry(tid).or_default();
-            if let Some(current) = congestion.recv_drops {
-                let new_drops = current > state.prev_drops;
-                if new_drops && !state.dropping {
-                    new_drop_events.push(tid);
-                }
-                state.dropping = new_drops;
-                state.prev_drops = current;
+            if self.transport_drops.sample(tid, congestion.recv_drops) {
+                new_drop_events.push(tid);
             }
         }
         for tid in new_drop_events {

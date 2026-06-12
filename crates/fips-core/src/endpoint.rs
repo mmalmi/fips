@@ -4,9 +4,11 @@
 //! peer admission and local routing policy while reusing FIPS connectivity.
 
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
+#[cfg(test)]
+use crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN;
 use crate::node::{
-    EndpointCommandLane, NodeEndpointCommand, NodeEndpointEvent, NodeEndpointPeer,
-    NodeEndpointRelayStatus,
+    EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
+    NodeEndpointCommand, NodeEndpointEvent,
 };
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
@@ -16,6 +18,82 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
+
+const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
+const ENDPOINT_RECV_BATCH_MAX: usize = 128;
+
+mod builder;
+mod receive;
+mod status;
+
+#[cfg(test)]
+mod tests;
+
+pub use builder::FipsEndpointBuilder;
+use receive::EndpointReceiveState;
+pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
+
+/// App-owned endpoint payload plus its queue/pressure policy.
+///
+/// `FipsEndpointPayload::new` classifies raw packet bytes once. Embedders that
+/// already classified a packet while staging their own priority/bulk queues can
+/// use `from_classified` to carry the same class into FIPS without parsing the
+/// packet a second time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FipsEndpointPayload {
+    bytes: Vec<u8>,
+    class: EndpointPayloadClass,
+}
+
+impl FipsEndpointPayload {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        let class = crate::node::classify_endpoint_payload(&bytes);
+        Self { bytes, class }
+    }
+
+    pub fn from_classified(bytes: Vec<u8>, class: EndpointPayloadClass) -> Self {
+        Self { bytes, class }
+    }
+
+    pub fn class(&self) -> EndpointPayloadClass {
+        self.class
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl From<FipsEndpointPayload> for EndpointDataPayload {
+    fn from(payload: FipsEndpointPayload) -> Self {
+        EndpointDataPayload::from_classified(payload.bytes, payload.class)
+    }
+}
+
+#[derive(Debug)]
+enum EndpointPayloadLaneBatches {
+    Empty,
+    Single {
+        lane: EndpointCommandLane,
+        payloads: Vec<EndpointDataPayload>,
+    },
+    Split {
+        priority_payloads: Vec<EndpointDataPayload>,
+        bulk_payloads: Vec<EndpointDataPayload>,
+    },
+}
 
 #[cfg(debug_assertions)]
 fn endpoint_debug_log(message: impl AsRef<str>) {
@@ -57,12 +135,22 @@ pub enum FipsEndpointError {
 /// Source-attributed endpoint data delivered to an embedded application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FipsEndpointMessage {
-    /// FIPS node address that originated the endpoint data.
-    pub source_node_addr: NodeAddr,
-    /// Source Nostr public key when the node has learned it.
-    pub source_npub: Option<String>,
+    /// Authenticated FIPS peer that originated the endpoint data.
+    pub source_peer: PeerIdentity,
     /// Application-owned payload bytes.
     pub data: Vec<u8>,
+}
+
+impl FipsEndpointMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
 }
 
 /// Reports what changed in response to [`FipsEndpoint::update_peers`].
@@ -92,186 +180,6 @@ impl From<crate::node::UpdatePeersOutcome> for UpdatePeersOutcome {
             updated: value.updated,
             unchanged: value.unchanged,
         }
-    }
-}
-
-/// Authenticated FIPS peer state visible to an embedded application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FipsEndpointPeer {
-    /// Peer Nostr public key.
-    pub npub: String,
-    /// Whether an authenticated link-layer peer is currently active.
-    pub connected: bool,
-    /// Current underlay transport address, when a link has authenticated.
-    pub transport_addr: Option<String>,
-    /// Current underlay transport kind, when known.
-    pub transport_type: Option<String>,
-    /// Authenticated link id.
-    pub link_id: u64,
-    /// Smoothed RTT in milliseconds, once measured by FIPS MMP.
-    pub srtt_ms: Option<u64>,
-    /// Link packets sent.
-    pub packets_sent: u64,
-    /// Link packets received.
-    pub packets_recv: u64,
-    /// Link bytes sent.
-    pub bytes_sent: u64,
-    /// Link bytes received.
-    pub bytes_recv: u64,
-    /// Whether direct UDP probing is queued while this peer may still be
-    /// reachable through a fallback transport.
-    pub direct_probe_pending: bool,
-    /// Millisecond timestamp when the queued direct probe becomes eligible.
-    pub direct_probe_after_ms: Option<u64>,
-}
-
-/// Live Nostr relay state visible to an embedded application.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FipsEndpointRelayStatus {
-    pub url: String,
-    pub status: String,
-}
-
-/// Builder for an embedded FIPS endpoint.
-#[derive(Debug, Clone)]
-pub struct FipsEndpointBuilder {
-    config: Config,
-    identity_nsec: Option<String>,
-    discovery_scope: Option<String>,
-    local_ethernet_interfaces: Vec<String>,
-    disable_system_networking: bool,
-    packet_channel_capacity: usize,
-}
-
-impl Default for FipsEndpointBuilder {
-    fn default() -> Self {
-        Self {
-            config: Config::new(),
-            identity_nsec: None,
-            discovery_scope: None,
-            local_ethernet_interfaces: Vec::new(),
-            disable_system_networking: true,
-            packet_channel_capacity: 1024,
-        }
-    }
-}
-
-impl FipsEndpointBuilder {
-    /// Start from an explicit FIPS config.
-    pub fn config(mut self, config: Config) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Use an `nsec` or hex secret for the endpoint identity.
-    pub fn identity_nsec(mut self, nsec: impl Into<String>) -> Self {
-        self.identity_nsec = Some(nsec.into());
-        self
-    }
-
-    /// Set an application-level discovery scope.
-    ///
-    /// When the builder owns the default empty connectivity config, this also
-    /// enables scoped Nostr discovery, open same-scope peer discovery, local
-    /// LAN candidates, and a UDP NAT advert. If an explicit transport or
-    /// Nostr config was supplied, the explicit config is left in control and
-    /// the scope is retained as endpoint metadata.
-    pub fn discovery_scope(mut self, scope: impl Into<String>) -> Self {
-        self.discovery_scope = Some(scope.into());
-        self
-    }
-
-    /// Enable host-local Ethernet discovery on a private L2 interface.
-    ///
-    /// This is intended for veth/TAP interfaces attached to a per-host bridge
-    /// shared by FIPS-aware applications. The endpoint announces Ethernet
-    /// beacons, listens for matching peers, auto-connects to them, and accepts
-    /// inbound handshakes over the interface.
-    pub fn local_ethernet(mut self, interface: impl Into<String>) -> Self {
-        self.local_ethernet_interfaces.push(interface.into());
-        self
-    }
-
-    /// Disable FIPS-owned TUN and DNS system integration.
-    pub fn without_system_tun(mut self) -> Self {
-        self.disable_system_networking = true;
-        self
-    }
-
-    /// Set the app packet/data channel capacity.
-    pub fn packet_channel_capacity(mut self, capacity: usize) -> Self {
-        self.packet_channel_capacity = capacity.max(1);
-        self
-    }
-
-    fn prepared_config(&self) -> Config {
-        let mut config = self.config.clone();
-        if let Some(nsec) = &self.identity_nsec {
-            config.node.identity = IdentityConfig {
-                nsec: Some(nsec.clone()),
-                persistent: false,
-            };
-        }
-        if self.disable_system_networking {
-            config.tun.enabled = false;
-            config.dns.enabled = false;
-            config.node.system_files_enabled = false;
-        }
-        if let Some(scope) = self.discovery_scope.as_deref() {
-            config.node.discovery.lan.scope = Some(scope.to_string());
-            config.node.discovery.local.enabled = true;
-            apply_default_scoped_discovery(&mut config, scope);
-        }
-        for interface in &self.local_ethernet_interfaces {
-            add_endpoint_ethernet_transport(
-                &mut config,
-                interface,
-                self.discovery_scope.as_deref(),
-            );
-        }
-        config
-    }
-
-    /// Bind and start the embedded endpoint.
-    pub async fn bind(self) -> Result<FipsEndpoint, FipsEndpointError> {
-        endpoint_debug_log("FipsEndpointBuilder::bind begin");
-        let config = self.prepared_config();
-        endpoint_debug_log("FipsEndpointBuilder::bind config prepared");
-
-        let mut node = Node::new(config)?;
-        endpoint_debug_log("FipsEndpointBuilder::bind node created");
-        let npub = node.npub();
-        let node_addr = *node.node_addr();
-        let address = *node.identity().address();
-        let packet_io = node.attach_external_packet_io(self.packet_channel_capacity)?;
-        endpoint_debug_log("FipsEndpointBuilder::bind packet io attached");
-        let endpoint_data_io = node.attach_endpoint_data_io(self.packet_channel_capacity)?;
-        endpoint_debug_log("FipsEndpointBuilder::bind endpoint data io attached");
-        endpoint_debug_log("FipsEndpointBuilder::bind node.start begin");
-        node.start().await?;
-        endpoint_debug_log("FipsEndpointBuilder::bind node.start complete");
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = spawn_node_task(node, shutdown_rx);
-        endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
-        let endpoint_priority_commands = endpoint_data_io.priority_command_tx;
-        let endpoint_commands = endpoint_data_io.command_tx;
-
-        Ok(FipsEndpoint {
-            npub,
-            node_addr,
-            address,
-            discovery_scope: self.discovery_scope,
-            outbound_packets: packet_io.outbound_tx,
-            delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
-            endpoint_priority_commands,
-            endpoint_commands,
-            inbound_endpoint_tx: endpoint_data_io.event_tx,
-            inbound_endpoint_rx: Arc::new(Mutex::new(endpoint_data_io.event_rx)),
-            peer_identity_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            shutdown_tx: Some(shutdown_tx),
-            task,
-        })
     }
 }
 
@@ -381,6 +289,7 @@ fn spawn_node_task(
 
 /// A running embedded FIPS endpoint.
 pub struct FipsEndpoint {
+    identity: PeerIdentity,
     npub: String,
     node_addr: NodeAddr,
     address: FipsAddress,
@@ -394,13 +303,14 @@ pub struct FipsEndpoint {
     /// path. The node's rx_loop also sends into this channel directly
     /// (it holds a clone of this sender) so there is no per-packet relay
     /// task between the node task and `recv()`.
-    inbound_endpoint_tx: mpsc::UnboundedSender<NodeEndpointEvent>,
-    /// Unbounded receiver. Was previously fed by a per-packet relay task
+    inbound_endpoint_tx: EndpointEventSender,
+    /// Unbounded receiver plus pending tail from an internal batch. This was
+    /// previously fed by a per-packet relay task
     /// that translated `NodeEndpointEvent::Data` into `FipsEndpointMessage`
     /// across an additional bounded mpsc; collapsed into a single channel
     /// — the translation happens inline in `recv()` and the second hop
     /// (with its scheduler wake per packet) is gone.
-    inbound_endpoint_rx: Arc<Mutex<mpsc::UnboundedReceiver<NodeEndpointEvent>>>,
+    inbound_endpoint_rx: Arc<Mutex<EndpointReceiveState>>,
     /// Cache of resolved PeerIdentity by npub string. Avoids the per-packet
     /// secp256k1 EC point parse that `PeerIdentity::from_npub` performs;
     /// without this cache the bulk-data send hot path spends ~10–30% of CPU
@@ -456,35 +366,125 @@ impl FipsEndpoint {
         let remote_npub = remote_npub.into();
         let data = data.into();
         if remote_npub == self.npub {
-            self.inbound_endpoint_tx
-                .send(NodeEndpointEvent::Data {
-                    source_node_addr: self.node_addr,
-                    source_npub: Some(self.npub.clone()),
-                    payload: data,
-                    queued_at: crate::perf_profile::stamp(),
-                })
-                .map_err(|_| FipsEndpointError::Closed)?;
-            return Ok(());
+            return self.send_loopback(data);
         }
 
         let remote = self.resolve_peer_identity(&remote_npub)?;
+        self.send_to_peer(remote, data).await
+    }
 
+    /// Send application-owned endpoint data to a resolved remote identity.
+    ///
+    /// This is the fast path for applications that already validate and cache
+    /// peer identities in their own routing table. It avoids per-packet npub
+    /// allocation, endpoint cache lookup, and `PeerIdentity::from_npub` parsing
+    /// while preserving the same owned-payload command semantics as [`Self::send`].
+    pub async fn send_to_peer(
+        &self,
+        remote: PeerIdentity,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let data = data.into();
+        if *remote.node_addr() == self.node_addr {
+            return self.send_loopback(data);
+        }
         // Fire-and-forget: caller already drops the result, so skip
         // the per-packet `oneshot::channel()` allocation entirely.
         // The node task's `SendOneway` arm runs the same code path as
         // `Send` but without writing the result into a oneshot.
-        let command_tx = match crate::node::endpoint_command_lane_for_payload(&data) {
-            EndpointCommandLane::Priority => &self.endpoint_priority_commands,
-            EndpointCommandLane::Bulk => &self.endpoint_commands,
-        };
-        command_tx
-            .send(NodeEndpointCommand::SendOneway {
-                remote,
-                payload: data,
-                queued_at: crate::perf_profile::stamp(),
-            })
-            .await
-            .map_err(|_| FipsEndpointError::Closed)?;
+        let command = NodeEndpointCommand::send_oneway(remote, data, crate::perf_profile::stamp());
+        send_endpoint_command(
+            command,
+            &self.endpoint_priority_commands,
+            &self.endpoint_commands,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Send a burst of application-owned endpoint payloads to one resolved peer.
+    ///
+    /// Raw payloads are classified once, then enqueued as bounded lane batches
+    /// instead of one command per packet. Callers that already classified packets
+    /// while staging their own queues can use [`Self::send_classified_batch_to_peer`].
+    pub async fn send_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let payloads = payloads.into_iter().map(FipsEndpointPayload::new).collect();
+        self.send_classified_batch_to_peer(remote, payloads).await
+    }
+
+    /// Send a burst of already-classified endpoint payloads to one resolved peer.
+    pub async fn send_classified_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: Vec<FipsEndpointPayload>,
+    ) -> Result<(), FipsEndpointError> {
+        if *remote.node_addr() == self.node_addr {
+            for payload in payloads {
+                self.send_loopback(payload.into_bytes())?;
+            }
+            return Ok(());
+        }
+
+        let queued_at = crate::perf_profile::stamp();
+        match endpoint_payload_lane_batches(payloads) {
+            EndpointPayloadLaneBatches::Empty => {}
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                self.send_endpoint_command_batch(remote, payloads, queued_at, lane)
+                    .await?;
+            }
+            EndpointPayloadLaneBatches::Split {
+                priority_payloads,
+                bulk_payloads,
+            } => {
+                self.send_endpoint_command_batch(
+                    remote,
+                    priority_payloads,
+                    queued_at,
+                    EndpointCommandLane::Priority,
+                )
+                .await?;
+                self.send_endpoint_command_batch(
+                    remote,
+                    bulk_payloads,
+                    queued_at,
+                    EndpointCommandLane::Bulk,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_endpoint_command_batch(
+        &self,
+        remote: PeerIdentity,
+        mut payloads: Vec<EndpointDataPayload>,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+        lane: EndpointCommandLane,
+    ) -> Result<(), FipsEndpointError> {
+        while !payloads.is_empty() {
+            let tail = if payloads.len() > ENDPOINT_SEND_BATCH_COMMAND_MAX {
+                payloads.split_off(ENDPOINT_SEND_BATCH_COMMAND_MAX)
+            } else {
+                Vec::new()
+            };
+            let batch = std::mem::replace(&mut payloads, tail);
+            let Some(command) =
+                NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at, lane)
+            else {
+                continue;
+            };
+            send_endpoint_command(
+                command,
+                &self.endpoint_priority_commands,
+                &self.endpoint_commands,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -510,6 +510,16 @@ impl FipsEndpoint {
         Ok(remote)
     }
 
+    fn send_loopback(&self, data: Vec<u8>) -> Result<(), FipsEndpointError> {
+        self.inbound_endpoint_tx
+            .send(NodeEndpointEvent::Data {
+                source_peer: self.identity,
+                payload: data,
+                queued_at: crate::perf_profile::stamp(),
+            })
+            .map_err(|_| FipsEndpointError::Closed)
+    }
+
     /// Receive the next source-attributed endpoint data message.
     ///
     /// Translation from the internal `NodeEndpointEvent::Data` shape to
@@ -517,19 +527,69 @@ impl FipsEndpoint {
     /// rx_loop pushes directly onto this channel, no relay task in
     /// between, no extra cross-task hop per packet.
     pub async fn recv(&self) -> Option<FipsEndpointMessage> {
-        let event = self.inbound_endpoint_rx.lock().await.recv().await?;
-        let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
-            data: payload,
-        })
+        let mut state = self.inbound_endpoint_rx.lock().await;
+        if let Some(message) = state.pop_pending_priority() {
+            return Some(message);
+        }
+        if let Ok(event) = state.rx.try_recv_priority() {
+            return state.first_from_event(event);
+        }
+        if let Some(message) = state.pop_pending_bulk() {
+            return Some(message);
+        }
+        let event = state.rx.recv().await?;
+        state.first_from_event(event)
+    }
+
+    /// Receive one endpoint message, then drain currently queued follow-ons.
+    ///
+    /// This is the receive-side counterpart to [`Self::send_batch_to_peer`]:
+    /// callers still get individual source-attributed messages, but a hot
+    /// dataplane consumer can amortize the endpoint receiver lock and task wake
+    /// across a bounded burst.
+    pub async fn recv_batch(&self, max: usize) -> Option<Vec<FipsEndpointMessage>> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut messages = Vec::with_capacity(max);
+        self.recv_batch_into(&mut messages, max).await?;
+        Some(messages)
+    }
+
+    /// Receive one endpoint message, then drain ready follow-ons into a caller-owned buffer.
+    ///
+    /// This is the allocation-conscious form of [`Self::recv_batch`] for hot
+    /// dataplane consumers. The provided buffer is cleared before use and keeps
+    /// its allocation across calls.
+    pub async fn recv_batch_into(
+        &self,
+        messages: &mut Vec<FipsEndpointMessage>,
+        max: usize,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        messages.clear();
+
+        let mut state = self.inbound_endpoint_rx.lock().await;
+        state.drain_priority_pending_into(messages, max);
+        while messages.len() < max {
+            match state.rx.try_recv_priority() {
+                Ok(event) => state.push_event_into(event, messages, max),
+                Err(_) => break,
+            }
+        }
+        state.drain_bulk_pending_into(messages, max);
+
+        while messages.len() < max {
+            let event = if messages.is_empty() {
+                state.rx.recv().await?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            state.push_event_into(event, messages, max);
+        }
+
+        Some(messages.len())
     }
 
     /// Synchronous blocking send — parks the calling **OS thread** on
@@ -549,26 +609,35 @@ impl FipsEndpoint {
         let remote_npub = remote_npub.into();
         let data = data.into();
         if remote_npub == self.npub {
-            self.inbound_endpoint_tx
-                .send(NodeEndpointEvent::Data {
-                    source_node_addr: self.node_addr,
-                    source_npub: Some(self.npub.clone()),
-                    payload: data,
-                    queued_at: crate::perf_profile::stamp(),
-                })
-                .map_err(|_| FipsEndpointError::Closed)?;
-            return Ok(());
+            return self.send_loopback(data);
         }
         let remote = self.resolve_peer_identity(&remote_npub)?;
+        self.blocking_send_to_peer(remote, data)
+    }
+
+    /// Synchronous blocking send to a resolved remote identity.
+    ///
+    /// This mirrors [`Self::send_to_peer`] for callers that already own a
+    /// `PeerIdentity` but need to use the blocking endpoint command path.
+    pub fn blocking_send_to_peer(
+        &self,
+        remote: PeerIdentity,
+        data: impl Into<Vec<u8>>,
+    ) -> Result<(), FipsEndpointError> {
+        let data = data.into();
+        if *remote.node_addr() == self.node_addr {
+            return self.send_loopback(data);
+        }
         let (response_tx, _response_rx) = oneshot::channel();
-        self.endpoint_priority_commands
-            .blocking_send(NodeEndpointCommand::Send {
-                remote,
-                payload: data,
-                queued_at: crate::perf_profile::stamp(),
-                response_tx,
-            })
-            .map_err(|_| FipsEndpointError::Closed)?;
+        let command =
+            NodeEndpointCommand::send(remote, data, crate::perf_profile::stamp(), response_tx);
+        endpoint_command_tx_for_command(
+            &command,
+            &self.endpoint_priority_commands,
+            &self.endpoint_commands,
+        )
+        .blocking_send(command)
+        .map_err(|_| FipsEndpointError::Closed)?;
         Ok(())
     }
 
@@ -588,20 +657,90 @@ impl FipsEndpoint {
     /// directly — the wake is a single futex_wake() with no scheduler
     /// involvement, an order of magnitude cheaper.
     pub fn blocking_recv(&self) -> Option<FipsEndpointMessage> {
-        let mut rx = self.inbound_endpoint_rx.blocking_lock();
-        let event = rx.blocking_recv()?;
-        let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
-            data: payload,
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        if let Some(message) = state.pop_pending_priority() {
+            return Some(message);
+        }
+        if let Ok(event) = state.rx.try_recv_priority() {
+            return state.first_from_event(event);
+        }
+        if let Some(message) = state.pop_pending_bulk() {
+            return Some(message);
+        }
+        let event = state.rx.blocking_recv()?;
+        state.first_from_event(event)
+    }
+
+    /// Synchronous blocking batch receive into a caller-owned buffer.
+    ///
+    /// This is the blocking-thread counterpart to [`Self::recv_batch_into`]:
+    /// it parks the calling **OS thread** for the first message, then drains
+    /// ready follow-ons while holding the endpoint receiver lock. MUST NOT be
+    /// called from inside a tokio runtime; use this only from a dedicated
+    /// blocking thread.
+    pub fn blocking_recv_batch_into(
+        &self,
+        messages: &mut Vec<FipsEndpointMessage>,
+        max: usize,
+    ) -> Option<usize> {
+        messages.clear();
+        self.blocking_recv_batch_for_each(max, |message| {
+            messages.push(message);
+            true
         })
+    }
+
+    /// Synchronous blocking batch receive that invokes a callback for each
+    /// delivered endpoint message without staging them in a caller-owned
+    /// `Vec`.
+    ///
+    /// This is for dedicated packet-mover threads that immediately forward
+    /// messages onward. It preserves the same priority-before-bulk ordering,
+    /// internal batch-tail handling, and receive limit as
+    /// [`Self::blocking_recv_batch_into`]. Returning `false` from the callback
+    /// stops the current drain after that message; any unconsumed messages from
+    /// the current internal batch are retained for the next receive.
+    pub fn blocking_recv_batch_for_each(
+        &self,
+        max: usize,
+        mut handle_message: impl FnMut(FipsEndpointMessage) -> bool,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut drained = 0usize;
+
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        if !state.drain_priority_pending_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+        while drained < max {
+            match state.rx.try_recv_priority() {
+                Ok(event) => {
+                    if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                        return Some(drained);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if !state.drain_bulk_pending_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+
+        while drained < max {
+            let event = if drained == 0 {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                return Some(drained);
+            }
+        }
+
+        Some(drained)
     }
 
     /// Non-blocking receive — returns the next ready endpoint message
@@ -624,20 +763,18 @@ impl FipsEndpoint {
     /// Returns `None` if the channel is empty, closed, or briefly
     /// contested by another consumer.
     pub fn try_recv(&self) -> Option<FipsEndpointMessage> {
-        let mut rx = self.inbound_endpoint_rx.try_lock().ok()?;
-        let event = rx.try_recv().ok()?;
-        let NodeEndpointEvent::Data {
-            source_node_addr,
-            source_npub,
-            payload,
-            queued_at,
-        } = event;
-        crate::perf_profile::record_since(crate::perf_profile::Stage::EndpointEventWait, queued_at);
-        Some(FipsEndpointMessage {
-            source_node_addr,
-            source_npub,
-            data: payload,
-        })
+        let mut state = self.inbound_endpoint_rx.try_lock().ok()?;
+        if let Some(message) = state.pop_pending_priority() {
+            return Some(message);
+        }
+        if let Ok(event) = state.rx.try_recv_priority() {
+            return state.first_from_event(event);
+        }
+        if let Some(message) = state.pop_pending_bulk() {
+            return Some(message);
+        }
+        let event = state.rx.try_recv().ok()?;
+        state.first_from_event(event)
     }
 
     /// Replace the runtime peer list. Newly added auto-connect peers get
@@ -746,230 +883,93 @@ impl FipsEndpoint {
     }
 }
 
-impl From<NodeEndpointPeer> for FipsEndpointPeer {
-    fn from(peer: NodeEndpointPeer) -> Self {
-        Self {
-            npub: peer.npub,
-            connected: peer.connected,
-            transport_addr: peer.transport_addr,
-            transport_type: peer.transport_type,
-            link_id: peer.link_id,
-            srtt_ms: peer.srtt_ms,
-            packets_sent: peer.packets_sent,
-            packets_recv: peer.packets_recv,
-            bytes_sent: peer.bytes_sent,
-            bytes_recv: peer.bytes_recv,
-            direct_probe_pending: peer.direct_probe_pending,
-            direct_probe_after_ms: peer.direct_probe_after_ms,
-        }
+fn endpoint_command_tx_for_command<'a>(
+    command: &NodeEndpointCommand,
+    priority_tx: &'a mpsc::Sender<NodeEndpointCommand>,
+    bulk_tx: &'a mpsc::Sender<NodeEndpointCommand>,
+) -> &'a mpsc::Sender<NodeEndpointCommand> {
+    match command.lane() {
+        EndpointCommandLane::Priority => priority_tx,
+        EndpointCommandLane::Bulk => bulk_tx,
     }
 }
 
-impl From<NodeEndpointRelayStatus> for FipsEndpointRelayStatus {
-    fn from(relay: NodeEndpointRelayStatus) -> Self {
-        Self {
-            url: relay.url,
-            status: relay.status,
+fn endpoint_payload_lane_batches(payloads: Vec<FipsEndpointPayload>) -> EndpointPayloadLaneBatches {
+    let payload_count = payloads.len();
+    let mut raw_payloads = payloads.into_iter();
+    let Some(first) = raw_payloads.next() else {
+        return EndpointPayloadLaneBatches::Empty;
+    };
+
+    let first = EndpointDataPayload::from(first);
+    let mut first_lane_payloads = Vec::with_capacity(payload_count);
+    let first_lane = first.lane();
+    first_lane_payloads.push(first);
+    let mut batches = EndpointPayloadLaneBatches::Single {
+        lane: first_lane,
+        payloads: first_lane_payloads,
+    };
+
+    for payload in raw_payloads.map(EndpointDataPayload::from) {
+        let payload_lane = payload.lane();
+        match &mut batches {
+            EndpointPayloadLaneBatches::Empty => unreachable!("first payload exists"),
+            EndpointPayloadLaneBatches::Single { lane, payloads } if payload_lane == *lane => {
+                payloads.push(payload);
+            }
+            EndpointPayloadLaneBatches::Single { lane, payloads } => {
+                let first_lane_payloads = std::mem::take(payloads);
+                let mut priority_payloads = Vec::new();
+                let mut bulk_payloads = Vec::new();
+                match *lane {
+                    EndpointCommandLane::Priority => priority_payloads = first_lane_payloads,
+                    EndpointCommandLane::Bulk => bulk_payloads = first_lane_payloads,
+                }
+                match payload_lane {
+                    EndpointCommandLane::Priority => priority_payloads.push(payload),
+                    EndpointCommandLane::Bulk => bulk_payloads.push(payload),
+                }
+                batches = EndpointPayloadLaneBatches::Split {
+                    priority_payloads,
+                    bulk_payloads,
+                };
+            }
+            EndpointPayloadLaneBatches::Split {
+                priority_payloads,
+                bulk_payloads,
+            } => match payload_lane {
+                EndpointCommandLane::Priority => priority_payloads.push(payload),
+                EndpointCommandLane::Bulk => bulk_payloads.push(payload),
+            },
         }
     }
+
+    batches
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
+async fn send_endpoint_command(
+    command: NodeEndpointCommand,
+    priority_tx: &mpsc::Sender<NodeEndpointCommand>,
+    bulk_tx: &mpsc::Sender<NodeEndpointCommand>,
+) -> Result<(), FipsEndpointError> {
+    let command_tx = endpoint_command_tx_for_command(&command, priority_tx, bulk_tx);
 
-    #[tokio::test]
-    async fn endpoint_starts_without_system_tun() {
-        let endpoint = FipsEndpoint::builder()
-            .without_system_tun()
-            .bind()
-            .await
-            .expect("endpoint should bind");
-
-        assert!(!endpoint.npub().is_empty());
-        assert!(endpoint.discovery_scope().is_none());
-        endpoint.shutdown().await.expect("shutdown should succeed");
+    if command.drop_on_backpressure() {
+        match command_tx.try_send(command) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Full(command)) => {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointCommandBulkDropped,
+                    command.drain_cost() as u64,
+                );
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => return Err(FipsEndpointError::Closed),
+        }
     }
 
-    #[tokio::test]
-    async fn loopback_endpoint_data_roundtrips() {
-        let endpoint = FipsEndpoint::builder()
-            .without_system_tun()
-            .bind()
-            .await
-            .expect("endpoint should bind");
-
-        endpoint
-            .send(endpoint.npub().to_string(), b"ping".to_vec())
-            .await
-            .expect("loopback send should succeed");
-        let message = tokio::time::timeout(Duration::from_secs(1), endpoint.recv())
-            .await
-            .expect("recv should not time out")
-            .expect("message should arrive");
-        assert_eq!(message.source_node_addr, *endpoint.node_addr());
-        assert_eq!(message.source_npub, Some(endpoint.npub().to_string()));
-        assert_eq!(message.data, b"ping");
-        assert!(endpoint.discovery_scope().is_none());
-
-        endpoint.shutdown().await.expect("shutdown should succeed");
-    }
-
-    #[test]
-    fn discovery_scope_enables_default_scoped_udp_discovery() {
-        let config = FipsEndpoint::builder()
-            .discovery_scope("nostr-vpn:test")
-            .prepared_config();
-
-        assert!(!config.tun.enabled);
-        assert!(!config.dns.enabled);
-        assert!(!config.node.system_files_enabled);
-        assert!(config.node.discovery.nostr.enabled);
-        assert!(config.node.discovery.nostr.advertise);
-        assert_eq!(
-            config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::Open
-        );
-        assert!(config.node.discovery.nostr.share_local_candidates);
-        assert_eq!(config.node.discovery.nostr.app, "nostr-vpn:test");
-        assert_eq!(
-            config.node.discovery.lan.scope.as_deref(),
-            Some("nostr-vpn:test")
-        );
-        assert!(config.node.discovery.local.enabled);
-
-        let udp = match config.transports.udp {
-            TransportInstances::Single(udp) => udp,
-            TransportInstances::Named(_) => panic!("expected a default UDP transport"),
-        };
-        assert_eq!(udp.bind_addr(), "0.0.0.0:0");
-        assert!(udp.advertise_on_nostr());
-        assert!(!udp.is_public());
-        assert!(!udp.outbound_only());
-        assert!(udp.accept_connections());
-    }
-
-    #[test]
-    fn local_ethernet_adds_scoped_discovery_transport() {
-        let config = FipsEndpoint::builder()
-            .discovery_scope("iris-chat:host")
-            .local_ethernet("fips-app0")
-            .prepared_config();
-
-        assert!(config.node.discovery.nostr.enabled);
-        assert_eq!(
-            config.node.discovery.lan.scope.as_deref(),
-            Some("iris-chat:host")
-        );
-
-        let eth = match config.transports.ethernet {
-            TransportInstances::Single(eth) => eth,
-            TransportInstances::Named(_) => panic!("expected a single Ethernet transport"),
-        };
-        assert_eq!(eth.interface, "fips-app0");
-        assert!(eth.discovery());
-        assert!(eth.announce());
-        assert!(eth.auto_connect());
-        assert!(eth.accept_connections());
-        assert_eq!(eth.discovery_scope(), Some("iris-chat:host"));
-    }
-
-    #[test]
-    fn local_ethernet_preserves_existing_ethernet_config() {
-        let mut explicit = Config::new();
-        explicit.transports.ethernet = TransportInstances::Single(EthernetConfig {
-            interface: "br-existing".to_string(),
-            announce: Some(false),
-            ..EthernetConfig::default()
-        });
-
-        let config = FipsEndpoint::builder()
-            .config(explicit)
-            .local_ethernet("fips-app0")
-            .prepared_config();
-
-        let TransportInstances::Named(map) = config.transports.ethernet else {
-            panic!("expected named Ethernet transports");
-        };
-        assert!(map.contains_key("default"));
-        let local = map
-            .get("local-ethernet-fips-app0")
-            .expect("local endpoint Ethernet transport");
-        assert_eq!(local.interface, "fips-app0");
-        assert!(local.announce());
-        assert!(local.auto_connect());
-        assert!(local.accept_connections());
-    }
-
-    #[test]
-    fn discovery_scope_preserves_explicit_connectivity_config() {
-        let mut explicit = Config::new();
-        explicit.node.discovery.nostr.enabled = true;
-        explicit.node.discovery.nostr.app = "custom-app".to_string();
-        explicit.node.discovery.nostr.policy = NostrDiscoveryPolicy::ConfiguredOnly;
-        explicit.node.discovery.nostr.share_local_candidates = false;
-        explicit.transports.udp = TransportInstances::Single(UdpConfig {
-            bind_addr: Some("127.0.0.1:34567".to_string()),
-            advertise_on_nostr: Some(false),
-            outbound_only: Some(true),
-            ..UdpConfig::default()
-        });
-
-        let config = FipsEndpoint::builder()
-            .config(explicit)
-            .discovery_scope("nostr-vpn:test")
-            .prepared_config();
-
-        assert_eq!(config.node.discovery.nostr.app, "custom-app");
-        assert_eq!(
-            config.node.discovery.nostr.policy,
-            NostrDiscoveryPolicy::ConfiguredOnly
-        );
-        assert!(!config.node.discovery.nostr.share_local_candidates);
-        assert_eq!(
-            config.node.discovery.lan.scope.as_deref(),
-            Some("nostr-vpn:test")
-        );
-        assert!(config.node.discovery.local.enabled);
-        let udp = match config.transports.udp {
-            TransportInstances::Single(udp) => udp,
-            TransportInstances::Named(_) => panic!("expected explicit UDP transport"),
-        };
-        assert_eq!(udp.bind_addr.as_deref(), Some("127.0.0.1:34567"));
-        assert_eq!(udp.bind_addr(), "0.0.0.0:0");
-        assert!(!udp.advertise_on_nostr());
-        assert!(udp.outbound_only());
-    }
-
-    #[tokio::test]
-    async fn invalid_remote_npub_is_rejected() {
-        let endpoint = FipsEndpoint::builder()
-            .without_system_tun()
-            .bind()
-            .await
-            .expect("endpoint should bind");
-
-        let error = endpoint
-            .send("not-an-npub", b"hello".to_vec())
-            .await
-            .expect_err("invalid npub should fail");
-        assert!(matches!(error, FipsEndpointError::InvalidRemoteNpub { .. }));
-
-        endpoint.shutdown().await.expect("shutdown should succeed");
-    }
-
-    #[tokio::test]
-    async fn endpoint_peer_snapshot_starts_empty() {
-        let endpoint = FipsEndpoint::builder()
-            .without_system_tun()
-            .bind()
-            .await
-            .expect("endpoint should bind");
-
-        let peers = endpoint.peers().await.expect("peer snapshot");
-        assert!(peers.is_empty());
-
-        endpoint.shutdown().await.expect("shutdown should succeed");
-    }
+    command_tx
+        .send(command)
+        .await
+        .map_err(|_| FipsEndpointError::Closed)
 }

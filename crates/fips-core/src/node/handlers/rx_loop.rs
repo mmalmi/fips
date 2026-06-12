@@ -3,41 +3,30 @@
 use crate::control::queries;
 use crate::control::{ControlSocket, commands};
 use crate::discovery::is_punch_packet;
-use crate::node::decrypt_worker::{DecryptFailureReport, DecryptFallback, DecryptWorkerEvent};
-use crate::node::wire::{
-    COMMON_PREFIX_SIZE, CommonPrefix, FLAG_CE, FLAG_SP, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1,
-    PHASE_MSG2,
+use crate::node::decrypt_worker::{
+    DecryptFailureReport, DecryptFallback, DecryptJobBatcher, DecryptWorkerEvent,
+    DecryptWorkerFallbackReceivers,
 };
-use crate::node::{Node, NodeEndpointCommand, NodeError};
+use crate::node::handlers::encrypted::EncryptedFrameFastPath;
+use crate::node::wire::{
+    COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
+};
+use crate::node::{AuthenticatedFmpPlaintext, Node, NodeEndpointCommand, NodeError};
+use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
-use crate::transport::TransportHandle;
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
+use tokio::sync::mpsc::Receiver;
 use tracing::{debug, info, trace, warn};
 
-/// How often the raw-packet drain loop yields a slice of work to the
-/// decrypt-fallback drain. Keeps TCP ACK / heartbeat / handshake
-/// progress steady under sustained inbound bursts.
-const FALLBACK_INTERLEAVE_EVERY: usize = 32;
-/// Cap on the per-interleave fallback drain so a hot inbound spike
-/// can't starve the outer raw-packet drain in the opposite direction.
-const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
-const PACKET_DRAIN_BUDGET: usize = 256;
-const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
-const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
-const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
-const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
+mod budget;
+mod drain;
 
-fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
-    let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
-    let ms = raw
-        .trim()
-        .parse::<u64>()
-        .ok()?
-        .min(RX_LOOP_FAULT_MAX_DELAY_MS);
-    (ms > 0).then(|| Duration::from_millis(ms))
-}
+#[cfg(test)]
+mod tests;
+
+use budget::*;
+use drain::*;
 
 impl Node {
     /// Run the receive event loop.
@@ -109,7 +98,7 @@ impl Node {
             match self.decrypt_fallback_rx.take() {
                 Some(rx) => (rx, None),
                 None => {
-                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (tx, rx) = crate::node::decrypt_worker::decrypt_worker_fallback_channels();
                     (rx, Some(tx))
                 }
             };
@@ -117,8 +106,7 @@ impl Node {
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut last_data_activity = None::<Instant>;
-        let mut slow_maintenance_timed_out_under_data = false;
+        let mut maintenance_state = RxLoopMaintenanceState::default();
 
         // Set up control socket channel
         let (control_tx, mut control_rx) =
@@ -144,27 +132,118 @@ impl Node {
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
         crate::perf_profile::maybe_spawn_reporter();
+        // Tokio intervals tick immediately on first poll. Consume that startup
+        // tick so the reserved-progress branch below represents a due periodic
+        // maintenance turn, not an eager pre-data maintenance pass.
+        tick.tick().await;
 
         loop {
             tokio::select! {
                 biased;
-                // Decrypt-worker fallback drains FIRST. The previous
-                // ordering put `packet_rx` first, which under sustained
-                // inbound bursts let the raw-packet drain (up to 256
-                // packets + flush) starve fallback work for tens of
-                // milliseconds. UDP throughput tolerates that; TCP
-                // doesn't — late FMP plaintexts mean late ACKs,
-                // dup-ACK fast retransmits, and cwnd collapse.
-                // Reproduced on native macOS / Wi-Fi where TCP fell to
-                // ~10 Mb/s while UDP cleared ~100 Mb/s on the same
-                // tunnel. Promoting fallback gives the kernel-side
-                // TCP machinery a fair chance to see its ACKs and
-                // keep cwnd growing.
-                Some(event) = decrypt_fallback_rx.recv() => {
-                    self.process_decrypt_worker_event(event).await;
-                    self.drain_decrypt_fallback(&mut decrypt_fallback_rx, 255).await;
-                    last_data_activity = Some(Instant::now());
-                    self.flush_pending_sends().await;
+                // Priority decrypt-worker fallback drains first. The
+                // previous packet-first ordering could hold small ACK,
+                // heartbeat, and failure-report plaintexts behind a hot
+                // raw-packet drain long enough to collapse TCP. Bulk
+                // fallback is intentionally below `packet_rx`: bulk
+                // plaintext must keep making bounded progress, but it
+                // should not stop fresh transport priority packets from
+                // being dequeued. `drain_packet_rx` interleaves fallback
+                // turns every few dozen packets to keep that progress
+                // reserve while avoiding a bulk-fallback convoy.
+                Some(event) = decrypt_fallback_rx.priority.recv() => {
+                    let fallback_drained = self.drain_decrypt_priority_fallback(
+                        &mut decrypt_fallback_rx.priority,
+                        Some(event),
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
+                // Timer-driven liveness is a reserved-progress branch. It
+                // performs bounded pre/post data drains and timeboxes slow
+                // discovery/status work, so hot packet or bulk-fallback
+                // queues cannot indefinitely postpone heartbeat, rekey, MMP,
+                // route aging, or path maintenance.
+                _ = tick.tick() => {
+                    let drained = self.drain_rx_loop_data_queues(
+                        &mut packet_rx,
+                        &mut decrypt_fallback_rx,
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                        debug!(
+                            drained = drained.total(),
+                            drained_packets = drained.packets,
+                            drained_tun = drained.tun,
+                            drained_endpoint = drained.endpoint,
+                            "Drained queued packets before rx-loop maintenance"
+                        );
+                    }
+                    let maintenance_plan = maintenance_state.plan_maintenance(
+                        drained,
+                        Instant::now(),
+                        RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW,
+                        RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+                        RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+                    );
+
+                    let slow_timed_out = self.run_rx_loop_maintenance_tick(
+                        maintenance_plan,
+                    ).await;
+                    maintenance_state.record_maintenance_result(
+                        maintenance_plan.data_pressure(),
+                        slow_timed_out,
+                    );
+
+                    let post_drained = self.drain_rx_loop_data_queues(
+                        &mut packet_rx,
+                        &mut decrypt_fallback_rx,
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if post_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                        debug!(
+                            drained = post_drained.total(),
+                            drained_packets = post_drained.packets,
+                            drained_tun = post_drained.tun,
+                            drained_endpoint = post_drained.endpoint,
+                            "Drained queued packets after rx-loop maintenance"
+                        );
+                    }
+                }
+                Some(event) = decrypt_fallback_rx.authenticated_bulk.recv(),
+                    if authenticated_bulk_preempts_packet_rx(packet_rx.priority_ready_packets()) =>
+                {
+                    let fallback_drained = self.drain_decrypt_fallback(
+                        &mut decrypt_fallback_rx,
+                        None,
+                        Some(event),
+                        None,
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
+                        &mut tun_outbound_rx,
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                    ).await;
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
                 }
                 packet = packet_rx.recv() => {
                     match packet {
@@ -172,79 +251,63 @@ impl Node {
                             let drained = self.drain_packet_rx(
                                 &mut packet_rx,
                                 &mut decrypt_fallback_rx,
+                                Some(RxLoopSideQueues {
+                                    tun_outbound_rx: &mut tun_outbound_rx,
+                                    endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
+                                    endpoint_command_rx: &mut endpoint_command_rx,
+                                }),
                                 Some(p),
                                 PACKET_DRAIN_BUDGET,
                             ).await;
                             if drained > 0 {
-                                last_data_activity = Some(Instant::now());
+                                maintenance_state.record_data_activity(Instant::now());
                             }
                         }
                         None => break, // channel closed
                     }
                 }
-                _ = tick.tick() => {
-                    let (drained_packets, drained_tun, drained_endpoint) = self.drain_rx_loop_data_queues(
-                        &mut packet_rx,
-                        &mut decrypt_fallback_rx,
-                        &mut tun_outbound_rx,
+                Some(command) = endpoint_priority_command_rx.recv() => {
+                    let drained = self.drain_endpoint_commands(
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        PACKET_DRAIN_BUDGET,
+                        Some(command),
+                        None,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
-                    let drained = drained_packets + drained_tun + drained_endpoint;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
-                        debug!(
-                            drained,
-                            drained_packets,
-                            drained_tun,
-                            drained_endpoint,
-                            "Drained queued packets before rx-loop maintenance"
-                        );
+                        maintenance_state.record_data_activity(Instant::now());
                     }
-                    let recent_data_activity = last_data_activity
-                        .is_some_and(|t| t.elapsed() <= RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW);
-                    let data_pressure = drained > 0 || recent_data_activity;
-                    if !data_pressure {
-                        slow_maintenance_timed_out_under_data = false;
-                    }
-
-                    let slow_timed_out = self.run_rx_loop_maintenance_tick(
-                        data_pressure,
-                        data_pressure && slow_maintenance_timed_out_under_data,
-                    ).await;
-                    if slow_timed_out && data_pressure {
-                        slow_maintenance_timed_out_under_data = true;
-                    }
-
-                    let (post_drained_packets, post_drained_tun, post_drained_endpoint) = self.drain_rx_loop_data_queues(
-                        &mut packet_rx,
+                }
+                Some(event) = decrypt_fallback_rx.bulk.recv() => {
+                    let fallback_plan = fallback_drain_plan(
+                        packet_rx.priority_ready_packets(),
+                        decrypt_fallback_rx.bulk_queued_packets(),
+                    );
+                    let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
+                        None,
+                        None,
+                        Some(event),
+                        fallback_plan.trailing_budget,
+                    ).await;
+                    let side_drained = self.drain_rx_loop_side_queues(
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        PACKET_DRAIN_BUDGET,
+                        SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    let post_drained = post_drained_packets + post_drained_tun + post_drained_endpoint;
-                    if post_drained > 0 {
-                        last_data_activity = Some(Instant::now());
-                        debug!(
-                            drained = post_drained,
-                            drained_packets = post_drained_packets,
-                            drained_tun = post_drained_tun,
-                            drained_endpoint = post_drained_endpoint,
-                            "Drained queued packets after rx-loop maintenance"
-                        );
+                    if fallback_drained > 0 || side_drained.has_drained() {
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some(ipv6_packet) = tun_outbound_rx.recv() => {
                     let drained = self.drain_tun_outbound(
                         &mut tun_outbound_rx,
                         Some(ipv6_packet),
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some(identity) = dns_identity_rx.recv() => {
@@ -254,28 +317,16 @@ impl Node {
                     );
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
-                Some(command) = endpoint_priority_command_rx.recv() => {
-                    let drained = self.drain_endpoint_commands(
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        Some(command),
-                        None,
-                        PACKET_DRAIN_BUDGET,
-                    ).await;
-                    if drained > 0 {
-                        last_data_activity = Some(Instant::now());
-                    }
-                }
                 Some(command) = endpoint_command_rx.recv() => {
                     let drained = self.drain_endpoint_commands(
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         None,
                         Some(command),
-                        PACKET_DRAIN_BUDGET,
+                        NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
-                        last_data_activity = Some(Instant::now());
+                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some((request, response_tx)) = control_rx.recv() => {
@@ -299,71 +350,195 @@ impl Node {
 
     async fn drain_rx_loop_data_queues(
         &mut self,
-        packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
-        decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        packet_rx: &mut PacketRx,
+        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
-    ) -> (usize, usize, usize) {
+    ) -> RxLoopDataDrainStats {
         let drained_packets = self
-            .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, budget)
+            .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
             .await;
-        let drained_tun = self.drain_tun_outbound(tun_outbound_rx, None, budget).await;
+        let non_packet_budget = non_packet_drain_budget(budget);
+        let drained_tun = self
+            .drain_tun_outbound(tun_outbound_rx, None, non_packet_budget)
+            .await;
         let drained_endpoint = self
             .drain_endpoint_commands(
                 endpoint_priority_command_rx,
                 endpoint_command_rx,
                 None,
                 None,
-                budget,
+                non_packet_budget,
             )
             .await;
-        (drained_packets, drained_tun, drained_endpoint)
+        RxLoopDataDrainStats::new(drained_packets, drained_tun, drained_endpoint)
     }
 
     async fn drain_packet_rx(
         &mut self,
-        packet_rx: &mut UnboundedReceiver<ReceivedPacket>,
-        decrypt_fallback_rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        packet_rx: &mut PacketRx,
+        decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
+        mut side_queues: Option<RxLoopSideQueues<'_>>,
         first_packet: Option<ReceivedPacket>,
         budget: usize,
     ) -> usize {
-        let mut drained = 0usize;
-        if let Some(packet) = first_packet {
-            self.process_packet(packet).await;
-            drained = 1;
-        }
-
         // Drain remaining ready inbound packets in a tight loop before
         // yielding back to select! Every yield is a scheduler hop, and at
         // line rate transports typically have several packets available per
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
-        while drained < budget {
-            if drained > 0 && drained.is_multiple_of(FALLBACK_INTERLEAVE_EVERY) {
-                self.drain_decrypt_fallback(decrypt_fallback_rx, FALLBACK_INTERLEAVE_BUDGET)
-                    .await;
-            }
-            match packet_rx.try_recv() {
-                Ok(packet) => {
-                    self.process_packet(packet).await;
-                    drained += 1;
+        self.begin_endpoint_event_batch();
+        let side_queue_interleave_every = if side_queues.is_some() {
+            SIDE_QUEUE_INTERLEAVE_EVERY
+        } else {
+            0
+        };
+        let mut fallback_plan = fallback_drain_plan(
+            packet_rx.priority_ready_packets(),
+            decrypt_fallback_rx.bulk_queued_packets(),
+        );
+        let mut drain = PacketDrainCursor::new(
+            first_packet,
+            budget,
+            fallback_plan.interleave_every,
+            side_queue_interleave_every,
+        );
+        let mut decrypt_jobs = DecryptJobBatcher::new();
+        while let Some(action) = drain.next(packet_rx) {
+            match action {
+                PacketDrainAction::Packet(packet) => {
+                    let action = self.begin_process_packet(packet);
+                    match action {
+                        PacketProcessAction::DecryptJob { job } => {
+                            if let Some(workers) = self.decrypt_workers.as_ref() {
+                                decrypt_jobs.push(workers, job);
+                            }
+                        }
+                        PacketProcessAction::Done => {}
+                        action => {
+                            self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+                            self.finish_packet_process(action).await;
+                        }
+                    }
                 }
-                Err(_) => break,
+                PacketDrainAction::InterleaveFallback => {
+                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+                    fallback_plan = fallback_drain_plan(
+                        packet_rx.priority_ready_packets(),
+                        decrypt_fallback_rx.bulk_queued_packets(),
+                    );
+                    drain.reset_fallback_interleave_every(fallback_plan.interleave_every);
+                    let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
+                        self.drain_decrypt_fallback(
+                            decrypt_fallback_rx,
+                            None,
+                            None,
+                            None,
+                            fallback_plan.interleave_budget,
+                        )
+                        .await
+                    } else {
+                        0
+                    };
+                    if drained == 0 {
+                        drain.refund_empty_interleave_turn();
+                    }
+                }
+                PacketDrainAction::InterleaveSideQueues => {
+                    self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+                    let drained = if let Some(side_queues) = side_queues.as_mut() {
+                        if rx_loop_side_queues_have_ready(side_queues) {
+                            self.drain_rx_loop_side_queues(
+                                side_queues.tun_outbound_rx,
+                                side_queues.endpoint_priority_command_rx,
+                                side_queues.endpoint_command_rx,
+                                SIDE_QUEUE_INTERLEAVE_BUDGET,
+                            )
+                            .await
+                        } else {
+                            RxLoopDataDrainStats::default()
+                        }
+                    } else {
+                        RxLoopDataDrainStats::default()
+                    };
+                    if !drained.has_drained() {
+                        drain.refund_empty_interleave_turn();
+                    }
+                }
             }
         }
 
+        self.flush_decrypt_job_batcher(&mut decrypt_jobs);
+        let drained = drain.drained();
         if drained > 0 {
-            // One trailing fallback drain so the last bounced packets of the
-            // burst aren't held up by the post-burst send flush.
-            self.drain_decrypt_fallback(decrypt_fallback_rx, PACKET_DRAIN_BUDGET)
-                .await;
-            // Flush any batched sends triggered by inbound packets (e.g.
-            // forwarded SessionDatagrams, MMP reports, tree announces).
-            self.flush_pending_sends().await;
+            fallback_plan = fallback_drain_plan(
+                packet_rx.priority_ready_packets(),
+                decrypt_fallback_rx.bulk_queued_packets(),
+            );
+            // One trailing fallback slice so the last bounced packets of the
+            // burst aren't held up by the post-burst send flush. Keep it a
+            // non-packet turn: bulk fallback should not convoy ahead of fresh
+            // transport receive work after every hot packet drain.
+            self.drain_decrypt_fallback(
+                decrypt_fallback_rx,
+                None,
+                None,
+                None,
+                fallback_plan.trailing_budget.min(budget),
+            )
+            .await;
+            self.finish_endpoint_event_batch();
+        } else {
+            self.finish_endpoint_event_batch();
         }
         drained
+    }
+
+    async fn drain_rx_loop_side_queues(
+        &mut self,
+        tun_outbound_rx: &mut TunOutboundRx,
+        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        budget: usize,
+    ) -> RxLoopDataDrainStats {
+        let (endpoint_budget, tun_budget) = split_side_queue_budget(budget);
+        let mut drained_endpoint = self
+            .drain_endpoint_commands(
+                endpoint_priority_command_rx,
+                endpoint_command_rx,
+                None,
+                None,
+                endpoint_budget,
+            )
+            .await;
+        let mut drained_tun = self
+            .drain_tun_outbound(tun_outbound_rx, None, tun_budget)
+            .await;
+
+        let endpoint_remainder = remaining_side_queue_budget(endpoint_budget, drained_endpoint);
+        let tun_remainder = remaining_side_queue_budget(tun_budget, drained_tun);
+        if endpoint_remainder > 0 && !tun_outbound_rx.is_empty() {
+            drained_tun += self
+                .drain_tun_outbound(tun_outbound_rx, None, endpoint_remainder)
+                .await;
+        }
+        if tun_remainder > 0
+            && (!endpoint_priority_command_rx.is_empty() || !endpoint_command_rx.is_empty())
+        {
+            drained_endpoint += self
+                .drain_endpoint_commands(
+                    endpoint_priority_command_rx,
+                    endpoint_command_rx,
+                    None,
+                    None,
+                    tun_remainder,
+                )
+                .await;
+        }
+
+        RxLoopDataDrainStats::new(0, drained_tun, drained_endpoint)
     }
 
     async fn drain_tun_outbound(
@@ -372,26 +547,12 @@ impl Node {
         first_packet: Option<Vec<u8>>,
         budget: usize,
     ) -> usize {
-        let mut drained = 0usize;
-        if let Some(packet) = first_packet {
+        let mut drain = SingleLaneDrainCursor::new(first_packet, budget);
+        while let Some(packet) = drain.next(tun_outbound_rx) {
             self.handle_tun_outbound(packet).await;
-            drained = 1;
         }
 
-        while drained < budget {
-            match tun_outbound_rx.try_recv() {
-                Ok(packet) => {
-                    self.handle_tun_outbound(packet).await;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
-        }
-
-        if drained > 0 {
-            self.flush_pending_sends().await;
-        }
-        drained
+        drain.drained()
     }
 
     async fn drain_endpoint_commands(
@@ -402,36 +563,18 @@ impl Node {
         first_bulk_command: Option<NodeEndpointCommand>,
         budget: usize,
     ) -> usize {
-        let mut first_bulk_command = first_bulk_command;
-        let mut drained = 0usize;
-        if let Some(command) = first_priority_command {
+        let mut drain =
+            PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
+        while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
+            let drain_cost = command.drain_cost();
             self.handle_endpoint_data_command(command).await;
-            drained = 1;
+            drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
-        while drained < budget {
-            let Some(command) = try_recv_endpoint_command(
-                endpoint_priority_command_rx,
-                endpoint_command_rx,
-                &mut first_bulk_command,
-            ) else {
-                break;
-            };
-            self.handle_endpoint_data_command(command).await;
-            drained += 1;
-        }
-
-        if drained > 0 {
-            self.flush_pending_sends().await;
-        }
-        drained
+        drain.drained()
     }
 
-    async fn run_rx_loop_maintenance_tick(
-        &mut self,
-        data_pressure: bool,
-        skip_slow_maintenance: bool,
-    ) -> bool {
+    async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
         self.check_timeouts();
         let now_ms = Self::now_ms();
         // Link/session liveness must run before slower retry/discovery work:
@@ -456,24 +599,25 @@ impl Node {
         self.activate_connected_udp_sessions().await;
         self.sample_transport_congestion();
 
-        if skip_slow_maintenance {
+        let Some(slow_timeout) = plan.slow_timeout() else {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::RxLoopSlowMaintenanceSkipped,
+            );
             return false;
-        }
-
-        let slow_timeout = if data_pressure {
-            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT
-        } else {
-            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT
         };
 
         if tokio::time::timeout(slow_timeout, self.run_rx_loop_slow_maintenance_tick())
             .await
             .is_err()
         {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::RxLoopSlowMaintenanceTimeout,
+            );
             self.mark_rx_loop_maintenance_timeout();
             warn!(
                 timeout_ms = slow_timeout.as_millis() as u64,
-                data_pressure, "RX loop slow maintenance timed out; continuing packet processing"
+                data_pressure = plan.data_pressure(),
+                "RX loop slow maintenance timed out; continuing packet processing"
             );
             return true;
         }
@@ -499,15 +643,40 @@ impl Node {
     }
 
     /// Hand a decrypt-worker fallback to the canonical post-FMP-decrypt
-    /// processor. Reconstructs `ce_flag` / `sp_flag` from the FMP header
-    /// flag byte the worker captured into `DecryptFallback::fmp_flags`
-    /// (without this both ECN CE propagation and spin-bit RTT
-    /// observation are dropped on the worker path) and slices the
-    /// plaintext out of the original wire buffer with zero allocation.
+    /// processor as one authenticated receive envelope. The envelope keeps the
+    /// worker-captured source peer, FMP flags, packet facts, and plaintext slice
+    /// together so peer bookkeeping and link dispatch cannot drift apart.
     async fn process_decrypt_worker_event(&mut self, event: DecryptWorkerEvent) {
+        event.record_queue_wait();
         match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
                 self.process_decrypt_fallback(fallback).await;
+            }
+            DecryptWorkerEvent::PlaintextBatch(fallbacks) => {
+                for fallback in fallbacks {
+                    self.process_decrypt_fallback(fallback).await;
+                }
+            }
+            DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
+                self.process_authenticated_fmp_receive_from_worker(receive);
+            }
+            DecryptWorkerEvent::AuthenticatedSession(session) => {
+                self.process_authenticated_session_from_worker(session)
+                    .await;
+            }
+            DecryptWorkerEvent::DirectSessionCommit(commit) => {
+                self.process_direct_session_commit_from_worker(commit).await;
+            }
+            DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
+                for commit in commits {
+                    self.process_direct_session_commit_from_worker(commit).await;
+                }
+            }
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                self.process_direct_session_data_from_worker(direct).await;
+            }
+            DecryptWorkerEvent::FspDecryptFailure(report) => {
+                self.process_fsp_decrypt_failure_from_worker(report).await;
             }
             DecryptWorkerEvent::DecryptFailure(report) => {
                 self.process_decrypt_failure_report(report).await;
@@ -516,27 +685,24 @@ impl Node {
     }
 
     async fn process_decrypt_fallback(&mut self, fallback: DecryptFallback) {
-        let ce_flag = fallback.fmp_flags & FLAG_CE != 0;
-        let sp_flag = fallback.fmp_flags & FLAG_SP != 0;
         let plaintext = &fallback.packet_data[fallback.fmp_plaintext_offset
             ..fallback.fmp_plaintext_offset + fallback.fmp_plaintext_len];
-        self.process_authentic_fmp_plaintext(
-            &fallback.source_node_addr,
+        self.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
+            fallback.source_peer,
             fallback.transport_id,
             &fallback.remote_addr,
             fallback.timestamp_ms,
             fallback.packet_len,
             fallback.fmp_counter,
-            ce_flag,
-            sp_flag,
+            fallback.fmp_flags,
             plaintext,
-        )
+        ))
         .await;
     }
 
     async fn process_decrypt_failure_report(&mut self, report: DecryptFailureReport) {
         debug!(
-            peer = %self.peer_display_name(&report.source_node_addr),
+            peer = %self.peer_display_name(report.source_peer.node_addr()),
             counter = report.fmp_counter,
             replay_highest = report.fmp_replay_highest,
             "Worker FMP AEAD decryption failed"
@@ -544,53 +710,92 @@ impl Node {
         self.handle_decrypt_failure_report(&report).await;
     }
 
-    /// Drain up to `budget` queued fallbacks without yielding back to
-    /// `select!`. Returns the number processed. Called both from the
-    /// promoted-fallback select arm (after the head item) and
-    /// interleaved inside the packet_rx drain loop so bounced FMP
-    /// plaintexts can't accumulate behind a 256-packet inbound burst.
-    async fn drain_decrypt_fallback(
+    /// Drain only the priority decrypt-worker fallback lane.
+    ///
+    /// This is the top-level reserved-progress arm: priority plaintext and
+    /// decrypt failures get first service, but bulk fallback stays behind
+    /// `packet_rx` unless it is explicitly interleaved inside a packet drain
+    /// or selected by its own lower-priority branch.
+    async fn drain_decrypt_priority_fallback(
         &mut self,
-        rx: &mut UnboundedReceiver<DecryptWorkerEvent>,
+        priority_rx: &mut Receiver<DecryptWorkerEvent>,
+        first_event: Option<DecryptWorkerEvent>,
         budget: usize,
     ) -> usize {
-        let mut drained = 0;
-        while drained < budget {
-            match rx.try_recv() {
-                Ok(event) => {
-                    self.process_decrypt_worker_event(event).await;
-                    drained += 1;
-                }
-                Err(_) => break,
-            }
+        self.begin_endpoint_event_batch();
+        let mut drain = SingleLaneDrainCursor::new(first_event, budget);
+        while let Some(event) = drain.next(priority_rx) {
+            self.process_decrypt_worker_event(event).await;
         }
+        let drained = drain.drained();
+        self.finish_endpoint_event_batch();
         drained
     }
 
-    /// Flush any pending batched sends across all transports. Today
-    /// every transport's `flush_pending_send` is a no-op — the UDP
-    /// transport's per-transport `pending_send` buffer was removed
-    /// when the bulk data path moved into `encrypt_worker` (which
-    /// does its own target-grouped `sendmmsg(2)` directly). The
-    /// call sites are retained so any future batched transport can
-    /// opt in by overriding `flush_pending_send` without touching
-    /// the rx_loop.
-    async fn flush_pending_sends(&self) {
-        for transport in self.transports.values() {
-            if matches!(transport, TransportHandle::Udp(_)) {
-                transport.flush_pending_send().await;
-            }
+    /// Drain up to `budget` queued fallbacks without yielding back to
+    /// `select!`. Returns the number processed. Called both from the
+    /// bulk-fallback select arm (after the selected head item) and interleaved
+    /// inside the packet_rx drain loop so bounced FMP plaintexts can't
+    /// accumulate behind a hot inbound packet turn.
+    async fn drain_decrypt_fallback(
+        &mut self,
+        rx: &mut DecryptWorkerFallbackReceivers,
+        first_priority_event: Option<DecryptWorkerEvent>,
+        first_authenticated_bulk_event: Option<DecryptWorkerEvent>,
+        first_bulk_event: Option<DecryptWorkerEvent>,
+        budget: usize,
+    ) -> usize {
+        self.begin_endpoint_event_batch();
+        let mut drain = DecryptReturnDrainCursor::new(
+            first_priority_event,
+            first_authenticated_bulk_event,
+            first_bulk_event,
+            budget,
+        );
+        while let Some(event) =
+            drain.next(&mut rx.priority, &mut rx.authenticated_bulk, &mut rx.bulk)
+        {
+            rx.release_dequeued_event(&event);
+            let extra = event.packet_count().saturating_sub(1);
+            self.process_decrypt_worker_event(event).await;
+            drain.charge_extra(extra);
         }
+        let drained = drain.drained();
+        self.finish_endpoint_event_batch();
+        drained
     }
 
     /// Process a single received packet.
     ///
     /// Dispatches based on the phase field in the 4-byte common prefix.
+    #[cfg(test)]
     pub(in crate::node) async fn process_packet(&mut self, packet: ReceivedPacket) {
-        let _t_total = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
-        crate::perf_profile::record_since(
+        let action = self.begin_process_packet(packet);
+        self.finish_packet_process(action).await;
+    }
+
+    fn begin_process_packet(&mut self, packet: ReceivedPacket) -> PacketProcessAction {
+        let timer = crate::perf_profile::Timer::start(crate::perf_profile::Stage::ProcessPacket);
+        let priority_sized = packet.is_priority_sized();
+        let priority_count = u64::from(priority_sized);
+        let bulk_count = u64::from(!priority_sized);
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::TransportQueueWait,
+            crate::perf_profile::Stage::TransportPriorityQueueWait,
+            crate::perf_profile::Stage::TransportBulkQueueWait,
             packet.trace_enqueued_at,
+            1,
+            priority_count,
+            bulk_count,
+        );
+        crate::perf_profile::record_since_split_count(
+            crate::perf_profile::Stage::TransportRxLoopWait,
+            crate::perf_profile::Stage::TransportPriorityRxLoopWait,
+            crate::perf_profile::Stage::TransportBulkRxLoopWait,
+            packet.trace_rx_loop_owned_at,
+            1,
+            priority_count,
+            bulk_count,
         );
         if is_punch_packet(&packet.data) {
             trace!(
@@ -599,15 +804,15 @@ impl Node {
                 bytes = packet.data.len(),
                 "Dropping stray punch probe/ack in FMP rx loop"
             );
-            return;
+            return PacketProcessAction::Done;
         }
         if packet.data.len() < COMMON_PREFIX_SIZE {
-            return; // Drop packets too short for common prefix
+            return PacketProcessAction::Done; // Drop packets too short for common prefix
         }
 
         let prefix = match CommonPrefix::parse(&packet.data) {
             Some(p) => p,
-            None => return, // Malformed prefix
+            None => return PacketProcessAction::Done, // Malformed prefix
         };
         if matches!(prefix.phase, PHASE_MSG1 | PHASE_MSG2) {
             debug!(
@@ -647,15 +852,12 @@ impl Node {
                 matches!(prefix.phase, PHASE_ESTABLISHED | PHASE_MSG1 | PHASE_MSG2);
             if looks_like_fmp_phase
                 && self.bootstrap_transports.contains(&packet.transport_id)
-                && let Some(npub) = self
-                    .bootstrap_transport_npubs
-                    .get(&packet.transport_id)
-                    .cloned()
+                && let Some(npub) = self.bootstrap_transports.peer_npub(&packet.transport_id)
                 && let Some(handle) = self.nostr_discovery_handle()
             {
                 let now_ms = Self::now_ms();
                 let cooldown_secs = handle.protocol_mismatch_cooldown_secs();
-                if handle.record_protocol_mismatch(&npub, now_ms) {
+                if handle.record_protocol_mismatch(npub, now_ms) {
                     warn!(
                         peer_npub = %npub,
                         transport_id = %packet.transport_id,
@@ -666,70 +868,62 @@ impl Node {
                     );
                 }
             }
-            return;
+            return PacketProcessAction::Done;
         }
 
         match prefix.phase {
-            PHASE_ESTABLISHED => {
-                self.handle_encrypted_frame(packet).await;
-            }
-            PHASE_MSG1 => {
-                self.handle_msg1(packet).await;
-            }
-            PHASE_MSG2 => {
-                self.handle_msg2(packet).await;
-            }
+            PHASE_ESTABLISHED => match self.try_prepare_encrypted_frame_for_worker(packet) {
+                EncryptedFrameFastPath::Dispatch(job) => PacketProcessAction::DecryptJob { job },
+                EncryptedFrameFastPath::Dropped => PacketProcessAction::Done,
+                EncryptedFrameFastPath::Slow(packet) => {
+                    PacketProcessAction::EncryptedSlow { packet, timer }
+                }
+            },
+            PHASE_MSG1 => PacketProcessAction::Msg1 { packet, timer },
+            PHASE_MSG2 => PacketProcessAction::Msg2 { packet, timer },
             _ => {
                 debug!(
                     phase = prefix.phase,
                     transport_id = %packet.transport_id,
                     "Unknown FMP phase, dropping"
                 );
+                PacketProcessAction::Done
             }
         }
     }
-}
 
-fn try_recv_endpoint_command<T>(
-    priority_rx: &mut Receiver<T>,
-    bulk_rx: &mut Receiver<T>,
-    first_bulk: &mut Option<T>,
-) -> Option<T> {
-    priority_rx
-        .try_recv()
-        .ok()
-        .or_else(|| first_bulk.take())
-        .or_else(|| bulk_rx.try_recv().ok())
-}
+    async fn finish_packet_process(&mut self, action: PacketProcessAction) {
+        match action {
+            PacketProcessAction::Done => {}
+            PacketProcessAction::DecryptJob { job } => {
+                if let Some(workers) = self.decrypt_workers.as_ref() {
+                    workers.dispatch_job(job);
+                }
+            }
+            PacketProcessAction::EncryptedSlow {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_encrypted_frame_slow(packet).await;
+            }
+            PacketProcessAction::Msg1 {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_msg1(packet).await;
+            }
+            PacketProcessAction::Msg2 {
+                packet,
+                timer: _timer,
+            } => {
+                self.handle_msg2(packet).await;
+            }
+        }
+    }
 
-#[cfg(test)]
-mod tests {
-    use super::try_recv_endpoint_command;
-
-    #[tokio::test]
-    async fn endpoint_command_drain_prefers_ready_priority_over_selected_bulk() {
-        let (priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
-        let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
-
-        priority_tx.send("priority").await.unwrap();
-        bulk_tx.send("bulk-queued").await.unwrap();
-        let mut selected_bulk = Some("bulk-selected");
-
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            Some("priority")
-        );
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            Some("bulk-selected")
-        );
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            Some("bulk-queued")
-        );
-        assert_eq!(
-            try_recv_endpoint_command(&mut priority_rx, &mut bulk_rx, &mut selected_bulk),
-            None
-        );
+    fn flush_decrypt_job_batcher(&self, batcher: &mut DecryptJobBatcher) {
+        if let Some(workers) = self.decrypt_workers.as_ref() {
+            batcher.flush(workers);
+        }
     }
 }

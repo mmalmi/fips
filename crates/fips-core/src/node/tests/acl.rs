@@ -119,7 +119,7 @@ fn open_discovery_counts_inflight_nonconfigured_handshakes_at_cap() {
     config.node.discovery.nostr.open_discovery_max_pending = 1;
     let mut node = Node::new(config).unwrap();
     let inflight_identity = PeerIdentity::from_pubkey_full(inflight.pubkey_full());
-    node.connections.insert(
+    node.peers.insert_connection(
         LinkId::new(1),
         PeerConnection::outbound(LinkId::new(1), inflight_identity, 0),
     );
@@ -240,9 +240,9 @@ async fn test_outbound_msg2_denied_after_acl_reload() {
     );
     node_a.links.insert(link_id_a, link_a);
     node_a
-        .addr_to_link
-        .insert((transport_id, remote_addr.clone()), link_id_a);
-    node_a.connections.insert(link_id_a, conn_a);
+        .links
+        .insert_addr((transport_id, remote_addr.clone()), link_id_a);
+    node_a.peers.insert_connection(link_id_a, conn_a);
     node_a
         .pending_outbound
         .insert((transport_id, our_index_a.as_u32()), link_id_a);

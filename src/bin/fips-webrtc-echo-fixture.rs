@@ -79,12 +79,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stdout().flush()?;
 
     while let Some(message) = endpoint.recv().await {
-        if let Some(source_npub) = message.source_npub {
-            let len = message.data.len();
-            endpoint.send(source_npub, message.data).await?;
-            println!("{}", json!({ "type": "echo", "bytes": len }));
-            std::io::stdout().flush()?;
-        }
+        let source_npub = message.source_npub();
+        let len = message.data.len();
+        endpoint.send(source_npub, message.data).await?;
+        println!("{}", json!({ "type": "echo", "bytes": len }));
+        std::io::stdout().flush()?;
     }
 
     Ok(())

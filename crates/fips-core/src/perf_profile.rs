@@ -26,22 +26,56 @@
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
-//!   * `TRANSPORT_QUEUE_WAIT` — UDP/transport receive loop → rx_loop
+//!   * `TRANSPORT_QUEUE_WAIT` — UDP/transport receive loop → rx_loop packet processing
+//!   * `TRANSPORT_PRIORITY_QUEUE_WAIT` — priority-sized transport packets → rx_loop packet processing
+//!   * `TRANSPORT_BULK_QUEUE_WAIT` — bulk-sized transport packets → rx_loop packet processing
+//!   * `TRANSPORT_CHANNEL_WAIT` — UDP/transport receive loop → packet channel dequeue
+//!   * `TRANSPORT_PRIORITY_CHANNEL_WAIT` — priority-sized transport packets → packet channel dequeue
+//!   * `TRANSPORT_BULK_CHANNEL_WAIT` — bulk-sized transport packets → packet channel dequeue
+//!   * `TRANSPORT_RX_LOOP_WAIT` — packet channel dequeue → rx_loop packet processing
+//!   * `TRANSPORT_PRIORITY_RX_LOOP_WAIT` — priority-sized packet channel dequeue → rx_loop packet processing
+//!   * `TRANSPORT_BULK_RX_LOOP_WAIT` — bulk-sized packet channel dequeue → rx_loop packet processing
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
+//!   * `ENDPOINT_PRIORITY_COMMAND_WAIT` — priority endpoint command → node command loop
+//!   * `ENDPOINT_BULK_COMMAND_WAIT` — bulk endpoint command → node command loop
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
+//!   * `FMP_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP encrypt jobs → worker
+//!   * `FMP_WORKER_BULK_QUEUE_WAIT` — bulk FMP encrypt jobs → worker
+//!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
+//!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
+//!   * `DECRYPT_WORKER_BULK_QUEUE_WAIT` — bulk FMP decrypt jobs → decrypt worker
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
+//!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
+//!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
+//!   * `DECRYPT_FALLBACK_WAIT` — plaintext/failure worker completion → rx_loop fallback processing
+//!   * `DECRYPT_FALLBACK_PRIORITY_WAIT` — priority plaintext/failure completions → rx_loop
+//!   * `DECRYPT_FALLBACK_BULK_WAIT` — bulk plaintext completions → rx_loop
+//!   * `DECRYPT_AUTHENTICATED_SESSION_WAIT` — FSP-authenticated worker completion → rx_loop dispatch
+//!   * `DECRYPT_AUTHENTICATED_SESSION_PRIORITY_WAIT` — priority FSP-authenticated completions
+//!   * `DECRYPT_AUTHENTICATED_SESSION_BULK_WAIT` — bulk FSP-authenticated completions
+//!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
+//!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
+//!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
 
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{
+    AtomicU64,
+    Ordering::{Acquire, Relaxed, Release},
+};
 use std::time::Instant;
 
+mod format;
+
+use format::{fmt_ns, fmt_rate_per_sec};
+
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 16;
-const N_EVENTS: usize = 6;
+const N_STAGES: usize = 42;
+const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Stage {
     UdpRecv = 0,
@@ -82,6 +116,71 @@ pub enum Stage {
     /// Time spent waiting after `rx_loop` delivers endpoint data until
     /// the embedded endpoint consumer receives it.
     EndpointEventWait = 15,
+    /// Priority-sized transport receive wait, split from the aggregate
+    /// `transport_queue_wait` so liveness/control reserve can be verified.
+    TransportPriorityQueueWait = 16,
+    /// Bulk-sized transport receive wait, split from the aggregate
+    /// `transport_queue_wait` so bulk pressure cannot hide priority behavior.
+    TransportBulkQueueWait = 17,
+    /// Priority-sized endpoint event wait, split from the aggregate
+    /// `endpoint_event_wait` so app/control reserve can be verified.
+    EndpointPriorityEventWait = 18,
+    /// Bulk-sized endpoint event wait, split from the aggregate
+    /// `endpoint_event_wait` so bulk pressure cannot hide priority behavior.
+    EndpointBulkEventWait = 19,
+    /// Time spent after a transport receives a packet until `PacketRx`
+    /// dequeues its channel item. This isolates scheduler/channel residence
+    /// from per-packet batch-tail residence inside the rx loop.
+    TransportChannelWait = 20,
+    /// Priority-sized transport channel residence, split from
+    /// `transport_channel_wait` so priority reserve stays independently visible.
+    TransportPriorityChannelWait = 21,
+    /// Bulk-sized transport channel residence, split from
+    /// `transport_channel_wait` so bulk pressure stays independently visible.
+    TransportBulkChannelWait = 22,
+    /// Time spent after a decrypt worker finishes FMP open until the rx loop
+    /// starts processing the bounced authenticated plaintext/failure event.
+    DecryptFallbackWait = 23,
+    /// Priority decrypt completion wait, split from `decrypt_fallback_wait`.
+    DecryptFallbackPriorityWait = 24,
+    /// Bulk decrypt completion wait, split from `decrypt_fallback_wait`.
+    DecryptFallbackBulkWait = 25,
+    /// Time spent after `PacketRx` dequeues a transport channel item until the
+    /// rx loop starts processing an individual packet from that owned item.
+    TransportRxLoopWait = 26,
+    /// Priority-sized rx-loop-owned packet residence.
+    TransportPriorityRxLoopWait = 27,
+    /// Bulk-sized rx-loop-owned packet residence.
+    TransportBulkRxLoopWait = 28,
+    /// Time spent after the rx loop queues an FMP decrypt job until the decrypt
+    /// worker starts handling it.
+    DecryptWorkerQueueWait = 29,
+    /// Priority decrypt-worker input residence.
+    DecryptWorkerPriorityQueueWait = 30,
+    /// Bulk decrypt-worker input residence.
+    DecryptWorkerBulkQueueWait = 31,
+    /// Priority endpoint command residence, split from `endpoint_command_wait`.
+    EndpointPriorityCommandWait = 32,
+    /// Bulk endpoint command residence, split from `endpoint_command_wait`.
+    EndpointBulkCommandWait = 33,
+    /// Time spent after a decrypt worker authenticates an established FSP
+    /// session frame until the rx loop applies receive-sync and dispatches it.
+    DecryptAuthenticatedSessionWait = 34,
+    /// Priority authenticated-session completion residence.
+    DecryptAuthenticatedSessionPriorityWait = 35,
+    /// Bulk authenticated-session completion residence.
+    DecryptAuthenticatedSessionBulkWait = 36,
+    /// Time spent after an FMP worker queues a local established FSP job to the
+    /// FSP owner worker until that worker starts handling it.
+    DecryptFspWorkerQueueWait = 37,
+    /// Priority FSP owner-worker input residence.
+    DecryptFspWorkerPriorityQueueWait = 38,
+    /// Bulk FSP owner-worker input residence.
+    DecryptFspWorkerBulkQueueWait = 39,
+    /// Priority FMP encrypt-worker input residence.
+    FmpWorkerPriorityQueueWait = 40,
+    /// Bulk FMP encrypt-worker input residence.
+    FmpWorkerBulkQueueWait = 41,
 }
 
 impl Stage {
@@ -103,6 +202,34 @@ impl Stage {
             Stage::FmpWorkerQueueWait => "fmp_worker_queue_wait",
             Stage::TransportQueueWait => "transport_queue_wait",
             Stage::EndpointEventWait => "endpoint_event_wait",
+            Stage::TransportPriorityQueueWait => "transport_priority_queue_wait",
+            Stage::TransportBulkQueueWait => "transport_bulk_queue_wait",
+            Stage::EndpointPriorityEventWait => "endpoint_priority_event_wait",
+            Stage::EndpointBulkEventWait => "endpoint_bulk_event_wait",
+            Stage::TransportChannelWait => "transport_channel_wait",
+            Stage::TransportPriorityChannelWait => "transport_priority_channel_wait",
+            Stage::TransportBulkChannelWait => "transport_bulk_channel_wait",
+            Stage::DecryptFallbackWait => "decrypt_fallback_wait",
+            Stage::DecryptFallbackPriorityWait => "decrypt_fallback_priority_wait",
+            Stage::DecryptFallbackBulkWait => "decrypt_fallback_bulk_wait",
+            Stage::TransportRxLoopWait => "transport_rx_loop_wait",
+            Stage::TransportPriorityRxLoopWait => "transport_priority_rx_loop_wait",
+            Stage::TransportBulkRxLoopWait => "transport_bulk_rx_loop_wait",
+            Stage::DecryptWorkerQueueWait => "decrypt_worker_queue_wait",
+            Stage::DecryptWorkerPriorityQueueWait => "decrypt_worker_priority_queue_wait",
+            Stage::DecryptWorkerBulkQueueWait => "decrypt_worker_bulk_queue_wait",
+            Stage::EndpointPriorityCommandWait => "endpoint_priority_command_wait",
+            Stage::EndpointBulkCommandWait => "endpoint_bulk_command_wait",
+            Stage::DecryptAuthenticatedSessionWait => "decrypt_authenticated_session_wait",
+            Stage::DecryptAuthenticatedSessionPriorityWait => {
+                "decrypt_authenticated_session_priority_wait"
+            }
+            Stage::DecryptAuthenticatedSessionBulkWait => "decrypt_authenticated_session_bulk_wait",
+            Stage::DecryptFspWorkerQueueWait => "decrypt_fsp_worker_queue_wait",
+            Stage::DecryptFspWorkerPriorityQueueWait => "decrypt_fsp_worker_priority_queue_wait",
+            Stage::DecryptFspWorkerBulkQueueWait => "decrypt_fsp_worker_bulk_queue_wait",
+            Stage::FmpWorkerPriorityQueueWait => "fmp_worker_priority_queue_wait",
+            Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
         }
     }
 }
@@ -125,12 +252,38 @@ fn stage_from_index(idx: usize) -> Stage {
         13 => Stage::FmpWorkerQueueWait,
         14 => Stage::TransportQueueWait,
         15 => Stage::EndpointEventWait,
+        16 => Stage::TransportPriorityQueueWait,
+        17 => Stage::TransportBulkQueueWait,
+        18 => Stage::EndpointPriorityEventWait,
+        19 => Stage::EndpointBulkEventWait,
+        20 => Stage::TransportChannelWait,
+        21 => Stage::TransportPriorityChannelWait,
+        22 => Stage::TransportBulkChannelWait,
+        23 => Stage::DecryptFallbackWait,
+        24 => Stage::DecryptFallbackPriorityWait,
+        25 => Stage::DecryptFallbackBulkWait,
+        26 => Stage::TransportRxLoopWait,
+        27 => Stage::TransportPriorityRxLoopWait,
+        28 => Stage::TransportBulkRxLoopWait,
+        29 => Stage::DecryptWorkerQueueWait,
+        30 => Stage::DecryptWorkerPriorityQueueWait,
+        31 => Stage::DecryptWorkerBulkQueueWait,
+        32 => Stage::EndpointPriorityCommandWait,
+        33 => Stage::EndpointBulkCommandWait,
+        34 => Stage::DecryptAuthenticatedSessionWait,
+        35 => Stage::DecryptAuthenticatedSessionPriorityWait,
+        36 => Stage::DecryptAuthenticatedSessionBulkWait,
+        37 => Stage::DecryptFspWorkerQueueWait,
+        38 => Stage::DecryptFspWorkerPriorityQueueWait,
+        39 => Stage::DecryptFspWorkerBulkQueueWait,
+        40 => Stage::FmpWorkerPriorityQueueWait,
+        41 => Stage::FmpWorkerBulkQueueWait,
         _ => unreachable!(),
     }
 }
 
 /// Count-only events that clarify which hot-path variant is active.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Event {
     UdpSendConnected = 0,
@@ -139,6 +292,65 @@ pub enum Event {
     ConnectedUdpInstalled = 3,
     ConnectedUdpActivationFailed = 4,
     UdpSendBackpressureSleep = 5,
+    ConnectedUdpPeerCapSkipped = 6,
+    EncryptWorkerQueueFull = 7,
+    EncryptWorkerBulkDropped = 8,
+    UdpSendBulkDropped = 9,
+    DecryptWorkerQueueFull = 10,
+    DecryptWorkerBulkDropped = 11,
+    DecryptWorkerRegisterFull = 12,
+    DecryptWorkerPriorityDropped = 13,
+    DecryptFallbackBulkDropped = 14,
+    DecryptFallbackPriorityDropped = 15,
+    PendingTunDestinationDropped = 16,
+    PendingTunPacketDropped = 17,
+    PendingEndpointDestinationDropped = 18,
+    PendingEndpointPacketDropped = 19,
+    ConnectedUdpFdBudgetSkipped = 20,
+    EndpointEventBacklogHigh = 21,
+    EndpointCommandBulkDropped = 22,
+    TransportChannelBacklogHigh = 23,
+    TransportBulkDropped = 24,
+    EndpointEventBulkDropped = 25,
+    ConnectedUdpDirectDecrypt = 26,
+    ConnectedUdpDirectDecryptMiss = 27,
+    DecryptFallbackBacklogHigh = 28,
+    RxLoopSlowMaintenanceTimeout = 29,
+    RxLoopSlowMaintenanceSkipped = 30,
+    DecryptFallbackPressureDrain = 31,
+    DecryptFallbackPriorityGated = 32,
+    DecryptFspPriorityQueueFullFallback = 33,
+    DecryptFspBulkQueueFullFallback = 34,
+    DecryptFspWorkerReplayDropped = 35,
+    DecryptAuthenticatedSessionPriorityDropped = 36,
+    DecryptAuthenticatedSessionBulkDropped = 37,
+    FmpWorkerBatchFlush = 38,
+    FmpWorkerBatchPackets = 39,
+    FmpWorkerBatchFull = 40,
+    FmpWorkerBatchSingle = 41,
+    FmpWorkerBatchPriorityPackets = 42,
+    FmpWorkerBatchBulkPackets = 43,
+    UdpSendGsoBatch = 44,
+    UdpSendGsoPackets = 45,
+    UdpSendSendmmsgBatch = 46,
+    UdpSendSendmmsgPackets = 47,
+    DecryptWorkerBatchFlush = 48,
+    DecryptWorkerBatchPackets = 49,
+    DecryptWorkerBatchFull = 50,
+    DecryptWorkerBatchSingle = 51,
+    DecryptWorkerBatchPriorityPackets = 52,
+    DecryptWorkerBatchBulkPackets = 53,
+    UdpSendGsoBatchGe32 = 54,
+    UdpSendGsoBatchGe48 = 55,
+    UdpSendGsoBatchEq64 = 56,
+    UdpSendSendmmsgBatchGe32 = 57,
+    UdpSendSendmmsgBatchGe48 = 58,
+    UdpSendSendmmsgBatchEq64 = 59,
+    FmpSendGroup = 60,
+    FmpSendGroupPackets = 61,
+    FmpSendGroupSingle = 62,
+    EncryptWorkerPriorityQueueFull = 63,
+    EncryptWorkerBulkQueueFull = 64,
 }
 
 impl Event {
@@ -150,6 +362,71 @@ impl Event {
             Event::ConnectedUdpInstalled => "connected_udp_installed",
             Event::ConnectedUdpActivationFailed => "connected_udp_activation_failed",
             Event::UdpSendBackpressureSleep => "udp_send_backpressure_sleep",
+            Event::ConnectedUdpPeerCapSkipped => "connected_udp_peer_cap_skipped",
+            Event::EncryptWorkerQueueFull => "encrypt_worker_queue_full",
+            Event::EncryptWorkerBulkDropped => "encrypt_worker_bulk_dropped",
+            Event::UdpSendBulkDropped => "udp_send_bulk_dropped",
+            Event::DecryptWorkerQueueFull => "decrypt_worker_queue_full",
+            Event::DecryptWorkerBulkDropped => "decrypt_worker_bulk_dropped",
+            Event::DecryptWorkerRegisterFull => "decrypt_worker_register_full",
+            Event::DecryptWorkerPriorityDropped => "decrypt_worker_priority_dropped",
+            Event::DecryptFallbackBulkDropped => "decrypt_fallback_bulk_dropped",
+            Event::DecryptFallbackPriorityDropped => "decrypt_fallback_priority_dropped",
+            Event::PendingTunDestinationDropped => "pending_tun_destination_dropped",
+            Event::PendingTunPacketDropped => "pending_tun_packet_dropped",
+            Event::PendingEndpointDestinationDropped => "pending_endpoint_destination_dropped",
+            Event::PendingEndpointPacketDropped => "pending_endpoint_packet_dropped",
+            Event::ConnectedUdpFdBudgetSkipped => "connected_udp_fd_budget_skipped",
+            Event::EndpointEventBacklogHigh => "endpoint_event_backlog_high",
+            Event::EndpointCommandBulkDropped => "endpoint_command_bulk_dropped",
+            Event::TransportChannelBacklogHigh => "transport_channel_backlog_high",
+            Event::TransportBulkDropped => "transport_bulk_dropped",
+            Event::EndpointEventBulkDropped => "endpoint_event_bulk_dropped",
+            Event::ConnectedUdpDirectDecrypt => "connected_udp_direct_decrypt",
+            Event::ConnectedUdpDirectDecryptMiss => "connected_udp_direct_decrypt_miss",
+            Event::DecryptFallbackBacklogHigh => "decrypt_fallback_backlog_high",
+            Event::RxLoopSlowMaintenanceTimeout => "rx_loop_slow_maintenance_timeout",
+            Event::RxLoopSlowMaintenanceSkipped => "rx_loop_slow_maintenance_skipped",
+            Event::DecryptFallbackPressureDrain => "decrypt_fallback_pressure_drain",
+            Event::DecryptFallbackPriorityGated => "decrypt_fallback_priority_gated",
+            Event::DecryptFspPriorityQueueFullFallback => {
+                "decrypt_fsp_priority_queue_full_fallback"
+            }
+            Event::DecryptFspBulkQueueFullFallback => "decrypt_fsp_bulk_queue_full_fallback",
+            Event::DecryptFspWorkerReplayDropped => "decrypt_fsp_worker_replay_dropped",
+            Event::DecryptAuthenticatedSessionPriorityDropped => {
+                "decrypt_authenticated_session_priority_dropped"
+            }
+            Event::DecryptAuthenticatedSessionBulkDropped => {
+                "decrypt_authenticated_session_bulk_dropped"
+            }
+            Event::FmpWorkerBatchFlush => "fmp_worker_batch_flush",
+            Event::FmpWorkerBatchPackets => "fmp_worker_batch_packets",
+            Event::FmpWorkerBatchFull => "fmp_worker_batch_full",
+            Event::FmpWorkerBatchSingle => "fmp_worker_batch_single",
+            Event::FmpWorkerBatchPriorityPackets => "fmp_worker_batch_priority_packets",
+            Event::FmpWorkerBatchBulkPackets => "fmp_worker_batch_bulk_packets",
+            Event::UdpSendGsoBatch => "udp_send_gso_batch",
+            Event::UdpSendGsoPackets => "udp_send_gso_packets",
+            Event::UdpSendSendmmsgBatch => "udp_send_sendmmsg_batch",
+            Event::UdpSendSendmmsgPackets => "udp_send_sendmmsg_packets",
+            Event::DecryptWorkerBatchFlush => "decrypt_worker_batch_flush",
+            Event::DecryptWorkerBatchPackets => "decrypt_worker_batch_packets",
+            Event::DecryptWorkerBatchFull => "decrypt_worker_batch_full",
+            Event::DecryptWorkerBatchSingle => "decrypt_worker_batch_single",
+            Event::DecryptWorkerBatchPriorityPackets => "decrypt_worker_batch_priority_packets",
+            Event::DecryptWorkerBatchBulkPackets => "decrypt_worker_batch_bulk_packets",
+            Event::UdpSendGsoBatchGe32 => "udp_send_gso_batch_ge32",
+            Event::UdpSendGsoBatchGe48 => "udp_send_gso_batch_ge48",
+            Event::UdpSendGsoBatchEq64 => "udp_send_gso_batch_eq64",
+            Event::UdpSendSendmmsgBatchGe32 => "udp_send_sendmmsg_batch_ge32",
+            Event::UdpSendSendmmsgBatchGe48 => "udp_send_sendmmsg_batch_ge48",
+            Event::UdpSendSendmmsgBatchEq64 => "udp_send_sendmmsg_batch_eq64",
+            Event::FmpSendGroup => "fmp_send_group",
+            Event::FmpSendGroupPackets => "fmp_send_group_packets",
+            Event::FmpSendGroupSingle => "fmp_send_group_single",
+            Event::EncryptWorkerPriorityQueueFull => "encrypt_worker_priority_queue_full",
+            Event::EncryptWorkerBulkQueueFull => "encrypt_worker_bulk_queue_full",
         }
     }
 }
@@ -162,6 +439,65 @@ fn event_from_index(idx: usize) -> Event {
         3 => Event::ConnectedUdpInstalled,
         4 => Event::ConnectedUdpActivationFailed,
         5 => Event::UdpSendBackpressureSleep,
+        6 => Event::ConnectedUdpPeerCapSkipped,
+        7 => Event::EncryptWorkerQueueFull,
+        8 => Event::EncryptWorkerBulkDropped,
+        9 => Event::UdpSendBulkDropped,
+        10 => Event::DecryptWorkerQueueFull,
+        11 => Event::DecryptWorkerBulkDropped,
+        12 => Event::DecryptWorkerRegisterFull,
+        13 => Event::DecryptWorkerPriorityDropped,
+        14 => Event::DecryptFallbackBulkDropped,
+        15 => Event::DecryptFallbackPriorityDropped,
+        16 => Event::PendingTunDestinationDropped,
+        17 => Event::PendingTunPacketDropped,
+        18 => Event::PendingEndpointDestinationDropped,
+        19 => Event::PendingEndpointPacketDropped,
+        20 => Event::ConnectedUdpFdBudgetSkipped,
+        21 => Event::EndpointEventBacklogHigh,
+        22 => Event::EndpointCommandBulkDropped,
+        23 => Event::TransportChannelBacklogHigh,
+        24 => Event::TransportBulkDropped,
+        25 => Event::EndpointEventBulkDropped,
+        26 => Event::ConnectedUdpDirectDecrypt,
+        27 => Event::ConnectedUdpDirectDecryptMiss,
+        28 => Event::DecryptFallbackBacklogHigh,
+        29 => Event::RxLoopSlowMaintenanceTimeout,
+        30 => Event::RxLoopSlowMaintenanceSkipped,
+        31 => Event::DecryptFallbackPressureDrain,
+        32 => Event::DecryptFallbackPriorityGated,
+        33 => Event::DecryptFspPriorityQueueFullFallback,
+        34 => Event::DecryptFspBulkQueueFullFallback,
+        35 => Event::DecryptFspWorkerReplayDropped,
+        36 => Event::DecryptAuthenticatedSessionPriorityDropped,
+        37 => Event::DecryptAuthenticatedSessionBulkDropped,
+        38 => Event::FmpWorkerBatchFlush,
+        39 => Event::FmpWorkerBatchPackets,
+        40 => Event::FmpWorkerBatchFull,
+        41 => Event::FmpWorkerBatchSingle,
+        42 => Event::FmpWorkerBatchPriorityPackets,
+        43 => Event::FmpWorkerBatchBulkPackets,
+        44 => Event::UdpSendGsoBatch,
+        45 => Event::UdpSendGsoPackets,
+        46 => Event::UdpSendSendmmsgBatch,
+        47 => Event::UdpSendSendmmsgPackets,
+        48 => Event::DecryptWorkerBatchFlush,
+        49 => Event::DecryptWorkerBatchPackets,
+        50 => Event::DecryptWorkerBatchFull,
+        51 => Event::DecryptWorkerBatchSingle,
+        52 => Event::DecryptWorkerBatchPriorityPackets,
+        53 => Event::DecryptWorkerBatchBulkPackets,
+        54 => Event::UdpSendGsoBatchGe32,
+        55 => Event::UdpSendGsoBatchGe48,
+        56 => Event::UdpSendGsoBatchEq64,
+        57 => Event::UdpSendSendmmsgBatchGe32,
+        58 => Event::UdpSendSendmmsgBatchGe48,
+        59 => Event::UdpSendSendmmsgBatchEq64,
+        60 => Event::FmpSendGroup,
+        61 => Event::FmpSendGroupPackets,
+        62 => Event::FmpSendGroupSingle,
+        63 => Event::EncryptWorkerPriorityQueueFull,
+        64 => Event::EncryptWorkerBulkQueueFull,
         _ => unreachable!(),
     }
 }
@@ -172,6 +508,39 @@ static MAX_NS: [AtomicU64; N_STAGES] = [const { AtomicU64::new(0) }; N_STAGES];
 static HIST: [AtomicU64; N_STAGES * HIST_BUCKETS] =
     [const { AtomicU64::new(0) }; N_STAGES * HIST_BUCKETS];
 static EVENTS: [AtomicU64; N_EVENTS] = [const { AtomicU64::new(0) }; N_EVENTS];
+static TRACE_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// Compact monotonic timestamp carried by packet/job queue handoffs.
+///
+/// `Instant` is 16 bytes on common targets. Hot-path packets and worker jobs
+/// only need elapsed time relative to this process, so store a non-zero
+/// nanosecond offset from one process-local epoch instead. `Option<TraceStamp>`
+/// stays 8 bytes thanks to `NonZeroU64`'s niche.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TraceStamp(NonZeroU64);
+
+impl TraceStamp {
+    fn now() -> Self {
+        let elapsed = trace_elapsed_ns().saturating_add(1).max(1);
+        Self(NonZeroU64::new(elapsed).unwrap_or(NonZeroU64::MAX))
+    }
+
+    fn elapsed_ns(self) -> u64 {
+        trace_elapsed_ns().saturating_sub(self.0.get().saturating_sub(1))
+    }
+}
+
+fn trace_epoch() -> Instant {
+    *TRACE_EPOCH.get_or_init(Instant::now)
+}
+
+fn trace_elapsed_ns() -> u64 {
+    Instant::now()
+        .saturating_duration_since(trace_epoch())
+        .as_nanos()
+        .min(u64::MAX as u128) as u64
+}
 
 /// True iff perf/pipeline tracing is enabled. Read once at startup so
 /// the per-packet check is a single cached load.
@@ -192,33 +561,81 @@ pub(crate) fn enabled() -> bool {
 /// `None` when tracing is disabled so callers can store it cheaply in
 /// packet/job structs without paying `Instant::now()` in production.
 #[inline]
-pub(crate) fn stamp() -> Option<Instant> {
+pub(crate) fn stamp() -> Option<TraceStamp> {
     if enabled() {
-        Some(Instant::now())
+        Some(TraceStamp::now())
     } else {
         None
     }
 }
 
-/// Record time elapsed since a previously captured stamp.
-#[inline]
-pub(crate) fn record_since(stage: Stage, start: Option<Instant>) {
-    if let Some(start) = start {
-        record(stage, start.elapsed().as_nanos() as u64);
-    }
+#[cfg(test)]
+pub(crate) fn test_stamp() -> TraceStamp {
+    TraceStamp::now()
 }
 
 /// Record `elapsed_ns` for the given stage. No-op when disabled.
 pub fn record(stage: Stage, elapsed_ns: u64) {
+    record_count(stage, elapsed_ns, 1);
+}
+
+/// Record `elapsed_ns` for `count` equivalent stage samples. No-op when disabled.
+pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
     if !enabled() {
         return;
     }
-    let idx = stage as usize;
+    if count == 0 {
+        return;
+    }
     let elapsed_ns = elapsed_ns.max(1);
-    TOTAL_NS[idx].fetch_add(elapsed_ns, Relaxed);
-    COUNT[idx].fetch_add(1, Relaxed);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(stage, elapsed_ns, count, bucket);
+}
+
+#[inline]
+fn record_count_sample(stage: Stage, elapsed_ns: u64, count: u64, bucket: usize) {
+    let idx = stage as usize;
+    TOTAL_NS[idx].fetch_add(elapsed_ns.saturating_mul(count), Relaxed);
     MAX_NS[idx].fetch_max(elapsed_ns, Relaxed);
-    HIST[(idx * HIST_BUCKETS) + bucket_for_ns(elapsed_ns)].fetch_add(1, Relaxed);
+    HIST[(idx * HIST_BUCKETS) + bucket].fetch_add(count, Relaxed);
+    COUNT[idx].fetch_add(count, Release);
+}
+
+/// Record one queue wait into aggregate + priority/bulk split counters.
+///
+/// Queue waits are among the hottest tracing points. Compute elapsed time and
+/// histogram bucket once per observed handoff, then fan the same sample into
+/// aggregate and lane counters.
+#[inline]
+pub(crate) fn record_since_split_count(
+    total_stage: Stage,
+    priority_stage: Stage,
+    bulk_stage: Stage,
+    start: Option<TraceStamp>,
+    total_count: u64,
+    priority_count: u64,
+    bulk_count: u64,
+) {
+    debug_assert_eq!(
+        priority_count.saturating_add(bulk_count),
+        total_count,
+        "queue wait split counts should add up to the aggregate count"
+    );
+    if !enabled() || total_count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(total_stage, elapsed_ns, total_count, bucket);
+    if priority_count > 0 {
+        record_count_sample(priority_stage, elapsed_ns, priority_count, bucket);
+    }
+    if bulk_count > 0 {
+        record_count_sample(bulk_stage, elapsed_ns, bulk_count, bucket);
+    }
 }
 
 #[inline]
@@ -230,6 +647,188 @@ pub fn record_event_count(event: Event, count: u64) {
     if !enabled() || count == 0 {
         return;
     }
+    record_event_count_sample(event, count);
+}
+
+#[inline]
+pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
+    record_event(Event::EncryptWorkerQueueFull);
+    record_event(if priority {
+        Event::EncryptWorkerPriorityQueueFull
+    } else {
+        Event::EncryptWorkerBulkQueueFull
+    });
+}
+
+/// Record how much work an FMP encrypt worker drained before one flush.
+///
+/// These count-only metrics make `fmp_worker_*_queue_wait` easier to interpret:
+/// full batches point at a saturated worker/send path, frequent single batches
+/// point at wakeup or producer cadence rather than backlog, and lane packet
+/// counts show whether a hot turn was bulk-dominated or carrying priority work.
+#[inline]
+pub(crate) fn record_fmp_worker_batch(
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+    max_batch: usize,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        packets,
+        priority_packets.saturating_add(bulk_packets),
+        "FMP worker batch lane counts should cover every packet"
+    );
+    record_event_count_sample(Event::FmpWorkerBatchFlush, 1);
+    record_event_count_sample(Event::FmpWorkerBatchPackets, packets as u64);
+    record_event_count_sample(
+        Event::FmpWorkerBatchPriorityPackets,
+        priority_packets as u64,
+    );
+    record_event_count_sample(Event::FmpWorkerBatchBulkPackets, bulk_packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::FmpWorkerBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::FmpWorkerBatchSingle, 1);
+    }
+}
+
+/// Record how the worker's drained packet batch was split into adjacent
+/// send-target groups before Linux GSO/sendmmsg or direct sends.
+///
+/// This sits between producer batch metrics and UDP syscall batch metrics:
+/// if worker batches are wide but selected send groups are tiny, the packet
+/// mover is preserving dequeue order across mixed targets/policies rather than
+/// handing the kernel one large contiguous flow-shaped group.
+#[inline]
+pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_groups: usize) {
+    if !enabled() || groups == 0 || packets == 0 {
+        return;
+    }
+    debug_assert!(
+        single_groups <= groups,
+        "single-packet send groups cannot exceed total groups"
+    );
+    record_event_count_sample(Event::FmpSendGroup, groups as u64);
+    record_event_count_sample(Event::FmpSendGroupPackets, packets as u64);
+    if single_groups > 0 {
+        record_event_count_sample(Event::FmpSendGroupSingle, single_groups as u64);
+    }
+}
+
+/// Record how much packet work a decrypt worker handled before yielding.
+///
+/// Mirroring the FMP worker batch counters makes `decrypt_worker_*_queue_wait`
+/// easier to interpret in stressed runs: full turns imply a saturated worker,
+/// single turns point at wakeup/producer cadence, and lane packet counts show
+/// whether priority traffic is still getting mixed in under bulk pressure.
+#[inline]
+pub(crate) fn record_decrypt_worker_batch(
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+    max_batch: usize,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        packets,
+        priority_packets.saturating_add(bulk_packets),
+        "decrypt worker batch lane counts should cover every packet"
+    );
+    record_event_count_sample(Event::DecryptWorkerBatchFlush, 1);
+    record_event_count_sample(Event::DecryptWorkerBatchPackets, packets as u64);
+    record_event_count_sample(
+        Event::DecryptWorkerBatchPriorityPackets,
+        priority_packets as u64,
+    );
+    record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, bulk_packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::DecryptWorkerBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
+    }
+}
+
+/// Record which Linux UDP batch primitive actually submitted packets.
+///
+/// FMP worker batch metrics expose producer-side fullness; these counters
+/// expose whether the send side turned that work into UDP_GSO super-skbs or
+/// fell back to plain `sendmmsg(2)` batches.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_send_gso_batch(packets: usize) {
+    record_udp_send_batch(Event::UdpSendGsoBatch, Event::UdpSendGsoPackets, packets);
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendGsoBatchGe32,
+        Event::UdpSendGsoBatchGe48,
+        Event::UdpSendGsoBatchEq64,
+    );
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_udp_send_sendmmsg_batch(packets: usize) {
+    record_udp_send_batch(
+        Event::UdpSendSendmmsgBatch,
+        Event::UdpSendSendmmsgPackets,
+        packets,
+    );
+    record_udp_send_batch_tail_buckets(
+        packets,
+        Event::UdpSendSendmmsgBatchGe32,
+        Event::UdpSendSendmmsgBatchGe48,
+        Event::UdpSendSendmmsgBatchEq64,
+    );
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn record_udp_send_batch(batch_event: Event, packet_event: Event, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(batch_event, 1);
+    record_event_count_sample(packet_event, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn record_udp_send_batch_tail_buckets(
+    packets: usize,
+    ge32_event: Event,
+    ge48_event: Event,
+    eq64_event: Event,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    let (ge32, ge48, eq64) = udp_send_batch_tail_bucket_flags(packets);
+    if ge32 {
+        record_event_count_sample(ge32_event, 1);
+    }
+    if ge48 {
+        record_event_count_sample(ge48_event, 1);
+    }
+    if eq64 {
+        record_event_count_sample(eq64_event, 1);
+    }
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+fn udp_send_batch_tail_bucket_flags(packets: usize) -> (bool, bool, bool) {
+    (packets >= 32, packets >= 48, packets >= 64)
+}
+
+#[inline]
+fn record_event_count_sample(event: Event, count: u64) {
     EVENTS[event as usize].fetch_add(count, Relaxed);
 }
 
@@ -290,10 +889,13 @@ pub fn maybe_spawn_reporter() {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let mut line = format!("[pipe {}s]", interval);
             for i in 0..N_STAGES {
-                let t = TOTAL_NS[i].load(Relaxed);
-                let c = COUNT[i].load(Relaxed);
-                let dt = t.saturating_sub(prev_total[i]);
+                let c = COUNT[i].load(Acquire);
                 let dc = c.saturating_sub(prev_count[i]);
+                if dc == 0 {
+                    continue;
+                }
+                let t = TOTAL_NS[i].load(Relaxed);
+                let dt = t.saturating_sub(prev_total[i]);
                 prev_total[i] = t;
                 prev_count[i] = c;
 
@@ -305,12 +907,9 @@ pub fn maybe_spawn_reporter() {
                     *delta = current.saturating_sub(prev_hist[idx]);
                     prev_hist[idx] = current;
                 }
-                if dc == 0 {
-                    continue;
-                }
                 let stage = stage_from_index(i);
                 let avg_ns = if dc > 0 { dt / dc } else { 0 };
-                let pps = if interval > 0 { dc / interval } else { 0 };
+                let rate_per_sec = fmt_rate_per_sec(dc, interval);
                 let p50 = percentile_ns(&hist_delta, dc, 50);
                 let p95 = percentile_ns(&hist_delta, dc, 95);
                 let p99 = percentile_ns(&hist_delta, dc, 99);
@@ -319,7 +918,7 @@ pub fn maybe_spawn_reporter() {
                 line.push_str(&format!(
                     " {}={}/s avg={} p50<={} p95<={} p99<={} max<={} allmax={}",
                     stage.name(),
-                    pps,
+                    rate_per_sec,
                     fmt_ns(avg_ns),
                     fmt_ns(p50),
                     fmt_ns(p95),
@@ -336,8 +935,13 @@ pub fn maybe_spawn_reporter() {
                     continue;
                 }
                 let event = event_from_index(i);
-                let per_sec = delta / interval;
-                line.push_str(&format!(" {}={}/s", event.name(), per_sec));
+                let rate_per_sec = fmt_rate_per_sec(delta, interval);
+                line.push_str(&format!(
+                    " {}={}/s total={}",
+                    event.name(),
+                    rate_per_sec,
+                    current
+                ));
             }
             // eprintln so it always lands regardless of RUST_LOG.
             eprintln!("{}", line);
@@ -363,6 +967,8 @@ fn bucket_upper_ns(bucket: usize) -> u64 {
 }
 
 fn percentile_ns(hist_delta: &[u64; HIST_BUCKETS], total: u64, pct: u64) -> u64 {
+    let observed_total = hist_delta.iter().copied().sum::<u64>();
+    let total = total.min(observed_total);
     if total == 0 {
         return 0;
     }
@@ -374,7 +980,7 @@ fn percentile_ns(hist_delta: &[u64; HIST_BUCKETS], total: u64, pct: u64) -> u64 
             return bucket_upper_ns(idx);
         }
     }
-    bucket_upper_ns(HIST_BUCKETS - 1)
+    interval_max_ns(hist_delta)
 }
 
 fn interval_max_ns(hist_delta: &[u64; HIST_BUCKETS]) -> u64 {
@@ -386,14 +992,5 @@ fn interval_max_ns(hist_delta: &[u64; HIST_BUCKETS]) -> u64 {
     0
 }
 
-fn fmt_ns(ns: u64) -> String {
-    if ns >= 1_000_000_000 {
-        format!("{:.1}s", ns as f64 / 1_000_000_000.0)
-    } else if ns >= 1_000_000 {
-        format!("{:.1}ms", ns as f64 / 1_000_000.0)
-    } else if ns >= 1_000 {
-        format!("{:.1}us", ns as f64 / 1_000.0)
-    } else {
-        format!("{ns}ns")
-    }
-}
+#[cfg(test)]
+mod tests;

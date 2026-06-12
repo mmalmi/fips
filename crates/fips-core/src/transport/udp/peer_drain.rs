@@ -21,7 +21,7 @@
 
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use super::super::{ReceivedPacket, TransportAddr, TransportId};
+use super::super::{ReceivedPacket, TransportAddr, TransportId, received_timestamp_ms};
 use super::PacketTx;
 use super::connected_peer::ConnectedPeerSocket;
 use crate::discovery::is_punch_packet;
@@ -31,6 +31,22 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, trace, warn};
+
+pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
+    fn batcher(&self) -> Box<dyn ConnectedUdpPacketFastPathBatcher>;
+}
+
+pub(crate) trait ConnectedUdpPacketFastPathBatcher {
+    fn try_dispatch(
+        &mut self,
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        packet_data: Vec<u8>,
+        timestamp_ms: u64,
+    ) -> Result<(), Vec<u8>>;
+
+    fn flush(&mut self);
+}
 
 /// Handle to a running per-peer drain thread. Drops the thread (and
 /// closes its self-pipe) on drop; the thread exits next time it
@@ -63,6 +79,7 @@ impl PeerRecvDrain {
         transport_id: TransportId,
         peer_addr: SocketAddr,
         packet_tx: PacketTx,
+        fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     ) -> io::Result<Self> {
         // Self-pipe for shutdown signaling. The drain thread polls
         // (socket_fd | pipe_rx) so a write to pipe_tx wakes it.
@@ -80,6 +97,7 @@ impl PeerRecvDrain {
                     transport_id,
                     peer_addr,
                     packet_tx,
+                    fast_path,
                     pipe_rx,
                     stop_clone,
                 );
@@ -144,6 +162,7 @@ fn drain_loop(
     transport_id: TransportId,
     peer_addr: SocketAddr,
     packet_tx: PacketTx,
+    fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     stop_pipe_rx: RawFd,
     stop: Arc<AtomicBool>,
 ) {
@@ -154,11 +173,14 @@ fn drain_loop(
         "fips-peer-drain: starting"
     );
 
-    const BATCH: usize = 32;
+    const BATCH: usize = super::UDP_RECV_BATCH_SIZE;
     const BUF_SIZE: usize = 1600; // covers any practical FIPS MTU.
-    let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| vec![0u8; BUF_SIZE]).collect();
+    let mut backing: Vec<Vec<u8>> = (0..BATCH)
+        .map(|_| super::fresh_recv_buffer(BUF_SIZE))
+        .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
+    let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
 
     loop {
         if stop.load(Ordering::Acquire) {
@@ -233,30 +255,52 @@ fn drain_loop(
             }
         };
 
+        let timestamp_ms = received_timestamp_ms();
+        let trace_enqueued_at = crate::perf_profile::stamp();
+        let mut packets = Vec::with_capacity(count);
         for i in 0..count {
             let len = lens[i];
             if len == 0 {
+                super::reset_recv_buffer(&mut backing[i]);
                 continue;
             }
-            // Move the filled buffer out, refill the slot with a
-            // fresh one. Same zero-copy pattern the wildcard listen
-            // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
-            let mut data = std::mem::replace(&mut backing[i], vec![0u8; BUF_SIZE]);
-            data.truncate(len);
-            if is_punch_packet(&data) {
+            if is_punch_packet(&backing[i][..len]) {
                 trace!(
                     transport_id = %transport_id,
                     peer_addr = %peer_addr,
                     bytes = len,
                     "fips-peer-drain: dropping stray punch probe/ack"
                 );
+                super::reset_recv_buffer(&mut backing[i]);
                 continue;
             }
-            let packet = ReceivedPacket::new(transport_id, packet_addr.clone(), data);
-            if packet_tx.send(packet).is_err() {
-                trace!("fips-peer-drain: packet channel closed; exiting");
-                return;
+            // Move the filled buffer out, refill the slot with a
+            // fresh one. Same zero-copy pattern the wildcard listen
+            // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
+            let mut data = std::mem::replace(&mut backing[i], super::fresh_recv_buffer(BUF_SIZE));
+            data.truncate(len);
+            if let Some(fast_path) = fast_path_batcher.as_mut() {
+                match fast_path.try_dispatch(transport_id, packet_addr.clone(), data, timestamp_ms)
+                {
+                    Ok(()) => continue,
+                    Err(returned) => data = returned,
+                }
             }
+            let packet = ReceivedPacket::with_trace_timestamp(
+                transport_id,
+                packet_addr.clone(),
+                data,
+                timestamp_ms,
+                trace_enqueued_at,
+            );
+            packets.push(packet);
+        }
+        if let Some(fast_path) = fast_path_batcher.as_mut() {
+            fast_path.flush();
+        }
+        if !packets.is_empty() && packet_tx.send_batch(packets).is_err() {
+            trace!("fips-peer-drain: packet channel closed; exiting");
+            return;
         }
     }
 
@@ -360,7 +404,7 @@ fn drain_packets(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::
 /// kernel-wide UDP socket-buffer accounting already).
 #[cfg(target_os = "linux")]
 fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Result<usize> {
-    const BATCH: usize = 32;
+    const BATCH: usize = super::UDP_RECV_BATCH_SIZE;
     let n = backing.len().min(lens.len()).min(BATCH);
     if n == 0 {
         return Ok(0);
@@ -370,8 +414,16 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
     let mut storages: [libc::sockaddr_storage; BATCH] = unsafe { std::mem::zeroed() };
     let mut msgs: [libc::mmsghdr; BATCH] = unsafe { std::mem::zeroed() };
     for i in 0..n {
-        iovs[i].iov_base = backing[i].as_mut_ptr() as *mut libc::c_void;
-        iovs[i].iov_len = backing[i].len();
+        backing[i].clear();
+        let spare = backing[i].spare_capacity_mut();
+        if spare.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UDP receive buffer has no spare capacity",
+            ));
+        }
+        iovs[i].iov_base = spare.as_mut_ptr() as *mut libc::c_void;
+        iovs[i].iov_len = spare.len();
         msgs[i].msg_hdr.msg_name = &mut storages[i] as *mut _ as *mut libc::c_void;
         msgs[i].msg_hdr.msg_namelen =
             std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -397,7 +449,20 @@ fn recvmmsg_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io:
     }
     let count = r as usize;
     for i in 0..count {
-        lens[i] = msgs[i].msg_len as usize;
+        let len = msgs[i].msg_len as usize;
+        if len > backing[i].capacity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recvmmsg reported a datagram larger than the receive buffer",
+            ));
+        }
+        // SAFETY: `recvmmsg` wrote `len` initialized bytes into
+        // `backing[i]`'s spare capacity through the iovec above, and
+        // `len <= capacity` was checked before extending the Vec.
+        unsafe {
+            backing[i].set_len(len);
+        }
+        lens[i] = len;
     }
     Ok(count)
 }
@@ -438,9 +503,51 @@ fn recv_drain(fd: RawFd, backing: &mut [Vec<u8>], lens: &mut [usize]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::packet_channel;
     use std::net::UdpSocket;
+    use std::sync::mpsc;
     use std::time::Duration;
-    use tokio::sync::mpsc;
+
+    struct RecordingFastPath {
+        flushed_tx: mpsc::Sender<Vec<Vec<u8>>>,
+    }
+
+    struct RecordingFastPathBatcher {
+        pending: Vec<Vec<u8>>,
+        flushed_tx: mpsc::Sender<Vec<Vec<u8>>>,
+    }
+
+    impl ConnectedUdpPacketFastPath for RecordingFastPath {
+        fn batcher(&self) -> Box<dyn ConnectedUdpPacketFastPathBatcher> {
+            Box::new(RecordingFastPathBatcher {
+                pending: Vec::new(),
+                flushed_tx: self.flushed_tx.clone(),
+            })
+        }
+    }
+
+    impl ConnectedUdpPacketFastPathBatcher for RecordingFastPathBatcher {
+        fn try_dispatch(
+            &mut self,
+            _transport_id: TransportId,
+            _remote_addr: TransportAddr,
+            packet_data: Vec<u8>,
+            _timestamp_ms: u64,
+        ) -> Result<(), Vec<u8>> {
+            self.pending.push(packet_data);
+            Ok(())
+        }
+
+        fn flush(&mut self) {
+            if self.pending.is_empty() {
+                return;
+            }
+            let packets = std::mem::take(&mut self.pending);
+            self.flushed_tx
+                .send(packets)
+                .expect("recording fast path receiver should stay alive");
+        }
+    }
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread
     /// on it, send packets at it from a remote, verify they land in
@@ -460,7 +567,7 @@ mod tests {
         );
 
         // packet_tx for the drain thread to push into.
-        let (tx, mut rx) = mpsc::unbounded_channel::<ReceivedPacket>();
+        let (tx, mut rx) = packet_channel(32);
         let transport_id = TransportId::new(42);
 
         // Find out what local_addr the kernel assigned to our socket
@@ -491,7 +598,7 @@ mod tests {
         };
 
         // Spawn the drain.
-        let _drain = PeerRecvDrain::spawn(socket.clone(), transport_id, peer_addr, tx)
+        let _drain = PeerRecvDrain::spawn(socket.clone(), transport_id, peer_addr, tx, None)
             .expect("PeerRecvDrain::spawn");
 
         // Send a couple of packets from the peer to our socket.
@@ -515,6 +622,70 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drain_flushes_connected_udp_fast_path_batches() {
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        let peer_addr = peer.local_addr().expect("peer local_addr");
+        let local_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let socket = Arc::new(
+            ConnectedPeerSocket::open(local_addr, peer_addr, 1 << 20, 1 << 20)
+                .expect("ConnectedPeerSocket::open"),
+        );
+        let our_local_addr: SocketAddr = {
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            let r = unsafe {
+                libc::getsockname(
+                    socket.as_raw_fd(),
+                    &mut storage as *mut _ as *mut libc::sockaddr,
+                    &mut len,
+                )
+            };
+            assert!(r >= 0, "getsockname failed");
+            assert_eq!(
+                storage.ss_family as i32,
+                libc::AF_INET,
+                "test assumes IPv4 loopback"
+            );
+            let sin: &libc::sockaddr_in =
+                unsafe { &*(&storage as *const _ as *const libc::sockaddr_in) };
+            let port = u16::from_be(sin.sin_port);
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            SocketAddr::from((ip, port))
+        };
+
+        let (flushed_tx, flushed_rx) = mpsc::channel();
+        let fast_path = Arc::new(RecordingFastPath { flushed_tx });
+        let (tx, mut rx) = packet_channel(32);
+        let _drain =
+            PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx, Some(fast_path))
+                .expect("PeerRecvDrain::spawn");
+
+        for i in 0u8..5 {
+            let payload = [i, 0xDD, 0xEE, 0xFF];
+            peer.send_to(&payload, our_local_addr).expect("peer sendto");
+        }
+
+        let mut observed = Vec::new();
+        while observed.len() < 5 {
+            let batch = flushed_rx
+                .recv_timeout(Duration::from_millis(500))
+                .expect("timeout waiting for fast-path batch flush");
+            observed.extend(batch);
+        }
+
+        assert_eq!(observed.len(), 5);
+        for (i, packet) in observed.iter().enumerate() {
+            assert_eq!(packet, &[i as u8, 0xDD, 0xEE, 0xFF]);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "fast-path-consumed packets must not also enter PacketRx"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_idle_drain_returns_promptly() {
         let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
         let peer_addr = peer.local_addr().expect("peer local_addr");
@@ -522,8 +693,8 @@ mod tests {
             ConnectedPeerSocket::open("127.0.0.1:0".parse().unwrap(), peer_addr, 1 << 20, 1 << 20)
                 .expect("ConnectedPeerSocket::open"),
         );
-        let (tx, _rx) = mpsc::unbounded_channel::<ReceivedPacket>();
-        let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx)
+        let (tx, _rx) = packet_channel(32);
+        let drain = PeerRecvDrain::spawn(socket, TransportId::new(42), peer_addr, tx, None)
             .expect("PeerRecvDrain::spawn");
 
         let started = std::time::Instant::now();

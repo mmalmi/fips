@@ -18,21 +18,22 @@ impl Node {
     /// maintenance traffic on established sessions). Two predicates cover
     /// "established peer at this transport+addr":
     ///
-    /// 1. `addr_to_link` has an entry for `(transport_id, remote_addr)`.
-    ///    This is the fast path and matches when the peer registered with
-    ///    the same `TransportAddr` form we observe on inbound packets
-    ///    (e.g., both numeric when peer config uses a numeric IP).
+    /// 1. The link registry has an address-index entry for
+    ///    `(transport_id, remote_addr)`. This is the fast path and matches
+    ///    when the peer registered with the same `TransportAddr` form we
+    ///    observe on inbound packets (e.g., both numeric when peer config uses
+    ///    a numeric IP).
     ///
     /// 2. An active peer's `current_addr()` matches `(transport_id,
     ///    remote_addr)`. `current_addr` is updated from inbound encrypted-
     ///    frame source addrs (always numeric `SocketAddr`-form), so this
-    ///    catches established peers whose `addr_to_link` key is hostname-
-    ///    form (because `initiate_connection` populated it from a
-    ///    hostname-bearing peer config) while inbound rekey msg1 arrives
-    ///    in numeric form. Without this second predicate, the carve-out
-    ///    misses any deployment that combines a hostname-based peer config
-    ///    with `udp.accept_connections: false` or `udp.outbound_only: true`
-    ///    (the production trigger for the 2026-04-30 bug).
+    ///    catches established peers whose address-index key is hostname-form
+    ///    (because `initiate_connection` populated it from a hostname-bearing
+    ///    peer config) while inbound rekey msg1 arrives in numeric form.
+    ///    Without this second predicate, the carve-out misses any deployment
+    ///    that combines a hostname-based peer config with
+    ///    `udp.accept_connections: false` or `udp.outbound_only: true` (the
+    ///    production trigger for the 2026-04-30 bug).
     ///
     /// Otherwise the transport's `accept_connections` config decides;
     /// absence of a registered transport admits (no gate to apply).
@@ -42,8 +43,8 @@ impl Node {
         remote_addr: &crate::transport::TransportAddr,
     ) -> bool {
         if self
-            .addr_to_link
-            .contains_key(&(transport_id, remote_addr.clone()))
+            .links
+            .contains_addr(&(transport_id, remote_addr.clone()))
         {
             return true;
         }
@@ -114,9 +115,10 @@ impl Node {
         // Epoch-based restart detection: if the sender already has an inbound
         // link AND is an active peer in self.peers, fall through to decrypt
         // the msg1 and check the epoch. Otherwise, treat as duplicate.
-        let addr_key = (packet.transport_id, packet.remote_addr.clone());
         let mut possible_restart = false;
-        if let Some(&existing_link_id) = self.addr_to_link.get(&addr_key)
+        if let Some(existing_link_id) = self
+            .links
+            .lookup_addr(packet.transport_id, &packet.remote_addr)
             && let Some(link) = self.links.get(&existing_link_id)
         {
             if link.direction() == LinkDirection::Inbound {
@@ -212,15 +214,16 @@ impl Node {
         let peer_node_addr = *peer_identity.node_addr();
 
         // Identity-based restart/rekey detection: if the peer is already
-        // active but addr_to_link didn't match (different source address, e.g.,
-        // TCP from a different port), we still need to check for restart/rekey.
+        // active but address-index dispatch didn't match (different source
+        // address, e.g., TCP from a different port), we still need to check
+        // for restart/rekey.
         if !possible_restart && self.peers.contains_key(&peer_node_addr) {
             possible_restart = true;
         }
 
         if self.max_peers > 0 && self.peers.len() >= self.max_peers {
             let is_known_active = self.peers.contains_key(&peer_node_addr);
-            let is_pending_outbound = self.connections.iter().any(|(_, conn)| {
+            let is_pending_outbound = self.peers.connection_iter().any(|(_, conn)| {
                 conn.expected_identity()
                     .map(|id| *id.node_addr() == peer_node_addr)
                     .unwrap_or(false)
@@ -238,7 +241,7 @@ impl Node {
 
         // Epoch-based restart detection and duplicate msg1 handling.
         //
-        // If we fell through from the addr_to_link check above with
+        // If we fell through from the address-index check above with
         // possible_restart=true, we now have the decrypted epoch from msg1.
         // Compare it against the stored epoch for this peer.
         if possible_restart && let Some(existing_peer) = self.peers.get(&peer_node_addr) {
@@ -281,7 +284,7 @@ impl Node {
                                 peer = %self.peer_display_name(&peer_node_addr),
                                 "Rekey msg1 received but already have pending session, dropping"
                             );
-                            self.connections.remove(&link_id);
+                            self.peers.remove_connection(&link_id);
                             self.links.remove(&link_id);
                             self.msg1_rate_limiter.complete_handshake();
                             return;
@@ -300,7 +303,7 @@ impl Node {
                                     peer = %self.peer_display_name(&peer_node_addr),
                                     "Dual rekey initiation: we win (smaller addr), dropping their msg1"
                                 );
-                                self.connections.remove(&link_id);
+                                self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
@@ -368,28 +371,34 @@ impl Node {
                             }
                         }
 
-                        // Store pending session on the existing peer
-                        if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                            peer.set_pending_session(
-                                noise_session,
-                                our_new_index,
-                                header.sender_idx,
-                                false,
+                        let Some(registered) = self.peers.install_pending_rekey_session_and_index(
+                            &peer_node_addr,
+                            noise_session,
+                            our_new_index,
+                            header.sender_idx,
+                            false,
+                            None,
+                        ) else {
+                            warn!(
+                                peer = %self.peer_display_name(&peer_node_addr),
+                                "Could not install responder pending rekey session"
                             );
-                            peer.record_peer_rekey();
-                        }
-
-                        // Register new index in peers_by_index
-                        self.peers_by_index.insert(
-                            (packet.transport_id, our_new_index.as_u32()),
-                            peer_node_addr,
+                            let _ = self.index_allocator.free(our_new_index);
+                            self.peers.remove_connection(&link_id);
+                            self.links.remove(&link_id);
+                            self.msg1_rate_limiter.complete_handshake();
+                            return;
+                        };
+                        self.log_registered_peer_session_index_result(
+                            &peer_node_addr,
+                            &registered,
+                            "responder_pending_rekey",
                         );
 
-                        // Clean up: remove the temporary connection/link we created.
-                        // Do NOT remove addr_to_link — the entry must remain pointing
-                        // to the original link so future msg1s from this address are
-                        // recognized as rekeys (not new connections).
-                        self.connections.remove(&link_id);
+                        // Clean up any temporary connection/link state from this path.
+                        // The active peer's link registry entry must keep recognizing
+                        // future msg1s from this address as rekeys, not new connections.
+                        self.peers.remove_connection(&link_id);
                         self.links.remove(&link_id);
 
                         self.msg1_rate_limiter.complete_handshake();
@@ -459,12 +468,11 @@ impl Node {
         );
 
         self.links.insert(link_id, link);
-        self.addr_to_link.insert(addr_key, link_id);
-        self.connections.insert(link_id, conn);
+        self.peers.insert_connection(link_id, conn);
 
         // Build and send msg2 response, storing for potential resend
         let wire_msg2 = build_msg2(our_index, header.sender_idx, &msg2_response);
-        if let Some(conn) = self.connections.get_mut(&link_id) {
+        if let Some(conn) = self.peers.get_connection_mut(&link_id) {
             conn.set_handshake_msg2(wire_msg2.clone());
         }
 
@@ -486,10 +494,8 @@ impl Node {
                         "Failed to send msg2"
                     );
                     // Clean up on failure
-                    self.connections.remove(&link_id);
+                    self.peers.remove_connection(&link_id);
                     self.links.remove(&link_id);
-                    self.addr_to_link
-                        .remove(&(packet.transport_id, packet.remote_addr));
                     let _ = self.index_allocator.free(our_index);
                     self.msg1_rate_limiter.complete_handshake();
                     return;
@@ -560,8 +566,8 @@ impl Node {
                         }
                         // This connection lost — clean up its link
                         self.remove_link(&link_id);
-                        // Restore addr_to_link for the winner's link
-                        self.addr_to_link.insert(
+                        // Restore address dispatch for the winner's link
+                        self.links.insert_addr(
                             (packet.transport_id, packet.remote_addr.clone()),
                             winner_link_id,
                         );
@@ -593,7 +599,7 @@ impl Node {
     /// (if already promoted).
     fn find_stored_msg2(&self, link_id: LinkId) -> Option<Vec<u8>> {
         // Check pending connection first
-        if let Some(conn) = self.connections.get(&link_id)
+        if let Some(conn) = self.peers.get_connection(&link_id)
             && let Some(msg2) = conn.handshake_msg2()
         {
             return Some(msg2.to_vec());
@@ -608,899 +614,7 @@ impl Node {
         }
         None
     }
-
-    /// Handle handshake message 2 (phase 0x2).
-    ///
-    /// This completes an outbound handshake we initiated.
-    pub(in crate::node) async fn handle_msg2(&mut self, packet: ReceivedPacket) {
-        // Parse header
-        let header = match Msg2Header::parse(&packet.data) {
-            Some(h) => h,
-            None => {
-                debug!("Invalid msg2 header");
-                return;
-            }
-        };
-
-        // Look up our pending handshake by our sender_idx (receiver_idx in msg2).
-        //
-        // The sender index is allocated globally, but older code also keyed
-        // the lookup by the receive-side transport id. That is normally the
-        // same transport we used for msg1, but UDP replies can surface through
-        // an equivalent/adopted transport id after NAT traversal or local
-        // socket changes. In that case the index is still authoritative; only
-        // fall back when it names a single pending outbound handshake.
-        let exact_key = (packet.transport_id, header.receiver_idx.as_u32());
-        let (key, link_id) = match self.pending_outbound.get(&exact_key).copied() {
-            Some(id) => (exact_key, id),
-            None => {
-                let mut matches = self
-                    .pending_outbound
-                    .iter()
-                    .filter(|((_, idx), _)| *idx == header.receiver_idx.as_u32());
-                match (matches.next(), matches.next()) {
-                    (Some((fallback_key, id)), None) => {
-                        debug!(
-                            receiver_idx = %header.receiver_idx,
-                            received_transport_id = %packet.transport_id,
-                            pending_transport_id = %fallback_key.0,
-                            "Matched pending outbound handshake by sender index across transport ids"
-                        );
-                        (*fallback_key, *id)
-                    }
-                    _ => {
-                        debug!(
-                            receiver_idx = %header.receiver_idx,
-                            transport_id = %packet.transport_id,
-                            "No pending outbound handshake for index"
-                        );
-                        return;
-                    }
-                }
-            }
-        };
-
-        // Check if this is a rekey msg2: the handshake state is on the
-        // ActivePeer (not a PeerConnection), so self.connections won't have it.
-        // Look for a peer with matching rekey_our_index.
-        if !self.connections.contains_key(&link_id) {
-            let noise_msg2 = &packet.data[header.noise_msg2_offset..];
-
-            // Find peer with rekey in progress for this index
-            let peer_addr = self.peers.iter().find_map(|(addr, peer)| {
-                if peer.rekey_in_progress() && peer.rekey_our_index() == Some(header.receiver_idx) {
-                    Some(*addr)
-                } else {
-                    None
-                }
-            });
-
-            if let Some(peer_node_addr) = peer_addr {
-                let display_name = self.peer_display_name(&peer_node_addr);
-
-                // Complete the rekey handshake on the ActivePeer
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                    match peer.complete_rekey_msg2(noise_msg2) {
-                        Ok((session, remote_epoch)) => {
-                            let our_index = peer.rekey_our_index().unwrap_or(header.receiver_idx);
-                            let remote_epoch_changed = matches!(
-                                (peer.remote_epoch(), remote_epoch),
-                                (Some(old), Some(new)) if old != new
-                            );
-                            if remote_epoch.is_some() {
-                                peer.set_remote_epoch(remote_epoch);
-                            }
-                            peer.set_pending_session(session, our_index, header.sender_idx, true);
-
-                            if let Some(transport_id) = peer.transport_id() {
-                                self.peers_by_index
-                                    .insert((transport_id, our_index.as_u32()), peer_node_addr);
-                            }
-
-                            if remote_epoch_changed {
-                                if self.sessions.remove(&peer_node_addr).is_some() {
-                                    debug!(
-                                        peer = %display_name,
-                                        "Cleared stale FSP session after peer restart during FMP rekey"
-                                    );
-                                }
-                                info!(
-                                    peer = %display_name,
-                                    "Peer restart detected during FMP rekey, replacing stale endpoint session"
-                                );
-                            }
-
-                            debug!(
-                                peer = %display_name,
-                                new_our_index = %our_index,
-                                new_their_index = %header.sender_idx,
-                                "Rekey completed (initiator), pending K-bit cutover"
-                            );
-                        }
-                        Err(e) => {
-                            warn!(
-                                peer = %display_name,
-                                error = %e,
-                                "Rekey msg2 processing failed"
-                            );
-                            if let Some(idx) = peer.abandon_rekey() {
-                                if let Some(tid) = peer.transport_id() {
-                                    self.deregister_session_index((tid, idx.as_u32()));
-                                }
-                                let _ = self.index_allocator.free(idx);
-                            }
-                        }
-                    }
-                }
-
-                self.pending_outbound.remove(&key);
-                return;
-            }
-
-            // Not a rekey — stale pending_outbound entry
-            self.pending_outbound.remove(&key);
-            return;
-        }
-
-        let (peer_identity, our_index) = {
-            let conn = self.connections.get_mut(&link_id).unwrap();
-
-            let noise_msg2 = &packet.data[header.noise_msg2_offset..];
-            if let Err(e) = conn.complete_handshake(noise_msg2, packet.timestamp_ms) {
-                warn!(
-                    link_id = %link_id,
-                    error = %e,
-                    "Handshake completion failed"
-                );
-                conn.mark_failed();
-                return;
-            }
-
-            conn.set_their_index(header.sender_idx);
-            conn.set_source_addr(packet.remote_addr.clone());
-
-            let peer_identity = match conn.expected_identity() {
-                Some(id) => *id,
-                None => {
-                    warn!(link_id = %link_id, "No identity after handshake");
-                    return;
-                }
-            };
-
-            (peer_identity, conn.our_index())
-        };
-
-        if self
-            .authorize_peer(
-                &peer_identity,
-                PeerAclContext::OutboundHandshake,
-                packet.transport_id,
-                &packet.remote_addr,
-            )
-            .is_err()
-        {
-            self.pending_outbound.remove(&key);
-            if let Some(link) = self.links.get(&link_id) {
-                let tid = link.transport_id();
-                let addr = link.remote_addr().clone();
-                if let Some(transport) = self.transports.get(&tid) {
-                    transport.close_connection(&addr).await;
-                }
-            }
-            self.connections.remove(&link_id);
-            self.remove_link(&link_id);
-            if let Some(idx) = our_index {
-                let _ = self.index_allocator.free(idx);
-            }
-            return;
-        }
-
-        let peer_node_addr = *peer_identity.node_addr();
-
-        debug!(
-            peer = %self.peer_display_name(&peer_node_addr),
-            link_id = %link_id,
-            their_index = %header.sender_idx,
-            "Outbound handshake completed"
-        );
-
-        // Cross-connection resolution: if the peer was already promoted via
-        // our inbound handshake (we processed their msg1), both nodes initially
-        // use mismatched sessions. The tie-breaker determines which handshake
-        // wins: smaller node_addr's outbound.
-        //
-        // - Winner (smaller node): swap to outbound session + outbound indices
-        // - Loser (larger node): keep inbound session + original their_index
-        //
-        // This ensures both nodes use the same Noise handshake (the winner's
-        // outbound = the loser's inbound).
-        if self.peers.contains_key(&peer_node_addr) {
-            let our_outbound_wins = cross_connection_winner(
-                self.identity.node_addr(),
-                &peer_node_addr,
-                true, // this IS our outbound
-            );
-
-            // Extract the outbound connection
-            let mut conn = match self.connections.remove(&link_id) {
-                Some(c) => c,
-                None => {
-                    self.pending_outbound.remove(&key);
-                    return;
-                }
-            };
-
-            let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
-            let outbound_addr = conn
-                .source_addr()
-                .cloned()
-                .unwrap_or_else(|| packet.remote_addr.clone());
-            let outbound_alternate_path = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                peer.transport_id() != Some(outbound_transport_id)
-                    || peer.current_addr() != Some(&outbound_addr)
-            });
-
-            if outbound_alternate_path {
-                let outbound_remote_epoch = conn.remote_epoch();
-                let remote_epoch_changed = self.peers.get(&peer_node_addr).is_some_and(|peer| {
-                    matches!(
-                        (peer.remote_epoch(), outbound_remote_epoch),
-                        (Some(old), Some(new)) if old != new
-                    )
-                });
-                let existing_path_unusable = self
-                    .peers
-                    .get(&peer_node_addr)
-                    .is_some_and(|peer| !peer.can_send())
-                    || self.session_direct_path_blocks_direct_payload(
-                        &peer_node_addr,
-                        packet.timestamp_ms,
-                    );
-                if !remote_epoch_changed
-                    && !existing_path_unusable
-                    && !self.alternate_path_priority_allows_replace(
-                        &peer_node_addr,
-                        outbound_transport_id,
-                        &outbound_addr,
-                    )
-                {
-                    let outbound_our_index = conn.our_index();
-                    self.pending_outbound.remove(&key);
-                    if let Some(idx) = outbound_our_index {
-                        let _ = self.index_allocator.free(idx);
-                    }
-                    if let Some(transport) = self.transports.get(&outbound_transport_id) {
-                        transport.close_connection(&outbound_addr).await;
-                    }
-                    if let Some(link) = self.remove_link(&link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(link.transport_id());
-                    }
-                    return;
-                }
-
-                // This is not a simultaneous connection race: we already had
-                // a usable peer and explicitly dialed a different concrete
-                // transport tuple as a path refresh. A completed authenticated
-                // outbound handshake is enough proof to promote the new path,
-                // even if the normal cross-connection tie-breaker would keep
-                // the old session.
-                let outbound_our_index = conn.our_index();
-                let outbound_session = conn.take_session();
-
-                let (outbound_session, outbound_our_index) = match (
-                    outbound_session,
-                    outbound_our_index,
-                ) {
-                    (Some(s), Some(idx)) => (s, idx),
-                    _ => {
-                        warn!(peer = %self.peer_display_name(&peer_node_addr), "Incomplete outbound alternate-path connection");
-                        self.pending_outbound.remove(&key);
-                        if let Some(link) = self.remove_link(&link_id) {
-                            self.cleanup_bootstrap_transport_if_unused(link.transport_id());
-                        }
-                        return;
-                    }
-                };
-
-                let display_name = self.peer_display_name(&peer_node_addr);
-                let mut loser_link_id = None;
-                let mut loser_session_index = None;
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                    let suppressed = peer.replay_suppressed_count();
-                    loser_link_id = Some(peer.link_id());
-                    loser_session_index = peer
-                        .transport_id()
-                        .zip(peer.our_index().map(|idx| idx.as_u32()));
-                    let old_our_index = peer.replace_session(
-                        outbound_session,
-                        outbound_our_index,
-                        header.sender_idx,
-                    );
-                    peer.set_link_id(link_id);
-                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
-                    if outbound_remote_epoch.is_some() {
-                        peer.set_remote_epoch(outbound_remote_epoch);
-                    }
-                    peer.mark_connected(packet.timestamp_ms);
-
-                    if let Some(old_idx) = old_our_index {
-                        let _ = self.index_allocator.free(old_idx);
-                    }
-
-                    if suppressed > 0 {
-                        debug!(
-                            peer = %display_name,
-                            count = suppressed,
-                            "Suppressed replay detections during link transition"
-                        );
-                    }
-                }
-
-                if let Some(old_key) = loser_session_index {
-                    self.deregister_session_index(old_key);
-                }
-                self.seed_path_mtu_for_link_peer(
-                    &peer_node_addr,
-                    outbound_transport_id,
-                    &outbound_addr,
-                );
-                self.peers_by_index.insert(
-                    (outbound_transport_id, outbound_our_index.as_u32()),
-                    peer_node_addr,
-                );
-                self.addr_to_link
-                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
-                self.clear_session_direct_path_degraded(&peer_node_addr);
-                self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
-                self.register_identity(peer_node_addr, peer_identity.pubkey_full());
-                self.register_decrypt_worker_session(&peer_node_addr);
-
-                if remote_epoch_changed {
-                    if self.sessions.remove(&peer_node_addr).is_some() {
-                        debug!(
-                            peer = %display_name,
-                            "Cleared stale FSP session after peer restart during outbound path refresh"
-                        );
-                    }
-                    info!(
-                        peer = %display_name,
-                        "Peer restart detected during outbound path refresh, replacing stale endpoint session"
-                    );
-                }
-
-                self.pending_outbound.remove(&key);
-                if let Some(loser_link_id) = loser_link_id {
-                    if let Some(loser_link) = self.links.get(&loser_link_id) {
-                        let loser_tid = loser_link.transport_id();
-                        let loser_addr = loser_link.remote_addr().clone();
-                        if let Some(transport) = self.transports.get(&loser_tid) {
-                            transport.close_connection(&loser_addr).await;
-                        }
-                    }
-                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
-                    }
-                }
-
-                debug!(
-                    peer = %display_name,
-                    link_id = %link_id,
-                    transport_id = %outbound_transport_id,
-                    remote_addr = %outbound_addr,
-                    "Promoted outbound alternate-path refresh"
-                );
-
-                if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
-                    debug!(peer = %display_name, error = %e, "Failed to send TreeAnnounce after outbound path refresh");
-                }
-                self.bloom_state.mark_update_needed(peer_node_addr);
-                self.reset_discovery_backoff();
-                return;
-            }
-
-            if our_outbound_wins {
-                // We're the smaller node. Swap to outbound session + indices.
-                // The peer will keep their inbound session (complement of ours).
-                let outbound_our_index = conn.our_index();
-                let outbound_session = conn.take_session();
-                let outbound_transport_id = conn.transport_id().unwrap_or(packet.transport_id);
-                let outbound_addr = conn
-                    .source_addr()
-                    .cloned()
-                    .unwrap_or_else(|| packet.remote_addr.clone());
-
-                let (outbound_session, outbound_our_index) = match (
-                    outbound_session,
-                    outbound_our_index,
-                ) {
-                    (Some(s), Some(idx)) => (s, idx),
-                    _ => {
-                        warn!(peer = %self.peer_display_name(&peer_node_addr), "Incomplete outbound connection");
-                        self.pending_outbound.remove(&key);
-                        return;
-                    }
-                };
-
-                let mut loser_link_id = None;
-                let mut loser_session_index = None;
-                if let Some(peer) = self.peers.get_mut(&peer_node_addr) {
-                    let suppressed = peer.replay_suppressed_count();
-                    loser_link_id = Some(peer.link_id());
-                    loser_session_index = peer
-                        .transport_id()
-                        .zip(peer.our_index().map(|idx| idx.as_u32()));
-                    let old_our_index = peer.replace_session(
-                        outbound_session,
-                        outbound_our_index,
-                        header.sender_idx,
-                    );
-                    peer.set_link_id(link_id);
-                    peer.set_current_addr(outbound_transport_id, &outbound_addr);
-                    peer.mark_connected(packet.timestamp_ms);
-
-                    if let Some(old_idx) = old_our_index {
-                        let _ = self.index_allocator.free(old_idx);
-                    }
-
-                    if suppressed > 0 {
-                        debug!(
-                            peer = %self.peer_display_name(&peer_node_addr),
-                            count = suppressed,
-                            "Suppressed replay detections during link transition"
-                        );
-                    }
-
-                    debug!(
-                        peer = %self.peer_display_name(&peer_node_addr),
-                        new_our_index = %outbound_our_index,
-                        new_their_index = %header.sender_idx,
-                        transport_id = %outbound_transport_id,
-                        remote_addr = %outbound_addr,
-                        "Cross-connection: swapped to outbound session (our outbound wins)"
-                    );
-                    // Re-register with the decrypt worker under the new
-                    // cache_key (the old inbound index was deregistered
-                    // above via deregister_session_index).
-                }
-                if let Some(old_key) = loser_session_index {
-                    self.deregister_session_index(old_key);
-                }
-                self.peers_by_index.insert(
-                    (outbound_transport_id, outbound_our_index.as_u32()),
-                    peer_node_addr,
-                );
-                self.addr_to_link
-                    .insert((outbound_transport_id, outbound_addr.clone()), link_id);
-                self.register_decrypt_worker_session(&peer_node_addr);
-
-                self.pending_outbound.remove(&key);
-                if let Some(loser_link_id) = loser_link_id {
-                    if let Some(loser_link) = self.links.get(&loser_link_id) {
-                        let loser_tid = loser_link.transport_id();
-                        let loser_addr = loser_link.remote_addr().clone();
-                        if let Some(transport) = self.transports.get(&loser_tid) {
-                            transport.close_connection(&loser_addr).await;
-                        }
-                    }
-                    if let Some(loser_link) = self.remove_link(&loser_link_id) {
-                        self.cleanup_bootstrap_transport_if_unused(loser_link.transport_id());
-                    }
-                }
-            } else {
-                // We're the larger node. Keep our inbound session (it pairs
-                // with the peer's outbound, which is the winning handshake).
-                //
-                // Do NOT update their_index here. Our their_index was set during
-                // promote_connection() from the peer's msg1 sender_idx, which is
-                // the peer's outbound our_index. After the peer (winner) swaps to
-                // their outbound session, that index is exactly what they'll use.
-                // The msg2 sender_idx we see here is the peer's INBOUND our_index,
-                // which becomes stale after the peer swaps.
-                let outbound_our_index = conn.our_index();
-
-                if let Some(peer) = self.peers.get(&peer_node_addr) {
-                    debug!(
-                        peer = %self.peer_display_name(&peer_node_addr),
-                        kept_their_index = ?peer.their_index(),
-                        "Cross-connection: keeping inbound session and original their_index (peer outbound wins)"
-                    );
-                }
-
-                // Free the outbound's session index since we're not using it
-                if let Some(idx) = outbound_our_index {
-                    let _ = self.index_allocator.free(idx);
-                }
-
-                self.pending_outbound.remove(&key);
-                // Close the losing TCP connection (no-op for connectionless)
-                if let Some(link) = self.links.get(&link_id) {
-                    let tid = link.transport_id();
-                    let addr = link.remote_addr().clone();
-                    if let Some(transport) = self.transports.get(&tid) {
-                        transport.close_connection(&addr).await;
-                    }
-                }
-                if let Some(link) = self.remove_link(&link_id) {
-                    self.cleanup_bootstrap_transport_if_unused(link.transport_id());
-                }
-            }
-
-            // Send TreeAnnounce now that sessions are aligned
-            if let Err(e) = self.send_tree_announce_to_peer(&peer_node_addr).await {
-                debug!(peer = %self.peer_display_name(&peer_node_addr), error = %e, "Failed to send TreeAnnounce after cross-connection resolution");
-            }
-            // Schedule filter announce (sent on next tick via debounce)
-            self.bloom_state.mark_update_needed(peer_node_addr);
-            self.reset_discovery_backoff();
-            return;
-        }
-
-        // Normal path: promote to active peer
-        match self.promote_connection(link_id, peer_identity, packet.timestamp_ms) {
-            Ok(result) => {
-                // Clean up pending_outbound
-                self.pending_outbound.remove(&key);
-
-                match result {
-                    PromotionResult::Promoted(node_addr) => {
-                        info!(
-                            peer = %self.peer_display_name(&node_addr),
-                            "Peer promoted to active"
-                        );
-                        // Send initial tree announce to new peer
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                    }
-                    PromotionResult::CrossConnectionWon {
-                        loser_link_id,
-                        node_addr,
-                    } => {
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(loser_link) = self.links.get(&loser_link_id) {
-                            let loser_tid = loser_link.transport_id();
-                            let loser_addr = loser_link.remote_addr().clone();
-                            if let Some(transport) = self.transports.get(&loser_tid) {
-                                transport.close_connection(&loser_addr).await;
-                            }
-                        }
-                        // Clean up the losing connection's link
-                        self.remove_link(&loser_link_id);
-                        // Ensure addr_to_link points to the winning link
-                        self.addr_to_link
-                            .insert((packet.transport_id, packet.remote_addr.clone()), link_id);
-                        debug!(
-                            peer = %self.peer_display_name(&node_addr),
-                            loser_link_id = %loser_link_id,
-                            "Outbound cross-connection won, loser link cleaned up"
-                        );
-                        // Send initial tree announce to peer (new or reconnected)
-                        if let Err(e) = self.send_tree_announce_to_peer(&node_addr).await {
-                            debug!(peer = %self.peer_display_name(&node_addr), error = %e, "Failed to send initial TreeAnnounce");
-                        }
-                        // Schedule filter announce (sent on next tick via debounce)
-                        self.bloom_state.mark_update_needed(node_addr);
-                        self.reset_discovery_backoff();
-                    }
-                    PromotionResult::CrossConnectionLost { winner_link_id } => {
-                        // Close the losing TCP connection (no-op for connectionless)
-                        if let Some(transport) = self.transports.get(&packet.transport_id) {
-                            transport.close_connection(&packet.remote_addr).await;
-                        }
-                        // This connection lost — clean up its link
-                        self.remove_link(&link_id);
-                        // Ensure addr_to_link points to the winner's link
-                        self.addr_to_link.insert(
-                            (packet.transport_id, packet.remote_addr.clone()),
-                            winner_link_id,
-                        );
-                        debug!(
-                            winner_link_id = %winner_link_id,
-                            "Outbound cross-connection lost, keeping existing"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    link_id = %link_id,
-                    error = %e,
-                    "Failed to promote connection"
-                );
-            }
-        }
-    }
-
-    /// Promote a connection to active peer after successful authentication.
-    ///
-    /// Handles cross-connection detection and resolution using tie-breaker rules.
-    pub(in crate::node) fn promote_connection(
-        &mut self,
-        link_id: LinkId,
-        verified_identity: PeerIdentity,
-        current_time_ms: u64,
-    ) -> Result<PromotionResult, NodeError> {
-        // Remove the connection from pending
-        let mut connection = self
-            .connections
-            .remove(&link_id)
-            .ok_or(NodeError::ConnectionNotFound(link_id))?;
-
-        // Verify handshake is complete and extract session
-        if !connection.has_session() {
-            return Err(NodeError::HandshakeIncomplete(link_id));
-        }
-
-        let noise_session = connection
-            .take_session()
-            .ok_or(NodeError::NoSession(link_id))?;
-
-        let our_index = connection
-            .our_index()
-            .ok_or_else(|| NodeError::PromotionFailed {
-                link_id,
-                reason: "missing our_index".into(),
-            })?;
-        let their_index = connection
-            .their_index()
-            .ok_or_else(|| NodeError::PromotionFailed {
-                link_id,
-                reason: "missing their_index".into(),
-            })?;
-        let transport_id = connection
-            .transport_id()
-            .ok_or_else(|| NodeError::PromotionFailed {
-                link_id,
-                reason: "missing transport_id".into(),
-            })?;
-        let current_addr = connection
-            .source_addr()
-            .ok_or_else(|| NodeError::PromotionFailed {
-                link_id,
-                reason: "missing source_addr".into(),
-            })?
-            .clone();
-        let link_stats = connection.link_stats().clone();
-        let remote_epoch = connection.remote_epoch();
-
-        let peer_node_addr = *verified_identity.node_addr();
-        let is_outbound = connection.is_outbound();
-        let discovery_fallback_transit_allowed =
-            self.discovery_fallback_transit_for_promotion(&peer_node_addr);
-
-        // Check for cross-connection
-        if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
-            let existing_link_id = existing_peer.link_id();
-            let existing_path_unusable = !existing_peer.can_send();
-            let outbound_alternate_path = is_outbound
-                && (existing_peer.transport_id() != Some(transport_id)
-                    || existing_peer.current_addr() != Some(&current_addr));
-
-            let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
-            let existing_path_unusable = existing_path_unusable
-                || self.session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms);
-            let outbound_alternate_path_wins = outbound_alternate_path
-                && self.alternate_path_priority_allows_replace(
-                    &peer_node_addr,
-                    transport_id,
-                    &current_addr,
-                );
-
-            // Determine which connection wins. A peer restart (different
-            // startup epoch) is not a normal cross-connection: the old link
-            // and FSP sessions are cryptographically stale, so the freshly
-            // authenticated connection must replace them regardless of the
-            // tie-breaker direction.
-            //
-            // Likewise, a link-dead path is kept as a reconnecting peer so
-            // higher-level sessions and routes survive. A fresh authenticated
-            // connection is proof of a usable replacement path, so it should
-            // win instead of applying the simultaneous-handshake tie-breaker to
-            // a path we already marked unusable.
-            //
-            // A completed outbound handshake on a different transport tuple is
-            // also not a symmetric cross-connection. It is an explicit
-            // alternate-path refresh we initiated after learning a candidate;
-            // successful authentication is enough proof only when the
-            // candidate is at least as preferred as the current healthy path.
-            let this_wins = remote_epoch_changed
-                || existing_path_unusable
-                || if outbound_alternate_path {
-                    outbound_alternate_path_wins
-                } else {
-                    cross_connection_winner(self.identity.node_addr(), &peer_node_addr, is_outbound)
-                };
-
-            if this_wins {
-                // This connection wins, replace the existing peer
-                let old_peer = self.peers.remove(&peer_node_addr).unwrap();
-                let loser_link_id = old_peer.link_id();
-
-                // Clean up old peer's index from peers_by_index
-                if let (Some(old_tid), Some(old_idx)) =
-                    (old_peer.transport_id(), old_peer.our_index())
-                {
-                    self.deregister_session_index((old_tid, old_idx.as_u32()));
-                    let _ = self.index_allocator.free(old_idx);
-                }
-
-                if remote_epoch_changed {
-                    if self.sessions.remove(&peer_node_addr).is_some() {
-                        debug!(
-                            peer = %self.peer_display_name(&peer_node_addr),
-                            "Cleared stale FSP session after peer restart during promotion"
-                        );
-                    }
-                    info!(
-                        peer = %self.peer_display_name(&peer_node_addr),
-                        winner_link = %link_id,
-                        loser_link = %loser_link_id,
-                        "Peer restart detected during promotion, replacing stale active peer"
-                    );
-                }
-
-                self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
-
-                let mut new_peer = ActivePeer::with_session(
-                    verified_identity,
-                    link_id,
-                    current_time_ms,
-                    noise_session,
-                    our_index,
-                    their_index,
-                    transport_id,
-                    current_addr,
-                    link_stats,
-                    is_outbound,
-                    &self.config.node.mmp,
-                    remote_epoch,
-                );
-                new_peer.set_tree_announce_min_interval_ms(
-                    self.config.node.tree.announce_min_interval_ms,
-                );
-
-                self.peers.insert(peer_node_addr, new_peer);
-                self.peers_by_index
-                    .insert((transport_id, our_index.as_u32()), peer_node_addr);
-                self.clear_session_direct_path_degraded(&peer_node_addr);
-                self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
-                self.set_discovery_fallback_transit_allowed(
-                    peer_node_addr,
-                    discovery_fallback_transit_allowed,
-                );
-                self.register_identity(peer_node_addr, verified_identity.pubkey_full());
-
-                // Hand the new FMP recv state to the decrypt-worker
-                // shard. The sibling "no existing peer" branch below
-                // already does this on initial promotion; the
-                // existing-peer replace branch was missing it, so a
-                // cross-connection winner ended up never registered
-                // with the worker and silently fell back to the
-                // in-line decrypt path for the lifetime of the peer.
-                self.register_decrypt_worker_session(&peer_node_addr);
-
-                debug!(
-                    peer = %self.peer_display_name(&peer_node_addr),
-                    winner_link = %link_id,
-                    loser_link = %loser_link_id,
-                    "Cross-connection resolved: this connection won"
-                );
-
-                Ok(PromotionResult::CrossConnectionWon {
-                    loser_link_id,
-                    node_addr: peer_node_addr,
-                })
-            } else {
-                // This connection loses, keep existing
-                // Free the index we allocated
-                let _ = self.index_allocator.free(our_index);
-
-                debug!(
-                    peer = %self.peer_display_name(&peer_node_addr),
-                    winner_link = %existing_link_id,
-                    loser_link = %link_id,
-                    "Cross-connection resolved: this connection lost"
-                );
-
-                Ok(PromotionResult::CrossConnectionLost {
-                    winner_link_id: existing_link_id,
-                })
-            }
-        } else {
-            // No existing promoted peer. There may be a pending outbound
-            // connection to the same peer (cross-connection in progress).
-            // Do NOT clean it up yet — we need the outbound to stay alive
-            // so that when the peer's msg2 arrives, we can learn the peer's
-            // inbound session index and update their_index on the promoted
-            // peer. The outbound will be cleaned up in handle_msg2 or by
-            // the 30s handshake timeout.
-            let pending_to_same_peer: Vec<LinkId> = self
-                .connections
-                .iter()
-                .filter(|(_, conn)| {
-                    conn.expected_identity()
-                        .map(|id| *id.node_addr() == peer_node_addr)
-                        .unwrap_or(false)
-                })
-                .map(|(lid, _)| *lid)
-                .collect();
-
-            for pending_link_id in &pending_to_same_peer {
-                debug!(
-                    peer = %self.peer_display_name(&peer_node_addr),
-                    pending_link_id = %pending_link_id,
-                    promoted_link_id = %link_id,
-                    "Deferring cleanup of pending outbound (awaiting msg2 for index update)"
-                );
-            }
-
-            // Normal promotion
-            if self.max_peers > 0 && self.peers.len() >= self.max_peers {
-                let _ = self.index_allocator.free(our_index);
-                return Err(NodeError::MaxPeersExceeded {
-                    max: self.max_peers,
-                });
-            }
-
-            // Preserve tree announce rate-limit state from old peer (if reconnecting).
-            // Without this, reconnection resets the rate limit window to zero,
-            // allowing an immediate announce that can feed an announce loop.
-            let old_announce_ts = self
-                .peers
-                .get(&peer_node_addr)
-                .map(|p| p.last_tree_announce_sent_ms());
-
-            self.seed_path_mtu_for_link_peer(&peer_node_addr, transport_id, &current_addr);
-
-            let mut new_peer = ActivePeer::with_session(
-                verified_identity,
-                link_id,
-                current_time_ms,
-                noise_session,
-                our_index,
-                their_index,
-                transport_id,
-                current_addr,
-                link_stats,
-                is_outbound,
-                &self.config.node.mmp,
-                remote_epoch,
-            );
-            new_peer
-                .set_tree_announce_min_interval_ms(self.config.node.tree.announce_min_interval_ms);
-            if let Some(ts) = old_announce_ts {
-                new_peer.set_last_tree_announce_sent_ms(ts);
-            }
-
-            self.peers.insert(peer_node_addr, new_peer);
-            self.peers_by_index
-                .insert((transport_id, our_index.as_u32()), peer_node_addr);
-            self.clear_session_direct_path_degraded(&peer_node_addr);
-            self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
-            self.set_discovery_fallback_transit_allowed(
-                peer_node_addr,
-                discovery_fallback_transit_allowed,
-            );
-            self.register_identity(peer_node_addr, verified_identity.pubkey_full());
-
-            // Eagerly hand the FMP recv state to the decrypt-worker
-            // shard. From this point on the shard is the
-            // authoritative FMP-replay-window writer for this peer;
-            // rx_loop's in-line decrypt path is no longer used.
-            self.register_decrypt_worker_session(&peer_node_addr);
-
-            info!(
-                peer = %self.peer_display_name(&peer_node_addr),
-                link_id = %link_id,
-                our_index = %our_index,
-                their_index = %their_index,
-                "Connection promoted to active peer"
-            );
-
-            Ok(PromotionResult::Promoted(peer_node_addr))
-        }
-    }
 }
+
+mod msg2;
+mod promotion;

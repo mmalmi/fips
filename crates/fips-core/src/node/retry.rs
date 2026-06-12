@@ -8,6 +8,7 @@ use super::{Node, NodeError};
 use crate::PeerIdentity;
 use crate::config::PeerConfig;
 use crate::identity::NodeAddr;
+use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
 // MAX_BACKOFF_MS is now derived from config: node.retry.max_backoff_secs * 1000
@@ -24,6 +25,7 @@ fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
 }
 
 /// Tracks retry state for a peer across connection attempts.
+#[derive(Debug)]
 pub struct RetryState {
     /// The peer config to use for initiating retries.
     pub peer_config: PeerConfig,
@@ -65,6 +67,166 @@ impl RetryState {
         base_interval_ms
             .saturating_mul(multiplier)
             .min(max_backoff_ms)
+    }
+}
+
+/// Retry entries waiting for reconnect or direct-path refresh.
+#[derive(Debug, Default)]
+pub(in crate::node) struct PendingRouteRetries {
+    entries: HashMap<NodeAddr, RetryState>,
+}
+
+impl PendingRouteRetries {
+    pub(in crate::node) fn insert(
+        &mut self,
+        node_addr: NodeAddr,
+        state: RetryState,
+    ) -> Option<RetryState> {
+        self.entries.insert(node_addr, state)
+    }
+
+    pub(in crate::node) fn remove(&mut self, node_addr: &NodeAddr) -> Option<RetryState> {
+        self.entries.remove(node_addr)
+    }
+
+    pub(in crate::node) fn get(&self, node_addr: &NodeAddr) -> Option<&RetryState> {
+        self.entries.get(node_addr)
+    }
+
+    pub(in crate::node) fn get_mut(&mut self, node_addr: &NodeAddr) -> Option<&mut RetryState> {
+        self.entries.get_mut(node_addr)
+    }
+
+    pub(in crate::node) fn contains_key(&self, node_addr: &NodeAddr) -> bool {
+        self.entries.contains_key(node_addr)
+    }
+
+    pub(in crate::node) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(in crate::node) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub(in crate::node) fn iter(&self) -> impl Iterator<Item = (&NodeAddr, &RetryState)> {
+        self.entries.iter()
+    }
+
+    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &RetryState> {
+        self.entries.values()
+    }
+
+    pub(in crate::node) fn get_or_insert_with(
+        &mut self,
+        node_addr: NodeAddr,
+        f: impl FnOnce() -> RetryState,
+    ) -> &mut RetryState {
+        self.entries.entry(node_addr).or_insert_with(f)
+    }
+
+    pub(in crate::node) fn purge_expired(&mut self, now_ms: u64) -> Vec<NodeAddr> {
+        let mut expired: Vec<NodeAddr> = self
+            .entries
+            .iter()
+            .filter_map(|(addr, state)| {
+                state
+                    .expires_at_ms
+                    .filter(|expires_at_ms| now_ms >= *expires_at_ms)
+                    .map(|_| *addr)
+            })
+            .collect();
+        expired.sort();
+        for node_addr in &expired {
+            self.entries.remove(node_addr);
+        }
+        expired
+    }
+
+    pub(in crate::node) fn due_for_tick<F>(
+        &self,
+        now_ms: u64,
+        mut is_active_peer: F,
+        reconnect_budget: usize,
+        active_budget: usize,
+    ) -> PendingRouteRetryDueTick
+    where
+        F: FnMut(&NodeAddr) -> bool,
+    {
+        let mut active_due = Vec::new();
+        let mut reconnect_due = Vec::new();
+        for (node_addr, state) in &self.entries {
+            if now_ms < state.retry_after_ms {
+                continue;
+            }
+            if is_active_peer(node_addr) {
+                active_due.push(*node_addr);
+            } else {
+                reconnect_due.push(*node_addr);
+            }
+        }
+
+        let retry_sort_key = |node_addr: &NodeAddr| {
+            (
+                self.entries
+                    .get(node_addr)
+                    .map(|state| state.retry_after_ms)
+                    .unwrap_or(u64::MAX),
+                *node_addr,
+            )
+        };
+        active_due.sort_by_key(retry_sort_key);
+        reconnect_due.sort_by_key(retry_sort_key);
+
+        let active_total = active_due.len();
+        let reconnect_total = reconnect_due.len();
+        active_due.truncate(active_budget);
+        reconnect_due.truncate(reconnect_budget);
+
+        PendingRouteRetryDueTick {
+            reconnect_due,
+            active_due,
+            reconnect_total,
+            active_total,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(in crate::node) struct PendingRouteRetryDueTick {
+    reconnect_due: Vec<NodeAddr>,
+    active_due: Vec<NodeAddr>,
+    reconnect_total: usize,
+    active_total: usize,
+}
+
+impl PendingRouteRetryDueTick {
+    pub(in crate::node) fn reconnect_total(&self) -> usize {
+        self.reconnect_total
+    }
+
+    pub(in crate::node) fn reconnect_deferred(&self) -> usize {
+        self.reconnect_total
+            .saturating_sub(self.reconnect_due.len())
+    }
+
+    pub(in crate::node) fn active_total(&self) -> usize {
+        self.active_total
+    }
+
+    pub(in crate::node) fn active_deferred(&self) -> usize {
+        self.active_total.saturating_sub(self.active_due.len())
+    }
+
+    pub(in crate::node) fn has_deferred(&self) -> bool {
+        self.reconnect_deferred() > 0 || self.active_deferred() > 0
+    }
+
+    pub(in crate::node) fn into_due_order(self) -> Vec<NodeAddr> {
+        self.reconnect_due
+            .into_iter()
+            .chain(self.active_due)
+            .collect()
     }
 }
 
@@ -117,6 +279,7 @@ impl Node {
         if let Some(state) = self.retry_pending.get_mut(&node_addr) {
             // Already tracking — increment
             state.retry_count += 1;
+            state.reconnect = state.reconnect || state.peer_config.auto_reconnect;
             if !state.reconnect && state.retry_count > max_retries {
                 info!(
                     peer = %peer_name,
@@ -139,7 +302,7 @@ impl Node {
             if let Some(pc) = peer_config {
                 let mut state = RetryState::new(pc);
                 state.retry_count = 1;
-                state.reconnect = true;
+                state.reconnect = state.peer_config.auto_reconnect;
                 let delay = state.backoff_ms(base_interval_ms, max_backoff_ms);
                 state.retry_after_ms = now_ms + delay;
                 debug!(
@@ -192,7 +355,7 @@ impl Node {
         let peer_name = self.peer_display_name(&node_addr);
 
         if let Some(state) = self.retry_pending.get_mut(&node_addr) {
-            state.reconnect = true;
+            state.reconnect = state.reconnect || state.peer_config.auto_reconnect;
             state.retry_after_ms = retry_after_ms;
             debug!(
                 peer = %peer_name,
@@ -202,7 +365,7 @@ impl Node {
             );
         } else if let Some(pc) = peer_config {
             let mut state = RetryState::new(pc);
-            state.reconnect = true;
+            state.reconnect = state.peer_config.auto_reconnect;
             state.retry_after_ms = retry_after_ms;
             debug!(
                 peer = %peer_name,
@@ -341,8 +504,7 @@ impl Node {
         let peer_name = self.peer_display_name(&node_addr);
         let state = self
             .retry_pending
-            .entry(node_addr)
-            .or_insert_with(|| RetryState::new(peer_config.clone()));
+            .get_or_insert_with(node_addr, || RetryState::new(peer_config.clone()));
         state.peer_config = peer_config;
         state.reconnect = true;
         state.retry_count = 0;
@@ -368,16 +530,17 @@ impl Node {
         node_addr: &NodeAddr,
         now_ms: u64,
     ) {
-        let peer_config = self
+        let peer = self
             .config
             .auto_connect_peers()
-            .find(|pc| {
+            .filter_map(|pc| {
                 PeerIdentity::from_npub(&pc.npub)
-                    .map(|id| id.node_addr() == node_addr)
-                    .unwrap_or(false)
+                    .ok()
+                    .map(|identity| (pc, identity))
             })
-            .cloned();
-        let Some(peer_config) = peer_config else {
+            .find(|(_, identity)| identity.node_addr() == node_addr)
+            .map(|(pc, identity)| (pc.clone(), identity));
+        let Some((peer_config, peer_identity)) = peer else {
             return;
         };
 
@@ -398,7 +561,7 @@ impl Node {
             return;
         };
 
-        let decision = bootstrap.record_unstable_path(&peer_config.npub, now_ms);
+        let decision = bootstrap.record_unstable_path_for_peer(peer_identity, now_ms);
         let cooldown_secs = decision
             .cooldown_until_ms
             .map(|t| t.saturating_sub(now_ms) / 1000);
@@ -446,18 +609,7 @@ impl Node {
             return;
         }
 
-        let expired: Vec<NodeAddr> = self
-            .retry_pending
-            .iter()
-            .filter_map(|(addr, state)| {
-                state
-                    .expires_at_ms
-                    .filter(|expires_at_ms| now_ms >= *expires_at_ms)
-                    .map(|_| *addr)
-            })
-            .collect();
-        for node_addr in expired {
-            self.retry_pending.remove(&node_addr);
+        for node_addr in self.retry_pending.purge_expired(now_ms) {
             info!(
                 peer = %self.peer_display_name(&node_addr),
                 "Retry window expired, dropping pending retry state"
@@ -471,59 +623,26 @@ impl Node {
         // refreshes; keep those in the background so a synchronized link-dead
         // event cannot start a handshake/traversal storm that competes with
         // fallback traffic recovery.
-        let due: Vec<NodeAddr> = self
-            .retry_pending
-            .iter()
-            .filter(|(_, state)| now_ms >= state.retry_after_ms)
-            .map(|(addr, _)| *addr)
-            .collect();
-        let (mut active_due, mut reconnect_due): (Vec<NodeAddr>, Vec<NodeAddr>) = due
-            .into_iter()
-            .partition(|node_addr| self.peers.contains_key(node_addr));
-        active_due.sort_by_key(|node_addr| {
-            (
-                self.retry_pending
-                    .get(node_addr)
-                    .map(|state| state.retry_after_ms)
-                    .unwrap_or(u64::MAX),
-                *node_addr,
-            )
-        });
-        reconnect_due.sort_by_key(|node_addr| {
-            (
-                self.retry_pending
-                    .get(node_addr)
-                    .map(|state| state.retry_after_ms)
-                    .unwrap_or(u64::MAX),
-                *node_addr,
-            )
-        });
-        let reconnect_deferred = reconnect_due
-            .len()
-            .saturating_sub(MAX_RETRY_CONNECTIONS_PER_TICK);
-        let active_deferred = active_due
-            .len()
-            .saturating_sub(MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK);
-        if reconnect_deferred > 0 || active_deferred > 0 {
+        let peers = &self.peers;
+        let due_tick = self.retry_pending.due_for_tick(
+            now_ms,
+            |node_addr| peers.contains_key(node_addr),
+            MAX_RETRY_CONNECTIONS_PER_TICK,
+            MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK,
+        );
+        if due_tick.has_deferred() {
             debug!(
-                reconnect_due = reconnect_due.len(),
+                reconnect_due = due_tick.reconnect_total(),
                 reconnect_processing = MAX_RETRY_CONNECTIONS_PER_TICK,
-                reconnect_deferred,
-                active_due = active_due.len(),
+                reconnect_deferred = due_tick.reconnect_deferred(),
+                active_due = due_tick.active_total(),
                 active_processing = MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK,
-                active_deferred,
+                active_deferred = due_tick.active_deferred(),
                 "Retry processing budget exhausted; deferring remaining peers"
             );
         }
 
-        let due = reconnect_due
-            .into_iter()
-            .take(MAX_RETRY_CONNECTIONS_PER_TICK)
-            .chain(
-                active_due
-                    .into_iter()
-                    .take(MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK),
-            );
+        let due = due_tick.into_due_order().into_iter();
 
         for node_addr in due {
             if self.peers.contains_key(&node_addr) {
@@ -682,8 +801,57 @@ impl Node {
 mod tests {
     use super::*;
     use crate::config::PeerConfig;
+    use std::collections::HashSet;
 
     const TEST_MAX_BACKOFF_MS: u64 = 300_000;
+
+    fn test_addr(byte: u8) -> NodeAddr {
+        NodeAddr::from_bytes([byte; 16])
+    }
+
+    fn test_retry_state(npub: &str, retry_after_ms: u64, expires_at_ms: Option<u64>) -> RetryState {
+        RetryState {
+            peer_config: PeerConfig::new(npub.to_string(), "udp", "127.0.0.1:9"),
+            retry_count: 0,
+            retry_after_ms,
+            reconnect: true,
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn pending_route_retries_own_expiry_due_order_and_budgets() {
+        let expired = test_addr(1);
+        let reconnect_early = test_addr(2);
+        let reconnect_late = test_addr(3);
+        let active_early = test_addr(4);
+        let active_late = test_addr(5);
+        let future = test_addr(6);
+
+        let mut pending = PendingRouteRetries::default();
+        pending.insert(expired, test_retry_state("expired", 0, Some(100)));
+        pending.insert(reconnect_late, test_retry_state("reconnect-late", 80, None));
+        pending.insert(
+            reconnect_early,
+            test_retry_state("reconnect-early", 20, None),
+        );
+        pending.insert(active_late, test_retry_state("active-late", 70, None));
+        pending.insert(active_early, test_retry_state("active-early", 10, None));
+        pending.insert(future, test_retry_state("future", 150, None));
+
+        assert_eq!(pending.purge_expired(100), vec![expired]);
+        assert!(!pending.contains_key(&expired));
+        assert!(pending.contains_key(&future));
+
+        let active_peers: HashSet<NodeAddr> = [active_early, active_late].into_iter().collect();
+        let due = pending.due_for_tick(100, |addr| active_peers.contains(addr), 1, 1);
+
+        assert_eq!(due.reconnect_total(), 2);
+        assert_eq!(due.reconnect_deferred(), 1);
+        assert_eq!(due.active_total(), 2);
+        assert_eq!(due.active_deferred(), 1);
+        assert_eq!(due.into_due_order(), vec![reconnect_early, active_early]);
+    }
 
     #[test]
     fn test_backoff_exponential() {

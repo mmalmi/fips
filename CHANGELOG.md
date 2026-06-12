@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.55] - 2026-06-12
+
+### Changed
+
+- Split oversized dataplane, node, transport, and test modules into focused
+  submodules and added a CI-enforced Rust source file line guard capped at
+  1000 lines.
+- Bumped `fips-endpoint` to 0.3.31 so the app-facing endpoint crate follows
+  the `fips-core` 0.3.55 release.
+
+### Added
+
+- Added fast dataplane ownership checks and a Linux Docker dataplane safety
+  harness covering queue pressure, priority traffic, and long-run routing
+  reliability scenarios.
+
 ## [0.3.54] - 2026-06-07
 
 ### Fixed
