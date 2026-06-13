@@ -72,8 +72,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 44;
-const N_EVENTS: usize = 65;
+const N_STAGES: usize = 46;
+const N_EVENTS: usize = 71;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -187,6 +187,11 @@ pub enum Stage {
     FmpWorkerFspSeal = 42,
     /// Worker-side outer FMP seal for pipelined endpoint sends.
     FmpWorkerFmpSeal = 43,
+    /// Linux bulk-container sender queue residence before the ordered sender
+    /// thread starts waiting on the container.
+    FmpLinuxBulkContainerQueueWait = 44,
+    /// Linux bulk-container sender wait for worker slots to finish sealing.
+    FmpLinuxBulkContainerReadyWait = 45,
 }
 
 impl Stage {
@@ -238,6 +243,8 @@ impl Stage {
             Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
+            Stage::FmpLinuxBulkContainerQueueWait => "fmp_linux_bulk_container_queue_wait",
+            Stage::FmpLinuxBulkContainerReadyWait => "fmp_linux_bulk_container_ready_wait",
         }
     }
 }
@@ -288,6 +295,8 @@ fn stage_from_index(idx: usize) -> Stage {
         41 => Stage::FmpWorkerBulkQueueWait,
         42 => Stage::FmpWorkerFspSeal,
         43 => Stage::FmpWorkerFmpSeal,
+        44 => Stage::FmpLinuxBulkContainerQueueWait,
+        45 => Stage::FmpLinuxBulkContainerReadyWait,
         _ => unreachable!(),
     }
 }
@@ -361,6 +370,12 @@ pub enum Event {
     FmpSendGroupSingle = 62,
     EncryptWorkerPriorityQueueFull = 63,
     EncryptWorkerBulkQueueFull = 64,
+    FmpLinuxBulkContainerEnqueued = 65,
+    FmpLinuxBulkContainerPackets = 66,
+    FmpLinuxBulkContainerSkippedPackets = 67,
+    FmpLinuxBulkContainerSent = 68,
+    FmpLinuxBulkContainerSentPackets = 69,
+    FmpLinuxBulkContainerEmpty = 70,
 }
 
 impl Event {
@@ -437,6 +452,14 @@ impl Event {
             Event::FmpSendGroupSingle => "fmp_send_group_single",
             Event::EncryptWorkerPriorityQueueFull => "encrypt_worker_priority_queue_full",
             Event::EncryptWorkerBulkQueueFull => "encrypt_worker_bulk_queue_full",
+            Event::FmpLinuxBulkContainerEnqueued => "fmp_linux_bulk_container_enqueued",
+            Event::FmpLinuxBulkContainerPackets => "fmp_linux_bulk_container_packets",
+            Event::FmpLinuxBulkContainerSkippedPackets => {
+                "fmp_linux_bulk_container_skipped_packets"
+            }
+            Event::FmpLinuxBulkContainerSent => "fmp_linux_bulk_container_sent",
+            Event::FmpLinuxBulkContainerSentPackets => "fmp_linux_bulk_container_sent_packets",
+            Event::FmpLinuxBulkContainerEmpty => "fmp_linux_bulk_container_empty",
         }
     }
 }
@@ -508,6 +531,12 @@ fn event_from_index(idx: usize) -> Event {
         62 => Event::FmpSendGroupSingle,
         63 => Event::EncryptWorkerPriorityQueueFull,
         64 => Event::EncryptWorkerBulkQueueFull,
+        65 => Event::FmpLinuxBulkContainerEnqueued,
+        66 => Event::FmpLinuxBulkContainerPackets,
+        67 => Event::FmpLinuxBulkContainerSkippedPackets,
+        68 => Event::FmpLinuxBulkContainerSent,
+        69 => Event::FmpLinuxBulkContainerSentPackets,
+        70 => Event::FmpLinuxBulkContainerEmpty,
         _ => unreachable!(),
     }
 }
@@ -661,6 +690,20 @@ pub fn record_event_count(event: Event, count: u64) {
 }
 
 #[inline]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
+    if !enabled() || count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(stage, elapsed_ns, count, bucket);
+}
+
+#[inline]
 pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
     record_event(Event::EncryptWorkerQueueFull);
     record_event(if priority {
@@ -727,6 +770,38 @@ pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_group
     if single_groups > 0 {
         record_event_count_sample(Event::FmpSendGroupSingle, single_groups as u64);
     }
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_linux_bulk_container_enqueued(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FmpLinuxBulkContainerEnqueued, 1);
+    record_event_count_sample(Event::FmpLinuxBulkContainerPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_linux_bulk_container_skipped_packet() {
+    record_event(Event::FmpLinuxBulkContainerSkippedPackets);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_linux_bulk_container_sent(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FmpLinuxBulkContainerSent, 1);
+    record_event_count_sample(Event::FmpLinuxBulkContainerSentPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_linux_bulk_container_empty() {
+    record_event(Event::FmpLinuxBulkContainerEmpty);
 }
 
 /// Record how much packet work a decrypt worker handled before yielding.

@@ -158,6 +158,7 @@ impl EncryptWorkerPool {
             }
             return;
         }
+        crate::perf_profile::record_fmp_linux_bulk_container_enqueued(run.len());
 
         let idx = self.select_linux_bulk_container_worker();
         for (slot, job) in run.drain(..).enumerate() {

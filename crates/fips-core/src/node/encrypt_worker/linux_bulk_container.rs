@@ -144,6 +144,11 @@ impl LinuxBulkSendFlow {
                         .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                     self.active
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::perf_profile::record_since_count(
+                        crate::perf_profile::Stage::FmpLinuxBulkContainerQueueWait,
+                        container.enqueued_at(),
+                        1,
+                    );
                     container.wait_and_send(&self.send_target, self.key);
                     self.active
                         .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -166,6 +171,7 @@ impl LinuxBulkSendFlow {
 struct LinuxBulkSendContainer {
     state: Mutex<LinuxBulkSendContainerState>,
     ready_cv: Condvar,
+    enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 #[cfg(target_os = "linux")]
@@ -195,7 +201,12 @@ impl LinuxBulkSendContainer {
                 slots,
             }),
             ready_cv: Condvar::new(),
+            enqueued_at: crate::perf_profile::stamp(),
         }
+    }
+
+    fn enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
+        self.enqueued_at
     }
 
     fn complete_packet(&self, slot: usize, packet: Vec<u8>, drop_on_backpressure: bool) {
@@ -213,26 +224,34 @@ impl LinuxBulkSendContainer {
     }
 
     fn complete_slot(&self, slot: usize, item: LinuxBulkSendSlot) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("linux bulk container state poisoned");
-        let mut completed = false;
-        if let Some(slot_state) = state.slots.get_mut(slot)
-            && matches!(slot_state, LinuxBulkSendSlot::Pending)
-        {
-            *slot_state = item;
-            completed = true;
-        }
-        if completed {
-            state.remaining = state.remaining.saturating_sub(1);
-            if state.remaining == 0 {
-                self.ready_cv.notify_one();
+        let skipped = matches!(item, LinuxBulkSendSlot::Skip);
+        let (completed, notify_ready) = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("linux bulk container state poisoned");
+            let mut completed = false;
+            if let Some(slot_state) = state.slots.get_mut(slot)
+                && matches!(slot_state, LinuxBulkSendSlot::Pending)
+            {
+                *slot_state = item;
+                completed = true;
             }
+            if completed {
+                state.remaining = state.remaining.saturating_sub(1);
+            }
+            (completed, completed && state.remaining == 0)
+        };
+        if completed && skipped {
+            crate::perf_profile::record_fmp_linux_bulk_container_skipped_packet();
+        }
+        if notify_ready {
+            self.ready_cv.notify_one();
         }
     }
 
     fn wait_and_send(&self, send_target: &SelectedSendTarget, target_key: SendTargetKey) {
+        let ready_wait_start = crate::perf_profile::stamp();
         let slots = {
             let mut state = self
                 .state
@@ -244,6 +263,11 @@ impl LinuxBulkSendContainer {
                     .wait(state)
                     .expect("linux bulk container state poisoned");
             }
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FmpLinuxBulkContainerReadyWait,
+                ready_wait_start,
+                1,
+            );
             std::mem::take(&mut state.slots)
         };
 
@@ -267,6 +291,7 @@ impl LinuxBulkSendContainer {
             );
         }
         if groups.is_empty() {
+            crate::perf_profile::record_fmp_linux_bulk_container_empty();
             return;
         }
 
@@ -275,6 +300,7 @@ impl LinuxBulkSendContainer {
             .iter()
             .map(SelectedSendBatch::packet_count)
             .sum::<usize>();
+        crate::perf_profile::record_fmp_linux_bulk_container_sent(udp_send_packet_count);
         let _t = crate::perf_profile::BatchTimer::start(
             crate::perf_profile::Stage::UdpSend,
             udp_send_packet_count,

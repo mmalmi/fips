@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 65);
+    assert_eq!(N_EVENTS, 71);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -181,6 +181,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::EncryptWorkerBulkQueueFull as usize).name(),
         "encrypt_worker_bulk_queue_full"
     );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerEnqueued as usize).name(),
+        "fmp_linux_bulk_container_enqueued"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerPackets as usize).name(),
+        "fmp_linux_bulk_container_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerSkippedPackets as usize).name(),
+        "fmp_linux_bulk_container_skipped_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerSent as usize).name(),
+        "fmp_linux_bulk_container_sent"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerSentPackets as usize).name(),
+        "fmp_linux_bulk_container_sent_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerEmpty as usize).name(),
+        "fmp_linux_bulk_container_empty"
+    );
 }
 
 #[test]
@@ -197,7 +221,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 44);
+    assert_eq!(N_STAGES, 46);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -250,6 +274,14 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         stage_from_index(Stage::FmpWorkerFmpSeal as usize).name(),
         "fmp_worker_fmp_seal"
     );
+    assert_eq!(
+        stage_from_index(Stage::FmpLinuxBulkContainerQueueWait as usize).name(),
+        "fmp_linux_bulk_container_queue_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::FmpLinuxBulkContainerReadyWait as usize).name(),
+        "fmp_linux_bulk_container_ready_wait"
+    );
 }
 
 #[test]
@@ -286,6 +318,18 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBatchPriorityPackets as usize].load(Relaxed);
     let decrypt_batch_bulk_before =
         EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed);
+    let linux_container_enqueued_before =
+        EVENTS[Event::FmpLinuxBulkContainerEnqueued as usize].load(Relaxed);
+    let linux_container_packets_before =
+        EVENTS[Event::FmpLinuxBulkContainerPackets as usize].load(Relaxed);
+    let linux_container_skipped_before =
+        EVENTS[Event::FmpLinuxBulkContainerSkippedPackets as usize].load(Relaxed);
+    let linux_container_sent_before =
+        EVENTS[Event::FmpLinuxBulkContainerSent as usize].load(Relaxed);
+    let linux_container_sent_packets_before =
+        EVENTS[Event::FmpLinuxBulkContainerSentPackets as usize].load(Relaxed);
+    let linux_container_empty_before =
+        EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -312,6 +356,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
     record_event_count_sample(Event::DecryptWorkerBatchPriorityPackets, 3);
     record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, 62);
+    record_event_count_sample(Event::FmpLinuxBulkContainerEnqueued, 5);
+    record_event_count_sample(Event::FmpLinuxBulkContainerPackets, 320);
+    record_event_count_sample(Event::FmpLinuxBulkContainerSkippedPackets, 7);
+    record_event_count_sample(Event::FmpLinuxBulkContainerSent, 4);
+    record_event_count_sample(Event::FmpLinuxBulkContainerSentPackets, 313);
+    record_event_count_sample(Event::FmpLinuxBulkContainerEmpty, 1);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -419,5 +469,35 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed)
             - decrypt_batch_bulk_before,
         62
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerEnqueued as usize].load(Relaxed)
+            - linux_container_enqueued_before,
+        5
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerPackets as usize].load(Relaxed)
+            - linux_container_packets_before,
+        320
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerSkippedPackets as usize].load(Relaxed)
+            - linux_container_skipped_before,
+        7
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerSent as usize].load(Relaxed)
+            - linux_container_sent_before,
+        4
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerSentPackets as usize].load(Relaxed)
+            - linux_container_sent_packets_before,
+        313
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed)
+            - linux_container_empty_before,
+        1
     );
 }
