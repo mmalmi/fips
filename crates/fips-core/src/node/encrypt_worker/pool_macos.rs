@@ -160,9 +160,10 @@ impl EncryptWorkerPool {
         }
         crate::perf_profile::record_fmp_linux_bulk_container_enqueued(run.len());
 
-        // Keep one container on one encrypt worker. A/Bs with per-slot and
-        // chunked fan-out preserved wire order but fragmented worker drain
-        // batches enough to regress TCP throughput and retransmits.
+        // Keep one same-target run in one container on one encrypt worker.
+        // A/Bs with per-slot fan-out, chunked slot fan-out, and ordered
+        // sub-containers preserved wire order but either fragmented worker
+        // batches or sliced send groups enough to regress TCP behavior.
         let idx = self.select_linux_bulk_container_worker();
         for (slot, job) in run.drain(..).enumerate() {
             self.dispatch_to_worker(
