@@ -188,6 +188,7 @@ impl DecryptWorkerFallbackReceivers {
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => receive.lane,
+        DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => endpoint.lane,
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
@@ -210,6 +211,7 @@ fn decrypt_worker_event_return_bulk_lane(
 ) -> DecryptWorkerReturnBulkLane {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::DirectFmpEndpointData(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -227,6 +229,7 @@ fn decrypt_worker_event_drop_event(
 ) -> crate::perf_profile::Event {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::DirectFmpEndpointData(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)

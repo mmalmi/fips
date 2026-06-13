@@ -640,6 +640,25 @@ pub(crate) struct DecryptAuthenticatedFmpReceive {
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+pub(crate) struct DecryptDirectFmpEndpointData {
+    pub fmp: DecryptFmpBookkeeping,
+    pub payload: Vec<u8>,
+    lane: DecryptWorkerLane,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+impl DecryptDirectFmpEndpointData {
+    #[cfg(test)]
+    pub(in crate::node) fn for_test(fmp: DecryptFmpBookkeeping, payload: Vec<u8>) -> Self {
+        Self {
+            fmp,
+            payload,
+            lane: DecryptWorkerLane::Bulk,
+            trace_enqueued_at: None,
+        }
+    }
+}
+
 pub(crate) struct DecryptAuthenticatedSession {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
@@ -890,6 +909,7 @@ pub(crate) enum DecryptWorkerEvent {
     Plaintext(DecryptFallback),
     PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
+    DirectFmpEndpointData(DecryptDirectFmpEndpointData),
     AuthenticatedSession(DecryptAuthenticatedSession),
     DirectSessionCommit(DecryptDirectSessionCommit),
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
@@ -907,6 +927,7 @@ impl DecryptWorkerEvent {
         match self {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
             Self::AuthenticatedFmpReceive(_) => 1,
+            Self::DirectFmpEndpointData(_) => 1,
             Self::AuthenticatedSession(_) => 1,
             Self::DirectSessionCommit(_) => 1,
             Self::DirectSessionCommitBatch(commits) => commits.len(),
@@ -925,6 +946,7 @@ impl DecryptWorkerEvent {
                 }
             }
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at = queued_at,
+            Self::DirectFmpEndpointData(endpoint) => endpoint.trace_enqueued_at = queued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at = queued_at,
             Self::DirectSessionCommitBatch(commits) => {
@@ -945,6 +967,7 @@ impl DecryptWorkerEvent {
                 .first()
                 .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at,
+            Self::DirectFmpEndpointData(endpoint) => endpoint.trace_enqueued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at,
             Self::DirectSessionCommitBatch(commits) => {
@@ -965,6 +988,7 @@ impl DecryptWorkerEvent {
     ) {
         match self {
             Self::AuthenticatedFmpReceive(_)
+            | Self::DirectFmpEndpointData(_)
             | Self::AuthenticatedSession(_)
             | Self::DirectSessionCommit(_)
             | Self::DirectSessionCommitBatch(_)

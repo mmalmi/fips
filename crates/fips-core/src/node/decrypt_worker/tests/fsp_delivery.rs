@@ -602,6 +602,7 @@
                 panic!("FSP AEAD failure must not bounce a possibly mutated packet")
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::DirectFmpEndpointData(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

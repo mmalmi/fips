@@ -57,6 +57,7 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected a direct commit batch")
             }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => panic!("expected a direct commit batch"),
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
@@ -551,6 +552,9 @@
             DecryptWorkerEvent::Plaintext(_) => panic!("invalid bulk job should fail AEAD"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("invalid bulk job should fail AEAD"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {

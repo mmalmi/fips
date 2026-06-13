@@ -774,6 +774,10 @@ impl Node {
             DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
                 self.process_authenticated_fmp_receive_from_worker(receive);
             }
+            DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => {
+                self.process_direct_fmp_endpoint_data_from_worker(endpoint)
+                    .await;
+            }
             DecryptWorkerEvent::AuthenticatedSession(session) => {
                 self.process_authenticated_session_from_worker(session)
                     .await;

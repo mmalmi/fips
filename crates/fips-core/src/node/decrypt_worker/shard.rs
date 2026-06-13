@@ -582,7 +582,7 @@ impl DecryptWorkerShard {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
-            lane: _,
+            lane,
             session_key,
             _transport_id: transport_id,
             _remote_addr: remote_addr,
@@ -686,6 +686,35 @@ impl DecryptWorkerShard {
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
         let link_msg_end = fmp_plaintext_end;
+        if packet_data
+            .get(link_msg_start..link_msg_end)
+            .and_then(|link_msg| link_msg.split_first())
+            .is_some_and(|(&msg_type, _)| msg_type == LinkMessageType::DirectEndpointData.to_byte())
+        {
+            let payload = packet_data[link_msg_start + 1..link_msg_end].to_vec();
+            let fmp = DecryptFmpBookkeeping {
+                source_peer,
+                transport_id,
+                remote_addr,
+                packet_timestamp_ms: timestamp_ms,
+                packet_len,
+                fmp_counter,
+                inner_timestamp_ms,
+                fmp_flags,
+            };
+            return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+                fallback_tx,
+                event: DecryptWorkerEvent::DirectFmpEndpointData(
+                    DecryptDirectFmpEndpointData {
+                        fmp,
+                        payload,
+                        lane,
+                        trace_enqueued_at: None,
+                    },
+                ),
+                direct_delivery: None,
+            })));
+        }
         let fsp_meta = Self::local_established_fsp_meta(
             &packet_data,
             local_node_addr,

@@ -709,6 +709,72 @@
         assert!(entry.last_inbound_frame_ms() > 1_000);
     }
 
+    #[tokio::test]
+    async fn worker_direct_fmp_endpoint_data_uses_established_session_gate() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let payload = b"worker direct fmp endpoint".to_vec();
+        let fmp = || crate::node::decrypt_worker::DecryptFmpBookkeeping {
+            source_peer,
+            transport_id: crate::transport::TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            packet_timestamp_ms: 2_000,
+            packet_len: payload.len() + crate::node::wire::ESTABLISHED_HEADER_SIZE
+                + crate::noise::TAG_SIZE
+                + 5,
+            fmp_counter: 21,
+            inner_timestamp_ms: 0x0102_0304,
+            fmp_flags: 0,
+        };
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+
+        node.process_direct_fmp_endpoint_data_from_worker(
+            crate::node::decrypt_worker::DecryptDirectFmpEndpointData::for_test(
+                fmp(),
+                payload.clone(),
+            ),
+        )
+        .await;
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "worker direct-FMP endpoint data without an established session must be dropped"
+        );
+
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        node.process_direct_fmp_endpoint_data_from_worker(
+            crate::node::decrypt_worker::DecryptDirectFmpEndpointData::for_test(
+                fmp(),
+                payload.clone(),
+            ),
+        )
+        .await;
+
+        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+            crate::node::NodeEndpointEvent::Data {
+                source_peer: delivered_source,
+                payload: delivered_payload,
+                ..
+            } => {
+                assert_eq!(delivered_source, source_peer);
+                assert_eq!(delivered_payload, payload);
+            }
+            event => panic!("expected worker direct-FMP endpoint data event, got {event:?}"),
+        }
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.traffic_counters(), (0, 1, 0, payload.len() as u64));
+        assert!(entry.last_inbound_frame_ms() > 1_000);
+    }
+
     #[test]
     fn session_runtime_receive_owns_decrypt_failure_recovery_gate() {
         let local = Identity::generate();

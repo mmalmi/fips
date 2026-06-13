@@ -48,6 +48,9 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -170,6 +173,7 @@
                 panic!("timestamp-only receive must not bounce plaintext bytes")
             }
             DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectFmpEndpointData(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
@@ -308,6 +312,80 @@
     }
 
     #[test]
+    fn worker_emits_compact_direct_fmp_endpoint_data() {
+        let key_bytes = [0x33u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let session_key = test_session_key(1, 81);
+        let mut shard = test_shard();
+        let source_peer = test_source_peer();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState {
+                fmp_cipher: open_cipher.into(),
+                fmp_replay: ReplayWindow::new(),
+                source_peer,
+            },
+        );
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let counter = 13;
+        let flags = crate::node::wire::FLAG_SP;
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let payload = vec![0x5a; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN];
+        let mut plaintext = inner_timestamp_ms.to_le_bytes().to_vec();
+        plaintext.push(LinkMessageType::DirectEndpointData.to_byte());
+        plaintext.extend_from_slice(&payload);
+        let (packet, header) =
+            sealed_fmp_test_packet_with_plaintext(&seal_cipher, counter, flags, &plaintext);
+
+        shard
+            .handle_job(decrypt_job_for_test_packet(
+                packet,
+                header,
+                session_key,
+                counter,
+                flags,
+                fallback_tx,
+            ))
+            .expect("direct-FMP endpoint worker job should be handled");
+
+        match fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("compact direct-FMP endpoint event")
+        {
+            DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => {
+                assert_eq!(endpoint.fmp.source_peer, source_peer);
+                assert_eq!(endpoint.fmp.fmp_counter, counter);
+                assert_eq!(endpoint.fmp.inner_timestamp_ms, inner_timestamp_ms);
+                assert_eq!(endpoint.fmp.fmp_flags, flags);
+                assert_eq!(endpoint.payload, payload);
+                assert_eq!(endpoint.lane, DecryptWorkerLane::Bulk);
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("direct-FMP endpoint data must not bounce plaintext")
+            }
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("unexpected worker event for direct-FMP endpoint data")
+            }
+        }
+        assert!(fallback_rx.priority.try_recv().is_err());
+        assert!(fallback_rx.bulk.try_recv().is_err());
+        assert_eq!(
+            shard.fmp_replay_highest(session_key).unwrap(),
+            counter,
+            "successful direct-FMP endpoint AEAD must advance replay"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_shard_owns_register_and_unregister_state() {
         let session_key = test_session_key(2, 80);
         let mut shard = test_shard();
@@ -420,6 +498,9 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -508,6 +589,9 @@
             DecryptWorkerEvent::Plaintext(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected decrypt failure report"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
