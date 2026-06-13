@@ -360,7 +360,7 @@
     }
 
     #[test]
-    fn decrypt_worker_fallback_priority_full_returns_false_without_waiting() {
+    fn decrypt_worker_fallback_priority_full_waits_for_reserved_return_slot() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 
         assert!(fallback_tx.send(dummy_failure_event()));
@@ -374,22 +374,39 @@
         let tx_for_thread = fallback_tx.clone();
         std::thread::spawn(move || {
             done_tx
-                .send(tx_for_thread.send(dummy_failure_event()))
+                .send(tx_for_thread.send(dummy_authenticated_session_event(
+                    DecryptWorkerLane::Priority,
+                )))
                 .unwrap();
         });
 
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "full priority return lane should backpressure the decrypt worker until rx_loop drains"
+        );
+        assert!(matches!(
+            fallback_rx.priority.try_recv().expect("first priority event"),
+            DecryptWorkerEvent::DecryptFailure(_)
+        ));
         let sent = done_rx
             .recv_timeout(Duration::from_millis(250))
-            .expect("full fallback priority lane must not park decrypt worker");
+            .expect("draining one priority slot should unblock the decrypt worker");
         assert!(
-            !sent,
-            "priority fallback sender should report pressure when the lane is full"
+            sent,
+            "priority authenticated-session return should be accepted after backpressure"
         );
         assert_eq!(
             fallback_rx.priority.len(),
             1,
-            "priority fallback lane must stay bounded"
+            "priority fallback lane must stay bounded while preserving the event"
         );
+        assert!(matches!(
+            fallback_rx
+                .priority
+                .try_recv()
+                .expect("authenticated priority event"),
+            DecryptWorkerEvent::AuthenticatedSession(_)
+        ));
 
         assert!(
             fallback_tx.send(dummy_plaintext_event(
@@ -398,10 +415,6 @@
             "full priority fallback lane must not consume bulk fallback capacity"
         );
         assert_eq!(fallback_rx.bulk.len(), 1);
-        assert!(matches!(
-            fallback_rx.priority.try_recv().expect("priority event"),
-            DecryptWorkerEvent::DecryptFailure(_)
-        ));
         assert!(matches!(
             fallback_rx.bulk.try_recv().expect("bulk event"),
             DecryptWorkerEvent::Plaintext(_)
