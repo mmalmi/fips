@@ -155,6 +155,7 @@ impl EncryptWorkerPool {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
+                    (*job).complete_sequenced_skip();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -186,6 +187,7 @@ impl EncryptWorkerPool {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
+                    (*job).complete_sequenced_skip();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =

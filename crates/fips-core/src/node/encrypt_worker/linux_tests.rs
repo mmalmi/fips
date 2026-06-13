@@ -189,6 +189,53 @@ mod tests {
         });
     }
 
+    #[test]
+    fn linux_sequenced_send_flow_skip_unblocks_later_packet() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10045".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let key = target.key();
+            let flow = Arc::new(LinuxSequencedSendFlow {
+                key,
+                send_target: target,
+                next_seq: std::sync::atomic::AtomicU64::new(0),
+                last_used_ms: std::sync::atomic::AtomicU64::new(0),
+                state: Mutex::new(LinuxSendFlowState::default()),
+                ready_cv: Condvar::new(),
+                space_cv: Condvar::new(),
+            });
+
+            flow.complete_many(vec![(
+                1,
+                LinuxSendItem::Packet {
+                    packet: pkt(1500),
+                    drop_on_backpressure: true,
+                },
+            )]);
+            flow.complete_many(vec![(0, LinuxSendItem::Skip)]);
+
+            let groups = flow
+                .take_ready_groups()
+                .expect("skip should unblock later ordered packet");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].packet_count(), 1);
+            let state = flow.state.lock().expect("linux send flow state");
+            assert_eq!(state.next_send_seq, 2);
+            assert!(state.pending.is_empty());
+        });
+    }
+
     /// End-to-end: bind a real UDP socket pair on loopback, fire
     /// `send_batch_gso` from the sender, recv on the receiver, confirm
     /// we get N segmented datagrams back (one per logical packet).

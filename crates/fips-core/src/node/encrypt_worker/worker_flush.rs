@@ -71,7 +71,10 @@ impl SealedSendPacket {
         return Self::from_job_without_target_key(job);
     }
 
-    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
+    #[cfg(all(
+        unix,
+        any(test, not(any(target_os = "linux", target_os = "macos")))
+    ))]
     fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
         let QueuedFmpSendJob {
             job, target_key, ..
