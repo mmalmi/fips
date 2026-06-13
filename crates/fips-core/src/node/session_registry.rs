@@ -89,6 +89,50 @@ impl SessionRegistry {
         Some(result)
     }
 
+    pub(in crate::node) fn record_fsp_send_bookkeeping_batch<I>(
+        &mut self,
+        node_addr: &NodeAddr,
+        inputs: I,
+    ) -> Option<usize>
+    where
+        I: IntoIterator<Item = FspSendBookkeepingInput>,
+    {
+        let entry = self.sessions.get_mut(node_addr)?;
+        let mut data_packets = 0usize;
+        let mut data_bytes = 0usize;
+        let mut last_touch_ms = None;
+        let mut last_next_hop = None;
+
+        for input in inputs {
+            if let Some(next_hop) = input.next_hop {
+                last_next_hop = Some(next_hop);
+            }
+            if let Some(bytes) = input.data_bytes {
+                data_packets += 1;
+                data_bytes += bytes;
+            }
+            if let Some(mmp) = entry.mmp_mut() {
+                mmp.sender
+                    .record_sent(input.counter, input.timestamp, input.frame_bytes);
+            }
+            if input.touch_ms.is_some() {
+                last_touch_ms = input.touch_ms;
+            }
+        }
+
+        if let Some(next_hop) = last_next_hop {
+            entry.record_outbound_next_hop(next_hop);
+        }
+        if data_packets > 0 {
+            entry.record_sent_batch(data_packets, data_bytes);
+        }
+        if let Some(touch_ms) = last_touch_ms {
+            entry.touch(touch_ms);
+        }
+
+        Some(data_packets)
+    }
+
     #[cfg(unix)]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
         &mut self,

@@ -140,6 +140,30 @@ fn session_registry_owns_fsp_send_bookkeeping() {
     assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
     assert_eq!(mmp.sender.cumulative_bytes_sent(), 320);
 
+    let batch_next_hop = make_node_addr(78);
+    let batch_recorded = registry
+        .record_fsp_send_bookkeeping_batch(
+            &peer_addr,
+            [
+                FspSendBookkeepingInput::data(11, 9, 1_400, 70, 2_100)
+                    .with_next_hop(batch_next_hop),
+                FspSendBookkeepingInput::data(19, 10, 1_500, 90, 2_200)
+                    .with_next_hop(batch_next_hop),
+                FspSendBookkeepingInput::control(11, 1_600, 40),
+            ],
+        )
+        .expect("FSP batch bookkeeping should find session entry");
+    assert_eq!(batch_recorded, 2);
+    let entry = registry
+        .get(&peer_addr)
+        .expect("batch bookkeeping must keep session storage");
+    assert_eq!(entry.traffic_counters(), (3, 0, 153, 0));
+    assert_eq!(entry.last_activity(), 2_200);
+    assert_eq!(entry.last_outbound_next_hop(), Some(batch_next_hop));
+    let mmp = entry.mmp().expect("session should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 5);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 520);
+
     let legacy_full = Identity::generate();
     let legacy_identity = PeerIdentity::from_pubkey_full(legacy_full.pubkey_full());
     let legacy_addr = *legacy_identity.node_addr();
@@ -179,6 +203,15 @@ fn session_registry_owns_fsp_send_bookkeeping() {
             )
             .is_none(),
         "missing sessions should not record FSP send bookkeeping"
+    );
+    assert!(
+        registry
+            .record_fsp_send_bookkeeping_batch(
+                &make_node_addr(99),
+                [FspSendBookkeepingInput::control(10, 1_500, 48)],
+            )
+            .is_none(),
+        "missing sessions should not record FSP send batch bookkeeping"
     );
 }
 
