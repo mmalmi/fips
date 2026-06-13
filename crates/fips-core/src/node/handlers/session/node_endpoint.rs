@@ -265,10 +265,7 @@ impl Node {
         let wants_coords = send_context.wants_coords();
         let timestamp = send_context.timestamp;
 
-        let msg_type = SessionMessageType::EndpointData.to_byte();
         let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext =
-            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload.as_slice());
 
         let (include_coords, my_coords, dest_coords) = if wants_coords {
             let src = self.tree_state.my_coords().clone();
@@ -302,7 +299,7 @@ impl Node {
             now_ms,
             timestamp,
             fsp_flags: flags,
-            inner_plaintext,
+            inner_flags,
             my_coords,
             dest_coords,
         })

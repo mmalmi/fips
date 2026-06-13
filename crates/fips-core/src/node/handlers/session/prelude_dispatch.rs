@@ -599,9 +599,21 @@ struct PipelinedEndpointSend<'a> {
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum PipelinedEndpointInnerPlaintext<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    Borrowed(&'a [u8]),
+    EndpointData {
+        timestamp: u32,
+        inner_flags: u8,
+        payload: &'a [u8],
+    },
 }
 
 struct PreparedEndpointSessionData<'a> {
@@ -610,7 +622,7 @@ struct PreparedEndpointSessionData<'a> {
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: Vec<u8>,
+    inner_flags: u8,
     my_coords: Option<crate::tree::TreeCoordinate>,
     dest_coords: Option<crate::tree::TreeCoordinate>,
 }
@@ -630,7 +642,7 @@ struct PipelinedEndpointWire {
 struct PipelinedEndpointWirePlan<'a> {
     source_addr: NodeAddr,
     dest_addr: NodeAddr,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
     path_mtu: u16,
@@ -669,12 +681,17 @@ struct SessionFspSendPlan<'a> {
     dest_addr: NodeAddr,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: SessionFspPlaintext<'a>,
     coords: Option<(
         &'a crate::tree::TreeCoordinate,
         &'a crate::tree::TreeCoordinate,
     )>,
     bookkeeping: SessionFspSendBookkeeping,
+}
+
+enum SessionFspPlaintext<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
 }
 
 struct SealedSessionFspSend {
@@ -893,7 +910,11 @@ impl<'a> PreparedEndpointSessionData<'a> {
             now_ms: self.now_ms,
             timestamp: self.timestamp,
             fsp_flags: self.fsp_flags,
-            inner_plaintext: &self.inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::endpoint_data(
+                self.timestamp,
+                self.inner_flags,
+                self.payload.as_slice(),
+            ),
             my_coords: self.my_coords.as_ref(),
             dest_coords: self.dest_coords.as_ref(),
         }
@@ -904,7 +925,12 @@ impl<'a> PreparedEndpointSessionData<'a> {
             *self.dest_addr,
             self.timestamp,
             self.fsp_flags,
-            &self.inner_plaintext,
+            PipelinedEndpointInnerPlaintext::endpoint_data(
+                self.timestamp,
+                self.inner_flags,
+                self.payload.as_slice(),
+            )
+            .to_vec(),
             self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
             SessionFspSendBookkeeping::Data {
                 payload_len: self.payload.len(),
@@ -914,12 +940,88 @@ impl<'a> PreparedEndpointSessionData<'a> {
     }
 }
 
+#[cfg(unix)]
+impl<'a> PipelinedEndpointInnerPlaintext<'a> {
+    fn endpoint_data(timestamp: u32, inner_flags: u8, payload: &'a [u8]) -> Self {
+        Self::EndpointData {
+            timestamp,
+            inner_flags,
+            payload,
+        }
+    }
+
+    #[cfg(test)]
+    fn borrowed(inner_plaintext: &'a [u8]) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(inner_plaintext) => inner_plaintext.len(),
+            Self::EndpointData { payload, .. } => FSP_INNER_HEADER_SIZE + payload.len(),
+        }
+    }
+
+    fn write_to(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Borrowed(inner_plaintext) => out.extend_from_slice(inner_plaintext),
+            Self::EndpointData {
+                timestamp,
+                inner_flags,
+                payload,
+            } => {
+                out.extend_from_slice(&timestamp.to_le_bytes());
+                out.push(SessionMessageType::EndpointData.to_byte());
+                out.push(*inner_flags);
+                out.extend_from_slice(payload);
+            }
+        }
+    }
+
+    fn to_vec(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len());
+        self.write_to(&mut out);
+        out
+    }
+}
+
+impl<'a> SessionFspPlaintext<'a> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(inner_plaintext) => inner_plaintext,
+            Self::Owned(inner_plaintext) => inner_plaintext,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+}
+
+impl<'a> From<&'a [u8]> for SessionFspPlaintext<'a> {
+    fn from(inner_plaintext: &'a [u8]) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+}
+
+impl<'a> From<&'a Vec<u8>> for SessionFspPlaintext<'a> {
+    fn from(inner_plaintext: &'a Vec<u8>) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+}
+
+impl From<Vec<u8>> for SessionFspPlaintext<'_> {
+    fn from(inner_plaintext: Vec<u8>) -> Self {
+        Self::Owned(inner_plaintext)
+    }
+}
+
 impl<'a> SessionFspSendPlan<'a> {
     fn new(
         dest_addr: NodeAddr,
         timestamp: u32,
         fsp_flags: u8,
-        inner_plaintext: &'a [u8],
+        inner_plaintext: impl Into<SessionFspPlaintext<'a>>,
         coords: Option<(
             &'a crate::tree::TreeCoordinate,
             &'a crate::tree::TreeCoordinate,
@@ -935,7 +1037,7 @@ impl<'a> SessionFspSendPlan<'a> {
             dest_addr,
             timestamp,
             fsp_flags,
-            inner_plaintext,
+            inner_plaintext: inner_plaintext.into(),
             coords,
             bookkeeping,
         }
@@ -956,7 +1058,7 @@ impl<'a> SessionFspSendPlan<'a> {
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
             session
-                .encrypt_with_aad(self.inner_plaintext, &header)
+                .encrypt_with_aad(self.inner_plaintext.as_slice(), &header)
                 .map_err(|e| NodeError::SendFailed {
                     node_addr: self.dest_addr,
                     reason: format!("session encrypt failed: {}", e),

@@ -205,7 +205,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -269,7 +269,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -391,7 +391,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -563,7 +563,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -694,7 +694,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };

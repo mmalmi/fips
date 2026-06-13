@@ -352,7 +352,7 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
     fn new(
         source_addr: &NodeAddr,
         dest_addr: &NodeAddr,
-        inner_plaintext: &'a [u8],
+        inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
         my_coords: Option<&'a crate::tree::TreeCoordinate>,
         dest_coords: Option<&'a crate::tree::TreeCoordinate>,
         path_mtu: u16,
@@ -406,7 +406,7 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
             encode_coords(dst, &mut wire_buf);
         }
         let fsp_plaintext_offset = wire_buf.len();
-        wire_buf.extend_from_slice(self.inner_plaintext);
+        self.inner_plaintext.write_to(&mut wire_buf);
 
         PipelinedEndpointWire {
             wire_buf,
