@@ -60,6 +60,14 @@
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `FMP_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP encrypt jobs → worker
 //!   * `FMP_WORKER_BULK_QUEUE_WAIT` — bulk FMP encrypt jobs → worker
+//!   * `FMP_LINUX_BULK_CONTAINER_QUEUE_WAIT` — Linux ordered bulk container
+//!     enqueue → per-flow sender dequeue
+//!   * `FMP_LINUX_BULK_CONTAINER_READY_WAIT` — per-flow sender dequeue →
+//!     all ordered container slots complete
+//!   * `FMP_LINUX_BULK_CONTAINER_FIRST_SLOT_WAIT` — Linux ordered bulk
+//!     container enqueue → first worker slot completion
+//!   * `FMP_LINUX_BULK_CONTAINER_ALL_SLOTS_WAIT` — Linux ordered bulk
+//!     container enqueue → all worker slots complete
 //!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
 //!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
 //!   * `DECRYPT_WORKER_BULK_QUEUE_WAIT` — bulk FMP decrypt jobs → decrypt worker
@@ -89,7 +97,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 57;
+const N_STAGES: usize = 59;
 const N_EVENTS: usize = 82;
 const HIST_BUCKETS: usize = 48;
 
@@ -231,6 +239,10 @@ pub enum Stage {
     EndpointCommandMaintenancePreWait = 55,
     /// Endpoint command residence for the bounded drain after maintenance.
     EndpointCommandMaintenancePostWait = 56,
+    /// Linux bulk-container enqueue until the first worker slot completes.
+    FmpLinuxBulkContainerFirstSlotWait = 57,
+    /// Linux bulk-container enqueue until every worker slot completes.
+    FmpLinuxBulkContainerAllSlotsWait = 58,
 }
 
 impl Stage {
@@ -295,6 +307,8 @@ impl Stage {
             Stage::EndpointCommandSideWait => "endpoint_command_side_wait",
             Stage::EndpointCommandMaintenancePreWait => "endpoint_command_maintenance_pre_wait",
             Stage::EndpointCommandMaintenancePostWait => "endpoint_command_maintenance_post_wait",
+            Stage::FmpLinuxBulkContainerFirstSlotWait => "fmp_linux_bulk_container_first_slot_wait",
+            Stage::FmpLinuxBulkContainerAllSlotsWait => "fmp_linux_bulk_container_all_slots_wait",
         }
     }
 }
@@ -358,6 +372,8 @@ fn stage_from_index(idx: usize) -> Stage {
         54 => Stage::EndpointCommandSideWait,
         55 => Stage::EndpointCommandMaintenancePreWait,
         56 => Stage::EndpointCommandMaintenancePostWait,
+        57 => Stage::FmpLinuxBulkContainerFirstSlotWait,
+        58 => Stage::FmpLinuxBulkContainerAllSlotsWait,
         _ => unreachable!(),
     }
 }

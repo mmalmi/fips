@@ -225,25 +225,47 @@ impl LinuxBulkSendContainer {
 
     fn complete_slot(&self, slot: usize, item: LinuxBulkSendSlot) {
         let skipped = matches!(item, LinuxBulkSendSlot::Skip);
-        let (completed, notify_ready) = {
+        let (completed, notify_ready, first_completed, all_completed) = {
             let mut state = self
                 .state
                 .lock()
                 .expect("linux bulk container state poisoned");
             let mut completed = false;
+            let mut first_completed = false;
+            let was_first_pending = state.remaining == state.slots.len();
             if let Some(slot_state) = state.slots.get_mut(slot)
                 && matches!(slot_state, LinuxBulkSendSlot::Pending)
             {
                 *slot_state = item;
                 completed = true;
+                first_completed = was_first_pending;
             }
             if completed {
                 state.remaining = state.remaining.saturating_sub(1);
             }
-            (completed, completed && state.remaining == 0)
+            (
+                completed,
+                completed && state.remaining == 0,
+                first_completed,
+                completed && state.remaining == 0,
+            )
         };
         if completed && skipped {
             crate::perf_profile::record_fmp_linux_bulk_container_skipped_packet();
+        }
+        if first_completed {
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FmpLinuxBulkContainerFirstSlotWait,
+                self.enqueued_at,
+                1,
+            );
+        }
+        if all_completed {
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FmpLinuxBulkContainerAllSlotsWait,
+                self.enqueued_at,
+                1,
+            );
         }
         if notify_ready {
             self.ready_cv.notify_one();
