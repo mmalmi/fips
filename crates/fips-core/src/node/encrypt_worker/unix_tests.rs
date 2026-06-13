@@ -69,7 +69,7 @@ mod unix_tests {
         for i in 0..iters {
             fmp_wire_buf.truncate(fmp_plain_len);
             SealedSendPacket::seal_wire_packet(
-                fmp_cipher.clone(),
+                fmp_cipher.clone().into(),
                 i as u64,
                 &mut fmp_wire_buf,
                 None,
@@ -87,11 +87,11 @@ mod unix_tests {
         for i in 0..iters {
             dual_wire_buf.truncate(dual_plain_len);
             SealedSendPacket::seal_wire_packet(
-                fmp_cipher.clone(),
+                fmp_cipher.clone().into(),
                 i as u64,
                 &mut dual_wire_buf,
                 Some(FspSealJob {
-                    cipher: fsp_cipher.clone(),
+                    cipher: fsp_cipher.clone().into(),
                     counter: i as u64,
                     aad_offset: fsp_aad_offset,
                     plaintext_offset: fsp_plaintext_offset,
@@ -123,7 +123,7 @@ mod unix_tests {
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
         QueuedFmpSendJob::direct(FmpSendJob {
-            cipher: cipher.clone(),
+            cipher: cipher.clone().into(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
@@ -297,7 +297,7 @@ mod unix_tests {
             wire_buf.extend_from_slice(plaintext);
 
             let sealed = SealedSendPacket::from_job(FmpSendJob {
-                cipher: cipher.clone(),
+                cipher: cipher.clone().into(),
                 counter,
                 wire_buf,
                 fsp_seal: None,
@@ -335,11 +335,11 @@ mod unix_tests {
                 dest,
             );
             let invalid = SealedSendPacket::from_job(FmpSendJob {
-                cipher,
+                cipher: cipher.into(),
                 counter: counter + 1,
                 wire_buf: vec![0; ESTABLISHED_HEADER_SIZE + 8],
                 fsp_seal: Some(FspSealJob {
-                    cipher: test_cipher(5),
+                    cipher: test_cipher(5).into(),
                     counter: 1,
                     aad_offset: ESTABLISHED_HEADER_SIZE,
                     plaintext_offset: ESTABLISHED_HEADER_SIZE,
@@ -440,7 +440,7 @@ mod unix_tests {
                 wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
                 wire_buf.resize(ESTABLISHED_HEADER_SIZE + 32, 0);
                 FmpSendJob {
-                    cipher,
+                    cipher: cipher.into(),
                     counter: 7,
                     wire_buf,
                     fsp_seal: None,
@@ -513,7 +513,7 @@ mod unix_tests {
             wire_buf.extend_from_slice(plaintext);
 
             let queued = QueuedFmpSendJob::direct(FmpSendJob {
-                cipher: cipher.clone(),
+                cipher: cipher.clone().into(),
                 counter,
                 wire_buf,
                 fsp_seal: None,
@@ -604,11 +604,11 @@ mod unix_tests {
                 + crate::noise::TAG_SIZE
                 + crate::noise::TAG_SIZE;
             let mut batch = vec![FmpSendJob {
-                cipher: fmp_cipher.clone(),
+                cipher: fmp_cipher.clone().into(),
                 counter: fmp_counter,
                 wire_buf,
                 fsp_seal: Some(FspSealJob {
-                    cipher: fsp_cipher.clone(),
+                    cipher: fsp_cipher.clone().into(),
                     counter: fsp_counter,
                     aad_offset: fsp_aad_offset,
                     plaintext_offset: fsp_plaintext_offset,

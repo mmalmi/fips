@@ -51,7 +51,7 @@
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
         QueuedFmpSendJob::direct(FmpSendJob {
-            cipher: cipher.clone(),
+            cipher: cipher.clone().into(),
             counter: 0,
             wire_buf,
             fsp_seal: None,

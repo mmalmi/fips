@@ -344,7 +344,7 @@ mod tests {
                 wire_buf.extend_from_slice(&[0u8; 16]);
                 wire_buf.extend_from_slice(&vec![0u8; plaintext_size]);
                 FmpSendJob {
-                    cipher: cipher.clone(),
+                    cipher: cipher.clone().into(),
                     counter,
                     wire_buf,
                     fsp_seal: None,

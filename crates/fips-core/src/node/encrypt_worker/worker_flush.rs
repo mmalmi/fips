@@ -157,7 +157,7 @@ impl SealedSendPacket {
     }
 
     fn seal_wire_packet(
-        cipher: LessSafeKey,
+        cipher: Arc<LessSafeKey>,
         counter: u64,
         wire_buf: &mut Vec<u8>,
         fsp_seal: Option<FspSealJob>,

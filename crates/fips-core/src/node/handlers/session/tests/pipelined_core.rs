@@ -120,13 +120,13 @@
         let fmp_reservation = PreparedFmpWorkerReservation {
             counter: fmp_counter,
             header: fmp_header,
-            cipher: test_cipher(7),
+            cipher: test_cipher(7).into(),
             predicted_bytes: wire.wire_capacity,
         };
         let fsp_reservation = FspSendReservation {
             counter: fsp_counter,
             header: fsp_header,
-            cipher: test_cipher(8),
+            cipher: test_cipher(8).into(),
         };
         let worker_wire = wire.into_worker_wire(fmp_reservation, fsp_reservation);
         assert_eq!(worker_wire.fmp_counter, fmp_counter);
@@ -675,7 +675,7 @@
         let fmp_reservation = PreparedFmpWorkerReservation {
             counter: fmp_counter,
             header: fmp_header,
-            cipher: test_cipher(7),
+            cipher: test_cipher(7).into(),
             predicted_bytes: ESTABLISHED_HEADER_SIZE
                 + plan.fmp_payload_len() as usize
                 + crate::noise::TAG_SIZE,
@@ -683,7 +683,7 @@
         let fsp_reservation = FspSendReservation {
             counter: fsp_counter,
             header: fsp_header,
-            cipher: test_cipher(8),
+            cipher: test_cipher(8).into(),
         };
 
         let prepared = plan.into_prepared_worker_send(
@@ -813,7 +813,7 @@
         let fmp_reservation = PreparedFmpWorkerReservation {
             counter: fmp_counter,
             header: fmp_header,
-            cipher: test_cipher(7),
+            cipher: test_cipher(7).into(),
             predicted_bytes: ESTABLISHED_HEADER_SIZE
                 + plan.fmp_payload_len() as usize
                 + crate::noise::TAG_SIZE,

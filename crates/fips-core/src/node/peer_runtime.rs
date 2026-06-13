@@ -677,7 +677,7 @@ pub(in crate::node) struct PreparedFmpInlineSend {
 pub(in crate::node) struct PreparedFmpWorkerReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) cipher: Arc<ring::aead::LessSafeKey>,
     pub(in crate::node) predicted_bytes: usize,
 }
 
@@ -686,7 +686,7 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) cipher: Arc<ring::aead::LessSafeKey>,
     pub(in crate::node) wire_buf: Vec<u8>,
     pub(in crate::node) predicted_bytes: usize,
 }

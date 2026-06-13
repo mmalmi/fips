@@ -5,6 +5,7 @@
 //! (SessionSetup/SessionAck/SessionMsg3) carried inside SessionDatagram
 //! envelopes through the mesh.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::SessionMmpConfig;
@@ -66,7 +67,7 @@ pub(crate) enum FspOpenError {
 pub(crate) struct FspSendReservation {
     pub(crate) counter: u64,
     pub(crate) header: [u8; FSP_HEADER_SIZE],
-    pub(crate) cipher: LessSafeKey,
+    pub(crate) cipher: Arc<LessSafeKey>,
 }
 
 /// Recv-side epoch state exported to the decrypt worker.
@@ -586,7 +587,7 @@ impl SessionEntry {
     /// Reserve FSP send state for worker-side encryption.
     ///
     /// The session entry owns the send counter sequence. Worker paths receive a
-    /// clone of the AEAD key plus the already-reserved counter/header pair, so
+    /// shared AEAD handle plus the already-reserved counter/header pair, so
     /// worker encryption cannot advance or rebuild session-owned sequencing.
     #[cfg(unix)]
     pub(crate) fn reserve_fsp_worker_send(
@@ -597,7 +598,7 @@ impl SessionEntry {
         let Some(session) = self.current_noise_session_mut() else {
             return Ok(None);
         };
-        let Some(cipher) = session.send_cipher_clone() else {
+        let Some(cipher) = session.send_cipher_handle() else {
             return Ok(None);
         };
         let counter = session.take_send_counter()?;

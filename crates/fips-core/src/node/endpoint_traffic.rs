@@ -48,7 +48,7 @@ impl EndpointPayloadClass {
 pub(in crate::node) struct FmpWorkerSendReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) cipher: std::sync::Arc<ring::aead::LessSafeKey>,
 }
 
 #[cfg(unix)]
@@ -58,7 +58,7 @@ pub(in crate::node) fn reserve_fmp_worker_send(
     flags: u8,
     payload_len: u16,
 ) -> Result<Option<FmpWorkerSendReservation>, crate::noise::NoiseError> {
-    let Some(cipher) = session.send_cipher_clone() else {
+    let Some(cipher) = session.send_cipher_handle() else {
         return Ok(None);
     };
     let counter = session.take_send_counter()?;

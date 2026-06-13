@@ -46,9 +46,10 @@ use tracing::{debug, trace, warn};
 /// inside the worker. That second alloc + ~1.5 KB memcpy per packet at
 /// line rate cost ~150 MB/sec of memory bandwidth on the hot worker.)
 pub(crate) struct FmpSendJob {
-    /// Cloned FMP send cipher. `LessSafeKey` is `Clone` (`ring::aead`)
-    /// — the clone is just a refcount bump on the inner key material.
-    pub cipher: LessSafeKey,
+    /// Shared immutable FMP send cipher. The session pre-reserves a unique
+    /// counter for each job; workers only borrow this key for explicit-counter
+    /// AEAD and never mutate session nonce state.
+    pub cipher: Arc<LessSafeKey>,
     /// Pre-reserved monotonic counter (via `take_send_counter`).
     pub counter: u64,
     /// Pre-built wire buffer: `[16-byte FMP header][inner plaintext]`
@@ -92,7 +93,7 @@ pub(crate) struct FmpSendJob {
 }
 
 pub(crate) struct FspSealJob {
-    pub cipher: LessSafeKey,
+    pub cipher: Arc<LessSafeKey>,
     pub counter: u64,
     pub aad_offset: usize,
     pub plaintext_offset: usize,

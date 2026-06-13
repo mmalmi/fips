@@ -692,7 +692,7 @@ struct PipelinedEndpointWirePlan<'a> {
 
 #[cfg(unix)]
 struct PipelinedEndpointWorkerWire {
-    fmp_cipher: ring::aead::LessSafeKey,
+    fmp_cipher: std::sync::Arc<ring::aead::LessSafeKey>,
     fmp_counter: u64,
     fsp_counter: u64,
     wire_buf: Vec<u8>,
