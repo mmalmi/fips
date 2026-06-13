@@ -434,12 +434,14 @@ async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
 }
 
 #[tokio::test]
-async fn priority_bulk_drain_cursor_can_drain_two_full_batch_cost_items() {
+async fn priority_bulk_drain_cursor_can_drain_four_full_batch_cost_items() {
     let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
     let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
 
-    bulk_tx.send("bulk-queued").await.unwrap();
-    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 128);
+    bulk_tx.send("bulk-queued-1").await.unwrap();
+    bulk_tx.send("bulk-queued-2").await.unwrap();
+    bulk_tx.send("bulk-queued-3").await.unwrap();
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 256);
 
     assert_eq!(
         drain.next(&mut priority_rx, &mut bulk_rx),
@@ -448,11 +450,21 @@ async fn priority_bulk_drain_cursor_can_drain_two_full_batch_cost_items() {
     drain.charge_extra(63);
     assert_eq!(
         drain.next(&mut priority_rx, &mut bulk_rx),
-        Some("bulk-queued")
+        Some("bulk-queued-1")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued-2")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued-3")
     );
     drain.charge_extra(63);
     assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
-    assert_eq!(drain.drained(), 128);
+    assert_eq!(drain.drained(), 256);
 }
 
 #[tokio::test]

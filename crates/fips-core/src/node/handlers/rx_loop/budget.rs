@@ -31,9 +31,9 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 64;
 /// A directly selected endpoint command has already lost the biased select race
 /// to decrypt priority, timer maintenance, authenticated decrypt returns, and
-/// raw packet receive. Give that path enough room to dequeue two full endpoint
-/// batch commands while still returning before half a raw receive turn.
-pub(super) const ENDPOINT_COMMAND_DRAIN_BUDGET: usize = 128;
+/// raw packet receive. Give that path enough room to dequeue four full endpoint
+/// batch commands while still returning within half a raw receive turn.
+pub(super) const ENDPOINT_COMMAND_DRAIN_BUDGET: usize = 256;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
 /// transport queue; fallback/side interleaves reserve progress before the cap.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
