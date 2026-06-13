@@ -245,6 +245,7 @@
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectFmpEndpointData(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
@@ -562,6 +563,7 @@
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::DirectFmpEndpointData(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

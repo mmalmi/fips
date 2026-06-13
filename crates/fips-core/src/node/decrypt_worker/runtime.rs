@@ -307,6 +307,14 @@ impl DecryptWorkerOutput {
         )
     }
 
+    fn is_batchable_direct_fmp_endpoint_data(&self) -> bool {
+        matches!(
+            (&self.event, &self.direct_delivery),
+            (DecryptWorkerEvent::DirectFmpEndpointData(endpoint), None)
+                if matches!(endpoint.lane, DecryptWorkerLane::Bulk)
+        )
+    }
+
     fn is_batchable_direct_ipv6(&self) -> bool {
         matches!(
             (&self.event, &self.direct_delivery),

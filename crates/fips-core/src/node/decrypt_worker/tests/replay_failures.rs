@@ -51,6 +51,9 @@
             DecryptWorkerEvent::DirectFmpEndpointData(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -174,6 +177,7 @@
             }
             DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectFmpEndpointData(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
@@ -367,6 +371,7 @@
                 panic!("direct-FMP endpoint data must not bounce plaintext")
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -501,6 +506,9 @@
             DecryptWorkerEvent::DirectFmpEndpointData(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -592,6 +600,9 @@
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::DirectFmpEndpointData(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {

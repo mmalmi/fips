@@ -603,6 +603,7 @@
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::DirectFmpEndpointData(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

@@ -58,6 +58,9 @@
                 panic!("expected a direct commit batch")
             }
             DecryptWorkerEvent::DirectFmpEndpointData(_) => panic!("expected a direct commit batch"),
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
+                panic!("expected a direct commit batch")
+            }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
@@ -77,6 +80,116 @@
             }
             NodeEndpointEvent::Data { .. } => panic!("expected endpoint data batch"),
         }
+    }
+
+    #[test]
+    fn decrypt_worker_direct_fmp_endpoint_data_batches_authenticated_bulk_lane() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let source_peer = test_source_peer();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(dummy_direct_fmp_endpoint_output(
+            fallback_tx.clone(),
+            source_peer,
+            1,
+            DecryptWorkerLane::Bulk,
+            b"direct-fmp-one".to_vec(),
+        ));
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "first bulk direct-FMP endpoint event should wait for a batch flush"
+        );
+
+        batch.push_output(dummy_direct_fmp_endpoint_output(
+            fallback_tx,
+            source_peer,
+            2,
+            DecryptWorkerLane::Bulk,
+            b"direct-fmp-two".to_vec(),
+        ));
+        batch.flush();
+
+        assert_eq!(
+            fallback_rx.authenticated_bulk_queued_packets(),
+            2,
+            "direct-FMP endpoint batch should reserve by packet count"
+        );
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("direct-FMP endpoint batch");
+        assert_eq!(event.packet_count(), 2);
+        match &event {
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(endpoints) => {
+                assert_eq!(endpoints.len(), 2);
+                assert_eq!(endpoints[0].fmp.source_peer, source_peer);
+                assert_eq!(endpoints[1].fmp.source_peer, source_peer);
+                assert_eq!(endpoints[0].fmp.fmp_counter, 1);
+                assert_eq!(endpoints[1].fmp.fmp_counter, 2);
+                assert_eq!(endpoints[0].payload, b"direct-fmp-one");
+                assert_eq!(endpoints[1].payload, b"direct-fmp-two");
+            }
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
+                panic!("expected a direct-FMP endpoint batch")
+            }
+            DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected a direct-FMP endpoint batch")
+            }
+        }
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+    }
+
+    #[test]
+    fn decrypt_worker_direct_fmp_endpoint_data_priority_stays_single() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let source_peer = test_source_peer();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(dummy_direct_fmp_endpoint_output(
+            fallback_tx,
+            source_peer,
+            1,
+            DecryptWorkerLane::Priority,
+            b"small-control-shaped-endpoint-data".to_vec(),
+        ));
+
+        let event = fallback_rx
+            .priority
+            .try_recv()
+            .expect("priority direct-FMP endpoint data");
+        match event {
+            DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => {
+                assert_eq!(endpoint.fmp.source_peer, source_peer);
+                assert_eq!(endpoint.fmp.fmp_counter, 1);
+                assert_eq!(endpoint.payload, b"small-control-shaped-endpoint-data");
+                assert_eq!(endpoint.lane, DecryptWorkerLane::Priority);
+            }
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
+                panic!("priority direct-FMP endpoint data must not batch")
+            }
+            DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected priority direct-FMP endpoint data")
+            }
+        }
+        assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
+        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -555,6 +668,9 @@
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::DirectFmpEndpointData(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {

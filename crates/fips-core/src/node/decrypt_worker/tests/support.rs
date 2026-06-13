@@ -309,6 +309,38 @@
         }
     }
 
+    fn dummy_direct_fmp_endpoint_output(
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        lane: DecryptWorkerLane,
+        payload: Vec<u8>,
+    ) -> DecryptWorkerOutput {
+        let packet_len = match lane {
+            DecryptWorkerLane::Priority => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            DecryptWorkerLane::Bulk => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+        };
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::DirectFmpEndpointData(DecryptDirectFmpEndpointData {
+                fmp: DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 1_000,
+                    packet_len,
+                    fmp_counter,
+                    inner_timestamp_ms: fmp_counter as u32,
+                    fmp_flags: 0,
+                },
+                payload,
+                lane,
+                trace_enqueued_at: None,
+            }),
+            direct_delivery: None,
+        }
+    }
+
     fn dummy_direct_tun_output(
         fallback_tx: DecryptWorkerFallbackSender,
         tun_tx: TunTx,
