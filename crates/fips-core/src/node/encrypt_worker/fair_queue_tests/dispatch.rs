@@ -135,6 +135,10 @@
                 .collect();
             let pool = EncryptWorkerPool {
                 senders: Arc::from(senders.into_boxed_slice()),
+                #[cfg(target_os = "linux")]
+                linux_containers: Arc::new(LinuxBulkSendFlows::default()),
+                #[cfg(target_os = "linux")]
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
             let queued_a = queued_job_classified_with_flow(
@@ -204,6 +208,43 @@
                 Some(flow_b),
             ))
             .expect("different endpoint flow on same send target should get its own budget");
+        });
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_bulk_container_worker_selection_prefers_shorter_queue() {
+        with_test_socket(|socket, cipher| {
+            let (busy_tx, _busy_rx) = fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES);
+            let (idle_tx, _idle_rx) = fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES);
+            let busy_addr: SocketAddr = "127.0.0.1:10042".parse().unwrap();
+
+            for _ in 0..4 {
+                busy_tx
+                    .try_push(queued_job(
+                        socket.clone(),
+                        &cipher,
+                        busy_addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    ))
+                    .expect("busy worker warmup should enqueue");
+            }
+
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(vec![busy_tx, idle_tx].into_boxed_slice()),
+                #[cfg(target_os = "linux")]
+                linux_containers: Arc::new(LinuxBulkSendFlows::default()),
+                #[cfg(target_os = "linux")]
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+
+            assert_eq!(
+                pool.select_linux_bulk_container_worker(),
+                1,
+                "Linux bulk containers should avoid a worker that already has queued bulk"
+            );
         });
     }
 
