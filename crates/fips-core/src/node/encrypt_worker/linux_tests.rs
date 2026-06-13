@@ -246,6 +246,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn linux_ordered_sender_holds_out_of_order_completions() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let key = target.key();
+            let flow = LinuxSequencedSendFlow::new_for_test(key, target);
+
+            let seq0 = flow.reserve_seq();
+            let seq1 = flow.reserve_seq();
+            let seq2 = flow.reserve_seq();
+            assert_eq!((seq0, seq1, seq2), (0, 1, 2));
+
+            flow.complete_many(vec![
+                (
+                    seq1,
+                    LinuxSendItem::Packet {
+                        packet: vec![1],
+                        drop_on_backpressure: true,
+                    },
+                ),
+                (seq2, LinuxSendItem::Skip),
+            ]);
+            {
+                let state = flow.state.lock().expect("linux flow state");
+                assert_eq!(
+                    state.next_send_seq, 0,
+                    "later completions must not advance the send cursor"
+                );
+                assert_eq!(state.pending.len(), 2);
+            }
+
+            flow.complete_many(vec![(
+                seq0,
+                LinuxSendItem::Packet {
+                    packet: vec![0],
+                    drop_on_backpressure: true,
+                },
+            )]);
+
+            let items = flow.pop_ready_items(8).expect("ready items");
+            assert_eq!(items.len(), 3);
+            match &items[0] {
+                LinuxSendItem::Packet { packet, .. } => assert_eq!(packet, &[0]),
+                LinuxSendItem::Skip => panic!("seq0 should be a packet"),
+            }
+            match &items[1] {
+                LinuxSendItem::Packet { packet, .. } => assert_eq!(packet, &[1]),
+                LinuxSendItem::Skip => panic!("seq1 should be a packet"),
+            }
+            assert!(matches!(items[2], LinuxSendItem::Skip));
+        });
+    }
+
     /// Mixed-destination batch dispatched to a single worker. The
     /// pre-fix bug used `batch[0].socket` / `batch[0].connected_socket`
     /// / `packets[0].dest_addr` for the whole drained batch, so a

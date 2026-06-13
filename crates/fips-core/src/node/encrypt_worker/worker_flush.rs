@@ -71,7 +71,10 @@ impl SealedSendPacket {
         return Self::from_job_without_target_key(job);
     }
 
-    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
+    #[cfg(all(
+        unix,
+        any(test, not(any(target_os = "macos", target_os = "linux")))
+    ))]
     fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
         let QueuedFmpSendJob {
             job, target_key, ..
@@ -314,6 +317,8 @@ fn flush_batch_sync(
     let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
     #[cfg(target_os = "macos")]
     let mut macos_completions: Vec<MacCompletionGroup> = Vec::with_capacity(1);
+    #[cfg(target_os = "linux")]
+    let mut linux_completions: Vec<LinuxCompletionGroup> = Vec::with_capacity(1);
 
     for queued in batch.drain(..) {
         #[cfg(target_os = "macos")]
@@ -327,7 +332,18 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        let QueuedFmpSendJob {
+            job,
+            target_key,
+            linux_flow,
+            linux_seq,
+            ..
+        } = queued;
+
+        #[cfg(target_os = "linux")]
+        let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
         let sealed_result = SealedSendPacket::from_queued(queued);
         #[cfg(not(unix))]
         let sealed_result = {
@@ -345,6 +361,15 @@ fn flush_batch_sync(
                         Arc::clone(flow),
                         macos_seq,
                         MacSendItem::Skip,
+                    );
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(flow) = linux_flow.as_ref() {
+                    push_linux_completion(
+                        &mut linux_completions,
+                        Arc::clone(flow),
+                        linux_seq,
+                        LinuxSendItem::Skip,
                     );
                 }
                 continue;
@@ -367,6 +392,22 @@ fn flush_batch_sync(
             continue;
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some(flow) = linux_flow {
+            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
+            push_linux_completion(
+                &mut linux_completions,
+                flow,
+                linux_seq,
+                LinuxSendItem::Packet {
+                    packet: wire_packet,
+                    drop_on_backpressure,
+                },
+            );
+            continue;
+        }
+
         #[cfg(unix)]
         {
             push_sealed_send_packet_with_capacity(&mut groups, sealed, group_packet_capacity);
@@ -382,6 +423,10 @@ fn flush_batch_sync(
 
     #[cfg(target_os = "macos")]
     for group in macos_completions {
+        group.complete();
+    }
+    #[cfg(target_os = "linux")]
+    for group in linux_completions {
         group.complete();
     }
 

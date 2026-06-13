@@ -18,7 +18,9 @@ pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
     #[cfg(target_os = "macos")]
     macos_senders: Arc<MacSequencedSendFlows>,
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "linux")]
+    linux_senders: Arc<LinuxSequencedSendFlows>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     next_worker: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -59,7 +61,9 @@ impl EncryptWorkerPool {
             senders: senders.into(),
             #[cfg(target_os = "macos")]
             macos_senders: Arc::new(MacSequencedSendFlows::default()),
-            #[cfg(target_os = "macos")]
+            #[cfg(target_os = "linux")]
+            linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
@@ -128,6 +132,16 @@ impl EncryptWorkerPool {
 
     #[cfg(target_os = "linux")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
+        if linux_ordered_sender_enabled() && job.bulk_endpoint_data {
+            let flow = self.linux_senders.flow_for(&job);
+            let ticket = self
+                .next_worker
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                / linux_worker_stride();
+            let idx = ticket % self.senders.len();
+            return (idx, QueuedFmpSendJob::linux_sequenced(job, flow));
+        }
+
         let queued = QueuedFmpSendJob::direct(job);
         let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
         (idx, queued)
