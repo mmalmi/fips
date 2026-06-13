@@ -35,6 +35,8 @@
 //!     construction before encrypt worker enqueue
 //!   * `ENDPOINT_WORKER_COMMIT` — per-packet bookkeeping and encrypt worker
 //!     enqueue from prepared endpoint sends
+//!   * `FMP_LINUX_BULK_CONTAINER_SEND` — opt-in Linux ordered bulk-container
+//!     sender flush, isolated from global `UDP_SEND`
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
@@ -82,7 +84,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 51;
+const N_STAGES: usize = 52;
 const N_EVENTS: usize = 77;
 const HIST_BUCKETS: usize = 48;
 
@@ -212,6 +214,8 @@ pub enum Stage {
     EndpointWorkerJobBuild = 49,
     /// Per-packet bookkeeping and encrypt worker enqueue from prepared sends.
     EndpointWorkerCommit = 50,
+    /// Linux bulk-container ordered sender flush after all slots are ready.
+    FmpLinuxBulkContainerSend = 51,
 }
 
 impl Stage {
@@ -270,6 +274,7 @@ impl Stage {
             Stage::EndpointRuntimeDispatchPrep => "endpoint_runtime_dispatch_prep",
             Stage::EndpointWorkerJobBuild => "endpoint_worker_job_build",
             Stage::EndpointWorkerCommit => "endpoint_worker_commit",
+            Stage::FmpLinuxBulkContainerSend => "fmp_linux_bulk_container_send",
         }
     }
 }
@@ -327,6 +332,7 @@ fn stage_from_index(idx: usize) -> Stage {
         48 => Stage::EndpointRuntimeDispatchPrep,
         49 => Stage::EndpointWorkerJobBuild,
         50 => Stage::EndpointWorkerCommit,
+        51 => Stage::FmpLinuxBulkContainerSend,
         _ => unreachable!(),
     }
 }

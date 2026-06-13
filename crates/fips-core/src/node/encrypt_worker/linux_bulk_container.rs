@@ -301,6 +301,10 @@ impl LinuxBulkSendContainer {
             .map(SelectedSendBatch::packet_count)
             .sum::<usize>();
         crate::perf_profile::record_fmp_linux_bulk_container_sent(udp_send_packet_count);
+        let _bulk_send_t = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::FmpLinuxBulkContainerSend,
+            udp_send_packet_count,
+        );
         let _t = crate::perf_profile::BatchTimer::start(
             crate::perf_profile::Stage::UdpSend,
             udp_send_packet_count,
