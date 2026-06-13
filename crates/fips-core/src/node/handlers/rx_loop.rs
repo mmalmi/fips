@@ -272,7 +272,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         Some(command),
                         None,
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_COMMAND_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -323,7 +323,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         None,
                         Some(command),
-                        NON_PACKET_DRAIN_BUDGET,
+                        ENDPOINT_COMMAND_DRAIN_BUDGET,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());

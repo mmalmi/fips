@@ -1,9 +1,9 @@
 use super::budget::{
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-    FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-    FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget,
+    ENDPOINT_COMMAND_DRAIN_BUDGET, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
+    FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+    FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -18,6 +18,18 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
     assert_eq!(
         non_packet_drain_budget(PACKET_DRAIN_BUDGET),
         NON_PACKET_DRAIN_BUDGET
+    );
+}
+
+#[test]
+fn endpoint_command_drain_budget_catches_up_without_spanning_packet_turn() {
+    assert!(
+        ENDPOINT_COMMAND_DRAIN_BUDGET > NON_PACKET_DRAIN_BUDGET,
+        "directly selected endpoint commands may catch up beyond generic non-packet drains"
+    );
+    assert!(
+        ENDPOINT_COMMAND_DRAIN_BUDGET <= PACKET_DRAIN_BUDGET / 2,
+        "endpoint command catch-up stays below half a raw packet receive turn"
     );
 }
 
@@ -419,6 +431,28 @@ async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
     assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
     assert_eq!(bulk_rx.try_recv().ok(), Some("queued-bulk"));
     assert_eq!(drain.drained(), 4);
+}
+
+#[tokio::test]
+async fn priority_bulk_drain_cursor_can_drain_two_full_batch_cost_items() {
+    let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+    bulk_tx.send("bulk-queued").await.unwrap();
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 128);
+
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-selected")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued")
+    );
+    drain.charge_extra(63);
+    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+    assert_eq!(drain.drained(), 128);
 }
 
 #[tokio::test]

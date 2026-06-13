@@ -29,6 +29,11 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
 /// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
 /// without adding a second packet-drain path inside those handlers.
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 64;
+/// A directly selected endpoint command has already lost the biased select race
+/// to decrypt priority, timer maintenance, authenticated decrypt returns, and
+/// raw packet receive. Give that path enough room to dequeue two full endpoint
+/// batch commands while still returning before half a raw receive turn.
+pub(super) const ENDPOINT_COMMAND_DRAIN_BUDGET: usize = 128;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
 /// transport queue; fallback/side interleaves reserve progress before the cap.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
