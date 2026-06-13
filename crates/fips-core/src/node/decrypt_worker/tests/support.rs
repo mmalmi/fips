@@ -316,6 +316,7 @@
         lane: DecryptWorkerLane,
         payload: Vec<u8>,
     ) -> DecryptWorkerOutput {
+        let payload_len = payload.len();
         let packet_len = match lane {
             DecryptWorkerLane::Priority => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
             DecryptWorkerLane::Bulk => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
@@ -333,7 +334,9 @@
                     inner_timestamp_ms: fmp_counter as u32,
                     fmp_flags: 0,
                 },
-                payload,
+                packet_data: payload,
+                payload_offset: 0,
+                payload_len,
                 lane,
                 trace_enqueued_at: None,
             }),

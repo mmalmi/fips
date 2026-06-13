@@ -691,7 +691,8 @@ impl DecryptWorkerShard {
             .and_then(|link_msg| link_msg.split_first())
             .is_some_and(|(&msg_type, _)| msg_type == LinkMessageType::DirectEndpointData.to_byte())
         {
-            let payload = packet_data[link_msg_start + 1..link_msg_end].to_vec();
+            let payload_offset = link_msg_start + 1;
+            let payload_len = link_msg_end.saturating_sub(payload_offset);
             let fmp = DecryptFmpBookkeeping {
                 source_peer,
                 transport_id,
@@ -707,7 +708,9 @@ impl DecryptWorkerShard {
                 event: DecryptWorkerEvent::DirectFmpEndpointData(
                     DecryptDirectFmpEndpointData {
                         fmp,
-                        payload,
+                        packet_data,
+                        payload_offset,
+                        payload_len,
                         lane,
                         trace_enqueued_at: None,
                     },

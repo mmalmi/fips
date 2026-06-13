@@ -364,7 +364,7 @@
                 assert_eq!(endpoint.fmp.fmp_counter, counter);
                 assert_eq!(endpoint.fmp.inner_timestamp_ms, inner_timestamp_ms);
                 assert_eq!(endpoint.fmp.fmp_flags, flags);
-                assert_eq!(endpoint.payload, payload);
+                assert_eq!(endpoint.payload(), payload);
                 assert_eq!(endpoint.lane, DecryptWorkerLane::Bulk);
             }
             DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {

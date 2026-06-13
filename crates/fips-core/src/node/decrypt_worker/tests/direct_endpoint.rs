@@ -126,8 +126,8 @@
                 assert_eq!(endpoints[1].fmp.source_peer, source_peer);
                 assert_eq!(endpoints[0].fmp.fmp_counter, 1);
                 assert_eq!(endpoints[1].fmp.fmp_counter, 2);
-                assert_eq!(endpoints[0].payload, b"direct-fmp-one");
-                assert_eq!(endpoints[1].payload, b"direct-fmp-two");
+                assert_eq!(endpoints[0].payload(), b"direct-fmp-one");
+                assert_eq!(endpoints[1].payload(), b"direct-fmp-two");
             }
             DecryptWorkerEvent::DirectFmpEndpointData(_) => {
                 panic!("expected a direct-FMP endpoint batch")
@@ -170,7 +170,7 @@
             DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => {
                 assert_eq!(endpoint.fmp.source_peer, source_peer);
                 assert_eq!(endpoint.fmp.fmp_counter, 1);
-                assert_eq!(endpoint.payload, b"small-control-shaped-endpoint-data");
+                assert_eq!(endpoint.payload(), b"small-control-shaped-endpoint-data");
                 assert_eq!(endpoint.lane, DecryptWorkerLane::Priority);
             }
             DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {

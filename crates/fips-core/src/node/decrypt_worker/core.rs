@@ -642,7 +642,9 @@ pub(crate) struct DecryptAuthenticatedFmpReceive {
 
 pub(crate) struct DecryptDirectFmpEndpointData {
     pub fmp: DecryptFmpBookkeeping,
-    pub payload: Vec<u8>,
+    packet_data: Vec<u8>,
+    payload_offset: usize,
+    payload_len: usize,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
@@ -650,12 +652,28 @@ pub(crate) struct DecryptDirectFmpEndpointData {
 impl DecryptDirectFmpEndpointData {
     #[cfg(test)]
     pub(in crate::node) fn for_test(fmp: DecryptFmpBookkeeping, payload: Vec<u8>) -> Self {
+        let payload_len = payload.len();
         Self {
             fmp,
-            payload,
+            packet_data: payload,
+            payload_offset: 0,
+            payload_len,
             lane: DecryptWorkerLane::Bulk,
             trace_enqueued_at: None,
         }
+    }
+
+    pub(in crate::node) fn payload(&self) -> &[u8] {
+        &self.packet_data[self.payload_offset..self.payload_offset + self.payload_len]
+    }
+
+    pub(in crate::node) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(in crate::node) fn into_delivery(self) -> EndpointDataDelivery {
+        let source_peer = self.fmp.source_peer;
+        EndpointDataDelivery::new(source_peer, self.payload().to_vec())
     }
 }
 

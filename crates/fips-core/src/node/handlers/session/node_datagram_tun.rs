@@ -58,9 +58,10 @@ impl Node {
 
         let source_peer = endpoint.fmp.source_peer;
         let source_addr = *source_peer.node_addr();
+        let payload_len = endpoint.payload_len();
         if !self.sessions.record_direct_endpoint_data_receive(
             &source_addr,
-            endpoint.payload.len(),
+            payload_len,
             Self::now_ms(),
         ) {
             debug!(
@@ -71,7 +72,7 @@ impl Node {
         }
 
         self.learn_reverse_route(source_addr, source_addr);
-        self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, endpoint.payload));
+        self.deliver_endpoint_data(endpoint.into_delivery());
 
         if let Some(dest_addr) = self
             .pending_session_traffic
@@ -121,8 +122,8 @@ impl Node {
             self.record_worker_authenticated_fmp_receive(&endpoint.fmp);
             current_source_addr.get_or_insert(source_addr);
             current_source_peer.get_or_insert(endpoint.fmp.source_peer);
-            current_bytes = current_bytes.saturating_add(endpoint.payload.len());
-            current_payloads.push(endpoint.payload);
+            current_bytes = current_bytes.saturating_add(endpoint.payload_len());
+            current_payloads.push(endpoint);
         }
 
         if let (Some(source_peer), Some(source_addr)) = (current_source_peer, current_source_addr) {
@@ -141,31 +142,32 @@ impl Node {
         &mut self,
         source_peer: PeerIdentity,
         source_addr: NodeAddr,
-        payloads: Vec<Vec<u8>>,
+        endpoints: Vec<crate::node::decrypt_worker::DecryptDirectFmpEndpointData>,
         bytes: usize,
         now_ms: u64,
     ) {
-        if payloads.is_empty() {
+        if endpoints.is_empty() {
             return;
         }
 
         if !self.sessions.record_direct_endpoint_data_receive_batch(
             &source_addr,
-            payloads.len(),
+            endpoints.len(),
             bytes,
             now_ms,
         ) {
             debug!(
                 src = %self.peer_display_name(&source_addr),
-                packets = payloads.len(),
+                packets = endpoints.len(),
                 "Dropping worker-authenticated direct-FMP endpoint data batch for missing or non-established session"
             );
             return;
         }
 
         self.learn_reverse_route(source_addr, source_addr);
-        for payload in payloads {
-            self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, payload));
+        for endpoint in endpoints {
+            debug_assert_eq!(source_peer, endpoint.fmp.source_peer);
+            self.deliver_endpoint_data(endpoint.into_delivery());
         }
 
         if let Some(dest_addr) = self
