@@ -53,6 +53,8 @@
 include!("encrypt_worker/send_batch.rs");
 include!("encrypt_worker/queues.rs");
 include!("encrypt_worker/pool_macos.rs");
+include!("encrypt_worker/linux_bulk_container.rs");
+include!("encrypt_worker/job_completion.rs");
 include!("encrypt_worker/worker_flush.rs");
 include!("encrypt_worker/backpressure_linux.rs");
 include!("encrypt_worker/unix_tests.rs");

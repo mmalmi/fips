@@ -83,6 +83,10 @@ struct QueuedFmpSendJob {
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
     macos_seq: u64,
+    #[cfg(target_os = "linux")]
+    linux_container: Option<Arc<LinuxBulkSendContainer>>,
+    #[cfg(target_os = "linux")]
+    linux_container_slot: usize,
 }
 
 impl QueuedFmpSendJob {
@@ -108,6 +112,10 @@ impl QueuedFmpSendJob {
             macos_flow: None,
             #[cfg(target_os = "macos")]
             macos_seq: 0,
+            #[cfg(target_os = "linux")]
+            linux_container: None,
+            #[cfg(target_os = "linux")]
+            linux_container_slot: 0,
         }
     }
 
@@ -123,16 +131,6 @@ impl QueuedFmpSendJob {
             macos_flow: Some(macos_flow),
             macos_seq,
         }
-    }
-
-    fn complete_sequenced_skip(self) {
-        #[cfg(target_os = "macos")]
-        if let Some(flow) = self.macos_flow {
-            flow.complete_many(vec![(self.macos_seq, MacSendItem::Skip)]);
-            return;
-        }
-
-        drop(self);
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -442,12 +440,18 @@ impl MacWorkerQueueState {
 #[cfg(target_os = "macos")]
 enum MacWorkerTryPushError {
     Full(Box<QueuedFmpSendJob>),
-    Closed,
+    Closed(Box<QueuedFmpSendJob>),
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug)]
-struct MacWorkerPushError;
+struct MacWorkerPushError(Box<QueuedFmpSendJob>);
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for MacWorkerPushError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MacWorkerPushError")
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn mac_worker_channel(cap: usize) -> (MacWorkerSender, MacWorkerReceiver) {
@@ -479,8 +483,7 @@ impl MacWorkerSender {
             .lock()
             .expect("encrypt worker queue poisoned");
         if state.closed {
-            job.complete_sequenced_skip();
-            return Err(MacWorkerTryPushError::Closed);
+            return Err(MacWorkerTryPushError::Closed(Box::new(job)));
         }
         let cap = match job.queue_lane() {
             EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
@@ -507,8 +510,7 @@ impl MacWorkerSender {
             .expect("encrypt worker queue poisoned");
         loop {
             if state.closed {
-                job.complete_sequenced_skip();
-                return Err(MacWorkerPushError);
+                return Err(MacWorkerPushError(Box::new(job)));
             }
             let cap = match job.queue_lane() {
                 EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
@@ -661,7 +663,7 @@ enum FairReserve {
 #[cfg(not(target_os = "macos"))]
 enum FairWorkerTryPushError {
     Full(Box<QueuedFmpSendJob>),
-    Closed,
+    Closed(Box<QueuedFmpSendJob>),
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -669,13 +671,13 @@ impl std::fmt::Debug for FairWorkerTryPushError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Full(_) => f.write_str("Full"),
-            Self::Closed => f.write_str("Closed"),
+            Self::Closed(_) => f.write_str("Closed"),
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-struct FairWorkerPushError;
+struct FairWorkerPushError(Box<QueuedFmpSendJob>);
 
 #[cfg(not(target_os = "macos"))]
 fn fair_worker_channel(
@@ -737,8 +739,7 @@ impl FairWorkerSender {
                 Ok(()) => Ok(()),
                 Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
                 Err(TrySendError::Disconnected(job)) => {
-                    job.complete_sequenced_skip();
-                    Err(FairWorkerTryPushError::Closed)
+                    Err(FairWorkerTryPushError::Closed(Box::new(job)))
                 }
             };
         }
@@ -748,8 +749,7 @@ impl FairWorkerSender {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(job)) => job,
                 Err(TrySendError::Disconnected(job)) => {
-                    job.complete_sequenced_skip();
-                    return Err(FairWorkerTryPushError::Closed);
+                    return Err(FairWorkerTryPushError::Closed(Box::new(job)));
                 }
             }
         } else {
@@ -774,24 +774,19 @@ impl FairWorkerSender {
                         if let Some(reservation) = job.take_fair_reservation() {
                             self.admission.release(reservation);
                         }
-                        job.complete_sequenced_skip();
-                        Err(FairWorkerTryPushError::Closed)
+                        Err(FairWorkerTryPushError::Closed(Box::new(job)))
                     }
                 }
             }
             FairReserve::Full => Err(FairWorkerTryPushError::Full(Box::new(job))),
-            FairReserve::Closed => {
-                job.complete_sequenced_skip();
-                Err(FairWorkerTryPushError::Closed)
-            }
+            FairReserve::Closed => Err(FairWorkerTryPushError::Closed(Box::new(job))),
         }
     }
 
     fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
         if job.queue_lane() == EncryptWorkerLane::Priority {
             if let Err(SendError(job)) = self.priority_tx.send(job) {
-                job.complete_sequenced_skip();
-                return Err(FairWorkerPushError);
+                return Err(FairWorkerPushError(Box::new(job)));
             }
             return Ok(());
         }
@@ -799,10 +794,7 @@ impl FairWorkerSender {
         let weight = job.scheduling_weight();
         let reservation = match self.admission.reserve_blocking(key, weight) {
             Ok(reservation) => reservation,
-            Err(err) => {
-                job.complete_sequenced_skip();
-                return Err(err);
-            }
+            Err(()) => return Err(FairWorkerPushError(Box::new(job))),
         };
         let mut job = job;
         job.mark_fair_reserved(reservation);
@@ -810,8 +802,7 @@ impl FairWorkerSender {
             if let Some(reservation) = job.take_fair_reservation() {
                 self.admission.release(reservation);
             }
-            job.complete_sequenced_skip();
-            return Err(FairWorkerPushError);
+            return Err(FairWorkerPushError(Box::new(job)));
         }
         Ok(())
     }
@@ -839,14 +830,14 @@ impl FairAdmission {
         &self,
         key: SendDispatchKey,
         weight: usize,
-    ) -> Result<FairAdmissionReservation, FairWorkerPushError> {
+    ) -> Result<FairAdmissionReservation, ()> {
         let mut state = self
             .state
             .lock()
             .expect("encrypt worker fair admission poisoned");
         loop {
             if state.closed {
-                return Err(FairWorkerPushError);
+                return Err(());
             }
             if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
                 self.reserved_len
