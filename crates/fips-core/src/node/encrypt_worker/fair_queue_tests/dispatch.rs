@@ -43,10 +43,6 @@
                 .collect();
             let pool = EncryptWorkerPool {
                 senders: Arc::from(senders.into_boxed_slice()),
-                #[cfg(target_os = "linux")]
-                linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
-                #[cfg(target_os = "linux")]
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
             let queued_a = queued_job(
@@ -193,10 +189,6 @@
 
             let pool = EncryptWorkerPool {
                 senders: Arc::from(vec![tx].into_boxed_slice()),
-                #[cfg(target_os = "linux")]
-                linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
-                #[cfg(target_os = "linux")]
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_done = Arc::clone(&done);
