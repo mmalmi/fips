@@ -86,7 +86,7 @@ fn record_endpoint_command_wait(
     queued_at: Option<crate::perf_profile::TraceStamp>,
     lane: EndpointCommandLane,
     count: u64,
-    drain_source_stage: crate::perf_profile::Stage,
+    drain_stages: EndpointCommandDrainStages,
 ) {
     let (priority_count, bulk_count) = match lane {
         EndpointCommandLane::Priority => (count, 0),
@@ -101,7 +101,41 @@ fn record_endpoint_command_wait(
         priority_count,
         bulk_count,
     );
-    crate::perf_profile::record_since_count(drain_source_stage, queued_at, count);
+    drain_stages.record_since(queued_at, count);
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::node) struct EndpointCommandDrainStages {
+    aggregate: crate::perf_profile::Stage,
+    detail: Option<crate::perf_profile::Stage>,
+}
+
+impl EndpointCommandDrainStages {
+    pub(in crate::node) const fn aggregate(aggregate: crate::perf_profile::Stage) -> Self {
+        Self {
+            aggregate,
+            detail: None,
+        }
+    }
+
+    pub(in crate::node) const fn with_detail(
+        aggregate: crate::perf_profile::Stage,
+        detail: crate::perf_profile::Stage,
+    ) -> Self {
+        Self {
+            aggregate,
+            detail: Some(detail),
+        }
+    }
+
+    fn record_since(self, queued_at: Option<crate::perf_profile::TraceStamp>, count: u64) {
+        crate::perf_profile::record_since_count(self.aggregate, queued_at, count);
+        if let Some(detail) = self.detail
+            && detail != self.aggregate
+        {
+            crate::perf_profile::record_since_count(detail, queued_at, count);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

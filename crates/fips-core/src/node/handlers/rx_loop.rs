@@ -8,6 +8,7 @@ use crate::node::decrypt_worker::{
     DecryptWorkerFallbackReceivers,
 };
 use crate::node::handlers::encrypted::EncryptedFrameFastPath;
+use crate::node::handlers::session::EndpointCommandDrainStages;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
@@ -32,19 +33,25 @@ use drain::*;
 enum EndpointCommandDrainSource {
     DirectPriority,
     DirectBulk,
-    Side,
+    SidePacket,
+    SideDecryptPriority,
+    SideAuthenticatedBulk,
+    SideDecryptBulk,
     MaintenancePre,
     MaintenancePost,
 }
 
 impl EndpointCommandDrainSource {
-    fn event(self) -> crate::perf_profile::Event {
+    fn aggregate_event(self) -> crate::perf_profile::Event {
         match self {
             Self::DirectPriority => {
                 crate::perf_profile::Event::RxLoopEndpointCommandDrainDirectPriority
             }
             Self::DirectBulk => crate::perf_profile::Event::RxLoopEndpointCommandDrainDirectBulk,
-            Self::Side => crate::perf_profile::Event::RxLoopEndpointCommandDrainSide,
+            Self::SidePacket
+            | Self::SideDecryptPriority
+            | Self::SideAuthenticatedBulk
+            | Self::SideDecryptBulk => crate::perf_profile::Event::RxLoopEndpointCommandDrainSide,
             Self::MaintenancePre => {
                 crate::perf_profile::Event::RxLoopEndpointCommandDrainMaintenancePre
             }
@@ -54,13 +61,57 @@ impl EndpointCommandDrainSource {
         }
     }
 
-    fn wait_stage(self) -> crate::perf_profile::Stage {
+    fn detail_event(self) -> Option<crate::perf_profile::Event> {
         match self {
-            Self::DirectPriority => crate::perf_profile::Stage::EndpointCommandDirectPriorityWait,
-            Self::DirectBulk => crate::perf_profile::Stage::EndpointCommandDirectBulkWait,
-            Self::Side => crate::perf_profile::Stage::EndpointCommandSideWait,
-            Self::MaintenancePre => crate::perf_profile::Stage::EndpointCommandMaintenancePreWait,
-            Self::MaintenancePost => crate::perf_profile::Stage::EndpointCommandMaintenancePostWait,
+            Self::SidePacket => {
+                Some(crate::perf_profile::Event::RxLoopEndpointCommandDrainSidePacket)
+            }
+            Self::SideDecryptPriority => {
+                Some(crate::perf_profile::Event::RxLoopEndpointCommandDrainSideDecryptPriority)
+            }
+            Self::SideAuthenticatedBulk => {
+                Some(crate::perf_profile::Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk)
+            }
+            Self::SideDecryptBulk => {
+                Some(crate::perf_profile::Event::RxLoopEndpointCommandDrainSideDecryptBulk)
+            }
+            Self::DirectPriority
+            | Self::DirectBulk
+            | Self::MaintenancePre
+            | Self::MaintenancePost => None,
+        }
+    }
+
+    fn wait_stages(self) -> EndpointCommandDrainStages {
+        match self {
+            Self::DirectPriority => EndpointCommandDrainStages::aggregate(
+                crate::perf_profile::Stage::EndpointCommandDirectPriorityWait,
+            ),
+            Self::DirectBulk => EndpointCommandDrainStages::aggregate(
+                crate::perf_profile::Stage::EndpointCommandDirectBulkWait,
+            ),
+            Self::SidePacket => EndpointCommandDrainStages::with_detail(
+                crate::perf_profile::Stage::EndpointCommandSideWait,
+                crate::perf_profile::Stage::EndpointCommandSidePacketWait,
+            ),
+            Self::SideDecryptPriority => EndpointCommandDrainStages::with_detail(
+                crate::perf_profile::Stage::EndpointCommandSideWait,
+                crate::perf_profile::Stage::EndpointCommandSideDecryptPriorityWait,
+            ),
+            Self::SideAuthenticatedBulk => EndpointCommandDrainStages::with_detail(
+                crate::perf_profile::Stage::EndpointCommandSideWait,
+                crate::perf_profile::Stage::EndpointCommandSideAuthenticatedBulkWait,
+            ),
+            Self::SideDecryptBulk => EndpointCommandDrainStages::with_detail(
+                crate::perf_profile::Stage::EndpointCommandSideWait,
+                crate::perf_profile::Stage::EndpointCommandSideDecryptBulkWait,
+            ),
+            Self::MaintenancePre => EndpointCommandDrainStages::aggregate(
+                crate::perf_profile::Stage::EndpointCommandMaintenancePreWait,
+            ),
+            Self::MaintenancePost => EndpointCommandDrainStages::aggregate(
+                crate::perf_profile::Stage::EndpointCommandMaintenancePostWait,
+            ),
         }
     }
 }
@@ -198,6 +249,7 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        EndpointCommandDrainSource::SideDecryptPriority,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -279,6 +331,7 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        EndpointCommandDrainSource::SideAuthenticatedBulk,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -335,6 +388,7 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        EndpointCommandDrainSource::SideDecryptBulk,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -498,6 +552,7 @@ impl Node {
                                 side_queues.endpoint_priority_command_rx,
                                 side_queues.endpoint_command_rx,
                                 SIDE_QUEUE_INTERLEAVE_BUDGET,
+                                EndpointCommandDrainSource::SidePacket,
                             )
                             .await
                         } else {
@@ -545,6 +600,7 @@ impl Node {
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
+        endpoint_command_drain_source: EndpointCommandDrainSource,
     ) -> RxLoopDataDrainStats {
         let (endpoint_budget, tun_budget) = split_side_queue_budget(budget);
         let mut drained_endpoint = self
@@ -554,7 +610,7 @@ impl Node {
                 None,
                 None,
                 endpoint_budget,
-                EndpointCommandDrainSource::Side,
+                endpoint_command_drain_source,
             )
             .await;
         let mut drained_tun = self
@@ -578,7 +634,7 @@ impl Node {
                     None,
                     None,
                     tun_remainder,
-                    EndpointCommandDrainSource::Side,
+                    endpoint_command_drain_source,
                 )
                 .await;
         }
@@ -613,13 +669,16 @@ impl Node {
             PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
         while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
             let drain_cost = command.drain_cost();
-            self.handle_endpoint_data_command(command, source.wait_stage())
+            self.handle_endpoint_data_command(command, source.wait_stages())
                 .await;
             drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
         let drained = drain.drained();
-        crate::perf_profile::record_event_count(source.event(), drained as u64);
+        crate::perf_profile::record_event_count(source.aggregate_event(), drained as u64);
+        if let Some(detail_event) = source.detail_event() {
+            crate::perf_profile::record_event_count(detail_event, drained as u64);
+        }
         drained
     }
 

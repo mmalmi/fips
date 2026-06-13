@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 82);
+    assert_eq!(N_EVENTS, 86);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -249,6 +249,22 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::RxLoopEndpointCommandDrainMaintenancePost as usize).name(),
         "rx_loop_endpoint_command_drain_maintenance_post"
     );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainSidePacket as usize).name(),
+        "rx_loop_endpoint_command_drain_side_packet"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainSideDecryptPriority as usize).name(),
+        "rx_loop_endpoint_command_drain_side_decrypt_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk as usize).name(),
+        "rx_loop_endpoint_command_drain_side_authenticated_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainSideDecryptBulk as usize).name(),
+        "rx_loop_endpoint_command_drain_side_decrypt_bulk"
+    );
 }
 
 #[test]
@@ -265,7 +281,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 62);
+    assert_eq!(N_STAGES, 66);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -390,6 +406,22 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         stage_from_index(Stage::EndpointBulkCommandEnqueueWait as usize).name(),
         "endpoint_bulk_command_enqueue_wait"
     );
+    assert_eq!(
+        stage_from_index(Stage::EndpointCommandSidePacketWait as usize).name(),
+        "endpoint_command_side_packet_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::EndpointCommandSideDecryptPriorityWait as usize).name(),
+        "endpoint_command_side_decrypt_priority_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::EndpointCommandSideAuthenticatedBulkWait as usize).name(),
+        "endpoint_command_side_authenticated_bulk_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::EndpointCommandSideDecryptBulkWait as usize).name(),
+        "endpoint_command_side_decrypt_bulk_wait"
+    );
 }
 
 #[test]
@@ -455,6 +487,14 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::RxLoopEndpointCommandDrainDirectBulk as usize].load(Relaxed);
     let endpoint_drain_side_before =
         EVENTS[Event::RxLoopEndpointCommandDrainSide as usize].load(Relaxed);
+    let endpoint_drain_side_packet_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainSidePacket as usize].load(Relaxed);
+    let endpoint_drain_side_decrypt_priority_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainSideDecryptPriority as usize].load(Relaxed);
+    let endpoint_drain_side_authenticated_bulk_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk as usize].load(Relaxed);
+    let endpoint_drain_side_decrypt_bulk_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainSideDecryptBulk as usize].load(Relaxed);
     let endpoint_drain_maintenance_pre_before =
         EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePre as usize].load(Relaxed);
     let endpoint_drain_maintenance_post_before =
@@ -500,6 +540,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::RxLoopEndpointCommandDrainDirectPriority, 3);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainDirectBulk, 257);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainSide, 64);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainSidePacket, 41);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainSideDecryptPriority, 7);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk, 11);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainSideDecryptBulk, 5);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePre, 8);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePost, 16);
 
@@ -683,6 +727,26 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::RxLoopEndpointCommandDrainSide as usize].load(Relaxed)
             - endpoint_drain_side_before,
         64
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainSidePacket as usize].load(Relaxed)
+            - endpoint_drain_side_packet_before,
+        41
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainSideDecryptPriority as usize].load(Relaxed)
+            - endpoint_drain_side_decrypt_priority_before,
+        7
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk as usize].load(Relaxed)
+            - endpoint_drain_side_authenticated_bulk_before,
+        11
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainSideDecryptBulk as usize].load(Relaxed)
+            - endpoint_drain_side_decrypt_bulk_before,
+        5
     );
     assert_eq!(
         EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePre as usize].load(Relaxed)

@@ -63,6 +63,10 @@
 //!   * `ENDPOINT_COMMAND_SIDE_WAIT` — side-interleaved endpoint command wait
 //!   * `ENDPOINT_COMMAND_MAINTENANCE_PRE_WAIT` — pre-maintenance endpoint command wait
 //!   * `ENDPOINT_COMMAND_MAINTENANCE_POST_WAIT` — post-maintenance endpoint command wait
+//!   * `ENDPOINT_COMMAND_SIDE_PACKET_WAIT` — packet-drain side-interleave endpoint command wait
+//!   * `ENDPOINT_COMMAND_SIDE_DECRYPT_PRIORITY_WAIT` — decrypt-priority side-interleave endpoint command wait
+//!   * `ENDPOINT_COMMAND_SIDE_AUTHENTICATED_BULK_WAIT` — authenticated-bulk side-interleave endpoint command wait
+//!   * `ENDPOINT_COMMAND_SIDE_DECRYPT_BULK_WAIT` — decrypt-bulk side-interleave endpoint command wait
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `FMP_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP encrypt jobs → worker
 //!   * `FMP_WORKER_BULK_QUEUE_WAIT` — bulk FMP encrypt jobs → worker
@@ -103,8 +107,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 62;
-const N_EVENTS: usize = 82;
+const N_STAGES: usize = 66;
+const N_EVENTS: usize = 86;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -255,6 +259,14 @@ pub enum Stage {
     EndpointPriorityCommandEnqueueWait = 60,
     /// Bulk endpoint command producer capacity wait.
     EndpointBulkCommandEnqueueWait = 61,
+    /// Endpoint command side-interleave residence from packet-rx drains.
+    EndpointCommandSidePacketWait = 62,
+    /// Endpoint command side-interleave residence from decrypt-priority drains.
+    EndpointCommandSideDecryptPriorityWait = 63,
+    /// Endpoint command side-interleave residence from authenticated-bulk drains.
+    EndpointCommandSideAuthenticatedBulkWait = 64,
+    /// Endpoint command side-interleave residence from decrypt-bulk drains.
+    EndpointCommandSideDecryptBulkWait = 65,
 }
 
 impl Stage {
@@ -324,6 +336,14 @@ impl Stage {
             Stage::EndpointCommandEnqueueWait => "endpoint_command_enqueue_wait",
             Stage::EndpointPriorityCommandEnqueueWait => "endpoint_priority_command_enqueue_wait",
             Stage::EndpointBulkCommandEnqueueWait => "endpoint_bulk_command_enqueue_wait",
+            Stage::EndpointCommandSidePacketWait => "endpoint_command_side_packet_wait",
+            Stage::EndpointCommandSideDecryptPriorityWait => {
+                "endpoint_command_side_decrypt_priority_wait"
+            }
+            Stage::EndpointCommandSideAuthenticatedBulkWait => {
+                "endpoint_command_side_authenticated_bulk_wait"
+            }
+            Stage::EndpointCommandSideDecryptBulkWait => "endpoint_command_side_decrypt_bulk_wait",
         }
     }
 }
@@ -392,6 +412,10 @@ fn stage_from_index(idx: usize) -> Stage {
         59 => Stage::EndpointCommandEnqueueWait,
         60 => Stage::EndpointPriorityCommandEnqueueWait,
         61 => Stage::EndpointBulkCommandEnqueueWait,
+        62 => Stage::EndpointCommandSidePacketWait,
+        63 => Stage::EndpointCommandSideDecryptPriorityWait,
+        64 => Stage::EndpointCommandSideAuthenticatedBulkWait,
+        65 => Stage::EndpointCommandSideDecryptBulkWait,
         _ => unreachable!(),
     }
 }
@@ -482,6 +506,10 @@ pub enum Event {
     RxLoopEndpointCommandDrainSide = 79,
     RxLoopEndpointCommandDrainMaintenancePre = 80,
     RxLoopEndpointCommandDrainMaintenancePost = 81,
+    RxLoopEndpointCommandDrainSidePacket = 82,
+    RxLoopEndpointCommandDrainSideDecryptPriority = 83,
+    RxLoopEndpointCommandDrainSideAuthenticatedBulk = 84,
+    RxLoopEndpointCommandDrainSideDecryptBulk = 85,
 }
 
 impl Event {
@@ -585,6 +613,18 @@ impl Event {
             Event::RxLoopEndpointCommandDrainMaintenancePost => {
                 "rx_loop_endpoint_command_drain_maintenance_post"
             }
+            Event::RxLoopEndpointCommandDrainSidePacket => {
+                "rx_loop_endpoint_command_drain_side_packet"
+            }
+            Event::RxLoopEndpointCommandDrainSideDecryptPriority => {
+                "rx_loop_endpoint_command_drain_side_decrypt_priority"
+            }
+            Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk => {
+                "rx_loop_endpoint_command_drain_side_authenticated_bulk"
+            }
+            Event::RxLoopEndpointCommandDrainSideDecryptBulk => {
+                "rx_loop_endpoint_command_drain_side_decrypt_bulk"
+            }
         }
     }
 }
@@ -673,6 +713,10 @@ fn event_from_index(idx: usize) -> Event {
         79 => Event::RxLoopEndpointCommandDrainSide,
         80 => Event::RxLoopEndpointCommandDrainMaintenancePre,
         81 => Event::RxLoopEndpointCommandDrainMaintenancePost,
+        82 => Event::RxLoopEndpointCommandDrainSidePacket,
+        83 => Event::RxLoopEndpointCommandDrainSideDecryptPriority,
+        84 => Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk,
+        85 => Event::RxLoopEndpointCommandDrainSideDecryptBulk,
         _ => unreachable!(),
     }
 }
