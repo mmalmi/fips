@@ -116,6 +116,79 @@ mod tests {
         });
     }
 
+    #[test]
+    fn linux_sequenced_send_flow_drains_fifo_groups_after_missing_ticket_arrives() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10044".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let key = target.key();
+            let flow = Arc::new(LinuxSequencedSendFlow {
+                key,
+                send_target: target,
+                next_seq: std::sync::atomic::AtomicU64::new(0),
+                last_used_ms: std::sync::atomic::AtomicU64::new(0),
+                state: Mutex::new(LinuxSendFlowState::default()),
+                ready_cv: Condvar::new(),
+                space_cv: Condvar::new(),
+            });
+
+            flow.complete_many(vec![(
+                1,
+                LinuxSendItem::Packet {
+                    packet: pkt(1500),
+                    drop_on_backpressure: true,
+                },
+            )]);
+            {
+                let state = flow.state.lock().expect("linux send flow state");
+                assert_eq!(state.next_send_seq, 0);
+                assert_eq!(state.pending.len(), 1);
+            }
+
+            flow.complete_many(vec![
+                (
+                    0,
+                    LinuxSendItem::Packet {
+                        packet: pkt(1500),
+                        drop_on_backpressure: true,
+                    },
+                ),
+                (2, LinuxSendItem::Skip),
+                (
+                    3,
+                    LinuxSendItem::Packet {
+                        packet: pkt(900),
+                        drop_on_backpressure: true,
+                    },
+                ),
+            ]);
+
+            let groups = flow
+                .take_ready_groups()
+                .expect("ready ordered send group");
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].packet_count(), 3);
+            assert!(
+                groups[0].gso_eligible_sizes(),
+                "sequencer should preserve contiguous FIFO packets as one GSO-safe group"
+            );
+            let state = flow.state.lock().expect("linux send flow state");
+            assert_eq!(state.next_send_seq, 4);
+            assert!(state.pending.is_empty());
+        });
+    }
+
     /// End-to-end: bind a real UDP socket pair on loopback, fire
     /// `send_batch_gso` from the sender, recv on the receiver, confirm
     /// we get N segmented datagrams back (one per logical packet).

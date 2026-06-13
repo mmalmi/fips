@@ -77,6 +77,10 @@ struct QueuedFmpSendJob {
     scheduling_weight: usize,
     #[cfg(not(target_os = "macos"))]
     fair_reservation: Option<FairAdmissionReservation>,
+    #[cfg(target_os = "linux")]
+    linux_flow: Option<Arc<LinuxSequencedSendFlow>>,
+    #[cfg(target_os = "linux")]
+    linux_seq: u64,
     #[cfg(target_os = "macos")]
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
@@ -98,10 +102,31 @@ impl QueuedFmpSendJob {
             scheduling_weight,
             #[cfg(not(target_os = "macos"))]
             fair_reservation: None,
+            #[cfg(target_os = "linux")]
+            linux_flow: None,
+            #[cfg(target_os = "linux")]
+            linux_seq: 0,
             #[cfg(target_os = "macos")]
             macos_flow: None,
             #[cfg(target_os = "macos")]
             macos_seq: 0,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_sequenced(job: FmpSendJob, linux_flow: Arc<LinuxSequencedSendFlow>) -> Self {
+        let linux_seq = linux_flow.reserve_seq();
+        let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
+        let target_key = job.send_target_key();
+        let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
+        Self {
+            job,
+            lane,
+            target_key,
+            scheduling_weight,
+            fair_reservation: None,
+            linux_flow: Some(linux_flow),
+            linux_seq,
         }
     }
 
