@@ -116,7 +116,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: fmp_open,
+                fmp_cipher: fmp_open.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer: previous_hop_peer,
             },
@@ -427,7 +427,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: fmp_open,
+                fmp_cipher: fmp_open.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer: previous_hop_peer,
             },
@@ -565,7 +565,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: fmp_open,
+                fmp_cipher: fmp_open.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer: previous_hop_peer,
             },

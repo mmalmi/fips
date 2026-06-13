@@ -9,7 +9,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: open_cipher,
+                fmp_cipher: open_cipher.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer: test_source_peer(),
             },
@@ -127,7 +127,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: open_cipher,
+                fmp_cipher: open_cipher.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer,
             },
@@ -197,7 +197,7 @@
         let counter = 9;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
         let mut state = OwnedSessionState {
-            fmp_cipher: open_cipher,
+            fmp_cipher: open_cipher.into(),
             fmp_replay: ReplayWindow::new(),
             source_peer: test_source_peer(),
         };
@@ -254,6 +254,56 @@
             state.fmp_replay.highest(),
             counter,
             "replay rejection must leave the owned replay window unchanged"
+        );
+    }
+
+    #[test]
+    fn fmp_aead_open_is_separate_from_replay_acceptance() {
+        let key_bytes = [0x44u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let counter = 12;
+        let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
+        let mut state = OwnedSessionState {
+            fmp_cipher: open_cipher.into(),
+            fmp_replay: ReplayWindow::new(),
+            source_peer: test_source_peer(),
+        };
+
+        let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        let outcome = OwnedSessionState::open_fmp_aead_in_place(
+            &state.fmp_cipher,
+            &mut valid_packet,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            counter,
+            &valid_header,
+        )
+        .expect("crypto-only FMP open should authenticate the packet");
+        assert_eq!(outcome.plaintext_len, 5);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            0,
+            "crypto-only FMP open must not mutate replay ownership"
+        );
+        assert!(
+            state.fmp_replay.check(counter),
+            "the replay owner still decides whether the decrypted counter is admissible"
+        );
+        state.fmp_replay.accept(counter);
+
+        let (mut replay_packet, replay_header) =
+            sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        OwnedSessionState::open_fmp_aead_in_place(
+            &state.fmp_cipher,
+            &mut replay_packet,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            counter,
+            &replay_header,
+        )
+        .expect("crypto-only FMP open is intentionally not the replay gate");
+        assert!(
+            !state.fmp_replay.check(counter),
+            "the replay owner must reject the duplicate after crypto workers return"
         );
     }
 
@@ -338,7 +388,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: open_cipher,
+                fmp_cipher: open_cipher.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer,
             },
@@ -426,7 +476,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: open_cipher,
+                fmp_cipher: open_cipher.into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer,
             },

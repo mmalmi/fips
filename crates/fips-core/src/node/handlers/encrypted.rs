@@ -512,7 +512,7 @@ impl Node {
         let fmp_replay = fmp_session.recv_replay_snapshot_owned();
         let source_peer = *peer.identity();
         Some(crate::node::decrypt_worker::OwnedSessionState {
-            fmp_cipher,
+            fmp_cipher: fmp_cipher.into(),
             fmp_replay,
             source_peer,
         })

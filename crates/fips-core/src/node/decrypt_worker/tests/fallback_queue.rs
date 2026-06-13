@@ -498,7 +498,7 @@
             0,
             session_key,
             OwnedSessionState {
-                fmp_cipher: cipher.clone(),
+                fmp_cipher: cipher.clone().into(),
                 fmp_replay: ReplayWindow::new(),
                 source_peer,
             },

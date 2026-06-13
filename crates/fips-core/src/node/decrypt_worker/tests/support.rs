@@ -161,7 +161,7 @@
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
         OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
+            fmp_cipher: LessSafeKey::new(unbound).into(),
             fmp_replay: ReplayWindow::new(),
             source_peer: test_source_peer(),
         }
@@ -173,7 +173,7 @@
         let key_bytes = [8u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
         let state = OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
+            fmp_cipher: LessSafeKey::new(unbound).into(),
             fmp_replay: ReplayWindow::new(),
             source_peer,
         };

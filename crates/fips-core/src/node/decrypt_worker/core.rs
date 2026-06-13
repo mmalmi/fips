@@ -181,7 +181,7 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 /// Built at FMP-session establishment time (`promote_connection`)
 /// and shipped to the assigned worker via `WorkerMsg::RegisterSession`.
 pub(crate) struct OwnedSessionState {
-    pub fmp_cipher: LessSafeKey,
+    pub fmp_cipher: Arc<LessSafeKey>,
     pub fmp_replay: ReplayWindow,
     pub source_peer: PeerIdentity,
 }
@@ -363,6 +363,25 @@ enum FmpOpenError {
 }
 
 impl OwnedSessionState {
+    fn open_fmp_aead_in_place(
+        cipher: &LessSafeKey,
+        packet_data: &mut [u8],
+        fmp_ciphertext_offset: usize,
+        fmp_counter: u64,
+        fmp_header: &[u8; 16],
+    ) -> Result<FmpOpenOutcome, ()> {
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let plaintext_len = cipher
+            .open_in_place(nonce, Aad::from(fmp_header), buf)
+            .map_err(|_| ())?
+            .len();
+
+        Ok(FmpOpenOutcome { plaintext_len })
+    }
+
     fn open_fmp_in_place(
         &mut self,
         packet_data: &mut [u8],
@@ -375,18 +394,17 @@ impl OwnedSessionState {
             return Err(FmpOpenError::Replay);
         }
 
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let buf = &mut packet_data[fmp_ciphertext_offset..];
-        let plaintext_len = self
-            .fmp_cipher
-            .open_in_place(nonce, Aad::from(fmp_header), buf)
-            .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?
-            .len();
+        let outcome = Self::open_fmp_aead_in_place(
+            &self.fmp_cipher,
+            packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_header,
+        )
+        .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?;
 
         self.fmp_replay.accept(fmp_counter);
-        Ok(FmpOpenOutcome { plaintext_len })
+        Ok(outcome)
     }
 }
 
