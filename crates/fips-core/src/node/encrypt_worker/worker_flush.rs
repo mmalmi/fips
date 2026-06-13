@@ -71,7 +71,10 @@ impl SealedSendPacket {
         return Self::from_job_without_target_key(job);
     }
 
-    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
+    #[cfg(all(
+        unix,
+        any(test, not(any(target_os = "macos", target_os = "linux")))
+    ))]
     fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
         let QueuedFmpSendJob {
             job, target_key, ..
@@ -333,7 +336,18 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        let QueuedFmpSendJob {
+            job,
+            target_key,
+            linux_container,
+            linux_container_slot,
+            ..
+        } = queued;
+
+        #[cfg(target_os = "linux")]
+        let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
         let sealed_result = SealedSendPacket::from_queued(queued);
         #[cfg(not(unix))]
         let sealed_result = {
@@ -353,6 +367,10 @@ fn flush_batch_sync(
                         MacSendItem::Skip,
                     );
                 }
+                #[cfg(target_os = "linux")]
+                if let Some(container) = linux_container.as_ref() {
+                    container.skip(linux_container_slot);
+                }
                 continue;
             }
         };
@@ -370,6 +388,14 @@ fn flush_batch_sync(
                     drop_on_backpressure,
                 },
             );
+            continue;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(container) = linux_container {
+            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
+            container.complete_packet(linux_container_slot, wire_packet, drop_on_backpressure);
             continue;
         }
 
@@ -437,6 +463,25 @@ fn flush_batch_sync(
     );
 
     #[cfg(target_os = "linux")]
+    flush_linux_send_batches_sync(groups)?;
+    #[cfg(all(unix, not(target_os = "linux")))]
+    for group in groups {
+        let send_attempt = DirectSendBatchAttempt::from_batch(group);
+        if let Err(err) = flush_direct_send_attempt(send_attempt) {
+            return Err(format!("sendto failed: {err}").into());
+        }
+    }
+    // Windows: encrypt worker pool isn't spawned at all (see
+    // lifecycle.rs), so this function is never reached. The
+    // tokio-backed `AsyncUdpSocket::send_to` path on the rx_loop
+    // remains the only outbound path on that platform.
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn flush_linux_send_batches_sync(
+    groups: Vec<SelectedSendBatch>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for group in groups {
         let mut send_attempt = LinuxSendBatchAttempt::from_batch(group);
         let (fd, connected, dest_addr) = send_attempt.target_parts();
@@ -505,17 +550,6 @@ fn flush_batch_sync(
             send_attempt.mark_sent(n);
         }
     }
-    #[cfg(all(unix, not(target_os = "linux")))]
-    for group in groups {
-        let send_attempt = DirectSendBatchAttempt::from_batch(group);
-        if let Err(err) = flush_direct_send_attempt(send_attempt) {
-            return Err(format!("sendto failed: {err}").into());
-        }
-    }
-    // Windows: encrypt worker pool isn't spawned at all (see
-    // lifecycle.rs), so this function is never reached. The
-    // tokio-backed `AsyncUdpSocket::send_to` path on the rx_loop
-    // remains the only outbound path on that platform.
     Ok(())
 }
 

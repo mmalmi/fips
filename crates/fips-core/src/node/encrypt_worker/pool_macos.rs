@@ -16,9 +16,11 @@
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
+    #[cfg(target_os = "linux")]
+    linux_containers: Arc<LinuxBulkSendFlows>,
     #[cfg(target_os = "macos")]
     macos_senders: Arc<MacSequencedSendFlows>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     next_worker: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -57,9 +59,11 @@ impl EncryptWorkerPool {
         }
         Self {
             senders: senders.into(),
+            #[cfg(target_os = "linux")]
+            linux_containers: Arc::new(LinuxBulkSendFlows::default()),
             #[cfg(target_os = "macos")]
             macos_senders: Arc::new(MacSequencedSendFlows::default()),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
@@ -86,8 +90,84 @@ impl EncryptWorkerPool {
     }
 
     pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        #[cfg(target_os = "linux")]
+        if linux_bulk_container_sender_enabled() {
+            self.dispatch_linux_bulk_containers(jobs);
+            return;
+        }
+
         for job in jobs {
             self.dispatch(job);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_containers(&self, jobs: Vec<FmpSendJob>) {
+        let mut run = Vec::new();
+        let mut run_key: Option<SendTargetKey> = None;
+
+        for job in jobs {
+            if !job.bulk_endpoint_data {
+                self.dispatch_linux_bulk_container_run(&mut run);
+                run_key = None;
+                self.dispatch(job);
+                continue;
+            }
+
+            let key = job.send_target_key();
+            if matches!(run_key, Some(current) if current != key) {
+                self.dispatch_linux_bulk_container_run(&mut run);
+                run_key = None;
+            }
+            if run_key.is_none() {
+                run_key = Some(key);
+            }
+            run.push(job);
+        }
+
+        self.dispatch_linux_bulk_container_run(&mut run);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_container_run(&self, run: &mut Vec<FmpSendJob>) {
+        if run.is_empty() {
+            return;
+        }
+
+        if self.senders.len() <= 1 || run.len() < linux_bulk_container_min_packets() {
+            for job in run.drain(..) {
+                self.dispatch(job);
+            }
+            return;
+        }
+
+        let target_key = run[0].send_target_key();
+        debug_assert!(
+            run.iter().all(|job| job.bulk_endpoint_data
+                && job.send_target_key() == target_key),
+            "Linux bulk container runs must be same-target bulk packets"
+        );
+
+        let flow = self.linux_containers.flow_for(&run[0]);
+        let container = Arc::new(LinuxBulkSendContainer::new(run.len()));
+        if !flow.try_enqueue(Arc::clone(&container)) {
+            for job in run.drain(..) {
+                let (idx, queued) = self.prepare_dispatch(job);
+                record_encrypt_worker_queue_full(queued.queue_lane());
+                record_encrypt_worker_backpressure_drop(idx);
+            }
+            return;
+        }
+
+        let idx = self
+            .next_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.senders.len();
+        for (slot, job) in run.drain(..).enumerate() {
+            self.dispatch_to_worker(
+                idx,
+                QueuedFmpSendJob::linux_container(job, Arc::clone(&container), slot),
+            );
         }
     }
 
@@ -134,6 +214,7 @@ impl EncryptWorkerPool {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
+                    job.complete_worker_drop();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -146,11 +227,13 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(*job) {
+                if let Err(MacWorkerPushError(job)) = self.senders[idx].push_blocking(*job) {
+                    job.complete_worker_drop();
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(MacWorkerTryPushError::Closed) => {
+            Err(MacWorkerTryPushError::Closed(job)) => {
+                job.complete_worker_drop();
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
@@ -165,6 +248,7 @@ impl EncryptWorkerPool {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
                     record_encrypt_worker_backpressure_drop(idx);
+                    job.complete_worker_drop();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -177,11 +261,13 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(FairWorkerPushError) = sender.push_blocking(*job) {
+                if let Err(FairWorkerPushError(job)) = sender.push_blocking(*job) {
+                    job.complete_worker_drop();
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(FairWorkerTryPushError::Closed) => {
+            Err(FairWorkerTryPushError::Closed(job)) => {
+                job.complete_worker_drop();
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
