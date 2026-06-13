@@ -7,7 +7,7 @@ use crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
@@ -354,10 +354,6 @@ impl LinuxSendBatchAttempt {
         (fd, connected, self.send_target.dest_addr())
     }
 
-    fn packets(&self) -> &[Vec<u8>] {
-        &self.wire_packets
-    }
-
     fn gso_eligible_sizes(&self) -> bool {
         self.gso_eligible_sizes
     }
@@ -368,11 +364,6 @@ impl LinuxSendBatchAttempt {
 
     fn is_complete(&self) -> bool {
         self.sent >= self.wire_packets.len()
-    }
-
-    fn mark_all_sent(&mut self) {
-        let remaining = self.remaining_packets().len();
-        self.mark_sent(remaining);
     }
 
     fn mark_sent(&mut self, n: usize) {
