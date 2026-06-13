@@ -34,7 +34,7 @@ use crate::protocol::{
 #[cfg(unix)]
 use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
 use crate::protocol::{coords_wire_size, encode_coords};
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
@@ -665,12 +665,20 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
+#[derive(Clone)]
 struct PipelinedEndpointSendTarget {
     socket: crate::transport::udp::socket::AsyncUdpSocket,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     socket_addr: std::net::SocketAddr,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointResolvedRoute {
+    route_plan: PipelinedEndpointRoutePlan,
+    peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+    send_target: PipelinedEndpointSendTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -854,7 +862,7 @@ struct PipelinedEndpointRuntimeSendAttempt<'a> {
     send_target: PipelinedEndpointSendTarget,
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 struct PipelinedEndpointRuntimeSend<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
 }

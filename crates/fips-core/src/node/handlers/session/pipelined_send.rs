@@ -119,7 +119,7 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 impl<'a> PipelinedEndpointRuntimeSend<'a> {
     fn new(runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>) -> Self {
         Self { runtime_plan }
@@ -189,25 +189,38 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
         PipelinedEndpointPeerRuntimeSendError,
     > {
+        let Some(resolved_route) = runtime_route
+            .resolve_send_target(transports)
+            .await
+            .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)?
+        else {
+            return Ok(None);
+        };
+        Self::resolve_dispatch_with_resolved_route(&resolved_route, send, sessions, peers)
+    }
+
+    fn resolve_dispatch_with_resolved_route(
+        resolved_route: &PipelinedEndpointResolvedRoute,
+        send: PipelinedEndpointSend<'a>,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<
+        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
+        PipelinedEndpointPeerRuntimeSendError,
+    > {
         let dest_addr = *send.dest_addr;
-        let next_hop_addr = runtime_route.next_hop_addr();
-        let transport_id = runtime_route.transport_id();
-        let transport = transports.get(&transport_id).ok_or(
-            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
-                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
-            ),
-        )?;
-        let runtime_plan = runtime_route
-            .runtime_send_plan(&send, transport)
-            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
+        let next_hop_addr = resolved_route.next_hop_addr();
+        let runtime_plan = resolved_route.runtime_send_plan(&send).map_err(|error| {
+            PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
                 dest_addr,
                 next_hop_addr,
                 error,
-            })?;
+            }
+        })?;
 
-        PipelinedEndpointRuntimeSend::new(runtime_plan)
-            .resolve_dispatch_with_transport(transport, sessions, peers)
-            .await
+        PipelinedEndpointRuntimeSendAttempt::new(runtime_plan, resolved_route.send_target())
+            .reserve(sessions, peers)
+            .map_err(PipelinedEndpointRuntimeSendError::Attempt)
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
