@@ -20,6 +20,11 @@ pub(super) const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = FALLBACK_PRESSURE_DR
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
 pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
+/// Endpoint send commands are already pre-batched before they reach rx_loop.
+/// When that mailbox is non-empty, shorten the packet-drain interval so the
+/// endpoint producer does not sit for several packet turns before one batch is
+/// moved onward to the worker send path.
+pub(super) const SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY: usize = 32;
 /// Side-queue interleaves are a progress reserve, not a full drain. Keeping
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
@@ -109,6 +114,14 @@ pub(super) fn fallback_drain_plan(
 
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
     transport_priority_packets == 0
+}
+
+pub(super) fn side_queue_interleave_interval(endpoint_command_ready: bool) -> usize {
+    if endpoint_command_ready {
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY
+    } else {
+        SIDE_QUEUE_INTERLEAVE_EVERY
+    }
 }
 
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {

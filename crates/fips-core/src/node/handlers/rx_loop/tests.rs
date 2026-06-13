@@ -3,7 +3,9 @@ use super::budget::{
     FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
     FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
     NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PRIORITY_FALLBACK_DRAIN_BUDGET,
+    SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY, SIDE_QUEUE_INTERLEAVE_EVERY,
     authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
+    side_queue_interleave_interval,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -97,6 +99,22 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
 }
 
 #[test]
+fn side_queue_interleave_shortens_when_endpoint_commands_are_waiting() {
+    assert!(
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY < SIDE_QUEUE_INTERLEAVE_EVERY,
+        "endpoint pressure cadence should be a shorter packet interval than the normal side-queue reserve"
+    );
+    assert_eq!(
+        side_queue_interleave_interval(false),
+        SIDE_QUEUE_INTERLEAVE_EVERY
+    );
+    assert_eq!(
+        side_queue_interleave_interval(true),
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY
+    );
+}
+
+#[test]
 fn packet_drain_cursor_can_retime_fallback_interleave_under_pressure() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     for packet in 0..64 {
@@ -163,6 +181,39 @@ fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
         drain.next(&mut rx),
         Some(PacketDrainAction::InterleaveFallback),
         "priority pressure relief should restore the normal fallback cadence"
+    );
+}
+
+#[test]
+fn packet_drain_cursor_can_retime_side_queue_interleave_under_pressure() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for packet in 0..128 {
+        tx.send(packet).unwrap();
+    }
+
+    let mut drain = PacketDrainCursor::new(None, 128, 0, SIDE_QUEUE_INTERLEAVE_EVERY);
+    for _ in 0..SIDE_QUEUE_INTERLEAVE_EVERY {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues)
+    );
+
+    drain.reset_side_queue_interleave_every(SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY);
+    for _ in 0..SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues),
+        "endpoint command pressure should shorten the next side-queue interval"
     );
 }
 
