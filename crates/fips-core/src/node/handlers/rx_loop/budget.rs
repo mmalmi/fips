@@ -29,6 +29,11 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
 /// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work
 /// without adding a second packet-drain path inside those handlers.
 pub(super) const NON_PACKET_DRAIN_BUDGET: usize = 64;
+/// Priority decrypt returns carry ACKs, heartbeats, rekeys, and failure
+/// reports, so they stay at the top of the biased select. Keep each selected
+/// turn well below a raw receive turn so a hot stream of small ACK-shaped
+/// returns cannot monopolize the rx-loop ahead of endpoint command progress.
+pub(super) const PRIORITY_FALLBACK_DRAIN_BUDGET: usize = NON_PACKET_DRAIN_BUDGET;
 /// A directly selected endpoint command has already lost the biased select race
 /// to decrypt priority, timer maintenance, authenticated decrypt returns, and
 /// raw packet receive. Give that path enough room to dequeue four full endpoint

@@ -242,7 +242,7 @@ impl Node {
                     let fallback_drained = self.drain_decrypt_priority_fallback(
                         &mut decrypt_fallback_rx.priority,
                         Some(event),
-                        PACKET_DRAIN_BUDGET,
+                        PRIORITY_FALLBACK_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut tun_outbound_rx,

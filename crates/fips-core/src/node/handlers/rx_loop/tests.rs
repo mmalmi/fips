@@ -2,8 +2,8 @@ use super::budget::{
     ENDPOINT_COMMAND_DRAIN_BUDGET, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
     FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
     FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PRIORITY_FALLBACK_DRAIN_BUDGET,
+    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -30,6 +30,14 @@ fn endpoint_command_drain_budget_catches_up_without_spanning_packet_turn() {
     assert!(
         ENDPOINT_COMMAND_DRAIN_BUDGET <= PACKET_DRAIN_BUDGET / 2,
         "endpoint command catch-up stays below half a raw packet receive turn"
+    );
+}
+
+#[test]
+fn priority_fallback_drain_budget_is_a_non_packet_turn() {
+    assert_eq!(
+        PRIORITY_FALLBACK_DRAIN_BUDGET, NON_PACKET_DRAIN_BUDGET,
+        "top-level priority decrypt returns should yield at non-packet cadence"
     );
 }
 
