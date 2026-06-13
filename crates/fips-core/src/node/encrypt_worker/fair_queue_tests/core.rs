@@ -1,4 +1,3 @@
-    use super::*;
     use crate::transport::udp::socket::UdpRawSocket;
     use ring::aead::{LessSafeKey, UnboundKey};
 

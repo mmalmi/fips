@@ -23,6 +23,8 @@
 //! Stages tracked, outbound:
 //!   * `FSP_ENCRYPT` — inner AEAD seal (`send_session_data`)
 //!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
+//!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
+//!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
@@ -70,7 +72,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 42;
+const N_STAGES: usize = 44;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -181,6 +183,10 @@ pub enum Stage {
     FmpWorkerPriorityQueueWait = 40,
     /// Bulk FMP encrypt-worker input residence.
     FmpWorkerBulkQueueWait = 41,
+    /// Worker-side inner FSP seal for pipelined endpoint sends.
+    FmpWorkerFspSeal = 42,
+    /// Worker-side outer FMP seal for pipelined endpoint sends.
+    FmpWorkerFmpSeal = 43,
 }
 
 impl Stage {
@@ -230,6 +236,8 @@ impl Stage {
             Stage::DecryptFspWorkerBulkQueueWait => "decrypt_fsp_worker_bulk_queue_wait",
             Stage::FmpWorkerPriorityQueueWait => "fmp_worker_priority_queue_wait",
             Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
+            Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
+            Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
         }
     }
 }
@@ -278,6 +286,8 @@ fn stage_from_index(idx: usize) -> Stage {
         39 => Stage::DecryptFspWorkerBulkQueueWait,
         40 => Stage::FmpWorkerPriorityQueueWait,
         41 => Stage::FmpWorkerBulkQueueWait,
+        42 => Stage::FmpWorkerFspSeal,
+        43 => Stage::FmpWorkerFmpSeal,
         _ => unreachable!(),
     }
 }
