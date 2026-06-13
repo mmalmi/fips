@@ -68,6 +68,102 @@ fn test_replay_window_boundary() {
 }
 
 #[test]
+fn test_replay_window_clears_reused_ring_slots() {
+    let mut window = ReplayWindow::new();
+
+    window.accept(1);
+    assert!(!window.check(1));
+
+    let high = REPLAY_WINDOW_SIZE as u64 + 2;
+    window.accept(high);
+
+    // Counter 1 and counter REPLAY_WINDOW_SIZE + 1 share the same bitmap bit
+    // in the ring representation. Advancing the window must clear that reused
+    // slot so the newer in-window counter is not mistaken for a replay.
+    let reused_slot_counter = REPLAY_WINDOW_SIZE as u64 + 1;
+    assert!(window.check(reused_slot_counter));
+    window.accept(reused_slot_counter);
+    assert!(!window.check(reused_slot_counter));
+}
+
+#[test]
+fn test_replay_window_matches_set_model_across_wraps() {
+    use std::collections::HashSet;
+
+    fn model_check(seen: &HashSet<u64>, highest: u64, counter: u64) -> bool {
+        if counter > highest {
+            return true;
+        }
+        highest - counter < REPLAY_WINDOW_SIZE as u64 && !seen.contains(&counter)
+    }
+
+    fn model_accept(seen: &mut HashSet<u64>, highest: &mut u64, counter: u64) {
+        if counter > *highest {
+            *highest = counter;
+            seen.retain(|seen_counter| *highest - *seen_counter < REPLAY_WINDOW_SIZE as u64);
+        }
+        seen.insert(counter);
+    }
+
+    let mut window = ReplayWindow::new();
+    let mut seen = HashSet::new();
+    let mut highest = 0;
+    let counters = [
+        0,
+        1,
+        2,
+        1000,
+        20,
+        REPLAY_WINDOW_SIZE as u64 - 1,
+        REPLAY_WINDOW_SIZE as u64,
+        100,
+        REPLAY_WINDOW_SIZE as u64 + 2,
+        REPLAY_WINDOW_SIZE as u64 + 1,
+        (REPLAY_WINDOW_SIZE * 2) as u64 - 1,
+        REPLAY_WINDOW_SIZE as u64 + 900,
+        (REPLAY_WINDOW_SIZE * 2) as u64,
+        (REPLAY_WINDOW_SIZE * 2) as u64 + 1,
+        5000,
+        7000,
+        6999,
+        9000,
+    ];
+
+    for counter in counters {
+        assert_eq!(
+            window.check(counter),
+            model_check(&seen, highest, counter),
+            "pre-accept check mismatch for counter {counter}"
+        );
+        if model_check(&seen, highest, counter) {
+            window.accept(counter);
+            model_accept(&mut seen, &mut highest, counter);
+            assert!(
+                !window.check(counter),
+                "accepted counter {counter} must replay"
+            );
+        }
+
+        for probe in [
+            0,
+            1,
+            counter.saturating_sub(1),
+            counter,
+            counter.saturating_add(1),
+            highest.saturating_sub(REPLAY_WINDOW_SIZE as u64),
+            highest.saturating_sub(REPLAY_WINDOW_SIZE as u64 - 1),
+            highest,
+        ] {
+            assert_eq!(
+                window.check(probe),
+                model_check(&seen, highest, probe),
+                "probe check mismatch after counter {counter}, probe {probe}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_replay_window_sequential() {
     let mut window = ReplayWindow::new();
 

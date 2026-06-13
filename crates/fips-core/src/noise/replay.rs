@@ -12,8 +12,9 @@ use std::fmt;
 pub struct ReplayWindow {
     /// Highest counter value seen.
     highest: u64,
-    /// Bitmap tracking which counters in the window have been seen.
-    /// Bit i corresponds to counter (highest - i).
+    /// Ring bitmap tracking which counters in the current window have been seen.
+    /// Bit `counter % REPLAY_WINDOW_SIZE` belongs to that absolute counter while
+    /// it is within `[highest + 1 - REPLAY_WINDOW_SIZE, highest]`.
     bitmap: [u64; REPLAY_WINDOW_SIZE / 64],
 }
 
@@ -43,10 +44,8 @@ impl ReplayWindow {
             return false;
         }
 
-        // Check bitmap - bit is set if counter was already seen
-        let word_idx = (diff as usize) / 64;
-        let bit_idx = (diff as usize) % 64;
-        (self.bitmap[word_idx] & (1u64 << bit_idx)) == 0
+        let (word_idx, mask) = Self::bit_position(counter);
+        (self.bitmap[word_idx] & mask) == 0
     }
 
     /// Accept a counter into the window.
@@ -55,59 +54,33 @@ impl ReplayWindow {
     /// DoS attacks that exhaust the window.
     pub fn accept(&mut self, counter: u64) {
         if counter > self.highest {
-            // Shift the window
+            // Advance the logical window. The common in-order packet path only
+            // clears one recycled bit instead of shifting the whole bitmap.
             let shift = counter - self.highest;
             if shift as usize >= REPLAY_WINDOW_SIZE {
-                // Complete reset
                 self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
             } else {
-                // Shift bitmap
-                self.shift_bitmap(shift as usize);
+                self.clear_counter_range(self.highest + 1, counter);
             }
             self.highest = counter;
-            // Mark counter 0 (which is now the highest) as seen
-            self.bitmap[0] |= 1;
-        } else {
-            // Mark the counter as seen
-            let diff = self.highest - counter;
-            let word_idx = (diff as usize) / 64;
-            let bit_idx = (diff as usize) % 64;
-            self.bitmap[word_idx] |= 1u64 << bit_idx;
+        }
+
+        let (word_idx, mask) = Self::bit_position(counter);
+        self.bitmap[word_idx] |= mask;
+    }
+
+    fn clear_counter_range(&mut self, start: u64, end: u64) {
+        debug_assert!(start <= end);
+        for counter in start..=end {
+            let (word_idx, mask) = Self::bit_position(counter);
+            self.bitmap[word_idx] &= !mask;
         }
     }
 
-    /// Shift the bitmap by the given number of positions.
-    ///
-    /// This moves old counters to higher bit positions to make room for the
-    /// new highest counter at position 0.
-    fn shift_bitmap(&mut self, shift: usize) {
-        if shift >= REPLAY_WINDOW_SIZE {
-            self.bitmap = [0; REPLAY_WINDOW_SIZE / 64];
-            return;
-        }
-
-        let word_shift = shift / 64;
-        let bit_shift = shift % 64;
-
-        // Shift entire words first (from high to low to avoid overwriting)
-        if word_shift > 0 {
-            for i in (word_shift..self.bitmap.len()).rev() {
-                self.bitmap[i] = self.bitmap[i - word_shift];
-            }
-            for i in 0..word_shift {
-                self.bitmap[i] = 0;
-            }
-        }
-
-        // Shift bits within words (from low to high so carry propagates correctly)
-        if bit_shift > 0 {
-            let mut carry = 0u64;
-            for i in 0..self.bitmap.len() {
-                let new_carry = self.bitmap[i] >> (64 - bit_shift);
-                self.bitmap[i] = (self.bitmap[i] << bit_shift) | carry;
-                carry = new_carry;
-            }
-        }
+    #[inline]
+    fn bit_position(counter: u64) -> (usize, u64) {
+        let bit = (counter as usize) % REPLAY_WINDOW_SIZE;
+        (bit / 64, 1u64 << (bit % 64))
     }
 
     /// Get the highest counter seen.
