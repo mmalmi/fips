@@ -356,6 +356,12 @@ struct FmpOpenOutcome {
     plaintext_len: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReplayPrecheck {
+    counter: u64,
+    replay_highest: u64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
@@ -363,6 +369,17 @@ enum FmpOpenError {
 }
 
 impl OwnedSessionState {
+    fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
+        let replay_highest = self.fmp_replay.highest();
+        if !self.fmp_replay.check(fmp_counter) {
+            return Err(FmpOpenError::Replay);
+        }
+        Ok(FmpReplayPrecheck {
+            counter: fmp_counter,
+            replay_highest,
+        })
+    }
+
     fn open_fmp_aead_in_place(
         cipher: &LessSafeKey,
         packet_data: &mut [u8],
@@ -382,6 +399,14 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
+    fn accept_prechecked_fmp_replay(&mut self, precheck: FmpReplayPrecheck) {
+        debug_assert!(
+            self.fmp_replay.check(precheck.counter),
+            "ordered FMP replay owner must accept each prechecked counter at most once"
+        );
+        self.fmp_replay.accept(precheck.counter);
+    }
+
     fn open_fmp_in_place(
         &mut self,
         packet_data: &mut [u8],
@@ -389,10 +414,7 @@ impl OwnedSessionState {
         fmp_counter: u64,
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
-        let fmp_replay_highest = self.fmp_replay.highest();
-        if !self.fmp_replay.check(fmp_counter) {
-            return Err(FmpOpenError::Replay);
-        }
+        let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
 
         let outcome = Self::open_fmp_aead_in_place(
             &self.fmp_cipher,
@@ -401,9 +423,11 @@ impl OwnedSessionState {
             fmp_counter,
             fmp_header,
         )
-        .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?;
+        .map_err(|_| FmpOpenError::Aead {
+            fmp_replay_highest: replay_precheck.replay_highest,
+        })?;
 
-        self.fmp_replay.accept(fmp_counter);
+        self.accept_prechecked_fmp_replay(replay_precheck);
         Ok(outcome)
     }
 }

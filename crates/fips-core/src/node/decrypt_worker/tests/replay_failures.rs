@@ -316,6 +316,71 @@
     }
 
     #[test]
+    fn fmp_replay_precheck_waits_for_ordered_crypto_completion() {
+        let key_bytes = [0x55u8; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let counter = 19;
+        let flags = crate::node::wire::FLAG_SP;
+        let mut state = OwnedSessionState {
+            fmp_cipher: open_cipher.into(),
+            fmp_replay: ReplayWindow::new(),
+            source_peer: test_source_peer(),
+        };
+
+        let precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("fresh counter should pass the replay precheck");
+        assert_eq!(precheck.counter, counter);
+        assert_eq!(precheck.replay_highest, 0);
+        assert_eq!(
+            state.fmp_replay.highest(),
+            0,
+            "precheck must not advance the replay window before AEAD succeeds"
+        );
+        assert!(
+            state.fmp_replay.check(counter),
+            "prechecked counter is still admissible until ordered completion is accepted"
+        );
+
+        let (mut invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
+        let err = state
+            .open_fmp_in_place(
+                &mut invalid_packet,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                counter,
+                &invalid_header,
+            )
+            .expect_err("failed AEAD must be reported without consuming replay");
+        assert_eq!(
+            err,
+            FmpOpenError::Aead {
+                fmp_replay_highest: 0
+            }
+        );
+        assert!(
+            state.fmp_replay.check(counter),
+            "failed AEAD must leave the prechecked counter available for a valid packet"
+        );
+
+        let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        OwnedSessionState::open_fmp_aead_in_place(
+            &state.fmp_cipher,
+            &mut valid_packet,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            counter,
+            &valid_header,
+        )
+        .expect("worker-side AEAD should authenticate independently");
+        state.accept_prechecked_fmp_replay(precheck);
+        assert_eq!(state.fmp_replay.highest(), counter);
+        assert!(
+            !state.fmp_replay.check(counter),
+            "ordered completion accept makes the counter a replay"
+        );
+    }
+
+    #[test]
     fn worker_emits_compact_direct_fmp_endpoint_data() {
         let key_bytes = [0x33u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);
