@@ -25,6 +25,16 @@
 //!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
 //!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
 //!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
+//!   * `ENDPOINT_ROUTE_RESOLVE` — batch-level route snapshot selection before
+//!     pipelined endpoint send preparation
+//!   * `ENDPOINT_SESSION_PREP` — per-packet FSP session context/flags/coords
+//!     preparation before worker handoff
+//!   * `ENDPOINT_RUNTIME_DISPATCH_PREP` — per-packet runtime route/transport
+//!     dispatch and counter reservation before worker job construction
+//!   * `ENDPOINT_WORKER_JOB_BUILD` — per-packet wire buffer/header/job
+//!     construction before encrypt worker enqueue
+//!   * `ENDPOINT_WORKER_COMMIT` — per-packet bookkeeping and encrypt worker
+//!     enqueue from prepared endpoint sends
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
@@ -72,7 +82,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 46;
+const N_STAGES: usize = 51;
 const N_EVENTS: usize = 77;
 const HIST_BUCKETS: usize = 48;
 
@@ -192,6 +202,16 @@ pub enum Stage {
     FmpLinuxBulkContainerQueueWait = 44,
     /// Linux bulk-container sender wait for worker slots to finish sealing.
     FmpLinuxBulkContainerReadyWait = 45,
+    /// Batch-level route snapshot selection for established endpoint sends.
+    EndpointRouteResolve = 46,
+    /// Per-packet FSP context/flags/coords preparation before worker handoff.
+    EndpointSessionPrep = 47,
+    /// Per-packet runtime route/transport dispatch and counter reservation.
+    EndpointRuntimeDispatchPrep = 48,
+    /// Per-packet wire buffer/header/job construction before worker enqueue.
+    EndpointWorkerJobBuild = 49,
+    /// Per-packet bookkeeping and encrypt worker enqueue from prepared sends.
+    EndpointWorkerCommit = 50,
 }
 
 impl Stage {
@@ -245,6 +265,11 @@ impl Stage {
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
             Stage::FmpLinuxBulkContainerQueueWait => "fmp_linux_bulk_container_queue_wait",
             Stage::FmpLinuxBulkContainerReadyWait => "fmp_linux_bulk_container_ready_wait",
+            Stage::EndpointRouteResolve => "endpoint_route_resolve",
+            Stage::EndpointSessionPrep => "endpoint_session_prep",
+            Stage::EndpointRuntimeDispatchPrep => "endpoint_runtime_dispatch_prep",
+            Stage::EndpointWorkerJobBuild => "endpoint_worker_job_build",
+            Stage::EndpointWorkerCommit => "endpoint_worker_commit",
         }
     }
 }
@@ -297,6 +322,11 @@ fn stage_from_index(idx: usize) -> Stage {
         43 => Stage::FmpWorkerFmpSeal,
         44 => Stage::FmpLinuxBulkContainerQueueWait,
         45 => Stage::FmpLinuxBulkContainerReadyWait,
+        46 => Stage::EndpointRouteResolve,
+        47 => Stage::EndpointSessionPrep,
+        48 => Stage::EndpointRuntimeDispatchPrep,
+        49 => Stage::EndpointWorkerJobBuild,
+        50 => Stage::EndpointWorkerCommit,
         _ => unreachable!(),
     }
 }

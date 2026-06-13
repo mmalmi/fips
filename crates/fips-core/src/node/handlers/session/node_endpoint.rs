@@ -20,12 +20,17 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
     ) {
-        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
-            Ok(route) => route,
-            Err(_) => {
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                    .await;
-                return;
+        let route = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::EndpointRouteResolve,
+            );
+            match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
+                Ok(route) => route,
+                Err(_) => {
+                    self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
+                        .await;
+                    return;
+                }
             }
         };
 
@@ -250,6 +255,9 @@ impl Node {
         dest_addr: &'a NodeAddr,
         payload: &'a EndpointDataPayload,
     ) -> Result<PreparedEndpointSessionData<'a>, NodeError> {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSessionPrep);
+
         if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -474,16 +482,21 @@ impl Node {
         send: PipelinedEndpointSend<'_>,
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
     ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
-        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
-            runtime_route,
-            send,
-            &self.transports,
-            &mut self.sessions,
-            &mut self.peers,
-        )
-        .await
-        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
-        else {
+        let dispatch = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::EndpointRuntimeDispatchPrep,
+            );
+            PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
+                runtime_route,
+                send,
+                &self.transports,
+                &mut self.sessions,
+                &mut self.peers,
+            )
+            .await
+            .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
+        };
+        let Some(dispatch) = dispatch else {
             return Ok(None);
         };
 

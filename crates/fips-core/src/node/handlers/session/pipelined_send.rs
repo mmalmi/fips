@@ -33,6 +33,8 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
         self,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointWorkerJobBuild);
         let Self {
             runtime_plan,
             send_target,
@@ -310,6 +312,8 @@ impl PipelinedEndpointPreparedSend {
     }
 
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointWorkerCommit);
         let mut worker_job = self.record_bookkeeping(node);
         if worker_job.queued_at.is_none() {
             worker_job.queued_at = crate::perf_profile::stamp();
@@ -334,6 +338,10 @@ impl PipelinedEndpointPreparedSend {
             return;
         }
 
+        let _t = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointWorkerCommit,
+            sends.len(),
+        );
         let queued_at = crate::perf_profile::stamp();
         let jobs = sends
             .into_iter()
