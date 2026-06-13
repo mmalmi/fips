@@ -281,9 +281,9 @@ impl LinuxBulkSendContainer {
             else {
                 continue;
             };
-            push_selected_send_batch_with_capacity(
+            push_uniform_target_send_batch_with_capacity(
                 &mut groups,
-                send_target.clone(),
+                send_target,
                 target_key,
                 packet,
                 drop_on_backpressure,

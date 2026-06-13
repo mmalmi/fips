@@ -741,6 +741,83 @@ mod unix_tests {
     }
 
     #[test]
+    fn uniform_target_send_batch_splits_only_on_backpressure_policy() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10040".parse().unwrap();
+            let target = SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest,
+            );
+            let key = target.key();
+
+            let mut groups = Vec::new();
+            push_uniform_target_send_batch_with_capacity(
+                &mut groups,
+                &target,
+                key,
+                vec![1],
+                true,
+                32,
+            );
+            push_uniform_target_send_batch_with_capacity(
+                &mut groups,
+                &target,
+                key,
+                vec![2],
+                true,
+                32,
+            );
+            push_uniform_target_send_batch_with_capacity(
+                &mut groups,
+                &target,
+                key,
+                vec![3],
+                false,
+                32,
+            );
+            push_uniform_target_send_batch_with_capacity(
+                &mut groups,
+                &target,
+                key,
+                vec![4],
+                false,
+                32,
+            );
+            push_uniform_target_send_batch_with_capacity(
+                &mut groups,
+                &target,
+                key,
+                vec![5],
+                true,
+                32,
+            );
+
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[0].target_key(), key);
+            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![2]]);
+            assert!(groups[0].drop_on_backpressure);
+            assert_eq!(groups[1].wire_packets, vec![vec![3], vec![4]]);
+            assert!(!groups[1].drop_on_backpressure);
+            assert_eq!(groups[2].wire_packets, vec![vec![5]]);
+            assert!(groups[2].drop_on_backpressure);
+            assert_eq!(
+                selected_send_group_stats(&groups),
+                (3, 5, 1),
+                "same-target container sends keep FIFO groups while preserving retry policy"
+            );
+        });
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn linux_send_batch_attempt_owns_cursor_and_backpressure_policy() {
         let rt = tokio::runtime::Builder::new_current_thread()

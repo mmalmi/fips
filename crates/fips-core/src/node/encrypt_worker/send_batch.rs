@@ -558,6 +558,36 @@ fn push_selected_send_batch_with_capacity(
     ));
 }
 
+#[cfg(all(unix, any(test, target_os = "linux")))]
+fn push_uniform_target_send_batch_with_capacity(
+    groups: &mut Vec<SelectedSendBatch>,
+    send_target: &SelectedSendTarget,
+    target_key: SendTargetKey,
+    wire_packet: Vec<u8>,
+    drop_on_backpressure: bool,
+    packet_capacity: usize,
+) {
+    if let Some(group) = groups.last_mut() {
+        debug_assert_eq!(
+            group.target_key(),
+            target_key,
+            "uniform-target send batching must not mix kernel send targets"
+        );
+        if group.drop_on_backpressure() == drop_on_backpressure {
+            group.push(wire_packet, drop_on_backpressure);
+            return;
+        }
+    }
+
+    groups.push(SelectedSendBatch::new_with_capacity(
+        send_target.clone(),
+        target_key,
+        wire_packet,
+        drop_on_backpressure,
+        packet_capacity,
+    ));
+}
+
 #[cfg(unix)]
 fn selected_send_group_stats(groups: &[SelectedSendBatch]) -> (usize, usize, usize) {
     let mut packets = 0usize;
