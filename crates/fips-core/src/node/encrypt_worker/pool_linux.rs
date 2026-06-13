@@ -63,6 +63,67 @@ impl LinuxSequencedSendFlows {
 }
 
 #[cfg(target_os = "linux")]
+impl EncryptWorkerPool {
+    fn dispatch_linux_ordered_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        if jobs.is_empty() {
+            return;
+        }
+        if self.senders.is_empty() {
+            debug!("EncryptWorkerPool has no workers; dropping bulk batch");
+            return;
+        }
+
+        let mut run: Vec<FmpSendJob> = Vec::new();
+        let mut run_key: Option<SendTargetKey> = None;
+        for job in jobs {
+            if !job.bulk_endpoint_data {
+                self.dispatch_linux_ordered_bulk_run(std::mem::take(&mut run));
+                run_key = None;
+                self.dispatch(job);
+                continue;
+            }
+
+            let key = job.send_target_key();
+            if run_key.is_some_and(|current| current != key) {
+                self.dispatch_linux_ordered_bulk_run(std::mem::take(&mut run));
+            }
+            if run_key != Some(key) {
+                run_key = Some(key);
+            }
+            run.push(job);
+        }
+        self.dispatch_linux_ordered_bulk_run(run);
+    }
+
+    fn dispatch_linux_ordered_bulk_run(&self, jobs: Vec<FmpSendJob>) {
+        if jobs.is_empty() {
+            return;
+        }
+
+        let flow = self.linux_senders.flow_for(&jobs[0]);
+        let seq_base = flow.reserve_seq_run(jobs.len());
+        let packet_base = self
+            .next_worker
+            .fetch_add(jobs.len(), std::sync::atomic::Ordering::Relaxed);
+        let stride = linux_worker_stride();
+
+        for (offset, job) in jobs.into_iter().enumerate() {
+            let idx = linux_ordered_worker_index(
+                packet_base,
+                offset,
+                stride,
+                self.senders.len(),
+            );
+            let seq = seq_base.wrapping_add(offset as u64);
+            self.dispatch_to_worker(
+                idx,
+                QueuedFmpSendJob::linux_sequenced_with_seq(job, Arc::clone(&flow), seq),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn linux_ordered_sender_enabled() -> bool {
     // Opt-in Linux path that mirrors the wireguard-go packet mover shape:
     // route/nonce on rx_loop, parallel FMP AEAD on workers, one ordered
@@ -107,6 +168,18 @@ fn linux_ordered_send_batch_size() -> usize {
             .unwrap_or_else(worker_batch_size)
             .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
     })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_ordered_worker_index(
+    packet_base: usize,
+    offset: usize,
+    stride: usize,
+    worker_count: usize,
+) -> usize {
+    debug_assert!(worker_count > 0);
+    let stride = stride.max(1);
+    ((packet_base.wrapping_add(offset)) / stride) % worker_count
 }
 
 #[cfg(target_os = "linux")]
@@ -228,6 +301,12 @@ impl LinuxSequencedSendFlow {
     fn reserve_seq(&self) -> u64 {
         self.next_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn reserve_seq_run(&self, count: usize) -> u64 {
+        debug_assert!(count > 0);
+        self.next_seq
+            .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn mark_used(&self, now_ms: u64) {

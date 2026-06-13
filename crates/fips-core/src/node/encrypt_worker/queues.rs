@@ -130,6 +130,15 @@ impl QueuedFmpSendJob {
     #[cfg(target_os = "linux")]
     fn linux_sequenced(job: FmpSendJob, linux_flow: Arc<LinuxSequencedSendFlow>) -> Self {
         let linux_seq = linux_flow.reserve_seq();
+        Self::linux_sequenced_with_seq(job, linux_flow, linux_seq)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_sequenced_with_seq(
+        job: FmpSendJob,
+        linux_flow: Arc<LinuxSequencedSendFlow>,
+        linux_seq: u64,
+    ) -> Self {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         let target_key = job.send_target_key();
         let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);

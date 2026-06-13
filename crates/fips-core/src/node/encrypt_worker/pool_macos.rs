@@ -90,6 +90,12 @@ impl EncryptWorkerPool {
     }
 
     pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        #[cfg(target_os = "linux")]
+        if linux_ordered_sender_enabled() {
+            self.dispatch_linux_ordered_bulk_batch(jobs);
+            return;
+        }
+
         for job in jobs {
             self.dispatch(job);
         }

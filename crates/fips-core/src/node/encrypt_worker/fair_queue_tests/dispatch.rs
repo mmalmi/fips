@@ -116,6 +116,78 @@
         });
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_ordered_bulk_dispatch_reserves_one_sequence_run() {
+        with_test_socket(|socket, cipher| {
+            let worker_count = 2usize;
+            let stride = linux_worker_stride();
+            let run_len = stride.saturating_add(1);
+            let mut senders = Vec::new();
+            let mut receivers = Vec::new();
+            for _ in 0..worker_count {
+                let (tx, rx) = fair_worker_channel(
+                    run_len.saturating_add(4),
+                    run_len.saturating_add(4),
+                    WORKER_FAIR_QUANTUM_BYTES,
+                );
+                senders.push(tx);
+                receivers.push(rx);
+            }
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+                linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+            let addr: SocketAddr = "127.0.0.1:10029".parse().unwrap();
+            let jobs: Vec<FmpSendJob> = (0..run_len)
+                .map(|counter| {
+                    let mut queued = queued_job(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    );
+                    queued.job.counter = counter as u64;
+                    queued.job
+                })
+                .collect();
+
+            pool.dispatch_linux_ordered_bulk_batch(jobs);
+
+            let mut all_sequences = Vec::new();
+            for (idx, rx) in receivers.iter_mut().enumerate() {
+                let expected = (0..run_len)
+                    .filter(|offset| {
+                        linux_ordered_worker_index(0, *offset, stride, worker_count) == idx
+                    })
+                    .count();
+                let mut batch = Vec::new();
+                assert!(rx.recv_batch(&mut batch, run_len).is_some());
+                assert_eq!(
+                    batch.len(),
+                    expected,
+                    "worker {idx} should receive one stride-shaped slice"
+                );
+                all_sequences.extend(batch.iter().map(|job| job.linux_seq));
+            }
+
+            all_sequences.sort_unstable();
+            let expected_sequences: Vec<u64> = (0..run_len).map(|seq| seq as u64).collect();
+            assert_eq!(
+                all_sequences, expected_sequences,
+                "bulk dispatch should reserve one contiguous per-target sequence run"
+            );
+            assert_eq!(
+                pool.next_worker.load(std::sync::atomic::Ordering::Relaxed),
+                run_len,
+                "bulk dispatch should advance worker striping by packets, not by batches"
+            );
+        });
+    }
+
     #[test]
     fn boosted_flow_gets_larger_queue_budget() {
         with_test_socket(|socket, cipher| {
