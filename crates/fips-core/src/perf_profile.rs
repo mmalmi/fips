@@ -52,6 +52,12 @@
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `ENDPOINT_PRIORITY_COMMAND_WAIT` — priority endpoint command → node command loop
 //!   * `ENDPOINT_BULK_COMMAND_WAIT` — bulk endpoint command → node command loop
+//!   * `ENDPOINT_COMMAND_ENQUEUE_WAIT` — endpoint command producer waits for
+//!     command-channel capacity
+//!   * `ENDPOINT_PRIORITY_COMMAND_ENQUEUE_WAIT` — priority endpoint command
+//!     producer capacity wait
+//!   * `ENDPOINT_BULK_COMMAND_ENQUEUE_WAIT` — bulk endpoint command producer
+//!     capacity wait
 //!   * `ENDPOINT_COMMAND_DIRECT_PRIORITY_WAIT` — direct priority-select endpoint command wait
 //!   * `ENDPOINT_COMMAND_DIRECT_BULK_WAIT` — direct bulk-select endpoint command wait
 //!   * `ENDPOINT_COMMAND_SIDE_WAIT` — side-interleaved endpoint command wait
@@ -97,7 +103,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 59;
+const N_STAGES: usize = 62;
 const N_EVENTS: usize = 82;
 const HIST_BUCKETS: usize = 48;
 
@@ -243,6 +249,12 @@ pub enum Stage {
     FmpLinuxBulkContainerFirstSlotWait = 57,
     /// Linux bulk-container enqueue until every worker slot completes.
     FmpLinuxBulkContainerAllSlotsWait = 58,
+    /// Endpoint command producer wait for channel capacity before enqueue.
+    EndpointCommandEnqueueWait = 59,
+    /// Priority endpoint command producer capacity wait.
+    EndpointPriorityCommandEnqueueWait = 60,
+    /// Bulk endpoint command producer capacity wait.
+    EndpointBulkCommandEnqueueWait = 61,
 }
 
 impl Stage {
@@ -309,6 +321,9 @@ impl Stage {
             Stage::EndpointCommandMaintenancePostWait => "endpoint_command_maintenance_post_wait",
             Stage::FmpLinuxBulkContainerFirstSlotWait => "fmp_linux_bulk_container_first_slot_wait",
             Stage::FmpLinuxBulkContainerAllSlotsWait => "fmp_linux_bulk_container_all_slots_wait",
+            Stage::EndpointCommandEnqueueWait => "endpoint_command_enqueue_wait",
+            Stage::EndpointPriorityCommandEnqueueWait => "endpoint_priority_command_enqueue_wait",
+            Stage::EndpointBulkCommandEnqueueWait => "endpoint_bulk_command_enqueue_wait",
         }
     }
 }
@@ -374,6 +389,9 @@ fn stage_from_index(idx: usize) -> Stage {
         56 => Stage::EndpointCommandMaintenancePostWait,
         57 => Stage::FmpLinuxBulkContainerFirstSlotWait,
         58 => Stage::FmpLinuxBulkContainerAllSlotsWait,
+        59 => Stage::EndpointCommandEnqueueWait,
+        60 => Stage::EndpointPriorityCommandEnqueueWait,
+        61 => Stage::EndpointBulkCommandEnqueueWait,
         _ => unreachable!(),
     }
 }

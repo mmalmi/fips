@@ -948,15 +948,20 @@ fn endpoint_payload_lane_batches(payloads: Vec<FipsEndpointPayload>) -> Endpoint
 }
 
 async fn send_endpoint_command(
-    command: NodeEndpointCommand,
+    mut command: NodeEndpointCommand,
     priority_tx: &mpsc::Sender<NodeEndpointCommand>,
     bulk_tx: &mpsc::Sender<NodeEndpointCommand>,
 ) -> Result<(), FipsEndpointError> {
     let command_tx = endpoint_command_tx_for_command(&command, priority_tx, bulk_tx);
+    let enqueue_trace = EndpointCommandEnqueueTrace::new(&command);
 
     if command.drop_on_backpressure() {
+        command.set_queued_at(crate::perf_profile::stamp());
         match command_tx.try_send(command) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                enqueue_trace.record();
+                return Ok(());
+            }
             Err(mpsc::error::TrySendError::Full(command)) => {
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::EndpointCommandBulkDropped,
@@ -968,8 +973,45 @@ async fn send_endpoint_command(
         }
     }
 
-    command_tx
-        .send(command)
+    let permit = command_tx
+        .reserve()
         .await
-        .map_err(|_| FipsEndpointError::Closed)
+        .map_err(|_| FipsEndpointError::Closed)?;
+    enqueue_trace.record();
+    command.set_queued_at(crate::perf_profile::stamp());
+    permit.send(command);
+    Ok(())
+}
+
+#[derive(Copy, Clone)]
+struct EndpointCommandEnqueueTrace {
+    started_at: Option<crate::perf_profile::TraceStamp>,
+    lane: EndpointCommandLane,
+    count: u64,
+}
+
+impl EndpointCommandEnqueueTrace {
+    fn new(command: &NodeEndpointCommand) -> Self {
+        Self {
+            started_at: crate::perf_profile::stamp(),
+            lane: command.lane(),
+            count: command.drain_cost() as u64,
+        }
+    }
+
+    fn record(self) {
+        let (priority_count, bulk_count) = match self.lane {
+            EndpointCommandLane::Priority => (self.count, 0),
+            EndpointCommandLane::Bulk => (0, self.count),
+        };
+        crate::perf_profile::record_since_split_count(
+            crate::perf_profile::Stage::EndpointCommandEnqueueWait,
+            crate::perf_profile::Stage::EndpointPriorityCommandEnqueueWait,
+            crate::perf_profile::Stage::EndpointBulkCommandEnqueueWait,
+            self.started_at,
+            self.count,
+            priority_count,
+            bulk_count,
+        );
+    }
 }

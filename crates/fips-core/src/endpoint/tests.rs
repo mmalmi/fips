@@ -249,6 +249,49 @@ fn endpoint_send_command_owns_payload_lane_and_queue_stamp() {
 }
 
 #[test]
+fn endpoint_command_queue_stamp_can_be_reset_at_enqueue() {
+    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let initial_stamp = Some(crate::perf_profile::test_stamp());
+    let enqueue_stamp = Some(crate::perf_profile::test_stamp());
+    let mut command =
+        NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), initial_stamp);
+
+    command.set_queued_at(enqueue_stamp);
+
+    match command {
+        NodeEndpointCommand::SendOneway { command } => {
+            let (_send, queued_at) = command.into_parts();
+            assert_eq!(queued_at, enqueue_stamp);
+        }
+        other => panic!("expected send-oneway command, got {other:?}"),
+    }
+
+    let initial_stamp = Some(crate::perf_profile::test_stamp());
+    let enqueue_stamp = Some(crate::perf_profile::test_stamp());
+    let payloads = vec![
+        crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
+        crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
+    ];
+    let mut command = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads,
+        initial_stamp,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("non-empty batch command");
+
+    command.set_queued_at(enqueue_stamp);
+
+    match command {
+        NodeEndpointCommand::SendBatchOneway { command, .. } => {
+            let (_remote, _payloads, queued_at) = command.into_parts();
+            assert_eq!(queued_at, enqueue_stamp);
+        }
+        other => panic!("expected send-batch-oneway command, got {other:?}"),
+    }
+}
+
+#[test]
 fn endpoint_data_payload_owns_drop_policy_selected_at_construction() {
     let tcp_ack = crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x10, 0));
     assert_eq!(tcp_ack.lane(), EndpointCommandLane::Priority);
