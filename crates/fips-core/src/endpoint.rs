@@ -19,6 +19,11 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+// Linux TUN/vnet send drains can now deliver 128-packet bulk batches; keep
+// other platforms at the older cap until their packet movers have matching data.
+#[cfg(target_os = "linux")]
+pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 128;
+#[cfg(not(target_os = "linux"))]
 pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
