@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 88);
+    assert_eq!(N_EVENTS, 93);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -272,6 +272,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EncryptWorkerDiscardableBulkDropped as usize).name(),
         "encrypt_worker_discardable_bulk_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpBatchFastPath as usize).name(),
+        "endpoint_direct_fmp_batch_fast_path"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpBatchFastPathPackets as usize).name(),
+        "endpoint_direct_fmp_batch_fast_path_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpBatchFallback as usize).name(),
+        "endpoint_direct_fmp_batch_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpBatchFallbackPackets as usize).name(),
+        "endpoint_direct_fmp_batch_fallback_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpBatchPartial as usize).name(),
+        "endpoint_direct_fmp_batch_partial"
     );
 }
 
@@ -523,6 +543,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePre as usize].load(Relaxed);
     let endpoint_drain_maintenance_post_before =
         EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePost as usize].load(Relaxed);
+    let direct_fmp_fast_path_before =
+        EVENTS[Event::EndpointDirectFmpBatchFastPath as usize].load(Relaxed);
+    let direct_fmp_fast_path_packets_before =
+        EVENTS[Event::EndpointDirectFmpBatchFastPathPackets as usize].load(Relaxed);
+    let direct_fmp_fallback_before =
+        EVENTS[Event::EndpointDirectFmpBatchFallback as usize].load(Relaxed);
+    let direct_fmp_fallback_packets_before =
+        EVENTS[Event::EndpointDirectFmpBatchFallbackPackets as usize].load(Relaxed);
+    let direct_fmp_partial_before =
+        EVENTS[Event::EndpointDirectFmpBatchPartial as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -572,6 +602,11 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::RxLoopEndpointCommandDrainSideDecryptBulk, 5);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePre, 8);
     record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePost, 16);
+    record_event_count_sample(Event::EndpointDirectFmpBatchFastPath, 3);
+    record_event_count_sample(Event::EndpointDirectFmpBatchFastPathPackets, 192);
+    record_event_count_sample(Event::EndpointDirectFmpBatchFallback, 2);
+    record_event_count_sample(Event::EndpointDirectFmpBatchFallbackPackets, 65);
+    record_event_count_sample(Event::EndpointDirectFmpBatchPartial, 1);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -793,5 +828,30 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePost as usize].load(Relaxed)
             - endpoint_drain_maintenance_post_before,
         16
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpBatchFastPath as usize].load(Relaxed)
+            - direct_fmp_fast_path_before,
+        3
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpBatchFastPathPackets as usize].load(Relaxed)
+            - direct_fmp_fast_path_packets_before,
+        192
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpBatchFallback as usize].load(Relaxed)
+            - direct_fmp_fallback_before,
+        2
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpBatchFallbackPackets as usize].load(Relaxed)
+            - direct_fmp_fallback_packets_before,
+        65
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpBatchPartial as usize].load(Relaxed)
+            - direct_fmp_partial_before,
+        1
     );
 }

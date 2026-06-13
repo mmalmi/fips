@@ -114,7 +114,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 69;
-const N_EVENTS: usize = 88;
+const N_EVENTS: usize = 93;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -530,6 +530,11 @@ pub enum Event {
     RxLoopEndpointCommandDrainSideDecryptBulk = 85,
     EncryptWorkerReliableBulkDropped = 86,
     EncryptWorkerDiscardableBulkDropped = 87,
+    EndpointDirectFmpBatchFastPath = 88,
+    EndpointDirectFmpBatchFastPathPackets = 89,
+    EndpointDirectFmpBatchFallback = 90,
+    EndpointDirectFmpBatchFallbackPackets = 91,
+    EndpointDirectFmpBatchPartial = 92,
 }
 
 impl Event {
@@ -647,6 +652,15 @@ impl Event {
             }
             Event::EncryptWorkerReliableBulkDropped => "encrypt_worker_reliable_bulk_dropped",
             Event::EncryptWorkerDiscardableBulkDropped => "encrypt_worker_discardable_bulk_dropped",
+            Event::EndpointDirectFmpBatchFastPath => "endpoint_direct_fmp_batch_fast_path",
+            Event::EndpointDirectFmpBatchFastPathPackets => {
+                "endpoint_direct_fmp_batch_fast_path_packets"
+            }
+            Event::EndpointDirectFmpBatchFallback => "endpoint_direct_fmp_batch_fallback",
+            Event::EndpointDirectFmpBatchFallbackPackets => {
+                "endpoint_direct_fmp_batch_fallback_packets"
+            }
+            Event::EndpointDirectFmpBatchPartial => "endpoint_direct_fmp_batch_partial",
         }
     }
 }
@@ -741,6 +755,11 @@ fn event_from_index(idx: usize) -> Event {
         85 => Event::RxLoopEndpointCommandDrainSideDecryptBulk,
         86 => Event::EncryptWorkerReliableBulkDropped,
         87 => Event::EncryptWorkerDiscardableBulkDropped,
+        88 => Event::EndpointDirectFmpBatchFastPath,
+        89 => Event::EndpointDirectFmpBatchFastPathPackets,
+        90 => Event::EndpointDirectFmpBatchFallback,
+        91 => Event::EndpointDirectFmpBatchFallbackPackets,
+        92 => Event::EndpointDirectFmpBatchPartial,
         _ => unreachable!(),
     }
 }
@@ -1003,6 +1022,30 @@ pub(crate) fn record_endpoint_send_batch(
     }
     if packets == 1 {
         record_event_count_sample(Event::EndpointSendBatchSingle, 1);
+    }
+}
+
+#[inline]
+pub(crate) fn record_endpoint_direct_fmp_batch(fast_path_packets: usize, fallback_packets: usize) {
+    if !enabled() || fast_path_packets.saturating_add(fallback_packets) == 0 {
+        return;
+    }
+    if fast_path_packets > 0 {
+        record_event_count_sample(Event::EndpointDirectFmpBatchFastPath, 1);
+        record_event_count_sample(
+            Event::EndpointDirectFmpBatchFastPathPackets,
+            fast_path_packets as u64,
+        );
+    }
+    if fallback_packets > 0 {
+        record_event_count_sample(Event::EndpointDirectFmpBatchFallback, 1);
+        record_event_count_sample(
+            Event::EndpointDirectFmpBatchFallbackPackets,
+            fallback_packets as u64,
+        );
+    }
+    if fast_path_packets > 0 && fallback_packets > 0 {
+        record_event_count_sample(Event::EndpointDirectFmpBatchPartial, 1);
     }
 }
 

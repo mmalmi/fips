@@ -32,11 +32,13 @@ impl Node {
         resolved_route: &PipelinedEndpointResolvedRoute,
         workers: &crate::node::encrypt_worker::EncryptWorkerPool,
     ) -> DirectFmpEndpointBatchResult {
+        let batch_packets = payloads.len();
         if !resolved_route.route_plan.direct_fmp_endpoint_batch_eligible(
             dest_addr,
             &payloads,
             direct_endpoint_fmp_only_enabled(),
         ) {
+            crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
             return DirectFmpEndpointBatchResult::Ineligible(payloads);
         }
 
@@ -48,11 +50,15 @@ impl Node {
             );
             match self.sessions.session_fsp_send_context(&dest_addr, now_ms) {
                 Ok(context) => context,
-                Err(_) => return DirectFmpEndpointBatchResult::Ineligible(payloads),
+                Err(_) => {
+                    crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
+                    return DirectFmpEndpointBatchResult::Ineligible(payloads);
+                }
             }
         };
         if session_context.wants_coords() || !self.sessions.direct_endpoint_data_can_send(&dest_addr)
         {
+            crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
             return DirectFmpEndpointBatchResult::Ineligible(payloads);
         }
 
@@ -156,6 +162,8 @@ impl Node {
         }
 
         drop(_job_build);
+        let sent_packets = prepared_sends.len();
+        crate::perf_profile::record_endpoint_direct_fmp_batch(sent_packets, remaining.len());
         PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, workers);
 
         if remaining.is_empty() {
