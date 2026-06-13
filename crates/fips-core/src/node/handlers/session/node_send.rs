@@ -185,23 +185,29 @@ impl Node {
     pub(in crate::node) async fn handle_endpoint_data_command(
         &mut self,
         command: NodeEndpointCommand,
+        drain_source_stage: crate::perf_profile::Stage,
     ) {
         match command {
             NodeEndpointCommand::Send {
                 command,
                 response_tx,
             } => {
-                let result = self.handle_endpoint_send_command(command).await;
+                let result = self
+                    .handle_endpoint_send_command(command, drain_source_stage)
+                    .await;
                 let _ = response_tx.send(result);
             }
             NodeEndpointCommand::SendOneway { command } => {
                 // Result deliberately discarded — caller wanted
                 // fire-and-forget. Errors still get logged inside
                 // `send_endpoint_data` so they're not silent.
-                let _ = self.handle_endpoint_send_command(command).await;
+                let _ = self
+                    .handle_endpoint_send_command(command, drain_source_stage)
+                    .await;
             }
             NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.handle_endpoint_send_batch_command(command).await;
+                self.handle_endpoint_send_batch_command(command, drain_source_stage)
+                    .await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
@@ -360,15 +366,20 @@ impl Node {
     async fn handle_endpoint_send_command(
         &mut self,
         command: EndpointSendCommand,
+        drain_source_stage: crate::perf_profile::Stage,
     ) -> Result<(), NodeError> {
         let lane = command.lane();
         let (send, queued_at) = command.into_parts();
-        record_endpoint_command_wait(queued_at, lane, 1);
+        record_endpoint_command_wait(queued_at, lane, 1, drain_source_stage);
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
         self.send_endpoint_data_send(send).await
     }
 
-    async fn handle_endpoint_send_batch_command(&mut self, command: EndpointSendBatchCommand) {
+    async fn handle_endpoint_send_batch_command(
+        &mut self,
+        command: EndpointSendBatchCommand,
+        drain_source_stage: crate::perf_profile::Stage,
+    ) {
         let lane = command.lane();
         let count = command.len() as u64;
         let (remote, payloads, queued_at) = command.into_parts();
@@ -385,7 +396,7 @@ impl Node {
         // The command queue wait ends when rx_loop starts handling the batch.
         // Count one sample per payload without charging earlier payload send
         // work to later payloads' queue residence.
-        record_endpoint_command_wait(queued_at, lane, count);
+        record_endpoint_command_wait(queued_at, lane, count, drain_source_stage);
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);

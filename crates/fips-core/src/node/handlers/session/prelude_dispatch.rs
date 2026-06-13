@@ -86,6 +86,7 @@ fn record_endpoint_command_wait(
     queued_at: Option<crate::perf_profile::TraceStamp>,
     lane: EndpointCommandLane,
     count: u64,
+    drain_source_stage: crate::perf_profile::Stage,
 ) {
     let (priority_count, bulk_count) = match lane {
         EndpointCommandLane::Priority => (count, 0),
@@ -100,6 +101,7 @@ fn record_endpoint_command_wait(
         priority_count,
         bulk_count,
     );
+    crate::perf_profile::record_since_count(drain_source_stage, queued_at, count);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

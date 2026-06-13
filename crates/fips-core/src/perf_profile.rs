@@ -52,6 +52,11 @@
 //!   * `ENDPOINT_COMMAND_WAIT` — FipsEndpoint send → node command loop
 //!   * `ENDPOINT_PRIORITY_COMMAND_WAIT` — priority endpoint command → node command loop
 //!   * `ENDPOINT_BULK_COMMAND_WAIT` — bulk endpoint command → node command loop
+//!   * `ENDPOINT_COMMAND_DIRECT_PRIORITY_WAIT` — direct priority-select endpoint command wait
+//!   * `ENDPOINT_COMMAND_DIRECT_BULK_WAIT` — direct bulk-select endpoint command wait
+//!   * `ENDPOINT_COMMAND_SIDE_WAIT` — side-interleaved endpoint command wait
+//!   * `ENDPOINT_COMMAND_MAINTENANCE_PRE_WAIT` — pre-maintenance endpoint command wait
+//!   * `ENDPOINT_COMMAND_MAINTENANCE_POST_WAIT` — post-maintenance endpoint command wait
 //!   * `FMP_WORKER_QUEUE_WAIT` — rx_loop FMP job dispatch → worker
 //!   * `FMP_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP encrypt jobs → worker
 //!   * `FMP_WORKER_BULK_QUEUE_WAIT` — bulk FMP encrypt jobs → worker
@@ -84,7 +89,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 52;
+const N_STAGES: usize = 57;
 const N_EVENTS: usize = 82;
 const HIST_BUCKETS: usize = 48;
 
@@ -216,6 +221,16 @@ pub enum Stage {
     EndpointWorkerCommit = 50,
     /// Linux bulk-container ordered sender flush after all slots are ready.
     FmpLinuxBulkContainerSend = 51,
+    /// Endpoint command residence for the direct priority branch.
+    EndpointCommandDirectPriorityWait = 52,
+    /// Endpoint command residence for the direct bulk branch.
+    EndpointCommandDirectBulkWait = 53,
+    /// Endpoint command residence for packet/fallback side interleaves.
+    EndpointCommandSideWait = 54,
+    /// Endpoint command residence for the bounded drain before maintenance.
+    EndpointCommandMaintenancePreWait = 55,
+    /// Endpoint command residence for the bounded drain after maintenance.
+    EndpointCommandMaintenancePostWait = 56,
 }
 
 impl Stage {
@@ -275,6 +290,11 @@ impl Stage {
             Stage::EndpointWorkerJobBuild => "endpoint_worker_job_build",
             Stage::EndpointWorkerCommit => "endpoint_worker_commit",
             Stage::FmpLinuxBulkContainerSend => "fmp_linux_bulk_container_send",
+            Stage::EndpointCommandDirectPriorityWait => "endpoint_command_direct_priority_wait",
+            Stage::EndpointCommandDirectBulkWait => "endpoint_command_direct_bulk_wait",
+            Stage::EndpointCommandSideWait => "endpoint_command_side_wait",
+            Stage::EndpointCommandMaintenancePreWait => "endpoint_command_maintenance_pre_wait",
+            Stage::EndpointCommandMaintenancePostWait => "endpoint_command_maintenance_post_wait",
         }
     }
 }
@@ -333,6 +353,11 @@ fn stage_from_index(idx: usize) -> Stage {
         49 => Stage::EndpointWorkerJobBuild,
         50 => Stage::EndpointWorkerCommit,
         51 => Stage::FmpLinuxBulkContainerSend,
+        52 => Stage::EndpointCommandDirectPriorityWait,
+        53 => Stage::EndpointCommandDirectBulkWait,
+        54 => Stage::EndpointCommandSideWait,
+        55 => Stage::EndpointCommandMaintenancePreWait,
+        56 => Stage::EndpointCommandMaintenancePostWait,
         _ => unreachable!(),
     }
 }

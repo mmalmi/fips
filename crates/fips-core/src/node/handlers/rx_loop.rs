@@ -53,6 +53,16 @@ impl EndpointCommandDrainSource {
             }
         }
     }
+
+    fn wait_stage(self) -> crate::perf_profile::Stage {
+        match self {
+            Self::DirectPriority => crate::perf_profile::Stage::EndpointCommandDirectPriorityWait,
+            Self::DirectBulk => crate::perf_profile::Stage::EndpointCommandDirectBulkWait,
+            Self::Side => crate::perf_profile::Stage::EndpointCommandSideWait,
+            Self::MaintenancePre => crate::perf_profile::Stage::EndpointCommandMaintenancePreWait,
+            Self::MaintenancePost => crate::perf_profile::Stage::EndpointCommandMaintenancePostWait,
+        }
+    }
 }
 
 impl Node {
@@ -603,7 +613,8 @@ impl Node {
             PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
         while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
             let drain_cost = command.drain_cost();
-            self.handle_endpoint_data_command(command).await;
+            self.handle_endpoint_data_command(command, source.wait_stage())
+                .await;
             drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
