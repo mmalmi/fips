@@ -142,6 +142,10 @@ impl QueuedFmpSendJob {
         self.lane
     }
 
+    fn drop_on_backpressure(&self) -> bool {
+        self.job.drop_on_backpressure
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn mark_fair_reserved(&mut self, reservation: FairAdmissionReservation) {
         self.fair_reservation = Some(reservation);

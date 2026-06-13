@@ -77,10 +77,9 @@ pub(crate) struct FmpSendJob {
     /// out of this lane by the endpoint payload classifier.
     pub bulk_endpoint_data: bool,
     /// Bulk endpoint data may be dropped when the kernel reports UDP
-    /// send-queue exhaustion. This is separate from worker-queue admission:
-    /// this flag remains false for TCP endpoint data so kernel send
-    /// backpressure still retries TCP packets that have already reached a
-    /// worker.
+    /// send-queue exhaustion. Worker/container admission also uses this flag
+    /// to label full-queue drops as reliable vs discardable without blocking
+    /// the node rx_loop behind bulk egress.
     pub drop_on_backpressure: bool,
     /// Bounded scheduler weight for this send target. `1` is normal
     /// best-effort service; configured peers can get a small boost and

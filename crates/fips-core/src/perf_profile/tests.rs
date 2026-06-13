@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 86);
+    assert_eq!(N_EVENTS, 88);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -265,6 +265,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::RxLoopEndpointCommandDrainSideDecryptBulk as usize).name(),
         "rx_loop_endpoint_command_drain_side_decrypt_bulk"
     );
+    assert_eq!(
+        event_from_index(Event::EncryptWorkerReliableBulkDropped as usize).name(),
+        "encrypt_worker_reliable_bulk_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::EncryptWorkerDiscardableBulkDropped as usize).name(),
+        "encrypt_worker_discardable_bulk_dropped"
+    );
 }
 
 #[test]
@@ -438,6 +446,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let encrypt_priority_full_before =
         EVENTS[Event::EncryptWorkerPriorityQueueFull as usize].load(Relaxed);
     let encrypt_bulk_full_before = EVENTS[Event::EncryptWorkerBulkQueueFull as usize].load(Relaxed);
+    let encrypt_reliable_drop_before =
+        EVENTS[Event::EncryptWorkerReliableBulkDropped as usize].load(Relaxed);
+    let encrypt_discardable_drop_before =
+        EVENTS[Event::EncryptWorkerDiscardableBulkDropped as usize].load(Relaxed);
     let batch_flush_before = EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed);
     let batch_packets_before = EVENTS[Event::FmpWorkerBatchPackets as usize].load(Relaxed);
     let batch_full_before = EVENTS[Event::FmpWorkerBatchFull as usize].load(Relaxed);
@@ -509,6 +521,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::EncryptWorkerQueueFull, 3);
     record_event_count_sample(Event::EncryptWorkerPriorityQueueFull, 1);
     record_event_count_sample(Event::EncryptWorkerBulkQueueFull, 2);
+    record_event_count_sample(Event::EncryptWorkerReliableBulkDropped, 5);
+    record_event_count_sample(Event::EncryptWorkerDiscardableBulkDropped, 7);
     record_event_count_sample(Event::FmpWorkerBatchFlush, 19);
     record_event_count_sample(Event::FmpWorkerBatchPackets, 23);
     record_event_count_sample(Event::FmpWorkerBatchFull, 29);
@@ -585,6 +599,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     assert_eq!(
         EVENTS[Event::EncryptWorkerBulkQueueFull as usize].load(Relaxed) - encrypt_bulk_full_before,
         2
+    );
+    assert_eq!(
+        EVENTS[Event::EncryptWorkerReliableBulkDropped as usize].load(Relaxed)
+            - encrypt_reliable_drop_before,
+        5
+    );
+    assert_eq!(
+        EVENTS[Event::EncryptWorkerDiscardableBulkDropped as usize].load(Relaxed)
+            - encrypt_discardable_drop_before,
+        7
     );
     assert_eq!(
         EVENTS[Event::FmpWorkerBatchFlush as usize].load(Relaxed) - batch_flush_before,

@@ -154,7 +154,7 @@ impl EncryptWorkerPool {
             for job in run.drain(..) {
                 let (idx, queued) = self.prepare_dispatch(job);
                 record_encrypt_worker_queue_full(queued.queue_lane());
-                record_encrypt_worker_backpressure_drop(idx);
+                record_encrypt_worker_backpressure_drop(idx, queued.drop_on_backpressure());
             }
             return;
         }
@@ -234,7 +234,7 @@ impl EncryptWorkerPool {
             Err(MacWorkerTryPushError::Full(job)) => {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_backpressure_drop(idx);
+                    record_encrypt_worker_backpressure_drop(idx, job.drop_on_backpressure());
                     job.complete_worker_drop();
                     return;
                 }
@@ -268,7 +268,7 @@ impl EncryptWorkerPool {
             Err(FairWorkerTryPushError::Full(job)) => {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_backpressure_drop(idx);
+                    record_encrypt_worker_backpressure_drop(idx, job.drop_on_backpressure());
                     job.complete_worker_drop();
                     return;
                 }
@@ -299,8 +299,13 @@ fn record_encrypt_worker_queue_full(lane: EncryptWorkerLane) {
     crate::perf_profile::record_encrypt_worker_queue_full(lane == EncryptWorkerLane::Priority);
 }
 
-fn record_encrypt_worker_backpressure_drop(worker: usize) {
+fn record_encrypt_worker_backpressure_drop(worker: usize, drop_on_backpressure: bool) {
     crate::perf_profile::record_event(crate::perf_profile::Event::EncryptWorkerBulkDropped);
+    crate::perf_profile::record_event(if drop_on_backpressure {
+        crate::perf_profile::Event::EncryptWorkerDiscardableBulkDropped
+    } else {
+        crate::perf_profile::Event::EncryptWorkerReliableBulkDropped
+    });
     static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n < 8 || n.is_multiple_of(100_000) {

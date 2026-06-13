@@ -108,7 +108,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 66;
-const N_EVENTS: usize = 86;
+const N_EVENTS: usize = 88;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -510,6 +510,8 @@ pub enum Event {
     RxLoopEndpointCommandDrainSideDecryptPriority = 83,
     RxLoopEndpointCommandDrainSideAuthenticatedBulk = 84,
     RxLoopEndpointCommandDrainSideDecryptBulk = 85,
+    EncryptWorkerReliableBulkDropped = 86,
+    EncryptWorkerDiscardableBulkDropped = 87,
 }
 
 impl Event {
@@ -625,6 +627,8 @@ impl Event {
             Event::RxLoopEndpointCommandDrainSideDecryptBulk => {
                 "rx_loop_endpoint_command_drain_side_decrypt_bulk"
             }
+            Event::EncryptWorkerReliableBulkDropped => "encrypt_worker_reliable_bulk_dropped",
+            Event::EncryptWorkerDiscardableBulkDropped => "encrypt_worker_discardable_bulk_dropped",
         }
     }
 }
@@ -717,6 +721,8 @@ fn event_from_index(idx: usize) -> Event {
         83 => Event::RxLoopEndpointCommandDrainSideDecryptPriority,
         84 => Event::RxLoopEndpointCommandDrainSideAuthenticatedBulk,
         85 => Event::RxLoopEndpointCommandDrainSideDecryptBulk,
+        86 => Event::EncryptWorkerReliableBulkDropped,
+        87 => Event::EncryptWorkerDiscardableBulkDropped,
         _ => unreachable!(),
     }
 }
