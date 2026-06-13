@@ -864,6 +864,45 @@ impl Drop for Timer {
     }
 }
 
+/// RAII timer for a batch-shaped span that should report per-item cost while
+/// preserving the batch's total elapsed time in the aggregate counter.
+pub(crate) struct BatchTimer {
+    stage: Stage,
+    count: u64,
+    start: Option<Instant>,
+}
+
+impl BatchTimer {
+    #[inline]
+    pub(crate) fn start(stage: Stage, count: usize) -> Self {
+        let count = count as u64;
+        let start = if enabled() && count > 0 {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        Self {
+            stage,
+            count,
+            start,
+        }
+    }
+}
+
+impl Drop for BatchTimer {
+    fn drop(&mut self) {
+        let Some(t0) = self.start else {
+            return;
+        };
+        if self.count == 0 {
+            return;
+        }
+        let total_ns = t0.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let per_item_ns = total_ns.saturating_div(self.count).max(1);
+        record_count(self.stage, per_item_ns, self.count);
+    }
+}
+
 /// Spawn a background task that prints a per-stage breakdown every
 /// `FIPS_PERF_INTERVAL_SECS` seconds (default 5). Idempotent — only
 /// the first call spawns. No-op when profiling isn't enabled.

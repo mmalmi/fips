@@ -296,9 +296,14 @@ fn flush_batch_sync(
         return Ok(());
     }
 
-    // FIPS_PERF: one AEAD timer span over the whole batch — average
-    // per-packet falls out of the COUNT increment once per flush.
-    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
+    // FIPS_PERF: one AEAD timer span over the whole worker batch, recorded as
+    // per-packet samples so the pipeline readout stays comparable with
+    // per-packet queue waits and send counters.
+    let packet_count = batch.len();
+    let _t = crate::perf_profile::BatchTimer::start(
+        crate::perf_profile::Stage::FmpEncrypt,
+        packet_count,
+    );
 
     // Per-target encrypted-packet group. Vec layout (not HashMap)
     // because the typical batch has 1 target (hash-by-dest dispatch),
@@ -393,6 +398,11 @@ fn flush_batch_sync(
 
     #[cfg(unix)]
     record_selected_send_groups(&groups);
+    #[cfg(unix)]
+    let udp_send_packet_count = groups
+        .iter()
+        .map(SelectedSendBatch::packet_count)
+        .sum::<usize>();
 
     drop(_t); // close the encrypt timer before we open the send timer
 
@@ -417,7 +427,11 @@ fn flush_batch_sync(
     // nonblocking mode (`UdpRawSocket::open`), and at line rate the
     // kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is rarely
     // full so this is the cold path.
-    let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+    #[cfg(unix)]
+    let _t2 = crate::perf_profile::BatchTimer::start(
+        crate::perf_profile::Stage::UdpSend,
+        udp_send_packet_count,
+    );
 
     #[cfg(target_os = "linux")]
     for group in groups {
