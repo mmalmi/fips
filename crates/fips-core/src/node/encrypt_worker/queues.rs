@@ -586,16 +586,17 @@ impl MacWorkerReceiver {
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerSender {
     priority_tx: Sender<QueuedFmpSendJob>,
-    bulk_tx: Sender<QueuedFmpSendJob>,
+    bulk_tx: Sender<FairWorkerBulkItem>,
     admission: Arc<FairAdmission>,
 }
 
 #[cfg(not(target_os = "macos"))]
 struct FairWorkerReceiver {
     priority_rx: Receiver<QueuedFmpSendJob>,
-    bulk_rx: Receiver<QueuedFmpSendJob>,
+    bulk_rx: Receiver<FairWorkerBulkItem>,
     admission: Arc<FairAdmission>,
     release_buffer: Vec<FairAdmissionReservation>,
+    pending_bulk_jobs: VecDeque<QueuedFmpSendJob>,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -633,16 +634,25 @@ impl FairFlowQueue {
 #[cfg(not(target_os = "macos"))]
 struct FairAdmissionReservation {
     key: SendTargetKey,
+    count: usize,
 }
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmissionReservation {
-    fn new(key: SendTargetKey) -> Self {
-        Self { key }
+    fn new(key: SendTargetKey, count: usize) -> Self {
+        debug_assert!(count > 0);
+        Self {
+            key,
+            count: count.max(1),
+        }
     }
 
     fn key(&self) -> SendTargetKey {
         self.key
+    }
+
+    fn count(&self) -> usize {
+        self.count
     }
 }
 
@@ -660,6 +670,12 @@ enum FairWorkerTryPushError {
 }
 
 #[cfg(not(target_os = "macos"))]
+enum FairWorkerBatchTryPushError {
+    Full(Vec<QueuedFmpSendJob>),
+    Closed,
+}
+
+#[cfg(not(target_os = "macos"))]
 impl std::fmt::Debug for FairWorkerTryPushError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -670,7 +686,39 @@ impl std::fmt::Debug for FairWorkerTryPushError {
 }
 
 #[cfg(not(target_os = "macos"))]
+impl std::fmt::Debug for FairWorkerBatchTryPushError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full(jobs) => f.debug_tuple("Full").field(&jobs.len()).finish(),
+            Self::Closed => f.write_str("Closed"),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 struct FairWorkerPushError;
+
+#[cfg(not(target_os = "macos"))]
+enum FairWorkerBulkItem {
+    Job(QueuedFmpSendJob),
+    Batch(VecDeque<QueuedFmpSendJob>),
+}
+
+#[cfg(not(target_os = "macos"))]
+enum FairWorkerReceivedItem {
+    Job(QueuedFmpSendJob),
+    Bulk(FairWorkerBulkItem),
+}
+
+#[cfg(not(target_os = "macos"))]
+impl FairWorkerBulkItem {
+    fn into_jobs(self) -> Vec<QueuedFmpSendJob> {
+        match self {
+            Self::Job(job) => vec![job],
+            Self::Batch(jobs) => jobs.into_iter().collect(),
+        }
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 fn fair_worker_channel(
@@ -720,6 +768,7 @@ fn fair_worker_channel_with_priority_cap(
             bulk_rx,
             admission,
             release_buffer: Vec::new(),
+            pending_bulk_jobs: VecDeque::new(),
         },
     )
 }
@@ -739,11 +788,17 @@ impl FairWorkerSender {
         }
 
         let job = if self.admission.is_idle() && self.bulk_tx.len() < self.admission.fast_lane_cap {
-            match self.bulk_tx.try_send(job) {
+            match self.bulk_tx.try_send(FairWorkerBulkItem::Job(job)) {
                 Ok(()) => return Ok(()),
-                Err(TrySendError::Full(job)) => job,
-                Err(TrySendError::Disconnected(job)) => {
-                    job.complete_sequenced_skip();
+                Err(TrySendError::Full(item)) => {
+                    let mut jobs = item.into_jobs();
+                    debug_assert_eq!(jobs.len(), 1);
+                    jobs.pop().expect("single job should survive full send")
+                }
+                Err(TrySendError::Disconnected(item)) => {
+                    for job in item.into_jobs() {
+                        job.complete_sequenced_skip();
+                    }
                     return Err(FairWorkerTryPushError::Closed);
                 }
             }
@@ -757,19 +812,24 @@ impl FairWorkerSender {
             FairReserve::Reserved(reservation) => {
                 let mut job = job;
                 job.mark_fair_reserved(reservation);
-                match self.bulk_tx.try_send(job) {
+                match self.bulk_tx.try_send(FairWorkerBulkItem::Job(job)) {
                     Ok(()) => Ok(()),
-                    Err(TrySendError::Full(mut job)) => {
+                    Err(TrySendError::Full(item)) => {
+                        let mut jobs = item.into_jobs();
+                        debug_assert_eq!(jobs.len(), 1);
+                        let mut job = jobs.pop().expect("single job should survive full send");
                         if let Some(reservation) = job.take_fair_reservation() {
                             self.admission.release(reservation);
                         }
                         Err(FairWorkerTryPushError::Full(Box::new(job)))
                     }
-                    Err(TrySendError::Disconnected(mut job)) => {
-                        if let Some(reservation) = job.take_fair_reservation() {
-                            self.admission.release(reservation);
+                    Err(TrySendError::Disconnected(item)) => {
+                        for mut job in item.into_jobs() {
+                            if let Some(reservation) = job.take_fair_reservation() {
+                                self.admission.release(reservation);
+                            }
+                            job.complete_sequenced_skip();
                         }
-                        job.complete_sequenced_skip();
                         Err(FairWorkerTryPushError::Closed)
                     }
                 }
@@ -778,6 +838,73 @@ impl FairWorkerSender {
             FairReserve::Closed => {
                 job.complete_sequenced_skip();
                 Err(FairWorkerTryPushError::Closed)
+            }
+        }
+    }
+
+    fn try_push_bulk_batch(
+        &self,
+        jobs: Vec<QueuedFmpSendJob>,
+    ) -> Result<(), FairWorkerBatchTryPushError> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        if jobs.len() == 1 {
+            let job = jobs.into_iter().next().expect("checked one job");
+            return self.try_push(job).map_err(|err| match err {
+                FairWorkerTryPushError::Full(job) => FairWorkerBatchTryPushError::Full(vec![*job]),
+                FairWorkerTryPushError::Closed => FairWorkerBatchTryPushError::Closed,
+            });
+        }
+
+        debug_assert!(
+            jobs.iter()
+                .all(|job| job.queue_lane() == EncryptWorkerLane::Bulk),
+            "bulk batch queue item must only carry bulk jobs"
+        );
+        let key = jobs[0].flow_key();
+        debug_assert!(
+            jobs.iter().all(|job| job.flow_key() == key),
+            "bulk batch queue item must stay within one send-target flow"
+        );
+        let weight = jobs
+            .iter()
+            .map(QueuedFmpSendJob::scheduling_weight)
+            .max()
+            .unwrap_or(MIN_SEND_WEIGHT as usize);
+        let count = jobs.len();
+        match self.admission.try_reserve_many(key, weight, count) {
+            FairReserve::Reserved(_reservation) => {
+                let mut jobs = jobs;
+                for job in &mut jobs {
+                    job.mark_fair_reserved(FairAdmissionReservation::new(key, 1));
+                }
+                match self
+                    .bulk_tx
+                    .try_send(FairWorkerBulkItem::Batch(jobs.into_iter().collect()))
+                {
+                    Ok(()) => Ok(()),
+                    Err(TrySendError::Full(item)) => {
+                        let mut jobs = item.into_jobs();
+                        self.release_job_reservations(&mut jobs);
+                        Err(FairWorkerBatchTryPushError::Full(jobs))
+                    }
+                    Err(TrySendError::Disconnected(item)) => {
+                        let mut jobs = item.into_jobs();
+                        self.release_job_reservations(&mut jobs);
+                        for job in jobs {
+                            job.complete_sequenced_skip();
+                        }
+                        Err(FairWorkerBatchTryPushError::Closed)
+                    }
+                }
+            }
+            FairReserve::Full => Err(FairWorkerBatchTryPushError::Full(jobs)),
+            FairReserve::Closed => {
+                for job in jobs {
+                    job.complete_sequenced_skip();
+                }
+                Err(FairWorkerBatchTryPushError::Closed)
             }
         }
     }
@@ -801,20 +928,38 @@ impl FairWorkerSender {
         };
         let mut job = job;
         job.mark_fair_reserved(reservation);
-        if let Err(SendError(mut job)) = self.bulk_tx.send(job) {
-            if let Some(reservation) = job.take_fair_reservation() {
-                self.admission.release(reservation);
+        if let Err(SendError(item)) = self.bulk_tx.send(FairWorkerBulkItem::Job(job)) {
+            for mut job in item.into_jobs() {
+                if let Some(reservation) = job.take_fair_reservation() {
+                    self.admission.release(reservation);
+                }
+                job.complete_sequenced_skip();
             }
-            job.complete_sequenced_skip();
             return Err(FairWorkerPushError);
         }
         Ok(())
+    }
+
+    fn release_job_reservations(&self, jobs: &mut [QueuedFmpSendJob]) {
+        let mut reservations = Vec::new();
+        for job in jobs {
+            if let Some(reservation) = job.take_fair_reservation() {
+                reservations.push(reservation);
+            }
+        }
+        self.admission.release_many(&reservations);
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmission {
     fn try_reserve(&self, key: SendTargetKey, weight: usize) -> FairReserve {
+        self.try_reserve_many(key, weight, 1)
+    }
+
+    fn try_reserve_many(&self, key: SendTargetKey, weight: usize, count: usize) -> FairReserve {
+        debug_assert!(count > 0);
+        let count = count.max(1);
         let mut state = self
             .state
             .lock()
@@ -822,10 +967,17 @@ impl FairAdmission {
         if state.closed {
             return FairReserve::Closed;
         }
-        if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+        if Self::reserve_locked(
+            &mut state,
+            self.total_cap,
+            self.per_flow_cap,
+            key,
+            weight,
+            count,
+        ) {
             self.reserved_len
                 .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
-            return FairReserve::Reserved(FairAdmissionReservation::new(key));
+            return FairReserve::Reserved(FairAdmissionReservation::new(key, count));
         }
         FairReserve::Full
     }
@@ -843,10 +995,10 @@ impl FairAdmission {
             if state.closed {
                 return Err(FairWorkerPushError);
             }
-            if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
+            if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight, 1) {
                 self.reserved_len
                     .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
-                return Ok(FairAdmissionReservation::new(key));
+                return Ok(FairAdmissionReservation::new(key, 1));
             }
             state.full_waiters += 1;
             state = self
@@ -875,13 +1027,14 @@ impl FairAdmission {
             .expect("encrypt worker fair admission poisoned");
         for reservation in reservations {
             let key = reservation.key();
+            let count = reservation.count();
             if let Some(flow) = state.flows.get_mut(&key) {
-                flow.queued = flow.queued.saturating_sub(1);
+                flow.queued = flow.queued.saturating_sub(count);
                 if flow.queued == 0 {
                     state.flows.remove(&key);
                 }
             }
-            state.total_len = state.total_len.saturating_sub(1);
+            state.total_len = state.total_len.saturating_sub(count);
         }
         self.reserved_len
             .store(state.total_len, std::sync::atomic::Ordering::Relaxed);
@@ -908,8 +1061,12 @@ impl FairAdmission {
         per_flow_cap: usize,
         key: SendTargetKey,
         weight: usize,
+        count: usize,
     ) -> bool {
-        if state.total_len.saturating_add(1) > total_cap {
+        if count == 0 {
+            return true;
+        }
+        if state.total_len.saturating_add(count) > total_cap {
             return false;
         }
         let weight = weight.clamp(MIN_SEND_WEIGHT as usize, MAX_SEND_WEIGHT as usize);
@@ -921,18 +1078,18 @@ impl FairAdmission {
                     .saturating_mul(flow.weight)
                     .min(total_cap)
                     .max(1);
-                if flow.queued.saturating_add(1) > cap {
+                if flow.queued.saturating_add(count) > cap {
                     return false;
                 }
-                flow.queued += 1;
+                flow.queued += count;
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let mut flow = FairFlowQueue::new(weight);
-                flow.queued = 1;
+                flow.queued = count;
                 entry.insert(flow);
             }
         }
-        state.total_len += 1;
+        state.total_len += count;
         true
     }
 }
@@ -953,18 +1110,23 @@ impl FairWorkerReceiver {
     ) -> Option<FmpWorkerBatchStats> {
         debug_assert!(batch.is_empty());
         debug_assert!(self.release_buffer.is_empty());
+        let max = max.max(1);
         let Some(first) = self.recv_next_blocking() else {
             return None;
         };
         let mut stats = FmpWorkerBatchStats::default();
-        self.push_received(batch, first, &mut stats);
+        self.push_received_item(batch, max, first, &mut stats);
         while batch.len() < max {
             if let Ok(job) = self.priority_rx.try_recv() {
                 self.push_received(batch, job, &mut stats);
                 continue;
             }
+            if let Some(job) = self.pending_bulk_jobs.pop_front() {
+                self.push_received(batch, job, &mut stats);
+                continue;
+            }
             match self.bulk_rx.try_recv() {
-                Ok(job) => self.push_received(batch, job, &mut stats),
+                Ok(item) => self.push_received_bulk_item(batch, max, item, &mut stats),
                 Err(_) => break,
             }
         }
@@ -972,22 +1134,72 @@ impl FairWorkerReceiver {
         Some(stats)
     }
 
-    fn recv_next_blocking(&mut self) -> Option<QueuedFmpSendJob> {
+    fn recv_next_blocking(&mut self) -> Option<FairWorkerReceivedItem> {
         if let Ok(job) = self.priority_rx.try_recv() {
-            return Some(job);
+            return Some(FairWorkerReceivedItem::Job(job));
+        }
+        if let Some(job) = self.pending_bulk_jobs.pop_front() {
+            return Some(FairWorkerReceivedItem::Job(job));
         }
         self.recv_next_biased_blocking()
     }
 
-    fn recv_next_biased_blocking(&mut self) -> Option<QueuedFmpSendJob> {
+    fn recv_next_biased_blocking(&mut self) -> Option<FairWorkerReceivedItem> {
         crossbeam_channel::select_biased! {
-            recv(self.priority_rx) -> msg => msg.ok().or_else(|| self.recv_bulk_blocking()),
-            recv(self.bulk_rx) -> msg => msg.ok().or_else(|| self.priority_rx.recv().ok()),
+            recv(self.priority_rx) -> msg => {
+                msg.ok()
+                    .map(FairWorkerReceivedItem::Job)
+                    .or_else(|| self.recv_bulk_blocking())
+            },
+            recv(self.bulk_rx) -> msg => {
+                msg.ok()
+                    .map(FairWorkerReceivedItem::Bulk)
+                    .or_else(|| self.priority_rx.recv().ok().map(FairWorkerReceivedItem::Job))
+            },
         }
     }
 
-    fn recv_bulk_blocking(&mut self) -> Option<QueuedFmpSendJob> {
-        self.bulk_rx.recv().ok()
+    fn recv_bulk_blocking(&mut self) -> Option<FairWorkerReceivedItem> {
+        self.bulk_rx
+            .recv()
+            .ok()
+            .map(FairWorkerReceivedItem::Bulk)
+    }
+
+    fn push_received_item(
+        &mut self,
+        batch: &mut Vec<QueuedFmpSendJob>,
+        max: usize,
+        item: FairWorkerReceivedItem,
+        stats: &mut FmpWorkerBatchStats,
+    ) {
+        match item {
+            FairWorkerReceivedItem::Job(job) => self.push_received(batch, job, stats),
+            FairWorkerReceivedItem::Bulk(item) => {
+                self.push_received_bulk_item(batch, max, item, stats)
+            }
+        }
+    }
+
+    fn push_received_bulk_item(
+        &mut self,
+        batch: &mut Vec<QueuedFmpSendJob>,
+        max: usize,
+        item: FairWorkerBulkItem,
+        stats: &mut FmpWorkerBatchStats,
+    ) {
+        match item {
+            FairWorkerBulkItem::Job(job) => self.push_received(batch, job, stats),
+            FairWorkerBulkItem::Batch(mut jobs) => {
+                while batch.len() < max {
+                    let Some(job) = jobs.pop_front() else {
+                        break;
+                    };
+                    self.push_received(batch, job, stats);
+                }
+                self.pending_bulk_jobs.extend(jobs);
+            }
+        }
     }
 
     fn push_received(

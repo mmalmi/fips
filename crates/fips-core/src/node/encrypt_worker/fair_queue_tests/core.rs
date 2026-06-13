@@ -386,9 +386,15 @@
             ))
             .expect("priority job should enqueue");
 
-            let job = rx
+            let item = rx
                 .recv_next_biased_blocking()
                 .expect("receiver should select a ready lane");
+            let job = match item {
+                FairWorkerReceivedItem::Job(job) => job,
+                FairWorkerReceivedItem::Bulk(_) => {
+                    panic!("priority should be selected before ready bulk")
+                }
+            };
             assert_eq!(
                 job.queue_lane(),
                 EncryptWorkerLane::Priority,
@@ -464,6 +470,135 @@
             assert!(rx.recv_batch(&mut batch, 8).is_some());
             assert_eq!(batch.len(), 8);
             assert!(batch.iter().all(|job| job.flow_key().dest_addr == addr));
+        });
+    }
+
+    #[test]
+    fn fair_worker_bulk_batch_reserves_packet_slots_not_channel_items() {
+        with_test_socket(|socket, cipher| {
+            let (tx, _rx) = fair_worker_channel(4, 4, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+            let jobs: Vec<_> = (0..4)
+                .map(|_| {
+                    queued_job(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )
+                })
+                .collect();
+
+            tx.try_push_bulk_batch(jobs)
+                .expect("same-flow bulk batch should enter as one queue item");
+            assert_eq!(
+                tx.bulk_tx.len(),
+                1,
+                "a same-flow bulk batch should cost one channel item"
+            );
+            assert!(
+                !tx.admission.is_idle(),
+                "batch enqueue should reserve packet slots, not use the fast-lane bypass"
+            );
+            assert!(
+                matches!(
+                    tx.try_push(queued_job(
+                        socket,
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "admission must count packets inside the batch, not channel items"
+            );
+        });
+    }
+
+    #[test]
+    fn fair_worker_bulk_batch_tail_keeps_reservation_and_yields_to_priority() {
+        with_test_socket(|socket, cipher| {
+            let (tx, mut rx) = fair_worker_channel(4, 4, WORKER_FAIR_QUANTUM_BYTES);
+            let addr: SocketAddr = "127.0.0.1:10042".parse().unwrap();
+            let jobs: Vec<_> = (0..4)
+                .map(|_| {
+                    queued_job(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        128,
+                        true,
+                        DEFAULT_SEND_WEIGHT,
+                    )
+                })
+                .collect();
+            tx.try_push_bulk_batch(jobs)
+                .expect("same-flow bulk batch should enqueue");
+
+            let mut first = Vec::new();
+            let stats = rx
+                .recv_batch(&mut first, 1)
+                .expect("receiver should drain the first packet from the batch");
+            assert_eq!(first.len(), 1);
+            assert_eq!(stats.bulk_packets, 1);
+            assert_eq!(rx.pending_bulk_jobs.len(), 3);
+            assert!(
+                matches!(
+                    tx.try_push_bulk_batch(vec![
+                        queued_job(
+                            socket.clone(),
+                            &cipher,
+                            addr,
+                            128,
+                            true,
+                            DEFAULT_SEND_WEIGHT,
+                        ),
+                        queued_job(
+                            socket.clone(),
+                            &cipher,
+                            addr,
+                            128,
+                            true,
+                            DEFAULT_SEND_WEIGHT,
+                        ),
+                    ]),
+                    Err(FairWorkerBatchTryPushError::Full(_))
+                ),
+                "pending batch tail must keep its packet reservations until drained"
+            );
+
+            tx.try_push(queued_job_classified(
+                socket,
+                &cipher,
+                addr,
+                64,
+                false,
+                false,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("priority packet should bypass pending bulk tail");
+
+            let mut next = Vec::new();
+            let stats = rx
+                .recv_batch(&mut next, 4)
+                .expect("receiver should drain priority and pending tail");
+            assert_eq!(next.len(), 4);
+            assert_eq!(stats.priority_packets, 1);
+            assert_eq!(stats.bulk_packets, 3);
+            assert_eq!(next[0].queue_lane(), EncryptWorkerLane::Priority);
+            assert!(
+                next[1..]
+                    .iter()
+                    .all(|job| job.queue_lane() == EncryptWorkerLane::Bulk)
+            );
+            assert!(
+                tx.admission.is_idle(),
+                "draining the pending tail should release every batch packet slot"
+            );
         });
     }
 

@@ -107,6 +107,9 @@ impl EncryptWorkerPool {
             .fetch_add(jobs.len(), std::sync::atomic::Ordering::Relaxed);
         let stride = linux_worker_stride();
 
+        let mut chunk_idx: Option<usize> = None;
+        let mut chunk: Vec<QueuedFmpSendJob> = Vec::new();
+
         for (offset, job) in jobs.into_iter().enumerate() {
             let idx = linux_ordered_worker_index(
                 packet_base,
@@ -114,11 +117,55 @@ impl EncryptWorkerPool {
                 stride,
                 self.senders.len(),
             );
+            if chunk_idx.is_some_and(|current| current != idx) {
+                self.dispatch_linux_ordered_bulk_jobs_to_worker(
+                    chunk_idx.expect("chunk idx set"),
+                    std::mem::take(&mut chunk),
+                );
+            }
+            if chunk_idx != Some(idx) {
+                chunk_idx = Some(idx);
+            }
             let seq = seq_base.wrapping_add(offset as u64);
-            self.dispatch_to_worker(
-                idx,
-                QueuedFmpSendJob::linux_sequenced_with_seq(job, Arc::clone(&flow), seq),
-            );
+            chunk.push(QueuedFmpSendJob::linux_sequenced_with_seq(
+                job,
+                Arc::clone(&flow),
+                seq,
+            ));
+        }
+
+        if let Some(idx) = chunk_idx {
+            self.dispatch_linux_ordered_bulk_jobs_to_worker(idx, chunk);
+        }
+    }
+
+    fn dispatch_linux_ordered_bulk_jobs_to_worker(
+        &self,
+        idx: usize,
+        jobs: Vec<QueuedFmpSendJob>,
+    ) {
+        if jobs.is_empty() {
+            return;
+        }
+        if jobs.len() == 1 {
+            let job = jobs.into_iter().next().expect("checked one job");
+            self.dispatch_to_worker(idx, job);
+            return;
+        }
+
+        let sender = &self.senders[idx];
+        match sender.try_push_bulk_batch(jobs) {
+            Ok(()) => {}
+            Err(FairWorkerBatchTryPushError::Full(jobs)) => {
+                for job in jobs {
+                    record_encrypt_worker_queue_full(job.queue_lane());
+                    record_encrypt_worker_backpressure_drop(idx);
+                    job.complete_sequenced_skip();
+                }
+            }
+            Err(FairWorkerBatchTryPushError::Closed) => {
+                debug!(worker = idx, "EncryptWorker thread gone; dropping ordered bulk batch");
+            }
         }
     }
 }

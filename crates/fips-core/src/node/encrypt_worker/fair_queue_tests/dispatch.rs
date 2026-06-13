@@ -164,6 +164,21 @@
                         linux_ordered_worker_index(0, *offset, stride, worker_count) == idx
                     })
                     .count();
+                let mut expected_channel_items = 0usize;
+                let mut previous_offset_matched = false;
+                for offset in 0..run_len {
+                    let matched =
+                        linux_ordered_worker_index(0, offset, stride, worker_count) == idx;
+                    if matched && !previous_offset_matched {
+                        expected_channel_items += 1;
+                    }
+                    previous_offset_matched = matched;
+                }
+                assert_eq!(
+                    rx.bulk_rx.len(),
+                    expected_channel_items,
+                    "worker {idx} should receive contiguous stride slices as batch queue items"
+                );
                 let mut batch = Vec::new();
                 assert!(rx.recv_batch(&mut batch, run_len).is_some());
                 assert_eq!(

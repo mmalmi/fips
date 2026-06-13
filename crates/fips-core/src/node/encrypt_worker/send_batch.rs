@@ -10,7 +10,6 @@ use std::cell::RefCell;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-#[cfg(target_os = "macos")]
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 #[cfg(unix)]
