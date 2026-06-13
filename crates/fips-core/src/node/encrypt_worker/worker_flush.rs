@@ -447,25 +447,6 @@ fn push_sealed_send_packet_with_capacity(
 }
 
 #[cfg(target_os = "linux")]
-fn flush_linux_sealed_packets_sync(
-    packets: Vec<SealedSendPacket>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if packets.is_empty() {
-        return Ok(());
-    }
-
-    let group_packet_capacity = packets.len();
-    let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
-    for sealed in packets {
-        push_sealed_send_packet_with_capacity(&mut groups, sealed, group_packet_capacity);
-    }
-    record_selected_send_groups(&groups);
-
-    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-    flush_linux_send_groups_sync(groups)
-}
-
-#[cfg(target_os = "linux")]
 fn flush_linux_send_groups_sync(
     groups: Vec<SelectedSendBatch>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
