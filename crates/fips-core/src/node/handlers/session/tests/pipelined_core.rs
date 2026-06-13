@@ -326,6 +326,25 @@
         assert!(direct_plan.direct_fmp_endpoint());
         assert_eq!(direct_plan.fmp_payload_len() as usize, 4 + 1 + payload.len());
 
+        let direct_route = PipelinedEndpointRoutePlan::new(
+            node_addr(0x10),
+            dest_addr,
+            1234,
+            9,
+            1,
+            false,
+        );
+        assert!(direct_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            std::slice::from_ref(&payload),
+            true
+        ));
+        assert!(!direct_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            std::slice::from_ref(&payload),
+            false
+        ));
+
         let relayed_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
             &node_addr(0x10),
             &send,
@@ -338,6 +357,19 @@
         )
         .expect("relayed plan");
         assert!(!relayed_plan.direct_fmp_endpoint());
+        let relayed_route = PipelinedEndpointRoutePlan::new(
+            node_addr(0x10),
+            relay_addr,
+            1234,
+            9,
+            1,
+            false,
+        );
+        assert!(!relayed_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            std::slice::from_ref(&payload),
+            true
+        ));
 
         let degraded_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
             &node_addr(0x10),
@@ -351,6 +383,19 @@
         )
         .expect("degraded direct plan");
         assert!(!degraded_plan.direct_fmp_endpoint());
+        let degraded_route = PipelinedEndpointRoutePlan::new(
+            node_addr(0x10),
+            dest_addr,
+            1234,
+            9,
+            1,
+            true,
+        );
+        assert!(!degraded_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            std::slice::from_ref(&payload),
+            true
+        ));
 
         let control_send = PipelinedEndpointSend {
             fsp_flags: FSP_FLAG_CP,
@@ -368,6 +413,17 @@
         )
         .expect("control plan");
         assert!(!control_plan.direct_fmp_endpoint());
+
+        let mut priority_ipv4 = vec![0_u8; 28];
+        priority_ipv4[0] = 0x45;
+        priority_ipv4[9] = 1;
+        let priority_payload = EndpointDataPayload::new(priority_ipv4);
+        assert!(!priority_payload.bulk_endpoint_data());
+        assert!(!direct_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            &[priority_payload],
+            true
+        ));
     }
 
     #[test]

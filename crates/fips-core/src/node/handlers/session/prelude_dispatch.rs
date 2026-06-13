@@ -42,6 +42,9 @@ use secp256k1::PublicKey;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
+#[cfg(unix)]
+const DIRECT_ENDPOINT_FMP_PAYLOAD_PREFIX_LEN: usize = 4 + 1;
+
 /// Output of the single-borrow steady-state block in
 /// [`Node::handle_encrypted_session_msg`]. Carries the small amount of
 /// state the post-borrow path needs (the decrypted plaintext +

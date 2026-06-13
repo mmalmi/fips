@@ -226,8 +226,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         if !self.direct_fmp_endpoint {
             return None;
         }
-        let len = 4usize
-            .checked_add(1)?
+        let len = DIRECT_ENDPOINT_FMP_PAYLOAD_PREFIX_LEN
             .checked_add(self.payload.len())?;
         u16::try_from(len).ok()
     }
@@ -293,6 +292,21 @@ impl PipelinedEndpointRoutePlan {
             scheduling_weight,
             direct_path_blocks_direct_payload,
         }
+    }
+
+    fn direct_fmp_endpoint_batch_eligible(
+        &self,
+        dest_addr: NodeAddr,
+        payloads: &[EndpointDataPayload],
+        direct_fmp_opt_in: bool,
+    ) -> bool {
+        direct_fmp_opt_in
+            && self.next_hop_addr == dest_addr
+            && !self.direct_path_blocks_direct_payload
+            && !payloads.is_empty()
+            && payloads
+                .iter()
+                .all(EndpointDataPayload::bulk_endpoint_data)
     }
 
     fn build_send_plan<'a>(
