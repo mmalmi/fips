@@ -442,31 +442,47 @@ fn flush_batch_sync(
         let (fd, connected, dest_addr) = send_attempt.target_parts();
 
         // Within a group, destination is uniform by construction —
-        // GSO needs only the size check now.
+        // GSO needs only the size check now. Chunk by payload bytes too:
+        // UDP_SEGMENT still hands the kernel one logical UDP payload, so
+        // a wide worker/container batch must not exceed the UDP payload
+        // length limit even when it contains fewer than 64 segments.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
             && send_attempt.gso_eligible_sizes()
         {
-            match send_batch_gso(fd, send_attempt.packets(), dest_addr, connected) {
-                Ok(()) => {
-                    crate::perf_profile::record_udp_send_gso_batch(send_attempt.packets().len());
-                    send_attempt.mark_all_sent();
-                    continue;
+            while !send_attempt.is_complete() {
+                let chunk_len = linux_gso_safe_chunk_len(send_attempt.remaining_packets());
+                match send_batch_gso(
+                    fd,
+                    &send_attempt.remaining_packets()[..chunk_len],
+                    dest_addr,
+                    connected,
+                ) {
+                    Ok(()) => {
+                        crate::perf_profile::record_udp_send_gso_batch(chunk_len);
+                        send_attempt.mark_sent(chunk_len);
+                    }
+                    Err(err) if is_gso_capability_error(&err) => {
+                        GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!(
+                            error = %err,
+                            "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
+                        );
+                        // Fall through to sendmmsg for the remaining packets.
+                        break;
+                    }
+                    Err(err) if is_send_backpressure(&err) => {
+                        // Send buffer full mid-GSO — fall through to
+                        // sendmmsg retry loop for the remaining packets. No
+                        // GSO_DISABLED toggle.
+                        break;
+                    }
+                    Err(err) => {
+                        return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
+                    }
                 }
-                Err(err) if is_gso_capability_error(&err) => {
-                    GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    warn!(
-                        error = %err,
-                        "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
-                    );
-                    // fall through to sendmmsg path for this group
-                }
-                Err(err) if is_send_backpressure(&err) => {
-                    // Send buffer full mid-GSO — fall through to
-                    // sendmmsg retry loop. No GSO_DISABLED toggle.
-                }
-                Err(err) => {
-                    return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
-                }
+            }
+            if send_attempt.is_complete() {
+                continue;
             }
         }
 
@@ -501,6 +517,23 @@ fn flush_batch_sync(
     // tokio-backed `AsyncUdpSocket::send_to` path on the rx_loop
     // remains the only outbound path on that platform.
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_gso_safe_chunk_len(packets: &[Vec<u8>]) -> usize {
+    debug_assert!(!packets.is_empty());
+    let mut total_payload = 0usize;
+    let mut count = 0usize;
+    for packet in packets.iter().take(LINUX_UDP_SEND_BATCH_MAX) {
+        if count > 0
+            && total_payload.saturating_add(packet.len()) > LINUX_UDP_GSO_MAX_PAYLOAD
+        {
+            break;
+        }
+        total_payload = total_payload.saturating_add(packet.len());
+        count += 1;
+    }
+    count.max(1)
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]

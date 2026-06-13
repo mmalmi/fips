@@ -229,6 +229,23 @@ mod tests {
         assert_eq!(stamps, expected);
     }
 
+    #[test]
+    fn linux_gso_chunk_len_respects_udp_payload_limit_and_packet_cap() {
+        let full_size_packets: Vec<Vec<u8>> = (0..64).map(|_| pkt(1500)).collect();
+        let chunk = linux_gso_safe_chunk_len(&full_size_packets);
+        assert_eq!(
+            chunk, 43,
+            "43 * 1500 fits below the UDP payload limit; 44 * 1500 does not"
+        );
+
+        let tiny_packets: Vec<Vec<u8>> = (0..80).map(|_| pkt(200)).collect();
+        assert_eq!(
+            linux_gso_safe_chunk_len(&tiny_packets),
+            LINUX_UDP_SEND_BATCH_MAX,
+            "small packets should still use the syscall packet-count cap"
+        );
+    }
+
     /// Mixed-destination batch dispatched to a single worker. The
     /// pre-fix bug used `batch[0].socket` / `batch[0].connected_socket`
     /// / `packets[0].dest_addr` for the whole drained batch, so a
