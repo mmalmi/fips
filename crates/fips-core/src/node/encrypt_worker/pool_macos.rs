@@ -159,16 +159,36 @@ impl EncryptWorkerPool {
             return;
         }
 
-        let idx = self
-            .next_worker
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % self.senders.len();
+        let idx = self.select_linux_bulk_container_worker();
         for (slot, job) in run.drain(..).enumerate() {
             self.dispatch_to_worker(
                 idx,
                 QueuedFmpSendJob::linux_container(job, Arc::clone(&container), slot),
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn select_linux_bulk_container_worker(&self) -> usize {
+        debug_assert!(!self.senders.is_empty());
+        let start = self
+            .next_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.senders.len();
+        let mut best = start;
+        let mut best_len = self.senders[start].queued_len();
+        for offset in 1..self.senders.len() {
+            let idx = (start + offset) % self.senders.len();
+            let queued_len = self.senders[idx].queued_len();
+            if queued_len < best_len {
+                best = idx;
+                best_len = queued_len;
+                if best_len == 0 {
+                    break;
+                }
+            }
+        }
+        best
     }
 
     #[cfg(target_os = "macos")]

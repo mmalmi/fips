@@ -690,6 +690,10 @@ fn fair_worker_channel_with_priority_cap(
 
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerSender {
+    fn queued_len(&self) -> usize {
+        self.priority_tx.len().saturating_add(self.bulk_tx.len())
+    }
+
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
         if job.queue_lane() == EncryptWorkerLane::Priority {
             return match self.priority_tx.try_send(job) {
