@@ -372,6 +372,16 @@ impl Node {
         let lane = command.lane();
         let count = command.len() as u64;
         let (remote, payloads, queued_at) = command.into_parts();
+        let (priority_count, bulk_count) = match lane {
+            EndpointCommandLane::Priority => (count as usize, 0),
+            EndpointCommandLane::Bulk => (0, count as usize),
+        };
+        crate::perf_profile::record_endpoint_send_batch(
+            count as usize,
+            priority_count,
+            bulk_count,
+            crate::endpoint::ENDPOINT_SEND_BATCH_COMMAND_MAX,
+        );
         // The command queue wait ends when rx_loop starts handling the batch.
         // Count one sample per payload without charging earlier payload send
         // work to later payloads' queue residence.

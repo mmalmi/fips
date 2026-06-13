@@ -73,7 +73,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 46;
-const N_EVENTS: usize = 71;
+const N_EVENTS: usize = 77;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -376,6 +376,12 @@ pub enum Event {
     FmpLinuxBulkContainerSent = 68,
     FmpLinuxBulkContainerSentPackets = 69,
     FmpLinuxBulkContainerEmpty = 70,
+    EndpointSendBatchCommand = 71,
+    EndpointSendBatchPackets = 72,
+    EndpointSendBatchFull = 73,
+    EndpointSendBatchSingle = 74,
+    EndpointSendBatchPriorityPackets = 75,
+    EndpointSendBatchBulkPackets = 76,
 }
 
 impl Event {
@@ -460,6 +466,12 @@ impl Event {
             Event::FmpLinuxBulkContainerSent => "fmp_linux_bulk_container_sent",
             Event::FmpLinuxBulkContainerSentPackets => "fmp_linux_bulk_container_sent_packets",
             Event::FmpLinuxBulkContainerEmpty => "fmp_linux_bulk_container_empty",
+            Event::EndpointSendBatchCommand => "endpoint_send_batch_command",
+            Event::EndpointSendBatchPackets => "endpoint_send_batch_packets",
+            Event::EndpointSendBatchFull => "endpoint_send_batch_full",
+            Event::EndpointSendBatchSingle => "endpoint_send_batch_single",
+            Event::EndpointSendBatchPriorityPackets => "endpoint_send_batch_priority_packets",
+            Event::EndpointSendBatchBulkPackets => "endpoint_send_batch_bulk_packets",
         }
     }
 }
@@ -537,6 +549,12 @@ fn event_from_index(idx: usize) -> Event {
         68 => Event::FmpLinuxBulkContainerSent,
         69 => Event::FmpLinuxBulkContainerSentPackets,
         70 => Event::FmpLinuxBulkContainerEmpty,
+        71 => Event::EndpointSendBatchCommand,
+        72 => Event::EndpointSendBatchPackets,
+        73 => Event::EndpointSendBatchFull,
+        74 => Event::EndpointSendBatchSingle,
+        75 => Event::EndpointSendBatchPriorityPackets,
+        76 => Event::EndpointSendBatchBulkPackets,
         _ => unreachable!(),
     }
 }
@@ -769,6 +787,36 @@ pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_group
     record_event_count_sample(Event::FmpSendGroupPackets, packets as u64);
     if single_groups > 0 {
         record_event_count_sample(Event::FmpSendGroupSingle, single_groups as u64);
+    }
+}
+
+#[inline]
+pub(crate) fn record_endpoint_send_batch(
+    packets: usize,
+    priority_packets: usize,
+    bulk_packets: usize,
+    max_batch: usize,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        packets,
+        priority_packets.saturating_add(bulk_packets),
+        "endpoint send batch lane counts should cover every packet"
+    );
+    record_event_count_sample(Event::EndpointSendBatchCommand, 1);
+    record_event_count_sample(Event::EndpointSendBatchPackets, packets as u64);
+    record_event_count_sample(
+        Event::EndpointSendBatchPriorityPackets,
+        priority_packets as u64,
+    );
+    record_event_count_sample(Event::EndpointSendBatchBulkPackets, bulk_packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::EndpointSendBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::EndpointSendBatchSingle, 1);
     }
 }
 

@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 71);
+    assert_eq!(N_EVENTS, 77);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -205,6 +205,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::FmpLinuxBulkContainerEmpty as usize).name(),
         "fmp_linux_bulk_container_empty"
     );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchCommand as usize).name(),
+        "endpoint_send_batch_command"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchPackets as usize).name(),
+        "endpoint_send_batch_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchFull as usize).name(),
+        "endpoint_send_batch_full"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchSingle as usize).name(),
+        "endpoint_send_batch_single"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchPriorityPackets as usize).name(),
+        "endpoint_send_batch_priority_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointSendBatchBulkPackets as usize).name(),
+        "endpoint_send_batch_bulk_packets"
+    );
 }
 
 #[test]
@@ -330,6 +354,17 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpLinuxBulkContainerSentPackets as usize].load(Relaxed);
     let linux_container_empty_before =
         EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed);
+    let endpoint_batch_command_before =
+        EVENTS[Event::EndpointSendBatchCommand as usize].load(Relaxed);
+    let endpoint_batch_packets_before =
+        EVENTS[Event::EndpointSendBatchPackets as usize].load(Relaxed);
+    let endpoint_batch_full_before = EVENTS[Event::EndpointSendBatchFull as usize].load(Relaxed);
+    let endpoint_batch_single_before =
+        EVENTS[Event::EndpointSendBatchSingle as usize].load(Relaxed);
+    let endpoint_batch_priority_before =
+        EVENTS[Event::EndpointSendBatchPriorityPackets as usize].load(Relaxed);
+    let endpoint_batch_bulk_before =
+        EVENTS[Event::EndpointSendBatchBulkPackets as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -362,6 +397,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::FmpLinuxBulkContainerSent, 4);
     record_event_count_sample(Event::FmpLinuxBulkContainerSentPackets, 313);
     record_event_count_sample(Event::FmpLinuxBulkContainerEmpty, 1);
+    record_event_count_sample(Event::EndpointSendBatchCommand, 5);
+    record_event_count_sample(Event::EndpointSendBatchPackets, 257);
+    record_event_count_sample(Event::EndpointSendBatchFull, 4);
+    record_event_count_sample(Event::EndpointSendBatchSingle, 1);
+    record_event_count_sample(Event::EndpointSendBatchPriorityPackets, 9);
+    record_event_count_sample(Event::EndpointSendBatchBulkPackets, 248);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -499,5 +540,34 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed)
             - linux_container_empty_before,
         1
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchCommand as usize].load(Relaxed)
+            - endpoint_batch_command_before,
+        5
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchPackets as usize].load(Relaxed)
+            - endpoint_batch_packets_before,
+        257
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchFull as usize].load(Relaxed) - endpoint_batch_full_before,
+        4
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchSingle as usize].load(Relaxed)
+            - endpoint_batch_single_before,
+        1
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchPriorityPackets as usize].load(Relaxed)
+            - endpoint_batch_priority_before,
+        9
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointSendBatchBulkPackets as usize].load(Relaxed)
+            - endpoint_batch_bulk_before,
+        248
     );
 }

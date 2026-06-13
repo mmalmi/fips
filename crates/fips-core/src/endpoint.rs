@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
+pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
 mod builder;
