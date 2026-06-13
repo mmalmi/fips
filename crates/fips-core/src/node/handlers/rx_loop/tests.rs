@@ -637,3 +637,18 @@ async fn single_lane_drain_cursor_owns_first_item_and_budget() {
     assert_eq!(tun_rx.try_recv().ok(), Some("queued-3"));
     assert_eq!(drain.drained(), 3);
 }
+
+#[tokio::test]
+async fn single_lane_drain_cursor_charges_batch_extra_against_budget() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+
+    tx.send("queued-1").await.unwrap();
+    tx.send("queued-2").await.unwrap();
+    let mut drain = SingleLaneDrainCursor::new(Some("selected-batch"), 4);
+
+    assert_eq!(drain.next(&mut rx), Some("selected-batch"));
+    drain.charge_extra(3);
+    assert_eq!(drain.next(&mut rx), None);
+    assert_eq!(rx.try_recv().ok(), Some("queued-1"));
+    assert_eq!(drain.drained(), 4);
+}

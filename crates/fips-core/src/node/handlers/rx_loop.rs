@@ -833,7 +833,9 @@ impl Node {
         self.begin_endpoint_event_batch();
         let mut drain = SingleLaneDrainCursor::new(first_event, budget);
         while let Some(event) = drain.next(priority_rx) {
+            let extra = event.packet_count().saturating_sub(1);
             self.process_decrypt_worker_event(event).await;
+            drain.charge_extra(extra);
         }
         let drained = drain.drained();
         self.finish_endpoint_event_batch();

@@ -421,4 +421,9 @@ impl<T> SingleLaneDrainCursor<T> {
     pub(super) fn drained(&self) -> usize {
         self.drained
     }
+
+    pub(super) fn charge_extra(&mut self, extra: usize) {
+        self.remaining = self.remaining.saturating_sub(extra);
+        self.drained = self.drained.saturating_add(extra);
+    }
 }
