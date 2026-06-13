@@ -260,7 +260,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
 
         let missing_transport_send = PipelinedEndpointSend {
@@ -446,7 +446,7 @@
         .expect("first send should dispatch");
         assert_eq!(first.fsp_reservation_input().path_mtu, 1234);
         let first_prepared = first.into_prepared_send(None);
-        assert_eq!(first_prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(first_prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(first_prepared.fmp_counter, fmp_before);
 
         let second = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_resolved_route(
@@ -459,7 +459,7 @@
         .expect("second send should dispatch");
         assert_eq!(second.fsp_reservation_input().path_mtu, 1234);
         let second_prepared = second.into_prepared_send(None);
-        assert_eq!(second_prepared.fsp_bookkeeping.counter, fsp_before + 1);
+        assert_eq!(second_prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before + 1);
         assert_eq!(second_prepared.fmp_counter, fmp_before + 1);
 
         assert_eq!(
@@ -605,7 +605,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
 
         let missing_transport_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
@@ -777,7 +777,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
         assert_eq!(prepared.worker_job.counter, fmp_before);
 
@@ -926,7 +926,7 @@
             runtime,
             send_target,
             fmp_reservation,
-            fsp_reservation,
+            Some(fsp_reservation),
         );
         assert_eq!(dispatch.dest_addr(), dest_addr);
         assert_eq!(dispatch.next_hop_addr(), next_hop_addr);
@@ -938,8 +938,8 @@
         assert_eq!(prepared.fmp_counter, fmp_counter);
         assert_eq!(prepared.fmp_timestamp_ms, 0x0102_0304);
         assert_eq!(prepared.originated_bytes, expected_originated_bytes);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_counter);
-        assert_eq!(prepared.fsp_bookkeeping.next_hop, Some(next_hop_addr));
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_counter);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").next_hop, Some(next_hop_addr));
         assert_eq!(prepared.worker_job.counter, fmp_counter);
         assert!(prepared.worker_job.bulk_endpoint_data);
         assert!(!prepared.worker_job.drop_on_backpressure);

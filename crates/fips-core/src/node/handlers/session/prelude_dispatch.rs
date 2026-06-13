@@ -757,6 +757,7 @@ struct SessionDatagramRuntimeRoute {
 
 #[cfg(unix)]
 struct PipelinedEndpointDispatchPlan<'a> {
+    dest_addr: NodeAddr,
     next_hop_addr: NodeAddr,
     payload: &'a EndpointDataPayload,
     timestamp: u32,
@@ -767,6 +768,7 @@ struct PipelinedEndpointDispatchPlan<'a> {
     fsp_payload_len: u16,
     bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
+    direct_fmp_endpoint: bool,
     scheduling_weight: u8,
 }
 
@@ -871,8 +873,9 @@ enum PipelinedEndpointPeerRuntimeSendRequestError {
 
 #[cfg(unix)]
 struct PipelinedEndpointSendPlan<'a> {
-    wire_plan: PipelinedEndpointWirePlan<'a>,
+    wire_plan: Option<PipelinedEndpointWirePlan<'a>>,
     dispatch_plan: PipelinedEndpointDispatchPlan<'a>,
+    direct_fmp_payload_len: Option<u16>,
 }
 
 #[cfg(unix)]
@@ -887,7 +890,7 @@ struct PipelinedEndpointRuntimeSendDispatch<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
     send_target: PipelinedEndpointSendTarget,
     fmp_reservation: crate::node::PreparedFmpWorkerReservation,
-    fsp_reservation: crate::node::session::FspSendReservation,
+    fsp_reservation: Option<crate::node::session::FspSendReservation>,
 }
 
 #[cfg(unix)]
@@ -921,7 +924,7 @@ struct PipelinedEndpointPreparedSend {
     fmp_timestamp_ms: u32,
     fmp_wire_capacity: usize,
     originated_bytes: usize,
-    fsp_bookkeeping: FspSendBookkeepingInput,
+    session_bookkeeping: PipelinedEndpointSessionBookkeeping,
     worker_job: crate::node::encrypt_worker::FmpSendJob,
 }
 
@@ -934,7 +937,18 @@ struct PipelinedEndpointPreparedBookkeeping {
     fmp_timestamp_ms: u32,
     fmp_wire_capacity: usize,
     originated_bytes: usize,
-    fsp_bookkeeping: FspSendBookkeepingInput,
+    session_bookkeeping: PipelinedEndpointSessionBookkeeping,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum PipelinedEndpointSessionBookkeeping {
+    Fsp(FspSendBookkeepingInput),
+    DirectFmp {
+        payload_len: usize,
+        now_ms: u64,
+        next_hop: NodeAddr,
+    },
 }
 
 #[cfg(unix)]

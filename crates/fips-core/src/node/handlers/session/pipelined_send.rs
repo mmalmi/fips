@@ -4,7 +4,7 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
         runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
         send_target: PipelinedEndpointSendTarget,
         fmp_reservation: crate::node::PreparedFmpWorkerReservation,
-        fsp_reservation: crate::node::session::FspSendReservation,
+        fsp_reservation: Option<crate::node::session::FspSendReservation>,
     ) -> Self {
         Self {
             runtime_plan,
@@ -41,12 +41,7 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
             fmp_reservation,
             fsp_reservation,
         } = self;
-        runtime_plan.into_prepared_worker_send(
-            fmp_reservation,
-            fsp_reservation,
-            send_target,
-            queued_at,
-        )
+        runtime_plan.into_prepared_worker_send(fmp_reservation, fsp_reservation, send_target, queued_at)
     }
 
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
@@ -86,16 +81,27 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
 
         let dest_addr = runtime_plan.dest_addr();
         let next_hop_addr = runtime_plan.next_hop_addr();
-        let Some(fsp_reservation) = sessions
-            .reserve_endpoint_data_fsp_worker_send(&dest_addr, runtime_plan.fsp_reservation_input())
-            .map_err(
-                |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
-                    dest_addr,
-                    error,
-                },
-            )?
-        else {
-            return Ok(None);
+        let fsp_reservation = if runtime_plan.direct_fmp_endpoint() {
+            if !sessions.direct_endpoint_data_can_send(&dest_addr) {
+                return Ok(None);
+            }
+            None
+        } else {
+            let Some(fsp_reservation) = sessions
+                .reserve_endpoint_data_fsp_worker_send(
+                    &dest_addr,
+                    runtime_plan.fsp_reservation_input(),
+                )
+                .map_err(
+                    |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
+                        dest_addr,
+                        error,
+                    },
+                )?
+            else {
+                return Ok(None);
+            };
+            Some(fsp_reservation)
         };
 
         let Some(fmp_reservation) = peers
@@ -294,6 +300,60 @@ impl<'a> PipelinedEndpointPeerRuntimeSendRequest<'a> {
 }
 
 #[cfg(unix)]
+impl PipelinedEndpointSessionBookkeeping {
+    fn is_fsp(&self) -> bool {
+        matches!(self, Self::Fsp(_))
+    }
+
+    fn is_direct_fmp(&self) -> bool {
+        matches!(self, Self::DirectFmp { .. })
+    }
+
+    fn fsp(self) -> Option<FspSendBookkeepingInput> {
+        match self {
+            Self::Fsp(input) => Some(input),
+            Self::DirectFmp { .. } => None,
+        }
+    }
+
+    fn direct_fmp(self) -> Option<(usize, u64, NodeAddr)> {
+        match self {
+            Self::DirectFmp {
+                payload_len,
+                now_ms,
+                next_hop,
+            } => Some((payload_len, now_ms, next_hop)),
+            Self::Fsp(_) => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointPreparedBookkeeping {
+    fn record_session_send(&self, node: &mut Node) {
+        match self.session_bookkeeping {
+            PipelinedEndpointSessionBookkeeping::Fsp(input) => {
+                let _ = node
+                    .sessions
+                    .record_fsp_send_bookkeeping(&self.dest_addr, input);
+            }
+            PipelinedEndpointSessionBookkeeping::DirectFmp {
+                payload_len,
+                now_ms,
+                next_hop,
+            } => {
+                let _ = node.sessions.record_direct_endpoint_data_send(
+                    &self.dest_addr,
+                    payload_len,
+                    now_ms,
+                    next_hop,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 impl PipelinedEndpointPreparedSend {
     fn into_bookkeeping_and_job(
         self,
@@ -308,7 +368,7 @@ impl PipelinedEndpointPreparedSend {
             fmp_timestamp_ms,
             fmp_wire_capacity,
             originated_bytes,
-            fsp_bookkeeping,
+            session_bookkeeping,
             worker_job,
         } = self;
 
@@ -320,7 +380,7 @@ impl PipelinedEndpointPreparedSend {
                 fmp_timestamp_ms,
                 fmp_wire_capacity,
                 originated_bytes,
-                fsp_bookkeeping,
+                session_bookkeeping,
             },
             worker_job,
         )
@@ -339,9 +399,7 @@ impl PipelinedEndpointPreparedSend {
             .forwarding
             .record_originated(bookkeeping.originated_bytes);
 
-        let _ = node
-            .sessions
-            .record_fsp_send_bookkeeping(&bookkeeping.dest_addr, bookkeeping.fsp_bookkeeping);
+        bookkeeping.record_session_send(node);
 
         worker_job
     }
@@ -377,10 +435,28 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated_batch(records.len(), originated_bytes);
-            let _ = node.sessions.record_fsp_send_bookkeeping_batch(
-                &first.dest_addr,
-                records.iter().map(|record| record.fsp_bookkeeping),
-            );
+            if records.iter().all(|record| record.session_bookkeeping.is_fsp()) {
+                let _ = node.sessions.record_fsp_send_bookkeeping_batch(
+                    &first.dest_addr,
+                    records
+                        .iter()
+                        .filter_map(|record| record.session_bookkeeping.fsp()),
+                );
+            } else if records
+                .iter()
+                .all(|record| record.session_bookkeeping.is_direct_fmp())
+            {
+                let _ = node.sessions.record_direct_endpoint_data_send_batch(
+                    &first.dest_addr,
+                    records
+                        .iter()
+                        .filter_map(|record| record.session_bookkeeping.direct_fmp()),
+                );
+            } else {
+                for record in records {
+                    record.record_session_send(node);
+                }
+            }
             return;
         }
 
@@ -394,9 +470,7 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated(record.originated_bytes);
-            let _ = node
-                .sessions
-                .record_fsp_send_bookkeeping(&record.dest_addr, record.fsp_bookkeeping);
+            record.record_session_send(node);
         }
     }
 

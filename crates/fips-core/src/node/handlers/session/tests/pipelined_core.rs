@@ -261,6 +261,115 @@
         assert!(!control.drop_on_backpressure);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn direct_endpoint_fmp_only_parser_is_explicit_opt_in() {
+        for raw in [None, Some(""), Some("0"), Some("false"), Some("no"), Some("off")] {
+            assert!(
+                !parse_direct_endpoint_fmp_only_enabled(raw),
+                "{raw:?} should leave direct-FMP endpoint data disabled"
+            );
+        }
+        for raw in [Some("1"), Some("true"), Some("yes"), Some("on")] {
+            assert!(
+                parse_direct_endpoint_fmp_only_enabled(raw),
+                "{raw:?} should enable direct-FMP endpoint data"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pipelined_endpoint_direct_fmp_mode_is_opt_in_direct_bulk_only() {
+        let dest_addr = node_addr(0x20);
+        let relay_addr = node_addr(0x30);
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::endpoint_data(
+                0x5566_7788,
+                0,
+                payload.as_slice(),
+            ),
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let default_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &send,
+            dest_addr,
+            1234,
+            9,
+            1,
+            false,
+            false,
+        )
+        .expect("default plan");
+        assert!(!default_plan.direct_fmp_endpoint());
+
+        let direct_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &send,
+            dest_addr,
+            1234,
+            9,
+            1,
+            false,
+            true,
+        )
+        .expect("direct opt-in plan");
+        assert!(direct_plan.direct_fmp_endpoint());
+        assert_eq!(direct_plan.fmp_payload_len() as usize, 4 + 1 + payload.len());
+
+        let relayed_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &send,
+            relay_addr,
+            1234,
+            9,
+            1,
+            false,
+            true,
+        )
+        .expect("relayed plan");
+        assert!(!relayed_plan.direct_fmp_endpoint());
+
+        let degraded_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &send,
+            dest_addr,
+            1234,
+            9,
+            1,
+            true,
+            true,
+        )
+        .expect("degraded direct plan");
+        assert!(!degraded_plan.direct_fmp_endpoint());
+
+        let control_send = PipelinedEndpointSend {
+            fsp_flags: FSP_FLAG_CP,
+            ..send
+        };
+        let control_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &control_send,
+            dest_addr,
+            1234,
+            9,
+            1,
+            false,
+            true,
+        )
+        .expect("control plan");
+        assert!(!control_plan.direct_fmp_endpoint());
+    }
+
     #[test]
     fn session_fsp_send_plan_owns_flags_coords_wire_and_bookkeeping() {
         let local = Identity::generate();
@@ -539,15 +648,15 @@
         );
         assert_eq!(prepared.originated_bytes, expected_originated_bytes);
 
-        assert_eq!(prepared.fsp_bookkeeping.data_bytes, Some(payload.len()));
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_counter);
-        assert_eq!(prepared.fsp_bookkeeping.timestamp, send.timestamp);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").data_bytes, Some(payload.len()));
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_counter);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").timestamp, send.timestamp);
         assert_eq!(
-            prepared.fsp_bookkeeping.frame_bytes,
+            prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").frame_bytes,
             inner_plaintext.len() + crate::noise::TAG_SIZE
         );
-        assert_eq!(prepared.fsp_bookkeeping.touch_ms, Some(send.now_ms));
-        assert_eq!(prepared.fsp_bookkeeping.next_hop, Some(dest_addr));
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").touch_ms, Some(send.now_ms));
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").next_hop, Some(dest_addr));
 
         assert_eq!(prepared.worker_job.counter, fmp_counter);
         assert!(prepared.worker_job.bulk_endpoint_data);
@@ -563,6 +672,128 @@
         assert_eq!(
             fsp_seal.aad_offset,
             ESTABLISHED_HEADER_SIZE + 4 + SESSION_DATAGRAM_HEADER_SIZE
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipelined_endpoint_direct_fmp_worker_job_omits_fsp_seal() {
+        use crate::node::PreparedFmpWorkerReservation;
+        use crate::node::wire::{EncryptedHeader, build_established_header};
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+        use ring::aead::{LessSafeKey, UnboundKey};
+
+        fn test_cipher(byte: u8) -> LessSafeKey {
+            let unbound =
+                UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[byte; 32]).expect("test key");
+            LessSafeKey::new(unbound)
+        }
+
+        let source_addr = node_addr(0x10);
+        let dest_addr = node_addr(0x20);
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::endpoint_data(
+                0x5566_7788,
+                0,
+                payload.as_slice(),
+            ),
+            my_coords: None,
+            dest_coords: None,
+        };
+        let plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &source_addr,
+            &send,
+            dest_addr,
+            1234,
+            9,
+            7,
+            false,
+            true,
+        )
+        .expect("direct-FMP endpoint plan");
+        assert!(plan.direct_fmp_endpoint());
+
+        let transport_id = TransportId::new(0x55);
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let fmp_prepared = crate::node::FmpSendPreparation {
+            their_index: SessionIndex::new(0xA0B0_C0D0),
+            transport_id,
+            remote_addr: TransportAddr::from_string(&fallback_addr.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket: None,
+            timestamp_ms: 0x0102_0304,
+            flags: 0,
+            payload_len: plan.fmp_payload_len(),
+        };
+        let send_target = PipelinedEndpointSendTarget::resolve(&udp, &fmp_prepared)
+            .await
+            .expect("started UDP transport resolves send target");
+        let fmp_counter = 0x1112_1314_1516_1718;
+        let fmp_header = build_established_header(
+            fmp_prepared.their_index,
+            fmp_counter,
+            fmp_prepared.flags,
+            plan.fmp_payload_len(),
+        );
+        let fmp_reservation = PreparedFmpWorkerReservation {
+            counter: fmp_counter,
+            header: fmp_header,
+            cipher: test_cipher(7),
+            predicted_bytes: ESTABLISHED_HEADER_SIZE
+                + plan.fmp_payload_len() as usize
+                + crate::noise::TAG_SIZE,
+        };
+
+        let prepared =
+            plan.into_prepared_direct_fmp_worker_send(&fmp_prepared, fmp_reservation, send_target, None);
+
+        assert_eq!(prepared.dest_addr, dest_addr);
+        assert_eq!(prepared.next_hop_addr, dest_addr);
+        assert_eq!(prepared.fmp_counter, fmp_counter);
+        assert_eq!(
+            prepared.session_bookkeeping.direct_fmp(),
+            Some((payload.len(), send.now_ms, dest_addr))
+        );
+        assert_eq!(
+            prepared.originated_bytes,
+            1 + payload.len() + crate::noise::TAG_SIZE
+        );
+        assert!(prepared.worker_job.fsp_seal.is_none());
+        assert!(prepared.worker_job.bulk_endpoint_data);
+        assert!(prepared.worker_job.drop_on_backpressure);
+        assert_eq!(
+            prepared.worker_job.wire_buf.len(),
+            ESTABLISHED_HEADER_SIZE + 4 + 1 + payload.len()
+        );
+        let fmp = EncryptedHeader::parse(&prepared.worker_job.wire_buf).expect("FMP header");
+        assert_eq!(fmp.payload_len as usize, 4 + 1 + payload.len());
+        let link_offset = ESTABLISHED_HEADER_SIZE + 4;
+        assert_eq!(
+            prepared.worker_job.wire_buf[link_offset],
+            LinkMessageType::DirectEndpointData.to_byte()
+        );
+        assert_eq!(
+            &prepared.worker_job.wire_buf[link_offset + 1..],
+            payload.as_slice()
         );
     }
 

@@ -378,6 +378,10 @@ impl<'a> PeerRuntimeReceiveAction<'a> {
 }
 
 impl<'a> AuthenticatedLinkMessage<'a> {
+    pub(in crate::node) fn source_peer(&self) -> PeerIdentity {
+        self.source_peer
+    }
+
     pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
         self.source_peer.node_addr()
     }

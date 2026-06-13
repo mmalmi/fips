@@ -18,6 +18,38 @@ impl Node {
         }
     }
 
+    pub(in crate::node) async fn handle_direct_endpoint_data_link_message(
+        &mut self,
+        message: crate::node::AuthenticatedLinkMessage<'_>,
+    ) {
+        let source_peer = message.source_peer();
+        let source_addr = *source_peer.node_addr();
+        let payload = message.payload();
+
+        if !self.sessions.record_direct_endpoint_data_receive(
+            &source_addr,
+            payload.len(),
+            Self::now_ms(),
+        ) {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                "Dropping direct-FMP endpoint data for missing or non-established session"
+            );
+            return;
+        }
+
+        self.learn_reverse_route(source_addr, source_addr);
+        self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, payload.to_vec()));
+
+        if let Some(dest_addr) = self
+            .pending_session_traffic
+            .has_traffic_for(&source_addr)
+            .then_some(source_addr)
+        {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
     /// Similar to `send_session_data()` but:
