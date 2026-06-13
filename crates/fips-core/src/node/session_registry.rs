@@ -214,6 +214,27 @@ impl SessionRegistry {
         true
     }
 
+    pub(in crate::node) fn record_direct_endpoint_data_receive_batch(
+        &mut self,
+        node_addr: &NodeAddr,
+        packets: usize,
+        bytes: usize,
+        now_ms: u64,
+    ) -> bool {
+        let Some(entry) = self.sessions.get_mut(node_addr) else {
+            return false;
+        };
+        if !entry.is_established() {
+            return false;
+        }
+        if packets > 0 {
+            entry.record_recv_batch(packets, bytes);
+            entry.touch(now_ms);
+            entry.touch_inbound_frame(now_ms);
+        }
+        true
+    }
+
     #[cfg(unix)]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
         &mut self,

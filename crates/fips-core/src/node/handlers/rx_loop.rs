@@ -779,10 +779,8 @@ impl Node {
                     .await;
             }
             DecryptWorkerEvent::DirectFmpEndpointDataBatch(endpoints) => {
-                for endpoint in endpoints {
-                    self.process_direct_fmp_endpoint_data_from_worker(endpoint)
-                        .await;
-                }
+                self.process_direct_fmp_endpoint_data_batch_from_worker(endpoints)
+                    .await;
             }
             DecryptWorkerEvent::AuthenticatedSession(session) => {
                 self.process_authenticated_session_from_worker(session)

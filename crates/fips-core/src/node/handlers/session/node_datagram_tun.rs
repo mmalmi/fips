@@ -82,6 +82,101 @@ impl Node {
         }
     }
 
+    pub(in crate::node) async fn process_direct_fmp_endpoint_data_batch_from_worker(
+        &mut self,
+        endpoints: Vec<crate::node::decrypt_worker::DecryptDirectFmpEndpointData>,
+    ) {
+        if endpoints.len() <= 1 {
+            for endpoint in endpoints {
+                self.process_direct_fmp_endpoint_data_from_worker(endpoint)
+                    .await;
+            }
+            return;
+        }
+
+        let now_ms = Self::now_ms();
+        let mut current_source_addr = None;
+        let mut current_source_peer = None;
+        let mut current_payloads = Vec::new();
+        let mut current_bytes = 0usize;
+
+        for endpoint in endpoints {
+            let source_addr = *endpoint.fmp.source_peer.node_addr();
+            if current_source_addr.is_some_and(|current| current != source_addr) {
+                if let (Some(source_peer), Some(source_addr)) =
+                    (current_source_peer.take(), current_source_addr.take())
+                {
+                    self.finish_direct_fmp_endpoint_data_receive_group(
+                        source_peer,
+                        source_addr,
+                        std::mem::take(&mut current_payloads),
+                        current_bytes,
+                        now_ms,
+                    )
+                    .await;
+                }
+                current_bytes = 0;
+            }
+
+            self.record_worker_authenticated_fmp_receive(&endpoint.fmp);
+            current_source_addr.get_or_insert(source_addr);
+            current_source_peer.get_or_insert(endpoint.fmp.source_peer);
+            current_bytes = current_bytes.saturating_add(endpoint.payload.len());
+            current_payloads.push(endpoint.payload);
+        }
+
+        if let (Some(source_peer), Some(source_addr)) = (current_source_peer, current_source_addr) {
+            self.finish_direct_fmp_endpoint_data_receive_group(
+                source_peer,
+                source_addr,
+                current_payloads,
+                current_bytes,
+                now_ms,
+            )
+            .await;
+        }
+    }
+
+    async fn finish_direct_fmp_endpoint_data_receive_group(
+        &mut self,
+        source_peer: PeerIdentity,
+        source_addr: NodeAddr,
+        payloads: Vec<Vec<u8>>,
+        bytes: usize,
+        now_ms: u64,
+    ) {
+        if payloads.is_empty() {
+            return;
+        }
+
+        if !self.sessions.record_direct_endpoint_data_receive_batch(
+            &source_addr,
+            payloads.len(),
+            bytes,
+            now_ms,
+        ) {
+            debug!(
+                src = %self.peer_display_name(&source_addr),
+                packets = payloads.len(),
+                "Dropping worker-authenticated direct-FMP endpoint data batch for missing or non-established session"
+            );
+            return;
+        }
+
+        self.learn_reverse_route(source_addr, source_addr);
+        for payload in payloads {
+            self.deliver_endpoint_data(EndpointDataDelivery::new(source_peer, payload));
+        }
+
+        if let Some(dest_addr) = self
+            .pending_session_traffic
+            .has_traffic_for(&source_addr)
+            .then_some(source_addr)
+        {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
     /// Send a non-data session message (reports, notifications) over an established session.
     ///
     /// Similar to `send_session_data()` but:
