@@ -28,6 +28,33 @@ mod tests;
 use budget::*;
 use drain::*;
 
+#[derive(Copy, Clone)]
+enum EndpointCommandDrainSource {
+    DirectPriority,
+    DirectBulk,
+    Side,
+    MaintenancePre,
+    MaintenancePost,
+}
+
+impl EndpointCommandDrainSource {
+    fn event(self) -> crate::perf_profile::Event {
+        match self {
+            Self::DirectPriority => {
+                crate::perf_profile::Event::RxLoopEndpointCommandDrainDirectPriority
+            }
+            Self::DirectBulk => crate::perf_profile::Event::RxLoopEndpointCommandDrainDirectBulk,
+            Self::Side => crate::perf_profile::Event::RxLoopEndpointCommandDrainSide,
+            Self::MaintenancePre => {
+                crate::perf_profile::Event::RxLoopEndpointCommandDrainMaintenancePre
+            }
+            Self::MaintenancePost => {
+                crate::perf_profile::Event::RxLoopEndpointCommandDrainMaintenancePost
+            }
+        }
+    }
+}
+
 impl Node {
     /// Run the receive event loop.
     ///
@@ -179,6 +206,7 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         NON_PACKET_DRAIN_BUDGET,
+                        EndpointCommandDrainSource::MaintenancePre,
                     ).await;
                     if drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -213,6 +241,7 @@ impl Node {
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         PACKET_DRAIN_BUDGET,
+                        EndpointCommandDrainSource::MaintenancePost,
                     ).await;
                     if post_drained.has_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -273,6 +302,7 @@ impl Node {
                         Some(command),
                         None,
                         ENDPOINT_COMMAND_DRAIN_BUDGET,
+                        EndpointCommandDrainSource::DirectPriority,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -324,6 +354,7 @@ impl Node {
                         None,
                         Some(command),
                         ENDPOINT_COMMAND_DRAIN_BUDGET,
+                        EndpointCommandDrainSource::DirectBulk,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -356,6 +387,7 @@ impl Node {
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
+        endpoint_command_drain_source: EndpointCommandDrainSource,
     ) -> RxLoopDataDrainStats {
         let drained_packets = self
             .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
@@ -371,6 +403,7 @@ impl Node {
                 None,
                 None,
                 non_packet_budget,
+                endpoint_command_drain_source,
             )
             .await;
         RxLoopDataDrainStats::new(drained_packets, drained_tun, drained_endpoint)
@@ -511,6 +544,7 @@ impl Node {
                 None,
                 None,
                 endpoint_budget,
+                EndpointCommandDrainSource::Side,
             )
             .await;
         let mut drained_tun = self
@@ -534,6 +568,7 @@ impl Node {
                     None,
                     None,
                     tun_remainder,
+                    EndpointCommandDrainSource::Side,
                 )
                 .await;
         }
@@ -562,6 +597,7 @@ impl Node {
         first_priority_command: Option<NodeEndpointCommand>,
         first_bulk_command: Option<NodeEndpointCommand>,
         budget: usize,
+        source: EndpointCommandDrainSource,
     ) -> usize {
         let mut drain =
             PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
@@ -571,7 +607,9 @@ impl Node {
             drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
-        drain.drained()
+        let drained = drain.drained();
+        crate::perf_profile::record_event_count(source.event(), drained as u64);
+        drained
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {

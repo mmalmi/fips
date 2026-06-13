@@ -85,7 +85,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 52;
-const N_EVENTS: usize = 77;
+const N_EVENTS: usize = 82;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -418,6 +418,11 @@ pub enum Event {
     EndpointSendBatchSingle = 74,
     EndpointSendBatchPriorityPackets = 75,
     EndpointSendBatchBulkPackets = 76,
+    RxLoopEndpointCommandDrainDirectPriority = 77,
+    RxLoopEndpointCommandDrainDirectBulk = 78,
+    RxLoopEndpointCommandDrainSide = 79,
+    RxLoopEndpointCommandDrainMaintenancePre = 80,
+    RxLoopEndpointCommandDrainMaintenancePost = 81,
 }
 
 impl Event {
@@ -508,6 +513,19 @@ impl Event {
             Event::EndpointSendBatchSingle => "endpoint_send_batch_single",
             Event::EndpointSendBatchPriorityPackets => "endpoint_send_batch_priority_packets",
             Event::EndpointSendBatchBulkPackets => "endpoint_send_batch_bulk_packets",
+            Event::RxLoopEndpointCommandDrainDirectPriority => {
+                "rx_loop_endpoint_command_drain_direct_priority"
+            }
+            Event::RxLoopEndpointCommandDrainDirectBulk => {
+                "rx_loop_endpoint_command_drain_direct_bulk"
+            }
+            Event::RxLoopEndpointCommandDrainSide => "rx_loop_endpoint_command_drain_side",
+            Event::RxLoopEndpointCommandDrainMaintenancePre => {
+                "rx_loop_endpoint_command_drain_maintenance_pre"
+            }
+            Event::RxLoopEndpointCommandDrainMaintenancePost => {
+                "rx_loop_endpoint_command_drain_maintenance_post"
+            }
         }
     }
 }
@@ -591,6 +609,11 @@ fn event_from_index(idx: usize) -> Event {
         74 => Event::EndpointSendBatchSingle,
         75 => Event::EndpointSendBatchPriorityPackets,
         76 => Event::EndpointSendBatchBulkPackets,
+        77 => Event::RxLoopEndpointCommandDrainDirectPriority,
+        78 => Event::RxLoopEndpointCommandDrainDirectBulk,
+        79 => Event::RxLoopEndpointCommandDrainSide,
+        80 => Event::RxLoopEndpointCommandDrainMaintenancePre,
+        81 => Event::RxLoopEndpointCommandDrainMaintenancePost,
         _ => unreachable!(),
     }
 }

@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 77);
+    assert_eq!(N_EVENTS, 82);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -229,6 +229,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::EndpointSendBatchBulkPackets as usize).name(),
         "endpoint_send_batch_bulk_packets"
     );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainDirectPriority as usize).name(),
+        "rx_loop_endpoint_command_drain_direct_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainDirectBulk as usize).name(),
+        "rx_loop_endpoint_command_drain_direct_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainSide as usize).name(),
+        "rx_loop_endpoint_command_drain_side"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainMaintenancePre as usize).name(),
+        "rx_loop_endpoint_command_drain_maintenance_pre"
+    );
+    assert_eq!(
+        event_from_index(Event::RxLoopEndpointCommandDrainMaintenancePost as usize).name(),
+        "rx_loop_endpoint_command_drain_maintenance_post"
+    );
 }
 
 #[test]
@@ -389,6 +409,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::EndpointSendBatchPriorityPackets as usize].load(Relaxed);
     let endpoint_batch_bulk_before =
         EVENTS[Event::EndpointSendBatchBulkPackets as usize].load(Relaxed);
+    let endpoint_drain_direct_priority_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainDirectPriority as usize].load(Relaxed);
+    let endpoint_drain_direct_bulk_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainDirectBulk as usize].load(Relaxed);
+    let endpoint_drain_side_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainSide as usize].load(Relaxed);
+    let endpoint_drain_maintenance_pre_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePre as usize].load(Relaxed);
+    let endpoint_drain_maintenance_post_before =
+        EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePost as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -427,6 +457,11 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::EndpointSendBatchSingle, 1);
     record_event_count_sample(Event::EndpointSendBatchPriorityPackets, 9);
     record_event_count_sample(Event::EndpointSendBatchBulkPackets, 248);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainDirectPriority, 3);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainDirectBulk, 257);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainSide, 64);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePre, 8);
+    record_event_count_sample(Event::RxLoopEndpointCommandDrainMaintenancePost, 16);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -593,5 +628,30 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::EndpointSendBatchBulkPackets as usize].load(Relaxed)
             - endpoint_batch_bulk_before,
         248
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainDirectPriority as usize].load(Relaxed)
+            - endpoint_drain_direct_priority_before,
+        3
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainDirectBulk as usize].load(Relaxed)
+            - endpoint_drain_direct_bulk_before,
+        257
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainSide as usize].load(Relaxed)
+            - endpoint_drain_side_before,
+        64
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePre as usize].load(Relaxed)
+            - endpoint_drain_maintenance_pre_before,
+        8
+    );
+    assert_eq!(
+        EVENTS[Event::RxLoopEndpointCommandDrainMaintenancePost as usize].load(Relaxed)
+            - endpoint_drain_maintenance_post_before,
+        16
     );
 }
