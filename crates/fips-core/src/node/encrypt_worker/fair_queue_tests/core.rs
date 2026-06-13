@@ -125,15 +125,15 @@
     }
 
     #[test]
-    fn fast_lane_cap_is_one_worker_batch_not_a_second_queue_window() {
+    fn fast_lane_cap_stays_bounded_when_worker_batch_grows() {
         assert_eq!(
             worker_fast_lane_cap(2048, 512),
-            DEFAULT_WORKER_BATCH_SIZE,
-            "default bulk workers may bypass fair admission for one local batch, not one full per-flow queue"
+            WORKER_FAST_LANE_BATCH_CAP,
+            "bulk workers may bypass fair admission for one bounded turn, not one full per-flow queue"
         );
         assert_eq!(
             worker_fast_lane_cap_for_batch(2048, 512, DEFAULT_WORKER_BATCH_SIZE + 16),
-            DEFAULT_WORKER_BATCH_SIZE,
+            WORKER_FAST_LANE_BATCH_CAP,
             "larger experimental drain batches must not widen the fair-admission fast lane"
         );
         assert_eq!(

@@ -187,10 +187,14 @@ const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
-// Keep the Linux worker turn close to the packet-mover receive width; larger
-// turns amortize sends but make tail service less predictable under pressure.
+// Keep the fair-admission bypass at the old one-syscall turn even when Linux
+// drains a wider worker batch; this preserves pressure signalling for bulk.
+#[cfg(not(target_os = "macos"))]
+const WORKER_FAST_LANE_BATCH_CAP: usize = 32;
+// Docker single-target TCP benches showed a 64-packet Linux drain lifts the
+// default hash-by-target path without the ordered-send experiment's collapse.
 #[cfg(target_os = "linux")]
-const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
+const DEFAULT_WORKER_BATCH_SIZE: usize = 64;
 #[cfg(target_os = "linux")]
 const LINUX_UDP_SEND_BATCH_MAX: usize = 64;
 #[cfg(target_os = "linux")]
@@ -253,9 +257,7 @@ fn worker_fast_lane_cap_for_batch(
     batch_size: usize,
 ) -> usize {
     batch_size
-        // Larger experimental drain batches should not also widen the hidden
-        // admission bypass before fair per-flow backpressure can engage.
-        .min(DEFAULT_WORKER_BATCH_SIZE)
+        .min(WORKER_FAST_LANE_BATCH_CAP)
         .min(per_flow_cap.max(1))
         .min(total_cap.max(1))
         .max(1)
