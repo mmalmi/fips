@@ -347,16 +347,21 @@ impl LinuxBulkSendContainer {
 fn linux_bulk_container_sender_enabled() -> bool {
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("FIPS_LINUX_BULK_CONTAINERS")
-            .ok()
-            .map(|raw| {
-                !matches!(
-                    raw.trim().to_ascii_lowercase().as_str(),
-                    "0" | "false" | "no" | "off"
-                )
-            })
-            .unwrap_or(false)
+        parse_linux_bulk_container_sender_enabled(
+            std::env::var("FIPS_LINUX_BULK_CONTAINERS").ok().as_deref(),
+        )
     })
+}
+
+#[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))]
+fn parse_linux_bulk_container_sender_enabled(raw: Option<&str>) -> bool {
+    raw.map(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+    .unwrap_or(true)
 }
 
 #[cfg(target_os = "linux")]

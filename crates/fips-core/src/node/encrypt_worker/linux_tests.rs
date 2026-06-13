@@ -60,6 +60,26 @@ mod tests {
     }
 
     #[test]
+    fn linux_bulk_container_sender_defaults_on_with_explicit_opt_out() {
+        assert!(
+            parse_linux_bulk_container_sender_enabled(None),
+            "Linux bulk containers are the default same-target bulk path"
+        );
+        for raw in ["0", "false", "FALSE", "no", "off", " Off "] {
+            assert!(
+                !parse_linux_bulk_container_sender_enabled(Some(raw)),
+                "{raw:?} should opt out"
+            );
+        }
+        for raw in ["1", "true", "yes", "on", "", "sure"] {
+            assert!(
+                parse_linux_bulk_container_sender_enabled(Some(raw)),
+                "{raw:?} should keep the sender enabled"
+            );
+        }
+    }
+
+    #[test]
     fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
