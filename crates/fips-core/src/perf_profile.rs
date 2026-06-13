@@ -35,6 +35,12 @@
 //!     construction before encrypt worker enqueue
 //!   * `ENDPOINT_WORKER_COMMIT` — per-packet bookkeeping and encrypt worker
 //!     enqueue from prepared endpoint sends
+//!   * `ENDPOINT_SEND_BATCH_SERVICE` — batch command handler service time after
+//!     command residence ends, counted per payload
+//!   * `ENDPOINT_SEND_BATCH_FAST_PATH` — established batch fast-path
+//!     prep/commit service, counted per payload
+//!   * `ENDPOINT_SEND_BATCH_SLOW_PATH` — fallback batch service, counted per
+//!     payload
 //!   * `FMP_LINUX_BULK_CONTAINER_SEND` — opt-in Linux ordered bulk-container
 //!     sender flush, isolated from global `UDP_SEND`
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
@@ -107,7 +113,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 66;
+const N_STAGES: usize = 69;
 const N_EVENTS: usize = 88;
 const HIST_BUCKETS: usize = 48;
 
@@ -267,6 +273,12 @@ pub enum Stage {
     EndpointCommandSideAuthenticatedBulkWait = 64,
     /// Endpoint command side-interleave residence from decrypt-bulk drains.
     EndpointCommandSideDecryptBulkWait = 65,
+    /// Whole batch command handler service time after command residence ends.
+    EndpointSendBatchService = 66,
+    /// Established endpoint batch fast-path prep/commit service time.
+    EndpointSendBatchFastPath = 67,
+    /// Fallback endpoint batch service time.
+    EndpointSendBatchSlowPath = 68,
 }
 
 impl Stage {
@@ -344,6 +356,9 @@ impl Stage {
                 "endpoint_command_side_authenticated_bulk_wait"
             }
             Stage::EndpointCommandSideDecryptBulkWait => "endpoint_command_side_decrypt_bulk_wait",
+            Stage::EndpointSendBatchService => "endpoint_send_batch_service",
+            Stage::EndpointSendBatchFastPath => "endpoint_send_batch_fast_path",
+            Stage::EndpointSendBatchSlowPath => "endpoint_send_batch_slow_path",
         }
     }
 }
@@ -416,6 +431,9 @@ fn stage_from_index(idx: usize) -> Stage {
         63 => Stage::EndpointCommandSideDecryptPriorityWait,
         64 => Stage::EndpointCommandSideAuthenticatedBulkWait,
         65 => Stage::EndpointCommandSideDecryptBulkWait,
+        66 => Stage::EndpointSendBatchService,
+        67 => Stage::EndpointSendBatchFastPath,
+        68 => Stage::EndpointSendBatchSlowPath,
         _ => unreachable!(),
     }
 }

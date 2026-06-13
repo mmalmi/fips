@@ -5,6 +5,10 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
     ) {
+        let _batch_service = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSendBatchSlowPath,
+            payloads.len(),
+        );
         for payload in payloads {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
             let _ = self
@@ -60,6 +64,10 @@ impl Node {
                 return;
             }
         };
+        let _batch_service = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSendBatchFastPath,
+            payloads.len(),
+        );
         let mut prepared_sends = Vec::with_capacity(payloads.len().min(64));
         let mut use_reused_route = true;
 

@@ -397,6 +397,10 @@ impl Node {
         // Count one sample per payload without charging earlier payload send
         // work to later payloads' queue residence.
         record_endpoint_command_wait(queued_at, lane, count, drain_stages);
+        let _batch_service = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSendBatchService,
+            count as usize,
+        );
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);
