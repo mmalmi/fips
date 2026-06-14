@@ -364,8 +364,13 @@ fn linux_bulk_container_sender_enabled() -> bool {
 
 #[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))]
 fn parse_linux_bulk_container_sender_enabled(raw: Option<&str>) -> bool {
-    raw.map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
+    raw.map(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+    .unwrap_or(true)
 }
 
 #[cfg(target_os = "linux")]
@@ -407,7 +412,7 @@ fn linux_bulk_container_inflight_cap() -> usize {
 #[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))]
 fn parse_linux_bulk_container_inflight_cap(raw: Option<&str>) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(1)
+        .unwrap_or(64)
         .clamp(1, 4096)
 }
 

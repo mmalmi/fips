@@ -60,37 +60,37 @@ mod tests {
     }
 
     #[test]
-    fn linux_bulk_container_sender_defaults_off_with_explicit_opt_in() {
+    fn linux_bulk_container_sender_defaults_on_with_explicit_opt_out() {
         assert!(
-            !parse_linux_bulk_container_sender_enabled(None),
-            "Linux bulk containers stay opt-in until long-run stress behavior is boring"
+            parse_linux_bulk_container_sender_enabled(None),
+            "Linux bulk containers are the default same-target bulk path"
         );
-        for raw in ["0", "false", "FALSE", "no", "off", " Off ", "", "sure"] {
+        for raw in ["0", "false", "FALSE", "no", "off", " Off "] {
             assert!(
                 !parse_linux_bulk_container_sender_enabled(Some(raw)),
-                "{raw:?} should keep the sender disabled"
+                "{raw:?} should opt out"
             );
         }
-        for raw in ["1", "true", "TRUE", "yes", "on", " On "] {
+        for raw in ["1", "true", "TRUE", "yes", "on", " On ", "", "sure"] {
             assert!(
                 parse_linux_bulk_container_sender_enabled(Some(raw)),
-                "{raw:?} should enable the sender"
+                "{raw:?} should keep the sender enabled"
             );
         }
     }
 
     #[test]
-    fn linux_bulk_container_inflight_cap_defaults_to_small_backlog() {
+    fn linux_bulk_container_inflight_cap_defaults_to_bounded_backlog() {
         assert_eq!(
             parse_linux_bulk_container_inflight_cap(None),
-            1,
-            "same-flow container bursts should back off once one container is active or queued"
+            64,
+            "same-flow container bursts should stay bounded without collapsing the fast path"
         );
         assert_eq!(parse_linux_bulk_container_inflight_cap(Some("0")), 1);
         assert_eq!(parse_linux_bulk_container_inflight_cap(Some("1")), 1);
         assert_eq!(parse_linux_bulk_container_inflight_cap(Some("8")), 8);
         assert_eq!(parse_linux_bulk_container_inflight_cap(Some("999999")), 4096);
-        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("nope")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("nope")), 64);
     }
 
     #[test]
