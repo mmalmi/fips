@@ -240,7 +240,11 @@ fn wait_for_fmp_receive_order_window(
         return true;
     }
 
+    let mut wait_started_at = None;
     while !shard.fmp_receive_order_window_available(session_key) {
+        if wait_started_at.is_none() {
+            wait_started_at = crate::perf_profile::stamp();
+        }
         plaintext_batch.flush();
         crossbeam_channel::select_biased! {
             recv(priority_rx) -> msg => match msg {
@@ -248,17 +252,35 @@ fn wait_for_fmp_receive_order_window(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                Err(_) => return false,
+                Err(_) => {
+                    record_fmp_receive_order_window_wait(wait_started_at);
+                    return false;
+                }
             },
             recv(fmp_aead_completion_rx) -> completion => match completion {
                 Ok(completion) => {
                     shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
                 }
-                Err(_) => return false,
+                Err(_) => {
+                    record_fmp_receive_order_window_wait(wait_started_at);
+                    return false;
+                }
             },
         }
     }
+    record_fmp_receive_order_window_wait(wait_started_at);
     true
+}
+
+#[inline]
+fn record_fmp_receive_order_window_wait(wait_started_at: Option<crate::perf_profile::TraceStamp>) {
+    if wait_started_at.is_some() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FmpReceiveOrderWindowWait,
+            wait_started_at,
+            1,
+        );
+    }
 }
 
 fn handle_bulk_item(

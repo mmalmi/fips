@@ -43,6 +43,7 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
+const DECRYPT_WORKER_FMP_RECEIVE_WINDOW: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
 
@@ -572,7 +573,7 @@ impl FmpReceiveOrder {
     fn new() -> Self {
         Self {
             next_ticket: 0,
-            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_BULK_BURST_BUDGET),
+            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FMP_RECEIVE_WINDOW),
         }
     }
 

@@ -802,6 +802,10 @@
             "worker burst should track the reference packet-mover receive batch width"
         );
         assert_eq!(
+            DECRYPT_WORKER_FMP_RECEIVE_WINDOW, DECRYPT_WORKER_BULK_BURST_BUDGET,
+            "FMP helper in-flight order window stays at one bounded worker turn"
+        );
+        assert_eq!(
             DECRYPT_WORKER_BULK_BATCH_MAX, 32,
             "bulk batches should amortize handoff churn without becoming a whole worker turn"
         );

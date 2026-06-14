@@ -309,7 +309,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 71);
+    assert_eq!(N_STAGES, 72);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -469,6 +469,10 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::FmpAeadHelperCompletionWait as usize).name(),
         "fmp_aead_helper_completion_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::FmpReceiveOrderWindowWait as usize).name(),
+        "fmp_receive_order_window_wait"
     );
 }
 

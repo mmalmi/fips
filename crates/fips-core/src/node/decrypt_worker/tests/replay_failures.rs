@@ -414,7 +414,7 @@
         let session_key = test_session_key(1, 443);
         let mut state = test_owned_session_state();
         let receive_order_id = state.fmp_receive_order_id();
-        let tickets = (0..DECRYPT_WORKER_BULK_BURST_BUDGET)
+        let tickets = (0..DECRYPT_WORKER_FMP_RECEIVE_WINDOW)
             .map(|_| state.issue_fmp_receive_ticket())
             .collect::<Vec<_>>();
 
