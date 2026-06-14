@@ -250,6 +250,80 @@ fn run_worker(idx: usize, mut rx: FairWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread exiting");
 }
 
+#[cfg(target_os = "linux")]
+const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
+
+#[cfg(target_os = "linux")]
+fn parse_linux_deferred_sender_enabled(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim),
+        Some("1" | "true" | "TRUE" | "True" | "yes" | "YES" | "Yes" | "on" | "ON" | "On")
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_deferred_sender_enabled() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_linux_deferred_sender_enabled(std::env::var("FIPS_LINUX_DEFER_UDP_SEND").ok().as_deref())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_deferred_sender_cap(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_LINUX_DEFERRED_SENDER_CAP)
+        .clamp(1, 1024)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_deferred_sender_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_linux_deferred_sender_cap(
+            std::env::var("FIPS_LINUX_DEFERRED_SENDER_CAP")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_deferred_sender_tx() -> Option<&'static Sender<Vec<SelectedSendBatch>>> {
+    static VALUE: OnceLock<Option<Sender<Vec<SelectedSendBatch>>>> = OnceLock::new();
+    VALUE
+        .get_or_init(|| {
+            if !linux_deferred_sender_enabled() {
+                return None;
+            }
+            let (tx, rx) = bounded(linux_deferred_sender_cap());
+            match std::thread::Builder::new()
+                .name("fips-linux-udp-sender".to_string())
+                .spawn(move || run_linux_deferred_sender(rx))
+            {
+                Ok(_) => Some(tx),
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to spawn deferred Linux UDP sender; using synchronous sends"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_deferred_sender(rx: Receiver<Vec<SelectedSendBatch>>) {
+    while let Ok(groups) = rx.recv() {
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+        if let Err(err) = flush_linux_send_groups_sync(groups) {
+            debug!(error = %err, "deferred Linux UDP send failed");
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn run_worker_macos(idx: usize, rx: MacWorkerReceiver) {
     trace!(worker = idx, "FMP encrypt worker thread starting");
@@ -398,6 +472,17 @@ fn flush_batch_sync(
     record_selected_send_groups(&groups);
 
     drop(_t); // close the encrypt timer before we open the send timer
+
+    #[cfg(target_os = "linux")]
+    if let Some(tx) = linux_deferred_sender_tx() {
+        match tx.send(groups) {
+            Ok(()) => return Ok(()),
+            Err(SendError(returned_groups)) => {
+                warn!("deferred Linux UDP sender closed; falling back to synchronous send");
+                groups = returned_groups;
+            }
+        }
+    }
 
     // 2) Bulk send each group via its own raw FD.
     //

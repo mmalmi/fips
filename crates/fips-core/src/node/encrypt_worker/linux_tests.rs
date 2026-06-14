@@ -60,6 +60,28 @@ mod tests {
     }
 
     #[test]
+    fn linux_deferred_sender_env_is_default_off_and_bounded() {
+        assert!(!parse_linux_deferred_sender_enabled(None));
+        assert!(!parse_linux_deferred_sender_enabled(Some("0")));
+        assert!(!parse_linux_deferred_sender_enabled(Some("false")));
+        assert!(parse_linux_deferred_sender_enabled(Some("1")));
+        assert!(parse_linux_deferred_sender_enabled(Some("true")));
+        assert!(parse_linux_deferred_sender_enabled(Some("YES")));
+
+        assert_eq!(
+            parse_linux_deferred_sender_cap(None),
+            DEFAULT_LINUX_DEFERRED_SENDER_CAP
+        );
+        assert_eq!(parse_linux_deferred_sender_cap(Some("0")), 1);
+        assert_eq!(parse_linux_deferred_sender_cap(Some("17")), 17);
+        assert_eq!(parse_linux_deferred_sender_cap(Some("999999")), 1024);
+        assert_eq!(
+            parse_linux_deferred_sender_cap(Some("nope")),
+            DEFAULT_LINUX_DEFERRED_SENDER_CAP
+        );
+    }
+
+    #[test]
     fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
