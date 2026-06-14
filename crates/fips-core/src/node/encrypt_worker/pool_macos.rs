@@ -151,6 +151,7 @@ impl EncryptWorkerPool {
         let flow = self.linux_containers.flow_for(&run[0]);
         let container = Arc::new(LinuxBulkSendContainer::new(run.len()));
         if !flow.try_enqueue(Arc::clone(&container)) {
+            crate::perf_profile::record_fmp_linux_bulk_container_queue_full(run.len());
             for job in run.drain(..) {
                 let (idx, queued) = self.prepare_dispatch(job);
                 record_encrypt_worker_queue_full(queued.queue_lane());

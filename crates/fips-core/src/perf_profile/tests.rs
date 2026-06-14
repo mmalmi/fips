@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 93);
+    assert_eq!(N_EVENTS, 95);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -292,6 +292,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EndpointDirectFmpBatchPartial as usize).name(),
         "endpoint_direct_fmp_batch_partial"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerQueueFull as usize).name(),
+        "fmp_linux_bulk_container_queue_full"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpLinuxBulkContainerQueueFullPackets as usize).name(),
+        "fmp_linux_bulk_container_queue_full_packets"
     );
 }
 
@@ -562,6 +570,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpLinuxBulkContainerSentPackets as usize].load(Relaxed);
     let linux_container_empty_before =
         EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed);
+    let linux_container_queue_full_before =
+        EVENTS[Event::FmpLinuxBulkContainerQueueFull as usize].load(Relaxed);
+    let linux_container_queue_full_packets_before =
+        EVENTS[Event::FmpLinuxBulkContainerQueueFullPackets as usize].load(Relaxed);
     let endpoint_batch_command_before =
         EVENTS[Event::EndpointSendBatchCommand as usize].load(Relaxed);
     let endpoint_batch_packets_before =
@@ -635,6 +647,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::FmpLinuxBulkContainerSent, 4);
     record_event_count_sample(Event::FmpLinuxBulkContainerSentPackets, 313);
     record_event_count_sample(Event::FmpLinuxBulkContainerEmpty, 1);
+    record_event_count_sample(Event::FmpLinuxBulkContainerQueueFull, 2);
+    record_event_count_sample(Event::FmpLinuxBulkContainerQueueFullPackets, 129);
     record_event_count_sample(Event::EndpointSendBatchCommand, 5);
     record_event_count_sample(Event::EndpointSendBatchPackets, 257);
     record_event_count_sample(Event::EndpointSendBatchFull, 4);
@@ -802,6 +816,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpLinuxBulkContainerEmpty as usize].load(Relaxed)
             - linux_container_empty_before,
         1
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerQueueFull as usize].load(Relaxed)
+            - linux_container_queue_full_before,
+        2
+    );
+    assert_eq!(
+        EVENTS[Event::FmpLinuxBulkContainerQueueFullPackets as usize].load(Relaxed)
+            - linux_container_queue_full_packets_before,
+        129
     );
     assert_eq!(
         EVENTS[Event::EndpointSendBatchCommand as usize].load(Relaxed)

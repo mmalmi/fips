@@ -124,7 +124,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 81;
-const N_EVENTS: usize = 93;
+const N_EVENTS: usize = 95;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -598,6 +598,8 @@ pub enum Event {
     EndpointDirectFmpBatchFallback = 90,
     EndpointDirectFmpBatchFallbackPackets = 91,
     EndpointDirectFmpBatchPartial = 92,
+    FmpLinuxBulkContainerQueueFull = 93,
+    FmpLinuxBulkContainerQueueFullPackets = 94,
 }
 
 impl Event {
@@ -724,6 +726,10 @@ impl Event {
                 "endpoint_direct_fmp_batch_fallback_packets"
             }
             Event::EndpointDirectFmpBatchPartial => "endpoint_direct_fmp_batch_partial",
+            Event::FmpLinuxBulkContainerQueueFull => "fmp_linux_bulk_container_queue_full",
+            Event::FmpLinuxBulkContainerQueueFullPackets => {
+                "fmp_linux_bulk_container_queue_full_packets"
+            }
         }
     }
 }
@@ -823,6 +829,8 @@ fn event_from_index(idx: usize) -> Event {
         90 => Event::EndpointDirectFmpBatchFallback,
         91 => Event::EndpointDirectFmpBatchFallbackPackets,
         92 => Event::EndpointDirectFmpBatchPartial,
+        93 => Event::FmpLinuxBulkContainerQueueFull,
+        94 => Event::FmpLinuxBulkContainerQueueFullPackets,
         _ => unreachable!(),
     }
 }
@@ -1120,6 +1128,16 @@ pub(crate) fn record_fmp_linux_bulk_container_enqueued(packets: usize) {
     }
     record_event_count_sample(Event::FmpLinuxBulkContainerEnqueued, 1);
     record_event_count_sample(Event::FmpLinuxBulkContainerPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_linux_bulk_container_queue_full(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FmpLinuxBulkContainerQueueFull, 1);
+    record_event_count_sample(Event::FmpLinuxBulkContainerQueueFullPackets, packets as u64);
 }
 
 #[inline]
