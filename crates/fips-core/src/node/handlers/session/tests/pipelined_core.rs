@@ -151,6 +151,64 @@
 
     #[cfg(unix)]
     #[test]
+    fn pipelined_endpoint_wire_plan_endpoint_payload_matches_inner_plaintext_body() {
+        use crate::node::wire::{FLAG_SP, build_established_header};
+        use crate::utils::index::SessionIndex;
+
+        let source_addr = node_addr(0x10);
+        let dest_addr = node_addr(0x20);
+        let payload = [0xab; 37];
+        let timestamp = 0x0102_0304;
+        let msg_type = SessionMessageType::EndpointData.to_byte();
+        let inner_flags = 0x5a;
+        let inner_plaintext =
+            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, &payload);
+        let path_mtu = 1234;
+        let default_ttl = 8;
+
+        let borrowed_plan = PipelinedEndpointWirePlan::new(
+            &source_addr,
+            &dest_addr,
+            &inner_plaintext,
+            None,
+            None,
+            path_mtu,
+            default_ttl,
+        )
+        .expect("borrowed inner plaintext plan");
+        let direct_plan = PipelinedEndpointWirePlan::new_endpoint_payload(
+            &source_addr,
+            &dest_addr,
+            timestamp,
+            msg_type,
+            inner_flags,
+            &payload,
+            None,
+            None,
+            path_mtu,
+            default_ttl,
+        )
+        .expect("direct endpoint payload plan");
+
+        assert_eq!(direct_plan.link_plaintext_len(), borrowed_plan.link_plaintext_len());
+        assert_eq!(direct_plan.fmp_payload_len(), borrowed_plan.fmp_payload_len());
+
+        let fmp_header = build_established_header(
+            SessionIndex::new(0xA0B0_C0D0),
+            0x1112_1314_1516_1718,
+            FLAG_SP,
+            borrowed_plan.fmp_payload_len(),
+        );
+        let fsp_header = build_fsp_header(0x0102_0304_0506_0708, 0, inner_plaintext.len() as u16);
+        let borrowed_wire = borrowed_plan.build(fmp_header, fsp_header, 0x1020_3040);
+        let direct_wire = direct_plan.build(fmp_header, fsp_header, 0x1020_3040);
+
+        assert_eq!(direct_wire.fsp_plaintext_offset, borrowed_wire.fsp_plaintext_offset);
+        assert_eq!(direct_wire.wire_buf, borrowed_wire.wire_buf);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn pipelined_endpoint_dispatch_plan_owns_worker_policy_and_bookkeeping() {
         let dest_addr = node_addr(0x20);
         let relay_addr = node_addr(0x30);
@@ -162,7 +220,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -394,7 +452,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -537,7 +595,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: FSP_FLAG_K,
-            inner_plaintext: &inner_plaintext,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -624,7 +682,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: FSP_FLAG_K,
-            inner_plaintext: &inner_plaintext,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };

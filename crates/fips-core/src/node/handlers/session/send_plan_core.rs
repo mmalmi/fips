@@ -131,22 +131,48 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         scheduling_weight: u8,
         direct_path_blocks_direct_payload: bool,
     ) -> Option<Self> {
-        let fsp_payload_len = u16::try_from(send.inner_plaintext.len()).ok()?;
+        Self::new_with_lengths(
+            send.dest_addr,
+            send.payload,
+            send.timestamp,
+            send.now_ms,
+            send.fsp_flags,
+            send.body.inner_plaintext_len(),
+            next_hop_addr,
+            path_mtu,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+        )
+    }
+
+    fn new_with_lengths(
+        dest_addr: &NodeAddr,
+        payload: &'a EndpointDataPayload,
+        timestamp: u32,
+        now_ms: u64,
+        fsp_flags: u8,
+        inner_plaintext_len: usize,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+    ) -> Option<Self> {
+        let fsp_payload_len = u16::try_from(inner_plaintext_len).ok()?;
         let bulk_endpoint_data =
-            send.fsp_flags & FSP_FLAG_CP == 0 && send.payload.bulk_endpoint_data();
-        let drop_on_backpressure = next_hop_addr == *send.dest_addr
+            fsp_flags & FSP_FLAG_CP == 0 && payload.bulk_endpoint_data();
+        let drop_on_backpressure = next_hop_addr == *dest_addr
             && !direct_path_blocks_direct_payload
             && bulk_endpoint_data
-            && send.payload.drop_on_backpressure();
+            && payload.drop_on_backpressure();
 
         Some(Self {
             next_hop_addr,
-            payload: send.payload,
-            timestamp: send.timestamp,
-            now_ms: send.now_ms,
-            fsp_flags: send.fsp_flags,
+            payload,
+            timestamp,
+            now_ms,
+            fsp_flags,
             path_mtu,
-            inner_plaintext_len: send.inner_plaintext.len(),
+            inner_plaintext_len,
             fsp_payload_len,
             bulk_endpoint_data,
             drop_on_backpressure,
@@ -223,6 +249,7 @@ impl PipelinedEndpointRoutePlan {
             self.direct_path_blocks_direct_payload,
         )
     }
+
 }
 
 #[cfg(unix)]
@@ -386,10 +413,10 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         scheduling_weight: u8,
         direct_path_blocks_direct_payload: bool,
     ) -> Result<Self, PipelinedEndpointSendPlanError> {
-        let wire_plan = PipelinedEndpointWirePlan::new(
+        let wire_plan = PipelinedEndpointWirePlan::new_with_body(
             source_addr,
             send.dest_addr,
-            send.inner_plaintext,
+            send.body,
             send.my_coords,
             send.dest_coords,
             path_mtu,

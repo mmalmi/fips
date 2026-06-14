@@ -164,6 +164,7 @@ impl<'a> PipelinedEndpointRuntimeSend<'a> {
 
 #[cfg(unix)]
 impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn new(
         runtime_route: PipelinedEndpointPeerRuntimeRoute,
         send: PipelinedEndpointSend<'a>,
@@ -174,6 +175,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn resolve_dispatch_with_route(
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
         send: PipelinedEndpointSend<'a>,
@@ -209,6 +211,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn resolve_dispatch(
         self,
         transports: &std::collections::HashMap<
@@ -233,6 +236,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
 }
 
 #[cfg(unix)]
+#[cfg_attr(not(test), allow(dead_code))]
 impl<'a> PipelinedEndpointPeerRuntimeSendRequest<'a> {
     fn new(source_addr: NodeAddr, send: PipelinedEndpointSend<'a>, default_ttl: u8) -> Self {
         let route_request = PipelinedEndpointPeerRuntimeRouteRequest::new(
@@ -348,7 +352,37 @@ impl PipelinedEndpointPreparedSend {
 }
 
 #[cfg(unix)]
+impl<'a> PipelinedEndpointWireBody<'a> {
+    fn inner_plaintext_len(&self) -> usize {
+        match self {
+            Self::InnerPlaintext(inner_plaintext) => inner_plaintext.len(),
+            Self::EndpointPayload { payload, .. } => FSP_INNER_HEADER_SIZE + payload.len(),
+        }
+    }
+
+    fn append_inner_plaintext(&self, wire_buf: &mut Vec<u8>) {
+        match self {
+            Self::InnerPlaintext(inner_plaintext) => {
+                wire_buf.extend_from_slice(inner_plaintext);
+            }
+            Self::EndpointPayload {
+                timestamp,
+                msg_type,
+                inner_flags,
+                payload,
+            } => {
+                wire_buf.extend_from_slice(&timestamp.to_le_bytes());
+                wire_buf.push(*msg_type);
+                wire_buf.push(*inner_flags);
+                wire_buf.extend_from_slice(payload);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 impl<'a> PipelinedEndpointWirePlan<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn new(
         source_addr: &NodeAddr,
         dest_addr: &NodeAddr,
@@ -358,13 +392,63 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
         path_mtu: u16,
         default_ttl: u8,
     ) -> Option<Self> {
+        Self::new_with_body(
+            source_addr,
+            dest_addr,
+            PipelinedEndpointWireBody::InnerPlaintext(inner_plaintext),
+            my_coords,
+            dest_coords,
+            path_mtu,
+            default_ttl,
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn new_endpoint_payload(
+        source_addr: &NodeAddr,
+        dest_addr: &NodeAddr,
+        timestamp: u32,
+        msg_type: u8,
+        inner_flags: u8,
+        payload: &'a [u8],
+        my_coords: Option<&'a crate::tree::TreeCoordinate>,
+        dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+        path_mtu: u16,
+        default_ttl: u8,
+    ) -> Option<Self> {
+        Self::new_with_body(
+            source_addr,
+            dest_addr,
+            PipelinedEndpointWireBody::EndpointPayload {
+                timestamp,
+                msg_type,
+                inner_flags,
+                payload,
+            },
+            my_coords,
+            dest_coords,
+            path_mtu,
+            default_ttl,
+        )
+    }
+
+    fn new_with_body(
+        source_addr: &NodeAddr,
+        dest_addr: &NodeAddr,
+        body: PipelinedEndpointWireBody<'a>,
+        my_coords: Option<&'a crate::tree::TreeCoordinate>,
+        dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+        path_mtu: u16,
+        default_ttl: u8,
+    ) -> Option<Self> {
+        let inner_plaintext_len = body.inner_plaintext_len();
         let link_plaintext_len =
-            pipelined_endpoint_link_plaintext_len(inner_plaintext.len(), my_coords, dest_coords);
+            pipelined_endpoint_link_plaintext_len(inner_plaintext_len, my_coords, dest_coords);
         let fmp_payload_len = pipelined_endpoint_fmp_payload_len(link_plaintext_len)?;
         Some(Self {
             source_addr: *source_addr,
             dest_addr: *dest_addr,
-            inner_plaintext,
+            body,
             my_coords,
             dest_coords,
             path_mtu,
@@ -406,7 +490,7 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
             encode_coords(dst, &mut wire_buf);
         }
         let fsp_plaintext_offset = wire_buf.len();
-        wire_buf.extend_from_slice(self.inner_plaintext);
+        self.body.append_inner_plaintext(&mut wire_buf);
 
         PipelinedEndpointWire {
             wire_buf,

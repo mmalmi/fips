@@ -39,6 +39,7 @@ use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
+use std::borrow::Cow;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
 
@@ -599,7 +600,7 @@ struct PipelinedEndpointSend<'a> {
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    body: PipelinedEndpointWireBody<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
 }
@@ -609,8 +610,9 @@ struct PreparedEndpointSessionData<'a> {
     payload: &'a EndpointDataPayload,
     now_ms: u64,
     timestamp: u32,
+    msg_type: u8,
+    inner_flags: u8,
     fsp_flags: u8,
-    inner_plaintext: Vec<u8>,
     my_coords: Option<crate::tree::TreeCoordinate>,
     dest_coords: Option<crate::tree::TreeCoordinate>,
 }
@@ -626,11 +628,23 @@ struct PipelinedEndpointWire {
     wire_capacity: usize,
 }
 
+#[derive(Clone, Copy)]
+enum PipelinedEndpointWireBody<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    InnerPlaintext(&'a [u8]),
+    EndpointPayload {
+        timestamp: u32,
+        msg_type: u8,
+        inner_flags: u8,
+        payload: &'a [u8],
+    },
+}
+
 #[cfg(unix)]
 struct PipelinedEndpointWirePlan<'a> {
     source_addr: NodeAddr,
     dest_addr: NodeAddr,
-    inner_plaintext: &'a [u8],
+    body: PipelinedEndpointWireBody<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
     path_mtu: u16,
@@ -669,7 +683,7 @@ struct SessionFspSendPlan<'a> {
     dest_addr: NodeAddr,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: Cow<'a, [u8]>,
     coords: Option<(
         &'a crate::tree::TreeCoordinate,
         &'a crate::tree::TreeCoordinate,
@@ -893,18 +907,29 @@ impl<'a> PreparedEndpointSessionData<'a> {
             now_ms: self.now_ms,
             timestamp: self.timestamp,
             fsp_flags: self.fsp_flags,
-            inner_plaintext: &self.inner_plaintext,
+            body: PipelinedEndpointWireBody::EndpointPayload {
+                timestamp: self.timestamp,
+                msg_type: self.msg_type,
+                inner_flags: self.inner_flags,
+                payload: self.payload.as_slice(),
+            },
             my_coords: self.my_coords.as_ref(),
             dest_coords: self.dest_coords.as_ref(),
         }
     }
 
     fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
-        SessionFspSendPlan::new(
+        let inner_plaintext = fsp_prepend_inner_header(
+            self.timestamp,
+            self.msg_type,
+            self.inner_flags,
+            self.payload.as_slice(),
+        );
+        SessionFspSendPlan::new_owned(
             *self.dest_addr,
             self.timestamp,
             self.fsp_flags,
-            &self.inner_plaintext,
+            inner_plaintext,
             self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
             SessionFspSendBookkeeping::Data {
                 payload_len: self.payload.len(),
@@ -920,6 +945,48 @@ impl<'a> SessionFspSendPlan<'a> {
         timestamp: u32,
         fsp_flags: u8,
         inner_plaintext: &'a [u8],
+        coords: Option<(
+            &'a crate::tree::TreeCoordinate,
+            &'a crate::tree::TreeCoordinate,
+        )>,
+        bookkeeping: SessionFspSendBookkeeping,
+    ) -> Self {
+        Self::from_inner_plaintext(
+            dest_addr,
+            timestamp,
+            fsp_flags,
+            Cow::Borrowed(inner_plaintext),
+            coords,
+            bookkeeping,
+        )
+    }
+
+    fn new_owned(
+        dest_addr: NodeAddr,
+        timestamp: u32,
+        fsp_flags: u8,
+        inner_plaintext: Vec<u8>,
+        coords: Option<(
+            &'a crate::tree::TreeCoordinate,
+            &'a crate::tree::TreeCoordinate,
+        )>,
+        bookkeeping: SessionFspSendBookkeeping,
+    ) -> Self {
+        Self::from_inner_plaintext(
+            dest_addr,
+            timestamp,
+            fsp_flags,
+            Cow::Owned(inner_plaintext),
+            coords,
+            bookkeeping,
+        )
+    }
+
+    fn from_inner_plaintext(
+        dest_addr: NodeAddr,
+        timestamp: u32,
+        fsp_flags: u8,
+        inner_plaintext: Cow<'a, [u8]>,
         coords: Option<(
             &'a crate::tree::TreeCoordinate,
             &'a crate::tree::TreeCoordinate,
@@ -956,7 +1023,7 @@ impl<'a> SessionFspSendPlan<'a> {
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
             session
-                .encrypt_with_aad(self.inner_plaintext, &header)
+                .encrypt_with_aad(self.inner_plaintext.as_ref(), &header)
                 .map_err(|e| NodeError::SendFailed {
                     node_addr: self.dest_addr,
                     reason: format!("session encrypt failed: {}", e),

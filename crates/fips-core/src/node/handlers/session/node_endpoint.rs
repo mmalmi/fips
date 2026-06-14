@@ -267,8 +267,6 @@ impl Node {
 
         let msg_type = SessionMessageType::EndpointData.to_byte();
         let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext =
-            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload.as_slice());
 
         let (include_coords, my_coords, dest_coords) = if wants_coords {
             let src = self.tree_state.my_coords().clone();
@@ -301,8 +299,9 @@ impl Node {
             payload,
             now_ms,
             timestamp,
+            msg_type,
+            inner_flags,
             fsp_flags: flags,
-            inner_plaintext,
             my_coords,
             dest_coords,
         })
@@ -446,6 +445,7 @@ impl Node {
     }
 
     #[cfg(unix)]
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn execute_peer_runtime_endpoint_send(
         &mut self,
         send: PipelinedEndpointSend<'_>,
@@ -472,6 +472,7 @@ impl Node {
     }
 
     #[cfg(unix)]
+    #[cfg_attr(not(test), allow(dead_code))]
     async fn prepare_peer_runtime_endpoint_send_with_route(
         &mut self,
         send: PipelinedEndpointSend<'_>,
