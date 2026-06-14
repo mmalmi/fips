@@ -31,8 +31,8 @@
 //!
 //! The worker takes a pre-cooked [`FmpSendJob`] (pre-reserved counter,
 //! a fully-built wire buffer `[16-byte FMP header][inner plaintext]`
-//! with TAG_SIZE trailing capacity, a cloned cipher, an `AsyncUdpSocket`
-//! handle, and the destination `SocketAddr`) and does the AEAD
+//! with TAG_SIZE trailing capacity, a shared immutable cipher handle, an
+//! `AsyncUdpSocket` handle, and the destination `SocketAddr`) and does the AEAD
 //! `seal_in_place_separate_tag` + a single `sendmsg(2) + UDP_SEGMENT`
 //! (Linux GSO) or `sendmmsg(2)` fallback. It never touches `Node`
 //! state, so any number of these can run in parallel against the same
@@ -53,6 +53,8 @@
 include!("encrypt_worker/send_batch.rs");
 include!("encrypt_worker/queues.rs");
 include!("encrypt_worker/pool_macos.rs");
+include!("encrypt_worker/linux_bulk_container.rs");
+include!("encrypt_worker/job_completion.rs");
 include!("encrypt_worker/worker_flush.rs");
 include!("encrypt_worker/backpressure_linux.rs");
 include!("encrypt_worker/unix_tests.rs");

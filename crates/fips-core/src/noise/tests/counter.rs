@@ -18,10 +18,10 @@ fn test_encrypt_with_counter_no_aad_roundtrip() {
     let sender = init.into_session().unwrap();
     let mut receiver = resp.into_session().unwrap();
 
-    // Off-task encrypt path: dispatcher pre-assigns counter 0, hands cipher
-    // clone + counter to a worker, worker produces ciphertext using ring's
-    // in-place seal — same code the future pipelined dispatcher will run.
-    let send_cipher = sender.send_cipher_clone().unwrap();
+    // Off-task encrypt path: dispatcher pre-assigns counter 0, hands a shared
+    // immutable cipher handle + counter to a worker, and the worker produces
+    // ciphertext using ring's in-place seal.
+    let send_cipher = sender.send_cipher_handle().unwrap();
     let counter = 0u64;
     let plaintext = b"off-task encrypt";
     let nonce = CipherState::counter_to_nonce(counter);
@@ -67,7 +67,7 @@ fn test_encrypt_with_counter_matches_internal_counter() {
 #[test]
 fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
     // Pipelined encrypt: take_send_counter on session, then
-    // encrypt_with_counter_and_aad on a clone. Receiver decrypts with
+    // encrypt_with_counter_and_aad on a shared handle. Receiver decrypts with
     // matching counter+AAD via its existing path.
     let keypair1 = generate_keypair();
     let keypair2 = generate_keypair();
@@ -93,8 +93,8 @@ fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
     assert_eq!(counter, 0);
     assert_eq!(sender.send_nonce(), 1, "counter reserved → nonce advanced");
 
-    // Worker: clone + AEAD on cloned cipher, no further session mutation.
-    let cipher = sender.send_cipher_clone().unwrap();
+    // Worker: AEAD on shared cipher handle, no further session mutation.
+    let cipher = sender.send_cipher_handle().unwrap();
     let nonce = CipherState::counter_to_nonce(counter);
     let mut buf = plaintext.to_vec();
     cipher
@@ -111,10 +111,10 @@ fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
 
 #[test]
 fn test_pipelined_send_counter_reservation_is_single_owner() {
-    // Dataplane send workers may own cloned AEAD keys, but the session remains
-    // the sole owner of counter sequencing until a later shard explicitly moves
-    // that state. Reserved counters must be unique, and clone-side AEAD must not
-    // advance or reuse the session's next counter.
+    // Dataplane send workers may share an immutable AEAD handle, but the
+    // session remains the sole owner of counter sequencing until a later shard
+    // explicitly moves that state. Reserved counters must be unique, and
+    // worker-side AEAD must not advance or reuse the session's next counter.
     let keypair1 = generate_keypair();
     let keypair2 = generate_keypair();
 
@@ -142,7 +142,7 @@ fn test_pipelined_send_counter_reservation_is_single_owner() {
         "only the coordinator-owned reservation path advances the session counter"
     );
 
-    let cipher = sender.send_cipher_clone().unwrap();
+    let cipher = sender.send_cipher_handle().unwrap();
     let mut first = b"first reserved packet".to_vec();
     cipher
         .seal_in_place_append_tag(
@@ -163,7 +163,7 @@ fn test_pipelined_send_counter_reservation_is_single_owner() {
     assert_eq!(
         sender.current_send_counter(),
         2,
-        "worker-side cloned cipher use must not mutate session counter ownership"
+        "worker-side cipher-handle use must not mutate session counter ownership"
     );
     assert_eq!(
         receiver

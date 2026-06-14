@@ -8,17 +8,19 @@
 /// OS thread cuts the dispatch round-trip to the platform minimum —
 /// same pattern boringtun uses for its main loop.
 ///
-/// **Ordering: hash-by-send-target** so single-flow TCP keeps its
-/// FIFO ordering (round-robin caused 8000 retransmits in an earlier
-/// experiment — see the git log for the 56e0ca8 fix). Multi-peer /
-/// multi-flow benches still get parallelism since different
-/// send targets hash to different workers.
+/// **Ordering: hash by endpoint flow within each send target.** Single-flow
+/// TCP keeps FIFO ordering (round-robin caused 8000 retransmits in an earlier
+/// experiment — see the git log for the 56e0ca8 fix). Multi-flow endpoint
+/// traffic can still use multiple workers; sealed packets keep the selected
+/// send target as their kernel send/batch key.
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
+    #[cfg(target_os = "linux")]
+    linux_containers: Arc<LinuxBulkSendFlows>,
     #[cfg(target_os = "macos")]
     macos_senders: Arc<MacSequencedSendFlows>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     next_worker: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -57,25 +59,25 @@ impl EncryptWorkerPool {
         }
         Self {
             senders: senders.into(),
+            #[cfg(target_os = "linux")]
+            linux_containers: Arc::new(LinuxBulkSendFlows::default()),
             #[cfg(target_os = "macos")]
             macos_senders: Arc::new(MacSequencedSendFlows::default()),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
-    /// Dispatch a job to the worker that owns its send-target flow.
-    /// The hash is over `(socket fd, connected fd, dest_addr)` so every
-    /// packet for one exact kernel send target lands on the same worker and
-    /// stays in order — required for TCP's fast-retransmit logic above to
-    /// behave on a single-flow run. Fire-and-forget — the worker
-    /// handles send errors itself via stats counters.
+    /// Dispatch a job to the worker that owns its endpoint flow within the
+    /// selected send target. If a job has no endpoint flow hint, dispatch falls
+    /// back to the old exact send-target hash over `(socket fd, connected fd,
+    /// dest_addr)`. Fire-and-forget — the worker handles send errors itself via
+    /// stats counters.
     ///
     /// Uses `try_send` for the common uncontended case. Control/liveness jobs
-    /// may still block if their reserve is exhausted, but a full bulk lane is
-    /// treated like a congested network queue: drop the newly admitted bulk
-    /// packet instead of blocking the node rx_loop that must keep ACKs,
-    /// heartbeats, and route measurements moving.
+    /// may still block if their reserve is exhausted. Discardable bulk may be
+    /// dropped under worker backpressure, but reliable bulk applies backpressure
+    /// instead of silently losing TCP-shaped endpoint payload.
     pub fn dispatch(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
@@ -86,9 +88,118 @@ impl EncryptWorkerPool {
     }
 
     pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        #[cfg(target_os = "linux")]
+        if linux_bulk_container_sender_enabled() {
+            self.dispatch_linux_bulk_containers(jobs);
+            return;
+        }
+
         for job in jobs {
             self.dispatch(job);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_containers(&self, jobs: Vec<FmpSendJob>) {
+        let mut run = Vec::new();
+        let mut run_key: Option<SendTargetKey> = None;
+
+        for job in jobs {
+            if !job.bulk_endpoint_data || job.drop_on_backpressure {
+                self.dispatch_linux_bulk_container_run(&mut run);
+                run_key = None;
+                self.dispatch(job);
+                continue;
+            }
+
+            let key = job.send_target_key();
+            if matches!(run_key, Some(current) if current != key) {
+                self.dispatch_linux_bulk_container_run(&mut run);
+                run_key = None;
+            }
+            if run_key.is_none() {
+                run_key = Some(key);
+            }
+            run.push(job);
+        }
+
+        self.dispatch_linux_bulk_container_run(&mut run);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_container_run(&self, run: &mut Vec<FmpSendJob>) {
+        if run.is_empty() {
+            return;
+        }
+
+        if self.senders.len() <= 1 || run.len() < linux_bulk_container_min_packets() {
+            for job in run.drain(..) {
+                self.dispatch(job);
+            }
+            return;
+        }
+
+        let target_key = run[0].send_target_key();
+        debug_assert!(
+            run.iter().all(|job| job.bulk_endpoint_data
+                && !job.drop_on_backpressure
+                && job.send_target_key() == target_key),
+            "Linux bulk container runs must be same-target reliable bulk packets"
+        );
+
+        let flow = self.linux_containers.flow_for(&run[0]);
+        let container = Arc::new(LinuxBulkSendContainer::new(run.len()));
+        if !flow.try_enqueue(Arc::clone(&container)) {
+            crate::perf_profile::record_fmp_linux_bulk_container_queue_full(run.len());
+            self.dispatch_linux_bulk_container_queue_full_run(run);
+            return;
+        }
+        crate::perf_profile::record_fmp_linux_bulk_container_enqueued(run.len());
+
+        // Keep one same-target run in one container on one encrypt worker.
+        // A/Bs with per-slot fan-out, chunked slot fan-out, and ordered
+        // sub-containers preserved wire order but either fragmented worker
+        // batches or sliced send groups enough to regress TCP behavior.
+        let idx = self.select_linux_bulk_container_worker();
+        for (slot, job) in run.drain(..).enumerate() {
+            self.dispatch_to_worker(
+                idx,
+                QueuedFmpSendJob::linux_container(job, Arc::clone(&container), slot),
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_container_queue_full_run(&self, run: &mut Vec<FmpSendJob>) {
+        for job in run.drain(..) {
+            let (idx, queued) = self.prepare_dispatch(job);
+            record_encrypt_worker_queue_full(queued.queue_lane());
+            record_encrypt_worker_backpressure_drop(idx, queued.drop_on_backpressure());
+            queued.complete_worker_drop();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn select_linux_bulk_container_worker(&self) -> usize {
+        debug_assert!(!self.senders.is_empty());
+        let start = self
+            .next_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.senders.len();
+        let mut best = start;
+        let mut best_len = self.senders[start].queued_len();
+        for offset in 1..self.senders.len() {
+            let idx = (start + offset) % self.senders.len();
+            let queued_len = self.senders[idx].queued_len();
+            if queued_len < best_len {
+                best = idx;
+                best_len = queued_len;
+                if best_len == 0 {
+                    break;
+                }
+            }
+        }
+        best
     }
 
     #[cfg(target_os = "macos")]
@@ -119,17 +230,10 @@ impl EncryptWorkerPool {
         (idx, QueuedFmpSendJob::macos_sequenced(job, flow))
     }
 
-    #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+    #[cfg(not(target_os = "macos"))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
         let queued = QueuedFmpSendJob::direct(job);
-        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
-        (idx, queued)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        let queued = QueuedFmpSendJob::direct(job);
-        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
+        let idx = (send_dispatch_fast_hash(&queued.dispatch_key()) as usize) % self.senders.len();
         (idx, queued)
     }
 
@@ -139,9 +243,13 @@ impl EncryptWorkerPool {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
                 record_encrypt_worker_queue_full(job.queue_lane());
-                if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_backpressure_drop(idx);
-                    (*job).complete_sequenced_skip();
+                if job.queue_lane() == EncryptWorkerLane::Bulk
+                    && (job.drop_on_backpressure()
+                        || (job.bulk_endpoint_data()
+                            && macos_reliable_bulk_drop_on_worker_full_enabled()))
+                {
+                    record_encrypt_worker_backpressure_drop(idx, job.drop_on_backpressure());
+                    job.complete_worker_drop();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -154,11 +262,13 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(*job) {
+                if let Err(MacWorkerPushError(job)) = self.senders[idx].push_blocking(*job) {
+                    job.complete_worker_drop();
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(MacWorkerTryPushError::Closed) => {
+            Err(MacWorkerTryPushError::Closed(job)) => {
+                job.complete_worker_drop();
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
@@ -172,8 +282,8 @@ impl EncryptWorkerPool {
             Err(FairWorkerTryPushError::Full(job)) => {
                 record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_backpressure_drop(idx);
-                    (*job).complete_sequenced_skip();
+                    record_encrypt_worker_backpressure_drop(idx, job.drop_on_backpressure());
+                    job.complete_worker_drop();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -186,11 +296,13 @@ impl EncryptWorkerPool {
                         "EncryptWorker channel full; applying outbound backpressure"
                     );
                 }
-                if let Err(FairWorkerPushError) = sender.push_blocking(*job) {
+                if let Err(FairWorkerPushError(job)) = sender.push_blocking(*job) {
+                    job.complete_worker_drop();
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
-            Err(FairWorkerTryPushError::Closed) => {
+            Err(FairWorkerTryPushError::Closed(job)) => {
+                job.complete_worker_drop();
                 debug!(worker = idx, "EncryptWorker thread gone; dropping job");
             }
         }
@@ -201,8 +313,13 @@ fn record_encrypt_worker_queue_full(lane: EncryptWorkerLane) {
     crate::perf_profile::record_encrypt_worker_queue_full(lane == EncryptWorkerLane::Priority);
 }
 
-fn record_encrypt_worker_backpressure_drop(worker: usize) {
+fn record_encrypt_worker_backpressure_drop(worker: usize, drop_on_backpressure: bool) {
     crate::perf_profile::record_event(crate::perf_profile::Event::EncryptWorkerBulkDropped);
+    crate::perf_profile::record_event(if drop_on_backpressure {
+        crate::perf_profile::Event::EncryptWorkerDiscardableBulkDropped
+    } else {
+        crate::perf_profile::Event::EncryptWorkerReliableBulkDropped
+    });
     static DROP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = DROP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n < 8 || n.is_multiple_of(100_000) {
@@ -298,7 +415,6 @@ fn macos_ordered_sender_enabled() -> bool {
     })
 }
 
-#[cfg(target_os = "macos")]
 fn macos_worker_stride() -> usize {
     // One-packet round-robin maximizes FMP AEAD parallelism but wakes an idle
     // worker for nearly every packet on Darwin. Short strides let a hot worker
@@ -328,7 +444,7 @@ fn macos_worker_batch_size() -> usize {
         std::env::var("FIPS_MACOS_WORKER_BATCH")
             .ok()
             .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(8)
+            .unwrap_or(1)
             .clamp(1, 64)
     })
 }
@@ -383,6 +499,7 @@ struct MacCompletionGroup {
 enum MacSendItem {
     Packet {
         packet: Vec<u8>,
+        bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     },
     Skip,
@@ -534,16 +651,20 @@ impl MacSequencedSendFlow {
             match item {
                 MacSendItem::Packet {
                     packet,
+                    bulk_endpoint_data,
                     drop_on_backpressure,
                 } => {
                     let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-                    rate_pacer.pace(packet.len());
+                    if bulk_endpoint_data {
+                        rate_pacer.pace(packet.len());
+                    }
                     if let Err(err) = send_one_with_backpressure(
                         fd,
                         connected,
                         &self.send_target.dest_addr(),
                         &packet,
                         &mut backpressure,
+                        bulk_endpoint_data,
                         drop_on_backpressure,
                     ) {
                         debug!(

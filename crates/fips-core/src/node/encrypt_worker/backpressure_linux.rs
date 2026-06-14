@@ -53,15 +53,36 @@ enum SendBackpressureDecision {
     DropCurrentBulk,
 }
 
+#[cfg(test)]
 fn send_backpressure_decision(
     pacer_requested_drop: bool,
     drop_on_backpressure: bool,
 ) -> SendBackpressureDecision {
-    if pacer_requested_drop && drop_on_backpressure {
+    send_backpressure_decision_for_lane(pacer_requested_drop, drop_on_backpressure, false)
+}
+
+fn send_backpressure_decision_for_lane(
+    pacer_requested_drop: bool,
+    drop_on_backpressure: bool,
+    bulk_endpoint_data: bool,
+) -> SendBackpressureDecision {
+    if pacer_requested_drop
+        && (drop_on_backpressure || sustained_bulk_send_pressure_may_drop(bulk_endpoint_data))
+    {
         SendBackpressureDecision::DropCurrentBulk
     } else {
         SendBackpressureDecision::Retry
     }
+}
+
+#[cfg(target_os = "macos")]
+fn sustained_bulk_send_pressure_may_drop(bulk_endpoint_data: bool) -> bool {
+    bulk_endpoint_data && macos_reliable_bulk_drop_on_sustained_backpressure_enabled()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sustained_bulk_send_pressure_may_drop(_bulk_endpoint_data: bool) -> bool {
+    false
 }
 
 impl SendBackpressurePacer {
@@ -174,6 +195,41 @@ fn send_backpressure_drop_after() -> u32 {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_reliable_bulk_drop_on_sustained_backpressure_enabled() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_macos_reliable_bulk_drop_on_sustained_backpressure(
+            std::env::var("FIPS_MACOS_DROP_RELIABLE_BULK_ON_ENOBUFS")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_reliable_bulk_drop_on_worker_full_enabled() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_macos_reliable_bulk_drop_on_sustained_backpressure(
+            std::env::var("FIPS_MACOS_DROP_RELIABLE_BULK_ON_WORKER_FULL")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_macos_reliable_bulk_drop_on_sustained_backpressure(raw: Option<&str>) -> bool {
+    raw.map(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+    .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
 fn default_send_backpressure_sleep_after() -> u32 {
     // Darwin returns ENOBUFS in tight bursts when Wi-Fi/UDP egress is full.
     // Pure yield/retry can spin tens of thousands of times per second, preserve
@@ -201,10 +257,10 @@ fn default_send_backpressure_sleep_micros() -> u64 {
 #[cfg(target_os = "macos")]
 fn default_send_backpressure_drop_after() -> u32 {
     // WireGuard's Darwin UDP path returns ENOBUFS to the caller rather than
-    // retrying one datagram forever. For bulk endpoint data, a bounded retry
+    // retrying one datagram forever. For discardable bulk, a bounded retry
     // budget avoids head-of-line stalls that can last seconds when Wi-Fi
     // egress is saturated, while still preserving short transient bursts.
-    // Control frames pass `drop_on_backpressure = false` and keep retrying.
+    // Reliable endpoint data and control frames keep retrying by default.
     256
 }
 
@@ -263,6 +319,26 @@ mod send_backpressure_tests {
             send_backpressure_decision(false, true),
             SendBackpressureDecision::Retry
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn sustained_macos_backpressure_preserves_reliable_endpoint_bulk_by_default() {
+        assert_eq!(
+            send_backpressure_decision_for_lane(true, false, true),
+            SendBackpressureDecision::Retry
+        );
+        assert_eq!(
+            send_backpressure_decision_for_lane(true, false, false),
+            SendBackpressureDecision::Retry
+        );
+        assert_eq!(
+            send_backpressure_decision_for_lane(true, true, true),
+            SendBackpressureDecision::DropCurrentBulk
+        );
+        assert!(!parse_macos_reliable_bulk_drop_on_sustained_backpressure(None));
+        assert!(parse_macos_reliable_bulk_drop_on_sustained_backpressure(Some("on")));
+        assert!(!parse_macos_reliable_bulk_drop_on_sustained_backpressure(Some("off")));
     }
 
     #[test]

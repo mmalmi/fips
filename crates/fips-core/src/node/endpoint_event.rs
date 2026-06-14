@@ -641,6 +641,10 @@ impl EndpointSendCommand {
         self.send.payload().drop_on_backpressure()
     }
 
+    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
+        self.queued_at = queued_at;
+    }
+
     pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
         (self.send, self.queued_at)
     }
@@ -682,6 +686,10 @@ impl EndpointSendBatchCommand {
         self.payloads
             .iter()
             .all(EndpointDataPayload::drop_on_backpressure)
+    }
+
+    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
+        self.queued_at = queued_at;
     }
 
     pub(crate) fn into_parts(
@@ -766,6 +774,21 @@ impl NodeEndpointCommand {
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. } => 1,
+        }
+    }
+
+    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
+        match self {
+            Self::Send { command, .. } | Self::SendOneway { command } => {
+                command.set_queued_at(queued_at);
+            }
+            Self::SendBatchOneway { command, .. } => {
+                command.set_queued_at(queued_at);
+            }
+            Self::PeerSnapshot { .. }
+            | Self::RelaySnapshot { .. }
+            | Self::UpdateRelays { .. }
+            | Self::UpdatePeers { .. } => {}
         }
     }
 }

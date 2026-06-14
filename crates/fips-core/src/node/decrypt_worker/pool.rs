@@ -6,14 +6,68 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
+    fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
 }
 
 #[derive(Clone)]
 struct DecryptWorkerSender {
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
+    fmp_aead_completion: Sender<FmpAeadCompletion>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
+}
+
+struct FmpAeadHelperPool {
+    tx: Sender<FmpAeadHelperJob>,
+}
+
+impl FmpAeadHelperPool {
+    fn spawn(n: usize, channel_cap: usize) -> Option<Arc<Self>> {
+        if n == 0 {
+            return None;
+        }
+        let (tx, rx) = bounded::<FmpAeadHelperJob>(channel_cap.max(1));
+        for i in 0..n {
+            let helper_rx = rx.clone();
+            std::thread::Builder::new()
+                .name(format!("fips-decrypt-aead-{i}"))
+                .spawn(move || run_fmp_aead_helper(i, helper_rx))
+                .expect("failed to spawn fips-decrypt-aead OS thread");
+        }
+        info!(helpers = n, "Spawned FMP AEAD helper pool");
+        Some(Arc::new(Self { tx }))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn try_dispatch(&self, job: FmpAeadHelperJob) -> Result<(), FmpAeadHelperJob> {
+        match self.tx.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
+        }
+    }
+}
+
+fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperJob>) {
+    trace!(helper = idx, "FMP AEAD helper thread starting");
+    while let Ok(mut job) = rx.recv() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FmpAeadHelperQueueWait,
+            job.helper_queued_at,
+            1,
+        );
+        let Some(completion_tx) = job.completion_tx.take() else {
+            continue;
+        };
+        let completion = job.into_completion();
+        if completion_tx.send(completion).is_err() {
+            debug!(
+                helper = idx,
+                "FMP AEAD helper completion owner gone; dropping completion"
+            );
+        }
+    }
+    trace!(helper = idx, "FMP AEAD helper thread exiting");
 }
 
 impl DecryptWorkerPool {
@@ -34,20 +88,30 @@ impl DecryptWorkerPool {
         for _ in 0..n {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
+            let (fmp_aead_completion_tx, fmp_aead_completion_rx) =
+                bounded::<FmpAeadCompletion>(bulk_channel_cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
-            receivers.push((priority_rx, bulk_rx, Arc::clone(&bulk_queued_packets)));
+            receivers.push((
+                priority_rx,
+                fmp_aead_completion_rx,
+                bulk_rx,
+                Arc::clone(&bulk_queued_packets),
+            ));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fmp_aead_completion: fmp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
         }
+        let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
+            fmp_aead_helpers,
         };
-        for (i, (priority_rx, bulk_rx, worker_bulk_queued_packets)) in
+        for (i, (priority_rx, fmp_aead_completion_rx, bulk_rx, worker_bulk_queued_packets)) in
             receivers.into_iter().enumerate()
         {
             let worker_pool = pool.clone();
@@ -58,6 +122,7 @@ impl DecryptWorkerPool {
                         i,
                         worker_pool,
                         priority_rx,
+                        fmp_aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
                     )
@@ -117,6 +182,27 @@ impl DecryptWorkerPool {
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
         self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fmp_aead_helper_job(
+        &self,
+        owner_idx: usize,
+        mut job: FmpAeadHelperJob,
+    ) -> Result<(), FmpAeadHelperJob> {
+        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
+            return Err(job);
+        };
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return Err(job);
+        };
+        job.completion_tx = Some(sender.fmp_aead_completion.clone());
+        job.helper_queued_at = crate::perf_profile::stamp();
+        helpers.try_dispatch(job)
+    }
+
+    fn fmp_aead_helpers_enabled(&self) -> bool {
+        self.fmp_aead_helpers.is_some()
     }
 
     #[allow(clippy::result_large_err)]

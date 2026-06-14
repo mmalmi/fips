@@ -450,6 +450,15 @@ impl PacketRx {
         self.priority_queued_packets.load(Relaxed)
     }
 
+    pub(crate) fn ready_packets(&self) -> usize {
+        self.pending_priority
+            .as_ref()
+            .map_or(0, PendingPackets::len)
+            .saturating_add(self.pending_bulk.as_ref().map_or(0, PendingPackets::len))
+            .saturating_add(self.priority_queued_packets())
+            .saturating_add(self.bulk_queued_packets.load(Relaxed))
+    }
+
     pub(crate) fn priority_ready_packets(&self) -> usize {
         self.pending_priority
             .as_ref()

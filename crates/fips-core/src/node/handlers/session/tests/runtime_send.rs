@@ -205,7 +205,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -260,7 +260,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
 
         let missing_transport_send = PipelinedEndpointSend {
@@ -269,7 +269,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -319,6 +319,165 @@
                 .current_send_counter(),
             fmp_before + 1,
             "missing transport must fail before consuming another FMP counter"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pipelined_endpoint_resolved_route_reuses_target_without_prereserving_counters() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{LinkId, TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+        use std::collections::HashMap;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let dest_addr = *peer_identity.node_addr();
+        let source_addr = node_addr(0x10);
+        let transport_id = TransportId::new(0x55);
+        let fallback_addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(
+            sessions
+                .insert(dest_addr, established_entry(&local, &peer))
+                .is_none()
+        );
+
+        let mut peers = crate::node::PeerLifecycleRegistry::default();
+        let active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&local, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            crate::transport::LinkStats::new(),
+            true,
+            &crate::mmp::MmpConfig::default(),
+            Some([0x02; 8]),
+        );
+        peers.insert_with_current_session_index(dest_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+
+        let mut transports = HashMap::new();
+        assert!(
+            transports
+                .insert(transport_id, crate::transport::TransportHandle::Udp(udp))
+                .is_none()
+        );
+
+        let route_snapshot = peers
+            .prepare_peer_runtime_route_snapshot(&dest_addr)
+            .expect("active peer should prepare route snapshot");
+        let runtime_route =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false);
+
+        let fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists")
+            .send_counter();
+        let fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists")
+            .current_send_counter();
+
+        let resolved_route = runtime_route
+            .resolve_send_target(&transports)
+            .await
+            .expect("batch route target resolution should not fail")
+            .expect("started UDP transport resolves send target once");
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after target resolution")
+                .send_counter(),
+            fsp_before,
+            "target resolution must not reserve FSP counters"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after target resolution")
+                .current_send_counter(),
+            fmp_before,
+            "target resolution must not reserve FMP counters"
+        );
+
+        let payload = EndpointDataPayload::new(vec![0xee; 64]);
+        let inner_plaintext = vec![0xaa; 80];
+        let make_send = || PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
+            my_coords: None,
+            dest_coords: None,
+        };
+
+        let first = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_resolved_route(
+            &resolved_route,
+            make_send(),
+            &mut sessions,
+            &mut peers,
+        )
+        .expect("resolved route should build first dispatch")
+        .expect("first send should dispatch");
+        assert_eq!(first.fsp_reservation_input().path_mtu, 1234);
+        let first_prepared = first.into_prepared_send(None);
+        assert_eq!(first_prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
+        assert_eq!(first_prepared.fmp_counter, fmp_before);
+
+        let second = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_resolved_route(
+            &resolved_route,
+            make_send(),
+            &mut sessions,
+            &mut peers,
+        )
+        .expect("resolved route should build second dispatch")
+        .expect("second send should dispatch");
+        assert_eq!(second.fsp_reservation_input().path_mtu, 1234);
+        let second_prepared = second.into_prepared_send(None);
+        assert_eq!(second_prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before + 1);
+        assert_eq!(second_prepared.fmp_counter, fmp_before + 1);
+
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after both sends")
+                .send_counter(),
+            fsp_before + 2,
+            "each resolved-route send should reserve exactly one FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after both sends")
+                .current_send_counter(),
+            fmp_before + 2,
+            "each resolved-route send should reserve exactly one FMP counter"
         );
     }
 
@@ -391,7 +550,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -446,7 +605,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
 
         let missing_transport_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
@@ -563,7 +722,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -618,7 +777,7 @@
         let prepared = dispatch.into_prepared_send(None);
         assert_eq!(prepared.dest_addr, dest_addr);
         assert_eq!(prepared.next_hop_addr, dest_addr);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_before);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_before);
         assert_eq!(prepared.fmp_counter, fmp_before);
         assert_eq!(prepared.worker_job.counter, fmp_before);
 
@@ -694,7 +853,7 @@
             now_ms: 0x1122_3344,
             timestamp: 0x5566_7788,
             fsp_flags: 0,
-            inner_plaintext: &inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::borrowed(&inner_plaintext),
             my_coords: None,
             dest_coords: None,
         };
@@ -752,7 +911,7 @@
         let fmp_reservation = PreparedFmpWorkerReservation {
             counter: fmp_counter,
             header: fmp_header,
-            cipher: test_cipher(7),
+            cipher: test_cipher(7).into(),
             predicted_bytes: ESTABLISHED_HEADER_SIZE
                 + runtime.fmp_payload_len() as usize
                 + crate::noise::TAG_SIZE,
@@ -760,14 +919,14 @@
         let fsp_reservation = FspSendReservation {
             counter: fsp_counter,
             header: fsp_header,
-            cipher: test_cipher(8),
+            cipher: test_cipher(8).into(),
         };
 
         let dispatch = PipelinedEndpointRuntimeSendDispatch::new(
             runtime,
             send_target,
             fmp_reservation,
-            fsp_reservation,
+            Some(fsp_reservation),
         );
         assert_eq!(dispatch.dest_addr(), dest_addr);
         assert_eq!(dispatch.next_hop_addr(), next_hop_addr);
@@ -779,8 +938,8 @@
         assert_eq!(prepared.fmp_counter, fmp_counter);
         assert_eq!(prepared.fmp_timestamp_ms, 0x0102_0304);
         assert_eq!(prepared.originated_bytes, expected_originated_bytes);
-        assert_eq!(prepared.fsp_bookkeeping.counter, fsp_counter);
-        assert_eq!(prepared.fsp_bookkeeping.next_hop, Some(next_hop_addr));
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").counter, fsp_counter);
+        assert_eq!(prepared.session_bookkeeping.fsp().expect("FSP bookkeeping").next_hop, Some(next_hop_addr));
         assert_eq!(prepared.worker_job.counter, fmp_counter);
         assert!(prepared.worker_job.bulk_endpoint_data);
         assert!(!prepared.worker_job.drop_on_backpressure);

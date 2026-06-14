@@ -216,6 +216,7 @@ impl Node {
                                 prepared.connected_socket.clone(),
                                 socket_addr,
                             ),
+                            endpoint_flow_dispatch_key: None,
                             bulk_endpoint_data: traffic_class.bulk_endpoint_data,
                             drop_on_backpressure: traffic_class.drop_on_backpressure,
                             scheduling_weight,

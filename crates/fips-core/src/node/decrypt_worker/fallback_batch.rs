@@ -5,6 +5,8 @@ struct DecryptPlaintextFallbackBatch {
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
     endpoint_commits: Vec<DecryptDirectSessionCommit>,
     endpoint_deliveries: Vec<EndpointDataDelivery>,
+    direct_fmp_fallback_tx: Option<DecryptWorkerFallbackSender>,
+    direct_fmp_endpoints: Vec<DecryptDirectFmpEndpointData>,
     direct_fallback_tx: Option<DecryptWorkerFallbackSender>,
     direct_commits: Vec<DecryptDirectSessionCommit>,
     direct_deliveries: Vec<PendingDirectSessionDelivery>,
@@ -19,6 +21,8 @@ impl DecryptPlaintextFallbackBatch {
             endpoint_sink: None,
             endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
+            direct_fmp_fallback_tx: None,
+            direct_fmp_endpoints: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
             direct_fallback_tx: None,
             direct_commits: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
             direct_deliveries: Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
@@ -46,6 +50,7 @@ impl DecryptPlaintextFallbackBatch {
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_bulk_plaintext() {
             self.flush_endpoint();
+            self.flush_direct_fmp();
             self.flush_direct();
             let DecryptWorkerOutput {
                 fallback_tx,
@@ -79,6 +84,7 @@ impl DecryptPlaintextFallbackBatch {
         }
         if output.is_batchable_direct_endpoint() {
             self.flush_plaintext();
+            self.flush_direct_fmp();
             self.flush_direct();
             let DecryptWorkerOutput {
                 fallback_tx,
@@ -124,9 +130,45 @@ impl DecryptPlaintextFallbackBatch {
             }
             return;
         }
+        if output.is_batchable_direct_fmp_endpoint_data() {
+            self.flush_plaintext();
+            self.flush_endpoint();
+            self.flush_direct();
+            let DecryptWorkerOutput {
+                fallback_tx,
+                event,
+                direct_delivery,
+            } = output;
+            debug_assert!(direct_delivery.is_none());
+            let DecryptWorkerEvent::DirectFmpEndpointData(endpoint) = event else {
+                unreachable!("checked batchable direct-FMP endpoint data output")
+            };
+
+            if self
+                .direct_fmp_fallback_tx
+                .as_ref()
+                .is_some_and(|current| !current.same_channels(&fallback_tx))
+            {
+                self.flush_direct_fmp();
+            }
+            if self.direct_fmp_fallback_tx.is_none() {
+                self.direct_fmp_fallback_tx = Some(fallback_tx);
+            }
+            let batch_max = Self::direct_batch_max_for(
+                self.direct_fmp_fallback_tx
+                    .as_ref()
+                    .expect("fallback sender set before batching direct-FMP endpoint data"),
+            );
+            self.direct_fmp_endpoints.push(endpoint);
+            if self.direct_fmp_endpoints.len() >= batch_max {
+                self.flush_direct_fmp();
+            }
+            return;
+        }
         if output.is_batchable_direct_ipv6() {
             self.flush_plaintext();
             self.flush_endpoint();
+            self.flush_direct_fmp();
             let DecryptWorkerOutput {
                 fallback_tx,
                 event,
@@ -176,6 +218,7 @@ impl DecryptPlaintextFallbackBatch {
     fn flush(&mut self) {
         self.flush_plaintext();
         self.flush_endpoint();
+        self.flush_direct_fmp();
         self.flush_direct();
     }
 
@@ -269,6 +312,31 @@ impl DecryptPlaintextFallbackBatch {
                 "Failed to deliver worker-decoded endpoint data batch"
             );
         }
+    }
+
+    fn flush_direct_fmp(&mut self) {
+        if self.direct_fmp_endpoints.is_empty() {
+            return;
+        }
+        let Some(fallback_tx) = self.direct_fmp_fallback_tx.take() else {
+            self.direct_fmp_endpoints.clear();
+            return;
+        };
+
+        let event = if self.direct_fmp_endpoints.len() == 1 {
+            DecryptWorkerEvent::DirectFmpEndpointData(
+                self.direct_fmp_endpoints
+                    .pop()
+                    .expect("checked single direct-FMP endpoint data"),
+            )
+        } else {
+            let endpoints = std::mem::replace(
+                &mut self.direct_fmp_endpoints,
+                Vec::with_capacity(DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX),
+            );
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(endpoints)
+        };
+        let _ = fallback_tx.send(event);
     }
 
     fn flush_direct(&mut self) {

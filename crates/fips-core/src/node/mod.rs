@@ -60,7 +60,6 @@ pub(crate) use endpoint_event::{
     EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
     NodeEndpointPeer, NodeEndpointRelayStatus, UpdatePeersOutcome, endpoint_data_command_capacity,
 };
-pub(in crate::node) use endpoint_traffic::classify_fmp_plaintext_traffic;
 #[cfg(unix)]
 pub(in crate::node) use endpoint_traffic::reserve_fmp_worker_send;
 pub(crate) use endpoint_traffic::{
@@ -68,6 +67,9 @@ pub(crate) use endpoint_traffic::{
 };
 #[cfg(test)]
 pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
+pub(in crate::node) use endpoint_traffic::{
+    classify_fmp_plaintext_traffic, endpoint_flow_dispatch_key,
+};
 #[cfg(test)]
 pub(in crate::node) use endpoint_traffic::{
     endpoint_command_lane_for_payload, endpoint_payload_is_tcp,

@@ -1,3 +1,10 @@
+#[cfg(unix)]
+enum DirectFmpEndpointBatchResult {
+    Ineligible(Vec<EndpointDataPayload>),
+    Sent,
+    Partial(Vec<EndpointDataPayload>),
+}
+
 impl Node {
     async fn handle_endpoint_send_batch_slow_path(
         &mut self,
@@ -5,11 +12,167 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
     ) {
+        let _batch_service = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSendBatchSlowPath,
+            payloads.len(),
+        );
         for payload in payloads {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
             let _ = self
                 .send_or_queue_endpoint_payload(dest_addr, dest_pubkey, payload)
                 .await;
+        }
+    }
+
+    #[cfg(unix)]
+    fn try_handle_direct_fmp_endpoint_send_batch(
+        &mut self,
+        dest_addr: NodeAddr,
+        payloads: Vec<EndpointDataPayload>,
+        resolved_route: &PipelinedEndpointResolvedRoute,
+        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
+    ) -> DirectFmpEndpointBatchResult {
+        let batch_packets = payloads.len();
+        if !resolved_route.route_plan.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            &payloads,
+            direct_endpoint_fmp_only_enabled(),
+        ) {
+            crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
+            return DirectFmpEndpointBatchResult::Ineligible(payloads);
+        }
+
+        let now_ms = Self::now_ms();
+        let session_context = {
+            let _t = crate::perf_profile::BatchTimer::start(
+                crate::perf_profile::Stage::EndpointSessionPrep,
+                payloads.len(),
+            );
+            match self.sessions.session_fsp_send_context(&dest_addr, now_ms) {
+                Ok(context) => context,
+                Err(_) => {
+                    crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
+                    return DirectFmpEndpointBatchResult::Ineligible(payloads);
+                }
+            }
+        };
+        if session_context.wants_coords() || !self.sessions.direct_endpoint_data_can_send(&dest_addr)
+        {
+            crate::perf_profile::record_endpoint_direct_fmp_batch(0, batch_packets);
+            return DirectFmpEndpointBatchResult::Ineligible(payloads);
+        }
+
+        let _endpoint_send = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSend,
+            payloads.len(),
+        );
+        let _job_build = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointWorkerJobBuild,
+            payloads.len(),
+        );
+        let next_hop_addr = resolved_route.route_plan.next_hop_addr;
+        let selected_send_target = resolved_route.send_target().into_selected_send_target();
+        let mut prepared_sends = Vec::with_capacity(payloads.len());
+        let mut iter = payloads.into_iter();
+        let mut remaining = Vec::new();
+
+        while let Some(payload) = iter.next() {
+            let Some(direct_fmp_payload_len) = DIRECT_ENDPOINT_FMP_PAYLOAD_PREFIX_LEN
+                .checked_add(payload.len())
+                .and_then(|len| u16::try_from(len).ok())
+            else {
+                remaining.push(payload);
+                remaining.extend(iter);
+                break;
+            };
+            let peer_snapshot = resolved_route
+                .peer_snapshot
+                .prepare_send_snapshot(false, direct_fmp_payload_len);
+            if !peer_snapshot.fmp_worker_send_available() {
+                remaining.push(payload);
+                remaining.extend(iter);
+                break;
+            }
+            let fmp_prepared = peer_snapshot.fmp_prepared();
+            let fmp_reservation = match self
+                .peers
+                .reserve_peer_runtime_fmp_worker_send(&peer_snapshot)
+            {
+                Ok(Some(reservation)) => reservation,
+                Ok(None) => {
+                    remaining.push(payload);
+                    remaining.extend(iter);
+                    break;
+                }
+                Err(error) => {
+                    debug!(
+                        dest = %self.peer_display_name(&dest_addr),
+                        error = ?error,
+                        "Direct-FMP endpoint-data batch reservation stopped early; falling back for remaining payloads"
+                    );
+                    remaining.push(payload);
+                    remaining.extend(iter);
+                    break;
+                }
+            };
+
+            debug_assert_eq!(fmp_prepared.payload_len, direct_fmp_payload_len);
+            debug_assert_eq!(
+                fmp_reservation.predicted_bytes,
+                ESTABLISHED_HEADER_SIZE
+                    + direct_fmp_payload_len as usize
+                    + crate::noise::TAG_SIZE
+            );
+            let wire_capacity = fmp_reservation.predicted_bytes;
+            let mut wire_buf = Vec::with_capacity(wire_capacity);
+            wire_buf.extend_from_slice(&fmp_reservation.header);
+            wire_buf.extend_from_slice(&fmp_prepared.timestamp_ms.to_le_bytes());
+            wire_buf.push(LinkMessageType::DirectEndpointData.to_byte());
+            wire_buf.extend_from_slice(payload.as_slice());
+            debug_assert_eq!(
+                wire_buf.len(),
+                ESTABLISHED_HEADER_SIZE + direct_fmp_payload_len as usize
+            );
+
+            let payload_len = payload.len();
+            let drop_on_backpressure = payload.drop_on_backpressure();
+            prepared_sends.push(PipelinedEndpointPreparedSend {
+                dest_addr,
+                next_hop_addr,
+                fmp_counter: fmp_reservation.counter,
+                fmp_timestamp_ms: fmp_prepared.timestamp_ms,
+                fmp_wire_capacity: wire_capacity,
+                originated_bytes: 1 + payload_len + crate::noise::TAG_SIZE,
+                session_bookkeeping: PipelinedEndpointSessionBookkeeping::DirectFmp {
+                    payload_len,
+                    now_ms,
+                    next_hop: next_hop_addr,
+                },
+                worker_job: crate::node::encrypt_worker::FmpSendJob {
+                    cipher: fmp_reservation.cipher,
+                    counter: fmp_reservation.counter,
+                    wire_buf,
+                    fsp_seal: None,
+                    send_target: selected_send_target.clone(),
+                    endpoint_flow_dispatch_key: endpoint_flow_dispatch_key(payload.as_slice())
+                        .map(|key| key.get()),
+                    bulk_endpoint_data: true,
+                    drop_on_backpressure,
+                    scheduling_weight: resolved_route.route_plan.scheduling_weight,
+                    queued_at: None,
+                },
+            });
+        }
+
+        drop(_job_build);
+        let sent_packets = prepared_sends.len();
+        crate::perf_profile::record_endpoint_direct_fmp_batch(sent_packets, remaining.len());
+        PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, workers);
+
+        if remaining.is_empty() {
+            DirectFmpEndpointBatchResult::Sent
+        } else {
+            DirectFmpEndpointBatchResult::Partial(remaining)
         }
     }
 
@@ -20,12 +183,17 @@ impl Node {
         dest_pubkey: secp256k1::PublicKey,
         payloads: Vec<EndpointDataPayload>,
     ) {
-        let route = match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
-            Ok(route) => route,
-            Err(_) => {
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                    .await;
-                return;
+        let route = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::EndpointRouteResolve,
+            );
+            match self.resolve_peer_runtime_endpoint_route(dest_addr, Self::now_ms()) {
+                Ok(route) => route,
+                Err(_) => {
+                    self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
+                        .await;
+                    return;
+                }
             }
         };
 
@@ -33,6 +201,47 @@ impl Node {
             self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
                 .await;
             return;
+        };
+        let resolved_route = match self
+            .resolve_peer_runtime_endpoint_send_route(&route)
+            .await
+        {
+            Ok(Some(resolved_route)) => resolved_route,
+            Ok(None) => {
+                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
+                    .await;
+                return;
+            }
+            Err(error) => {
+                debug!(
+                    dest = %self.peer_display_name(&dest_addr),
+                    error = %error,
+                    "Established endpoint-data batch could not resolve worker send target; falling back"
+                );
+                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
+                    .await;
+                return;
+            }
+        };
+        let _batch_service = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointSendBatchFastPath,
+            payloads.len(),
+        );
+        let payloads = match self.try_handle_direct_fmp_endpoint_send_batch(
+            dest_addr,
+            payloads,
+            &resolved_route,
+            &workers,
+        ) {
+            DirectFmpEndpointBatchResult::Sent => return,
+            DirectFmpEndpointBatchResult::Partial(remaining) => {
+                if !remaining.is_empty() {
+                    self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, remaining)
+                        .await;
+                }
+                return;
+            }
+            DirectFmpEndpointBatchResult::Ineligible(payloads) => payloads,
         };
         let mut prepared_sends = Vec::with_capacity(payloads.len().min(64));
         let mut use_reused_route = true;
@@ -84,10 +293,10 @@ impl Node {
                 }
             };
 
-            match self
-                .prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
-                .await
-            {
+            match self.prepare_peer_runtime_endpoint_send_with_resolved_route(
+                prepared.pipelined(),
+                &resolved_route,
+            ) {
                 Ok(Some(prepared_send)) => {
                     prepared_sends.push(prepared_send);
                 }
@@ -250,6 +459,9 @@ impl Node {
         dest_addr: &'a NodeAddr,
         payload: &'a EndpointDataPayload,
     ) -> Result<PreparedEndpointSessionData<'a>, NodeError> {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSessionPrep);
+
         if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,
@@ -265,10 +477,7 @@ impl Node {
         let wants_coords = send_context.wants_coords();
         let timestamp = send_context.timestamp;
 
-        let msg_type = SessionMessageType::EndpointData.to_byte();
         let inner_flags = send_context.inner_flags_byte();
-        let inner_plaintext =
-            fsp_prepend_inner_header(timestamp, msg_type, inner_flags, payload.as_slice());
 
         let (include_coords, my_coords, dest_coords) = if wants_coords {
             let src = self.tree_state.my_coords().clone();
@@ -302,7 +511,7 @@ impl Node {
             now_ms,
             timestamp,
             fsp_flags: flags,
-            inner_plaintext,
+            inner_flags,
             my_coords,
             dest_coords,
         })
@@ -472,21 +681,65 @@ impl Node {
     }
 
     #[cfg(unix)]
+    async fn resolve_peer_runtime_endpoint_send_route(
+        &self,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+    ) -> Result<Option<PipelinedEndpointResolvedRoute>, NodeError> {
+        let _t = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointRuntimeDispatchPrep,
+        );
+        runtime_route
+            .resolve_send_target(&self.transports)
+            .await
+            .map_err(Self::map_pipelined_endpoint_runtime_send_error)
+    }
+
+    #[cfg(all(unix, test))]
     async fn prepare_peer_runtime_endpoint_send_with_route(
         &mut self,
         send: PipelinedEndpointSend<'_>,
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
     ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
-        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
-            runtime_route,
-            send,
-            &self.transports,
-            &mut self.sessions,
-            &mut self.peers,
-        )
-        .await
-        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
-        else {
+        let dispatch = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::EndpointRuntimeDispatchPrep,
+            );
+            PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
+                runtime_route,
+                send,
+                &self.transports,
+                &mut self.sessions,
+                &mut self.peers,
+            )
+            .await
+            .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
+        };
+        let Some(dispatch) = dispatch else {
+            return Ok(None);
+        };
+
+        Ok(Some(dispatch.into_prepared_send(None)))
+    }
+
+    #[cfg(unix)]
+    fn prepare_peer_runtime_endpoint_send_with_resolved_route(
+        &mut self,
+        send: PipelinedEndpointSend<'_>,
+        resolved_route: &PipelinedEndpointResolvedRoute,
+    ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
+        let dispatch = {
+            let _t = crate::perf_profile::Timer::start(
+                crate::perf_profile::Stage::EndpointRuntimeDispatchPrep,
+            );
+            PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_resolved_route(
+                resolved_route,
+                send,
+                &mut self.sessions,
+                &mut self.peers,
+            )
+            .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
+        };
+        let Some(dispatch) = dispatch else {
             return Ok(None);
         };
 

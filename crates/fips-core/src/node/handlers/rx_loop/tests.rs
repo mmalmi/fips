@@ -1,9 +1,14 @@
 use super::budget::{
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-    FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-    FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget,
+    ENDPOINT_COMMAND_DRAIN_BUDGET, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
+    FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+    FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, PRIORITY_FALLBACK_DRAIN_BUDGET,
+    RX_LOOP_CONNECTED_UDP_BUSY_TIMEOUT, RX_LOOP_CONNECTED_UDP_IDLE_TIMEOUT,
+    RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT, RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+    SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY, SIDE_QUEUE_INTERLEAVE_EVERY,
+    authenticated_bulk_preempts_packet_rx, connected_udp_activation_timeout,
+    endpoint_priority_commands_preempt_packet_rx, fallback_drain_plan, non_packet_drain_budget,
+    side_queue_interleave_interval, transport_packets_preempt_non_packet,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -18,6 +23,26 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
     assert_eq!(
         non_packet_drain_budget(PACKET_DRAIN_BUDGET),
         NON_PACKET_DRAIN_BUDGET
+    );
+}
+
+#[test]
+fn endpoint_command_drain_budget_catches_up_without_spanning_packet_turn() {
+    assert!(
+        ENDPOINT_COMMAND_DRAIN_BUDGET > NON_PACKET_DRAIN_BUDGET,
+        "directly selected endpoint commands may catch up beyond generic non-packet drains"
+    );
+    assert!(
+        ENDPOINT_COMMAND_DRAIN_BUDGET <= PACKET_DRAIN_BUDGET / 2,
+        "endpoint command catch-up stays below half a raw packet receive turn"
+    );
+}
+
+#[test]
+fn priority_fallback_drain_budget_is_a_non_packet_turn() {
+    assert_eq!(
+        PRIORITY_FALLBACK_DRAIN_BUDGET, NON_PACKET_DRAIN_BUDGET,
+        "top-level priority decrypt returns should yield at non-packet cadence"
     );
 }
 
@@ -72,7 +97,55 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(authenticated_bulk_preempts_packet_rx(0));
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
-        "bulk endpoint delivery should not preempt a ready control-sized transport packet"
+        "bulk endpoint delivery should not preempt a ready transport packet"
+    );
+}
+
+#[test]
+fn any_ready_transport_packet_preempts_non_packet_drains() {
+    assert!(!transport_packets_preempt_non_packet(0));
+    assert!(transport_packets_preempt_non_packet(1));
+    assert!(transport_packets_preempt_non_packet(32));
+}
+
+#[test]
+fn endpoint_priority_commands_preempt_transport_bulk_once() {
+    assert!(endpoint_priority_commands_preempt_packet_rx(0, 0, false));
+    assert!(
+        endpoint_priority_commands_preempt_packet_rx(0, 0, true),
+        "no transport work is waiting, so endpoint priority can keep draining"
+    );
+    assert!(
+        !endpoint_priority_commands_preempt_packet_rx(1, 1, false),
+        "fresh transport priority packets must keep their reserved slot"
+    );
+    assert!(
+        endpoint_priority_commands_preempt_packet_rx(32, 0, false),
+        "endpoint priority can jump ahead of transport bulk once"
+    );
+    assert!(
+        !endpoint_priority_commands_preempt_packet_rx(32, 0, true),
+        "after one endpoint-priority jump, a packet turn must run before the next jump"
+    );
+}
+
+#[test]
+fn side_queue_interleave_shortens_when_endpoint_commands_are_waiting() {
+    assert!(
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY < SIDE_QUEUE_INTERLEAVE_EVERY,
+        "endpoint pressure cadence should be a shorter packet interval than the normal side-queue reserve"
+    );
+    assert!(
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY <= 32,
+        "endpoint pressure must not wait longer than the measured macOS pain window"
+    );
+    assert_eq!(
+        side_queue_interleave_interval(false),
+        SIDE_QUEUE_INTERLEAVE_EVERY
+    );
+    assert_eq!(
+        side_queue_interleave_interval(true),
+        SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY
     );
 }
 
@@ -143,6 +216,39 @@ fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
         drain.next(&mut rx),
         Some(PacketDrainAction::InterleaveFallback),
         "priority pressure relief should restore the normal fallback cadence"
+    );
+}
+
+#[test]
+fn packet_drain_cursor_can_retime_side_queue_interleave_under_pressure() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for packet in 0..128 {
+        tx.send(packet).unwrap();
+    }
+
+    let mut drain = PacketDrainCursor::new(None, 128, 0, SIDE_QUEUE_INTERLEAVE_EVERY);
+    for _ in 0..SIDE_QUEUE_INTERLEAVE_EVERY {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues)
+    );
+
+    drain.reset_side_queue_interleave_every(SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY);
+    for _ in 0..SIDE_QUEUE_ENDPOINT_PRESSURE_INTERLEAVE_EVERY {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues),
+        "endpoint command pressure should shorten the next side-queue interval"
     );
 }
 
@@ -241,6 +347,26 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     );
     assert!(!expired_idle.data_pressure());
     assert_eq!(expired_idle.slow_timeout(), Some(idle_timeout));
+}
+
+#[test]
+fn connected_udp_activation_gets_smaller_busy_timeout() {
+    assert_eq!(
+        connected_udp_activation_timeout(false),
+        RX_LOOP_CONNECTED_UDP_IDLE_TIMEOUT
+    );
+    assert_eq!(
+        connected_udp_activation_timeout(true),
+        RX_LOOP_CONNECTED_UDP_BUSY_TIMEOUT
+    );
+    assert!(
+        RX_LOOP_CONNECTED_UDP_BUSY_TIMEOUT < RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+        "busy connected-UDP activation should be a shorter reserved slice than slow maintenance"
+    );
+    assert!(
+        RX_LOOP_CONNECTED_UDP_IDLE_TIMEOUT < RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+        "idle connected-UDP activation should stay separate from slow discovery scans"
+    );
 }
 
 #[tokio::test]
@@ -422,6 +548,40 @@ async fn priority_bulk_drain_cursor_charges_batch_extra_against_budget() {
 }
 
 #[tokio::test]
+async fn priority_bulk_drain_cursor_can_drain_four_full_batch_cost_items() {
+    let (_priority_tx, mut priority_rx) = tokio::sync::mpsc::channel(4);
+    let (bulk_tx, mut bulk_rx) = tokio::sync::mpsc::channel(4);
+
+    bulk_tx.send("bulk-queued-1").await.unwrap();
+    bulk_tx.send("bulk-queued-2").await.unwrap();
+    bulk_tx.send("bulk-queued-3").await.unwrap();
+    let mut drain = PriorityBulkDrainCursor::new(None, Some("bulk-selected"), 256);
+
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-selected")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued-1")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued-2")
+    );
+    drain.charge_extra(63);
+    assert_eq!(
+        drain.next(&mut priority_rx, &mut bulk_rx),
+        Some("bulk-queued-3")
+    );
+    drain.charge_extra(63);
+    assert_eq!(drain.next(&mut priority_rx, &mut bulk_rx), None);
+    assert_eq!(drain.drained(), 256);
+}
+
+#[tokio::test]
 async fn packet_drain_cursor_owns_first_packet_budget_and_interleave() {
     let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -582,4 +742,19 @@ async fn single_lane_drain_cursor_owns_first_item_and_budget() {
     assert_eq!(drain.next(&mut tun_rx), None);
     assert_eq!(tun_rx.try_recv().ok(), Some("queued-3"));
     assert_eq!(drain.drained(), 3);
+}
+
+#[tokio::test]
+async fn single_lane_drain_cursor_charges_batch_extra_against_budget() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+
+    tx.send("queued-1").await.unwrap();
+    tx.send("queued-2").await.unwrap();
+    let mut drain = SingleLaneDrainCursor::new(Some("selected-batch"), 4);
+
+    assert_eq!(drain.next(&mut rx), Some("selected-batch"));
+    drain.charge_extra(3);
+    assert_eq!(drain.next(&mut rx), None);
+    assert_eq!(rx.try_recv().ok(), Some("queued-1"));
+    assert_eq!(drain.drained(), 4);
 }

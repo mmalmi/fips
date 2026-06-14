@@ -517,6 +517,12 @@ impl LinkStats {
         self.bytes_sent += bytes as u64;
     }
 
+    /// Record multiple sent packets.
+    pub fn record_sent_batch(&mut self, packets: usize, bytes: usize) {
+        self.packets_sent += packets as u64;
+        self.bytes_sent += bytes as u64;
+    }
+
     /// Record a received packet.
     pub fn record_recv(&mut self, bytes: usize, timestamp_ms: u64) {
         self.packets_recv += 1;

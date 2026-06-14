@@ -85,6 +85,30 @@ impl SessionDatagramRuntimeRoute {
 }
 
 #[cfg(unix)]
+fn direct_endpoint_fmp_only_enabled() -> bool {
+    static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_direct_endpoint_fmp_only_enabled(
+            std::env::var("FIPS_DIRECT_ENDPOINT_FMP_ONLY")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+#[cfg(unix)]
+#[cfg_attr(not(test), allow(dead_code))]
+fn parse_direct_endpoint_fmp_only_enabled(raw: Option<&str>) -> bool {
+    let Some(raw) = raw.map(str::trim) else {
+        return false;
+    };
+    matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+#[cfg(unix)]
 impl PipelinedEndpointSendTarget {
     async fn resolve(
         udp: &crate::transport::udp::UdpTransport,
@@ -124,12 +148,31 @@ impl PipelinedEndpointSendTarget {
 
 #[cfg(unix)]
 impl<'a> PipelinedEndpointDispatchPlan<'a> {
+    #[cfg(test)]
     fn new(
         send: &PipelinedEndpointSend<'a>,
         next_hop_addr: NodeAddr,
         path_mtu: u16,
         scheduling_weight: u8,
         direct_path_blocks_direct_payload: bool,
+    ) -> Option<Self> {
+        Self::new_with_direct_fmp_opt_in(
+            send,
+            next_hop_addr,
+            path_mtu,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+            direct_endpoint_fmp_only_enabled(),
+        )
+    }
+
+    fn new_with_direct_fmp_opt_in(
+        send: &PipelinedEndpointSend<'a>,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+        direct_fmp_opt_in: bool,
     ) -> Option<Self> {
         let fsp_payload_len = u16::try_from(send.inner_plaintext.len()).ok()?;
         let bulk_endpoint_data =
@@ -138,8 +181,16 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
             && !direct_path_blocks_direct_payload
             && bulk_endpoint_data
             && send.payload.drop_on_backpressure();
+        let direct_fmp_endpoint = Self::direct_fmp_endpoint_eligible(
+            send,
+            next_hop_addr,
+            direct_path_blocks_direct_payload,
+            bulk_endpoint_data,
+            direct_fmp_opt_in,
+        );
 
         Some(Self {
+            dest_addr: *send.dest_addr,
             next_hop_addr,
             payload: send.payload,
             timestamp: send.timestamp,
@@ -150,8 +201,34 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
             fsp_payload_len,
             bulk_endpoint_data,
             drop_on_backpressure,
+            direct_fmp_endpoint,
             scheduling_weight,
         })
+    }
+
+    fn direct_fmp_endpoint_eligible(
+        send: &PipelinedEndpointSend<'a>,
+        next_hop_addr: NodeAddr,
+        direct_path_blocks_direct_payload: bool,
+        bulk_endpoint_data: bool,
+        direct_fmp_opt_in: bool,
+    ) -> bool {
+        (direct_fmp_opt_in || send.payload.direct_fmp_endpoint_allowed())
+            && next_hop_addr == *send.dest_addr
+            && !direct_path_blocks_direct_payload
+            && bulk_endpoint_data
+            && send.fsp_flags & FSP_FLAG_CP == 0
+            && send.my_coords.is_none()
+            && send.dest_coords.is_none()
+    }
+
+    fn direct_fmp_payload_len(&self) -> Option<u16> {
+        if !self.direct_fmp_endpoint {
+            return None;
+        }
+        let len = DIRECT_ENDPOINT_FMP_PAYLOAD_PREFIX_LEN
+            .checked_add(self.payload.len())?;
+        u16::try_from(len).ok()
     }
 
     fn fsp_reservation_input(&self) -> crate::node::FspWorkerSendReservationInput {
@@ -173,6 +250,14 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         .with_next_hop(self.next_hop_addr)
     }
 
+    fn direct_fmp_bookkeeping_input(&self) -> PipelinedEndpointSessionBookkeeping {
+        PipelinedEndpointSessionBookkeeping::DirectFmp {
+            payload_len: self.payload.len(),
+            now_ms: self.now_ms,
+            next_hop: self.next_hop_addr,
+        }
+    }
+
     fn into_worker_job(
         self,
         worker_wire: PipelinedEndpointWorkerWire,
@@ -183,6 +268,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
             send_target,
             self.bulk_endpoint_data,
             self.drop_on_backpressure,
+            endpoint_flow_dispatch_key(self.payload.as_slice()).map(|key| key.get()),
             self.scheduling_weight,
             queued_at,
         )
@@ -207,6 +293,24 @@ impl PipelinedEndpointRoutePlan {
             scheduling_weight,
             direct_path_blocks_direct_payload,
         }
+    }
+
+    fn direct_fmp_endpoint_batch_eligible(
+        &self,
+        dest_addr: NodeAddr,
+        payloads: &[EndpointDataPayload],
+        direct_fmp_opt_in: bool,
+    ) -> bool {
+        (direct_fmp_opt_in
+            || payloads
+                .iter()
+                .all(EndpointDataPayload::direct_fmp_endpoint_allowed))
+            && self.next_hop_addr == dest_addr
+            && !self.direct_path_blocks_direct_payload
+            && !payloads.is_empty()
+            && payloads
+                .iter()
+                .all(EndpointDataPayload::bulk_endpoint_data)
     }
 
     fn build_send_plan<'a>(
@@ -259,6 +363,7 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
+    #[cfg(test)]
     fn next_hop_addr(&self) -> NodeAddr {
         self.peer_snapshot.node_addr()
     }
@@ -296,20 +401,36 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
-    fn runtime_send_plan<'a>(
+    async fn resolve_send_target(
         &self,
-        send: &PipelinedEndpointSend<'a>,
-        transport: &crate::transport::TransportHandle,
-    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        transports: &std::collections::HashMap<
+            crate::transport::TransportId,
+            crate::transport::TransportHandle,
+        >,
+    ) -> Result<Option<PipelinedEndpointResolvedRoute>, PipelinedEndpointRuntimeSendError> {
+        let transport_id = self.transport_id();
+        let transport = transports
+            .get(&transport_id)
+            .ok_or(PipelinedEndpointRuntimeSendError::TransportNotFound(
+                transport_id,
+            ))?;
+        let crate::transport::TransportHandle::Udp(udp) = transport else {
+            return Ok(None);
+        };
+
         let route_plan = self.route_plan(transport);
-        let send_plan = route_plan
-            .build_send_plan(send)
-            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
-        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+        let target_snapshot = self.peer_snapshot.prepare_send_snapshot(false, 0);
+        let Some(send_target) =
+            PipelinedEndpointSendTarget::resolve(udp, target_snapshot.fmp_prepared()).await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(PipelinedEndpointResolvedRoute::new(
             route_plan,
-            send_plan,
             self.peer_snapshot.clone(),
-        )
+            send_target,
+        )))
     }
 
     #[cfg(test)]
@@ -326,6 +447,44 @@ impl PipelinedEndpointPeerRuntimeRoute {
             route_plan,
             send_plan,
             self.peer_snapshot,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointResolvedRoute {
+    fn new(
+        route_plan: PipelinedEndpointRoutePlan,
+        peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+        send_target: PipelinedEndpointSendTarget,
+    ) -> Self {
+        Self {
+            route_plan,
+            peer_snapshot,
+            send_target,
+        }
+    }
+
+    fn next_hop_addr(&self) -> NodeAddr {
+        self.route_plan.next_hop_addr
+    }
+
+    fn send_target(&self) -> PipelinedEndpointSendTarget {
+        self.send_target.clone()
+    }
+
+    fn runtime_send_plan<'a>(
+        &self,
+        send: &PipelinedEndpointSend<'a>,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        let send_plan = self
+            .route_plan
+            .build_send_plan(send)
+            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
+        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            self.route_plan,
+            send_plan,
+            self.peer_snapshot.clone(),
         )
     }
 }
@@ -386,6 +545,46 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         scheduling_weight: u8,
         direct_path_blocks_direct_payload: bool,
     ) -> Result<Self, PipelinedEndpointSendPlanError> {
+        Self::new_with_direct_fmp_opt_in(
+            source_addr,
+            send,
+            next_hop_addr,
+            path_mtu,
+            default_ttl,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+            direct_endpoint_fmp_only_enabled(),
+        )
+    }
+
+    fn new_with_direct_fmp_opt_in(
+        source_addr: &NodeAddr,
+        send: &PipelinedEndpointSend<'a>,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        default_ttl: u8,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+        direct_fmp_opt_in: bool,
+    ) -> Result<Self, PipelinedEndpointSendPlanError> {
+        let dispatch_plan = PipelinedEndpointDispatchPlan::new_with_direct_fmp_opt_in(
+            send,
+            next_hop_addr,
+            path_mtu,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+            direct_fmp_opt_in,
+        )
+        .ok_or(PipelinedEndpointSendPlanError::FspPayloadTooLarge)?;
+
+        if let Some(direct_fmp_payload_len) = dispatch_plan.direct_fmp_payload_len() {
+            return Ok(Self {
+                wire_plan: None,
+                dispatch_plan,
+                direct_fmp_payload_len: Some(direct_fmp_payload_len),
+            });
+        }
+
         let wire_plan = PipelinedEndpointWirePlan::new(
             source_addr,
             send.dest_addr,
@@ -396,27 +595,36 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
             default_ttl,
         )
         .ok_or(PipelinedEndpointSendPlanError::FmpPayloadTooLarge)?;
-        let dispatch_plan = PipelinedEndpointDispatchPlan::new(
-            send,
-            next_hop_addr,
-            path_mtu,
-            scheduling_weight,
-            direct_path_blocks_direct_payload,
-        )
-        .ok_or(PipelinedEndpointSendPlanError::FspPayloadTooLarge)?;
 
         Ok(Self {
-            wire_plan,
+            wire_plan: Some(wire_plan),
             dispatch_plan,
+            direct_fmp_payload_len: None,
         })
     }
 
     fn link_plaintext_len(&self) -> usize {
-        self.wire_plan.link_plaintext_len()
+        match &self.wire_plan {
+            Some(wire_plan) => wire_plan.link_plaintext_len(),
+            None => 1 + self.dispatch_plan.payload.len(),
+        }
     }
 
     fn fmp_payload_len(&self) -> u16 {
-        self.wire_plan.fmp_payload_len()
+        self.direct_fmp_payload_len.unwrap_or_else(|| {
+            self.wire_plan
+                .as_ref()
+                .expect("normal pipelined endpoint send keeps a wire plan")
+                .fmp_payload_len()
+        })
+    }
+
+    fn dest_addr(&self) -> NodeAddr {
+        self.dispatch_plan.dest_addr
+    }
+
+    fn direct_fmp_endpoint(&self) -> bool {
+        self.dispatch_plan.direct_fmp_endpoint
     }
 
     fn fsp_reservation_input(&self) -> crate::node::FspWorkerSendReservationInput {
@@ -431,10 +639,14 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         send_target: PipelinedEndpointSendTarget,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
-        debug_assert_eq!(fmp_prepared.payload_len, self.wire_plan.fmp_payload_len());
-        let dest_addr = self.wire_plan.dest_addr;
+        debug_assert_eq!(fmp_prepared.payload_len, self.fmp_payload_len());
+        let originated_bytes = self.link_plaintext_len() + crate::noise::TAG_SIZE;
+        let wire_plan = self
+            .wire_plan
+            .expect("normal pipelined endpoint send keeps a wire plan");
+        let dest_addr = wire_plan.dest_addr;
         let next_hop_addr = self.dispatch_plan.next_hop_addr;
-        let wire = self.wire_plan.build(
+        let wire = wire_plan.build(
             fmp_reservation.header,
             fsp_reservation.header,
             fmp_prepared.timestamp_ms,
@@ -442,14 +654,15 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         let worker_wire = wire.into_worker_wire(fmp_reservation, fsp_reservation);
         debug_assert_eq!(
             worker_wire.link_plaintext_len,
-            self.wire_plan.link_plaintext_len()
+            wire_plan.link_plaintext_len()
         );
 
         let fmp_counter = worker_wire.fmp_counter;
         let fsp_counter = worker_wire.fsp_counter;
         let fmp_wire_capacity = worker_wire.wire_capacity;
-        let originated_bytes = self.link_plaintext_len() + crate::noise::TAG_SIZE;
-        let fsp_bookkeeping = self.dispatch_plan.fsp_bookkeeping_input(fsp_counter);
+        let session_bookkeeping = PipelinedEndpointSessionBookkeeping::Fsp(
+            self.dispatch_plan.fsp_bookkeeping_input(fsp_counter),
+        );
         let worker_job = self.dispatch_plan.into_worker_job(
             worker_wire,
             send_target.into_selected_send_target(),
@@ -463,7 +676,59 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
             fmp_timestamp_ms: fmp_prepared.timestamp_ms,
             fmp_wire_capacity,
             originated_bytes,
-            fsp_bookkeeping,
+            session_bookkeeping,
+            worker_job,
+        }
+    }
+
+    fn into_prepared_direct_fmp_worker_send(
+        self,
+        fmp_prepared: &crate::node::FmpSendPreparation,
+        fmp_reservation: crate::node::PreparedFmpWorkerReservation,
+        send_target: PipelinedEndpointSendTarget,
+        queued_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> PipelinedEndpointPreparedSend {
+        debug_assert!(self.direct_fmp_endpoint());
+        debug_assert_eq!(fmp_prepared.payload_len, self.fmp_payload_len());
+        debug_assert_eq!(fmp_reservation.predicted_bytes, ESTABLISHED_HEADER_SIZE + fmp_prepared.payload_len as usize + crate::noise::TAG_SIZE);
+
+        let dest_addr = self.dispatch_plan.dest_addr;
+        let next_hop_addr = self.dispatch_plan.next_hop_addr;
+        let wire_capacity = fmp_reservation.predicted_bytes;
+        let mut wire_buf = Vec::with_capacity(wire_capacity);
+        wire_buf.extend_from_slice(&fmp_reservation.header);
+        wire_buf.extend_from_slice(&fmp_prepared.timestamp_ms.to_le_bytes());
+        wire_buf.push(LinkMessageType::DirectEndpointData.to_byte());
+        wire_buf.extend_from_slice(self.dispatch_plan.payload.as_slice());
+        debug_assert_eq!(
+            wire_buf.len(),
+            ESTABLISHED_HEADER_SIZE + fmp_prepared.payload_len as usize
+        );
+
+        let worker_job = crate::node::encrypt_worker::FmpSendJob {
+            cipher: fmp_reservation.cipher,
+            counter: fmp_reservation.counter,
+            wire_buf,
+            fsp_seal: None,
+            send_target: send_target.into_selected_send_target(),
+            endpoint_flow_dispatch_key: endpoint_flow_dispatch_key(
+                self.dispatch_plan.payload.as_slice(),
+            )
+            .map(|key| key.get()),
+            bulk_endpoint_data: self.dispatch_plan.bulk_endpoint_data,
+            drop_on_backpressure: self.dispatch_plan.drop_on_backpressure,
+            scheduling_weight: self.dispatch_plan.scheduling_weight,
+            queued_at,
+        };
+
+        PipelinedEndpointPreparedSend {
+            dest_addr,
+            next_hop_addr,
+            fmp_counter: fmp_reservation.counter,
+            fmp_timestamp_ms: fmp_prepared.timestamp_ms,
+            fmp_wire_capacity: wire_capacity,
+            originated_bytes: self.link_plaintext_len() + crate::noise::TAG_SIZE,
+            session_bookkeeping: self.dispatch_plan.direct_fmp_bookkeeping_input(),
             worker_job,
         }
     }
@@ -516,7 +781,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     }
 
     fn dest_addr(&self) -> NodeAddr {
-        self.send_plan.wire_plan.dest_addr
+        self.send_plan.dest_addr()
     }
 
     fn next_hop_addr(&self) -> NodeAddr {
@@ -537,6 +802,10 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.send_plan.fsp_reservation_input()
     }
 
+    fn direct_fmp_endpoint(&self) -> bool {
+        self.send_plan.direct_fmp_endpoint()
+    }
+
     #[cfg(test)]
     fn drop_on_backpressure(&self) -> bool {
         self.send_plan.dispatch_plan.drop_on_backpressure
@@ -547,6 +816,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.send_plan.dispatch_plan.scheduling_weight
     }
 
+    #[cfg(test)]
     fn fmp_prepared(&self) -> &crate::node::FmpSendPreparation {
         self.peer_snapshot.fmp_prepared()
     }
@@ -559,6 +829,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.peer_snapshot.fmp_worker_send_available()
     }
 
+    #[cfg(test)]
     async fn resolve_send_target(
         &self,
         udp: &crate::transport::udp::UdpTransport,
@@ -569,7 +840,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
     fn into_prepared_worker_send(
         self,
         fmp_reservation: crate::node::PreparedFmpWorkerReservation,
-        fsp_reservation: crate::node::session::FspSendReservation,
+        fsp_reservation: Option<crate::node::session::FspSendReservation>,
         send_target: PipelinedEndpointSendTarget,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
@@ -579,6 +850,16 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
             ..
         } = self;
         let fmp_prepared = peer_snapshot.fmp_prepared();
+        if send_plan.direct_fmp_endpoint() {
+            return send_plan.into_prepared_direct_fmp_worker_send(
+                fmp_prepared,
+                fmp_reservation,
+                send_target,
+                queued_at,
+            );
+        }
+        let fsp_reservation =
+            fsp_reservation.expect("normal pipelined endpoint send reserves FSP state");
         send_plan.into_prepared_worker_send(
             fmp_prepared,
             fmp_reservation,

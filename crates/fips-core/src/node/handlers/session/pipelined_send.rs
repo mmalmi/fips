@@ -4,7 +4,7 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
         runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
         send_target: PipelinedEndpointSendTarget,
         fmp_reservation: crate::node::PreparedFmpWorkerReservation,
-        fsp_reservation: crate::node::session::FspSendReservation,
+        fsp_reservation: Option<crate::node::session::FspSendReservation>,
     ) -> Self {
         Self {
             runtime_plan,
@@ -33,18 +33,15 @@ impl<'a> PipelinedEndpointRuntimeSendDispatch<'a> {
         self,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> PipelinedEndpointPreparedSend {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointWorkerJobBuild);
         let Self {
             runtime_plan,
             send_target,
             fmp_reservation,
             fsp_reservation,
         } = self;
-        runtime_plan.into_prepared_worker_send(
-            fmp_reservation,
-            fsp_reservation,
-            send_target,
-            queued_at,
-        )
+        runtime_plan.into_prepared_worker_send(fmp_reservation, fsp_reservation, send_target, queued_at)
     }
 
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
@@ -84,16 +81,27 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
 
         let dest_addr = runtime_plan.dest_addr();
         let next_hop_addr = runtime_plan.next_hop_addr();
-        let Some(fsp_reservation) = sessions
-            .reserve_endpoint_data_fsp_worker_send(&dest_addr, runtime_plan.fsp_reservation_input())
-            .map_err(
-                |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
-                    dest_addr,
-                    error,
-                },
-            )?
-        else {
-            return Ok(None);
+        let fsp_reservation = if runtime_plan.direct_fmp_endpoint() {
+            if !sessions.direct_endpoint_data_can_send(&dest_addr) {
+                return Ok(None);
+            }
+            None
+        } else {
+            let Some(fsp_reservation) = sessions
+                .reserve_endpoint_data_fsp_worker_send(
+                    &dest_addr,
+                    runtime_plan.fsp_reservation_input(),
+                )
+                .map_err(
+                    |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
+                        dest_addr,
+                        error,
+                    },
+                )?
+            else {
+                return Ok(None);
+            };
+            Some(fsp_reservation)
         };
 
         let Some(fmp_reservation) = peers
@@ -117,7 +125,7 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 impl<'a> PipelinedEndpointRuntimeSend<'a> {
     fn new(runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>) -> Self {
         Self { runtime_plan }
@@ -187,25 +195,38 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
         PipelinedEndpointPeerRuntimeSendError,
     > {
+        let Some(resolved_route) = runtime_route
+            .resolve_send_target(transports)
+            .await
+            .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)?
+        else {
+            return Ok(None);
+        };
+        Self::resolve_dispatch_with_resolved_route(&resolved_route, send, sessions, peers)
+    }
+
+    fn resolve_dispatch_with_resolved_route(
+        resolved_route: &PipelinedEndpointResolvedRoute,
+        send: PipelinedEndpointSend<'a>,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<
+        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
+        PipelinedEndpointPeerRuntimeSendError,
+    > {
         let dest_addr = *send.dest_addr;
-        let next_hop_addr = runtime_route.next_hop_addr();
-        let transport_id = runtime_route.transport_id();
-        let transport = transports.get(&transport_id).ok_or(
-            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
-                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
-            ),
-        )?;
-        let runtime_plan = runtime_route
-            .runtime_send_plan(&send, transport)
-            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
+        let next_hop_addr = resolved_route.next_hop_addr();
+        let runtime_plan = resolved_route.runtime_send_plan(&send).map_err(|error| {
+            PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
                 dest_addr,
                 next_hop_addr,
                 error,
-            })?;
+            }
+        })?;
 
-        PipelinedEndpointRuntimeSend::new(runtime_plan)
-            .resolve_dispatch_with_transport(transport, sessions, peers)
-            .await
+        PipelinedEndpointRuntimeSendAttempt::new(runtime_plan, resolved_route.send_target())
+            .reserve(sessions, peers)
+            .map_err(PipelinedEndpointRuntimeSendError::Attempt)
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
@@ -279,8 +300,67 @@ impl<'a> PipelinedEndpointPeerRuntimeSendRequest<'a> {
 }
 
 #[cfg(unix)]
+impl PipelinedEndpointSessionBookkeeping {
+    fn is_fsp(&self) -> bool {
+        matches!(self, Self::Fsp(_))
+    }
+
+    fn is_direct_fmp(&self) -> bool {
+        matches!(self, Self::DirectFmp { .. })
+    }
+
+    fn fsp(self) -> Option<FspSendBookkeepingInput> {
+        match self {
+            Self::Fsp(input) => Some(input),
+            Self::DirectFmp { .. } => None,
+        }
+    }
+
+    fn direct_fmp(self) -> Option<(usize, u64, NodeAddr)> {
+        match self {
+            Self::DirectFmp {
+                payload_len,
+                now_ms,
+                next_hop,
+            } => Some((payload_len, now_ms, next_hop)),
+            Self::Fsp(_) => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointPreparedBookkeeping {
+    fn record_session_send(&self, node: &mut Node) {
+        match self.session_bookkeeping {
+            PipelinedEndpointSessionBookkeeping::Fsp(input) => {
+                let _ = node
+                    .sessions
+                    .record_fsp_send_bookkeeping(&self.dest_addr, input);
+            }
+            PipelinedEndpointSessionBookkeeping::DirectFmp {
+                payload_len,
+                now_ms,
+                next_hop,
+            } => {
+                let _ = node.sessions.record_direct_endpoint_data_send(
+                    &self.dest_addr,
+                    payload_len,
+                    now_ms,
+                    next_hop,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 impl PipelinedEndpointPreparedSend {
-    fn record_bookkeeping(self, node: &mut Node) -> crate::node::encrypt_worker::FmpSendJob {
+    fn into_bookkeeping_and_job(
+        self,
+    ) -> (
+        PipelinedEndpointPreparedBookkeeping,
+        crate::node::encrypt_worker::FmpSendJob,
+    ) {
         let PipelinedEndpointPreparedSend {
             dest_addr,
             next_hop_addr,
@@ -288,28 +368,115 @@ impl PipelinedEndpointPreparedSend {
             fmp_timestamp_ms,
             fmp_wire_capacity,
             originated_bytes,
-            fsp_bookkeeping,
+            session_bookkeeping,
             worker_job,
         } = self;
 
+        (
+            PipelinedEndpointPreparedBookkeeping {
+                dest_addr,
+                next_hop_addr,
+                fmp_counter,
+                fmp_timestamp_ms,
+                fmp_wire_capacity,
+                originated_bytes,
+                session_bookkeeping,
+            },
+            worker_job,
+        )
+    }
+
+    fn record_bookkeeping(self, node: &mut Node) -> crate::node::encrypt_worker::FmpSendJob {
+        let (bookkeeping, worker_job) = self.into_bookkeeping_and_job();
+
         let _ = node.peers.record_fmp_send_bookkeeping(
-            &next_hop_addr,
-            fmp_counter,
-            fmp_timestamp_ms,
-            fmp_wire_capacity,
+            &bookkeeping.next_hop_addr,
+            bookkeeping.fmp_counter,
+            bookkeeping.fmp_timestamp_ms,
+            bookkeeping.fmp_wire_capacity,
         );
         node.stats_mut()
             .forwarding
-            .record_originated(originated_bytes);
+            .record_originated(bookkeeping.originated_bytes);
 
-        let _ = node
-            .sessions
-            .record_fsp_send_bookkeeping(&dest_addr, fsp_bookkeeping);
+        bookkeeping.record_session_send(node);
 
         worker_job
     }
 
+    fn record_bookkeeping_many(
+        records: &[PipelinedEndpointPreparedBookkeeping],
+        node: &mut Node,
+    ) {
+        let Some(first) = records.first().copied() else {
+            return;
+        };
+
+        if records
+            .iter()
+            .all(|record| {
+                record.dest_addr == first.dest_addr && record.next_hop_addr == first.next_hop_addr
+            })
+        {
+            let _ = node.peers.record_fmp_send_bookkeeping_batch(
+                &first.next_hop_addr,
+                records.iter().map(|record| {
+                    (
+                        record.fmp_counter,
+                        record.fmp_timestamp_ms,
+                        record.fmp_wire_capacity,
+                    )
+                }),
+            );
+            let originated_bytes = records
+                .iter()
+                .map(|record| record.originated_bytes)
+                .sum::<usize>();
+            node.stats_mut()
+                .forwarding
+                .record_originated_batch(records.len(), originated_bytes);
+            if records.iter().all(|record| record.session_bookkeeping.is_fsp()) {
+                let _ = node.sessions.record_fsp_send_bookkeeping_batch(
+                    &first.dest_addr,
+                    records
+                        .iter()
+                        .filter_map(|record| record.session_bookkeeping.fsp()),
+                );
+            } else if records
+                .iter()
+                .all(|record| record.session_bookkeeping.is_direct_fmp())
+            {
+                let _ = node.sessions.record_direct_endpoint_data_send_batch(
+                    &first.dest_addr,
+                    records
+                        .iter()
+                        .filter_map(|record| record.session_bookkeeping.direct_fmp()),
+                );
+            } else {
+                for record in records {
+                    record.record_session_send(node);
+                }
+            }
+            return;
+        }
+
+        for record in records {
+            let _ = node.peers.record_fmp_send_bookkeeping(
+                &record.next_hop_addr,
+                record.fmp_counter,
+                record.fmp_timestamp_ms,
+                record.fmp_wire_capacity,
+            );
+            node.stats_mut()
+                .forwarding
+                .record_originated(record.originated_bytes);
+            record.record_session_send(node);
+        }
+    }
+
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
+        let _t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointWorkerCommit);
         let mut worker_job = self.record_bookkeeping(node);
         if worker_job.queued_at.is_none() {
             worker_job.queued_at = crate::perf_profile::stamp();
@@ -334,15 +501,22 @@ impl PipelinedEndpointPreparedSend {
             return;
         }
 
+        let _t = crate::perf_profile::BatchTimer::start(
+            crate::perf_profile::Stage::EndpointWorkerCommit,
+            sends.len(),
+        );
         let queued_at = crate::perf_profile::stamp();
+        let mut records = Vec::with_capacity(sends.len());
         let jobs = sends
             .into_iter()
             .map(|send| {
-                let mut worker_job = send.record_bookkeeping(node);
+                let (bookkeeping, mut worker_job) = send.into_bookkeeping_and_job();
+                records.push(bookkeeping);
                 worker_job.queued_at = queued_at;
                 worker_job
             })
             .collect();
+        Self::record_bookkeeping_many(&records, node);
         workers.dispatch_bulk_batch(jobs);
     }
 }
@@ -352,7 +526,7 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
     fn new(
         source_addr: &NodeAddr,
         dest_addr: &NodeAddr,
-        inner_plaintext: &'a [u8],
+        inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
         my_coords: Option<&'a crate::tree::TreeCoordinate>,
         dest_coords: Option<&'a crate::tree::TreeCoordinate>,
         path_mtu: u16,
@@ -406,7 +580,7 @@ impl<'a> PipelinedEndpointWirePlan<'a> {
             encode_coords(dst, &mut wire_buf);
         }
         let fsp_plaintext_offset = wire_buf.len();
-        wire_buf.extend_from_slice(self.inner_plaintext);
+        self.inner_plaintext.write_to(&mut wire_buf);
 
         PipelinedEndpointWire {
             wire_buf,
@@ -460,6 +634,7 @@ impl PipelinedEndpointWorkerWire {
         send_target: crate::node::encrypt_worker::SelectedSendTarget,
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
+        endpoint_flow_dispatch_key: Option<u64>,
         scheduling_weight: u8,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> crate::node::encrypt_worker::FmpSendJob {
@@ -469,6 +644,7 @@ impl PipelinedEndpointWorkerWire {
             wire_buf: self.wire_buf,
             fsp_seal: Some(self.fsp_seal),
             send_target,
+            endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,

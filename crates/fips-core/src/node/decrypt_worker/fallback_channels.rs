@@ -70,58 +70,79 @@ impl DecryptWorkerFallbackSender {
 
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
         let lane = decrypt_worker_event_lane(&event);
-        let packet_count = event.packet_count();
-        let drop_event = decrypt_worker_event_drop_event(&event, lane);
-        let bulk_lane = if matches!(lane, DecryptWorkerLane::Bulk) {
-            Some(decrypt_worker_event_return_bulk_lane(&event))
-        } else {
-            None
-        };
         event.set_trace_enqueued_at(crate::perf_profile::stamp());
-        if let Some(bulk_lane) = bulk_lane {
-            let queued_packets = self.return_bulk_queued_packets(bulk_lane);
-            let Some(previous) = try_reserve_bulk_packets_with_previous(
-                queued_packets,
-                self.bulk_packet_cap,
-                packet_count,
-            ) else {
-                record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
-                return false;
-            };
-            let queued = previous.saturating_add(packet_count);
-            if bulk_lane == DecryptWorkerReturnBulkLane::Fallback
-                && previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
-                && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
-            {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFallbackBacklogHigh,
-                );
-            }
+        match lane {
+            DecryptWorkerLane::Priority => self.send_priority_event(event),
+            DecryptWorkerLane::Bulk => self.send_bulk_event(event),
         }
-        let result = match lane {
-            DecryptWorkerLane::Priority => self.priority.try_send(event),
-            DecryptWorkerLane::Bulk => match bulk_lane.expect("bulk event has return bulk lane") {
-                DecryptWorkerReturnBulkLane::Fallback => self.bulk.try_send(event),
-                DecryptWorkerReturnBulkLane::Authenticated => {
-                    self.authenticated_bulk.try_send(event)
+    }
+
+    fn send_priority_event(&self, event: DecryptWorkerEvent) -> bool {
+        match self.priority.try_send(event) {
+            Ok(()) => true,
+            // Worker completions are sent from decrypt OS threads. A full
+            // priority return lane should slow those workers, not drop
+            // control/rekey/liveness progress.
+            Err(TokioTrySendError::Full(event)) => match self.priority.blocking_send(event) {
+                Ok(()) => true,
+                Err(_) => {
+                    debug!("decrypt fallback receiver gone; dropping priority worker event");
+                    false
                 }
             },
+            Err(TokioTrySendError::Closed(_)) => {
+                debug!("decrypt fallback receiver gone; dropping priority worker event");
+                false
+            }
+        }
+    }
+
+    fn send_bulk_event(&self, event: DecryptWorkerEvent) -> bool {
+        let packet_count = event.packet_count();
+        let drop_event = decrypt_worker_event_drop_event(&event, DecryptWorkerLane::Bulk);
+        let bulk_lane = decrypt_worker_event_return_bulk_lane(&event);
+        let queued_packets = self.return_bulk_queued_packets(bulk_lane);
+        let Some(previous) = try_reserve_bulk_packets_with_previous(
+            queued_packets,
+            self.bulk_packet_cap,
+            packet_count,
+        ) else {
+            record_decrypt_worker_return_drop_count(
+                drop_event,
+                DecryptWorkerLane::Bulk,
+                packet_count,
+            );
+            return false;
+        };
+        let queued = previous.saturating_add(packet_count);
+        if bulk_lane == DecryptWorkerReturnBulkLane::Fallback
+            && previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+            && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+        {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFallbackBacklogHigh,
+            );
+        }
+
+        let result = match bulk_lane {
+            DecryptWorkerReturnBulkLane::Fallback => self.bulk.try_send(event),
+            DecryptWorkerReturnBulkLane::Authenticated => self.authenticated_bulk.try_send(event),
         };
         match result {
             Ok(()) => true,
             Err(TokioTrySendError::Full(_)) => {
-                if let Some(bulk_lane) = bulk_lane {
-                    release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
-                }
-                record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
+                release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
+                record_decrypt_worker_return_drop_count(
+                    drop_event,
+                    DecryptWorkerLane::Bulk,
+                    packet_count,
+                );
                 false
             }
             Err(TokioTrySendError::Closed(_)) => {
-                if let Some(bulk_lane) = bulk_lane {
-                    release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
-                }
+                release_bulk_packets(self.return_bulk_queued_packets(bulk_lane), packet_count);
                 debug!(
-                    ?lane,
+                    lane = ?DecryptWorkerLane::Bulk,
                     "decrypt fallback receiver gone; dropping worker event"
                 );
                 false
@@ -167,6 +188,8 @@ impl DecryptWorkerFallbackReceivers {
 fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => receive.lane,
+        DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => endpoint.lane,
+        DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
@@ -189,6 +212,8 @@ fn decrypt_worker_event_return_bulk_lane(
 ) -> DecryptWorkerReturnBulkLane {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::DirectFmpEndpointData(_)
+        | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
@@ -206,6 +231,8 @@ fn decrypt_worker_event_drop_event(
 ) -> crate::perf_profile::Event {
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+        | DecryptWorkerEvent::DirectFmpEndpointData(_)
+        | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)

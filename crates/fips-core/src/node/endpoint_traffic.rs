@@ -30,6 +30,15 @@ pub struct EndpointPayloadClass {
     drop_on_backpressure: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::node) struct EndpointFlowDispatchKey(u64);
+
+impl EndpointFlowDispatchKey {
+    pub(in crate::node) fn get(self) -> u64 {
+        self.0
+    }
+}
+
 impl EndpointPayloadClass {
     pub fn lane(self) -> EndpointPayloadLane {
         self.lane
@@ -48,7 +57,7 @@ impl EndpointPayloadClass {
 pub(in crate::node) struct FmpWorkerSendReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) cipher: std::sync::Arc<ring::aead::LessSafeKey>,
 }
 
 #[cfg(unix)]
@@ -58,7 +67,7 @@ pub(in crate::node) fn reserve_fmp_worker_send(
     flags: u8,
     payload_len: u16,
 ) -> Result<Option<FmpWorkerSendReservation>, crate::noise::NoiseError> {
-    let Some(cipher) = session.send_cipher_clone() else {
+    let Some(cipher) = session.send_cipher_handle() else {
         return Ok(None);
     };
     let counter = session.take_send_counter()?;
@@ -103,6 +112,12 @@ pub(in crate::node) fn fmp_plaintext_is_bulk_session_datagram(plaintext: &[u8]) 
     FspCommonPrefix::parse(fsp_payload).is_some_and(|prefix| {
         prefix.phase == FSP_PHASE_ESTABLISHED && !prefix.is_unencrypted() && !prefix.has_coords()
     })
+}
+
+pub(in crate::node) fn endpoint_flow_dispatch_key(
+    payload: &[u8],
+) -> Option<EndpointFlowDispatchKey> {
+    endpoint_payload_flow_parts(payload).map(|parts| EndpointFlowDispatchKey(parts.hash()))
 }
 
 /// Classify an app-owned endpoint payload for queue admission and pressure policy.
@@ -155,6 +170,7 @@ pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointComma
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
     traffic_class: EndpointPayloadClass,
+    direct_fmp_endpoint_allowed: bool,
 }
 
 impl EndpointDataPayload {
@@ -163,14 +179,26 @@ impl EndpointDataPayload {
         Self {
             bytes,
             traffic_class,
+            direct_fmp_endpoint_allowed: false,
         }
     }
 
-    pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
+    pub(crate) fn from_classified_with_direct_fmp_endpoint_allowed(
+        bytes: Vec<u8>,
+        traffic_class: EndpointPayloadClass,
+        direct_fmp_endpoint_allowed: bool,
+    ) -> Self {
         Self {
             bytes,
             traffic_class,
+            direct_fmp_endpoint_allowed,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allow_direct_fmp_endpoint_data(mut self) -> Self {
+        self.direct_fmp_endpoint_allowed = true;
+        self
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
@@ -183,6 +211,10 @@ impl EndpointDataPayload {
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.traffic_class.drop_on_backpressure()
+    }
+
+    pub(crate) fn direct_fmp_endpoint_allowed(&self) -> bool {
+        self.direct_fmp_endpoint_allowed
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -558,6 +590,116 @@ fn parse_endpoint_payload_ip_proto(payload: &[u8]) -> Option<(u8, usize)> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct EndpointFlowParts<'a> {
+    version: u8,
+    proto: u8,
+    src: &'a [u8],
+    dst: &'a [u8],
+    ports: Option<[u8; 4]>,
+}
+
+impl EndpointFlowParts<'_> {
+    fn hash(self) -> u64 {
+        let mut h = EndpointFlowHasher::default();
+        h.write_u8(self.version);
+        h.write_u8(self.proto);
+        h.write(self.src);
+        h.write(self.dst);
+        if let Some(ports) = self.ports {
+            h.write(&ports);
+        }
+        h.finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EndpointFlowHasher(u64);
+
+impl Default for EndpointFlowHasher {
+    fn default() -> Self {
+        Self(0x9ae1_6a3b_2f90_404f)
+    }
+}
+
+impl EndpointFlowHasher {
+    fn write_u8(&mut self, value: u8) {
+        self.write(&[value]);
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x1000_0000_01b3);
+            self.0 ^= self.0 >> 32;
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+fn endpoint_payload_flow_parts(payload: &[u8]) -> Option<EndpointFlowParts<'_>> {
+    const IPV4_MIN_HEADER_LEN: usize = 20;
+    const IPV6_HEADER_LEN: usize = 40;
+
+    let version = payload.first().copied()? >> 4;
+    match version {
+        4 => {
+            if payload.len() < IPV4_MIN_HEADER_LEN {
+                return None;
+            }
+            let header_len = usize::from(payload[0] & 0x0f) * 4;
+            if header_len < IPV4_MIN_HEADER_LEN || payload.len() < header_len {
+                return None;
+            }
+            let fragment_bits = u16::from_be_bytes([payload[6], payload[7]]) & 0x3fff;
+            Some(EndpointFlowParts {
+                version,
+                proto: payload[9],
+                src: &payload[12..16],
+                dst: &payload[16..20],
+                ports: if fragment_bits == 0 {
+                    endpoint_transport_ports(payload, payload[9], header_len)
+                } else {
+                    None
+                },
+            })
+        }
+        6 => {
+            if payload.len() < IPV6_HEADER_LEN {
+                return None;
+            }
+            let (proto, offset, fragmented) = ipv6_payload_next_header_with_fragment(payload)?;
+            Some(EndpointFlowParts {
+                version,
+                proto,
+                src: &payload[8..24],
+                dst: &payload[24..40],
+                ports: if fragmented {
+                    None
+                } else {
+                    endpoint_transport_ports(payload, proto, offset)
+                },
+            })
+        }
+        _ => None,
+    }
+}
+
+fn endpoint_transport_ports(payload: &[u8], proto: u8, transport_offset: usize) -> Option<[u8; 4]> {
+    const IPPROTO_TCP: u8 = 6;
+    const IPPROTO_UDP: u8 = 17;
+    const IPPROTO_SCTP: u8 = 132;
+
+    if !matches!(proto, IPPROTO_TCP | IPPROTO_UDP | IPPROTO_SCTP) {
+        return None;
+    }
+    let ports = payload.get(transport_offset..transport_offset + 4)?;
+    Some([ports[0], ports[1], ports[2], ports[3]])
+}
+
 #[cfg(test)]
 pub(in crate::node) fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
     const IPPROTO_TCP: u8 = 6;
@@ -565,6 +707,11 @@ pub(in crate::node) fn endpoint_payload_is_tcp(payload: &[u8]) -> bool {
 }
 
 fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
+    ipv6_payload_next_header_with_fragment(payload)
+        .map(|(next_header, offset, _)| (next_header, offset))
+}
+
+fn ipv6_payload_next_header_with_fragment(payload: &[u8]) -> Option<(u8, usize, bool)> {
     const IPV6_HEADER_LEN: usize = 40;
     const IPV6_FRAGMENT_HEADER_LEN: usize = 8;
 
@@ -575,11 +722,13 @@ fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
     let mut next_header = payload[6];
     let mut offset = IPV6_HEADER_LEN;
     let mut extension_count = 0usize;
+    let mut fragmented = false;
     while ipv6_extension_header_is_skippable(next_header) {
         if next_header == 44 {
             if payload.len() < offset + IPV6_FRAGMENT_HEADER_LEN {
                 return None;
             }
+            fragmented = true;
             next_header = payload[offset];
             offset += IPV6_FRAGMENT_HEADER_LEN;
         } else if next_header == 51 {
@@ -609,7 +758,7 @@ fn ipv6_payload_next_header(payload: &[u8]) -> Option<(u8, usize)> {
         }
     }
 
-    Some((next_header, offset))
+    Some((next_header, offset, fragmented))
 }
 
 fn ipv6_extension_header_is_skippable(next_header: u8) -> bool {

@@ -60,11 +60,12 @@
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
         let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
         let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let endpoint_payload = ipv4_icmp_echo_packet(600);
         let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
             0x0102_0304,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
             0x01,
-            b"direct endpoint",
+            &endpoint_payload,
         );
         let fsp_counter = fsp_sender.current_send_counter();
         let fsp_header = crate::node::session_wire::build_fsp_header(
@@ -94,6 +95,11 @@
         let fmp_counter = 77;
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        assert!(
+            wire.len() > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            "test must wrap a priority endpoint payload in a bulk-sized encrypted envelope"
+        );
+        let wire_len = wire.len();
         let session_key = test_session_key(1, 9);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let job = DecryptJob::new(
@@ -115,11 +121,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -148,16 +150,18 @@
                 assert_eq!(direct.fmp.source_peer, previous_hop_peer);
                 assert_eq!(direct.fmp.fmp_counter, fmp_counter);
                 assert_eq!(direct.fmp.inner_timestamp_ms, inner_timestamp_ms);
+                assert_eq!(direct.fmp.packet_len, wire_len);
                 assert_eq!(direct.receive_sync.counter, fsp_counter);
                 assert_eq!(direct.receive_sync.slot, EpochSlot::Current);
                 assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
                 assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
-                assert_eq!(direct.body_len, b"direct endpoint".len());
+                assert_eq!(direct.body_len, endpoint_payload.len());
                 assert!(direct.receive_sync.spin_bit);
+                assert_eq!(direct.lane, DecryptWorkerLane::Priority);
                 match direct.delivery {
                     DecryptDirectSessionDelivery::EndpointData(delivery) => {
                         assert_eq!(delivery.source_peer, source_peer);
-                        assert_eq!(delivery.payload, b"direct endpoint");
+                        assert_eq!(delivery.payload, endpoint_payload);
                     }
                     DecryptDirectSessionDelivery::Ipv6Packet(_) => {
                         panic!("endpoint data must not become an IPv6 packet")
@@ -426,11 +430,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -564,11 +564,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -602,6 +598,8 @@
                 panic!("FSP AEAD failure must not bounce a possibly mutated packet")
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::DirectFmpEndpointData(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

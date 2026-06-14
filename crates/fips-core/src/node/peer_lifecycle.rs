@@ -468,6 +468,36 @@ impl PeerLifecycleRegistry {
         Some(result)
     }
 
+    pub(in crate::node) fn record_fmp_send_bookkeeping_batch<I>(
+        &mut self,
+        node_addr: &NodeAddr,
+        records: I,
+    ) -> Option<usize>
+    where
+        I: IntoIterator<Item = (u64, u32, usize)>,
+    {
+        let peer = self.active.get_mut(node_addr)?;
+        let mut packets = 0usize;
+        let mut bytes = 0usize;
+
+        {
+            let mut mmp = peer.mmp_mut();
+            for (fmp_counter, timestamp_ms, bytes_sent) in records {
+                packets += 1;
+                bytes += bytes_sent;
+                if let Some(mmp) = mmp.as_mut() {
+                    mmp.sender
+                        .record_sent(fmp_counter, timestamp_ms, bytes_sent);
+                }
+            }
+        }
+
+        if packets > 0 {
+            peer.link_stats_mut().record_sent_batch(packets, bytes);
+        }
+        Some(packets)
+    }
+
     pub(in crate::node) fn prepare_fmp_send(
         &self,
         node_addr: &NodeAddr,

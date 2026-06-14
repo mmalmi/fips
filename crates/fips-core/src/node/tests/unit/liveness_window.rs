@@ -235,6 +235,17 @@ fn endpoint_payload_tcp_classifier_handles_common_ip_packets() {
 
 #[test]
 fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
+    fn ipv4_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
+        let total_len = 20 + 20 + tcp_payload_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        packet[9] = 6;
+        packet[20 + 12] = 5 << 4;
+        packet[20 + 13] = flags;
+        packet
+    }
+
     fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
         let tcp_len = 20 + tcp_payload_len;
         let mut packet = vec![0u8; 40 + tcp_len];
@@ -255,12 +266,30 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
         EndpointCommandLane::Priority
     );
 
+    let ipv4_tcp_ack_packet = ipv4_tcp_packet(0x10, 0);
+    let ipv4_tcp_ack = classify_endpoint_payload(&ipv4_tcp_ack_packet);
+    assert_eq!(ipv4_tcp_ack.lane(), EndpointPayloadLane::Priority);
+    assert!(!ipv4_tcp_ack.drop_on_backpressure());
+    assert_eq!(
+        endpoint_command_lane_for_payload(&ipv4_tcp_ack_packet),
+        EndpointCommandLane::Priority
+    );
+
     let tcp_syn_packet = ipv6_tcp_packet(0x02, 0);
     let tcp_syn = classify_endpoint_payload(&tcp_syn_packet);
     assert_eq!(tcp_syn.lane(), EndpointPayloadLane::Priority);
     assert!(!tcp_syn.drop_on_backpressure());
     assert_eq!(
         endpoint_command_lane_for_payload(&tcp_syn_packet),
+        EndpointCommandLane::Priority
+    );
+
+    let ipv4_tcp_syn_packet = ipv4_tcp_packet(0x02, 0);
+    let ipv4_tcp_syn = classify_endpoint_payload(&ipv4_tcp_syn_packet);
+    assert_eq!(ipv4_tcp_syn.lane(), EndpointPayloadLane::Priority);
+    assert!(!ipv4_tcp_syn.drop_on_backpressure());
+    assert_eq!(
+        endpoint_command_lane_for_payload(&ipv4_tcp_syn_packet),
         EndpointCommandLane::Priority
     );
 
@@ -273,12 +302,30 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
         EndpointCommandLane::Priority
     );
 
+    let ipv4_tiny_tcp_data_packet = ipv4_tcp_packet(0x18, 64);
+    let ipv4_tiny_tcp_data = classify_endpoint_payload(&ipv4_tiny_tcp_data_packet);
+    assert_eq!(ipv4_tiny_tcp_data.lane(), EndpointPayloadLane::Priority);
+    assert!(!ipv4_tiny_tcp_data.drop_on_backpressure());
+    assert_eq!(
+        endpoint_command_lane_for_payload(&ipv4_tiny_tcp_data_packet),
+        EndpointCommandLane::Priority
+    );
+
     let bulk_tcp_data_packet = ipv6_tcp_packet(0x18, 512);
     let bulk_tcp_data = classify_endpoint_payload(&bulk_tcp_data_packet);
     assert_eq!(bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
     assert!(!bulk_tcp_data.drop_on_backpressure());
     assert_eq!(
         endpoint_command_lane_for_payload(&bulk_tcp_data_packet),
+        EndpointCommandLane::Bulk
+    );
+
+    let ipv4_bulk_tcp_data_packet = ipv4_tcp_packet(0x18, 512);
+    let ipv4_bulk_tcp_data = classify_endpoint_payload(&ipv4_bulk_tcp_data_packet);
+    assert_eq!(ipv4_bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
+    assert!(!ipv4_bulk_tcp_data.drop_on_backpressure());
+    assert_eq!(
+        endpoint_command_lane_for_payload(&ipv4_bulk_tcp_data_packet),
         EndpointCommandLane::Bulk
     );
 
@@ -328,6 +375,97 @@ fn endpoint_payload_traffic_classifier_prioritizes_ipv4_icmp_ping() {
         endpoint_command_lane_for_payload(&icmpv4_packet),
         EndpointCommandLane::Priority
     );
+}
+
+#[test]
+fn endpoint_flow_dispatch_key_tracks_inner_ip_transport_flow() {
+    fn ipv6_tcp_flow(src_port: u16, dst_port: u16, tcp_payload_len: usize) -> Vec<u8> {
+        let tcp_len = 20 + tcp_payload_len;
+        let mut packet = vec![0u8; 40 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(tcp_len as u16).to_be_bytes());
+        packet[6] = 6;
+        packet[8..24]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        packet[24..40]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        packet[40..42].copy_from_slice(&src_port.to_be_bytes());
+        packet[42..44].copy_from_slice(&dst_port.to_be_bytes());
+        packet[40 + 12] = 5 << 4;
+        packet[40 + 13] = 0x18;
+        packet
+    }
+
+    fn ipv4_tcp_flow(src_port: u16, dst_port: u16, tcp_payload_len: usize) -> Vec<u8> {
+        let total_len = 20 + 20 + tcp_payload_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        packet[9] = 6;
+        packet[12..16].copy_from_slice(&[192, 0, 2, 1]);
+        packet[16..20].copy_from_slice(&[192, 0, 2, 2]);
+        packet[20..22].copy_from_slice(&src_port.to_be_bytes());
+        packet[22..24].copy_from_slice(&dst_port.to_be_bytes());
+        packet[20 + 12] = 5 << 4;
+        packet[20 + 13] = 0x18;
+        packet
+    }
+
+    fn ipv4_tcp_fragment(fake_src_port: u16, fake_dst_port: u16, fragment_bits: u16) -> Vec<u8> {
+        let mut packet = ipv4_tcp_flow(fake_src_port, fake_dst_port, 8);
+        packet[6..8].copy_from_slice(&fragment_bits.to_be_bytes());
+        packet
+    }
+
+    fn ipv6_tcp_fragment(fake_src_port: u16, fake_dst_port: u16) -> Vec<u8> {
+        let tcp_len = 20;
+        let mut packet = vec![0u8; 40 + 8 + tcp_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&((8 + tcp_len) as u16).to_be_bytes());
+        packet[6] = 44;
+        packet[8..24]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        packet[24..40]
+            .copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        packet[40] = 6;
+        packet[42..44].copy_from_slice(&1u16.to_be_bytes());
+        packet[48..50].copy_from_slice(&fake_src_port.to_be_bytes());
+        packet[50..52].copy_from_slice(&fake_dst_port.to_be_bytes());
+        packet[48 + 12] = 5 << 4;
+        packet[48 + 13] = 0x18;
+        packet
+    }
+
+    let flow_a = ipv6_tcp_flow(1000, 443, 512);
+    let same_flow_larger_payload = ipv6_tcp_flow(1000, 443, 1024);
+    let flow_b = ipv6_tcp_flow(1001, 443, 512);
+    let ipv4_first_fragment = ipv4_tcp_fragment(1000, 443, 0x2000);
+    let ipv4_later_fragment = ipv4_tcp_fragment(2000, 8443, 0x0001);
+    let ipv6_first_fragment = ipv6_tcp_fragment(1000, 443);
+    let ipv6_later_fragment = ipv6_tcp_fragment(2000, 8443);
+
+    assert_eq!(
+        endpoint_flow_dispatch_key(&flow_a).map(|key| key.get()),
+        endpoint_flow_dispatch_key(&same_flow_larger_payload).map(|key| key.get()),
+        "payload length must not split one TCP stream across workers"
+    );
+    assert_ne!(
+        endpoint_flow_dispatch_key(&flow_a).map(|key| key.get()),
+        endpoint_flow_dispatch_key(&flow_b).map(|key| key.get()),
+        "different TCP streams may use different worker admission keys"
+    );
+    assert_eq!(
+        endpoint_flow_dispatch_key(&ipv4_first_fragment).map(|key| key.get()),
+        endpoint_flow_dispatch_key(&ipv4_later_fragment).map(|key| key.get()),
+        "IPv4 fragments must not split one fragmented datagram by apparent port bytes"
+    );
+    assert_eq!(
+        endpoint_flow_dispatch_key(&ipv6_first_fragment).map(|key| key.get()),
+        endpoint_flow_dispatch_key(&ipv6_later_fragment).map(|key| key.get()),
+        "IPv6 fragments must not split one fragmented datagram by apparent port bytes"
+    );
+    assert!(endpoint_flow_dispatch_key(&ipv4_tcp_flow(1000, 443, 512)).is_some());
+    assert!(endpoint_flow_dispatch_key(&[0, 1, 2, 3]).is_none());
 }
 
 #[tokio::test]

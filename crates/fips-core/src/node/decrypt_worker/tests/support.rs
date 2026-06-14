@@ -27,6 +27,24 @@
     }
 
     #[test]
+    fn fmp_aead_helper_default_is_linux_only_and_cpu_bounded() {
+        assert_eq!(default_fmp_aead_helper_count_for(false, 128), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 1), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 3), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 4), 2);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 128), 2);
+    }
+
+    #[test]
+    fn fmp_aead_helper_env_can_disable_or_override_default() {
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("0"), 2), 0);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("1"), 2), 1);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("99"), 2), 64);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("bad"), 2), 2);
+        assert_eq!(fmp_aead_helper_count_from_raw(None, 2), 2);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -36,6 +54,17 @@
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
             DecryptWorkerLane::Bulk
         );
+    }
+
+    fn ipv4_icmp_echo_packet(payload_len: usize) -> Vec<u8> {
+        let total_len = 20 + 8 + payload_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        packet[8] = 64;
+        packet[9] = 1;
+        packet[20] = 8;
+        packet
     }
 
     #[test]
@@ -74,6 +103,8 @@
     ) {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
+            bounded::<FmpAeadCompletion>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
@@ -81,12 +112,14 @@
                     vec![DecryptWorkerSender {
                         priority: priority_tx,
                         bulk: bulk_tx,
+                        fmp_aead_completion: fmp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
                     }]
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fmp_aead_helpers: None,
             },
             priority_rx,
             bulk_rx,
@@ -107,10 +140,13 @@
         for _ in 0..worker_count {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
+                bounded::<FmpAeadCompletion>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fmp_aead_completion: fmp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
             });
@@ -121,6 +157,7 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fmp_aead_helpers: None,
             },
             priority_receivers,
             bulk_receivers,
@@ -137,6 +174,11 @@
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (bulk_tx, bulk_rx, bulk_queued_packets)
+    }
+
+    fn test_fmp_aead_completion_lane(cap: usize) -> Receiver<FmpAeadCompletion> {
+        let (_completion_tx, completion_rx) = bounded::<FmpAeadCompletion>(cap);
+        completion_rx
     }
 
     fn queue_bulk_item_for_test(
@@ -160,11 +202,11 @@
     fn test_owned_session_state() -> OwnedSessionState {
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        }
+        OwnedSessionState::new(
+            LessSafeKey::new(unbound).into(),
+            ReplayWindow::new(),
+            test_source_peer(),
+        )
     }
 
     #[test]
@@ -172,11 +214,11 @@
         let source_peer = test_source_peer();
         let key_bytes = [8u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        let state = OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
-            fmp_replay: ReplayWindow::new(),
+        let state = OwnedSessionState::new(
+            LessSafeKey::new(unbound).into(),
+            ReplayWindow::new(),
             source_peer,
-        };
+        );
 
         assert_eq!(state.source_peer, source_peer);
     }
@@ -209,6 +251,26 @@
 
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+    }
+
+    fn dummy_opened_fmp_job(plaintext_len: usize) -> OpenedFmpJob {
+        let packet_len = crate::node::wire::ESTABLISHED_HEADER_SIZE + plaintext_len.max(1);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        OpenedFmpJob {
+            packet_data: vec![0; packet_len],
+            lane: decrypt_worker_packet_lane(packet_len),
+            source_peer: test_source_peer(),
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: *test_source_peer().node_addr(),
+            timestamp_ms: 1_000,
+            packet_len,
+            fmp_counter: 1,
+            fmp_flags: 0,
+            fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fmp_plaintext_len: plaintext_len,
+            fallback_tx,
+        }
     }
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
@@ -265,7 +327,7 @@
     ) -> DecryptWorkerOutput {
         let source_addr = *source_peer.node_addr();
         let payload_len = payload.len();
-        let commit = DecryptDirectSessionCommit::for_test(
+        let mut commit = DecryptDirectSessionCommit::for_test(
             DecryptFmpBookkeeping {
                 source_peer,
                 transport_id: TransportId::new(1),
@@ -292,6 +354,7 @@
             payload_len,
             false,
         );
+        commit.lane = endpoint_payload_decrypt_worker_lane(payload);
 
         DecryptWorkerOutput {
             fallback_tx,
@@ -306,6 +369,41 @@
                     payload.to_vec(),
                 )),
             }),
+        }
+    }
+
+    fn dummy_direct_fmp_endpoint_output(
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        lane: DecryptWorkerLane,
+        payload: Vec<u8>,
+    ) -> DecryptWorkerOutput {
+        let payload_len = payload.len();
+        let packet_len = match lane {
+            DecryptWorkerLane::Priority => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            DecryptWorkerLane::Bulk => DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+        };
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::DirectFmpEndpointData(DecryptDirectFmpEndpointData {
+                fmp: DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 1_000,
+                    packet_len,
+                    fmp_counter,
+                    inner_timestamp_ms: fmp_counter as u32,
+                    fmp_flags: 0,
+                },
+                packet_data: payload,
+                payload_offset: 0,
+                payload_len,
+                lane,
+                trace_enqueued_at: None,
+            }),
+            direct_delivery: None,
         }
     }
 

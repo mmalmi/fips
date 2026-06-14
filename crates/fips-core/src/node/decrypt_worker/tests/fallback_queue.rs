@@ -226,6 +226,114 @@
     }
 
     #[test]
+    fn decrypt_worker_authenticated_return_wait_metrics_split_event_kinds() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let fmp = || DecryptFmpBookkeeping {
+            source_peer,
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            packet_timestamp_ms: 1_000,
+            packet_len: DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+            fmp_counter: 9,
+            inner_timestamp_ms: 10,
+            fmp_flags: 0,
+        };
+        let receive_sync = || FspReceiveSync {
+            counter: 11,
+            slot: EpochSlot::Current,
+            received_k_bit: false,
+            timestamp: 12,
+            plaintext_len: 64,
+            ce_flag: false,
+            path_mtu: 1_280,
+            spin_bit: false,
+        };
+
+        let authenticated_fmp = DecryptWorkerEvent::AuthenticatedFmpReceive(
+            DecryptAuthenticatedFmpReceive {
+                fmp: fmp(),
+                lane: DecryptWorkerLane::Priority,
+                trace_enqueued_at: None,
+            },
+        );
+        assert_eq!(
+            authenticated_fmp.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait)
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let direct_fmp = dummy_direct_fmp_endpoint_output(
+            fallback_tx.clone(),
+            source_peer,
+            1,
+            DecryptWorkerLane::Bulk,
+            b"direct-fmp".to_vec(),
+        )
+        .event;
+        assert_eq!(
+            direct_fmp.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectFmpEndpointWait)
+        );
+
+        let direct_fmp_batch = DecryptWorkerEvent::DirectFmpEndpointDataBatch(vec![
+            DecryptDirectFmpEndpointData::for_test(fmp(), b"one".to_vec()),
+            DecryptDirectFmpEndpointData::for_test(fmp(), b"two".to_vec()),
+        ]);
+        assert_eq!(
+            direct_fmp_batch.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectFmpEndpointWait)
+        );
+
+        assert_eq!(
+            dummy_authenticated_session_event(DecryptWorkerLane::Bulk)
+                .authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptAuthenticatedSessionMessageWait)
+        );
+
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(8);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let direct_commit = dummy_direct_endpoint_output(
+            fallback_tx,
+            sink,
+            source_peer,
+            2,
+            b"direct-commit",
+        )
+        .event;
+        assert_eq!(
+            direct_commit.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectSessionCommitWait)
+        );
+
+        let direct_data = DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
+            fmp: fmp(),
+            source_addr,
+            previous_hop_peer: source_peer,
+            ce_flag: false,
+            receive_sync: receive_sync(),
+            body_len: 64,
+            delivery: DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                source_peer,
+                b"direct-data".to_vec(),
+            )),
+            lane: DecryptWorkerLane::Bulk,
+            trace_enqueued_at: None,
+        });
+        assert_eq!(
+            direct_data.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectSessionDataWait)
+        );
+
+        assert_eq!(
+            dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+                .authenticated_return_kind_stage(),
+            None
+        );
+        assert_eq!(dummy_failure_event().authenticated_return_kind_stage(), None);
+    }
+
+    #[test]
     fn decrypt_worker_fallback_sender_stamps_queue_wait_origin() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 
@@ -244,6 +352,8 @@
             DecryptWorkerEvent::Plaintext(_) => panic!("expected failure report"),
             DecryptWorkerEvent::PlaintextBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectFmpEndpointData(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::AuthenticatedSession(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
@@ -360,7 +470,7 @@
     }
 
     #[test]
-    fn decrypt_worker_fallback_priority_full_returns_false_without_waiting() {
+    fn decrypt_worker_fallback_priority_full_waits_for_reserved_return_slot() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 
         assert!(fallback_tx.send(dummy_failure_event()));
@@ -374,22 +484,39 @@
         let tx_for_thread = fallback_tx.clone();
         std::thread::spawn(move || {
             done_tx
-                .send(tx_for_thread.send(dummy_failure_event()))
+                .send(tx_for_thread.send(dummy_authenticated_session_event(
+                    DecryptWorkerLane::Priority,
+                )))
                 .unwrap();
         });
 
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "full priority return lane should backpressure the decrypt worker until rx_loop drains"
+        );
+        assert!(matches!(
+            fallback_rx.priority.try_recv().expect("first priority event"),
+            DecryptWorkerEvent::DecryptFailure(_)
+        ));
         let sent = done_rx
             .recv_timeout(Duration::from_millis(250))
-            .expect("full fallback priority lane must not park decrypt worker");
+            .expect("draining one priority slot should unblock the decrypt worker");
         assert!(
-            !sent,
-            "priority fallback sender should report pressure when the lane is full"
+            sent,
+            "priority authenticated-session return should be accepted after backpressure"
         );
         assert_eq!(
             fallback_rx.priority.len(),
             1,
-            "priority fallback lane must stay bounded"
+            "priority fallback lane must stay bounded while preserving the event"
         );
+        assert!(matches!(
+            fallback_rx
+                .priority
+                .try_recv()
+                .expect("authenticated priority event"),
+            DecryptWorkerEvent::AuthenticatedSession(_)
+        ));
 
         assert!(
             fallback_tx.send(dummy_plaintext_event(
@@ -398,10 +525,6 @@
             "full priority fallback lane must not consume bulk fallback capacity"
         );
         assert_eq!(fallback_rx.bulk.len(), 1);
-        assert!(matches!(
-            fallback_rx.priority.try_recv().expect("priority event"),
-            DecryptWorkerEvent::DecryptFailure(_)
-        ));
         assert!(matches!(
             fallback_rx.bulk.try_recv().expect("bulk event"),
             DecryptWorkerEvent::Plaintext(_)
@@ -484,15 +607,12 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: cipher.clone(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(cipher.clone().into(), ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let bulk_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 64;
         let (packet_one, header_one) =
             sealed_fmp_test_packet_with_link_body(&cipher, 1, 0, bulk_body_len);
@@ -505,6 +625,7 @@
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(
                     packet_one,
@@ -547,6 +668,8 @@
             }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::DirectFmpEndpointData(_)
+            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)

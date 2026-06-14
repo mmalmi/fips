@@ -20,7 +20,7 @@ use crate::node::{
     EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
     LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
     NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD, endpoint_flow_dispatch_key,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
@@ -34,13 +34,16 @@ use crate::protocol::{
 #[cfg(unix)]
 use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
 use crate::protocol::{coords_wire_size, encode_coords};
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 use crate::transport::TransportHandle;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
 use std::time::Instant;
 use tracing::{debug, info, trace, warn};
+
+#[cfg(unix)]
+const DIRECT_ENDPOINT_FMP_PAYLOAD_PREFIX_LEN: usize = 4 + 1;
 
 /// Output of the single-borrow steady-state block in
 /// [`Node::handle_encrypted_session_msg`]. Carries the small amount of
@@ -86,6 +89,7 @@ fn record_endpoint_command_wait(
     queued_at: Option<crate::perf_profile::TraceStamp>,
     lane: EndpointCommandLane,
     count: u64,
+    drain_stages: EndpointCommandDrainStages,
 ) {
     let (priority_count, bulk_count) = match lane {
         EndpointCommandLane::Priority => (count, 0),
@@ -100,6 +104,41 @@ fn record_endpoint_command_wait(
         priority_count,
         bulk_count,
     );
+    drain_stages.record_since(queued_at, count);
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::node) struct EndpointCommandDrainStages {
+    aggregate: crate::perf_profile::Stage,
+    detail: Option<crate::perf_profile::Stage>,
+}
+
+impl EndpointCommandDrainStages {
+    pub(in crate::node) const fn aggregate(aggregate: crate::perf_profile::Stage) -> Self {
+        Self {
+            aggregate,
+            detail: None,
+        }
+    }
+
+    pub(in crate::node) const fn with_detail(
+        aggregate: crate::perf_profile::Stage,
+        detail: crate::perf_profile::Stage,
+    ) -> Self {
+        Self {
+            aggregate,
+            detail: Some(detail),
+        }
+    }
+
+    fn record_since(self, queued_at: Option<crate::perf_profile::TraceStamp>, count: u64) {
+        crate::perf_profile::record_since_count(self.aggregate, queued_at, count);
+        if let Some(detail) = self.detail
+            && detail != self.aggregate
+        {
+            crate::perf_profile::record_since_count(detail, queued_at, count);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -599,9 +638,21 @@ struct PipelinedEndpointSend<'a> {
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum PipelinedEndpointInnerPlaintext<'a> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    Borrowed(&'a [u8]),
+    EndpointData {
+        timestamp: u32,
+        inner_flags: u8,
+        payload: &'a [u8],
+    },
 }
 
 struct PreparedEndpointSessionData<'a> {
@@ -610,7 +661,7 @@ struct PreparedEndpointSessionData<'a> {
     now_ms: u64,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: Vec<u8>,
+    inner_flags: u8,
     my_coords: Option<crate::tree::TreeCoordinate>,
     dest_coords: Option<crate::tree::TreeCoordinate>,
 }
@@ -630,7 +681,7 @@ struct PipelinedEndpointWire {
 struct PipelinedEndpointWirePlan<'a> {
     source_addr: NodeAddr,
     dest_addr: NodeAddr,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: PipelinedEndpointInnerPlaintext<'a>,
     my_coords: Option<&'a crate::tree::TreeCoordinate>,
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
     path_mtu: u16,
@@ -641,7 +692,7 @@ struct PipelinedEndpointWirePlan<'a> {
 
 #[cfg(unix)]
 struct PipelinedEndpointWorkerWire {
-    fmp_cipher: ring::aead::LessSafeKey,
+    fmp_cipher: std::sync::Arc<ring::aead::LessSafeKey>,
     fmp_counter: u64,
     fsp_counter: u64,
     wire_buf: Vec<u8>,
@@ -651,12 +702,20 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
+#[derive(Clone)]
 struct PipelinedEndpointSendTarget {
     socket: crate::transport::udp::socket::AsyncUdpSocket,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     socket_addr: std::net::SocketAddr,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointResolvedRoute {
+    route_plan: PipelinedEndpointRoutePlan,
+    peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+    send_target: PipelinedEndpointSendTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,12 +728,17 @@ struct SessionFspSendPlan<'a> {
     dest_addr: NodeAddr,
     timestamp: u32,
     fsp_flags: u8,
-    inner_plaintext: &'a [u8],
+    inner_plaintext: SessionFspPlaintext<'a>,
     coords: Option<(
         &'a crate::tree::TreeCoordinate,
         &'a crate::tree::TreeCoordinate,
     )>,
     bookkeeping: SessionFspSendBookkeeping,
+}
+
+enum SessionFspPlaintext<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Vec<u8>),
 }
 
 struct SealedSessionFspSend {
@@ -696,6 +760,7 @@ struct SessionDatagramRuntimeRoute {
 
 #[cfg(unix)]
 struct PipelinedEndpointDispatchPlan<'a> {
+    dest_addr: NodeAddr,
     next_hop_addr: NodeAddr,
     payload: &'a EndpointDataPayload,
     timestamp: u32,
@@ -706,6 +771,7 @@ struct PipelinedEndpointDispatchPlan<'a> {
     fsp_payload_len: u16,
     bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
+    direct_fmp_endpoint: bool,
     scheduling_weight: u8,
 }
 
@@ -810,8 +876,9 @@ enum PipelinedEndpointPeerRuntimeSendRequestError {
 
 #[cfg(unix)]
 struct PipelinedEndpointSendPlan<'a> {
-    wire_plan: PipelinedEndpointWirePlan<'a>,
+    wire_plan: Option<PipelinedEndpointWirePlan<'a>>,
     dispatch_plan: PipelinedEndpointDispatchPlan<'a>,
+    direct_fmp_payload_len: Option<u16>,
 }
 
 #[cfg(unix)]
@@ -826,7 +893,7 @@ struct PipelinedEndpointRuntimeSendDispatch<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
     send_target: PipelinedEndpointSendTarget,
     fmp_reservation: crate::node::PreparedFmpWorkerReservation,
-    fsp_reservation: crate::node::session::FspSendReservation,
+    fsp_reservation: Option<crate::node::session::FspSendReservation>,
 }
 
 #[cfg(unix)]
@@ -835,7 +902,7 @@ struct PipelinedEndpointRuntimeSendAttempt<'a> {
     send_target: PipelinedEndpointSendTarget,
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 struct PipelinedEndpointRuntimeSend<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
 }
@@ -860,8 +927,31 @@ struct PipelinedEndpointPreparedSend {
     fmp_timestamp_ms: u32,
     fmp_wire_capacity: usize,
     originated_bytes: usize,
-    fsp_bookkeeping: FspSendBookkeepingInput,
+    session_bookkeeping: PipelinedEndpointSessionBookkeeping,
     worker_job: crate::node::encrypt_worker::FmpSendJob,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+struct PipelinedEndpointPreparedBookkeeping {
+    dest_addr: NodeAddr,
+    next_hop_addr: NodeAddr,
+    fmp_counter: u64,
+    fmp_timestamp_ms: u32,
+    fmp_wire_capacity: usize,
+    originated_bytes: usize,
+    session_bookkeeping: PipelinedEndpointSessionBookkeeping,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum PipelinedEndpointSessionBookkeeping {
+    Fsp(FspSendBookkeepingInput),
+    DirectFmp {
+        payload_len: usize,
+        now_ms: u64,
+        next_hop: NodeAddr,
+    },
 }
 
 #[cfg(unix)]
@@ -893,7 +983,11 @@ impl<'a> PreparedEndpointSessionData<'a> {
             now_ms: self.now_ms,
             timestamp: self.timestamp,
             fsp_flags: self.fsp_flags,
-            inner_plaintext: &self.inner_plaintext,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::endpoint_data(
+                self.timestamp,
+                self.inner_flags,
+                self.payload.as_slice(),
+            ),
             my_coords: self.my_coords.as_ref(),
             dest_coords: self.dest_coords.as_ref(),
         }
@@ -904,7 +998,12 @@ impl<'a> PreparedEndpointSessionData<'a> {
             *self.dest_addr,
             self.timestamp,
             self.fsp_flags,
-            &self.inner_plaintext,
+            PipelinedEndpointInnerPlaintext::endpoint_data(
+                self.timestamp,
+                self.inner_flags,
+                self.payload.as_slice(),
+            )
+            .to_vec(),
             self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
             SessionFspSendBookkeeping::Data {
                 payload_len: self.payload.len(),
@@ -914,12 +1013,88 @@ impl<'a> PreparedEndpointSessionData<'a> {
     }
 }
 
+#[cfg(unix)]
+impl<'a> PipelinedEndpointInnerPlaintext<'a> {
+    fn endpoint_data(timestamp: u32, inner_flags: u8, payload: &'a [u8]) -> Self {
+        Self::EndpointData {
+            timestamp,
+            inner_flags,
+            payload,
+        }
+    }
+
+    #[cfg(test)]
+    fn borrowed(inner_plaintext: &'a [u8]) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(inner_plaintext) => inner_plaintext.len(),
+            Self::EndpointData { payload, .. } => FSP_INNER_HEADER_SIZE + payload.len(),
+        }
+    }
+
+    fn write_to(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Borrowed(inner_plaintext) => out.extend_from_slice(inner_plaintext),
+            Self::EndpointData {
+                timestamp,
+                inner_flags,
+                payload,
+            } => {
+                out.extend_from_slice(&timestamp.to_le_bytes());
+                out.push(SessionMessageType::EndpointData.to_byte());
+                out.push(*inner_flags);
+                out.extend_from_slice(payload);
+            }
+        }
+    }
+
+    fn to_vec(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len());
+        self.write_to(&mut out);
+        out
+    }
+}
+
+impl<'a> SessionFspPlaintext<'a> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(inner_plaintext) => inner_plaintext,
+            Self::Owned(inner_plaintext) => inner_plaintext,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+}
+
+impl<'a> From<&'a [u8]> for SessionFspPlaintext<'a> {
+    fn from(inner_plaintext: &'a [u8]) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+}
+
+impl<'a> From<&'a Vec<u8>> for SessionFspPlaintext<'a> {
+    fn from(inner_plaintext: &'a Vec<u8>) -> Self {
+        Self::Borrowed(inner_plaintext)
+    }
+}
+
+impl From<Vec<u8>> for SessionFspPlaintext<'_> {
+    fn from(inner_plaintext: Vec<u8>) -> Self {
+        Self::Owned(inner_plaintext)
+    }
+}
+
 impl<'a> SessionFspSendPlan<'a> {
     fn new(
         dest_addr: NodeAddr,
         timestamp: u32,
         fsp_flags: u8,
-        inner_plaintext: &'a [u8],
+        inner_plaintext: impl Into<SessionFspPlaintext<'a>>,
         coords: Option<(
             &'a crate::tree::TreeCoordinate,
             &'a crate::tree::TreeCoordinate,
@@ -935,7 +1110,7 @@ impl<'a> SessionFspSendPlan<'a> {
             dest_addr,
             timestamp,
             fsp_flags,
-            inner_plaintext,
+            inner_plaintext: inner_plaintext.into(),
             coords,
             bookkeeping,
         }
@@ -956,7 +1131,7 @@ impl<'a> SessionFspSendPlan<'a> {
         let ciphertext = {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspEncrypt);
             session
-                .encrypt_with_aad(self.inner_plaintext, &header)
+                .encrypt_with_aad(self.inner_plaintext.as_slice(), &header)
                 .map_err(|e| NodeError::SendFailed {
                     node_addr: self.dest_addr,
                     reason: format!("session encrypt failed: {}", e),

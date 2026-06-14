@@ -60,6 +60,40 @@ mod tests {
     }
 
     #[test]
+    fn linux_bulk_container_sender_defaults_on_with_explicit_opt_out() {
+        assert!(
+            parse_linux_bulk_container_sender_enabled(None),
+            "Linux bulk containers are the default same-target bulk path"
+        );
+        for raw in ["0", "false", "FALSE", "no", "off", " Off "] {
+            assert!(
+                !parse_linux_bulk_container_sender_enabled(Some(raw)),
+                "{raw:?} should opt out"
+            );
+        }
+        for raw in ["1", "true", "TRUE", "yes", "on", " On ", "", "sure"] {
+            assert!(
+                parse_linux_bulk_container_sender_enabled(Some(raw)),
+                "{raw:?} should keep the sender enabled"
+            );
+        }
+    }
+
+    #[test]
+    fn linux_bulk_container_inflight_cap_defaults_to_bounded_backlog() {
+        assert_eq!(
+            parse_linux_bulk_container_inflight_cap(None),
+            64,
+            "same-flow container bursts should stay bounded without collapsing the fast path"
+        );
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("0")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("1")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("8")), 8);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("999999")), 4096);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("nope")), 64);
+    }
+
+    #[test]
     fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -77,7 +111,7 @@ mod tests {
             let target = SelectedSendTarget::new(socket, None, dest);
             let target_key = target.key();
 
-            let mut batch = SelectedSendBatch::new(target, target_key, pkt(1500), true);
+            let mut batch = SelectedSendBatch::new(target, target_key, pkt(1500), true, true);
             assert_eq!(
                 batch.gso_eligible_sizes(),
                 gso_eligible_sizes_ref(&batch.wire_packets)
@@ -87,14 +121,14 @@ mod tests {
                 "single packet groups should stay on the plain send path"
             );
 
-            batch.push(pkt(1500), true);
+            batch.push(pkt(1500), true, true);
             assert_eq!(
                 batch.gso_eligible_sizes(),
                 gso_eligible_sizes_ref(&batch.wire_packets)
             );
             assert!(batch.gso_eligible_sizes());
 
-            batch.push(pkt(900), true);
+            batch.push(pkt(900), true, true);
             assert_eq!(
                 batch.gso_eligible_sizes(),
                 gso_eligible_sizes_ref(&batch.wire_packets)
@@ -104,7 +138,7 @@ mod tests {
                 "one short final segment is valid UDP_GSO input"
             );
 
-            batch.push(pkt(1500), true);
+            batch.push(pkt(1500), true, true);
             assert_eq!(
                 batch.gso_eligible_sizes(),
                 gso_eligible_sizes_ref(&batch.wire_packets)
@@ -229,6 +263,23 @@ mod tests {
         assert_eq!(stamps, expected);
     }
 
+    #[test]
+    fn linux_gso_chunk_len_respects_udp_payload_limit_and_packet_cap() {
+        let full_size_packets: Vec<Vec<u8>> = (0..64).map(|_| pkt(1500)).collect();
+        let chunk = linux_gso_safe_chunk_len(&full_size_packets);
+        assert_eq!(
+            chunk, 43,
+            "43 * 1500 fits below the UDP payload limit; 44 * 1500 does not"
+        );
+
+        let tiny_packets: Vec<Vec<u8>> = (0..80).map(|_| pkt(200)).collect();
+        assert_eq!(
+            linux_gso_safe_chunk_len(&tiny_packets),
+            LINUX_UDP_SEND_BATCH_MAX,
+            "small packets should still use the syscall packet-count cap"
+        );
+    }
+
     /// Mixed-destination batch dispatched to a single worker. The
     /// pre-fix bug used `batch[0].socket` / `batch[0].connected_socket`
     /// / `packets[0].dest_addr` for the whole drained batch, so a
@@ -307,7 +358,7 @@ mod tests {
                 wire_buf.extend_from_slice(&[0u8; 16]);
                 wire_buf.extend_from_slice(&vec![0u8; plaintext_size]);
                 FmpSendJob {
-                    cipher: cipher.clone(),
+                    cipher: cipher.clone().into(),
                     counter,
                     wire_buf,
                     fsp_seal: None,
@@ -317,6 +368,7 @@ mod tests {
                         None,
                         dest,
                     ),
+                    endpoint_flow_dispatch_key: None,
                     bulk_endpoint_data: true,
                     drop_on_backpressure: true,
                     scheduling_weight: DEFAULT_SEND_WEIGHT,

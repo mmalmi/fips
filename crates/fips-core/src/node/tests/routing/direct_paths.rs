@@ -236,11 +236,29 @@ fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallba
         );
     }
 
+    node.coord_cache_mut()
+        .insert_with_ttl(dest_addr, TreeCoordinate::root(dest_addr), 0, u64::MAX);
+    assert_eq!(
+        node.coord_cache()
+            .get_entry(&dest_addr)
+            .expect("coord cache entry")
+            .last_used(),
+        0
+    );
+
     let route = node.find_next_hop(&dest_addr).expect("direct route");
     assert_eq!(
         route.node_addr(),
         &dest_addr,
         "a healthy operator-configured static UDP path must not silently move payload onto a learned fallback"
+    );
+    assert_eq!(
+        node.coord_cache()
+            .get_entry(&dest_addr)
+            .expect("coord cache entry")
+            .last_used(),
+        0,
+        "static configured direct UDP routing should return before touching fallback coord cache state"
     );
 }
 

@@ -47,6 +47,11 @@ pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>)
         || !side_queues.endpoint_command_rx.is_empty()
 }
 
+pub(super) fn rx_loop_endpoint_commands_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
+    !side_queues.endpoint_priority_command_rx.is_empty()
+        || !side_queues.endpoint_command_rx.is_empty()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
@@ -262,6 +267,11 @@ impl<T> PacketDrainCursor<T> {
         self.fallback_interleave_every = fallback_interleave_every;
         self.packets_until_fallback_interleave = fallback_interleave_every;
     }
+
+    pub(super) fn reset_side_queue_interleave_every(&mut self, side_queue_interleave_every: usize) {
+        self.side_queue_interleave_every = side_queue_interleave_every;
+        self.packets_until_side_queue_interleave = side_queue_interleave_every;
+    }
 }
 
 pub(super) trait PacketDrainReceiver<T> {
@@ -420,5 +430,10 @@ impl<T> SingleLaneDrainCursor<T> {
 
     pub(super) fn drained(&self) -> usize {
         self.drained
+    }
+
+    pub(super) fn charge_extra(&mut self, extra: usize) {
+        self.remaining = self.remaining.saturating_sub(extra);
+        self.drained = self.drained.saturating_add(extra);
     }
 }

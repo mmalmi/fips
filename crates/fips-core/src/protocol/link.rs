@@ -78,6 +78,12 @@ pub enum LinkMessageType {
     SenderReport = 0x01,
     /// Receiver-side MMP report (stub).
     ReceiverReport = 0x02,
+    /// Direct-neighbor app endpoint data authenticated by the FMP link.
+    ///
+    /// This is only valid when the authenticated link peer is also the
+    /// end-to-end session peer; relayed endpoint data stays inside
+    /// `SessionDatagram` + FSP.
+    DirectEndpointData = 0x03,
 
     // Tree protocol (0x10-0x1F)
     /// Spanning tree state announcement.
@@ -108,6 +114,7 @@ impl LinkMessageType {
             0x00 => Some(LinkMessageType::SessionDatagram),
             0x01 => Some(LinkMessageType::SenderReport),
             0x02 => Some(LinkMessageType::ReceiverReport),
+            0x03 => Some(LinkMessageType::DirectEndpointData),
             0x10 => Some(LinkMessageType::TreeAnnounce),
             0x20 => Some(LinkMessageType::FilterAnnounce),
             0x30 => Some(LinkMessageType::LookupRequest),
@@ -130,6 +137,7 @@ impl fmt::Display for LinkMessageType {
             LinkMessageType::SessionDatagram => "SessionDatagram",
             LinkMessageType::SenderReport => "SenderReport",
             LinkMessageType::ReceiverReport => "ReceiverReport",
+            LinkMessageType::DirectEndpointData => "DirectEndpointData",
             LinkMessageType::TreeAnnounce => "TreeAnnounce",
             LinkMessageType::FilterAnnounce => "FilterAnnounce",
             LinkMessageType::LookupRequest => "LookupRequest",
@@ -462,6 +470,7 @@ mod tests {
             LinkMessageType::LookupRequest,
             LinkMessageType::LookupResponse,
             LinkMessageType::SessionDatagram,
+            LinkMessageType::DirectEndpointData,
             LinkMessageType::Disconnect,
             LinkMessageType::Heartbeat,
         ];
@@ -476,7 +485,7 @@ mod tests {
     #[test]
     fn test_link_message_type_invalid() {
         assert!(LinkMessageType::from_byte(0xFF).is_none());
-        assert!(LinkMessageType::from_byte(0x03).is_none());
+        assert!(LinkMessageType::from_byte(0x04).is_none());
         assert!(LinkMessageType::from_byte(0x40).is_none());
     }
 

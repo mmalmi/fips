@@ -41,6 +41,7 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
 include!("decrypt_worker/core.rs");
+include!("decrypt_worker/events.rs");
 include!("decrypt_worker/fallback_channels.rs");
 include!("decrypt_worker/queue.rs");
 include!("decrypt_worker/pool.rs");

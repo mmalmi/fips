@@ -76,6 +76,11 @@ impl ForwardingStats {
         self.originated_bytes += bytes as u64;
     }
 
+    pub fn record_originated_batch(&mut self, packets: usize, bytes: usize) {
+        self.originated_packets += packets as u64;
+        self.originated_bytes += bytes as u64;
+    }
+
     pub fn snapshot(&self) -> ForwardingStatsSnapshot {
         ForwardingStatsSnapshot {
             received_packets: self.received_packets,

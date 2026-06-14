@@ -56,6 +56,7 @@ struct SealedSendPacket {
     #[cfg(unix)]
     target_key: SendTargetKey,
     wire_packet: Vec<u8>,
+    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
 }
 
@@ -71,7 +72,10 @@ impl SealedSendPacket {
         return Self::from_job_without_target_key(job);
     }
 
-    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
+    #[cfg(all(
+        unix,
+        any(test, not(any(target_os = "macos", target_os = "linux")))
+    ))]
     fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
         let QueuedFmpSendJob {
             job, target_key, ..
@@ -100,6 +104,7 @@ impl SealedSendPacket {
             mut wire_buf,
             fsp_seal,
             send_target,
+            endpoint_flow_dispatch_key: _,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: _,
@@ -122,6 +127,7 @@ impl SealedSendPacket {
             #[cfg(unix)]
             target_key,
             wire_packet: wire_buf,
+            bulk_endpoint_data,
             drop_on_backpressure,
         })
     }
@@ -134,6 +140,7 @@ impl SealedSendPacket {
             mut wire_buf,
             fsp_seal,
             send_target,
+            endpoint_flow_dispatch_key: _,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: _,
@@ -149,12 +156,13 @@ impl SealedSendPacket {
         Ok(Self {
             send_target,
             wire_packet: wire_buf,
+            bulk_endpoint_data,
             drop_on_backpressure,
         })
     }
 
     fn seal_wire_packet(
-        cipher: LessSafeKey,
+        cipher: Arc<LessSafeKey>,
         counter: u64,
         wire_buf: &mut Vec<u8>,
         fsp_seal: Option<FspSealJob>,
@@ -166,6 +174,8 @@ impl SealedSendPacket {
                 return Err(SealPacketError::InvalidFspLayout);
             }
 
+            let _t =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpWorkerFspSeal);
             let mut nonce_bytes = [0u8; 12];
             nonce_bytes[4..12].copy_from_slice(&fsp.counter.to_le_bytes());
             let nonce = Nonce::assume_unique_for_key(nonce_bytes);
@@ -178,6 +188,7 @@ impl SealedSendPacket {
             wire_buf.extend_from_slice(tag.as_ref());
         }
 
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpWorkerFmpSeal);
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
@@ -193,20 +204,22 @@ impl SealedSendPacket {
     }
 
     #[cfg(unix)]
-    fn into_parts(self) -> (SelectedSendTarget, SendTargetKey, Vec<u8>, bool) {
+    fn into_parts(self) -> (SelectedSendTarget, SendTargetKey, Vec<u8>, bool, bool) {
         (
             self.send_target,
             self.target_key,
             self.wire_packet,
+            self.bulk_endpoint_data,
             self.drop_on_backpressure,
         )
     }
 
     #[cfg(not(unix))]
-    fn into_parts(self) -> (SelectedSendTarget, Vec<u8>, bool) {
+    fn into_parts(self) -> (SelectedSendTarget, Vec<u8>, bool, bool) {
         (
             self.send_target,
             self.wire_packet,
+            self.bulk_endpoint_data,
             self.drop_on_backpressure,
         )
     }
@@ -296,9 +309,14 @@ fn flush_batch_sync(
         return Ok(());
     }
 
-    // FIPS_PERF: one AEAD timer span over the whole batch — average
-    // per-packet falls out of the COUNT increment once per flush.
-    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
+    // FIPS_PERF: one AEAD timer span over the whole worker batch, recorded as
+    // per-packet samples so the pipeline readout stays comparable with
+    // per-packet queue waits and send counters.
+    let packet_count = batch.len();
+    let _t = crate::perf_profile::BatchTimer::start(
+        crate::perf_profile::Stage::FmpEncrypt,
+        packet_count,
+    );
 
     // Per-target encrypted-packet group. Vec layout (not HashMap)
     // because the typical batch has 1 target (hash-by-dest dispatch),
@@ -325,7 +343,18 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        let QueuedFmpSendJob {
+            job,
+            target_key,
+            linux_container,
+            linux_container_slot,
+            ..
+        } = queued;
+
+        #[cfg(target_os = "linux")]
+        let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
+        #[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
         let sealed_result = SealedSendPacket::from_queued(queued);
         #[cfg(not(unix))]
         let sealed_result = {
@@ -345,13 +374,17 @@ fn flush_batch_sync(
                         MacSendItem::Skip,
                     );
                 }
+                #[cfg(target_os = "linux")]
+                if let Some(container) = linux_container.as_ref() {
+                    container.skip(linux_container_slot);
+                }
                 continue;
             }
         };
 
         #[cfg(target_os = "macos")]
         if let Some(flow) = macos_flow {
-            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+            let (_send_target, _target_key, wire_packet, bulk_endpoint_data, drop_on_backpressure) =
                 sealed.into_parts();
             push_mac_completion(
                 &mut macos_completions,
@@ -359,20 +392,31 @@ fn flush_batch_sync(
                 macos_seq,
                 MacSendItem::Packet {
                     packet: wire_packet,
+                    bulk_endpoint_data,
                     drop_on_backpressure,
                 },
             );
             continue;
         }
 
+        #[cfg(target_os = "linux")]
+        if let Some(container) = linux_container {
+            let (_send_target, _target_key, wire_packet, _bulk_endpoint_data, drop_on_backpressure) =
+                sealed.into_parts();
+            container.complete_packet(linux_container_slot, wire_packet, drop_on_backpressure);
+            continue;
+        }
+
         #[cfg(unix)]
         {
-            let (send_target, target_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            let (send_target, target_key, wire_packet, bulk_endpoint_data, drop_on_backpressure) =
+                sealed.into_parts();
             push_selected_send_batch_with_capacity(
                 &mut groups,
                 send_target,
                 target_key,
                 wire_packet,
+                bulk_endpoint_data,
                 drop_on_backpressure,
                 group_packet_capacity,
             );
@@ -393,6 +437,11 @@ fn flush_batch_sync(
 
     #[cfg(unix)]
     record_selected_send_groups(&groups);
+    #[cfg(unix)]
+    let udp_send_packet_count = groups
+        .iter()
+        .map(SelectedSendBatch::packet_count)
+        .sum::<usize>();
 
     drop(_t); // close the encrypt timer before we open the send timer
 
@@ -417,10 +466,14 @@ fn flush_batch_sync(
     // nonblocking mode (`UdpRawSocket::open`), and at line rate the
     // kernel send buffer (8 MiB by `DEFAULT_UDP_SEND_BUF`) is rarely
     // full so this is the cold path.
-    let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+    #[cfg(unix)]
+    let _t2 = crate::perf_profile::BatchTimer::start(
+        crate::perf_profile::Stage::UdpSend,
+        udp_send_packet_count,
+    );
 
     #[cfg(target_os = "linux")]
-    flush_linux_send_groups_sync(groups)?;
+    flush_linux_send_batches_sync(groups)?;
     #[cfg(all(unix, not(target_os = "linux")))]
     for group in groups {
         let send_attempt = DirectSendBatchAttempt::from_batch(group);
@@ -436,7 +489,7 @@ fn flush_batch_sync(
 }
 
 #[cfg(target_os = "linux")]
-fn flush_linux_send_groups_sync(
+fn flush_linux_send_batches_sync(
     groups: Vec<SelectedSendBatch>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for group in groups {
@@ -444,31 +497,47 @@ fn flush_linux_send_groups_sync(
         let (fd, connected, dest_addr) = send_attempt.target_parts();
 
         // Within a group, destination is uniform by construction —
-        // GSO needs only the size check now.
+        // GSO needs only the size check now. Chunk by payload bytes too:
+        // UDP_SEGMENT still hands the kernel one logical UDP payload, so
+        // a wide worker/container batch must not exceed the UDP payload
+        // length limit even when it contains fewer than 64 segments.
         if !GSO_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
             && send_attempt.gso_eligible_sizes()
         {
-            match send_batch_gso(fd, send_attempt.packets(), dest_addr, connected) {
-                Ok(()) => {
-                    crate::perf_profile::record_udp_send_gso_batch(send_attempt.packets().len());
-                    send_attempt.mark_all_sent();
-                    continue;
+            while !send_attempt.is_complete() {
+                let chunk_len = linux_gso_safe_chunk_len(send_attempt.remaining_packets());
+                match send_batch_gso(
+                    fd,
+                    &send_attempt.remaining_packets()[..chunk_len],
+                    dest_addr,
+                    connected,
+                ) {
+                    Ok(()) => {
+                        crate::perf_profile::record_udp_send_gso_batch(chunk_len);
+                        send_attempt.mark_sent(chunk_len);
+                    }
+                    Err(err) if is_gso_capability_error(&err) => {
+                        GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!(
+                            error = %err,
+                            "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
+                        );
+                        // Fall through to sendmmsg for the remaining packets.
+                        break;
+                    }
+                    Err(err) if is_send_backpressure(&err) => {
+                        // Send buffer full mid-GSO — fall through to
+                        // sendmmsg retry loop for the remaining packets. No
+                        // GSO_DISABLED toggle.
+                        break;
+                    }
+                    Err(err) => {
+                        return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
+                    }
                 }
-                Err(err) if is_gso_capability_error(&err) => {
-                    GSO_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
-                    warn!(
-                        error = %err,
-                        "UDP_GSO refused by kernel; falling back to sendmmsg for life of process"
-                    );
-                    // fall through to sendmmsg path for this group
-                }
-                Err(err) if is_send_backpressure(&err) => {
-                    // Send buffer full mid-GSO — fall through to
-                    // sendmmsg retry loop. No GSO_DISABLED toggle.
-                }
-                Err(err) => {
-                    return Err(format!("sendmsg+UDP_GSO failed: {err}").into());
-                }
+            }
+            if send_attempt.is_complete() {
+                continue;
             }
         }
 
@@ -494,14 +563,33 @@ fn flush_linux_send_groups_sync(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn linux_gso_safe_chunk_len(packets: &[Vec<u8>]) -> usize {
+    debug_assert!(!packets.is_empty());
+    let mut total_payload = 0usize;
+    let mut count = 0usize;
+    for packet in packets.iter().take(LINUX_UDP_SEND_BATCH_MAX) {
+        if count > 0
+            && total_payload.saturating_add(packet.len()) > LINUX_UDP_GSO_MAX_PAYLOAD
+        {
+            break;
+        }
+        total_payload = total_payload.saturating_add(packet.len());
+        count += 1;
+    }
+    count.max(1)
+}
+
 #[cfg(all(unix, not(target_os = "linux")))]
 fn flush_direct_send_attempt(mut send_attempt: DirectSendBatchAttempt) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         MAC_DIRECT_SEND_RATE_PACER.with(|pacer| {
             let mut rate_pacer = pacer.borrow_mut();
-            while let Some(len) = send_attempt.current_packet_len() {
-                rate_pacer.pace(len);
+            while !send_attempt.is_complete() {
+                if let Some(len) = send_attempt.current_bulk_packet_len_for_pacing() {
+                    rate_pacer.pace(len);
+                }
                 send_attempt.send_current()?;
             }
             Ok(())

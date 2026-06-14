@@ -9,20 +9,21 @@ use crate::node::session_wire::{
     FspCommonPrefix, FspEncryptedHeader, fsp_strip_inner_header,
 };
 use crate::node::{
-    EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
+    EndpointDataDelivery, EndpointEventSender, EndpointPayloadLane, NodeDeliveredPacket,
+    NodeEndpointEvent, classify_endpoint_payload,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
 use crate::transport::{TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // `endpoint_event_tx` used to ride on every `DecryptJob`, bloating the hot
 // packet shape with an extra Arc clone and accidentally gating TUN-only worker
@@ -43,8 +44,11 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
+const DECRYPT_WORKER_FMP_RECEIVE_WINDOW: usize = 1024;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+
+static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -155,11 +159,42 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
+fn default_fmp_aead_helper_count_for(linux: bool, cpu_count: usize) -> usize {
+    if linux && cpu_count >= 4 { 2 } else { 0 }
+}
+
+fn default_fmp_aead_helper_count() -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    default_fmp_aead_helper_count_for(cfg!(target_os = "linux"), cpu_count)
+}
+
+fn fmp_aead_helper_count_from_raw(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+        .min(64)
+}
+
+fn fmp_aead_helper_count() -> usize {
+    fmp_aead_helper_count_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS").ok().as_deref(),
+        default_fmp_aead_helper_count(),
+    )
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
     } else {
         DecryptWorkerLane::Bulk
+    }
+}
+
+fn endpoint_payload_decrypt_worker_lane(payload: &[u8]) -> DecryptWorkerLane {
+    match classify_endpoint_payload(payload).lane() {
+        EndpointPayloadLane::Priority => DecryptWorkerLane::Priority,
+        EndpointPayloadLane::Bulk => DecryptWorkerLane::Bulk,
     }
 }
 
@@ -181,9 +216,11 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 /// Built at FMP-session establishment time (`promote_connection`)
 /// and shipped to the assigned worker via `WorkerMsg::RegisterSession`.
 pub(crate) struct OwnedSessionState {
-    pub fmp_cipher: LessSafeKey,
+    pub fmp_cipher: Arc<LessSafeKey>,
     pub fmp_replay: ReplayWindow,
     pub source_peer: PeerIdentity,
+    fmp_receive_order_id: u64,
+    fmp_receive_order: FmpReceiveOrder,
 }
 
 struct OwnedFspEpochState {
@@ -356,13 +393,386 @@ struct FmpOpenOutcome {
     plaintext_len: usize,
 }
 
+struct OpenedFmpJob {
+    packet_data: Vec<u8>,
+    lane: DecryptWorkerLane,
+    source_peer: PeerIdentity,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    local_node_addr: NodeAddr,
+    timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    fmp_plaintext_offset: usize,
+    fmp_plaintext_len: usize,
+    fallback_tx: DecryptWorkerFallbackSender,
+}
+
+struct FmpAeadHelperJob {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    precheck: FmpReplayPrecheck,
+    cipher: Arc<LessSafeKey>,
+    fmp_header: [u8; 16],
+    opened: OpenedFmpJob,
+    completion_tx: Option<Sender<FmpAeadCompletion>>,
+    helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+struct FmpAeadCompletion {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    completed_at: Option<crate::perf_profile::TraceStamp>,
+    result: FmpAeadCompletionResult,
+}
+
+enum FmpAeadCompletionResult {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        opened: OpenedFmpJob,
+    },
+    AeadFailed {
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        lane: DecryptWorkerLane,
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    },
+}
+
+impl FmpAeadCompletionResult {
+    fn lane(&self) -> DecryptWorkerLane {
+        match self {
+            Self::Opened { opened, .. } => opened.lane,
+            Self::AeadFailed { lane, .. } => *lane,
+        }
+    }
+}
+
+impl FmpAeadHelperJob {
+    fn into_completion(mut self) -> FmpAeadCompletion {
+        let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
+        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        match OwnedSessionState::open_fmp_aead_in_place(
+            &self.cipher,
+            &mut self.opened.packet_data,
+            self.opened.fmp_plaintext_offset,
+            self.opened.fmp_counter,
+            &self.fmp_header,
+        ) {
+            Ok(outcome) => {
+                self.opened.fmp_plaintext_len = outcome.plaintext_len;
+                FmpAeadCompletion {
+                    session_key: self.session_key,
+                    receive_order_id: self.receive_order_id,
+                    ticket: self.ticket,
+                    completed_at,
+                    result: FmpAeadCompletionResult::Opened {
+                        precheck: self.precheck,
+                        opened: self.opened,
+                    },
+                }
+            }
+            Err(()) => FmpAeadCompletion {
+                session_key: self.session_key,
+                receive_order_id: self.receive_order_id,
+                ticket: self.ticket,
+                completed_at,
+                result: FmpAeadCompletionResult::AeadFailed {
+                    fallback_tx: self.opened.fallback_tx,
+                    source_peer: self.opened.source_peer,
+                    lane: self.opened.lane,
+                    fmp_counter: self.opened.fmp_counter,
+                    fmp_replay_highest: self.precheck.replay_highest,
+                },
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReplayPrecheck {
+    counter: u64,
+    replay_highest: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReceiveTicket {
+    sequence: u64,
+}
+
+#[derive(Debug)]
+enum OrderedCompletionError {
+    Stale,
+    Duplicate,
+    WindowExceeded,
+}
+
+#[derive(Debug)]
+struct OrderedCompletionBuffer<T> {
+    next_ready: u64,
+    pending: VecDeque<Option<T>>,
+    pending_limit: usize,
+}
+
+impl<T> OrderedCompletionBuffer<T> {
+    fn new(pending_limit: usize) -> Self {
+        Self {
+            next_ready: 0,
+            pending: VecDeque::new(),
+            pending_limit: pending_limit.max(1),
+        }
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: T,
+        mut on_ready: impl FnMut(T),
+    ) -> Result<usize, OrderedCompletionError> {
+        if ticket.sequence < self.next_ready {
+            return Err(OrderedCompletionError::Stale);
+        }
+
+        let offset = (ticket.sequence - self.next_ready) as usize;
+        if offset == 0 {
+            on_ready(completion);
+            self.next_ready = self.next_ready.saturating_add(1);
+
+            if !self.pending.is_empty() {
+                let _ = self.pending.pop_front();
+            }
+
+            let mut ready = 1;
+            while matches!(self.pending.front(), Some(Some(_))) {
+                let completion = self
+                    .pending
+                    .pop_front()
+                    .and_then(|completion| completion)
+                    .expect("checked ready pending completion");
+                on_ready(completion);
+                self.next_ready = self.next_ready.saturating_add(1);
+                ready += 1;
+            }
+            return Ok(ready);
+        }
+
+        if offset >= self.pending_limit {
+            return Err(OrderedCompletionError::WindowExceeded);
+        }
+
+        if self.pending.len() <= offset {
+            self.pending.resize_with(offset + 1, || None);
+        }
+        if self.pending[offset].is_some() {
+            return Err(OrderedCompletionError::Duplicate);
+        }
+        self.pending[offset] = Some(completion);
+        Ok(0)
+    }
+
+    fn next_ready(&self) -> u64 {
+        self.next_ready
+    }
+
+    fn pending_limit(&self) -> usize {
+        self.pending_limit
+    }
+}
+
+struct FmpReceiveOrder {
+    next_ticket: u64,
+    completions: OrderedCompletionBuffer<FmpOrderedCompletion<OpenedFmpJob>>,
+}
+
+impl FmpReceiveOrder {
+    fn new() -> Self {
+        Self {
+            next_ticket: 0,
+            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FMP_RECEIVE_WINDOW),
+        }
+    }
+
+    fn issue(&mut self) -> FmpReceiveTicket {
+        let ticket = FmpReceiveTicket {
+            sequence: self.next_ticket,
+        };
+        self.next_ticket = self.next_ticket.saturating_add(1);
+        ticket
+    }
+
+    fn can_issue(&self) -> bool {
+        self.next_ticket.saturating_sub(self.completions.next_ready())
+            < self.completions.pending_limit() as u64
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        on_ready: impl FnMut(FmpOrderedCompletion<OpenedFmpJob>),
+    ) -> Result<usize, OrderedCompletionError> {
+        self.completions.complete(ticket, completion, on_ready)
+    }
+}
+
+#[derive(Debug)]
+enum FmpOrderedCompletion<T> {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        value: T,
+    },
+    AeadFailed,
+}
+
+#[derive(Default, Debug, Eq, PartialEq)]
+struct FmpOrderedDrain {
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
+    #[cfg(test)]
     Aead { fmp_replay_highest: u64 },
 }
 
 impl OwnedSessionState {
+    pub(crate) fn new(
+        fmp_cipher: Arc<LessSafeKey>,
+        fmp_replay: ReplayWindow,
+        source_peer: PeerIdentity,
+    ) -> Self {
+        Self {
+            fmp_cipher,
+            fmp_replay,
+            source_peer,
+            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
+            fmp_receive_order: FmpReceiveOrder::new(),
+        }
+    }
+
+    fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
+        let replay_highest = self.fmp_replay.highest();
+        if !self.fmp_replay.check(fmp_counter) {
+            return Err(FmpOpenError::Replay);
+        }
+        Ok(FmpReplayPrecheck {
+            counter: fmp_counter,
+            replay_highest,
+        })
+    }
+
+    fn open_fmp_aead_in_place(
+        cipher: &LessSafeKey,
+        packet_data: &mut [u8],
+        fmp_ciphertext_offset: usize,
+        fmp_counter: u64,
+        fmp_header: &[u8; 16],
+    ) -> Result<FmpOpenOutcome, ()> {
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let plaintext_len = cipher
+            .open_in_place(nonce, Aad::from(fmp_header), buf)
+            .map_err(|_| ())?
+            .len();
+
+        Ok(FmpOpenOutcome { plaintext_len })
+    }
+
+    #[cfg(test)]
+    fn accept_prechecked_fmp_replay(
+        &mut self,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)
+    }
+
+    fn accept_prechecked_fmp_replay_on(
+        fmp_replay: &mut ReplayWindow,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        if !fmp_replay.check(precheck.counter) {
+            return Err(FmpOpenError::Replay);
+        }
+        fmp_replay.accept(precheck.counter);
+        Ok(())
+    }
+
+    fn issue_fmp_receive_ticket(&mut self) -> FmpReceiveTicket {
+        self.fmp_receive_order.issue()
+    }
+
+    fn fmp_receive_order_id(&self) -> u64 {
+        self.fmp_receive_order_id
+    }
+
+    fn can_issue_fmp_receive_ticket(&self) -> bool {
+        self.fmp_receive_order.can_issue()
+    }
+
+    #[cfg(test)]
+    fn complete_ordered_fmp_open(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened { precheck, .. } => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
+    }
+
+    fn complete_ordered_fmp_open_with_value(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        mut on_opened: impl FnMut(OpenedFmpJob),
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened { precheck, value } => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                        on_opened(value);
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
+    }
+
+    #[cfg(test)]
     fn open_fmp_in_place(
         &mut self,
         packet_data: &mut [u8],
@@ -370,23 +780,19 @@ impl OwnedSessionState {
         fmp_counter: u64,
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
-        let fmp_replay_highest = self.fmp_replay.highest();
-        if !self.fmp_replay.check(fmp_counter) {
-            return Err(FmpOpenError::Replay);
-        }
-
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let buf = &mut packet_data[fmp_ciphertext_offset..];
-        let plaintext_len = self
-            .fmp_cipher
-            .open_in_place(nonce, Aad::from(fmp_header), buf)
-            .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?
-            .len();
-
-        self.fmp_replay.accept(fmp_counter);
-        Ok(FmpOpenOutcome { plaintext_len })
+        let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
+        let outcome = Self::open_fmp_aead_in_place(
+            &self.fmp_cipher,
+            packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_header,
+        )
+        .map_err(|_| FmpOpenError::Aead {
+            fmp_replay_highest: replay_precheck.replay_highest,
+        })?;
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, replay_precheck)?;
+        Ok(outcome)
     }
 }
 
@@ -622,6 +1028,43 @@ pub(crate) struct DecryptAuthenticatedFmpReceive {
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+pub(crate) struct DecryptDirectFmpEndpointData {
+    pub fmp: DecryptFmpBookkeeping,
+    packet_data: Vec<u8>,
+    payload_offset: usize,
+    payload_len: usize,
+    lane: DecryptWorkerLane,
+    pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+impl DecryptDirectFmpEndpointData {
+    #[cfg(test)]
+    pub(in crate::node) fn for_test(fmp: DecryptFmpBookkeeping, payload: Vec<u8>) -> Self {
+        let payload_len = payload.len();
+        Self {
+            fmp,
+            packet_data: payload,
+            payload_offset: 0,
+            payload_len,
+            lane: DecryptWorkerLane::Bulk,
+            trace_enqueued_at: None,
+        }
+    }
+
+    pub(in crate::node) fn payload(&self) -> &[u8] {
+        &self.packet_data[self.payload_offset..self.payload_offset + self.payload_len]
+    }
+
+    pub(in crate::node) fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    pub(in crate::node) fn into_delivery(self) -> EndpointDataDelivery {
+        let source_peer = self.fmp.source_peer;
+        EndpointDataDelivery::new(source_peer, self.payload().to_vec())
+    }
+}
+
 pub(crate) struct DecryptAuthenticatedSession {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
@@ -636,6 +1079,17 @@ pub(crate) struct DecryptAuthenticatedSession {
 pub(crate) enum DecryptDirectSessionDelivery {
     Ipv6Packet(Vec<u8>),
     EndpointData(EndpointDataDelivery),
+}
+
+fn direct_session_delivery_lane(delivery: &DecryptDirectSessionDelivery) -> DecryptWorkerLane {
+    match delivery {
+        DecryptDirectSessionDelivery::EndpointData(delivery) => {
+            endpoint_payload_decrypt_worker_lane(&delivery.payload)
+        }
+        DecryptDirectSessionDelivery::Ipv6Packet(packet) => {
+            endpoint_payload_decrypt_worker_lane(packet)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -865,126 +1319,4 @@ pub(crate) struct DecryptFspFailureReport {
     pub received_k_bit: bool,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
-}
-
-/// Event emitted by the decrypt worker to the rx_loop.
-pub(crate) enum DecryptWorkerEvent {
-    Plaintext(DecryptFallback),
-    PlaintextBatch(Vec<DecryptFallback>),
-    AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
-    AuthenticatedSession(DecryptAuthenticatedSession),
-    DirectSessionCommit(DecryptDirectSessionCommit),
-    DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
-    DirectSessionData(DecryptDirectSessionData),
-    FspDecryptFailure(DecryptFspFailureReport),
-    DecryptFailure(DecryptFailureReport),
-}
-
-impl DecryptWorkerEvent {
-    fn lane(&self) -> DecryptWorkerLane {
-        decrypt_worker_event_lane(self)
-    }
-
-    pub(crate) fn packet_count(&self) -> usize {
-        match self {
-            Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
-            Self::AuthenticatedFmpReceive(_) => 1,
-            Self::AuthenticatedSession(_) => 1,
-            Self::DirectSessionCommit(_) => 1,
-            Self::DirectSessionCommitBatch(commits) => commits.len(),
-            Self::DirectSessionData(_) => 1,
-            Self::FspDecryptFailure(_) => 1,
-            Self::PlaintextBatch(fallbacks) => fallbacks.len(),
-        }
-    }
-
-    fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
-        match self {
-            Self::Plaintext(fallback) => fallback.trace_enqueued_at = queued_at,
-            Self::PlaintextBatch(fallbacks) => {
-                for fallback in fallbacks {
-                    fallback.trace_enqueued_at = queued_at;
-                }
-            }
-            Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at = queued_at,
-            Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
-            Self::DirectSessionCommit(commit) => commit.trace_enqueued_at = queued_at,
-            Self::DirectSessionCommitBatch(commits) => {
-                for commit in commits {
-                    commit.trace_enqueued_at = queued_at;
-                }
-            }
-            Self::DirectSessionData(direct) => direct.trace_enqueued_at = queued_at,
-            Self::FspDecryptFailure(report) => report.trace_enqueued_at = queued_at,
-            Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
-        }
-    }
-
-    fn trace_enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
-        match self {
-            Self::Plaintext(fallback) => fallback.trace_enqueued_at,
-            Self::PlaintextBatch(fallbacks) => fallbacks
-                .first()
-                .and_then(|fallback| fallback.trace_enqueued_at),
-            Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at,
-            Self::AuthenticatedSession(session) => session.trace_enqueued_at,
-            Self::DirectSessionCommit(commit) => commit.trace_enqueued_at,
-            Self::DirectSessionCommitBatch(commits) => {
-                commits.first().and_then(|commit| commit.trace_enqueued_at)
-            }
-            Self::DirectSessionData(direct) => direct.trace_enqueued_at,
-            Self::FspDecryptFailure(report) => report.trace_enqueued_at,
-            Self::DecryptFailure(report) => report.trace_enqueued_at,
-        }
-    }
-
-    fn queue_wait_stages(
-        &self,
-    ) -> (
-        crate::perf_profile::Stage,
-        crate::perf_profile::Stage,
-        crate::perf_profile::Stage,
-    ) {
-        match self {
-            Self::AuthenticatedFmpReceive(_)
-            | Self::AuthenticatedSession(_)
-            | Self::DirectSessionCommit(_)
-            | Self::DirectSessionCommitBatch(_)
-            | Self::DirectSessionData(_) => (
-                crate::perf_profile::Stage::DecryptAuthenticatedSessionWait,
-                crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
-                crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
-            ),
-            Self::Plaintext(_)
-            | Self::PlaintextBatch(_)
-            | Self::FspDecryptFailure(_)
-            | Self::DecryptFailure(_) => (
-                crate::perf_profile::Stage::DecryptFallbackWait,
-                crate::perf_profile::Stage::DecryptFallbackPriorityWait,
-                crate::perf_profile::Stage::DecryptFallbackBulkWait,
-            ),
-        }
-    }
-
-    pub(crate) fn record_queue_wait(&self) {
-        let queued_at = self.trace_enqueued_at();
-        if queued_at.is_none() {
-            return;
-        }
-        let count = self.packet_count() as u64;
-        let (priority_count, bulk_count) = match self.lane() {
-            DecryptWorkerLane::Priority => (count, 0),
-            DecryptWorkerLane::Bulk => (0, count),
-        };
-        let (total_stage, priority_stage, bulk_stage) = self.queue_wait_stages();
-        crate::perf_profile::record_since_split_count(
-            total_stage,
-            priority_stage,
-            bulk_stage,
-            queued_at,
-            count,
-            priority_count,
-            bulk_count,
-        );
-    }
 }

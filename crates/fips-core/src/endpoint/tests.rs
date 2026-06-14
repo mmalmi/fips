@@ -23,6 +23,29 @@ fn ipv4_icmp_echo_packet() -> Vec<u8> {
 }
 
 #[test]
+fn endpoint_payload_direct_fmp_opt_in_survives_internal_conversion() {
+    let payload = FipsEndpointPayload::new(vec![0xee; 64]).with_direct_fmp_endpoint_allowed();
+    let internal: EndpointDataPayload = payload.into();
+
+    assert!(internal.direct_fmp_endpoint_allowed());
+}
+
+#[test]
+fn endpoint_send_batch_command_cap_matches_platform_send_path() {
+    #[cfg(target_os = "linux")]
+    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 128);
+
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        ENDPOINT_SEND_BATCH_COMMAND_MAX, 16,
+        "macOS endpoint commands stay short because the sender has no GSO/sendmmsg bulk mover"
+    );
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 64);
+}
+
+#[test]
 fn endpoint_peer_conversion_preserves_rekey_state() {
     let peer = FipsEndpointPeer::from(NodeEndpointPeer {
         npub: "npub1peer".to_string(),
@@ -246,6 +269,49 @@ fn endpoint_send_command_owns_payload_lane_and_queue_stamp() {
     assert_eq!(owned_send.payload().as_slice(), payload.as_slice());
     assert_eq!(owned_send.payload().lane(), EndpointCommandLane::Bulk);
     assert_eq!(owned_queued_at, queued_at);
+}
+
+#[test]
+fn endpoint_command_queue_stamp_can_be_reset_at_enqueue() {
+    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let initial_stamp = Some(crate::perf_profile::test_stamp());
+    let enqueue_stamp = Some(crate::perf_profile::test_stamp());
+    let mut command =
+        NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), initial_stamp);
+
+    command.set_queued_at(enqueue_stamp);
+
+    match command {
+        NodeEndpointCommand::SendOneway { command } => {
+            let (_send, queued_at) = command.into_parts();
+            assert_eq!(queued_at, enqueue_stamp);
+        }
+        other => panic!("expected send-oneway command, got {other:?}"),
+    }
+
+    let initial_stamp = Some(crate::perf_profile::test_stamp());
+    let enqueue_stamp = Some(crate::perf_profile::test_stamp());
+    let payloads = vec![
+        crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
+        crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512)),
+    ];
+    let mut command = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads,
+        initial_stamp,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("non-empty batch command");
+
+    command.set_queued_at(enqueue_stamp);
+
+    match command {
+        NodeEndpointCommand::SendBatchOneway { command, .. } => {
+            let (_remote, _payloads, queued_at) = command.into_parts();
+            assert_eq!(queued_at, enqueue_stamp);
+        }
+        other => panic!("expected send-batch-oneway command, got {other:?}"),
+    }
 }
 
 #[test]

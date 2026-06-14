@@ -2,6 +2,7 @@ use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
 use ring::aead::LessSafeKey;
 use secp256k1::{PublicKey, XOnlyPublicKey};
 use std::fmt;
+use std::sync::Arc;
 
 /// Completed Noise session for transport encryption.
 ///
@@ -204,14 +205,23 @@ impl NoiseSession {
         self.replay_window.clone()
     }
 
-    /// Clone the send-side AEAD instance, for off-task encrypt.
+    /// Clone the send-side AEAD instance as an owned key.
     ///
     /// Returns `None` if the send cipher has no key. Pairs with
-    /// `encrypt_with_counter[_and_aad]` on `CipherState`. The caller must
-    /// own counter sequencing — `take_send_counter` hands out monotonic
-    /// counters under the session's own &mut.
+    /// `encrypt_with_counter[_and_aad]` on `CipherState`. Hot send-worker
+    /// paths should prefer [`Self::send_cipher_handle`] so they do not rebuild
+    /// the keyed AEAD per packet. The caller must own counter sequencing —
+    /// `take_send_counter` hands out monotonic counters under the session's
+    /// own &mut.
     pub fn send_cipher_clone(&self) -> Option<LessSafeKey> {
         self.send_cipher.cipher_clone()
+    }
+
+    /// Cheap handle to the send-side AEAD for explicit-counter worker sends.
+    ///
+    /// The session still owns nonce assignment through `take_send_counter`.
+    pub(crate) fn send_cipher_handle(&self) -> Option<Arc<LessSafeKey>> {
+        self.send_cipher.cipher_handle()
     }
 
     /// Whether the send-side cipher is keyed for worker-side encryption.
@@ -220,10 +230,10 @@ impl NoiseSession {
     }
 
     /// Reserve and return the next send counter, advancing the internal
-    /// nonce. For pipelined encrypt paths that call `encrypt_with_counter`
-    /// on a cloned cipher: the dispatcher pre-assigns the counter here
-    /// (under the session's &mut) and the worker performs the AEAD with
-    /// no further mutation of session state.
+    /// nonce. For pipelined encrypt paths, the dispatcher pre-assigns the
+    /// counter here (under the session's &mut) and the worker performs the
+    /// AEAD using the shared send-cipher handle with no further mutation of
+    /// session state.
     pub fn take_send_counter(&mut self) -> Result<u64, NoiseError> {
         if self.send_cipher.nonce == u64::MAX {
             return Err(NoiseError::NonceOverflow);

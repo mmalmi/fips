@@ -41,6 +41,7 @@ mod session;
 
 use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use std::fmt;
+use std::sync::Arc;
 use thiserror::Error;
 
 pub use handshake::HandshakeState;
@@ -181,16 +182,15 @@ impl fmt::Display for HandshakeProgress {
 /// AEAD is `ring`'s ChaCha20-Poly1305 (BoringSSL backend), which dispatches
 /// to NEON on aarch64 and AVX-512/AVX2 on x86_64. The `cipher` field caches
 /// a constructed `LessSafeKey` so we don't re-derive it per packet.
-/// `LessSafeKey` itself isn't `Clone`, so `CipherState`'s `Clone` impl
-/// rebuilds it from the retained 32-byte key on demand — for the
-/// off-task-decrypt path see `cipher_clone`.
+/// Off-task send workers use a cheap `Arc` handle to that immutable key
+/// while the session state keeps counter assignment sequential.
 pub struct CipherState {
     /// Encryption key (32 bytes). Retained so we can rebuild the keyed
-    /// AEAD on `Clone` and `cipher_clone()` (ring's `UnboundKey`/`LessSafeKey`
+    /// AEAD for `cipher_clone()` (ring's `UnboundKey`/`LessSafeKey`
     /// don't implement `Clone` deliberately for safety).
     key: [u8; 32],
     /// Cached keyed AEAD, valid iff `has_key`. None for an un-keyed state.
-    cipher: Option<LessSafeKey>,
+    cipher: Option<Arc<LessSafeKey>>,
     /// Nonce counter (8 bytes used, 4 bytes zero prefix).
     pub(super) nonce: u64,
     /// Whether this cipher has a valid key.
@@ -199,14 +199,9 @@ pub struct CipherState {
 
 impl Clone for CipherState {
     fn clone(&self) -> Self {
-        let cipher = if self.has_key {
-            Self::build_cipher(&self.key)
-        } else {
-            None
-        };
         Self {
             key: self.key,
-            cipher,
+            cipher: self.cipher.clone(),
             nonce: self.nonce,
             has_key: self.has_key,
         }
@@ -243,10 +238,17 @@ impl CipherState {
         self.has_key = true;
     }
 
-    /// Build a ring `LessSafeKey` from raw key bytes. Centralized so the
-    /// cipher-cache rebuild paths (`new`, `initialize_key`, `Clone`,
-    /// `cipher_clone`) all agree on construction.
-    fn build_cipher(key: &[u8; 32]) -> Option<LessSafeKey> {
+    /// Build the cached ring `LessSafeKey` from raw key bytes.
+    fn build_cipher(key: &[u8; 32]) -> Option<Arc<LessSafeKey>> {
+        UnboundKey::new(&CHACHA20_POLY1305, key)
+            .ok()
+            .map(LessSafeKey::new)
+            .map(Arc::new)
+    }
+
+    /// Build an owned key for receive-side worker snapshots that intentionally
+    /// own their decrypt state instead of sharing it.
+    fn build_owned_cipher(key: &[u8; 32]) -> Option<LessSafeKey> {
         UnboundKey::new(&CHACHA20_POLY1305, key)
             .ok()
             .map(LessSafeKey::new)
@@ -267,7 +269,7 @@ impl CipherState {
         }
 
         let counter = self.advance_nonce()?;
-        seal(self.cipher.as_ref(), counter, &[], plaintext)
+        seal(self.cipher.as_deref(), counter, &[], plaintext)
     }
 
     /// Decrypt ciphertext (with appended tag), returning plaintext.
@@ -288,7 +290,7 @@ impl CipherState {
         }
 
         let counter = self.advance_nonce()?;
-        open(self.cipher.as_ref(), counter, &[], ciphertext)
+        open(self.cipher.as_deref(), counter, &[], ciphertext)
     }
 
     /// Decrypt with an explicit counter value (for transport phase).
@@ -312,7 +314,7 @@ impl CipherState {
             });
         }
 
-        open(self.cipher.as_ref(), counter, &[], ciphertext)
+        open(self.cipher.as_deref(), counter, &[], ciphertext)
     }
 
     /// Encrypt plaintext with Additional Authenticated Data (AAD).
@@ -337,7 +339,7 @@ impl CipherState {
         }
 
         let counter = self.advance_nonce()?;
-        seal(self.cipher.as_ref(), counter, aad, plaintext)
+        seal(self.cipher.as_deref(), counter, aad, plaintext)
     }
 
     /// Encrypt plaintext with an explicit counter (no AAD).
@@ -364,7 +366,7 @@ impl CipherState {
             });
         }
 
-        seal(self.cipher.as_ref(), counter, &[], plaintext)
+        seal(self.cipher.as_deref(), counter, &[], plaintext)
     }
 
     /// Encrypt plaintext with an explicit counter and AAD.
@@ -389,26 +391,31 @@ impl CipherState {
             });
         }
 
-        seal(self.cipher.as_ref(), counter, aad, plaintext)
+        seal(self.cipher.as_deref(), counter, aad, plaintext)
     }
 
     /// Construct an independent keyed AEAD pinned to this cipher's key.
     ///
     /// Returns `None` for an empty (un-keyed) state. The returned key is
     /// freshly built from the retained 32-byte key material — ring's
-    /// `LessSafeKey` doesn't implement `Clone` deliberately, but for
-    /// ChaCha20-Poly1305 the construction is essentially a key copy plus
-    /// a constant-time check, so this is cheap. Combined with
-    /// `decrypt_with_counter[_and_aad]` (which already takes `&self`),
-    /// this lets a dispatcher offload the AEAD rounds to a worker pool
-    /// while the main task keeps the replay window and counter
-    /// assignment sequential.
+    /// `LessSafeKey` doesn't implement `Clone` deliberately. Rebuilding from
+    /// the retained bytes is fine for infrequent owned receive snapshots; hot
+    /// send workers use [`Self::cipher_handle`] to avoid this per packet.
     pub fn cipher_clone(&self) -> Option<LessSafeKey> {
         if self.has_key {
-            Self::build_cipher(&self.key)
+            Self::build_owned_cipher(&self.key)
         } else {
             None
         }
+    }
+
+    /// Cheaply clone a handle to the cached keyed AEAD.
+    ///
+    /// `LessSafeKey` is immutable for explicit-counter AEAD calls. Send
+    /// workers receive counters reserved by the owning session, so sharing the
+    /// key handle does not share nonce state.
+    pub(crate) fn cipher_handle(&self) -> Option<Arc<LessSafeKey>> {
+        self.cipher.clone()
     }
 
     /// Decrypt with an explicit counter and AAD (for transport phase).
@@ -433,7 +440,7 @@ impl CipherState {
             });
         }
 
-        open(self.cipher.as_ref(), counter, aad, ciphertext)
+        open(self.cipher.as_deref(), counter, aad, ciphertext)
     }
 
     /// In-place variant of [`Self::decrypt_with_counter_and_aad`].
@@ -456,7 +463,7 @@ impl CipherState {
         if !self.has_key {
             return Ok(buf.len());
         }
-        open_in_place(self.cipher.as_ref(), counter, aad, buf)
+        open_in_place(self.cipher.as_deref(), counter, aad, buf)
     }
 
     /// Build a ring `Nonce` from a counter value (8-byte LE counter, with
@@ -505,9 +512,8 @@ impl fmt::Debug for CipherState {
 /// `seal_in_place_append_tag` works on a single buffer; we own it here
 /// to keep the public Vec-returning API of `CipherState`).
 ///
-/// Module-private so other paths inside `noise` (e.g. a future pipelined
-/// dispatcher consuming `cipher_clone`) can reuse the exact same
-/// allocation + AEAD pattern.
+/// Module-private so explicit-counter paths inside `noise` can reuse the
+/// exact same allocation + AEAD pattern.
 pub(crate) fn seal(
     cipher: Option<&LessSafeKey>,
     counter: u64,
