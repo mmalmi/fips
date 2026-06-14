@@ -35,6 +35,7 @@ impl FmpAeadHelperPool {
                 .spawn(move || run_fmp_aead_helper(i, helper_rx))
                 .expect("failed to spawn fips-decrypt-aead OS thread");
         }
+        info!(helpers = n, "Spawned FMP AEAD helper pool");
         Some(Arc::new(Self { tx }))
     }
 

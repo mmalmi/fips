@@ -27,6 +27,24 @@
     }
 
     #[test]
+    fn fmp_aead_helper_default_is_linux_only_and_cpu_bounded() {
+        assert_eq!(default_fmp_aead_helper_count_for(false, 128), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 1), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 3), 0);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 4), 2);
+        assert_eq!(default_fmp_aead_helper_count_for(true, 128), 2);
+    }
+
+    #[test]
+    fn fmp_aead_helper_env_can_disable_or_override_default() {
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("0"), 2), 0);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("1"), 2), 1);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("99"), 2), 64);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("bad"), 2), 2);
+        assert_eq!(fmp_aead_helper_count_from_raw(None, 2), 2);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),

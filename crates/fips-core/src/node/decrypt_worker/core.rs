@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
 };
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // `endpoint_event_tx` used to ride on every `DecryptJob`, bloating the hot
 // packet shape with an extra Arc clone and accidentally gating TUN-only worker
@@ -157,12 +157,28 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
-fn fmp_aead_helper_count() -> usize {
-    std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(0)
+fn default_fmp_aead_helper_count_for(linux: bool, cpu_count: usize) -> usize {
+    if linux && cpu_count >= 4 { 2 } else { 0 }
+}
+
+fn default_fmp_aead_helper_count() -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    default_fmp_aead_helper_count_for(cfg!(target_os = "linux"), cpu_count)
+}
+
+fn fmp_aead_helper_count_from_raw(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
         .min(64)
+}
+
+fn fmp_aead_helper_count() -> usize {
+    fmp_aead_helper_count_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS").ok().as_deref(),
+        default_fmp_aead_helper_count(),
+    )
 }
 
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
