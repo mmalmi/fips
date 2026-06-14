@@ -310,6 +310,27 @@ fn flush_batch_sync(
     let group_packet_capacity = batch.len();
     #[cfg(unix)]
     let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
+
+    #[cfg(target_os = "linux")]
+    if let Some(sealed_packets) = try_seal_batch_with_linux_fanout(batch) {
+        for sealed in sealed_packets {
+            let (send_target, target_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            push_selected_send_batch_with_capacity(
+                &mut groups,
+                send_target,
+                target_key,
+                wire_packet,
+                drop_on_backpressure,
+                group_packet_capacity,
+            );
+        }
+        record_selected_send_groups(&groups);
+        drop(_t);
+        let _t2 = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+        flush_linux_send_groups_sync(groups)?;
+        return Ok(());
+    }
+
     #[cfg(target_os = "macos")]
     let mut macos_completions: Vec<MacCompletionGroup> = Vec::with_capacity(1);
 
