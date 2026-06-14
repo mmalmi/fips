@@ -86,11 +86,7 @@ impl Node {
             return EncryptedFrameFastPath::Slow(packet);
         }
 
-        let session_key = DecryptSessionKey::for_peer(
-            packet.transport_id,
-            header.receiver_idx.as_u32(),
-            &node_addr,
-        );
+        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
         if self.decrypt_workers.is_none() {
             return EncryptedFrameFastPath::Slow(packet);
         }
@@ -263,11 +259,7 @@ impl Node {
         // production `self.decrypt_workers` is always `Some` (spawned
         // at lifecycle start with `num_cpus` workers), so this branch
         // is taken and the legacy block below never runs.
-        let session_key = DecryptSessionKey::for_peer(
-            packet.transport_id,
-            header.receiver_idx.as_u32(),
-            &node_addr,
-        );
+        let session_key = DecryptSessionKey::new(packet.transport_id, header.receiver_idx.as_u32());
         // **Worker is the production decrypt path.** The previous
         // version of this gate also required `endpoint_event_tx` to
         // be `Some`, but that field is only populated when a caller
@@ -450,8 +442,7 @@ impl Node {
             let Some(our_index) = peer.our_index() else {
                 return;
             };
-            let session_key =
-                DecryptSessionKey::for_peer(transport_id, our_index.as_u32(), node_addr);
+            let session_key = DecryptSessionKey::new(transport_id, our_index.as_u32());
             let Some(state) = self.build_owned_session_state(node_addr) else {
                 return;
             };

@@ -630,18 +630,3 @@
             "common session keys should spread across all workers: {buckets:?}"
         );
     }
-
-    #[test]
-    fn peer_owned_decrypt_session_key_hashes_with_fsp_owner() {
-        let peer = *test_source_peer().node_addr();
-        let key = DecryptSessionKey::for_peer(TransportId::new(7), 42, &peer);
-
-        assert!(key.matches_wire_key(TransportId::new(7), 42));
-        assert!(!key.matches_wire_key(TransportId::new(8), 42));
-        assert!(!key.matches_wire_key(TransportId::new(7), 43));
-        assert_eq!(
-            decrypt_session_fast_hash(key),
-            decrypt_fsp_session_fast_hash(&peer),
-            "peer-owned FMP and FSP receive state should route to the same worker"
-        );
-    }

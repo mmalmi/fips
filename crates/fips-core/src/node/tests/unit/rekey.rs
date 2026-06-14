@@ -320,13 +320,12 @@ fn test_deregister_session_index_preserves_connected_udp_on_rekey_drain() {
         "peer must still be present after rekey-drain deregistration"
     );
     assert!(
-        !node.sessions.is_worker_registered(
-            &crate::node::decrypt_worker::DecryptSessionKey::for_peer(
+        !node
+            .sessions
+            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
                 transport_id,
-                index_old,
-                &node_addr,
-            )
-        ),
+                index_old
+            )),
         "old session must be evicted from the session registry worker-registration mirror"
     );
 }

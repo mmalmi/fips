@@ -60,16 +60,10 @@ enum DecryptWorkerLane {
 /// receiver_idx)` tuple, but once a packet crosses into the worker pool this
 /// named key is the contract: registration, packet jobs, and unregister all
 /// hash the same value so one FMP recv session has one shard owner.
-///
-/// Once rx_loop knows the peer address, production keys carry that peer owner
-/// so FMP decrypt and FSP decrypt hash to the same worker. That removes the
-/// hot FMP-worker to FSP-worker handoff for direct established session data
-/// without changing the wire receiver index used for packet lookup.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct DecryptSessionKey {
     transport_id: TransportId,
     receiver_idx: u32,
-    peer_owner: Option<NodeAddr>,
 }
 
 impl DecryptSessionKey {
@@ -77,24 +71,7 @@ impl DecryptSessionKey {
         Self {
             transport_id,
             receiver_idx,
-            peer_owner: None,
         }
-    }
-
-    pub(crate) fn for_peer(
-        transport_id: TransportId,
-        receiver_idx: u32,
-        peer_addr: &NodeAddr,
-    ) -> Self {
-        Self {
-            transport_id,
-            receiver_idx,
-            peer_owner: Some(*peer_addr),
-        }
-    }
-
-    pub(crate) fn matches_wire_key(&self, transport_id: TransportId, receiver_idx: u32) -> bool {
-        self.transport_id == transport_id && self.receiver_idx == receiver_idx
     }
 }
 
@@ -106,10 +83,6 @@ impl From<(TransportId, u32)> for DecryptSessionKey {
 
 #[inline]
 fn decrypt_session_fast_hash(session_key: DecryptSessionKey) -> u64 {
-    if let Some(peer_owner) = session_key.peer_owner {
-        return decrypt_fsp_session_fast_hash(&peer_owner);
-    }
-
     let packed =
         (u64::from(session_key.transport_id.as_u32()) << 32) | u64::from(session_key.receiver_idx);
     mix_decrypt_session_hash(packed ^ 0x9e37_79b9_7f4a_7c15)

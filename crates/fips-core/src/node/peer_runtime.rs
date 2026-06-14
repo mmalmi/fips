@@ -738,10 +738,9 @@ impl ConnectedUdpDecryptFastPath {
         let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
             return Err(packet_data);
         };
-        if !self
-            .session_key
-            .matches_wire_key(transport_id, header.receiver_idx.as_u32())
-        {
+        let packet_session_key =
+            decrypt_worker::DecryptSessionKey::new(transport_id, header.receiver_idx.as_u32());
+        if packet_session_key != self.session_key {
             return Err(packet_data);
         }
 

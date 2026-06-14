@@ -302,11 +302,8 @@ impl Node {
         let workers = self.decrypt_workers.as_ref()?.clone();
         let peer = self.peers.get(node_addr)?;
         let our_index = peer.our_index()?;
-        let session_key = crate::node::decrypt_worker::DecryptSessionKey::for_peer(
-            transport_id,
-            our_index.as_u32(),
-            node_addr,
-        );
+        let session_key =
+            crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
         if !self.sessions.is_worker_registered(&session_key) {
             return None;
         }

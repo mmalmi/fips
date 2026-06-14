@@ -655,13 +655,11 @@ fn test_promote_registers_decrypt_worker() {
     let peer = node.get_peer(&node_addr).unwrap();
     let our_index = peer.our_index().unwrap();
     assert!(
-        node.sessions.is_worker_registered(
-            &crate::node::decrypt_worker::DecryptSessionKey::for_peer(
+        node.sessions
+            .is_worker_registered(&crate::node::decrypt_worker::DecryptSessionKey::new(
                 transport_id,
-                our_index.as_u32(),
-                &node_addr,
-            )
-        ),
+                our_index.as_u32()
+            )),
         "session registry must contain the new worker registration after promote"
     );
 }
