@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 65);
+    assert_eq!(N_EVENTS, 67);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -181,6 +181,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::EncryptWorkerBulkQueueFull as usize).name(),
         "encrypt_worker_bulk_queue_full"
     );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchBatch as usize).name(),
+        "fmp_worker_dispatch_batch"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchPackets as usize).name(),
+        "fmp_worker_dispatch_packets"
+    );
 }
 
 #[test]
@@ -197,7 +205,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 49);
+    assert_eq!(N_STAGES, 50);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -270,6 +278,10 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         stage_from_index(Stage::FmpWorkerFmpSeal as usize).name(),
         "fmp_worker_fmp_seal"
     );
+    assert_eq!(
+        stage_from_index(Stage::FmpWorkerDispatch as usize).name(),
+        "fmp_worker_dispatch"
+    );
 }
 
 #[test]
@@ -306,6 +318,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBatchPriorityPackets as usize].load(Relaxed);
     let decrypt_batch_bulk_before =
         EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed);
+    let dispatch_batch_before = EVENTS[Event::FmpWorkerDispatchBatch as usize].load(Relaxed);
+    let dispatch_packets_before = EVENTS[Event::FmpWorkerDispatchPackets as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -332,6 +346,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
     record_event_count_sample(Event::DecryptWorkerBatchPriorityPackets, 3);
     record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, 62);
+    record_event_count_sample(Event::FmpWorkerDispatchBatch, 5);
+    record_event_count_sample(Event::FmpWorkerDispatchPackets, 320);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -439,5 +455,13 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed)
             - decrypt_batch_bulk_before,
         62
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchBatch as usize].load(Relaxed) - dispatch_batch_before,
+        5
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchPackets as usize].load(Relaxed) - dispatch_packets_before,
+        320
     );
 }

@@ -25,6 +25,7 @@
 //!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
 //!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
 //!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
+//!   * `FMP_WORKER_DISPATCH` — rx_loop-side worker hashing/admission/channel enqueue
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
@@ -75,8 +76,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 49;
-const N_EVENTS: usize = 65;
+const N_STAGES: usize = 50;
+const N_EVENTS: usize = 67;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -206,6 +207,8 @@ pub enum Stage {
     FmpWorkerFspSeal = 47,
     /// Worker-side outer FMP seal for pipelined endpoint sends.
     FmpWorkerFmpSeal = 48,
+    /// Producer-side cost to hash, admit, and enqueue FMP worker jobs.
+    FmpWorkerDispatch = 49,
 }
 
 impl Stage {
@@ -262,6 +265,7 @@ impl Stage {
             Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
+            Stage::FmpWorkerDispatch => "fmp_worker_dispatch",
         }
     }
 }
@@ -317,6 +321,7 @@ fn stage_from_index(idx: usize) -> Stage {
         46 => Stage::FspAeadHelperCompletionWait,
         47 => Stage::FmpWorkerFspSeal,
         48 => Stage::FmpWorkerFmpSeal,
+        49 => Stage::FmpWorkerDispatch,
         _ => unreachable!(),
     }
 }
@@ -390,6 +395,8 @@ pub enum Event {
     FmpSendGroupSingle = 62,
     EncryptWorkerPriorityQueueFull = 63,
     EncryptWorkerBulkQueueFull = 64,
+    FmpWorkerDispatchBatch = 65,
+    FmpWorkerDispatchPackets = 66,
 }
 
 impl Event {
@@ -466,6 +473,8 @@ impl Event {
             Event::FmpSendGroupSingle => "fmp_send_group_single",
             Event::EncryptWorkerPriorityQueueFull => "encrypt_worker_priority_queue_full",
             Event::EncryptWorkerBulkQueueFull => "encrypt_worker_bulk_queue_full",
+            Event::FmpWorkerDispatchBatch => "fmp_worker_dispatch_batch",
+            Event::FmpWorkerDispatchPackets => "fmp_worker_dispatch_packets",
         }
     }
 }
@@ -537,6 +546,8 @@ fn event_from_index(idx: usize) -> Event {
         62 => Event::FmpSendGroupSingle,
         63 => Event::EncryptWorkerPriorityQueueFull,
         64 => Event::EncryptWorkerBulkQueueFull,
+        65 => Event::FmpWorkerDispatchBatch,
+        66 => Event::FmpWorkerDispatchPackets,
         _ => unreachable!(),
     }
 }
@@ -771,6 +782,29 @@ pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_group
     if single_groups > 0 {
         record_event_count_sample(Event::FmpSendGroupSingle, single_groups as u64);
     }
+}
+
+/// Record rx-loop producer-side cost for handing prepared packets to the
+/// encrypt worker queues.
+///
+/// Worker queue residence starts after enqueue. This stage sits before that
+/// timestamp and shows whether a hot sender is spending material CPU time in
+/// hashing, fair admission, and channel submission before worker ownership.
+#[inline]
+pub(crate) fn record_fmp_worker_dispatch(elapsed_ns: u64, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    let packets_u64 = packets as u64;
+    let per_packet_ns = elapsed_ns.max(1).saturating_div(packets_u64).max(1);
+    record_count_sample(
+        Stage::FmpWorkerDispatch,
+        per_packet_ns,
+        packets_u64,
+        bucket_for_ns(per_packet_ns),
+    );
+    record_event_count_sample(Event::FmpWorkerDispatchBatch, 1);
+    record_event_count_sample(Event::FmpWorkerDispatchPackets, packets_u64);
 }
 
 /// Record how much packet work a decrypt worker handled before yielding.

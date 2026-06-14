@@ -77,18 +77,30 @@ impl EncryptWorkerPool {
     /// packet instead of blocking the node rx_loop that must keep ACKs,
     /// heartbeats, and route measurements moving.
     pub fn dispatch(&self, job: FmpSendJob) {
+        let started_at = encrypt_worker_dispatch_timer();
+        self.dispatch_unmeasured(job);
+        record_encrypt_worker_dispatch(started_at, 1);
+    }
+
+    pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        let count = jobs.len();
+        if count == 0 {
+            return;
+        }
+        let started_at = encrypt_worker_dispatch_timer();
+        for job in jobs {
+            self.dispatch_unmeasured(job);
+        }
+        record_encrypt_worker_dispatch(started_at, count);
+    }
+
+    fn dispatch_unmeasured(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
             return;
         }
         let (idx, job) = self.prepare_dispatch(job);
         self.dispatch_to_worker(idx, job);
-    }
-
-    pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
-        for job in jobs {
-            self.dispatch(job);
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -195,6 +207,24 @@ impl EncryptWorkerPool {
             }
         }
     }
+}
+
+fn encrypt_worker_dispatch_timer() -> Option<std::time::Instant> {
+    if crate::perf_profile::enabled() {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    }
+}
+
+fn record_encrypt_worker_dispatch(started_at: Option<std::time::Instant>, count: usize) {
+    let Some(started_at) = started_at else {
+        return;
+    };
+    crate::perf_profile::record_fmp_worker_dispatch(
+        started_at.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+        count,
+    );
 }
 
 fn record_encrypt_worker_queue_full(lane: EncryptWorkerLane) {
