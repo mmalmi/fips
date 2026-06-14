@@ -117,7 +117,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 72;
+const N_STAGES: usize = 77;
 const N_EVENTS: usize = 93;
 const HIST_BUCKETS: usize = 48;
 
@@ -289,6 +289,17 @@ pub enum Stage {
     FmpAeadHelperCompletionWait = 70,
     /// FMP owner-worker residence waiting for ordered helper completions.
     FmpReceiveOrderWindowWait = 71,
+    /// Authenticated worker return residence for timestamp-only FMP receives.
+    DecryptAuthenticatedFmpReceiveWait = 72,
+    /// Authenticated worker return residence for direct-FMP endpoint data.
+    DecryptDirectFmpEndpointWait = 73,
+    /// Authenticated worker return residence for full FSP session messages.
+    DecryptAuthenticatedSessionMessageWait = 74,
+    /// Authenticated worker return residence for direct session commit metadata.
+    DecryptDirectSessionCommitWait = 75,
+    /// Authenticated worker return residence for direct session payloads that
+    /// still need rx-loop delivery.
+    DecryptDirectSessionDataWait = 76,
 }
 
 impl Stage {
@@ -372,6 +383,13 @@ impl Stage {
             Stage::FmpAeadHelperQueueWait => "fmp_aead_helper_queue_wait",
             Stage::FmpAeadHelperCompletionWait => "fmp_aead_helper_completion_wait",
             Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
+            Stage::DecryptAuthenticatedFmpReceiveWait => "decrypt_authenticated_fmp_receive_wait",
+            Stage::DecryptDirectFmpEndpointWait => "decrypt_direct_fmp_endpoint_wait",
+            Stage::DecryptAuthenticatedSessionMessageWait => {
+                "decrypt_authenticated_session_message_wait"
+            }
+            Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
+            Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
         }
     }
 }
@@ -450,6 +468,11 @@ fn stage_from_index(idx: usize) -> Stage {
         69 => Stage::FmpAeadHelperQueueWait,
         70 => Stage::FmpAeadHelperCompletionWait,
         71 => Stage::FmpReceiveOrderWindowWait,
+        72 => Stage::DecryptAuthenticatedFmpReceiveWait,
+        73 => Stage::DecryptDirectFmpEndpointWait,
+        74 => Stage::DecryptAuthenticatedSessionMessageWait,
+        75 => Stage::DecryptDirectSessionCommitWait,
+        76 => Stage::DecryptDirectSessionDataWait,
         _ => unreachable!(),
     }
 }

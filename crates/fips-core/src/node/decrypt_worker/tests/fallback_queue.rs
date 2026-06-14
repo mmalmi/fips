@@ -226,6 +226,114 @@
     }
 
     #[test]
+    fn decrypt_worker_authenticated_return_wait_metrics_split_event_kinds() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let fmp = || DecryptFmpBookkeeping {
+            source_peer,
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            packet_timestamp_ms: 1_000,
+            packet_len: DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+            fmp_counter: 9,
+            inner_timestamp_ms: 10,
+            fmp_flags: 0,
+        };
+        let receive_sync = || FspReceiveSync {
+            counter: 11,
+            slot: EpochSlot::Current,
+            received_k_bit: false,
+            timestamp: 12,
+            plaintext_len: 64,
+            ce_flag: false,
+            path_mtu: 1_280,
+            spin_bit: false,
+        };
+
+        let authenticated_fmp = DecryptWorkerEvent::AuthenticatedFmpReceive(
+            DecryptAuthenticatedFmpReceive {
+                fmp: fmp(),
+                lane: DecryptWorkerLane::Priority,
+                trace_enqueued_at: None,
+            },
+        );
+        assert_eq!(
+            authenticated_fmp.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait)
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let direct_fmp = dummy_direct_fmp_endpoint_output(
+            fallback_tx.clone(),
+            source_peer,
+            1,
+            DecryptWorkerLane::Bulk,
+            b"direct-fmp".to_vec(),
+        )
+        .event;
+        assert_eq!(
+            direct_fmp.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectFmpEndpointWait)
+        );
+
+        let direct_fmp_batch = DecryptWorkerEvent::DirectFmpEndpointDataBatch(vec![
+            DecryptDirectFmpEndpointData::for_test(fmp(), b"one".to_vec()),
+            DecryptDirectFmpEndpointData::for_test(fmp(), b"two".to_vec()),
+        ]);
+        assert_eq!(
+            direct_fmp_batch.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectFmpEndpointWait)
+        );
+
+        assert_eq!(
+            dummy_authenticated_session_event(DecryptWorkerLane::Bulk)
+                .authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptAuthenticatedSessionMessageWait)
+        );
+
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(8);
+        let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
+        let direct_commit = dummy_direct_endpoint_output(
+            fallback_tx,
+            sink,
+            source_peer,
+            2,
+            b"direct-commit",
+        )
+        .event;
+        assert_eq!(
+            direct_commit.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectSessionCommitWait)
+        );
+
+        let direct_data = DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
+            fmp: fmp(),
+            source_addr,
+            previous_hop_peer: source_peer,
+            ce_flag: false,
+            receive_sync: receive_sync(),
+            body_len: 64,
+            delivery: DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                source_peer,
+                b"direct-data".to_vec(),
+            )),
+            lane: DecryptWorkerLane::Bulk,
+            trace_enqueued_at: None,
+        });
+        assert_eq!(
+            direct_data.authenticated_return_kind_stage(),
+            Some(crate::perf_profile::Stage::DecryptDirectSessionDataWait)
+        );
+
+        assert_eq!(
+            dummy_plaintext_event(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+                .authenticated_return_kind_stage(),
+            None
+        );
+        assert_eq!(dummy_failure_event().authenticated_return_kind_stage(), None);
+    }
+
+    #[test]
     fn decrypt_worker_fallback_sender_stamps_queue_wait_origin() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
 

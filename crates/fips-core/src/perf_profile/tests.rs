@@ -309,7 +309,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 72);
+    assert_eq!(N_STAGES, 77);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -473,6 +473,26 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::FmpReceiveOrderWindowWait as usize).name(),
         "fmp_receive_order_window_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedFmpReceiveWait as usize).name(),
+        "decrypt_authenticated_fmp_receive_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptDirectFmpEndpointWait as usize).name(),
+        "decrypt_direct_fmp_endpoint_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedSessionMessageWait as usize).name(),
+        "decrypt_authenticated_session_message_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptDirectSessionCommitWait as usize).name(),
+        "decrypt_direct_session_commit_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptDirectSessionDataWait as usize).name(),
+        "decrypt_direct_session_data_wait"
     );
 }
 

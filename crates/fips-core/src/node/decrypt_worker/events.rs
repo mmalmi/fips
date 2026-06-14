@@ -113,6 +113,30 @@ impl DecryptWorkerEvent {
         }
     }
 
+    fn authenticated_return_kind_stage(&self) -> Option<crate::perf_profile::Stage> {
+        match self {
+            Self::AuthenticatedFmpReceive(_) => {
+                Some(crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait)
+            }
+            Self::DirectFmpEndpointData(_) | Self::DirectFmpEndpointDataBatch(_) => {
+                Some(crate::perf_profile::Stage::DecryptDirectFmpEndpointWait)
+            }
+            Self::AuthenticatedSession(_) => Some(
+                crate::perf_profile::Stage::DecryptAuthenticatedSessionMessageWait,
+            ),
+            Self::DirectSessionCommit(_) | Self::DirectSessionCommitBatch(_) => {
+                Some(crate::perf_profile::Stage::DecryptDirectSessionCommitWait)
+            }
+            Self::DirectSessionData(_) => {
+                Some(crate::perf_profile::Stage::DecryptDirectSessionDataWait)
+            }
+            Self::Plaintext(_)
+            | Self::PlaintextBatch(_)
+            | Self::FspDecryptFailure(_)
+            | Self::DecryptFailure(_) => None,
+        }
+    }
+
     pub(crate) fn record_queue_wait(&self) {
         let queued_at = self.trace_enqueued_at();
         if queued_at.is_none() {
@@ -133,5 +157,8 @@ impl DecryptWorkerEvent {
             priority_count,
             bulk_count,
         );
+        if let Some(kind_stage) = self.authenticated_return_kind_stage() {
+            crate::perf_profile::record_since_count(kind_stage, queued_at, count);
+        }
     }
 }
