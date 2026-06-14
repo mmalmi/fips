@@ -288,13 +288,7 @@ fn record_decrypt_worker_bulk_input_head_wait(
     queued_at: Option<crate::perf_profile::TraceStamp>,
     count: usize,
 ) {
-    if queued_at.is_some() {
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::DecryptWorkerBulkInputHeadWait,
-            queued_at,
-            count as u64,
-        );
-    }
+    crate::perf_profile::record_decrypt_worker_bulk_input_wait(queued_at, count as u64);
 }
 
 #[inline]

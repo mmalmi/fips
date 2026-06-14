@@ -124,7 +124,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 81;
-const N_EVENTS: usize = 97;
+const N_EVENTS: usize = 100;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -602,6 +602,9 @@ pub enum Event {
     FmpLinuxBulkContainerQueueFullPackets = 94,
     EndpointDirectFmpReceiveDropped = 95,
     EndpointDirectFmpReceiveDroppedPackets = 96,
+    DecryptWorkerBulkInputWaitGe250us = 97,
+    DecryptWorkerBulkInputWaitGe500us = 98,
+    DecryptWorkerBulkInputWaitGe1ms = 99,
 }
 
 impl Event {
@@ -736,6 +739,9 @@ impl Event {
             Event::EndpointDirectFmpReceiveDroppedPackets => {
                 "endpoint_direct_fmp_receive_dropped_packets"
             }
+            Event::DecryptWorkerBulkInputWaitGe250us => "decrypt_worker_bulk_input_wait_ge250us",
+            Event::DecryptWorkerBulkInputWaitGe500us => "decrypt_worker_bulk_input_wait_ge500us",
+            Event::DecryptWorkerBulkInputWaitGe1ms => "decrypt_worker_bulk_input_wait_ge1ms",
         }
     }
 }
@@ -839,6 +845,9 @@ fn event_from_index(idx: usize) -> Event {
         94 => Event::FmpLinuxBulkContainerQueueFullPackets,
         95 => Event::EndpointDirectFmpReceiveDropped,
         96 => Event::EndpointDirectFmpReceiveDroppedPackets,
+        97 => Event::DecryptWorkerBulkInputWaitGe250us,
+        98 => Event::DecryptWorkerBulkInputWaitGe500us,
+        99 => Event::DecryptWorkerBulkInputWaitGe1ms,
         _ => unreachable!(),
     }
 }
@@ -1138,6 +1147,49 @@ pub(crate) fn record_endpoint_direct_fmp_receive_dropped(packets: usize) {
         Event::EndpointDirectFmpReceiveDroppedPackets,
         packets as u64,
     );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_bulk_input_wait(start: Option<TraceStamp>, count: u64) {
+    if !enabled() || count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(
+        Stage::DecryptWorkerBulkInputHeadWait,
+        elapsed_ns,
+        count,
+        bucket,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe250us,
+        elapsed_ns,
+        count,
+        250_000,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe500us,
+        elapsed_ns,
+        count,
+        500_000,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe1ms,
+        elapsed_ns,
+        count,
+        1_000_000,
+    );
+}
+
+#[inline]
+fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns: u64) {
+    if elapsed_ns >= threshold_ns {
+        record_event_count_sample(event, count);
+    }
 }
 
 #[inline]
