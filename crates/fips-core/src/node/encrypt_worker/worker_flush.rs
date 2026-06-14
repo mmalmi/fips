@@ -444,7 +444,7 @@ fn run_linux_deferred_sender(
 fn flush_linux_deferred_send_groups(groups: Vec<SelectedSendBatch>) {
     if !groups.is_empty() {
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-        if let Err(err) = flush_linux_send_groups_sync(groups) {
+        if let Err(err) = flush_linux_send_batches_sync(groups) {
             debug!(error = %err, "deferred Linux UDP send failed");
         }
     }
@@ -585,7 +585,7 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "linux")]
         if let Some(container) = linux_container {
-            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+            let (_send_target, _target_key, _lane, wire_packet, drop_on_backpressure) =
                 sealed.into_parts();
             container.complete_packet(linux_container_slot, wire_packet, drop_on_backpressure);
             continue;

@@ -100,6 +100,9 @@ impl LinuxBulkSendFlow {
         if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
             return false;
         }
+        if self.inflight_containers() >= linux_bulk_container_inflight_cap() {
+            return false;
+        }
 
         self.queued
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -111,6 +114,12 @@ impl LinuxBulkSendFlow {
                 false
             }
         }
+    }
+
+    fn inflight_containers(&self) -> usize {
+        self.queued
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(self.active.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
@@ -257,10 +266,11 @@ impl LinuxBulkSendContainer {
             else {
                 continue;
             };
-            push_selected_send_batch_with_capacity(
+            push_selected_send_batch_with_lane_and_capacity(
                 &mut groups,
                 send_target.clone(),
                 target_key,
+                SelectedSendLane::Bulk,
                 packet,
                 drop_on_backpressure,
                 packet_capacity,
@@ -322,6 +332,25 @@ fn linux_bulk_container_queue_cap() -> usize {
             .unwrap_or(32)
             .clamp(1, 4096)
     })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_bulk_container_inflight_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_linux_bulk_container_inflight_cap(
+            std::env::var("FIPS_LINUX_BULK_CONTAINER_INFLIGHT_CAP")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+#[cfg_attr(not(all(test, target_os = "linux")), allow(dead_code))]
+fn parse_linux_bulk_container_inflight_cap(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(64)
+        .clamp(1, 4096)
 }
 
 #[cfg(target_os = "linux")]

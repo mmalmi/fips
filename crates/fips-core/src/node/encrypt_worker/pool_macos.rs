@@ -107,7 +107,7 @@ impl EncryptWorkerPool {
         let mut run_key: Option<SendTargetKey> = None;
 
         for job in jobs {
-            if !job.bulk_endpoint_data {
+            if !job.bulk_endpoint_data || job.drop_on_backpressure {
                 self.dispatch_linux_bulk_container_run(&mut run);
                 run_key = None;
                 self.dispatch(job);
@@ -144,18 +144,15 @@ impl EncryptWorkerPool {
         let target_key = run[0].send_target_key();
         debug_assert!(
             run.iter().all(|job| job.bulk_endpoint_data
+                && !job.drop_on_backpressure
                 && job.send_target_key() == target_key),
-            "Linux bulk container runs must be same-target bulk packets"
+            "Linux bulk container runs must be same-target reliable bulk packets"
         );
 
         let flow = self.linux_containers.flow_for(&run[0]);
         let container = Arc::new(LinuxBulkSendContainer::new(run.len()));
         if !flow.try_enqueue(Arc::clone(&container)) {
-            for job in run.drain(..) {
-                let (idx, queued) = self.prepare_dispatch(job);
-                record_encrypt_worker_queue_full(queued.queue_lane());
-                record_encrypt_worker_backpressure_drop(idx);
-            }
+            self.dispatch_linux_bulk_container_queue_full_run(run);
             return;
         }
 
@@ -165,6 +162,16 @@ impl EncryptWorkerPool {
                 idx,
                 QueuedFmpSendJob::linux_container(job, Arc::clone(&container), slot),
             );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_bulk_container_queue_full_run(&self, run: &mut Vec<FmpSendJob>) {
+        for job in run.drain(..) {
+            let (idx, queued) = self.prepare_dispatch(job);
+            record_encrypt_worker_queue_full(queued.queue_lane());
+            record_encrypt_worker_backpressure_drop(idx);
+            queued.complete_worker_drop();
         }
     }
 

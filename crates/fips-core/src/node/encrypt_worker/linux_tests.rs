@@ -113,6 +113,20 @@ mod tests {
     }
 
     #[test]
+    fn linux_bulk_container_inflight_cap_defaults_to_bounded_backlog() {
+        assert_eq!(
+            parse_linux_bulk_container_inflight_cap(None),
+            64,
+            "same-flow container bursts should stay bounded without collapsing the fast path"
+        );
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("0")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("1")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("8")), 8);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("999999")), 4096);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("nope")), 64);
+    }
+
+    #[test]
     fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
