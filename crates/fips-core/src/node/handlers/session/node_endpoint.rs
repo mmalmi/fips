@@ -71,6 +71,7 @@ impl Node {
             payloads.len(),
         );
         let next_hop_addr = resolved_route.route_plan.next_hop_addr;
+        let selected_send_target = resolved_route.send_target().into_selected_send_target();
         let mut prepared_sends = Vec::with_capacity(payloads.len());
         let mut iter = payloads.into_iter();
         let mut remaining = Vec::new();
@@ -152,7 +153,7 @@ impl Node {
                     counter: fmp_reservation.counter,
                     wire_buf,
                     fsp_seal: None,
-                    send_target: resolved_route.send_target().into_selected_send_target(),
+                    send_target: selected_send_target.clone(),
                     bulk_endpoint_data: true,
                     drop_on_backpressure,
                     scheduling_weight: resolved_route.route_plan.scheduling_weight,
