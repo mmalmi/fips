@@ -429,9 +429,19 @@ enum FmpAeadCompletionResult {
     AeadFailed {
         fallback_tx: DecryptWorkerFallbackSender,
         source_peer: PeerIdentity,
+        lane: DecryptWorkerLane,
         fmp_counter: u64,
         fmp_replay_highest: u64,
     },
+}
+
+impl FmpAeadCompletionResult {
+    fn lane(&self) -> DecryptWorkerLane {
+        match self {
+            Self::Opened { opened, .. } => opened.lane,
+            Self::AeadFailed { lane, .. } => *lane,
+        }
+    }
 }
 
 impl FmpAeadHelperJob {
@@ -466,6 +476,7 @@ impl FmpAeadHelperJob {
                 result: FmpAeadCompletionResult::AeadFailed {
                     fallback_tx: self.opened.fallback_tx,
                     source_peer: self.opened.source_peer,
+                    lane: self.opened.lane,
                     fmp_counter: self.opened.fmp_counter,
                     fmp_replay_highest: self.precheck.replay_highest,
                 },

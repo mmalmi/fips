@@ -385,6 +385,7 @@
             result: FmpAeadCompletionResult::AeadFailed {
                 fallback_tx,
                 source_peer: test_source_peer(),
+                lane: DecryptWorkerLane::Priority,
                 fmp_counter: 45,
                 fmp_replay_highest: 44,
             },
@@ -439,6 +440,7 @@
                 result: FmpAeadCompletionResult::AeadFailed {
                     fallback_tx,
                     source_peer: test_source_peer(),
+                    lane: DecryptWorkerLane::Priority,
                     fmp_counter: 45,
                     fmp_replay_highest: 44,
                 },

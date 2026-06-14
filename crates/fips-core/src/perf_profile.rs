@@ -105,6 +105,8 @@
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
 //!   * `FMP_AEAD_HELPER_QUEUE_WAIT` — FMP owner-worker helper dispatch → AEAD helper
 //!   * `FMP_AEAD_HELPER_COMPLETION_WAIT` — AEAD helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_PRIORITY_COMPLETION_WAIT` — priority helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_BULK_COMPLETION_WAIT` — bulk helper completion → owner-worker
 //!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP
 //!     helper completions before issuing more tickets
 
@@ -121,7 +123,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 79;
+const N_STAGES: usize = 81;
 const N_EVENTS: usize = 93;
 const HIST_BUCKETS: usize = 48;
 
@@ -308,6 +310,10 @@ pub enum Stage {
     DecryptWorkerBulkInputHeadWait = 77,
     /// Per-packet tail inside a dequeued bulk input item before packet handling.
     DecryptWorkerBulkInputTailWait = 78,
+    /// Priority FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperPriorityCompletionWait = 79,
+    /// Bulk FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperBulkCompletionWait = 80,
 }
 
 impl Stage {
@@ -400,6 +406,10 @@ impl Stage {
             Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
             Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
             Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
+            Stage::FmpAeadHelperPriorityCompletionWait => {
+                "fmp_aead_helper_priority_completion_wait"
+            }
+            Stage::FmpAeadHelperBulkCompletionWait => "fmp_aead_helper_bulk_completion_wait",
         }
     }
 }
@@ -485,6 +495,8 @@ fn stage_from_index(idx: usize) -> Stage {
         76 => Stage::DecryptDirectSessionDataWait,
         77 => Stage::DecryptWorkerBulkInputHeadWait,
         78 => Stage::DecryptWorkerBulkInputTailWait,
+        79 => Stage::FmpAeadHelperPriorityCompletionWait,
+        80 => Stage::FmpAeadHelperBulkCompletionWait,
         _ => unreachable!(),
     }
 }

@@ -700,10 +700,18 @@ impl DecryptWorkerShard {
         &mut self,
         completion: FmpAeadCompletion,
     ) -> DecryptWorkerJobActions {
-        crate::perf_profile::record_since_count(
+        let (priority_count, bulk_count) = match completion.result.lane() {
+            DecryptWorkerLane::Priority => (1, 0),
+            DecryptWorkerLane::Bulk => (0, 1),
+        };
+        crate::perf_profile::record_since_split_count(
             crate::perf_profile::Stage::FmpAeadHelperCompletionWait,
+            crate::perf_profile::Stage::FmpAeadHelperPriorityCompletionWait,
+            crate::perf_profile::Stage::FmpAeadHelperBulkCompletionWait,
             completion.completed_at,
             1,
+            priority_count,
+            bulk_count,
         );
         let FmpAeadCompletion {
             session_key,
@@ -752,6 +760,7 @@ impl DecryptWorkerShard {
             FmpAeadCompletionResult::AeadFailed {
                 fallback_tx,
                 source_peer,
+                lane: _,
                 fmp_counter,
                 fmp_replay_highest,
             } => {
