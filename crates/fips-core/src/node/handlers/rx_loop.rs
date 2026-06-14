@@ -390,11 +390,12 @@ impl Node {
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
         self.begin_endpoint_event_batch();
-        let side_queue_interleave_every = if side_queues.is_some() {
-            SIDE_QUEUE_INTERLEAVE_EVERY
-        } else {
-            0
-        };
+        let side_queue_interleave_every = side_queues
+            .as_ref()
+            .map(|side_queues| {
+                side_queue_interleave_interval(rx_loop_endpoint_commands_have_ready(side_queues))
+            })
+            .unwrap_or(0);
         let mut fallback_plan = fallback_drain_plan(
             packet_rx.priority_ready_packets(),
             decrypt_fallback_rx.bulk_queued_packets(),
@@ -465,6 +466,11 @@ impl Node {
                     };
                     if !drained.has_drained() {
                         drain.refund_empty_interleave_turn();
+                        drain.reset_side_queue_interleave_every(SIDE_QUEUE_INTERLEAVE_EVERY);
+                    } else if let Some(side_queues) = side_queues.as_ref() {
+                        drain.reset_side_queue_interleave_every(side_queue_interleave_interval(
+                            rx_loop_endpoint_commands_have_ready(side_queues),
+                        ));
                     }
                 }
             }
