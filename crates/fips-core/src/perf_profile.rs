@@ -87,6 +87,10 @@
 //!   * `DECRYPT_WORKER_QUEUE_WAIT` — rx_loop FMP decrypt job dispatch → decrypt worker
 //!   * `DECRYPT_WORKER_PRIORITY_QUEUE_WAIT` — priority FMP decrypt jobs → decrypt worker
 //!   * `DECRYPT_WORKER_BULK_QUEUE_WAIT` — bulk FMP decrypt jobs → decrypt worker
+//!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt item enqueue →
+//!     worker starts servicing the dequeued item, counted per packet
+//!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — worker starts servicing a
+//!     dequeued bulk item → individual packet handling, counted per packet
 //!   * `ENDPOINT_EVENT_WAIT` — rx_loop endpoint delivery → endpoint recv
 //!   * `ENDPOINT_PRIORITY_EVENT_WAIT` — priority-sized endpoint events → endpoint recv
 //!   * `ENDPOINT_BULK_EVENT_WAIT` — bulk-sized endpoint events → endpoint recv
@@ -117,7 +121,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 77;
+const N_STAGES: usize = 79;
 const N_EVENTS: usize = 93;
 const HIST_BUCKETS: usize = 48;
 
@@ -300,6 +304,10 @@ pub enum Stage {
     /// Authenticated worker return residence for direct session payloads that
     /// still need rx-loop delivery.
     DecryptDirectSessionDataWait = 76,
+    /// Bulk decrypt-worker input residence until a dequeued bulk item starts service.
+    DecryptWorkerBulkInputHeadWait = 77,
+    /// Per-packet tail inside a dequeued bulk input item before packet handling.
+    DecryptWorkerBulkInputTailWait = 78,
 }
 
 impl Stage {
@@ -390,6 +398,8 @@ impl Stage {
             }
             Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
             Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
+            Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
+            Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
         }
     }
 }
@@ -473,6 +483,8 @@ fn stage_from_index(idx: usize) -> Stage {
         74 => Stage::DecryptAuthenticatedSessionMessageWait,
         75 => Stage::DecryptDirectSessionCommitWait,
         76 => Stage::DecryptDirectSessionDataWait,
+        77 => Stage::DecryptWorkerBulkInputHeadWait,
+        78 => Stage::DecryptWorkerBulkInputTailWait,
         _ => unreachable!(),
     }
 }

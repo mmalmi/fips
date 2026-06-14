@@ -283,6 +283,33 @@ fn record_fmp_receive_order_window_wait(wait_started_at: Option<crate::perf_prof
     }
 }
 
+#[inline]
+fn record_decrypt_worker_bulk_input_head_wait(
+    queued_at: Option<crate::perf_profile::TraceStamp>,
+    count: usize,
+) {
+    if queued_at.is_some() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::DecryptWorkerBulkInputHeadWait,
+            queued_at,
+            count as u64,
+        );
+    }
+}
+
+#[inline]
+fn record_decrypt_worker_bulk_input_tail_wait(
+    item_started_at: Option<crate::perf_profile::TraceStamp>,
+) {
+    if item_started_at.is_some() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::DecryptWorkerBulkInputTailWait,
+            item_started_at,
+            1,
+        );
+    }
+}
+
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -294,6 +321,9 @@ fn handle_bulk_item(
 ) -> usize {
     match item {
         DecryptWorkerBulkItem::Job(job) => {
+            let item_started_at = crate::perf_profile::stamp();
+            record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
+            record_decrypt_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_job_msg(idx, job, plaintext_batch);
             1
         }
@@ -303,6 +333,10 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let count = jobs.len();
+            let item_started_at = crate::perf_profile::stamp();
+            if let Some(job) = jobs.first() {
+                record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, count);
+            }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
@@ -326,6 +360,7 @@ fn handle_bulk_item(
                 ) {
                     break;
                 }
+                record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 match shard.handle_job_action(idx, job) {
                     Ok(actions) => {
                         shard.push_job_actions_output(
