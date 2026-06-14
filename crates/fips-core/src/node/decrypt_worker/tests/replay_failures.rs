@@ -341,6 +341,7 @@
                 fallback_tx,
             },
             completion_tx: Some(completion_tx),
+            helper_queued_at: None,
         }
         .into_completion();
 
@@ -380,6 +381,7 @@
             session_key,
             receive_order_id: stale_receive_order_id,
             ticket: FmpReceiveTicket { sequence: 0 },
+            completed_at: None,
             result: FmpAeadCompletionResult::AeadFailed {
                 fallback_tx,
                 source_peer: test_source_peer(),
@@ -433,6 +435,7 @@
                 session_key,
                 receive_order_id,
                 ticket: tickets[0],
+                completed_at: None,
                 result: FmpAeadCompletionResult::AeadFailed {
                     fallback_tx,
                     source_peer: test_source_peer(),

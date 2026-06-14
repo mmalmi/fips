@@ -684,6 +684,7 @@ impl DecryptWorkerShard {
                 fallback_tx,
             },
             completion_tx: None,
+            helper_queued_at: None,
         };
 
         match self.pool.dispatch_fmp_aead_helper_job(idx, helper_job) {
@@ -699,10 +700,16 @@ impl DecryptWorkerShard {
         &mut self,
         completion: FmpAeadCompletion,
     ) -> DecryptWorkerJobActions {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FmpAeadHelperCompletionWait,
+            completion.completed_at,
+            1,
+        );
         let FmpAeadCompletion {
             session_key,
             receive_order_id,
             ticket,
+            completed_at: _,
             result,
         } = completion;
 

@@ -51,6 +51,11 @@ impl FmpAeadHelperPool {
 fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperJob>) {
     trace!(helper = idx, "FMP AEAD helper thread starting");
     while let Ok(mut job) = rx.recv() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FmpAeadHelperQueueWait,
+            job.helper_queued_at,
+            1,
+        );
         let Some(completion_tx) = job.completion_tx.take() else {
             continue;
         };
@@ -192,6 +197,7 @@ impl DecryptWorkerPool {
             return Err(job);
         };
         job.completion_tx = Some(sender.fmp_aead_completion.clone());
+        job.helper_queued_at = crate::perf_profile::stamp();
         helpers.try_dispatch(job)
     }
 

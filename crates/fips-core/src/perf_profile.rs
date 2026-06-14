@@ -99,6 +99,8 @@
 //!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
+//!   * `FMP_AEAD_HELPER_QUEUE_WAIT` — FMP owner-worker helper dispatch → AEAD helper
+//!   * `FMP_AEAD_HELPER_COMPLETION_WAIT` — AEAD helper completion → owner-worker
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -113,7 +115,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 69;
+const N_STAGES: usize = 71;
 const N_EVENTS: usize = 93;
 const HIST_BUCKETS: usize = 48;
 
@@ -279,6 +281,10 @@ pub enum Stage {
     EndpointSendBatchFastPath = 67,
     /// Fallback endpoint batch service time.
     EndpointSendBatchSlowPath = 68,
+    /// FMP AEAD helper job residence before a helper thread starts opening it.
+    FmpAeadHelperQueueWait = 69,
+    /// FMP AEAD helper completion residence before the owning decrypt worker handles it.
+    FmpAeadHelperCompletionWait = 70,
 }
 
 impl Stage {
@@ -359,6 +365,8 @@ impl Stage {
             Stage::EndpointSendBatchService => "endpoint_send_batch_service",
             Stage::EndpointSendBatchFastPath => "endpoint_send_batch_fast_path",
             Stage::EndpointSendBatchSlowPath => "endpoint_send_batch_slow_path",
+            Stage::FmpAeadHelperQueueWait => "fmp_aead_helper_queue_wait",
+            Stage::FmpAeadHelperCompletionWait => "fmp_aead_helper_completion_wait",
         }
     }
 }
@@ -434,6 +442,8 @@ fn stage_from_index(idx: usize) -> Stage {
         66 => Stage::EndpointSendBatchService,
         67 => Stage::EndpointSendBatchFastPath,
         68 => Stage::EndpointSendBatchSlowPath,
+        69 => Stage::FmpAeadHelperQueueWait,
+        70 => Stage::FmpAeadHelperCompletionWait,
         _ => unreachable!(),
     }
 }

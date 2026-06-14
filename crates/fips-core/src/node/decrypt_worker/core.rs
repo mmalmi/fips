@@ -409,12 +409,14 @@ struct FmpAeadHelperJob {
     fmp_header: [u8; 16],
     opened: OpenedFmpJob,
     completion_tx: Option<Sender<FmpAeadCompletion>>,
+    helper_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 struct FmpAeadCompletion {
     session_key: DecryptSessionKey,
     receive_order_id: u64,
     ticket: FmpReceiveTicket,
+    completed_at: Option<crate::perf_profile::TraceStamp>,
     result: FmpAeadCompletionResult,
 }
 
@@ -434,6 +436,7 @@ enum FmpAeadCompletionResult {
 impl FmpAeadHelperJob {
     fn into_completion(mut self) -> FmpAeadCompletion {
         let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
+        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
         match OwnedSessionState::open_fmp_aead_in_place(
             &self.cipher,
             &mut self.opened.packet_data,
@@ -447,6 +450,7 @@ impl FmpAeadHelperJob {
                     session_key: self.session_key,
                     receive_order_id: self.receive_order_id,
                     ticket: self.ticket,
+                    completed_at,
                     result: FmpAeadCompletionResult::Opened {
                         precheck: self.precheck,
                         opened: self.opened,
@@ -457,6 +461,7 @@ impl FmpAeadHelperJob {
                 session_key: self.session_key,
                 receive_order_id: self.receive_order_id,
                 ticket: self.ticket,
+                completed_at,
                 result: FmpAeadCompletionResult::AeadFailed {
                     fallback_tx: self.opened.fallback_tx,
                     source_peer: self.opened.source_peer,
