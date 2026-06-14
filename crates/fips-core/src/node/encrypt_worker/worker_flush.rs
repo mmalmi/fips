@@ -55,6 +55,8 @@ struct SealedSendPacket {
     send_target: SelectedSendTarget,
     #[cfg(unix)]
     target_key: SendTargetKey,
+    #[cfg(unix)]
+    lane: SelectedSendLane,
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 }
@@ -105,6 +107,7 @@ impl SealedSendPacket {
             scheduling_weight: _,
             queued_at,
         } = job;
+        let lane = SelectedSendLane::for_endpoint_data(bulk_endpoint_data);
         debug_assert_eq!(
             send_target.key(),
             target_key,
@@ -121,6 +124,8 @@ impl SealedSendPacket {
             send_target,
             #[cfg(unix)]
             target_key,
+            #[cfg(unix)]
+            lane,
             wire_packet: wire_buf,
             drop_on_backpressure,
         })
@@ -196,10 +201,19 @@ impl SealedSendPacket {
     }
 
     #[cfg(unix)]
-    fn into_parts(self) -> (SelectedSendTarget, SendTargetKey, Vec<u8>, bool) {
+    fn into_parts(
+        self,
+    ) -> (
+        SelectedSendTarget,
+        SendTargetKey,
+        SelectedSendLane,
+        Vec<u8>,
+        bool,
+    ) {
         (
             self.send_target,
             self.target_key,
+            self.lane,
             self.wire_packet,
             self.drop_on_backpressure,
         )
@@ -289,19 +303,71 @@ fn linux_deferred_sender_cap() -> usize {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_deferred_sender_tx() -> Option<&'static Sender<Vec<SelectedSendBatch>>> {
-    static VALUE: OnceLock<Option<Sender<Vec<SelectedSendBatch>>>> = OnceLock::new();
+struct LinuxDeferredSender {
+    priority_tx: Sender<Vec<SelectedSendBatch>>,
+    bulk_tx: Sender<Vec<SelectedSendBatch>>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxDeferredSender {
+    fn send(&self, groups: Vec<SelectedSendBatch>) -> Result<(), Vec<SelectedSendBatch>> {
+        let (priority_groups, bulk_groups) = split_linux_deferred_send_groups(groups);
+        let mut returned_groups = Vec::new();
+
+        if !priority_groups.is_empty()
+            && let Err(SendError(groups)) = self.priority_tx.send(priority_groups)
+        {
+            returned_groups.extend(groups);
+        }
+
+        if !bulk_groups.is_empty()
+            && let Err(SendError(groups)) = self.bulk_tx.send(bulk_groups)
+        {
+            returned_groups.extend(groups);
+        }
+
+        if returned_groups.is_empty() {
+            Ok(())
+        } else {
+            Err(returned_groups)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn split_linux_deferred_send_groups(
+    groups: Vec<SelectedSendBatch>,
+) -> (Vec<SelectedSendBatch>, Vec<SelectedSendBatch>) {
+    let mut priority_groups = Vec::new();
+    let mut bulk_groups = Vec::new();
+    for group in groups {
+        match group.lane() {
+            SelectedSendLane::Priority => priority_groups.push(group),
+            SelectedSendLane::Bulk => bulk_groups.push(group),
+        }
+    }
+    (priority_groups, bulk_groups)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_deferred_sender() -> Option<&'static LinuxDeferredSender> {
+    static VALUE: OnceLock<Option<LinuxDeferredSender>> = OnceLock::new();
     VALUE
         .get_or_init(|| {
             if !linux_deferred_sender_enabled() {
                 return None;
             }
-            let (tx, rx) = bounded(linux_deferred_sender_cap());
+            let cap = linux_deferred_sender_cap();
+            let (priority_tx, priority_rx) = bounded(cap);
+            let (bulk_tx, bulk_rx) = bounded(cap);
             match std::thread::Builder::new()
                 .name("fips-linux-udp-sender".to_string())
-                .spawn(move || run_linux_deferred_sender(rx))
+                .spawn(move || run_linux_deferred_sender(priority_rx, bulk_rx))
             {
-                Ok(_) => Some(tx),
+                Ok(_) => Some(LinuxDeferredSender {
+                    priority_tx,
+                    bulk_tx,
+                }),
                 Err(err) => {
                     warn!(
                         error = %err,
@@ -315,8 +381,31 @@ fn linux_deferred_sender_tx() -> Option<&'static Sender<Vec<SelectedSendBatch>>>
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_deferred_sender(rx: Receiver<Vec<SelectedSendBatch>>) {
-    while let Ok(groups) = rx.recv() {
+fn run_linux_deferred_sender(
+    priority_rx: Receiver<Vec<SelectedSendBatch>>,
+    bulk_rx: Receiver<Vec<SelectedSendBatch>>,
+) {
+    loop {
+        while let Ok(groups) = priority_rx.try_recv() {
+            flush_linux_deferred_send_groups(groups);
+        }
+
+        crossbeam_channel::select_biased! {
+            recv(priority_rx) -> msg => match msg {
+                Ok(groups) => flush_linux_deferred_send_groups(groups),
+                Err(_) => break,
+            },
+            recv(bulk_rx) -> msg => match msg {
+                Ok(groups) => flush_linux_deferred_send_groups(groups),
+                Err(_) => break,
+            },
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn flush_linux_deferred_send_groups(groups: Vec<SelectedSendBatch>) {
+    if !groups.is_empty() {
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
         if let Err(err) = flush_linux_send_groups_sync(groups) {
             debug!(error = %err, "deferred Linux UDP send failed");
@@ -428,7 +517,7 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         if let Some(flow) = macos_flow {
-            let (_send_target, _target_key, wire_packet, drop_on_backpressure) =
+            let (_send_target, _target_key, _lane, wire_packet, drop_on_backpressure) =
                 sealed.into_parts();
             push_mac_completion(
                 &mut macos_completions,
@@ -444,11 +533,13 @@ fn flush_batch_sync(
 
         #[cfg(unix)]
         {
-            let (send_target, target_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
-            push_selected_send_batch_with_capacity(
+            let (send_target, target_key, lane, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
+            push_selected_send_batch_with_lane_and_capacity(
                 &mut groups,
                 send_target,
                 target_key,
+                lane,
                 wire_packet,
                 drop_on_backpressure,
                 group_packet_capacity,
@@ -474,10 +565,10 @@ fn flush_batch_sync(
     drop(_t); // close the encrypt timer before we open the send timer
 
     #[cfg(target_os = "linux")]
-    if let Some(tx) = linux_deferred_sender_tx() {
-        match tx.send(groups) {
+    if let Some(sender) = linux_deferred_sender() {
+        match sender.send(groups) {
             Ok(()) => return Ok(()),
-            Err(SendError(returned_groups)) => {
+            Err(returned_groups) => {
                 warn!("deferred Linux UDP sender closed; falling back to synchronous send");
                 groups = returned_groups;
             }

@@ -435,7 +435,8 @@ mod unix_tests {
                 target_key,
                 "sealing must consume the queued message's selected key"
             );
-            let (send_target, sealed_key, wire_packet, drop_on_backpressure) = sealed.into_parts();
+            let (send_target, sealed_key, _lane, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
             assert_eq!(sealed_key, target_key);
             assert!(drop_on_backpressure);
 

@@ -138,6 +138,122 @@ mod tests {
         });
     }
 
+    #[test]
+    fn selected_send_batch_keeps_priority_and_bulk_lanes_separate() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let target_key = target.key();
+            let mut groups = Vec::new();
+
+            push_selected_send_batch_with_lane_and_capacity(
+                &mut groups,
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                pkt(1500),
+                true,
+                8,
+            );
+            push_selected_send_batch_with_lane_and_capacity(
+                &mut groups,
+                target.clone(),
+                target_key,
+                SelectedSendLane::Priority,
+                pkt(160),
+                false,
+                8,
+            );
+            push_selected_send_batch_with_lane_and_capacity(
+                &mut groups,
+                target,
+                target_key,
+                SelectedSendLane::Bulk,
+                pkt(1500),
+                true,
+                8,
+            );
+
+            assert_eq!(
+                groups.len(),
+                3,
+                "lane changes must start a fresh send group"
+            );
+            assert_eq!(groups[0].lane(), SelectedSendLane::Bulk);
+            assert_eq!(groups[1].lane(), SelectedSendLane::Priority);
+            assert_eq!(groups[2].lane(), SelectedSendLane::Bulk);
+        });
+    }
+
+    #[test]
+    fn linux_deferred_sender_split_preserves_lane_local_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+            let target = SelectedSendTarget::new(socket, None, dest);
+            let target_key = target.key();
+
+            let groups = vec![
+                SelectedSendBatch::new_with_capacity(
+                    target.clone(),
+                    target_key,
+                    SelectedSendLane::Bulk,
+                    pkt(1500),
+                    true,
+                    1,
+                ),
+                SelectedSendBatch::new_with_capacity(
+                    target.clone(),
+                    target_key,
+                    SelectedSendLane::Priority,
+                    pkt(160),
+                    false,
+                    1,
+                ),
+                SelectedSendBatch::new_with_capacity(
+                    target,
+                    target_key,
+                    SelectedSendLane::Bulk,
+                    pkt(1200),
+                    true,
+                    1,
+                ),
+            ];
+
+            let (priority, bulk) = split_linux_deferred_send_groups(groups);
+            assert_eq!(priority.len(), 1);
+            assert_eq!(priority[0].lane(), SelectedSendLane::Priority);
+            assert_eq!(priority[0].packet_count(), 1);
+            assert_eq!(bulk.len(), 2);
+            assert!(bulk
+                .iter()
+                .all(|group| group.lane() == SelectedSendLane::Bulk));
+            assert_eq!(bulk[0].packet_count(), 1);
+            assert_eq!(bulk[1].packet_count(), 1);
+        });
+    }
+
     /// End-to-end: bind a real UDP socket pair on loopback, fire
     /// `send_batch_gso` from the sender, recv on the receiver, confirm
     /// we get N segmented datagrams back (one per logical packet).

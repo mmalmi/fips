@@ -204,9 +204,28 @@ impl FmpSendJob {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SelectedSendLane {
+    Priority,
+    Bulk,
+}
+
+#[cfg(unix)]
+impl SelectedSendLane {
+    fn for_endpoint_data(bulk_endpoint_data: bool) -> Self {
+        if bulk_endpoint_data {
+            Self::Bulk
+        } else {
+            Self::Priority
+        }
+    }
+}
+
+#[cfg(unix)]
 struct SelectedSendBatch {
     send_target: SelectedSendTarget,
     target_key: SendTargetKey,
+    lane: SelectedSendLane,
     wire_packets: Vec<Vec<u8>>,
     drop_on_backpressure: bool,
     #[cfg(target_os = "linux")]
@@ -231,6 +250,7 @@ impl SelectedSendBatch {
         Self::new_with_capacity(
             send_target,
             target_key,
+            SelectedSendLane::Bulk,
             wire_packet,
             drop_on_backpressure,
             1,
@@ -240,6 +260,7 @@ impl SelectedSendBatch {
     fn new_with_capacity(
         send_target: SelectedSendTarget,
         target_key: SendTargetKey,
+        lane: SelectedSendLane,
         wire_packet: Vec<u8>,
         drop_on_backpressure: bool,
         packet_capacity: usize,
@@ -256,6 +277,7 @@ impl SelectedSendBatch {
         Self {
             send_target,
             target_key,
+            lane,
             wire_packets,
             drop_on_backpressure,
             #[cfg(target_os = "linux")]
@@ -271,6 +293,10 @@ impl SelectedSendBatch {
 
     fn target_key(&self) -> SendTargetKey {
         self.target_key
+    }
+
+    fn lane(&self) -> SelectedSendLane {
+        self.lane
     }
 
     fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
@@ -522,10 +548,11 @@ fn push_selected_send_batch(
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 ) {
-    push_selected_send_batch_with_capacity(
+    push_selected_send_batch_with_lane_and_capacity(
         groups,
         send_target,
         target_key,
+        SelectedSendLane::Bulk,
         wire_packet,
         drop_on_backpressure,
         1,
@@ -533,6 +560,7 @@ fn push_selected_send_batch(
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn push_selected_send_batch_with_capacity(
     groups: &mut Vec<SelectedSendBatch>,
     send_target: SelectedSendTarget,
@@ -541,8 +569,30 @@ fn push_selected_send_batch_with_capacity(
     drop_on_backpressure: bool,
     packet_capacity: usize,
 ) {
+    push_selected_send_batch_with_lane_and_capacity(
+        groups,
+        send_target,
+        target_key,
+        SelectedSendLane::Bulk,
+        wire_packet,
+        drop_on_backpressure,
+        packet_capacity,
+    );
+}
+
+#[cfg(unix)]
+fn push_selected_send_batch_with_lane_and_capacity(
+    groups: &mut Vec<SelectedSendBatch>,
+    send_target: SelectedSendTarget,
+    target_key: SendTargetKey,
+    lane: SelectedSendLane,
+    wire_packet: Vec<u8>,
+    drop_on_backpressure: bool,
+    packet_capacity: usize,
+) {
     if let Some(group) = groups.last_mut()
         && group.target_key() == target_key
+        && group.lane() == lane
     {
         if group.drop_on_backpressure() == drop_on_backpressure {
             group.push(wire_packet, drop_on_backpressure);
@@ -550,6 +600,7 @@ fn push_selected_send_batch_with_capacity(
             groups.push(SelectedSendBatch::new_with_capacity(
                 send_target,
                 target_key,
+                lane,
                 wire_packet,
                 drop_on_backpressure,
                 packet_capacity,
@@ -561,6 +612,7 @@ fn push_selected_send_batch_with_capacity(
     groups.push(SelectedSendBatch::new_with_capacity(
         send_target,
         target_key,
+        lane,
         wire_packet,
         drop_on_backpressure,
         packet_capacity,
