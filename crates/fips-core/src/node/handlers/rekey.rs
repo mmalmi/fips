@@ -662,7 +662,7 @@ impl Node {
                 }
                 let _ = self.index_allocator.free(cleanup.rekey_our_index);
             }
-            warn!(
+            debug!(
                 peer = %self.peer_display_name(&exhausted.node_addr),
                 "FMP rekey aborted: msg1 unconfirmed after max retransmissions"
             );
@@ -711,7 +711,7 @@ impl Node {
             .sessions
             .exhaust_due_rekey_msg3_resend_budgets(now_ms, max_resends)
         {
-            warn!(
+            debug!(
                 peer = %self.peer_display_name(&exhausted.dest_addr),
                 "FSP rekey aborted: msg3 unconfirmed after max retransmissions"
             );
