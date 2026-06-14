@@ -226,6 +226,10 @@ impl VirtualIpPool {
             let sessions = conntrack.active_sessions(mapping.virtual_ip).unwrap_or(0);
             mapping.session_count = sessions;
 
+            if sessions > 0 {
+                mapping.last_referenced = now;
+            }
+
             match mapping.state {
                 MappingState::Allocated => {
                     if sessions > 0 {
@@ -250,25 +254,20 @@ impl VirtualIpPool {
                 }
                 MappingState::Active => {
                     if now.duration_since(mapping.last_referenced) > ttl {
-                        if sessions > 0 {
-                            mapping.state = MappingState::Draining;
-                            mapping.drain_start = Some(now);
-                            debug!(
-                                virtual_ip = %mapping.virtual_ip,
-                                sessions,
-                                "Mapping draining (TTL expired, sessions active)"
-                            );
-                        } else {
-                            // TTL expired and no sessions — start grace
-                            mapping.state = MappingState::Draining;
-                            mapping.drain_start = Some(now);
-                            mapping.session_count = 0;
-                        }
+                        mapping.state = MappingState::Draining;
+                        mapping.drain_start = Some(now);
                     }
                 }
                 MappingState::Draining => {
-                    if sessions == 0
-                        && let Some(drain_start) = mapping.drain_start
+                    if sessions > 0 {
+                        mapping.state = MappingState::Active;
+                        mapping.drain_start = None;
+                        debug!(
+                            virtual_ip = %mapping.virtual_ip,
+                            sessions,
+                            "Draining mapping recovered to active (traffic resumed)"
+                        );
+                    } else if let Some(drain_start) = mapping.drain_start
                         && now.duration_since(drain_start) > grace
                     {
                         to_free.push(*node_addr);
@@ -512,15 +511,14 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(pool.mappings[&node].state, MappingState::Active);
 
-        // TTL expires but sessions remain → Draining
+        // TTL expires after sessions drop to 0 → Draining
         let later = now + std::time::Duration::from_secs(2);
-        ct.set(vip, 1);
+        ct.set(vip, 0);
         let events = pool.tick(later, &ct);
         assert!(events.is_empty());
         assert_eq!(pool.mappings[&node].state, MappingState::Draining);
 
-        // Sessions drop to 0 but grace period not elapsed
-        ct.set(vip, 0);
+        // Still draining, grace period not elapsed
         let events = pool.tick(later, &ct);
         assert!(events.is_empty());
         assert_eq!(pool.mappings[&node].state, MappingState::Draining);
@@ -528,6 +526,105 @@ mod tests {
         // Grace period elapsed → Free
         let much_later = later + std::time::Duration::from_secs(2);
         let events = pool.tick(much_later, &ct);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], PoolEvent::MappingRemoved { .. }));
+        assert_eq!(pool.mappings.len(), 0);
+    }
+
+    #[test]
+    fn test_active_traffic_never_reclaimed() {
+        let mut pool = VirtualIpPool::new("fd01::/120", 1, 1).unwrap();
+        let mut ct = MockConntrack::new();
+        let node = make_node_addr(1);
+        let mesh = make_mesh_addr(1);
+
+        let (vip, _) = pool.allocate(node, mesh, "test.fips").unwrap();
+        ct.set(vip, 2);
+
+        let mut now = Instant::now();
+        let events = pool.tick(now, &ct);
+        assert!(events.is_empty());
+        assert_eq!(pool.mappings[&node].state, MappingState::Active);
+
+        for _ in 0..10 {
+            now += std::time::Duration::from_secs(5);
+            let events = pool.tick(now, &ct);
+            assert!(events.is_empty(), "mapping must not be reclaimed");
+            assert_eq!(
+                pool.mappings[&node].state,
+                MappingState::Active,
+                "mapping must stay active while traffic flows"
+            );
+        }
+
+        assert_eq!(pool.mappings.len(), 1);
+    }
+
+    #[test]
+    fn test_bursty_draining_recovers_to_active() {
+        let mut pool = VirtualIpPool::new("fd01::/120", 1, 5).unwrap();
+        let mut ct = MockConntrack::new();
+        let node = make_node_addr(1);
+        let mesh = make_mesh_addr(1);
+
+        let (vip, _) = pool.allocate(node, mesh, "test.fips").unwrap();
+        ct.set(vip, 1);
+        let now = Instant::now();
+        let events = pool.tick(now, &ct);
+        assert!(events.is_empty());
+        assert_eq!(pool.mappings[&node].state, MappingState::Active);
+
+        let drained = now + std::time::Duration::from_secs(2);
+        ct.set(vip, 0);
+        let events = pool.tick(drained, &ct);
+        assert!(events.is_empty());
+        assert_eq!(pool.mappings[&node].state, MappingState::Draining);
+
+        let resumed = drained + std::time::Duration::from_secs(2);
+        ct.set(vip, 3);
+        let events = pool.tick(resumed, &ct);
+        assert!(events.is_empty());
+        assert_eq!(pool.mappings[&node].state, MappingState::Active);
+        assert!(pool.mappings[&node].drain_start.is_none());
+        assert_eq!(pool.mappings.len(), 1);
+    }
+
+    #[test]
+    fn test_redrain_honors_fresh_grace_window() {
+        let mut pool = VirtualIpPool::new("fd01::/120", 1, 5).unwrap();
+        let mut ct = MockConntrack::new();
+        let node = make_node_addr(1);
+        let mesh = make_mesh_addr(1);
+
+        let (vip, _) = pool.allocate(node, mesh, "test.fips").unwrap();
+
+        ct.set(vip, 1);
+        let now = Instant::now();
+        pool.tick(now, &ct);
+        assert_eq!(pool.mappings[&node].state, MappingState::Active);
+
+        let first_drain = now + std::time::Duration::from_secs(2);
+        ct.set(vip, 0);
+        pool.tick(first_drain, &ct);
+        assert_eq!(pool.mappings[&node].state, MappingState::Draining);
+
+        let recover = first_drain + std::time::Duration::from_secs(2);
+        ct.set(vip, 2);
+        pool.tick(recover, &ct);
+        assert_eq!(pool.mappings[&node].state, MappingState::Active);
+
+        let second_drain = recover + std::time::Duration::from_secs(2);
+        ct.set(vip, 0);
+        pool.tick(second_drain, &ct);
+        assert_eq!(pool.mappings[&node].state, MappingState::Draining);
+
+        let before_grace = second_drain + std::time::Duration::from_secs(4);
+        let events = pool.tick(before_grace, &ct);
+        assert!(events.is_empty(), "fresh grace window must be honored");
+        assert_eq!(pool.mappings.len(), 1);
+
+        let after_grace = second_drain + std::time::Duration::from_secs(6);
+        let events = pool.tick(after_grace, &ct);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], PoolEvent::MappingRemoved { .. }));
         assert_eq!(pool.mappings.len(), 0);

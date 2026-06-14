@@ -324,6 +324,49 @@ async fn test_disconnect_clears_session() {
     cleanup_nodes(&mut nodes).await;
 }
 
+/// A manual control-API disconnect must notify the peer, not just tear down
+/// the local side.
+#[tokio::test]
+async fn test_api_disconnect_notifies_peer() {
+    let edges = vec![(0, 1)];
+    let mut nodes = run_tree_test(2, &edges, false).await;
+    verify_tree_convergence(&nodes);
+
+    let node0_addr = *nodes[0].node.node_addr();
+    let node1_addr = *nodes[1].node.node_addr();
+    let node1_npub = nodes[1].node.npub();
+
+    assert!(
+        nodes[0].node.get_peer(&node1_addr).is_some(),
+        "Node 0 should have node 1 before disconnect"
+    );
+    assert!(
+        nodes[1].node.get_peer(&node0_addr).is_some(),
+        "Node 1 should have node 0 before disconnect"
+    );
+
+    nodes[0]
+        .node
+        .api_disconnect(&node1_npub)
+        .await
+        .expect("api_disconnect should succeed");
+
+    assert!(
+        nodes[0].node.get_peer(&node1_addr).is_none(),
+        "Node 0 should have removed node 1 after api_disconnect"
+    );
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    process_available_packets(&mut nodes).await;
+
+    assert!(
+        nodes[1].node.get_peer(&node0_addr).is_none(),
+        "Node 1 should have removed node 0 after receiving the disconnect notification"
+    );
+
+    cleanup_nodes(&mut nodes).await;
+}
+
 /// Verify that different disconnect reasons are handled correctly.
 ///
 /// Sends each reason code and verifies the peer is removed regardless.
