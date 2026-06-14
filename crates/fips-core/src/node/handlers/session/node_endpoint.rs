@@ -154,6 +154,8 @@ impl Node {
                     wire_buf,
                     fsp_seal: None,
                     send_target: selected_send_target.clone(),
+                    endpoint_flow_dispatch_key: endpoint_flow_dispatch_key(payload.as_slice())
+                        .map(|key| key.get()),
                     bulk_endpoint_data: true,
                     drop_on_backpressure,
                     scheduling_weight: resolved_route.route_plan.scheduling_weight,

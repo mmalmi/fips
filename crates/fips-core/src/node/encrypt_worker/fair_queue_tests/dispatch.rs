@@ -31,7 +31,7 @@
     }
 
     #[test]
-    fn selected_send_target_key_drives_dispatch_and_admission() {
+    fn selected_send_target_key_drives_dispatch_and_admission_without_endpoint_flow() {
         with_test_socket(|socket_a, cipher| {
             let raw_b = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
                 .expect("open second send socket");
@@ -58,7 +58,14 @@
                 DEFAULT_SEND_WEIGHT,
             );
             let key_a = queued_a.flow_key();
-            let expected_idx_a = (send_target_fast_hash(&key_a) as usize) % pool.senders.len();
+            let dispatch_key_a = queued_a.dispatch_key();
+            assert_eq!(
+                send_dispatch_fast_hash(&dispatch_key_a),
+                send_target_fast_hash(&key_a),
+                "without an endpoint flow hint, dispatch must use the old selected-target hash"
+            );
+            let expected_idx_a =
+                (send_dispatch_fast_hash(&dispatch_key_a) as usize) % pool.senders.len();
             let (idx_a, queued_a) = pool.prepare_dispatch(queued_a.job);
             assert_eq!(idx_a, expected_idx_a);
             assert_eq!(
@@ -113,6 +120,94 @@
             );
             tx.try_push(queued_b)
                 .expect("different selected target should get its own budget");
+        });
+    }
+
+    #[test]
+    fn endpoint_flow_key_splits_admission_within_one_send_target() {
+        with_test_socket(|socket, cipher| {
+            let dest: SocketAddr = "127.0.0.1:10027".parse().unwrap();
+            let flow_a = 0xaaaa_0001;
+            let flow_b = 0xbbbb_0002;
+
+            let senders: Vec<_> = (0..4)
+                .map(|_| fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES).0)
+                .collect();
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+                #[cfg(target_os = "linux")]
+                linux_containers: Arc::new(LinuxBulkSendFlows::default()),
+                #[cfg(target_os = "linux")]
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            };
+
+            let queued_a = queued_job_classified_with_flow(
+                socket.clone(),
+                &cipher,
+                dest,
+                128,
+                true,
+                false,
+                DEFAULT_SEND_WEIGHT,
+                Some(flow_a),
+            );
+            let target_key = queued_a.flow_key();
+            let dispatch_key_a = queued_a.dispatch_key();
+            assert_eq!(dispatch_key_a.target, target_key);
+            assert_eq!(dispatch_key_a.endpoint_flow, Some(flow_a));
+            let expected_idx_a =
+                (send_dispatch_fast_hash(&dispatch_key_a) as usize) % pool.senders.len();
+            let (idx_a, queued_a) = pool.prepare_dispatch(queued_a.job);
+            assert_eq!(idx_a, expected_idx_a);
+            assert_eq!(
+                queued_a.flow_key(),
+                target_key,
+                "endpoint flow dispatch must not change kernel send grouping"
+            );
+
+            let (tx, _rx) = fair_worker_channel(4, 1, WORKER_FAIR_QUANTUM_BYTES);
+            let warmup: SocketAddr = "127.0.0.1:10028".parse().unwrap();
+            for _ in 0..2 {
+                tx.try_push(queued_job(
+                    socket.clone(),
+                    &cipher,
+                    warmup,
+                    128,
+                    true,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("warmup bulk should enter fast lane");
+            }
+
+            tx.try_push(queued_a)
+                .expect("first endpoint flow should reserve its budget");
+            assert!(
+                matches!(
+                    tx.try_push(queued_job_classified_with_flow(
+                        socket.clone(),
+                        &cipher,
+                        dest,
+                        128,
+                        true,
+                        false,
+                        DEFAULT_SEND_WEIGHT,
+                        Some(flow_a),
+                    )),
+                    Err(FairWorkerTryPushError::Full(_))
+                ),
+                "same endpoint flow should hit its per-flow admission cap"
+            );
+            tx.try_push(queued_job_classified_with_flow(
+                socket,
+                &cipher,
+                dest,
+                128,
+                true,
+                false,
+                DEFAULT_SEND_WEIGHT,
+                Some(flow_b),
+            ))
+            .expect("different endpoint flow on same send target should get its own budget");
         });
     }
 

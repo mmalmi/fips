@@ -368,6 +368,7 @@ mod tests {
                         None,
                         dest,
                     ),
+                    endpoint_flow_dispatch_key: None,
                     bulk_endpoint_data: true,
                     drop_on_backpressure: true,
                     scheduling_weight: DEFAULT_SEND_WEIGHT,

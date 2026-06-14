@@ -47,6 +47,28 @@
         drop_on_backpressure: bool,
         scheduling_weight: u8,
     ) -> QueuedFmpSendJob {
+        queued_job_classified_with_flow(
+            socket,
+            cipher,
+            dest_addr,
+            payload_len,
+            bulk_endpoint_data,
+            drop_on_backpressure,
+            scheduling_weight,
+            None,
+        )
+    }
+
+    fn queued_job_classified_with_flow(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        payload_len: usize,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+        scheduling_weight: u8,
+        endpoint_flow_dispatch_key: Option<u64>,
+    ) -> QueuedFmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
@@ -61,6 +83,7 @@
                 None,
                 dest_addr,
             ),
+            endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,
@@ -596,9 +619,9 @@
             let socket_b = raw_b.into_async().expect("into_async second socket");
             let dest: SocketAddr = "127.0.0.1:10033".parse().unwrap();
             let key_a =
-                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
             let key_b =
-                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
             assert_ne!(
                 key_a, key_b,
                 "same destination on different sockets must have different reservations"
@@ -672,9 +695,9 @@
             let socket_b = raw_b.into_async().expect("into_async second socket");
             let dest: SocketAddr = "127.0.0.1:10035".parse().unwrap();
             let key_a =
-                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+                queued_job(socket_a, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
             let key_b =
-                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).flow_key();
+                queued_job(socket_b, &cipher, dest, 128, true, DEFAULT_SEND_WEIGHT).dispatch_key();
             let admission = FairAdmission {
                 state: Mutex::new(FairAdmissionState::default()),
                 not_full: Condvar::new(),

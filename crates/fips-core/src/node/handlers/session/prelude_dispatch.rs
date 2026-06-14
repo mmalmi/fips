@@ -20,7 +20,7 @@ use crate::node::{
     EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
     LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
     NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD, endpoint_flow_dispatch_key,
 };
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,

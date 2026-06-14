@@ -7,11 +7,13 @@ impl QueuedFmpSendJob {
     ) -> Self {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         let target_key = job.send_target_key();
+        let dispatch_key = SendDispatchKey::new(target_key, job.endpoint_flow_dispatch_key);
         let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
         Self {
             job,
             lane,
             target_key,
+            dispatch_key,
             scheduling_weight,
             fair_reservation: None,
             linux_container: Some(linux_container),

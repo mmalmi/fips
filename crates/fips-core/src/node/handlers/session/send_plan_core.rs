@@ -268,6 +268,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
             send_target,
             self.bulk_endpoint_data,
             self.drop_on_backpressure,
+            endpoint_flow_dispatch_key(self.payload.as_slice()).map(|key| key.get()),
             self.scheduling_weight,
             queued_at,
         )
@@ -707,6 +708,10 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
             wire_buf,
             fsp_seal: None,
             send_target: send_target.into_selected_send_target(),
+            endpoint_flow_dispatch_key: endpoint_flow_dispatch_key(
+                self.dispatch_plan.payload.as_slice(),
+            )
+            .map(|key| key.get()),
             bulk_endpoint_data: self.dispatch_plan.bulk_endpoint_data,
             drop_on_backpressure: self.dispatch_plan.drop_on_backpressure,
             scheduling_weight: self.dispatch_plan.scheduling_weight,

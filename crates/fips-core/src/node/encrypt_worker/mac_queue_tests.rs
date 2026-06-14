@@ -53,6 +53,7 @@ mod mac_queue_tests {
             wire_buf,
             fsp_seal: None,
             send_target: SelectedSendTarget::new(socket, None, dest_addr),
+            endpoint_flow_dispatch_key: None,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,

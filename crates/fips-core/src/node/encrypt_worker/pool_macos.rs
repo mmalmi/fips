@@ -8,11 +8,11 @@
 /// OS thread cuts the dispatch round-trip to the platform minimum —
 /// same pattern boringtun uses for its main loop.
 ///
-/// **Ordering: hash-by-send-target** so single-flow TCP keeps its
-/// FIFO ordering (round-robin caused 8000 retransmits in an earlier
-/// experiment — see the git log for the 56e0ca8 fix). Multi-peer /
-/// multi-flow benches still get parallelism since different
-/// send targets hash to different workers.
+/// **Ordering: hash by endpoint flow within each send target.** Single-flow
+/// TCP keeps FIFO ordering (round-robin caused 8000 retransmits in an earlier
+/// experiment — see the git log for the 56e0ca8 fix). Multi-flow endpoint
+/// traffic can still use multiple workers; sealed packets keep the selected
+/// send target as their kernel send/batch key.
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
@@ -68,12 +68,11 @@ impl EncryptWorkerPool {
         }
     }
 
-    /// Dispatch a job to the worker that owns its send-target flow.
-    /// The hash is over `(socket fd, connected fd, dest_addr)` so every
-    /// packet for one exact kernel send target lands on the same worker and
-    /// stays in order — required for TCP's fast-retransmit logic above to
-    /// behave on a single-flow run. Fire-and-forget — the worker
-    /// handles send errors itself via stats counters.
+    /// Dispatch a job to the worker that owns its endpoint flow within the
+    /// selected send target. If a job has no endpoint flow hint, dispatch falls
+    /// back to the old exact send-target hash over `(socket fd, connected fd,
+    /// dest_addr)`. Fire-and-forget — the worker handles send errors itself via
+    /// stats counters.
     ///
     /// Uses `try_send` for the common uncontended case. Control/liveness jobs
     /// may still block if their reserve is exhausted, but a full bulk lane is
@@ -235,7 +234,7 @@ impl EncryptWorkerPool {
     #[cfg(not(target_os = "macos"))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
         let queued = QueuedFmpSendJob::direct(job);
-        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
+        let idx = (send_dispatch_fast_hash(&queued.dispatch_key()) as usize) % self.senders.len();
         (idx, queued)
     }
 
