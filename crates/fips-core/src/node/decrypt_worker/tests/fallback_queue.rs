@@ -499,11 +499,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: cipher.clone().into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(cipher.clone().into(), ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);

@@ -16,7 +16,7 @@ use crate::transport::{TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
@@ -184,6 +184,7 @@ pub(crate) struct OwnedSessionState {
     pub fmp_cipher: Arc<LessSafeKey>,
     pub fmp_replay: ReplayWindow,
     pub source_peer: PeerIdentity,
+    fmp_receive_order: FmpReceiveOrder,
 }
 
 struct OwnedFspEpochState {
@@ -362,6 +363,128 @@ struct FmpReplayPrecheck {
     replay_highest: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReceiveTicket {
+    sequence: u64,
+}
+
+#[derive(Debug)]
+enum OrderedCompletionError {
+    Stale,
+    Duplicate,
+    WindowExceeded,
+}
+
+#[derive(Debug)]
+struct OrderedCompletionBuffer<T> {
+    next_ready: u64,
+    pending: VecDeque<Option<T>>,
+    pending_limit: usize,
+}
+
+impl<T> OrderedCompletionBuffer<T> {
+    fn new(pending_limit: usize) -> Self {
+        Self {
+            next_ready: 0,
+            pending: VecDeque::new(),
+            pending_limit: pending_limit.max(1),
+        }
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: T,
+        mut on_ready: impl FnMut(T),
+    ) -> Result<usize, OrderedCompletionError> {
+        if ticket.sequence < self.next_ready {
+            return Err(OrderedCompletionError::Stale);
+        }
+
+        let offset = (ticket.sequence - self.next_ready) as usize;
+        if offset == 0 {
+            on_ready(completion);
+            self.next_ready = self.next_ready.saturating_add(1);
+
+            if !self.pending.is_empty() {
+                let _ = self.pending.pop_front();
+            }
+
+            let mut ready = 1;
+            while matches!(self.pending.front(), Some(Some(_))) {
+                let completion = self
+                    .pending
+                    .pop_front()
+                    .and_then(|completion| completion)
+                    .expect("checked ready pending completion");
+                on_ready(completion);
+                self.next_ready = self.next_ready.saturating_add(1);
+                ready += 1;
+            }
+            return Ok(ready);
+        }
+
+        if offset >= self.pending_limit {
+            return Err(OrderedCompletionError::WindowExceeded);
+        }
+
+        if self.pending.len() <= offset {
+            self.pending.resize_with(offset + 1, || None);
+        }
+        if self.pending[offset].is_some() {
+            return Err(OrderedCompletionError::Duplicate);
+        }
+        self.pending[offset] = Some(completion);
+        Ok(0)
+    }
+}
+
+#[derive(Debug)]
+struct FmpReceiveOrder {
+    next_ticket: u64,
+    completions: OrderedCompletionBuffer<FmpOrderedCompletion>,
+}
+
+impl FmpReceiveOrder {
+    fn new() -> Self {
+        Self {
+            next_ticket: 0,
+            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_BULK_BURST_BUDGET),
+        }
+    }
+
+    fn issue(&mut self) -> FmpReceiveTicket {
+        let ticket = FmpReceiveTicket {
+            sequence: self.next_ticket,
+        };
+        self.next_ticket = self.next_ticket.saturating_add(1);
+        ticket
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion,
+        on_ready: impl FnMut(FmpOrderedCompletion),
+    ) -> Result<usize, OrderedCompletionError> {
+        self.completions.complete(ticket, completion, on_ready)
+    }
+}
+
+#[derive(Debug)]
+enum FmpOrderedCompletion {
+    Opened(FmpReplayPrecheck),
+    AeadFailed,
+}
+
+#[derive(Default, Debug, Eq, PartialEq)]
+struct FmpOrderedDrain {
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
@@ -369,6 +492,19 @@ enum FmpOpenError {
 }
 
 impl OwnedSessionState {
+    pub(crate) fn new(
+        fmp_cipher: Arc<LessSafeKey>,
+        fmp_replay: ReplayWindow,
+        source_peer: PeerIdentity,
+    ) -> Self {
+        Self {
+            fmp_cipher,
+            fmp_replay,
+            source_peer,
+            fmp_receive_order: FmpReceiveOrder::new(),
+        }
+    }
+
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
         let replay_highest = self.fmp_replay.highest();
         if !self.fmp_replay.check(fmp_counter) {
@@ -399,15 +535,52 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
+    #[cfg(test)]
     fn accept_prechecked_fmp_replay(
         &mut self,
         precheck: FmpReplayPrecheck,
     ) -> Result<(), FmpOpenError> {
-        if !self.fmp_replay.check(precheck.counter) {
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)
+    }
+
+    fn accept_prechecked_fmp_replay_on(
+        fmp_replay: &mut ReplayWindow,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        if !fmp_replay.check(precheck.counter) {
             return Err(FmpOpenError::Replay);
         }
-        self.fmp_replay.accept(precheck.counter);
+        fmp_replay.accept(precheck.counter);
         Ok(())
+    }
+
+    fn issue_fmp_receive_ticket(&mut self) -> FmpReceiveTicket {
+        self.fmp_receive_order.issue()
+    }
+
+    fn complete_ordered_fmp_open(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion,
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened(precheck) => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
     }
 
     fn open_fmp_in_place(
@@ -418,6 +591,7 @@ impl OwnedSessionState {
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
         let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
+        let ticket = self.issue_fmp_receive_ticket();
 
         let outcome = Self::open_fmp_aead_in_place(
             &self.fmp_cipher,
@@ -426,11 +600,21 @@ impl OwnedSessionState {
             fmp_counter,
             fmp_header,
         )
-        .map_err(|_| FmpOpenError::Aead {
-            fmp_replay_highest: replay_precheck.replay_highest,
+        .map_err(|_| {
+            let _ =
+                self.complete_ordered_fmp_open(ticket, FmpOrderedCompletion::AeadFailed);
+            FmpOpenError::Aead {
+                fmp_replay_highest: replay_precheck.replay_highest,
+            }
         })?;
 
-        self.accept_prechecked_fmp_replay(replay_precheck)?;
+        let drain = self.complete_ordered_fmp_open(
+            ticket,
+            FmpOrderedCompletion::Opened(replay_precheck),
+        )?;
+        if drain.replay_drops != 0 {
+            return Err(FmpOpenError::Replay);
+        }
         Ok(outcome)
     }
 }

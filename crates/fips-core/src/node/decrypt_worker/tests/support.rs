@@ -160,11 +160,11 @@
     fn test_owned_session_state() -> OwnedSessionState {
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound).into(),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        }
+        OwnedSessionState::new(
+            LessSafeKey::new(unbound).into(),
+            ReplayWindow::new(),
+            test_source_peer(),
+        )
     }
 
     #[test]
@@ -172,11 +172,11 @@
         let source_peer = test_source_peer();
         let key_bytes = [8u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        let state = OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound).into(),
-            fmp_replay: ReplayWindow::new(),
+        let state = OwnedSessionState::new(
+            LessSafeKey::new(unbound).into(),
+            ReplayWindow::new(),
             source_peer,
-        };
+        );
 
         assert_eq!(state.source_peer, source_peer);
     }

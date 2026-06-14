@@ -8,11 +8,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: open_cipher.into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer: test_source_peer(),
-            },
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer()),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let counter = 7;
@@ -132,11 +128,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: open_cipher.into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let counter = 11;
@@ -204,11 +196,8 @@
         let open_cipher = test_chacha_key(key_bytes);
         let counter = 9;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
-        let mut state = OwnedSessionState {
-            fmp_cipher: open_cipher.into(),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        };
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
 
         let (mut invalid_packet, invalid_header) = invalid_fmp_test_packet(flags);
         let err = state
@@ -272,11 +261,8 @@
         let open_cipher = test_chacha_key(key_bytes);
         let counter = 12;
         let flags = crate::node::wire::FLAG_CE | crate::node::wire::FLAG_SP;
-        let mut state = OwnedSessionState {
-            fmp_cipher: open_cipher.into(),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        };
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
 
         let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
         let outcome = OwnedSessionState::open_fmp_aead_in_place(
@@ -322,11 +308,8 @@
         let open_cipher = test_chacha_key(key_bytes);
         let counter = 19;
         let flags = crate::node::wire::FLAG_SP;
-        let mut state = OwnedSessionState {
-            fmp_cipher: open_cipher.into(),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        };
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
 
         let precheck = state
             .precheck_fmp_replay(counter)
@@ -391,6 +374,128 @@
     }
 
     #[test]
+    fn fmp_ordered_completion_buffers_out_of_order_crypto_results() {
+        let key_bytes = [0x56u8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
+
+        let first_precheck = state
+            .precheck_fmp_replay(20)
+            .expect("first fresh counter should pass precheck");
+        let first_ticket = state.issue_fmp_receive_ticket();
+        let second_precheck = state
+            .precheck_fmp_replay(21)
+            .expect("second fresh counter should pass precheck");
+        let second_ticket = state.issue_fmp_receive_ticket();
+
+        let drain = state
+            .complete_ordered_fmp_open(second_ticket, FmpOrderedCompletion::Opened(second_precheck))
+            .expect("later completion should buffer behind missing first ticket");
+        assert_eq!(drain, FmpOrderedDrain::default());
+        assert_eq!(
+            state.fmp_replay.highest(),
+            0,
+            "out-of-order completion must not advance replay until the gap closes"
+        );
+
+        let drain = state
+            .complete_ordered_fmp_open(first_ticket, FmpOrderedCompletion::Opened(first_precheck))
+            .expect("first completion should drain itself and the buffered second completion");
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 2,
+                aead_failures: 0,
+                replay_drops: 0,
+            }
+        );
+        assert_eq!(state.fmp_replay.highest(), 21);
+    }
+
+    #[test]
+    fn fmp_ordered_completion_aead_failure_releases_later_completion() {
+        let key_bytes = [0x57u8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
+
+        let failed_ticket = state.issue_fmp_receive_ticket();
+        let later_precheck = state
+            .precheck_fmp_replay(22)
+            .expect("later fresh counter should pass precheck");
+        let later_ticket = state.issue_fmp_receive_ticket();
+
+        let drain = state
+            .complete_ordered_fmp_open(later_ticket, FmpOrderedCompletion::Opened(later_precheck))
+            .expect("later completion should wait behind the failed crypto ticket");
+        assert_eq!(drain, FmpOrderedDrain::default());
+
+        let drain = state
+            .complete_ordered_fmp_open(failed_ticket, FmpOrderedCompletion::AeadFailed)
+            .expect("AEAD failure should close the ordering gap without consuming replay");
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 1,
+                aead_failures: 1,
+                replay_drops: 0,
+            }
+        );
+        assert_eq!(
+            state.fmp_replay.highest(),
+            22,
+            "later authenticated completion should drain after the failed ticket"
+        );
+    }
+
+    #[test]
+    fn fmp_ordered_completion_rechecks_duplicate_counter_at_drain() {
+        let key_bytes = [0x58u8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
+        let counter = 23;
+
+        let first_precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("first duplicate candidate should pass before either completion drains");
+        let first_ticket = state.issue_fmp_receive_ticket();
+        let duplicate_precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("duplicate can pass precheck while the first completion is pending");
+        let duplicate_ticket = state.issue_fmp_receive_ticket();
+
+        let drain = state
+            .complete_ordered_fmp_open(
+                duplicate_ticket,
+                FmpOrderedCompletion::Opened(duplicate_precheck),
+            )
+            .expect("duplicate completion should buffer behind the first ticket");
+        assert_eq!(drain, FmpOrderedDrain::default());
+
+        let drain = state
+            .complete_ordered_fmp_open(first_ticket, FmpOrderedCompletion::Opened(first_precheck))
+            .expect("first completion should accept and the duplicate should drain as replay");
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 1,
+                aead_failures: 0,
+                replay_drops: 1,
+            }
+        );
+        assert_eq!(state.fmp_replay.highest(), counter);
+        assert!(
+            !state.fmp_replay.check(counter),
+            "ordered drain must leave the duplicate counter rejected"
+        );
+    }
+
+    #[test]
     fn worker_emits_compact_direct_fmp_endpoint_data() {
         let key_bytes = [0x33u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);
@@ -401,11 +506,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: open_cipher.into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let counter = 13;
@@ -545,11 +646,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: open_cipher.into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), source_peer),
         );
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
@@ -639,11 +736,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: open_cipher.into(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), source_peer),
         );
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
