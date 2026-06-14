@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.57] - 2026-06-14
+
+### Fixed
+
+- The receive loop now shortens side-queue interleaves while endpoint send
+  commands are waiting, gives selected endpoint commands a larger bounded drain
+  turn, and keeps priority decrypt fallback work at non-packet cadence so bulk
+  packet receive pressure does not delay endpoint command progress.
+- Bumped `fips-endpoint` to 0.3.33 so app-facing consumers pick up the
+  `fips-core` 0.3.57 rx-loop scheduling fix.
+
 ## [0.3.56] - 2026-06-12
 
 ### Fixed

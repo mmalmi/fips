@@ -166,6 +166,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_direct_fmp_opt_in(
         send: &PipelinedEndpointSend<'a>,
         next_hop_addr: NodeAddr,
@@ -557,6 +558,7 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_direct_fmp_opt_in(
         source_addr: &NodeAddr,
         send: &PipelinedEndpointSend<'a>,

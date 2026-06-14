@@ -475,6 +475,7 @@ impl Node {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drain_rx_loop_data_queues(
         &mut self,
         packet_rx: &mut PacketRx,
@@ -705,6 +706,7 @@ impl Node {
         drain.drained()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drain_endpoint_commands(
         &mut self,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
