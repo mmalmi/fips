@@ -649,6 +649,7 @@
 
         let mut shard = test_shard();
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
@@ -656,6 +657,7 @@
             &fmp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert!(
@@ -726,6 +728,7 @@
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
@@ -733,6 +736,7 @@
             &fmp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert!(
@@ -841,6 +845,7 @@
 
         let mut shard = test_shard();
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
@@ -848,6 +853,7 @@
             &fmp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert_eq!(

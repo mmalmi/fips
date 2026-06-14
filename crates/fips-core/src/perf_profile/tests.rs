@@ -338,7 +338,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 81);
+    assert_eq!(N_STAGES, 82);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -538,6 +538,10 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::FmpAeadHelperBulkCompletionWait as usize).name(),
         "fmp_aead_helper_bulk_completion_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptWorkerBulkItemService as usize).name(),
+        "decrypt_worker_bulk_item_service"
     );
 }
 
@@ -991,29 +995,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
 
 #[test]
 fn wait_threshold_events_only_count_samples_at_or_above_threshold() {
-    let before = EVENTS[Event::DecryptWorkerBulkInputWaitGe500us as usize].load(Relaxed);
+    let event = Event::ConnectedUdpActivationFailed;
+    let before = EVENTS[event as usize].load(Relaxed);
 
-    record_wait_threshold(
-        Event::DecryptWorkerBulkInputWaitGe500us,
-        499_999,
-        3,
-        500_000,
-    );
-    record_wait_threshold(
-        Event::DecryptWorkerBulkInputWaitGe500us,
-        500_000,
-        5,
-        500_000,
-    );
-    record_wait_threshold(
-        Event::DecryptWorkerBulkInputWaitGe500us,
-        750_000,
-        7,
-        500_000,
-    );
+    record_wait_threshold(event, 499_999, 3, 500_000);
+    record_wait_threshold(event, 500_000, 5, 500_000);
+    record_wait_threshold(event, 750_000, 7, 500_000);
 
-    assert_eq!(
-        EVENTS[Event::DecryptWorkerBulkInputWaitGe500us as usize].load(Relaxed) - before,
-        12
-    );
+    assert_eq!(EVENTS[event as usize].load(Relaxed) - before, 12);
 }

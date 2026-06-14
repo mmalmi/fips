@@ -95,6 +95,7 @@ fn run_worker(
     trace!(worker = idx, "FMP+FSP decrypt worker thread starting");
 
     let mut shard = DecryptWorkerShard::new(pool);
+    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
 
     loop {
         drain_worker_queues(
@@ -104,6 +105,7 @@ fn run_worker(
             &fmp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
         match recv_worker_item_biased(&priority_rx, &fmp_aead_completion_rx, &bulk_rx) {
             DecryptWorkerQueueItem::Priority(msg) => {
@@ -113,7 +115,6 @@ fn run_worker(
                 batch_stats.record();
             }
             DecryptWorkerQueueItem::FmpAeadCompletion(completion) => {
-                let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
                 shard.handle_fmp_aead_completion_msg(idx, completion, &mut plaintext_batch);
                 plaintext_batch.flush();
             }
@@ -121,7 +122,6 @@ fn run_worker(
                 release_bulk_packets(&bulk_queued_packets, item.packet_count());
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_bulk_item(&item);
-                let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
                 handle_bulk_item(
                     idx,
                     &mut shard,
@@ -142,6 +142,7 @@ fn run_worker(
                     &fmp_aead_completion_rx,
                     &bulk_rx,
                     &bulk_queued_packets,
+                    &mut plaintext_batch,
                 );
                 break;
             }
@@ -186,6 +187,7 @@ fn drain_worker_queues(
     fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: &AtomicUsize,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
 ) {
     let mut batch_stats = DecryptWorkerBatchStats::default();
     while let Ok(msg) = priority_rx.try_recv() {
@@ -193,7 +195,6 @@ fn drain_worker_queues(
         shard.handle_msg(idx, msg);
     }
     let mut drained_bulk_jobs = 0;
-    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
     while drained_bulk_jobs < DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = priority_rx.try_recv() {
             plaintext_batch.flush();
@@ -203,7 +204,7 @@ fn drain_worker_queues(
         }
         if let Ok(completion) = fmp_aead_completion_rx.try_recv() {
             drained_bulk_jobs += 1;
-            shard.handle_fmp_aead_completion_msg(idx, completion, &mut plaintext_batch);
+            shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
             continue;
         }
         match bulk_rx.try_recv() {
@@ -216,7 +217,7 @@ fn drain_worker_queues(
                     priority_rx,
                     fmp_aead_completion_rx,
                     item,
-                    &mut plaintext_batch,
+                    plaintext_batch,
                     &mut batch_stats,
                 );
             }
@@ -304,6 +305,18 @@ fn record_decrypt_worker_bulk_input_tail_wait(
     }
 }
 
+#[inline]
+fn record_decrypt_worker_bulk_item_service(
+    item_started_at: Option<crate::perf_profile::TraceStamp>,
+    count: usize,
+) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::DecryptWorkerBulkItemService,
+        item_started_at,
+        count as u64,
+    );
+}
+
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -313,7 +326,8 @@ fn handle_bulk_item(
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     batch_stats: &mut DecryptWorkerBatchStats,
 ) -> usize {
-    match item {
+    let item_service_started_at = crate::perf_profile::stamp();
+    let count = match item {
         DecryptWorkerBulkItem::Job(job) => {
             let item_started_at = crate::perf_profile::stamp();
             record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
@@ -387,7 +401,9 @@ fn handle_bulk_item(
             }
             count
         }
-    }
+    };
+    record_decrypt_worker_bulk_item_service(item_service_started_at, count);
+    count
 }
 
 struct DecryptWorkerOutput {

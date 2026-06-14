@@ -123,7 +123,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 81;
+const N_STAGES: usize = 82;
 const N_EVENTS: usize = 100;
 const HIST_BUCKETS: usize = 48;
 
@@ -314,6 +314,8 @@ pub enum Stage {
     FmpAeadHelperPriorityCompletionWait = 79,
     /// Bulk FMP AEAD helper completion residence before the owner worker handles it.
     FmpAeadHelperBulkCompletionWait = 80,
+    /// Dequeued bulk item service time inside the owner decrypt worker.
+    DecryptWorkerBulkItemService = 81,
 }
 
 impl Stage {
@@ -410,6 +412,7 @@ impl Stage {
                 "fmp_aead_helper_priority_completion_wait"
             }
             Stage::FmpAeadHelperBulkCompletionWait => "fmp_aead_helper_bulk_completion_wait",
+            Stage::DecryptWorkerBulkItemService => "decrypt_worker_bulk_item_service",
         }
     }
 }
@@ -497,6 +500,7 @@ fn stage_from_index(idx: usize) -> Stage {
         78 => Stage::DecryptWorkerBulkInputTailWait,
         79 => Stage::FmpAeadHelperPriorityCompletionWait,
         80 => Stage::FmpAeadHelperBulkCompletionWait,
+        81 => Stage::DecryptWorkerBulkItemService,
         _ => unreachable!(),
     }
 }
