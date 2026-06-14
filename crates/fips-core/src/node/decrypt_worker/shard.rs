@@ -5,6 +5,22 @@ struct DecryptWorkerShard {
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
 }
 
+struct OpenedFmpJob {
+    packet_data: Vec<u8>,
+    lane: DecryptWorkerLane,
+    source_peer: PeerIdentity,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    local_node_addr: NodeAddr,
+    timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    fmp_plaintext_offset: usize,
+    fmp_plaintext_len: usize,
+    fallback_tx: DecryptWorkerFallbackSender,
+}
+
 impl DecryptWorkerShard {
     fn new(pool: DecryptWorkerPool) -> Self {
         Self {
@@ -644,14 +660,48 @@ impl DecryptWorkerShard {
         };
         drop(_t_fmp);
 
-        // The FMP plaintext lives in packet_data[fmp_ciphertext_offset..
-        // fmp_ciphertext_offset + plaintext_len]. It carries a 4-byte
+        Ok(self.handle_opened_fmp_job(OpenedFmpJob {
+            packet_data,
+            lane,
+            source_peer,
+            transport_id,
+            remote_addr,
+            local_node_addr,
+            timestamp_ms,
+            packet_len,
+            fmp_counter,
+            fmp_flags,
+            fmp_plaintext_offset: fmp_ciphertext_offset,
+            fmp_plaintext_len: plaintext_len,
+            fallback_tx,
+        }))
+    }
+
+    fn handle_opened_fmp_job(&mut self, job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
+        let OpenedFmpJob {
+            packet_data,
+            lane,
+            source_peer,
+            transport_id,
+            remote_addr,
+            local_node_addr,
+            timestamp_ms,
+            packet_len,
+            fmp_counter,
+            fmp_flags,
+            fmp_plaintext_offset,
+            fmp_plaintext_len,
+            fallback_tx,
+        } = job;
+
+        // The FMP plaintext lives in packet_data[fmp_plaintext_offset..
+        // fmp_plaintext_offset + fmp_plaintext_len]. It carries a 4-byte
         // session-relative timestamp prefix, then the link-layer message.
-        let fmp_plaintext_start = fmp_ciphertext_offset;
-        let fmp_plaintext_end = fmp_ciphertext_offset + plaintext_len;
+        let fmp_plaintext_start = fmp_plaintext_offset;
+        let fmp_plaintext_end = fmp_plaintext_offset + fmp_plaintext_len;
         const INNER_TIMESTAMP_LEN: usize = 4;
-        if plaintext_len < INNER_TIMESTAMP_LEN {
-            return Ok(None);
+        if fmp_plaintext_len < INNER_TIMESTAMP_LEN {
+            return None;
         }
 
         let inner_timestamp_ms = u32::from_le_bytes([
@@ -660,7 +710,7 @@ impl DecryptWorkerShard {
             packet_data[fmp_plaintext_start + 2],
             packet_data[fmp_plaintext_start + 3],
         ]);
-        if plaintext_len == INNER_TIMESTAMP_LEN {
+        if fmp_plaintext_len == INNER_TIMESTAMP_LEN {
             let fmp = DecryptFmpBookkeeping {
                 source_peer,
                 transport_id,
@@ -671,7 +721,7 @@ impl DecryptWorkerShard {
                 inner_timestamp_ms,
                 fmp_flags,
             };
-            return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+            return Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::AuthenticatedFmpReceive(
                     DecryptAuthenticatedFmpReceive {
@@ -681,7 +731,7 @@ impl DecryptWorkerShard {
                     },
                 ),
                 direct_delivery: None,
-            })));
+            }));
         }
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
@@ -703,7 +753,7 @@ impl DecryptWorkerShard {
                 inner_timestamp_ms,
                 fmp_flags,
             };
-            return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+            return Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::DirectFmpEndpointData(
                     DecryptDirectFmpEndpointData {
@@ -716,7 +766,7 @@ impl DecryptWorkerShard {
                     },
                 ),
                 direct_delivery: None,
-            })));
+            }));
         }
         let fsp_meta = Self::local_established_fsp_meta(
             &packet_data,
@@ -737,7 +787,7 @@ impl DecryptWorkerShard {
             fmp_flags,
             packet_data,
             fmp_plaintext_start,
-            plaintext_len,
+            fmp_plaintext_len,
         );
 
         if let Some(meta) = fsp_meta {
@@ -754,15 +804,15 @@ impl DecryptWorkerShard {
                 fsp_payload_len: meta.fsp_payload_len,
                 trace_enqueued_at: None,
             };
-            return Ok(Some(DecryptWorkerJobAction::FspJob(fsp_job)));
+            return Some(DecryptWorkerJobAction::FspJob(fsp_job));
         }
 
         let event = DecryptWorkerEvent::Plaintext(fallback);
-        Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+        Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
             fallback_tx,
             event,
             direct_delivery: None,
-        })))
+        }))
     }
 
     #[cfg(test)]

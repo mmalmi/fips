@@ -442,7 +442,7 @@ impl<T> OrderedCompletionBuffer<T> {
 #[derive(Debug)]
 struct FmpReceiveOrder {
     next_ticket: u64,
-    completions: OrderedCompletionBuffer<FmpOrderedCompletion>,
+    completions: OrderedCompletionBuffer<FmpOrderedCompletion<FmpOpenOutcome>>,
 }
 
 impl FmpReceiveOrder {
@@ -464,16 +464,19 @@ impl FmpReceiveOrder {
     fn complete(
         &mut self,
         ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion,
-        on_ready: impl FnMut(FmpOrderedCompletion),
+        completion: FmpOrderedCompletion<FmpOpenOutcome>,
+        on_ready: impl FnMut(FmpOrderedCompletion<FmpOpenOutcome>),
     ) -> Result<usize, OrderedCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
     }
 }
 
 #[derive(Debug)]
-enum FmpOrderedCompletion {
-    Opened(FmpReplayPrecheck),
+enum FmpOrderedCompletion<T> {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        value: T,
+    },
     AeadFailed,
 }
 
@@ -561,16 +564,43 @@ impl OwnedSessionState {
     fn complete_ordered_fmp_open(
         &mut self,
         ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion,
+        completion: FmpOrderedCompletion<FmpOpenOutcome>,
     ) -> Result<FmpOrderedDrain, FmpOpenError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
         drain.ready = self
             .fmp_receive_order
             .complete(ticket, completion, |completion| match completion {
-                FmpOrderedCompletion::Opened(precheck) => {
+                FmpOrderedCompletion::Opened { precheck, .. } => {
                     if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
                         drain.accepted += 1;
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
+    }
+
+    fn complete_ordered_fmp_open_with_value(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<FmpOpenOutcome>,
+        mut on_opened: impl FnMut(FmpOpenOutcome),
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened { precheck, value } => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                        on_opened(value);
                     } else {
                         drain.replay_drops += 1;
                     }
@@ -601,21 +631,27 @@ impl OwnedSessionState {
             fmp_header,
         )
         .map_err(|_| {
-            let _ =
-                self.complete_ordered_fmp_open(ticket, FmpOrderedCompletion::AeadFailed);
+            let _ = self.complete_ordered_fmp_open(ticket, FmpOrderedCompletion::AeadFailed);
             FmpOpenError::Aead {
                 fmp_replay_highest: replay_precheck.replay_highest,
             }
         })?;
 
-        let drain = self.complete_ordered_fmp_open(
+        let mut opened = None;
+        let drain = self.complete_ordered_fmp_open_with_value(
             ticket,
-            FmpOrderedCompletion::Opened(replay_precheck),
+            FmpOrderedCompletion::Opened {
+                precheck: replay_precheck,
+                value: outcome,
+            },
+            |outcome| {
+                opened = Some(outcome);
+            },
         )?;
         if drain.replay_drops != 0 {
             return Err(FmpOpenError::Replay);
         }
-        Ok(outcome)
+        opened.ok_or(FmpOpenError::Replay)
     }
 }
 

@@ -390,7 +390,13 @@
         let second_ticket = state.issue_fmp_receive_ticket();
 
         let drain = state
-            .complete_ordered_fmp_open(second_ticket, FmpOrderedCompletion::Opened(second_precheck))
+            .complete_ordered_fmp_open(
+                second_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: second_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 21 },
+                },
+            )
             .expect("later completion should buffer behind missing first ticket");
         assert_eq!(drain, FmpOrderedDrain::default());
         assert_eq!(
@@ -400,7 +406,13 @@
         );
 
         let drain = state
-            .complete_ordered_fmp_open(first_ticket, FmpOrderedCompletion::Opened(first_precheck))
+            .complete_ordered_fmp_open(
+                first_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: first_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 20 },
+                },
+            )
             .expect("first completion should drain itself and the buffered second completion");
         assert_eq!(
             drain,
@@ -428,7 +440,13 @@
         let later_ticket = state.issue_fmp_receive_ticket();
 
         let drain = state
-            .complete_ordered_fmp_open(later_ticket, FmpOrderedCompletion::Opened(later_precheck))
+            .complete_ordered_fmp_open(
+                later_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: later_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 22 },
+                },
+            )
             .expect("later completion should wait behind the failed crypto ticket");
         assert_eq!(drain, FmpOrderedDrain::default());
 
@@ -471,13 +489,22 @@
         let drain = state
             .complete_ordered_fmp_open(
                 duplicate_ticket,
-                FmpOrderedCompletion::Opened(duplicate_precheck),
+                FmpOrderedCompletion::Opened {
+                    precheck: duplicate_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 230 },
+                },
             )
             .expect("duplicate completion should buffer behind the first ticket");
         assert_eq!(drain, FmpOrderedDrain::default());
 
         let drain = state
-            .complete_ordered_fmp_open(first_ticket, FmpOrderedCompletion::Opened(first_precheck))
+            .complete_ordered_fmp_open(
+                first_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: first_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 23 },
+                },
+            )
             .expect("first completion should accept and the duplicate should drain as replay");
         assert_eq!(
             drain,
@@ -492,6 +519,65 @@
         assert!(
             !state.fmp_replay.check(counter),
             "ordered drain must leave the duplicate counter rejected"
+        );
+    }
+
+    #[test]
+    fn fmp_ordered_completion_drains_opened_values_in_receive_order() {
+        let key_bytes = [0x59u8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher.into(), ReplayWindow::new(), test_source_peer());
+
+        let first_precheck = state
+            .precheck_fmp_replay(24)
+            .expect("first fresh counter should pass precheck");
+        let first_ticket = state.issue_fmp_receive_ticket();
+        let second_precheck = state
+            .precheck_fmp_replay(25)
+            .expect("second fresh counter should pass precheck");
+        let second_ticket = state.issue_fmp_receive_ticket();
+        let mut opened = Vec::new();
+
+        let drain = state
+            .complete_ordered_fmp_open_with_value(
+                second_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: second_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 250 },
+                },
+                |outcome| opened.push(outcome.plaintext_len),
+            )
+            .expect("second completion should buffer");
+        assert_eq!(drain, FmpOrderedDrain::default());
+        assert!(
+            opened.is_empty(),
+            "buffered completion value must not be delivered before the gap closes"
+        );
+
+        let drain = state
+            .complete_ordered_fmp_open_with_value(
+                first_ticket,
+                FmpOrderedCompletion::Opened {
+                    precheck: first_precheck,
+                    value: FmpOpenOutcome { plaintext_len: 240 },
+                },
+                |outcome| opened.push(outcome.plaintext_len),
+            )
+            .expect("first completion should drain both opened values");
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 2,
+                aead_failures: 0,
+                replay_drops: 0,
+            }
+        );
+        assert_eq!(
+            opened,
+            vec![240, 250],
+            "opened values must be handed to owner-side dispatch in receive order"
         );
     }
 
