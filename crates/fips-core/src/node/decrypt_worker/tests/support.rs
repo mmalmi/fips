@@ -74,6 +74,7 @@
     ) {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        let (fsp_aead_completion_tx, _fsp_aead_completion_rx) = bounded::<FspAeadCompletion>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
@@ -81,12 +82,15 @@
                     vec![DecryptWorkerSender {
                         priority: priority_tx,
                         bulk: bulk_tx,
+                        fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
                     }]
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_aead_helpers: None,
+                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_rx,
             bulk_rx,
@@ -107,10 +111,13 @@
         for _ in 0..worker_count {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+            let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
+                bounded::<FspAeadCompletion>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
             });
@@ -121,6 +128,8 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_aead_helpers: None,
+                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_receivers,
             bulk_receivers,
@@ -137,6 +146,11 @@
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (bulk_tx, bulk_rx, bulk_queued_packets)
+    }
+
+    fn test_fsp_aead_completion_lane(cap: usize) -> Receiver<FspAeadCompletion> {
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(cap);
+        completion_rx
     }
 
     fn queue_bulk_item_for_test(

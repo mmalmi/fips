@@ -6,14 +6,63 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
+    fsp_aead_helpers: Option<Arc<FspAeadHelperPool>>,
+    fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
 
 #[derive(Clone)]
 struct DecryptWorkerSender {
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
+    fsp_aead_completion: Sender<FspAeadCompletion>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
+}
+
+struct FspAeadHelperPool {
+    tx: Sender<FspAeadHelperJob>,
+}
+
+impl FspAeadHelperPool {
+    fn spawn(n: usize, channel_cap: usize) -> Option<Arc<Self>> {
+        if n == 0 {
+            return None;
+        }
+        let (tx, rx) = bounded::<FspAeadHelperJob>(channel_cap.max(1));
+        for i in 0..n {
+            let helper_rx = rx.clone();
+            std::thread::Builder::new()
+                .name(format!("fips-decrypt-fsp-aead-{i}"))
+                .spawn(move || run_fsp_aead_helper(i, helper_rx))
+                .expect("failed to spawn fips-decrypt-fsp-aead OS thread");
+        }
+        Some(Arc::new(Self { tx }))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn try_dispatch(&self, job: FspAeadHelperJob) -> Result<(), FspAeadHelperJob> {
+        match self.tx.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
+        }
+    }
+}
+
+fn run_fsp_aead_helper(idx: usize, rx: Receiver<FspAeadHelperJob>) {
+    trace!(helper = idx, "FSP AEAD helper thread starting");
+    while let Ok(mut job) = rx.recv() {
+        let Some(completion_tx) = job.completion_tx.take() else {
+            continue;
+        };
+        let completion = job.into_completion();
+        if completion_tx.send(completion).is_err() {
+            debug!(
+                helper = idx,
+                "FSP AEAD helper completion owner gone; dropping completion"
+            );
+        }
+    }
+    trace!(helper = idx, "FSP AEAD helper thread exiting");
 }
 
 impl DecryptWorkerPool {
@@ -34,20 +83,32 @@ impl DecryptWorkerPool {
         for _ in 0..n {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
+            let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
+                bounded::<FspAeadCompletion>(bulk_channel_cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
-            receivers.push((priority_rx, bulk_rx, Arc::clone(&bulk_queued_packets)));
+            receivers.push((
+                priority_rx,
+                fsp_aead_completion_rx,
+                bulk_rx,
+                Arc::clone(&bulk_queued_packets),
+            ));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
         }
+        let fsp_aead_helpers =
+            FspAeadHelperPool::spawn(fsp_ordered_aead_helper_count(), bulk_channel_cap);
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
+            fsp_aead_helpers,
+            fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
-        for (i, (priority_rx, bulk_rx, worker_bulk_queued_packets)) in
+        for (i, (priority_rx, fsp_aead_completion_rx, bulk_rx, worker_bulk_queued_packets)) in
             receivers.into_iter().enumerate()
         {
             let worker_pool = pool.clone();
@@ -58,6 +119,7 @@ impl DecryptWorkerPool {
                         i,
                         worker_pool,
                         priority_rx,
+                        fsp_aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
                     )
@@ -117,6 +179,44 @@ impl DecryptWorkerPool {
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
         self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
+    }
+
+    fn fsp_aead_helpers_enabled(&self) -> bool {
+        self.fsp_aead_helpers.is_some()
+    }
+
+    fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
+        self.fsp_aead_sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(source_addr).cloned())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fsp_aead_helper_job(
+        &self,
+        owner_idx: usize,
+        mut job: FspAeadHelperJob,
+    ) -> Result<(), FspAeadHelperJob> {
+        let Some(helpers) = self.fsp_aead_helpers.as_ref() else {
+            return Err(job);
+        };
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return Err(job);
+        };
+        job.completion_tx = Some(sender.fsp_aead_completion.clone());
+        job.helper_queued_at = crate::perf_profile::stamp();
+        helpers.try_dispatch(job)
+    }
+
+    fn send_fsp_aead_completion_blocking(
+        &self,
+        owner_idx: usize,
+        completion: FspAeadCompletion,
+    ) -> bool {
+        self.senders
+            .get(owner_idx)
+            .is_some_and(|sender| sender.fsp_aead_completion.send(completion).is_ok())
     }
 
     #[allow(clippy::result_large_err)]
@@ -412,11 +512,25 @@ impl DecryptWorkerPool {
         }
         let idx = self.worker_idx_for_fsp(&source_addr);
         let state = OwnedFspSessionState::from(state);
+        let shared = self
+            .fsp_aead_helpers_enabled()
+            .then(|| state.shared_crypto_session(idx))
+            .flatten()
+            .map(Arc::new);
         match self.senders[idx]
             .priority
             .try_send(WorkerMsg::RegisterFspSession { source_addr, state })
         {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
+                    if let Some(shared) = shared {
+                        sessions.insert(source_addr, shared);
+                    } else {
+                        sessions.remove(&source_addr);
+                    }
+                }
+                true
+            }
             Err(TrySendError::Full(_)) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptWorkerQueueFull,
@@ -445,6 +559,9 @@ impl DecryptWorkerPool {
             return false;
         }
         let idx = self.worker_idx_for_fsp(&source_addr);
+        if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
+            sessions.remove(&source_addr);
+        }
         match self.senders[idx]
             .priority
             .try_send(WorkerMsg::UnregisterFspSession { source_addr })

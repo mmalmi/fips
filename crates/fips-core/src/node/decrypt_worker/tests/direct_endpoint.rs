@@ -534,7 +534,15 @@
         );
 
         let mut shard = test_shard();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert!(
             shard.contains_session(session_key),
@@ -597,7 +605,15 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert!(
             !shard.contains_session(session_key),
@@ -635,7 +651,8 @@
             DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
         );
 
-        match recv_worker_item_biased(&priority_rx, &bulk_rx) {
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        match recv_worker_item_biased(&priority_rx, &fsp_aead_completion_rx, &bulk_rx) {
             DecryptWorkerQueueItem::Priority(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
@@ -645,6 +662,9 @@
             }
             DecryptWorkerQueueItem::Bulk(_) => {
                 panic!("blocking receive must not select bulk while priority is ready")
+            }
+            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
+                panic!("blocking receive must not select FSP AEAD completion while priority is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -696,7 +716,15 @@
         }
 
         let mut shard = test_shard();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert_eq!(
             bulk_rx.len(),

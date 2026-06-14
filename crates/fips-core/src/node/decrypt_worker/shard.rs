@@ -169,6 +169,10 @@ impl DecryptWorkerShard {
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
+                let job = match self.try_start_fsp_aead_helper(idx, job, plaintext_batch) {
+                    Ok(()) => return,
+                    Err(job) => job,
+                };
                 if self.pool.worker_idx_for_fsp(&job.source_addr) == idx {
                     if let Some(output) = self.handle_fsp_job_output(job) {
                         plaintext_batch.push_output(output);
@@ -309,6 +313,121 @@ impl DecryptWorkerShard {
         )
     }
 
+    #[allow(clippy::result_large_err)]
+    fn try_start_fsp_aead_helper(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) -> Result<(), FspDecryptJob> {
+        if !self.pool.fsp_aead_helpers_enabled()
+            || !matches!(job.lane(), DecryptWorkerLane::Bulk)
+        {
+            return Err(job);
+        }
+        let Some(shared) = self.pool.fsp_aead_session(&job.source_addr) else {
+            return Err(job);
+        };
+        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+        let header = {
+            let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
+            else {
+                return Err(job);
+            };
+            let Some(header) = FspEncryptedHeader::parse(payload) else {
+                return Err(job);
+            };
+            header
+        };
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        if received_k_bit != shared.current_k_bit {
+            return Err(job);
+        }
+        let owner_idx = shared.owner_idx;
+        let helper_job = FspAeadHelperJob {
+            source_addr: job.source_addr,
+            receive_order_id: shared.receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job,
+            header,
+            completion_tx: None,
+            helper_queued_at: None,
+        };
+
+        match self.pool.dispatch_fsp_aead_helper_job(owner_idx, helper_job) {
+            Ok(()) => Ok(()),
+            Err(helper_job) => {
+                let completion = helper_job.into_completion();
+                if owner_idx == idx {
+                    self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+                } else {
+                    let _ = self
+                        .pool
+                        .send_fsp_aead_completion_blocking(owner_idx, completion);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn handle_fsp_aead_completion_msg(
+        &mut self,
+        idx: usize,
+        completion: FspAeadCompletion,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FspAeadHelperCompletionWait,
+            completion.completed_at,
+            1,
+        );
+        let FspAeadCompletion {
+            source_addr,
+            receive_order_id,
+            ticket,
+            result,
+            completed_at: _,
+        } = completion;
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            return;
+        };
+        if state.fsp_receive_order_id() != receive_order_id {
+            return;
+        }
+        let drain = match state.complete_ordered_fsp_open(ticket, result) {
+            Ok(drain) => drain,
+            Err(error) => {
+                debug!(
+                    worker = idx,
+                    ?error,
+                    %source_addr,
+                    "dropping invalid ordered FSP AEAD completion"
+                );
+                return;
+            }
+        };
+        debug_assert_eq!(drain.ready, drain.accepted + drain.aead_failures + drain.replay_drops);
+        for completion in drain.outputs {
+            match completion {
+                FspReadyCompletion::Opened {
+                    opened,
+                    slot,
+                    source_peer,
+                } => {
+                    if let Some(output) =
+                        self.output_for_opened_fsp_job(source_peer, opened, slot)
+                    {
+                        plaintext_batch.push_output(output);
+                    }
+                }
+                FspReadyCompletion::AeadFailed { job, header } => {
+                    plaintext_batch.push_output(self.output_for_fsp_aead_failure(job, &header));
+                }
+            }
+        }
+    }
+
     fn dispatch_or_handle_fsp_job(
         &mut self,
         idx: usize,
@@ -322,6 +441,149 @@ impl DecryptWorkerShard {
             Err(job) => Some(DecryptWorkerOutput {
                 fallback_tx: job.fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(job.fallback),
+                direct_delivery: None,
+            }),
+        }
+    }
+
+    fn output_for_fsp_aead_failure(
+        &self,
+        job: FspDecryptJob,
+        header: &FspEncryptedHeader,
+    ) -> DecryptWorkerOutput {
+        let FspDecryptJob {
+            fallback_tx,
+            fallback,
+            local_node_addr: _,
+            source_addr,
+            previous_hop_peer: _,
+            path_mtu: _,
+            ce_flag: _,
+            inner_timestamp_ms,
+            fsp_payload_offset: _,
+            fsp_payload_len: _,
+            trace_enqueued_at: _,
+        } = job;
+        let lane = fallback.lane();
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr,
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
+        };
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
+                fmp,
+                source_addr,
+                counter: header.counter,
+                received_k_bit,
+                lane,
+                trace_enqueued_at: None,
+            }),
+            direct_delivery: None,
+        }
+    }
+
+    fn output_for_opened_fsp_job(
+        &self,
+        source_peer: PeerIdentity,
+        opened: FspOpenedJob,
+        slot: EpochSlot,
+    ) -> Option<DecryptWorkerOutput> {
+        let FspOpenedJob {
+            job,
+            header,
+            plaintext_len,
+        } = opened;
+        let FspDecryptJob {
+            fallback_tx,
+            fallback,
+            local_node_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu,
+            ce_flag,
+            inner_timestamp_ms,
+            fsp_payload_offset,
+            fsp_payload_len: _,
+            trace_enqueued_at: _,
+        } = job;
+        let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
+        let plaintext = fallback
+            .packet_data
+            .get(ciphertext_offset..ciphertext_offset + plaintext_len)?;
+        let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(plaintext)?;
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        let spin_bit = inner_flags_byte & 0x01 != 0;
+        let lane = fallback.lane();
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fallback.source_peer,
+            transport_id: fallback.transport_id,
+            remote_addr: fallback.remote_addr.clone(),
+            packet_timestamp_ms: fallback.timestamp_ms,
+            packet_len: fallback.packet_len,
+            fmp_counter: fallback.fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags: fallback.fmp_flags,
+        };
+        let sync = FspReceiveSync {
+            counter: header.counter,
+            slot,
+            received_k_bit,
+            timestamp,
+            plaintext_len,
+            ce_flag,
+            path_mtu,
+            spin_bit,
+        };
+        let message = AuthenticatedSessionMessage::from_buffer(
+            source_peer,
+            fallback.packet_data,
+            ciphertext_offset,
+            plaintext_len,
+            msg_type,
+            inner_flags_byte,
+            timestamp,
+        );
+        let body_len = message.body_len();
+
+        match Self::direct_session_delivery_from_message(source_addr, local_node_addr, message) {
+            Ok(delivery) => {
+                let (event, direct_delivery) = Self::direct_session_event(
+                    &self.pool.direct_delivery_sink,
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    body_len,
+                    delivery,
+                    sync,
+                    lane,
+                );
+                Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event,
+                    direct_delivery,
+                })
+            }
+            Err(message) => Some(DecryptWorkerOutput {
+                fallback_tx,
+                event: DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
+                    fmp,
+                    source_addr,
+                    previous_hop_peer,
+                    ce_flag,
+                    message,
+                    receive_sync: sync,
+                    lane,
+                    trace_enqueued_at: None,
+                }),
                 direct_delivery: None,
             }),
         }
@@ -421,75 +683,28 @@ impl DecryptWorkerShard {
                     });
                 }
             };
-            let plaintext = fallback
-                .packet_data
-                .get(ciphertext_offset..ciphertext_offset + plaintext_len)?;
-            let (timestamp, msg_type, inner_flags_byte, _body) =
-                fsp_strip_inner_header(plaintext)?;
-            let spin_bit = inner_flags_byte & 0x01 != 0;
-            let sync = FspReceiveSync {
-                counter: header.counter,
-                slot,
-                received_k_bit,
-                timestamp,
-                plaintext_len,
-                ce_flag,
-                path_mtu,
-                spin_bit,
-            };
-            let message = AuthenticatedSessionMessage::from_buffer(
-                state.source_peer,
-                fallback.packet_data,
-                ciphertext_offset,
-                plaintext_len,
-                msg_type,
-                inner_flags_byte,
-                timestamp,
-            );
-            let body_len = message.body_len();
-
-            let event = match Self::direct_session_delivery_from_message(
-                source_addr,
-                local_node_addr,
-                message,
-            ) {
-                Ok(delivery) => {
-                    let (event, direct_delivery) = Self::direct_session_event(
-                        &self.pool.direct_delivery_sink,
-                        fmp,
-                        source_addr,
-                        previous_hop_peer,
-                        ce_flag,
-                        body_len,
-                        delivery,
-                        sync,
-                        lane,
-                    );
-                    return Some(DecryptWorkerOutput {
+            let source_peer = state.source_peer;
+            return self.output_for_opened_fsp_job(
+                source_peer,
+                FspOpenedJob {
+                    job: FspDecryptJob {
                         fallback_tx,
-                        event,
-                        direct_delivery,
-                    });
-                }
-                Err(message) => {
-                    DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
-                        fmp,
+                        fallback,
+                        local_node_addr,
                         source_addr,
                         previous_hop_peer,
+                        path_mtu,
                         ce_flag,
-                        message,
-                        receive_sync: sync,
-                        lane,
+                        inner_timestamp_ms,
+                        fsp_payload_offset,
+                        fsp_payload_len,
                         trace_enqueued_at: None,
-                    })
-                }
-            };
-
-            return Some(DecryptWorkerOutput {
-                fallback_tx,
-                event,
-                direct_delivery: None,
-            });
+                    },
+                    header,
+                    plaintext_len,
+                },
+                slot,
+            );
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {

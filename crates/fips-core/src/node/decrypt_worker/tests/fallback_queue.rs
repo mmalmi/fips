@@ -501,10 +501,12 @@
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::default();
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let processed = handle_bulk_item(
             0,
             &mut shard,
             &priority_rx,
+            &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(
                     packet_one,

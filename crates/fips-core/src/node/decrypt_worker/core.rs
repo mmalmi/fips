@@ -16,8 +16,8 @@ use crate::transport::{TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,
@@ -43,8 +43,10 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
+const DECRYPT_WORKER_FSP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
@@ -155,6 +157,20 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
+fn fsp_ordered_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(64)
+}
+
+fn fsp_ordered_aead_helper_count() -> usize {
+    fsp_ordered_aead_helper_count_from_raw(
+        std::env::var("FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
@@ -187,7 +203,7 @@ pub(crate) struct OwnedSessionState {
 }
 
 struct OwnedFspEpochState {
-    cipher: LessSafeKey,
+    cipher: Arc<LessSafeKey>,
     replay: ReplayWindow,
 }
 
@@ -197,6 +213,8 @@ pub(crate) struct OwnedFspSessionState {
     current: OwnedFspEpochState,
     pending: Option<OwnedFspEpochState>,
     previous: Option<OwnedFspEpochState>,
+    fsp_receive_order_id: u64,
+    fsp_receive_order: FspReceiveOrder,
 }
 
 struct FspOpenSuccess {
@@ -220,17 +238,50 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
             source_peer: snapshot.source_peer,
             current_k_bit: snapshot.current_k_bit,
             current: OwnedFspEpochState {
-                cipher: snapshot.current.cipher,
+                cipher: Arc::new(snapshot.current.cipher),
                 replay: snapshot.current.replay,
             },
             pending: snapshot.pending.map(|epoch| OwnedFspEpochState {
-                cipher: epoch.cipher,
+                cipher: Arc::new(epoch.cipher),
                 replay: epoch.replay,
             }),
             previous: snapshot.previous.map(|epoch| OwnedFspEpochState {
-                cipher: epoch.cipher,
+                cipher: Arc::new(epoch.cipher),
                 replay: epoch.replay,
             }),
+            fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
+            fsp_receive_order: FspReceiveOrder::new(),
+        }
+    }
+}
+
+struct FspSharedCryptoSession {
+    owner_idx: usize,
+    receive_order_id: u64,
+    current_k_bit: bool,
+    cipher: Arc<LessSafeKey>,
+    next_ticket: AtomicU64,
+}
+
+impl FspSharedCryptoSession {
+    fn new(
+        owner_idx: usize,
+        receive_order_id: u64,
+        current_k_bit: bool,
+        cipher: Arc<LessSafeKey>,
+    ) -> Self {
+        Self {
+            owner_idx,
+            receive_order_id,
+            current_k_bit,
+            cipher,
+            next_ticket: AtomicU64::new(0),
+        }
+    }
+
+    fn issue_ticket(&self) -> FspReceiveTicket {
+        FspReceiveTicket {
+            sequence: self.next_ticket.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
@@ -284,6 +335,21 @@ impl OwnedFspEpochState {
 impl OwnedFspSessionState {
     fn has_single_current_epoch(&self) -> bool {
         self.pending.is_none() && self.previous.is_none()
+    }
+
+    fn shared_crypto_session(&self, owner_idx: usize) -> Option<FspSharedCryptoSession> {
+        self.has_single_current_epoch().then(|| {
+            FspSharedCryptoSession::new(
+                owner_idx,
+                self.fsp_receive_order_id,
+                self.current_k_bit,
+                Arc::clone(&self.current.cipher),
+            )
+        })
+    }
+
+    fn fsp_receive_order_id(&self) -> u64 {
+        self.fsp_receive_order_id
     }
 
     fn open_established_frame(
@@ -348,6 +414,277 @@ impl OwnedFspSessionState {
             plaintext_len,
             slot: EpochSlot::Current,
         })
+    }
+
+    fn accept_opened_current_established_frame(
+        &mut self,
+        header: &FspEncryptedHeader,
+    ) -> Result<EpochSlot, FspOpenError> {
+        debug_assert!(self.has_single_current_epoch());
+        if header.flags & FSP_FLAG_K != u8::from(self.current_k_bit) * FSP_FLAG_K {
+            return Err(FspOpenError::Aead);
+        }
+        if !self.current.replay.check(header.counter) {
+            return Err(FspOpenError::Replay);
+        }
+        self.current.replay.accept(header.counter);
+        Ok(EpochSlot::Current)
+    }
+
+    fn complete_ordered_fsp_open(
+        &mut self,
+        ticket: FspReceiveTicket,
+        completion: FspOrderedCompletion,
+    ) -> Result<FspOrderedDrain, OrderedCompletionError> {
+        let mut ready = Vec::new();
+        let ready_count = self
+            .fsp_receive_order
+            .complete(ticket, completion, |completion| ready.push(completion))?;
+
+        let mut drain = FspOrderedDrain {
+            ready: ready_count,
+            ..FspOrderedDrain::default()
+        };
+        for completion in ready {
+            match completion {
+                FspOrderedCompletion::Opened(opened) => {
+                    match self.accept_opened_current_established_frame(&opened.header) {
+                        Ok(slot) => {
+                            drain.accepted += 1;
+                            drain.outputs.push(FspReadyCompletion::Opened {
+                                opened,
+                                slot,
+                                source_peer: self.source_peer,
+                            });
+                        }
+                        Err(FspOpenError::Replay) => {
+                            drain.replay_drops += 1;
+                            crate::perf_profile::record_event(
+                                crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
+                            );
+                        }
+                        Err(FspOpenError::Aead) => {
+                            drain.aead_failures += 1;
+                        }
+                    }
+                }
+                FspOrderedCompletion::AeadFailed { job, header } => {
+                    drain.aead_failures += 1;
+                    drain
+                        .outputs
+                        .push(FspReadyCompletion::AeadFailed { job, header });
+                }
+            }
+        }
+        Ok(drain)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FspReceiveTicket {
+    sequence: u64,
+}
+
+#[derive(Debug)]
+enum OrderedCompletionError {
+    Stale,
+    Duplicate,
+    WindowExceeded,
+}
+
+#[derive(Debug)]
+struct OrderedCompletionBuffer<T> {
+    next_ready: u64,
+    pending: VecDeque<Option<T>>,
+    pending_limit: usize,
+}
+
+impl<T> OrderedCompletionBuffer<T> {
+    fn new(pending_limit: usize) -> Self {
+        Self {
+            next_ready: 0,
+            pending: VecDeque::new(),
+            pending_limit: pending_limit.max(1),
+        }
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FspReceiveTicket,
+        completion: T,
+        mut on_ready: impl FnMut(T),
+    ) -> Result<usize, OrderedCompletionError> {
+        if ticket.sequence < self.next_ready {
+            return Err(OrderedCompletionError::Stale);
+        }
+
+        let offset = (ticket.sequence - self.next_ready) as usize;
+        if offset == 0 {
+            on_ready(completion);
+            self.next_ready = self.next_ready.saturating_add(1);
+            if !self.pending.is_empty() {
+                let _ = self.pending.pop_front();
+            }
+
+            let mut ready = 1;
+            while matches!(self.pending.front(), Some(Some(_))) {
+                let completion = self
+                    .pending
+                    .pop_front()
+                    .and_then(|completion| completion)
+                    .expect("checked ready pending completion");
+                on_ready(completion);
+                self.next_ready = self.next_ready.saturating_add(1);
+                ready += 1;
+            }
+            return Ok(ready);
+        }
+
+        if offset >= self.pending_limit {
+            return Err(OrderedCompletionError::WindowExceeded);
+        }
+
+        if self.pending.len() <= offset {
+            self.pending.resize_with(offset + 1, || None);
+        }
+        if self.pending[offset].is_some() {
+            return Err(OrderedCompletionError::Duplicate);
+        }
+        self.pending[offset] = Some(completion);
+        Ok(0)
+    }
+}
+
+struct FspReceiveOrder {
+    completions: OrderedCompletionBuffer<FspOrderedCompletion>,
+}
+
+impl FspReceiveOrder {
+    fn new() -> Self {
+        Self {
+            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FSP_RECEIVE_WINDOW),
+        }
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FspReceiveTicket,
+        completion: FspOrderedCompletion,
+        on_ready: impl FnMut(FspOrderedCompletion),
+    ) -> Result<usize, OrderedCompletionError> {
+        self.completions.complete(ticket, completion, on_ready)
+    }
+}
+
+struct FspOpenedJob {
+    job: FspDecryptJob,
+    header: FspEncryptedHeader,
+    plaintext_len: usize,
+}
+
+enum FspOrderedCompletion {
+    Opened(FspOpenedJob),
+    AeadFailed {
+        job: FspDecryptJob,
+        header: FspEncryptedHeader,
+    },
+}
+
+enum FspReadyCompletion {
+    Opened {
+        opened: FspOpenedJob,
+        slot: EpochSlot,
+        source_peer: PeerIdentity,
+    },
+    AeadFailed {
+        job: FspDecryptJob,
+        header: FspEncryptedHeader,
+    },
+}
+
+#[derive(Default)]
+struct FspOrderedDrain {
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+    outputs: Vec<FspReadyCompletion>,
+}
+
+struct FspAeadHelperJob {
+    source_addr: NodeAddr,
+    receive_order_id: u64,
+    ticket: FspReceiveTicket,
+    cipher: Arc<LessSafeKey>,
+    job: FspDecryptJob,
+    header: FspEncryptedHeader,
+    completion_tx: Option<Sender<FspAeadCompletion>>,
+    helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+struct FspAeadCompletion {
+    source_addr: NodeAddr,
+    receive_order_id: u64,
+    ticket: FspReceiveTicket,
+    result: FspOrderedCompletion,
+    completed_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+impl FspAeadHelperJob {
+    fn into_completion(mut self) -> FspAeadCompletion {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FspAeadHelperQueueWait,
+            self.helper_queued_at,
+            1,
+        );
+        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        let payload_end = self
+            .job
+            .fsp_payload_offset
+            .saturating_add(self.job.fsp_payload_len);
+        let ciphertext_offset = self.job.fsp_payload_offset + FSP_HEADER_SIZE;
+        let result = match self
+            .job
+            .fallback
+            .packet_data
+            .get_mut(ciphertext_offset..payload_end)
+        {
+            Some(ciphertext) => {
+                let _t_fsp =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+                let mut nonce_bytes = [0u8; 12];
+                nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
+                let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+                match self
+                    .cipher
+                    .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
+                {
+                    Ok(plaintext) => {
+                        let plaintext_len = plaintext.len();
+                        FspOrderedCompletion::Opened(FspOpenedJob {
+                            job: self.job,
+                            header: self.header,
+                            plaintext_len,
+                        })
+                    }
+                    Err(_) => FspOrderedCompletion::AeadFailed {
+                        job: self.job,
+                        header: self.header,
+                    },
+                }
+            }
+            None => FspOrderedCompletion::AeadFailed {
+                job: self.job,
+                header: self.header,
+            },
+        };
+        FspAeadCompletion {
+            source_addr: self.source_addr,
+            receive_order_id: self.receive_order_id,
+            ticket: self.ticket,
+            result,
+            completed_at,
+        }
     }
 }
 

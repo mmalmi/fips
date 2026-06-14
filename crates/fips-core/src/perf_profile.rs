@@ -73,7 +73,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 45;
+const N_STAGES: usize = 47;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -196,6 +196,10 @@ pub enum Stage {
     /// individual FSP job begins service. This is batch-tail residence inside
     /// one worker turn.
     DecryptFspWorkerBulkInputTailWait = 44,
+    /// FSP AEAD helper job residence before a helper thread starts opening it.
+    FspAeadHelperQueueWait = 45,
+    /// FSP AEAD helper completion residence before the owner worker handles it.
+    FspAeadHelperCompletionWait = 46,
 }
 
 impl Stage {
@@ -248,6 +252,8 @@ impl Stage {
             Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
             Stage::DecryptFspWorkerBulkInputHeadWait => "decrypt_fsp_worker_bulk_input_head_wait",
             Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
+            Stage::FspAeadHelperQueueWait => "fsp_aead_helper_queue_wait",
+            Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
         }
     }
 }
@@ -299,6 +305,8 @@ fn stage_from_index(idx: usize) -> Stage {
         42 => Stage::DecryptFspWorkerService,
         43 => Stage::DecryptFspWorkerBulkInputHeadWait,
         44 => Stage::DecryptFspWorkerBulkInputTailWait,
+        45 => Stage::FspAeadHelperQueueWait,
+        46 => Stage::FspAeadHelperCompletionWait,
         _ => unreachable!(),
     }
 }

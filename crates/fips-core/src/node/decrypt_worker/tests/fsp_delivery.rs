@@ -172,6 +172,134 @@
     }
 
     #[test]
+    fn fsp_aead_helper_completion_opens_then_owner_accepts_replay() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"ordered helper",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            0,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .expect("test FSP frame should encrypt");
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let fsp_payload_len = fsp_payload.len();
+        let header = FspEncryptedHeader::parse(&fsp_payload).expect("encrypted FSP header");
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let make_job = |packet_data: Vec<u8>| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let completion = FspAeadHelperJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(fsp_payload.clone()),
+            header: header.clone(),
+            completion_tx: None,
+            helper_queued_at: None,
+        }
+        .into_completion();
+
+        let drain = state
+            .complete_ordered_fsp_open(completion.ticket, completion.result)
+            .expect("first helper completion should fit receive order");
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.accepted, 1);
+        assert_eq!(drain.replay_drops, 0);
+        assert_eq!(drain.outputs.len(), 1);
+        match &drain.outputs[0] {
+            FspReadyCompletion::Opened {
+                opened,
+                slot,
+                source_peer: got_source_peer,
+            } => {
+                assert_eq!(*slot, EpochSlot::Current);
+                assert_eq!(*got_source_peer, source_peer);
+                assert_eq!(opened.plaintext_len, inner_plaintext.len());
+            }
+            FspReadyCompletion::AeadFailed { .. } => panic!("valid helper frame must open"),
+        }
+
+        let duplicate = FspAeadHelperJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(fsp_payload),
+            header,
+            completion_tx: None,
+            helper_queued_at: None,
+        }
+        .into_completion();
+        let duplicate_drain = state
+            .complete_ordered_fsp_open(duplicate.ticket, duplicate.result)
+            .expect("duplicate helper completion should fit receive order");
+        assert_eq!(duplicate_drain.ready, 1);
+        assert_eq!(duplicate_drain.accepted, 0);
+        assert_eq!(duplicate_drain.replay_drops, 1);
+        assert!(
+            duplicate_drain.outputs.is_empty(),
+            "replayed helper completion must not emit authenticated output"
+        );
+    }
+
+    #[test]
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
