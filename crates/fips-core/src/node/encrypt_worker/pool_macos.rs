@@ -122,14 +122,14 @@ impl EncryptWorkerPool {
     #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
         let queued = QueuedFmpSendJob::direct(job);
-        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
+        let idx = (send_dispatch_fast_hash(&queued.dispatch_key()) as usize) % self.senders.len();
         (idx, queued)
     }
 
     #[cfg(target_os = "linux")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
         let queued = QueuedFmpSendJob::direct(job);
-        let idx = (send_target_fast_hash(&queued.flow_key()) as usize) % self.senders.len();
+        let idx = (send_dispatch_fast_hash(&queued.dispatch_key()) as usize) % self.senders.len();
         (idx, queued)
     }
 

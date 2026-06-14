@@ -68,6 +68,11 @@ pub(crate) struct FmpSendJob {
     /// admission, macOS flow selection, and flush grouping all consume this
     /// same value instead of rebuilding target identity independently.
     pub send_target: SelectedSendTarget,
+    /// Optional inner endpoint flow key computed before FSP/FMP encryption.
+    /// Non-macOS worker admission can use this to split independent TCP/UDP
+    /// streams across workers while keeping packets for one stream FIFO.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub endpoint_flow_dispatch_key: Option<u64>,
     /// True for tunnel endpoint-data payloads that should use the worker's
     /// bulk lane instead of the control/liveness reserve. If this lane is
     /// already full, dispatch treats the worker queue as a saturated network

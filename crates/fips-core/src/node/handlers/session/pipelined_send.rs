@@ -544,6 +544,7 @@ impl PipelinedEndpointWorkerWire {
         send_target: crate::node::encrypt_worker::SelectedSendTarget,
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
+        endpoint_flow_dispatch_key: Option<u64>,
         scheduling_weight: u8,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> crate::node::encrypt_worker::FmpSendJob {
@@ -553,6 +554,7 @@ impl PipelinedEndpointWorkerWire {
             wire_buf: self.wire_buf,
             fsp_seal: Some(self.fsp_seal),
             send_target,
+            endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight,

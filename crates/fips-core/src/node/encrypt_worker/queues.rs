@@ -74,6 +74,8 @@ struct QueuedFmpSendJob {
     lane: EncryptWorkerLane,
     target_key: SendTargetKey,
     #[cfg(not(target_os = "macos"))]
+    dispatch_key: SendDispatchKey,
+    #[cfg(not(target_os = "macos"))]
     scheduling_weight: usize,
     #[cfg(not(target_os = "macos"))]
     fair_reservation: Option<FairAdmissionReservation>,
@@ -89,11 +91,15 @@ impl QueuedFmpSendJob {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         let target_key = job.send_target_key();
         #[cfg(not(target_os = "macos"))]
+        let dispatch_key = SendDispatchKey::new(target_key, job.endpoint_flow_dispatch_key);
+        #[cfg(not(target_os = "macos"))]
         let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
         Self {
             job,
             lane,
             target_key,
+            #[cfg(not(target_os = "macos"))]
+            dispatch_key,
             #[cfg(not(target_os = "macos"))]
             scheduling_weight,
             #[cfg(not(target_os = "macos"))]
@@ -134,9 +140,14 @@ impl QueuedFmpSendJob {
         self.target_key
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(test, not(target_os = "macos")))]
     fn flow_key(&self) -> SendTargetKey {
         self.target_key
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn dispatch_key(&self) -> SendDispatchKey {
+        self.dispatch_key
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -173,10 +184,10 @@ impl QueuedFmpSendJob {
 /// the receiving TCP layer reacts to with dup-ACK-triggered
 /// fast-retransmits — measured in bench: 2 workers on a single-flow
 /// TCP run dropped throughput 1308 → 1069 Mbps and pushed Retr count
-/// from 0 to 8058. Hashing on the exact kernel send target keeps all
-/// packets for one flow on one worker, preserving the FIFO order TCP
-/// expects. Multi-peer / multi-flow benches still get the parallelism
-/// since different send targets hash to different workers.
+/// from 0 to 8058. Packets without an inner endpoint-flow key still hash
+/// on the exact kernel send target. Endpoint-data packets may hash on
+/// `(send target, inner flow)` so independent TCP/UDP streams can use
+/// different workers while one stream remains FIFO.
 ///
 /// macOS defaults to the same hash-by-send-target shape unless explicitly
 /// opted into the ordered sender. Live Wi-Fi sender tests showed the
@@ -282,8 +293,28 @@ fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
 }
 
 #[cfg(not(target_os = "macos"))]
-type FairFlowMap =
-    HashMap<SendTargetKey, FairFlowQueue, std::hash::BuildHasherDefault<SendTargetFastHasher>>;
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct SendDispatchKey {
+    target: SendTargetKey,
+    endpoint_flow: Option<u64>,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl SendDispatchKey {
+    fn new(target: SendTargetKey, endpoint_flow: Option<u64>) -> Self {
+        Self {
+            target,
+            endpoint_flow,
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+type FairFlowMap = HashMap<
+    SendDispatchKey,
+    FairFlowQueue,
+    std::hash::BuildHasherDefault<SendTargetFastHasher>,
+>;
 
 #[cfg(not(target_os = "macos"))]
 struct SendTargetFastHasher(u64);
@@ -341,6 +372,20 @@ fn send_target_fast_hash(target: &SendTargetKey) -> u64 {
     let mut hasher = SendTargetFastHasher::default();
     target.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_dispatch_fast_hash(target: &SendDispatchKey) -> u64 {
+    if target.endpoint_flow.is_none() {
+        return send_target_fast_hash(&target.target);
+    }
+
+    let mut hash = send_target_fast_hash(&target.target);
+    if let Some(endpoint_flow) = target.endpoint_flow {
+        hash ^= endpoint_flow.wrapping_add(0x517c_c1b7_2722_0a95);
+        hash = hash.rotate_left(23).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    hash
 }
 
 #[cfg(target_os = "macos")]
@@ -592,16 +637,16 @@ impl FairFlowQueue {
 
 #[cfg(not(target_os = "macos"))]
 struct FairAdmissionReservation {
-    key: SendTargetKey,
+    key: SendDispatchKey,
 }
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmissionReservation {
-    fn new(key: SendTargetKey) -> Self {
+    fn new(key: SendDispatchKey) -> Self {
         Self { key }
     }
 
-    fn key(&self) -> SendTargetKey {
+    fn key(&self) -> SendDispatchKey {
         self.key
     }
 }
@@ -711,7 +756,7 @@ impl FairWorkerSender {
             job
         };
 
-        let key = job.flow_key();
+        let key = job.dispatch_key();
         let weight = job.scheduling_weight();
         match self.admission.try_reserve(key, weight) {
             FairReserve::Reserved(reservation) => {
@@ -750,7 +795,7 @@ impl FairWorkerSender {
             }
             return Ok(());
         }
-        let key = job.flow_key();
+        let key = job.dispatch_key();
         let weight = job.scheduling_weight();
         let reservation = match self.admission.reserve_blocking(key, weight) {
             Ok(reservation) => reservation,
@@ -774,7 +819,7 @@ impl FairWorkerSender {
 
 #[cfg(not(target_os = "macos"))]
 impl FairAdmission {
-    fn try_reserve(&self, key: SendTargetKey, weight: usize) -> FairReserve {
+    fn try_reserve(&self, key: SendDispatchKey, weight: usize) -> FairReserve {
         let mut state = self
             .state
             .lock()
@@ -792,7 +837,7 @@ impl FairAdmission {
 
     fn reserve_blocking(
         &self,
-        key: SendTargetKey,
+        key: SendDispatchKey,
         weight: usize,
     ) -> Result<FairAdmissionReservation, FairWorkerPushError> {
         let mut state = self
@@ -866,7 +911,7 @@ impl FairAdmission {
         state: &mut FairAdmissionState,
         total_cap: usize,
         per_flow_cap: usize,
-        key: SendTargetKey,
+        key: SendDispatchKey,
         weight: usize,
     ) -> bool {
         if state.total_len.saturating_add(1) > total_cap {
