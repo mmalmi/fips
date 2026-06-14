@@ -399,12 +399,15 @@ impl OwnedSessionState {
         Ok(FmpOpenOutcome { plaintext_len })
     }
 
-    fn accept_prechecked_fmp_replay(&mut self, precheck: FmpReplayPrecheck) {
-        debug_assert!(
-            self.fmp_replay.check(precheck.counter),
-            "ordered FMP replay owner must accept each prechecked counter at most once"
-        );
+    fn accept_prechecked_fmp_replay(
+        &mut self,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        if !self.fmp_replay.check(precheck.counter) {
+            return Err(FmpOpenError::Replay);
+        }
         self.fmp_replay.accept(precheck.counter);
+        Ok(())
     }
 
     fn open_fmp_in_place(
@@ -427,7 +430,7 @@ impl OwnedSessionState {
             fmp_replay_highest: replay_precheck.replay_highest,
         })?;
 
-        self.accept_prechecked_fmp_replay(replay_precheck);
+        self.accept_prechecked_fmp_replay(replay_precheck)?;
         Ok(outcome)
     }
 }

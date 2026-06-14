@@ -362,6 +362,9 @@
             state.fmp_replay.check(counter),
             "failed AEAD must leave the prechecked counter available for a valid packet"
         );
+        let duplicate_precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("a duplicate can pass precheck while the first completion is still pending");
 
         let (mut valid_packet, valid_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
         OwnedSessionState::open_fmp_aead_in_place(
@@ -372,11 +375,18 @@
             &valid_header,
         )
         .expect("worker-side AEAD should authenticate independently");
-        state.accept_prechecked_fmp_replay(precheck);
+        state
+            .accept_prechecked_fmp_replay(precheck)
+            .expect("first ordered completion consumes replay");
         assert_eq!(state.fmp_replay.highest(), counter);
         assert!(
             !state.fmp_replay.check(counter),
             "ordered completion accept makes the counter a replay"
+        );
+        assert_eq!(
+            state.accept_prechecked_fmp_replay(duplicate_precheck),
+            Err(FmpOpenError::Replay),
+            "ordered replay owner must re-check a prechecked counter at completion time"
         );
     }
 
