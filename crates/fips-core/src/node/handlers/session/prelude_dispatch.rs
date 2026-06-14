@@ -643,7 +643,6 @@ struct PipelinedEndpointSend<'a> {
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
 }
 
-#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum PipelinedEndpointInnerPlaintext<'a> {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1013,7 +1012,6 @@ impl<'a> PreparedEndpointSessionData<'a> {
     }
 }
 
-#[cfg(unix)]
 impl<'a> PipelinedEndpointInnerPlaintext<'a> {
     fn endpoint_data(timestamp: u32, inner_flags: u8, payload: &'a [u8]) -> Self {
         Self::EndpointData {
