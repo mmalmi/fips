@@ -804,4 +804,58 @@ mod unix_tests {
             );
         });
     }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_sequenced_send_flow_preserves_completion_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let recv = UdpSocket::bind("127.0.0.1:0").expect("bind recv");
+            recv.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+                .expect("set read timeout");
+            let recv_addr = recv.local_addr().expect("recv local_addr");
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open send socket");
+            let send_sock = raw.into_async().expect("into_async");
+            let target = SelectedSendTarget::new(
+                send_sock,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                recv_addr,
+            );
+            let key = target.key();
+            let flow = LinuxSequencedSendFlow::spawn(key, target, linux_now_ms());
+
+            let seq0 = flow.reserve_seq();
+            let seq1 = flow.reserve_seq();
+            assert_eq!(seq0, 0);
+            assert_eq!(seq1, 1);
+
+            flow.complete_many(vec![(
+                seq1,
+                LinuxSendItem::Packet {
+                    packet: vec![2, 2, 2],
+                    drop_on_backpressure: false,
+                },
+            )]);
+            flow.complete_many(vec![(
+                seq0,
+                LinuxSendItem::Packet {
+                    packet: vec![1, 1],
+                    drop_on_backpressure: false,
+                },
+            )]);
+
+            let mut buf = [0u8; 16];
+            let (first_len, _) = recv.recv_from(&mut buf).expect("recv first");
+            assert_eq!(&buf[..first_len], &[1, 1]);
+            let (second_len, _) = recv.recv_from(&mut buf).expect("recv second");
+            assert_eq!(&buf[..second_len], &[2, 2, 2]);
+
+            flow.close();
+        });
+    }
 }
