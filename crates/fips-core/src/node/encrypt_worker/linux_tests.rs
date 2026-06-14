@@ -60,23 +60,37 @@ mod tests {
     }
 
     #[test]
-    fn linux_bulk_container_sender_defaults_on_with_explicit_opt_out() {
+    fn linux_bulk_container_sender_defaults_off_with_explicit_opt_in() {
         assert!(
-            parse_linux_bulk_container_sender_enabled(None),
-            "Linux bulk containers are the default same-target bulk path"
+            !parse_linux_bulk_container_sender_enabled(None),
+            "Linux bulk containers stay opt-in until long-run stress behavior is boring"
         );
-        for raw in ["0", "false", "FALSE", "no", "off", " Off "] {
+        for raw in ["0", "false", "FALSE", "no", "off", " Off ", "", "sure"] {
             assert!(
                 !parse_linux_bulk_container_sender_enabled(Some(raw)),
-                "{raw:?} should opt out"
+                "{raw:?} should keep the sender disabled"
             );
         }
-        for raw in ["1", "true", "yes", "on", "", "sure"] {
+        for raw in ["1", "true", "TRUE", "yes", "on", " On "] {
             assert!(
                 parse_linux_bulk_container_sender_enabled(Some(raw)),
-                "{raw:?} should keep the sender enabled"
+                "{raw:?} should enable the sender"
             );
         }
+    }
+
+    #[test]
+    fn linux_bulk_container_inflight_cap_defaults_to_small_backlog() {
+        assert_eq!(
+            parse_linux_bulk_container_inflight_cap(None),
+            1,
+            "same-flow container bursts should back off once one container is active or queued"
+        );
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("0")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("1")), 1);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("8")), 8);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("999999")), 4096);
+        assert_eq!(parse_linux_bulk_container_inflight_cap(Some("nope")), 1);
     }
 
     #[test]
