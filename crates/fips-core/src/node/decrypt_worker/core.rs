@@ -46,6 +46,8 @@ const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
 
+static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DecryptWorkerLane {
     Priority,
@@ -155,6 +157,14 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
+fn fmp_aead_helper_count() -> usize {
+    std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(64)
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
@@ -184,6 +194,7 @@ pub(crate) struct OwnedSessionState {
     pub fmp_cipher: Arc<LessSafeKey>,
     pub fmp_replay: ReplayWindow,
     pub source_peer: PeerIdentity,
+    fmp_receive_order_id: u64,
     fmp_receive_order: FmpReceiveOrder,
 }
 
@@ -373,6 +384,74 @@ struct OpenedFmpJob {
     fallback_tx: DecryptWorkerFallbackSender,
 }
 
+struct FmpAeadHelperJob {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    precheck: FmpReplayPrecheck,
+    cipher: Arc<LessSafeKey>,
+    fmp_header: [u8; 16],
+    opened: OpenedFmpJob,
+    completion_tx: Option<Sender<FmpAeadCompletion>>,
+}
+
+struct FmpAeadCompletion {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    result: FmpAeadCompletionResult,
+}
+
+enum FmpAeadCompletionResult {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        opened: OpenedFmpJob,
+    },
+    AeadFailed {
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    },
+}
+
+impl FmpAeadHelperJob {
+    fn into_completion(mut self) -> FmpAeadCompletion {
+        let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
+        match OwnedSessionState::open_fmp_aead_in_place(
+            &self.cipher,
+            &mut self.opened.packet_data,
+            self.opened.fmp_plaintext_offset,
+            self.opened.fmp_counter,
+            &self.fmp_header,
+        ) {
+            Ok(outcome) => {
+                self.opened.fmp_plaintext_len = outcome.plaintext_len;
+                FmpAeadCompletion {
+                    session_key: self.session_key,
+                    receive_order_id: self.receive_order_id,
+                    ticket: self.ticket,
+                    result: FmpAeadCompletionResult::Opened {
+                        precheck: self.precheck,
+                        opened: self.opened,
+                    },
+                }
+            }
+            Err(()) => FmpAeadCompletion {
+                session_key: self.session_key,
+                receive_order_id: self.receive_order_id,
+                ticket: self.ticket,
+                result: FmpAeadCompletionResult::AeadFailed {
+                    fallback_tx: self.opened.fallback_tx,
+                    source_peer: self.opened.source_peer,
+                    fmp_counter: self.opened.fmp_counter,
+                    fmp_replay_highest: self.precheck.replay_highest,
+                },
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FmpReplayPrecheck {
     counter: u64,
@@ -453,6 +532,14 @@ impl<T> OrderedCompletionBuffer<T> {
         self.pending[offset] = Some(completion);
         Ok(0)
     }
+
+    fn next_ready(&self) -> u64 {
+        self.next_ready
+    }
+
+    fn pending_limit(&self) -> usize {
+        self.pending_limit
+    }
 }
 
 struct FmpReceiveOrder {
@@ -474,6 +561,11 @@ impl FmpReceiveOrder {
         };
         self.next_ticket = self.next_ticket.saturating_add(1);
         ticket
+    }
+
+    fn can_issue(&self) -> bool {
+        self.next_ticket.saturating_sub(self.completions.next_ready())
+            < self.completions.pending_limit() as u64
     }
 
     fn complete(
@@ -520,6 +612,7 @@ impl OwnedSessionState {
             fmp_cipher,
             fmp_replay,
             source_peer,
+            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fmp_receive_order: FmpReceiveOrder::new(),
         }
     }
@@ -575,6 +668,14 @@ impl OwnedSessionState {
 
     fn issue_fmp_receive_ticket(&mut self) -> FmpReceiveTicket {
         self.fmp_receive_order.issue()
+    }
+
+    fn fmp_receive_order_id(&self) -> u64 {
+        self.fmp_receive_order_id
+    }
+
+    fn can_issue_fmp_receive_ticket(&self) -> bool {
+        self.fmp_receive_order.can_issue()
     }
 
     #[cfg(test)]

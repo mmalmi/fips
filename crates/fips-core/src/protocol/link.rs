@@ -470,6 +470,7 @@ mod tests {
             LinkMessageType::LookupRequest,
             LinkMessageType::LookupResponse,
             LinkMessageType::SessionDatagram,
+            LinkMessageType::DirectEndpointData,
             LinkMessageType::Disconnect,
             LinkMessageType::Heartbeat,
         ];
@@ -484,7 +485,7 @@ mod tests {
     #[test]
     fn test_link_message_type_invalid() {
         assert!(LinkMessageType::from_byte(0xFF).is_none());
-        assert!(LinkMessageType::from_byte(0x03).is_none());
+        assert!(LinkMessageType::from_byte(0x04).is_none());
         assert!(LinkMessageType::from_byte(0x40).is_none());
     }
 

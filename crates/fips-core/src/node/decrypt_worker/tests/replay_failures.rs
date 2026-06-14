@@ -302,6 +302,170 @@
     }
 
     #[test]
+    fn fmp_aead_helper_job_opens_packet_into_completion() {
+        let key_bytes = [0x4a; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = test_chacha_key(key_bytes);
+        let session_key = test_session_key(1, 441);
+        let counter = 44;
+        let flags = crate::node::wire::FLAG_SP;
+        let (packet_data, fmp_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let (completion_tx, _completion_rx) = bounded::<FmpAeadCompletion>(1);
+        let precheck = FmpReplayPrecheck {
+            counter,
+            replay_highest: 0,
+        };
+        let ticket = FmpReceiveTicket { sequence: 7 };
+
+        let completion = FmpAeadHelperJob {
+            session_key,
+            receive_order_id: 42,
+            ticket,
+            precheck,
+            cipher: open_cipher.into(),
+            fmp_header,
+            opened: OpenedFmpJob {
+                packet_data,
+                lane: DecryptWorkerLane::Bulk,
+                source_peer: test_source_peer(),
+                transport_id: TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                local_node_addr: *test_source_peer().node_addr(),
+                timestamp_ms: 1_000,
+                packet_len: crate::node::wire::ESTABLISHED_HEADER_SIZE + 5 + 16,
+                fmp_counter: counter,
+                fmp_flags: flags,
+                fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                fmp_plaintext_len: 0,
+                fallback_tx,
+            },
+            completion_tx: Some(completion_tx),
+        }
+        .into_completion();
+
+        assert_eq!(completion.session_key, session_key);
+        assert_eq!(completion.receive_order_id, 42);
+        assert_eq!(completion.ticket, ticket);
+        match completion.result {
+            FmpAeadCompletionResult::Opened {
+                precheck: got_precheck,
+                opened,
+            } => {
+                assert_eq!(got_precheck, precheck);
+                assert_eq!(opened.fmp_plaintext_len, 5);
+                assert_eq!(
+                    &opened.packet_data[opened.fmp_plaintext_offset
+                        ..opened.fmp_plaintext_offset + opened.fmp_plaintext_len],
+                    &[0, 0, 0, 0, 0xAB]
+                );
+            }
+            FmpAeadCompletionResult::AeadFailed { .. } => {
+                panic!("valid helper packet must open")
+            }
+        }
+    }
+
+    #[test]
+    fn fmp_aead_completion_ignores_stale_receive_order() {
+        let session_key = test_session_key(1, 442);
+        let mut shard = test_shard();
+        let stale_state = test_owned_session_state();
+        let stale_receive_order_id = stale_state.fmp_receive_order_id();
+        shard.register_session(0, session_key, stale_state);
+        shard.register_session(0, session_key, test_owned_session_state());
+
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let completion = FmpAeadCompletion {
+            session_key,
+            receive_order_id: stale_receive_order_id,
+            ticket: FmpReceiveTicket { sequence: 0 },
+            result: FmpAeadCompletionResult::AeadFailed {
+                fallback_tx,
+                source_peer: test_source_peer(),
+                fmp_counter: 45,
+                fmp_replay_highest: 44,
+            },
+        };
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_fmp_aead_completion_msg(0, completion, &mut plaintext_batch);
+        plaintext_batch.flush();
+
+        assert!(
+            fallback_rx.priority.is_empty(),
+            "stale helper completions must not emit failure events for a replaced session"
+        );
+        assert!(
+            fallback_rx.bulk.is_empty(),
+            "stale helper completions must not emit plaintext for a replaced session"
+        );
+        assert_eq!(
+            shard.fmp_replay_highest(session_key),
+            Some(0),
+            "stale helper completions must not mutate the replacement replay window"
+        );
+    }
+
+    #[test]
+    fn fmp_aead_helper_window_wait_drains_oldest_completion() {
+        let session_key = test_session_key(1, 443);
+        let mut state = test_owned_session_state();
+        let receive_order_id = state.fmp_receive_order_id();
+        let tickets = (0..DECRYPT_WORKER_BULK_BURST_BUDGET)
+            .map(|_| state.issue_fmp_receive_ticket())
+            .collect::<Vec<_>>();
+
+        let mut shard = test_shard();
+        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperJob>(1);
+        shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
+        shard.register_session(0, session_key, state);
+        assert!(
+            !shard.fmp_receive_order_window_available(session_key),
+            "issuing one full receive-order window must stop further ticket issue"
+        );
+
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (completion_tx, completion_rx) = bounded::<FmpAeadCompletion>(1);
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        completion_tx
+            .try_send(FmpAeadCompletion {
+                session_key,
+                receive_order_id,
+                ticket: tickets[0],
+                result: FmpAeadCompletionResult::AeadFailed {
+                    fallback_tx,
+                    source_peer: test_source_peer(),
+                    fmp_counter: 45,
+                    fmp_replay_highest: 44,
+                },
+            })
+            .expect("test completion lane has room");
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        assert!(wait_for_fmp_receive_order_window(
+            0,
+            &mut shard,
+            &priority_rx,
+            &completion_rx,
+            session_key,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        ));
+        plaintext_batch.flush();
+
+        assert!(
+            shard.fmp_receive_order_window_available(session_key),
+            "oldest helper completion must reopen the ordered receive window"
+        );
+        assert!(
+            !fallback_rx.priority.is_empty(),
+            "AEAD failures drained while waiting must remain observable"
+        );
+    }
+
+    #[test]
     fn fmp_replay_precheck_waits_for_ordered_crypto_completion() {
         let key_bytes = [0x55u8; 32];
         let seal_cipher = test_chacha_key(key_bytes);

@@ -504,6 +504,7 @@
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let bulk_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 64;
         let (packet_one, header_one) =
             sealed_fmp_test_packet_with_link_body(&cipher, 1, 0, bulk_body_len);
@@ -516,6 +517,7 @@
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(
                     packet_one,
