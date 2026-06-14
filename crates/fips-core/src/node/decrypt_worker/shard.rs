@@ -5,22 +5,6 @@ struct DecryptWorkerShard {
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
 }
 
-struct OpenedFmpJob {
-    packet_data: Vec<u8>,
-    lane: DecryptWorkerLane,
-    source_peer: PeerIdentity,
-    transport_id: TransportId,
-    remote_addr: TransportAddr,
-    local_node_addr: NodeAddr,
-    timestamp_ms: u64,
-    packet_len: usize,
-    fmp_counter: u64,
-    fmp_flags: u8,
-    fmp_plaintext_offset: usize,
-    fmp_plaintext_len: usize,
-    fallback_tx: DecryptWorkerFallbackSender,
-}
-
 impl DecryptWorkerShard {
     fn new(pool: DecryptWorkerPool) -> Self {
         Self {
@@ -55,8 +39,7 @@ impl DecryptWorkerShard {
 
     fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
         match self.handle_job_action(idx, job) {
-            Ok(Some(action)) => self.handle_job_action_immediate(idx, action),
-            Ok(None) => {}
+            Ok(actions) => self.handle_job_actions_immediate(idx, actions),
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
             }
@@ -70,10 +53,9 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         match self.handle_job_action(idx, job) {
-            Ok(Some(action)) => {
-                self.push_job_action_output(idx, action, plaintext_batch, None);
+            Ok(actions) => {
+                self.push_job_actions_output(idx, actions, plaintext_batch, None);
             }
-            Ok(None) => {}
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
             }
@@ -158,6 +140,10 @@ impl DecryptWorkerShard {
         Ok(())
     }
 
+    fn handle_job_actions_immediate(&mut self, idx: usize, actions: DecryptWorkerJobActions) {
+        actions.for_each(|action| self.handle_job_action_immediate(idx, action));
+    }
+
     fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
         match action {
             DecryptWorkerJobAction::Output(output) => {
@@ -197,6 +183,18 @@ impl DecryptWorkerShard {
                 }
             }
         }
+    }
+
+    fn push_job_actions_output(
+        &mut self,
+        idx: usize,
+        actions: DecryptWorkerJobActions,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+        mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+    ) {
+        actions.for_each(|action| {
+            self.push_job_action_output(idx, action, plaintext_batch, fsp_batcher.as_deref_mut());
+        });
     }
 
     fn local_established_fsp_meta(
@@ -594,7 +592,7 @@ impl DecryptWorkerShard {
         &mut self,
         _idx: usize,
         job: DecryptJob,
-    ) -> Result<Option<DecryptWorkerJobAction>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<DecryptWorkerJobActions, Box<dyn std::error::Error + Send + Sync>> {
         job.record_queue_wait();
         let DecryptJob {
             mut packet_data,
@@ -625,7 +623,7 @@ impl DecryptWorkerShard {
             None => {
                 let _ = fallback_tx; // explicitly ignore — drop path
                 let _ = packet_data;
-                return Ok(None);
+                return Ok(DecryptWorkerJobActions::None);
             }
         };
         let source_peer = state.source_peer;
@@ -637,30 +635,51 @@ impl DecryptWorkerShard {
         // Arc<Mutex> lock acquire and no split-brain replay owner. Replays are
         // dropped before AEAD work; successful AEAD is the only path that
         // accepts the counter into the replay window.
-        let plaintext_len = match state.open_fmp_in_place(
+        let replay_precheck = match state.precheck_fmp_replay(fmp_counter) {
+            Ok(precheck) => precheck,
+            Err(FmpOpenError::Replay) => return Ok(DecryptWorkerJobActions::None),
+            #[cfg(test)]
+            Err(FmpOpenError::Aead { .. }) => unreachable!("FMP replay precheck cannot run AEAD"),
+        };
+        let ticket = state.issue_fmp_receive_ticket();
+        let outcome = match OwnedSessionState::open_fmp_aead_in_place(
+            &state.fmp_cipher,
             &mut packet_data,
             fmp_ciphertext_offset,
             fmp_counter,
             &fmp_header,
         ) {
             Ok(outcome) => outcome.plaintext_len,
-            Err(FmpOpenError::Replay) => return Ok(None),
-            Err(FmpOpenError::Aead { fmp_replay_highest }) => {
-                return Ok(Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
-                    fallback_tx,
-                    event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
-                        source_peer,
-                        fmp_counter,
-                        fmp_replay_highest,
-                        trace_enqueued_at: None,
-                    }),
-                    direct_delivery: None,
-                })));
+            Err(()) => {
+                drop(_t_fmp);
+                let mut actions =
+                    DecryptWorkerJobActions::one(DecryptWorkerJobAction::Output(
+                        DecryptWorkerOutput {
+                            fallback_tx,
+                            event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+                                source_peer,
+                                fmp_counter,
+                                fmp_replay_highest: replay_precheck.replay_highest,
+                                trace_enqueued_at: None,
+                            }),
+                            direct_delivery: None,
+                        },
+                    ));
+                let _ = state.complete_ordered_fmp_open_with_value(
+                    ticket,
+                    FmpOrderedCompletion::AeadFailed,
+                    |opened_job| {
+                        if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                            actions.push(action);
+                        }
+                    },
+                );
+                return Ok(actions);
             }
         };
         drop(_t_fmp);
 
-        Ok(self.handle_opened_fmp_job(OpenedFmpJob {
+        let opened_job = OpenedFmpJob {
             packet_data,
             lane,
             source_peer,
@@ -672,12 +691,36 @@ impl DecryptWorkerShard {
             fmp_counter,
             fmp_flags,
             fmp_plaintext_offset: fmp_ciphertext_offset,
-            fmp_plaintext_len: plaintext_len,
+            fmp_plaintext_len: outcome,
             fallback_tx,
-        }))
+        };
+        let mut actions = DecryptWorkerJobActions::None;
+        match state.complete_ordered_fmp_open_with_value(
+            ticket,
+            FmpOrderedCompletion::Opened {
+                precheck: replay_precheck,
+                value: opened_job,
+            },
+            |opened_job| {
+                if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                    actions.push(action);
+                }
+            },
+        ) {
+            Ok(drain) => {
+                debug_assert!(
+                    drain.aead_failures == 0,
+                    "current sequential AEAD path should not drain stale failures"
+                );
+            }
+            Err(FmpOpenError::Replay) => return Ok(actions),
+            #[cfg(test)]
+            Err(FmpOpenError::Aead { .. }) => unreachable!("ordered FMP completion cannot run AEAD"),
+        }
+        Ok(actions)
     }
 
-    fn handle_opened_fmp_job(&mut self, job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
+    fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
         let OpenedFmpJob {
             packet_data,
             lane,
@@ -723,13 +766,11 @@ impl DecryptWorkerShard {
             };
             return Some(DecryptWorkerJobAction::Output(DecryptWorkerOutput {
                 fallback_tx,
-                event: DecryptWorkerEvent::AuthenticatedFmpReceive(
-                    DecryptAuthenticatedFmpReceive {
-                        fmp,
-                        lane: DecryptWorkerLane::Priority,
-                        trace_enqueued_at: None,
-                    },
-                ),
+                event: DecryptWorkerEvent::AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive {
+                    fmp,
+                    lane: DecryptWorkerLane::Priority,
+                    trace_enqueued_at: None,
+                }),
                 direct_delivery: None,
             }));
         }
@@ -821,13 +862,29 @@ impl DecryptWorkerShard {
         idx: usize,
         job: DecryptJob,
     ) -> Result<Option<DecryptWorkerOutput>, Box<dyn std::error::Error + Send + Sync>> {
-        match self.handle_job_action(idx, job)? {
-            Some(DecryptWorkerJobAction::Output(output)) => Ok(Some(output)),
-            Some(DecryptWorkerJobAction::FspJob(job)) => {
-                Ok(self.dispatch_or_handle_fsp_job(idx, job))
+        let actions = self.handle_job_action(idx, job)?;
+        Ok(self.handle_job_actions_output(idx, actions))
+    }
+
+    #[cfg(test)]
+    fn handle_job_actions_output(
+        &mut self,
+        idx: usize,
+        actions: DecryptWorkerJobActions,
+    ) -> Option<DecryptWorkerOutput> {
+        let mut first_output = None;
+        actions.for_each(|action| {
+            let output = match action {
+                DecryptWorkerJobAction::Output(output) => Some(output),
+                DecryptWorkerJobAction::FspJob(job) => self.dispatch_or_handle_fsp_job(idx, job),
+            };
+            if first_output.is_none() {
+                first_output = output;
+            } else if let Some(output) = output {
+                let _ = output.send();
             }
-            None => Ok(None),
-        }
+        });
+        first_output
     }
 
     #[cfg(test)]

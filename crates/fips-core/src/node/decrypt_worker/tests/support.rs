@@ -211,6 +211,26 @@
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
     }
 
+    fn dummy_opened_fmp_job(plaintext_len: usize) -> OpenedFmpJob {
+        let packet_len = crate::node::wire::ESTABLISHED_HEADER_SIZE + plaintext_len.max(1);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        OpenedFmpJob {
+            packet_data: vec![0; packet_len],
+            lane: decrypt_worker_packet_lane(packet_len),
+            source_peer: test_source_peer(),
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: *test_source_peer().node_addr(),
+            timestamp_ms: 1_000,
+            packet_len,
+            fmp_counter: 1,
+            fmp_flags: 0,
+            fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fmp_plaintext_len: plaintext_len,
+            fallback_tx,
+        }
+    }
+
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {
         DecryptWorkerEvent::Plaintext(DecryptFallback::new(
             test_source_peer(),

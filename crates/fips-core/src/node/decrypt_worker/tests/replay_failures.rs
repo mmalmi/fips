@@ -394,7 +394,7 @@
                 second_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: second_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 21 },
+                    value: dummy_opened_fmp_job(21),
                 },
             )
             .expect("later completion should buffer behind missing first ticket");
@@ -410,7 +410,7 @@
                 first_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: first_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 20 },
+                    value: dummy_opened_fmp_job(20),
                 },
             )
             .expect("first completion should drain itself and the buffered second completion");
@@ -444,7 +444,7 @@
                 later_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: later_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 22 },
+                    value: dummy_opened_fmp_job(22),
                 },
             )
             .expect("later completion should wait behind the failed crypto ticket");
@@ -491,7 +491,7 @@
                 duplicate_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: duplicate_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 230 },
+                    value: dummy_opened_fmp_job(230),
                 },
             )
             .expect("duplicate completion should buffer behind the first ticket");
@@ -502,7 +502,7 @@
                 first_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: first_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 23 },
+                    value: dummy_opened_fmp_job(23),
                 },
             )
             .expect("first completion should accept and the duplicate should drain as replay");
@@ -544,9 +544,9 @@
                 second_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: second_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 250 },
+                    value: dummy_opened_fmp_job(250),
                 },
-                |outcome| opened.push(outcome.plaintext_len),
+                |job| opened.push(job.fmp_plaintext_len),
             )
             .expect("second completion should buffer");
         assert_eq!(drain, FmpOrderedDrain::default());
@@ -560,9 +560,9 @@
                 first_ticket,
                 FmpOrderedCompletion::Opened {
                     precheck: first_precheck,
-                    value: FmpOpenOutcome { plaintext_len: 240 },
+                    value: dummy_opened_fmp_job(240),
                 },
-                |outcome| opened.push(outcome.plaintext_len),
+                |job| opened.push(job.fmp_plaintext_len),
             )
             .expect("first completion should drain both opened values");
         assert_eq!(

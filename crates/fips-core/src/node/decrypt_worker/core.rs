@@ -357,6 +357,22 @@ struct FmpOpenOutcome {
     plaintext_len: usize,
 }
 
+struct OpenedFmpJob {
+    packet_data: Vec<u8>,
+    lane: DecryptWorkerLane,
+    source_peer: PeerIdentity,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    local_node_addr: NodeAddr,
+    timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    fmp_plaintext_offset: usize,
+    fmp_plaintext_len: usize,
+    fallback_tx: DecryptWorkerFallbackSender,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FmpReplayPrecheck {
     counter: u64,
@@ -439,10 +455,9 @@ impl<T> OrderedCompletionBuffer<T> {
     }
 }
 
-#[derive(Debug)]
 struct FmpReceiveOrder {
     next_ticket: u64,
-    completions: OrderedCompletionBuffer<FmpOrderedCompletion<FmpOpenOutcome>>,
+    completions: OrderedCompletionBuffer<FmpOrderedCompletion<OpenedFmpJob>>,
 }
 
 impl FmpReceiveOrder {
@@ -464,8 +479,8 @@ impl FmpReceiveOrder {
     fn complete(
         &mut self,
         ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion<FmpOpenOutcome>,
-        on_ready: impl FnMut(FmpOrderedCompletion<FmpOpenOutcome>),
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        on_ready: impl FnMut(FmpOrderedCompletion<OpenedFmpJob>),
     ) -> Result<usize, OrderedCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
     }
@@ -491,6 +506,7 @@ struct FmpOrderedDrain {
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
+    #[cfg(test)]
     Aead { fmp_replay_highest: u64 },
 }
 
@@ -561,10 +577,11 @@ impl OwnedSessionState {
         self.fmp_receive_order.issue()
     }
 
+    #[cfg(test)]
     fn complete_ordered_fmp_open(
         &mut self,
         ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion<FmpOpenOutcome>,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
     ) -> Result<FmpOrderedDrain, FmpOpenError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
@@ -589,8 +606,8 @@ impl OwnedSessionState {
     fn complete_ordered_fmp_open_with_value(
         &mut self,
         ticket: FmpReceiveTicket,
-        completion: FmpOrderedCompletion<FmpOpenOutcome>,
-        mut on_opened: impl FnMut(FmpOpenOutcome),
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        mut on_opened: impl FnMut(OpenedFmpJob),
     ) -> Result<FmpOrderedDrain, FmpOpenError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
@@ -613,6 +630,7 @@ impl OwnedSessionState {
         Ok(drain)
     }
 
+    #[cfg(test)]
     fn open_fmp_in_place(
         &mut self,
         packet_data: &mut [u8],
@@ -621,8 +639,6 @@ impl OwnedSessionState {
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
         let replay_precheck = self.precheck_fmp_replay(fmp_counter)?;
-        let ticket = self.issue_fmp_receive_ticket();
-
         let outcome = Self::open_fmp_aead_in_place(
             &self.fmp_cipher,
             packet_data,
@@ -630,28 +646,11 @@ impl OwnedSessionState {
             fmp_counter,
             fmp_header,
         )
-        .map_err(|_| {
-            let _ = self.complete_ordered_fmp_open(ticket, FmpOrderedCompletion::AeadFailed);
-            FmpOpenError::Aead {
-                fmp_replay_highest: replay_precheck.replay_highest,
-            }
+        .map_err(|_| FmpOpenError::Aead {
+            fmp_replay_highest: replay_precheck.replay_highest,
         })?;
-
-        let mut opened = None;
-        let drain = self.complete_ordered_fmp_open_with_value(
-            ticket,
-            FmpOrderedCompletion::Opened {
-                precheck: replay_precheck,
-                value: outcome,
-            },
-            |outcome| {
-                opened = Some(outcome);
-            },
-        )?;
-        if drain.replay_drops != 0 {
-            return Err(FmpOpenError::Replay);
-        }
-        opened.ok_or(FmpOpenError::Replay)
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, replay_precheck)?;
+        Ok(outcome)
     }
 }
 
