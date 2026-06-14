@@ -170,6 +170,7 @@ pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointComma
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
     traffic_class: EndpointPayloadClass,
+    direct_fmp_endpoint_allowed: bool,
 }
 
 impl EndpointDataPayload {
@@ -178,14 +179,26 @@ impl EndpointDataPayload {
         Self {
             bytes,
             traffic_class,
+            direct_fmp_endpoint_allowed: false,
         }
     }
 
-    pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
+    pub(crate) fn from_classified_with_direct_fmp_endpoint_allowed(
+        bytes: Vec<u8>,
+        traffic_class: EndpointPayloadClass,
+        direct_fmp_endpoint_allowed: bool,
+    ) -> Self {
         Self {
             bytes,
             traffic_class,
+            direct_fmp_endpoint_allowed,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn allow_direct_fmp_endpoint_data(mut self) -> Self {
+        self.direct_fmp_endpoint_allowed = true;
+        self
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
@@ -198,6 +211,10 @@ impl EndpointDataPayload {
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.traffic_class.drop_on_backpressure()
+    }
+
+    pub(crate) fn direct_fmp_endpoint_allowed(&self) -> bool {
+        self.direct_fmp_endpoint_allowed
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {

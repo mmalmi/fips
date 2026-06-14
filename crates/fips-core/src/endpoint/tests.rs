@@ -23,6 +23,14 @@ fn ipv4_icmp_echo_packet() -> Vec<u8> {
 }
 
 #[test]
+fn endpoint_payload_direct_fmp_opt_in_survives_internal_conversion() {
+    let payload = FipsEndpointPayload::new(vec![0xee; 64]).with_direct_fmp_endpoint_allowed();
+    let internal: EndpointDataPayload = payload.into();
+
+    assert!(internal.direct_fmp_endpoint_allowed());
+}
+
+#[test]
 fn endpoint_peer_conversion_preserves_rekey_state() {
     let peer = FipsEndpointPeer::from(NodeEndpointPeer {
         npub: "npub1peer".to_string(),

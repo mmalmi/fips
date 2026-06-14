@@ -344,6 +344,43 @@
             std::slice::from_ref(&payload),
             false
         ));
+        let direct_payload = EndpointDataPayload::new(vec![0xdd; 64]).allow_direct_fmp_endpoint_data();
+        let direct_payload_send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &direct_payload,
+            now_ms: 0x1122_3344,
+            timestamp: 0x5566_7788,
+            fsp_flags: 0,
+            inner_plaintext: PipelinedEndpointInnerPlaintext::endpoint_data(
+                0x5566_7788,
+                0,
+                direct_payload.as_slice(),
+            ),
+            my_coords: None,
+            dest_coords: None,
+        };
+        let direct_payload_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
+            &node_addr(0x10),
+            &direct_payload_send,
+            dest_addr,
+            1234,
+            9,
+            1,
+            false,
+            false,
+        )
+        .expect("direct payload plan");
+        assert!(direct_payload_plan.direct_fmp_endpoint());
+        assert!(direct_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            std::slice::from_ref(&direct_payload),
+            false
+        ));
+        assert!(!direct_route.direct_fmp_endpoint_batch_eligible(
+            dest_addr,
+            &[payload.clone(), direct_payload.clone()],
+            false
+        ));
 
         let relayed_plan = PipelinedEndpointSendPlan::new_with_direct_fmp_opt_in(
             &node_addr(0x10),

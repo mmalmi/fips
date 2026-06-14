@@ -213,7 +213,7 @@ impl<'a> PipelinedEndpointDispatchPlan<'a> {
         bulk_endpoint_data: bool,
         direct_fmp_opt_in: bool,
     ) -> bool {
-        direct_fmp_opt_in
+        (direct_fmp_opt_in || send.payload.direct_fmp_endpoint_allowed())
             && next_hop_addr == *send.dest_addr
             && !direct_path_blocks_direct_payload
             && bulk_endpoint_data
@@ -301,7 +301,10 @@ impl PipelinedEndpointRoutePlan {
         payloads: &[EndpointDataPayload],
         direct_fmp_opt_in: bool,
     ) -> bool {
-        direct_fmp_opt_in
+        (direct_fmp_opt_in
+            || payloads
+                .iter()
+                .all(EndpointDataPayload::direct_fmp_endpoint_allowed))
             && self.next_hop_addr == dest_addr
             && !self.direct_path_blocks_direct_payload
             && !payloads.is_empty()

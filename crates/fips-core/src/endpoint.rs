@@ -48,16 +48,34 @@ pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 pub struct FipsEndpointPayload {
     bytes: Vec<u8>,
     class: EndpointPayloadClass,
+    direct_fmp_endpoint_allowed: bool,
 }
 
 impl FipsEndpointPayload {
     pub fn new(bytes: Vec<u8>) -> Self {
         let class = crate::node::classify_endpoint_payload(&bytes);
-        Self { bytes, class }
+        Self {
+            bytes,
+            class,
+            direct_fmp_endpoint_allowed: false,
+        }
     }
 
     pub fn from_classified(bytes: Vec<u8>, class: EndpointPayloadClass) -> Self {
-        Self { bytes, class }
+        Self {
+            bytes,
+            class,
+            direct_fmp_endpoint_allowed: false,
+        }
+    }
+
+    /// Allow this payload to use direct-FMP endpoint data when the route is direct.
+    ///
+    /// Embedders should set this only after they know the remote endpoint can
+    /// receive `DirectEndpointData`; the default remains the compatible FSP path.
+    pub fn with_direct_fmp_endpoint_allowed(mut self) -> Self {
+        self.direct_fmp_endpoint_allowed = true;
+        self
     }
 
     pub fn class(&self) -> EndpointPayloadClass {
@@ -83,7 +101,11 @@ impl FipsEndpointPayload {
 
 impl From<FipsEndpointPayload> for EndpointDataPayload {
     fn from(payload: FipsEndpointPayload) -> Self {
-        EndpointDataPayload::from_classified(payload.bytes, payload.class)
+        EndpointDataPayload::from_classified_with_direct_fmp_endpoint_allowed(
+            payload.bytes,
+            payload.class,
+            payload.direct_fmp_endpoint_allowed,
+        )
     }
 }
 
