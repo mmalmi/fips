@@ -103,8 +103,12 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
 fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() {
     let transport_id = TransportId::new(7);
     let receiver_idx = SessionIndex::new(0x0a0b_0c0d);
-    let session_key =
-        crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, receiver_idx.as_u32());
+    let peer_addr = make_node_addr(0x55);
+    let session_key = crate::node::decrypt_worker::DecryptSessionKey::for_peer(
+        transport_id,
+        receiver_idx.as_u32(),
+        &peer_addr,
+    );
     let workers = crate::node::decrypt_worker::DecryptWorkerPool::spawn(1);
     let (fallback_tx, _fallback_rx) =
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
