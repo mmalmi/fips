@@ -56,6 +56,7 @@
 //!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
+//!   * `DECRYPT_FSP_WORKER_SERVICE` — FSP owner-worker decrypt/decode/output prep
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -70,7 +71,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 42;
+const N_STAGES: usize = 43;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -181,6 +182,10 @@ pub enum Stage {
     FmpWorkerPriorityQueueWait = 40,
     /// Bulk FMP encrypt-worker input residence.
     FmpWorkerBulkQueueWait = 41,
+    /// Time spent by the FSP owner worker after queue dequeue preparing the
+    /// authenticated output: inner AEAD/replay, inner-header decode, direct
+    /// delivery classification, and any batch push/flush work done inline.
+    DecryptFspWorkerService = 42,
 }
 
 impl Stage {
@@ -230,6 +235,7 @@ impl Stage {
             Stage::DecryptFspWorkerBulkQueueWait => "decrypt_fsp_worker_bulk_queue_wait",
             Stage::FmpWorkerPriorityQueueWait => "fmp_worker_priority_queue_wait",
             Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
+            Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
         }
     }
 }
@@ -278,6 +284,7 @@ fn stage_from_index(idx: usize) -> Stage {
         39 => Stage::DecryptFspWorkerBulkQueueWait,
         40 => Stage::FmpWorkerPriorityQueueWait,
         41 => Stage::FmpWorkerBulkQueueWait,
+        42 => Stage::DecryptFspWorkerService,
         _ => unreachable!(),
     }
 }

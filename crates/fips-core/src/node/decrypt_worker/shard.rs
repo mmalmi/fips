@@ -66,6 +66,8 @@ impl DecryptWorkerShard {
 
     fn handle_fsp_job_msg(&mut self, idx: usize, job: FspDecryptJob) {
         job.record_queue_wait();
+        let _t_service =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
         if let Some(output) = self.handle_fsp_job_output(job) {
             let _ = output.send();
         }
@@ -79,6 +81,8 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         job.record_queue_wait();
+        let _t_service =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
         if let Some(output) = self.handle_fsp_job_output(job) {
             plaintext_batch.push_output(output);
         }
@@ -386,10 +390,15 @@ impl DecryptWorkerShard {
                 });
             };
             let received_k_bit = header.flags & FSP_FLAG_K != 0;
+            let open_result = {
+                let _t_fsp =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+                state.open_current_established_frame_in_place(&header, ciphertext)
+            };
             let FspOpenInPlaceSuccess {
                 plaintext_len,
                 slot,
-            } = match state.open_current_established_frame_in_place(&header, ciphertext) {
+            } = match open_result {
                 Ok(success) => success,
                 Err(FspOpenError::Replay) => {
                     crate::perf_profile::record_event(
@@ -492,23 +501,27 @@ impl DecryptWorkerShard {
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        let FspOpenSuccess { plaintext, slot } =
-            match state.open_established_frame(&header, ciphertext) {
-                Ok(success) => success,
-                Err(FspOpenError::Replay) => {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
-                    );
-                    return None;
-                }
-                Err(FspOpenError::Aead) => {
-                    return Some(DecryptWorkerOutput {
-                        fallback_tx,
-                        event: DecryptWorkerEvent::Plaintext(fallback),
-                        direct_delivery: None,
-                    });
-                }
-            };
+        let open_result = {
+            let _t_fsp =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+            state.open_established_frame(&header, ciphertext)
+        };
+        let FspOpenSuccess { plaintext, slot } = match open_result {
+            Ok(success) => success,
+            Err(FspOpenError::Replay) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
+                );
+                return None;
+            }
+            Err(FspOpenError::Aead) => {
+                return Some(DecryptWorkerOutput {
+                    fallback_tx,
+                    event: DecryptWorkerEvent::Plaintext(fallback),
+                    direct_delivery: None,
+                });
+            }
+        };
         let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(&plaintext)?;
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
