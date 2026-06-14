@@ -279,9 +279,13 @@ mod unix_tests {
     }
 
     #[test]
-    fn worker_batch_size_parse_stays_within_sender_accounting_limit() {
+    fn worker_batch_size_parse_stays_within_safe_default_turn() {
         assert_eq!(parse_worker_batch_size(Some("0"), 32), 1);
-        assert_eq!(parse_worker_batch_size(Some("999"), 32), 64);
+        assert_eq!(
+            parse_worker_batch_size(Some("999"), 32),
+            32,
+            "wide sender turns remain opt-out until the owner/send path changes"
+        );
         assert_eq!(parse_worker_batch_size(Some("17"), 32), 17);
         assert_eq!(
             parse_worker_batch_size(Some("not-a-number"), 31),

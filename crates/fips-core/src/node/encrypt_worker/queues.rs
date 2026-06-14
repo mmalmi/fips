@@ -271,12 +271,14 @@ fn worker_fast_lane_cap_for_batch(
 
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
+    let max_batch = default.max(1);
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(default)
-        // Linux UDP submission in this module is capped at 64 iovecs.
-        // Keep the worker drain cap aligned so a same-target group never asks
-        // the GSO path to submit a prefix while accounting the whole group.
-        .clamp(1, 64)
+        // Linux UDP submission can carry wider GSO batches, but no-direct
+        // clean/stressed runs repeatedly showed wider worker turns amplify
+        // TCP retransmits. Keep explicit env tuning inside the proven default
+        // turn until the sender shape changes.
+        .clamp(1, max_batch)
 }
 
 #[cfg(not(target_os = "macos"))]
