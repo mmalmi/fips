@@ -23,6 +23,8 @@
 //! Stages tracked, outbound:
 //!   * `FSP_ENCRYPT` — inner AEAD seal (`send_session_data`)
 //!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
+//!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
+//!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
 //!   * `UDP_SEND` — sendmmsg/sendmsg/sendto flush
 //!
 //! Handoff waits tracked:
@@ -73,7 +75,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 47;
+const N_STAGES: usize = 49;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -200,6 +202,10 @@ pub enum Stage {
     FspAeadHelperQueueWait = 45,
     /// FSP AEAD helper completion residence before the owner worker handles it.
     FspAeadHelperCompletionWait = 46,
+    /// Worker-side inner FSP seal for pipelined endpoint sends.
+    FmpWorkerFspSeal = 47,
+    /// Worker-side outer FMP seal for pipelined endpoint sends.
+    FmpWorkerFmpSeal = 48,
 }
 
 impl Stage {
@@ -254,6 +260,8 @@ impl Stage {
             Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
             Stage::FspAeadHelperQueueWait => "fsp_aead_helper_queue_wait",
             Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
+            Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
+            Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
         }
     }
 }
@@ -307,6 +315,8 @@ fn stage_from_index(idx: usize) -> Stage {
         44 => Stage::DecryptFspWorkerBulkInputTailWait,
         45 => Stage::FspAeadHelperQueueWait,
         46 => Stage::FspAeadHelperCompletionWait,
+        47 => Stage::FmpWorkerFspSeal,
+        48 => Stage::FmpWorkerFmpSeal,
         _ => unreachable!(),
     }
 }

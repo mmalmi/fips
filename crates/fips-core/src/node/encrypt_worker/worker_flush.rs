@@ -166,6 +166,8 @@ impl SealedSendPacket {
                 return Err(SealPacketError::InvalidFspLayout);
             }
 
+            let _t =
+                crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpWorkerFspSeal);
             let mut nonce_bytes = [0u8; 12];
             nonce_bytes[4..12].copy_from_slice(&fsp.counter.to_le_bytes());
             let nonce = Nonce::assume_unique_for_key(nonce_bytes);
@@ -178,6 +180,7 @@ impl SealedSendPacket {
             wire_buf.extend_from_slice(tag.as_ref());
         }
 
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpWorkerFmpSeal);
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
