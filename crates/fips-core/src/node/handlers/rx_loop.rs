@@ -1,7 +1,7 @@
 //! RX event loop and packet dispatch.
 
 use crate::control::queries;
-use crate::control::{ControlSocket, commands};
+use crate::control::{ControlMessage, ControlSenders, ControlSocket, commands};
 use crate::discovery::is_punch_packet;
 use crate::node::decrypt_worker::{
     DecryptFailureReport, DecryptFallback, DecryptJobBatcher, DecryptWorkerEvent,
@@ -108,17 +108,21 @@ impl Node {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut maintenance_state = RxLoopMaintenanceState::default();
 
-        // Set up control socket channel
-        let (control_tx, mut control_rx) =
-            tokio::sync::mpsc::channel::<crate::control::ControlMessage>(32);
+        // Set up control socket channels. Read-only queries are separated
+        // from mutating commands so operator status reads can get reserved
+        // progress while a command awaits slower discovery/transport work.
+        let (control_query_tx, mut control_query_rx) =
+            tokio::sync::mpsc::channel::<ControlMessage>(32);
+        let (control_command_tx, mut control_command_rx) =
+            tokio::sync::mpsc::channel::<ControlMessage>(32);
 
         if self.config.node.control.enabled {
             let config = self.config.node.control.clone();
-            let tx = control_tx.clone();
+            let senders = ControlSenders::new(control_query_tx.clone(), control_command_tx.clone());
             tokio::spawn(async move {
                 match ControlSocket::bind(&config) {
                     Ok(socket) => {
-                        socket.accept_loop(tx).await;
+                        socket.accept_loop_split(senders).await;
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to bind control socket");
@@ -127,7 +131,8 @@ impl Node {
             });
         }
         // Drop unused sender to avoid keeping channel open if control is disabled
-        drop(control_tx);
+        drop(control_query_tx);
+        drop(control_command_tx);
 
         info!("RX event loop started");
         // Optional perf profiler (FIPS_PERF=1). No-op otherwise.
@@ -157,12 +162,13 @@ impl Node {
                         PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || side_drained.has_drained() {
+                    if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -236,14 +242,22 @@ impl Node {
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || side_drained.has_drained() {
+                    if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
+                }
+                Some(message) = control_query_rx.recv() => {
+                    self.drain_control_queries(
+                        &mut control_query_rx,
+                        Some(message),
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
                 }
                 packet = packet_rx.recv() => {
                     match packet {
@@ -252,6 +266,7 @@ impl Node {
                                 &mut packet_rx,
                                 &mut decrypt_fallback_rx,
                                 Some(RxLoopSideQueues {
+                                    control_query_rx: &mut control_query_rx,
                                     tun_outbound_rx: &mut tun_outbound_rx,
                                     endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
                                     endpoint_command_rx: &mut endpoint_command_rx,
@@ -291,12 +306,13 @@ impl Node {
                         fallback_plan.trailing_budget,
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
+                        &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || side_drained.has_drained() {
+                    if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
@@ -329,16 +345,12 @@ impl Node {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
-                Some((request, response_tx)) = control_rx.recv() => {
-                    let response = if request.command.starts_with("show_") {
-                        queries::dispatch(self, &request.command, request.params.as_ref())
-                    } else {
-                        commands::dispatch(
-                            self,
-                            &request.command,
-                            request.params.as_ref(),
-                        ).await
-                    };
+                Some((request, response_tx)) = control_command_rx.recv() => {
+                    let response = commands::dispatch(
+                        self,
+                        &request.command,
+                        request.params.as_ref(),
+                    ).await;
                     let _ = response_tx.send(response);
                 }
             }
@@ -451,6 +463,7 @@ impl Node {
                     let drained = if let Some(side_queues) = side_queues.as_mut() {
                         if rx_loop_side_queues_have_ready(side_queues) {
                             self.drain_rx_loop_side_queues(
+                                side_queues.control_query_rx,
                                 side_queues.tun_outbound_rx,
                                 side_queues.endpoint_priority_command_rx,
                                 side_queues.endpoint_command_rx,
@@ -498,12 +511,18 @@ impl Node {
 
     async fn drain_rx_loop_side_queues(
         &mut self,
+        control_query_rx: &mut Receiver<ControlMessage>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let (endpoint_budget, tun_budget) = split_side_queue_budget(budget);
+        let control_budget = budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
+        let drained_control = self
+            .drain_control_queries(control_query_rx, None, control_budget)
+            .await;
+        let remaining_budget = budget.saturating_sub(drained_control);
+        let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
         let mut drained_endpoint = self
             .drain_endpoint_commands(
                 endpoint_priority_command_rx,
@@ -538,7 +557,22 @@ impl Node {
                 .await;
         }
 
-        RxLoopDataDrainStats::new(0, drained_tun, drained_endpoint)
+        RxLoopDataDrainStats::with_control(0, drained_tun, drained_endpoint, drained_control)
+    }
+
+    async fn drain_control_queries(
+        &mut self,
+        control_query_rx: &mut Receiver<ControlMessage>,
+        first_message: Option<ControlMessage>,
+        budget: usize,
+    ) -> usize {
+        let mut drain = SingleLaneDrainCursor::new(first_message, budget);
+        while let Some((request, response_tx)) = drain.next(control_query_rx) {
+            let response = queries::dispatch(self, &request.command, request.params.as_ref());
+            let _ = response_tx.send(response);
+        }
+
+        drain.drained()
     }
 
     async fn drain_tun_outbound(

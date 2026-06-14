@@ -24,6 +24,10 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
 pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
+/// Read-only control queries are status/observability work, not dataplane bulk.
+/// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
+/// convoy ahead of packet receive or endpoint/TUN progress.
+pub(super) const CONTROL_QUERY_INTERLEAVE_BUDGET: usize = 4;
 /// Top-level non-packet queues get shorter turns than raw packet receive.
 /// Returning to the biased select loop after a small slice lets ready
 /// `packet_rx` preempt bulk fallback, TUN egress, and endpoint command work

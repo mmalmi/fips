@@ -1,3 +1,4 @@
+use crate::control::ControlMessage;
 use crate::node::NodeEndpointCommand;
 use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
 use crate::transport::{PacketRx, ReceivedPacket};
@@ -32,6 +33,7 @@ pub(super) enum PacketDrainAction<T> {
 }
 
 pub(super) struct RxLoopSideQueues<'a> {
+    pub(super) control_query_rx: &'a mut Receiver<ControlMessage>,
     pub(super) tun_outbound_rx: &'a mut TunOutboundRx,
     pub(super) endpoint_priority_command_rx: &'a mut Receiver<NodeEndpointCommand>,
     pub(super) endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
@@ -42,7 +44,8 @@ pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) ->
 }
 
 pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
-    !side_queues.tun_outbound_rx.is_empty()
+    !side_queues.control_query_rx.is_empty()
+        || !side_queues.tun_outbound_rx.is_empty()
         || !side_queues.endpoint_priority_command_rx.is_empty()
         || !side_queues.endpoint_command_rx.is_empty()
 }
@@ -52,6 +55,7 @@ pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
     pub(super) tun: usize,
     pub(super) endpoint: usize,
+    pub(super) control: usize,
 }
 
 impl RxLoopDataDrainStats {
@@ -60,19 +64,42 @@ impl RxLoopDataDrainStats {
             packets,
             tun,
             endpoint,
+            control: 0,
         }
     }
 
-    pub(super) fn total(&self) -> usize {
+    pub(super) fn with_control(
+        packets: usize,
+        tun: usize,
+        endpoint: usize,
+        control: usize,
+    ) -> Self {
+        Self {
+            packets,
+            tun,
+            endpoint,
+            control,
+        }
+    }
+
+    pub(super) fn data_total(&self) -> usize {
         self.packets + self.tun + self.endpoint
+    }
+
+    pub(super) fn total(&self) -> usize {
+        self.data_total() + self.control
     }
 
     pub(super) fn has_drained(&self) -> bool {
         self.total() > 0
     }
 
+    pub(super) fn has_data_drained(&self) -> bool {
+        self.data_total() > 0
+    }
+
     pub(super) fn data_pressure(&self, recent_data_activity: bool) -> bool {
-        self.has_drained() || recent_data_activity
+        self.has_data_drained() || recent_data_activity
     }
 }
 

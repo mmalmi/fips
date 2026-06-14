@@ -29,13 +29,55 @@ const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A message sent from the accept loop to the main event loop.
 pub type ControlMessage = (Request, oneshot::Sender<Response>);
 
+/// Split control-plane send handles.
+///
+/// Read-only `show_*` requests are safe to service in short reserved turns,
+/// while mutating commands may await transport/discovery work. Keeping them on
+/// separate channels prevents a slow command from blocking status queries that
+/// operators use during dataplane pressure.
+#[derive(Clone)]
+pub(crate) struct ControlSenders {
+    query_tx: mpsc::Sender<ControlMessage>,
+    command_tx: mpsc::Sender<ControlMessage>,
+}
+
+impl ControlSenders {
+    pub(crate) fn new(
+        query_tx: mpsc::Sender<ControlMessage>,
+        command_tx: mpsc::Sender<ControlMessage>,
+    ) -> Self {
+        Self {
+            query_tx,
+            command_tx,
+        }
+    }
+
+    fn single(control_tx: mpsc::Sender<ControlMessage>) -> Self {
+        Self {
+            query_tx: control_tx.clone(),
+            command_tx: control_tx,
+        }
+    }
+
+    async fn send(
+        &self,
+        message: ControlMessage,
+    ) -> Result<(), mpsc::error::SendError<ControlMessage>> {
+        if message.0.command.starts_with("show_") {
+            self.query_tx.send(message).await
+        } else {
+            self.command_tx.send(message).await
+        }
+    }
+}
+
 /// Handle a single client connection over any AsyncRead + AsyncWrite stream.
 ///
 /// Shared between Unix and Windows implementations to avoid duplicating
 /// the request/response protocol logic.
 async fn handle_connection_generic<S>(
     stream: S,
-    control_tx: mpsc::Sender<ControlMessage>,
+    control_senders: ControlSenders,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -75,7 +117,7 @@ where
                 Ok(request) => {
                     // Send to main loop and wait for response
                     let (resp_tx, resp_rx) = oneshot::channel();
-                    if control_tx.send((request, resp_tx)).await.is_err() {
+                    if control_senders.send((request, resp_tx)).await.is_err() {
                         Response::error("node shutting down")
                     } else {
                         match tokio::time::timeout(IO_TIMEOUT, resp_rx).await {
@@ -230,6 +272,11 @@ mod unix_impl {
         /// 4. Write the response as one line of JSON
         /// 5. Close the connection
         pub async fn accept_loop(self, control_tx: mpsc::Sender<ControlMessage>) {
+            self.accept_loop_split(ControlSenders::single(control_tx))
+                .await;
+        }
+
+        pub(crate) async fn accept_loop_split(self, control_senders: ControlSenders) {
             loop {
                 let (stream, _addr) = match self.listener.accept().await {
                     Ok(conn) => conn,
@@ -239,9 +286,9 @@ mod unix_impl {
                     }
                 };
 
-                let tx = control_tx.clone();
+                let senders = control_senders.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection_generic(stream, tx).await {
+                    if let Err(e) = handle_connection_generic(stream, senders).await {
                         debug!(error = %e, "Control connection error");
                     }
                 });
@@ -342,6 +389,11 @@ mod windows_impl {
         /// Each accepted connection is handled in a spawned task using the
         /// shared `handle_connection_generic` protocol handler.
         pub async fn accept_loop(self, control_tx: mpsc::Sender<ControlMessage>) {
+            self.accept_loop_split(ControlSenders::single(control_tx))
+                .await;
+        }
+
+        pub(crate) async fn accept_loop_split(self, control_senders: ControlSenders) {
             loop {
                 let (stream, addr) = match self.listener.accept().await {
                     Ok(conn) => conn,
@@ -357,9 +409,9 @@ mod windows_impl {
                     continue;
                 }
 
-                let tx = control_tx.clone();
+                let senders = control_senders.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection_generic(stream, tx).await {
+                    if let Err(e) = handle_connection_generic(stream, senders).await {
                         debug!(error = %e, "Control connection error");
                     }
                 });
@@ -376,8 +428,53 @@ pub use windows_impl::ControlSocket;
 
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
     use super::*;
+
+    #[tokio::test]
+    async fn control_senders_route_show_queries_to_query_lane() {
+        let (query_tx, mut query_rx) = mpsc::channel(1);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let senders = ControlSenders::new(query_tx, command_tx);
+        let (resp_tx, _resp_rx) = oneshot::channel();
+
+        senders
+            .send((
+                Request {
+                    command: "show_status".to_string(),
+                    params: None,
+                },
+                resp_tx,
+            ))
+            .await
+            .unwrap();
+
+        let (request, _response_tx) = query_rx.recv().await.unwrap();
+        assert_eq!(request.command, "show_status");
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn control_senders_route_mutations_to_command_lane() {
+        let (query_tx, mut query_rx) = mpsc::channel(1);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let senders = ControlSenders::new(query_tx, command_tx);
+        let (resp_tx, _resp_rx) = oneshot::channel();
+
+        senders
+            .send((
+                Request {
+                    command: "connect".to_string(),
+                    params: None,
+                },
+                resp_tx,
+            ))
+            .await
+            .unwrap();
+
+        let (request, _response_tx) = command_rx.recv().await.unwrap();
+        assert_eq!(request.command, "connect");
+        assert!(query_rx.try_recv().is_err());
+    }
 
     #[cfg(windows)]
     #[tokio::test]

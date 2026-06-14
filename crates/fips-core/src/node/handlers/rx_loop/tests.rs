@@ -1,14 +1,16 @@
 use super::budget::{
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-    FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-    FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget,
+    CONTROL_QUERY_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY,
+    FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+    FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
-    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, SingleLaneDrainCursor,
+    RxLoopDataDrainStats, RxLoopMaintenancePlan, RxLoopMaintenanceState, RxLoopSideQueues,
+    SingleLaneDrainCursor, rx_loop_side_queues_have_ready,
 };
+use crate::control::protocol::Request;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -150,15 +152,93 @@ fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
 fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     let empty = RxLoopDataDrainStats::default();
     assert_eq!(empty.total(), 0);
+    assert_eq!(empty.data_total(), 0);
     assert!(!empty.has_drained());
+    assert!(!empty.has_data_drained());
     assert!(!empty.data_pressure(false));
     assert!(empty.data_pressure(true));
 
     let drained = RxLoopDataDrainStats::new(2, 3, 5);
+    assert_eq!(drained.data_total(), 10);
     assert_eq!(drained.total(), 10);
     assert!(drained.has_drained());
+    assert!(drained.has_data_drained());
     assert!(drained.data_pressure(false));
     assert!(drained.data_pressure(true));
+
+    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 2);
+    assert_eq!(control_only.data_total(), 0);
+    assert_eq!(control_only.total(), 2);
+    assert!(control_only.has_drained());
+    assert!(!control_only.has_data_drained());
+    assert!(
+        !control_only.data_pressure(false),
+        "read-only control progress must not look like dataplane pressure"
+    );
+}
+
+#[tokio::test]
+async fn rx_loop_side_queue_readiness_includes_control_queries() {
+    assert!(
+        CONTROL_QUERY_INTERLEAVE_BUDGET < super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET,
+        "control query reserve should stay a small slice of the side-queue budget"
+    );
+
+    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+
+    control_tx
+        .send((
+            Request {
+                command: "show_status".to_string(),
+                params: None,
+            },
+            response_tx,
+        ))
+        .await
+        .unwrap();
+
+    let side_queues = RxLoopSideQueues {
+        control_query_rx: &mut control_rx,
+        tun_outbound_rx: &mut tun_rx,
+        endpoint_priority_command_rx: &mut endpoint_priority_rx,
+        endpoint_command_rx: &mut endpoint_rx,
+    };
+
+    assert!(
+        rx_loop_side_queues_have_ready(&side_queues),
+        "hot packet drains should notice queued read-only control queries"
+    );
+}
+
+#[tokio::test]
+async fn drain_control_queries_answers_show_requests() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (control_tx, mut control_rx) = tokio::sync::mpsc::channel(2);
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+    control_tx
+        .send((
+            Request {
+                command: "show_stats_list".to_string(),
+                params: None,
+            },
+            response_tx,
+        ))
+        .await
+        .unwrap();
+
+    let drained = node.drain_control_queries(&mut control_rx, None, 1).await;
+    assert_eq!(drained, 1);
+
+    let response = response_rx.await.expect("query response");
+    assert_eq!(response.status, "ok");
+    assert!(response.data.is_some());
+    assert!(control_rx.try_recv().is_err());
 }
 
 #[test]
