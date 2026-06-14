@@ -310,27 +310,59 @@ struct LinuxDeferredSender {
 
 #[cfg(target_os = "linux")]
 impl LinuxDeferredSender {
-    fn send(&self, groups: Vec<SelectedSendBatch>) -> Result<(), Vec<SelectedSendBatch>> {
+    fn send(&self, groups: Vec<SelectedSendBatch>) -> Result<(), LinuxDeferredSendError> {
         let (priority_groups, bulk_groups) = split_linux_deferred_send_groups(groups);
         let mut returned_groups = Vec::new();
 
-        if !priority_groups.is_empty()
-            && let Err(SendError(groups)) = self.priority_tx.send(priority_groups)
-        {
-            returned_groups.extend(groups);
+        if let Err(err) = try_send_linux_deferred_groups(&self.priority_tx, priority_groups) {
+            let closed = err.is_closed();
+            returned_groups.extend(err.into_groups());
+            returned_groups.extend(bulk_groups);
+            return if closed {
+                Err(LinuxDeferredSendError::Closed(returned_groups))
+            } else {
+                Err(LinuxDeferredSendError::Full(returned_groups))
+            };
+        }
+        if let Err(err) = try_send_linux_deferred_groups(&self.bulk_tx, bulk_groups) {
+            return Err(err);
         }
 
-        if !bulk_groups.is_empty()
-            && let Err(SendError(groups)) = self.bulk_tx.send(bulk_groups)
-        {
-            returned_groups.extend(groups);
-        }
+        Ok(())
+    }
+}
 
-        if returned_groups.is_empty() {
-            Ok(())
-        } else {
-            Err(returned_groups)
+#[cfg(target_os = "linux")]
+enum LinuxDeferredSendError {
+    Full(Vec<SelectedSendBatch>),
+    Closed(Vec<SelectedSendBatch>),
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxDeferredSendError {
+    fn is_closed(&self) -> bool {
+        matches!(self, Self::Closed(_))
+    }
+
+    fn into_groups(self) -> Vec<SelectedSendBatch> {
+        match self {
+            Self::Full(groups) | Self::Closed(groups) => groups,
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn try_send_linux_deferred_groups(
+    tx: &Sender<Vec<SelectedSendBatch>>,
+    groups: Vec<SelectedSendBatch>,
+) -> Result<(), LinuxDeferredSendError> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    match tx.try_send(groups) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(groups)) => Err(LinuxDeferredSendError::Full(groups)),
+        Err(TrySendError::Disconnected(groups)) => Err(LinuxDeferredSendError::Closed(groups)),
     }
 }
 
@@ -568,9 +600,11 @@ fn flush_batch_sync(
     if let Some(sender) = linux_deferred_sender() {
         match sender.send(groups) {
             Ok(()) => return Ok(()),
-            Err(returned_groups) => {
-                warn!("deferred Linux UDP sender closed; falling back to synchronous send");
-                groups = returned_groups;
+            Err(err) => {
+                if err.is_closed() {
+                    warn!("deferred Linux UDP sender closed; falling back to synchronous send");
+                }
+                groups = err.into_groups();
             }
         }
     }

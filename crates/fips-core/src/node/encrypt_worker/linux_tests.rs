@@ -11,6 +11,37 @@ mod tests {
         vec![0u8; bytes]
     }
 
+    async fn test_send_target() -> (SelectedSendTarget, SendTargetKey) {
+        let raw = crate::transport::udp::socket::UdpRawSocket::open(
+            "127.0.0.1:0".parse().unwrap(),
+            1 << 20,
+            1 << 20,
+        )
+        .expect("open send socket");
+        let socket = raw.into_async().expect("into_async");
+        let dest: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+        let target = SelectedSendTarget::new(socket, None, dest);
+        let target_key = target.key();
+        (target, target_key)
+    }
+
+    fn selected_test_group(
+        target: SelectedSendTarget,
+        target_key: SendTargetKey,
+        lane: SelectedSendLane,
+        bytes: usize,
+        drop_on_backpressure: bool,
+    ) -> SelectedSendBatch {
+        SelectedSendBatch::new_with_capacity(
+            target,
+            target_key,
+            lane,
+            pkt(bytes),
+            drop_on_backpressure,
+            1,
+        )
+    }
+
     #[test]
     fn gso_eligible_rejects_single_packet() {
         assert!(!gso_eligible_sizes_ref(&[pkt(1500)]));
@@ -251,6 +282,100 @@ mod tests {
                 .all(|group| group.lane() == SelectedSendLane::Bulk));
             assert_eq!(bulk[0].packet_count(), 1);
             assert_eq!(bulk[1].packet_count(), 1);
+        });
+    }
+
+    #[test]
+    fn linux_deferred_sender_returns_bulk_when_bulk_queue_is_full() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (priority_tx, priority_rx) = bounded(1);
+            let (bulk_tx, bulk_rx) = bounded(1);
+            let sender = LinuxDeferredSender {
+                priority_tx,
+                bulk_tx,
+            };
+            let (target, target_key) = test_send_target().await;
+            let full_bulk = selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                true,
+            );
+            assert!(sender.bulk_tx.try_send(vec![full_bulk]).is_ok());
+
+            let priority = selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Priority,
+                160,
+                false,
+            );
+            let bulk = selected_test_group(target, target_key, SelectedSendLane::Bulk, 1400, true);
+            let err = sender
+                .send(vec![priority, bulk])
+                .expect_err("full bulk queue should return only bulk groups");
+            assert!(!err.is_closed());
+            let returned = err.into_groups();
+
+            let queued_priority = priority_rx.try_recv().expect("priority queued");
+            assert_eq!(queued_priority.len(), 1);
+            assert_eq!(queued_priority[0].lane(), SelectedSendLane::Priority);
+            assert_eq!(returned.len(), 1);
+            assert_eq!(returned[0].lane(), SelectedSendLane::Bulk);
+            assert!(bulk_rx.try_recv().is_ok(), "pre-filled bulk stays queued");
+        });
+    }
+
+    #[test]
+    fn linux_deferred_sender_returns_all_when_priority_queue_is_full() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (priority_tx, priority_rx) = bounded(1);
+            let (bulk_tx, bulk_rx) = bounded(1);
+            let sender = LinuxDeferredSender {
+                priority_tx,
+                bulk_tx,
+            };
+            let (target, target_key) = test_send_target().await;
+            let full_priority = selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Priority,
+                128,
+                false,
+            );
+            assert!(sender.priority_tx.try_send(vec![full_priority]).is_ok());
+
+            let priority = selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Priority,
+                160,
+                false,
+            );
+            let bulk = selected_test_group(target, target_key, SelectedSendLane::Bulk, 1400, true);
+            let err = sender
+                .send(vec![priority, bulk])
+                .expect_err("full priority queue should force synchronous fallback");
+            assert!(!err.is_closed());
+            let returned = err.into_groups();
+
+            assert_eq!(returned.len(), 2);
+            assert_eq!(returned[0].lane(), SelectedSendLane::Priority);
+            assert_eq!(returned[1].lane(), SelectedSendLane::Bulk);
+            assert!(
+                bulk_rx.try_recv().is_err(),
+                "fresh bulk must not be queued behind a full priority lane"
+            );
+            assert!(priority_rx.try_recv().is_ok(), "pre-filled priority stays queued");
         });
     }
 
