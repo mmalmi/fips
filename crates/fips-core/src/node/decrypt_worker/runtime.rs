@@ -205,6 +205,33 @@ fn drain_worker_queues(
     batch_stats.record();
 }
 
+#[inline]
+fn record_fsp_worker_bulk_input_head_wait(job: &FspDecryptJob) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::DecryptFspWorkerBulkInputHeadWait,
+        job.trace_enqueued_at,
+        1,
+    );
+}
+
+#[inline]
+fn record_fsp_worker_bulk_input_head_wait_batch(jobs: &[FspDecryptJob]) {
+    for job in jobs {
+        record_fsp_worker_bulk_input_head_wait(job);
+    }
+}
+
+#[inline]
+fn record_fsp_worker_bulk_input_tail_wait(
+    item_started_at: Option<crate::perf_profile::TraceStamp>,
+) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::DecryptFspWorkerBulkInputTailWait,
+        item_started_at,
+        1,
+    );
+}
+
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -219,6 +246,9 @@ fn handle_bulk_item(
             1
         }
         DecryptWorkerBulkItem::FspJob(job) => {
+            let item_started_at = crate::perf_profile::stamp();
+            record_fsp_worker_bulk_input_head_wait(&job);
+            record_fsp_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             1
         }
@@ -251,6 +281,8 @@ fn handle_bulk_item(
             count
         }
         DecryptWorkerBulkItem::FspBatch(jobs) => {
+            let item_started_at = crate::perf_profile::stamp();
+            record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
@@ -258,6 +290,7 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
+                record_fsp_worker_bulk_input_tail_wait(item_started_at);
                 shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             }
             count

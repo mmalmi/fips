@@ -57,6 +57,8 @@
 //!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_SERVICE` — FSP owner-worker decrypt/decode/output prep
+//!   * `DECRYPT_FSP_WORKER_BULK_INPUT_HEAD_WAIT` — bulk FSP owner enqueue → batch item service start
+//!   * `DECRYPT_FSP_WORKER_BULK_INPUT_TAIL_WAIT` — FSP batch item service start → individual job handling
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -71,7 +73,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 43;
+const N_STAGES: usize = 45;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -186,6 +188,14 @@ pub enum Stage {
     /// authenticated output: inner AEAD/replay, inner-header decode, direct
     /// delivery classification, and any batch push/flush work done inline.
     DecryptFspWorkerService = 42,
+    /// Bulk FSP owner handoff residence before the worker starts servicing the
+    /// dequeued bulk item. This isolates producer/owner backlog from time spent
+    /// behind earlier jobs in the same dequeued FSP batch.
+    DecryptFspWorkerBulkInputHeadWait = 43,
+    /// Bulk FSP owner residence after a dequeued bulk item starts but before an
+    /// individual FSP job begins service. This is batch-tail residence inside
+    /// one worker turn.
+    DecryptFspWorkerBulkInputTailWait = 44,
 }
 
 impl Stage {
@@ -236,6 +246,8 @@ impl Stage {
             Stage::FmpWorkerPriorityQueueWait => "fmp_worker_priority_queue_wait",
             Stage::FmpWorkerBulkQueueWait => "fmp_worker_bulk_queue_wait",
             Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
+            Stage::DecryptFspWorkerBulkInputHeadWait => "decrypt_fsp_worker_bulk_input_head_wait",
+            Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
         }
     }
 }
@@ -285,6 +297,8 @@ fn stage_from_index(idx: usize) -> Stage {
         40 => Stage::FmpWorkerPriorityQueueWait,
         41 => Stage::FmpWorkerBulkQueueWait,
         42 => Stage::DecryptFspWorkerService,
+        43 => Stage::DecryptFspWorkerBulkInputHeadWait,
+        44 => Stage::DecryptFspWorkerBulkInputTailWait,
         _ => unreachable!(),
     }
 }
@@ -595,6 +609,21 @@ pub fn record_count(stage: Stage, elapsed_ns: u64, count: u64) {
         return;
     }
     let elapsed_ns = elapsed_ns.max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(stage, elapsed_ns, count, bucket);
+}
+
+/// Record `count` equivalent samples from `start` until now into one stage.
+/// No-op when tracing was disabled at the producer or consumer.
+#[inline]
+pub(crate) fn record_since_count(stage: Stage, start: Option<TraceStamp>, count: u64) {
+    if !enabled() || count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
     let bucket = bucket_for_ns(elapsed_ns);
     record_count_sample(stage, elapsed_ns, count, bucket);
 }
