@@ -27,6 +27,15 @@
     }
 
     #[test]
+    fn fmp_aead_helper_env_defaults_off_and_caps_override() {
+        assert_eq!(fmp_aead_helper_count_from_raw(None), 0);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("0")), 0);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("2")), 2);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("99")), 64);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("bad")), 0);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -74,6 +83,7 @@
     ) {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        let (fmp_aead_completion_tx, _fmp_aead_completion_rx) = bounded::<FmpAeadCompletion>(1);
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) = bounded::<FspAeadCompletion>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
@@ -82,6 +92,7 @@
                     vec![DecryptWorkerSender {
                         priority: priority_tx,
                         bulk: bulk_tx,
+                        fmp_aead_completion: fmp_aead_completion_tx,
                         fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
@@ -89,6 +100,7 @@
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fmp_aead_helpers: None,
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -111,12 +123,15 @@
         for _ in 0..worker_count {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
+                bounded::<FmpAeadCompletion>(cap);
             let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletion>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
@@ -128,6 +143,7 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fmp_aead_helpers: None,
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -153,6 +169,11 @@
         completion_rx
     }
 
+    fn test_fmp_aead_completion_lane(cap: usize) -> Receiver<FmpAeadCompletion> {
+        let (_completion_tx, completion_rx) = bounded::<FmpAeadCompletion>(cap);
+        completion_rx
+    }
+
     fn queue_bulk_item_for_test(
         tx: &Sender<DecryptWorkerBulkItem>,
         queued_packets: &AtomicUsize,
@@ -174,11 +195,11 @@
     fn test_owned_session_state() -> OwnedSessionState {
         let key_bytes = [7u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
-            fmp_replay: ReplayWindow::new(),
-            source_peer: test_source_peer(),
-        }
+        OwnedSessionState::new(
+            LessSafeKey::new(unbound),
+            ReplayWindow::new(),
+            test_source_peer(),
+        )
     }
 
     #[test]
@@ -186,11 +207,8 @@
         let source_peer = test_source_peer();
         let key_bytes = [8u8; 32];
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
-        let state = OwnedSessionState {
-            fmp_cipher: LessSafeKey::new(unbound),
-            fmp_replay: ReplayWindow::new(),
-            source_peer,
-        };
+        let state =
+            OwnedSessionState::new(LessSafeKey::new(unbound), ReplayWindow::new(), source_peer);
 
         assert_eq!(state.source_peer, source_peer);
     }
@@ -223,6 +241,26 @@
 
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
+    }
+
+    fn dummy_opened_fmp_job(plaintext_len: usize) -> OpenedFmpJob {
+        let packet_len = crate::node::wire::ESTABLISHED_HEADER_SIZE + plaintext_len.max(1);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        OpenedFmpJob {
+            packet_data: vec![0; packet_len],
+            lane: decrypt_worker_packet_lane(packet_len),
+            source_peer: test_source_peer(),
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: *test_source_peer().node_addr(),
+            timestamp_ms: 1_000,
+            packet_len,
+            fmp_counter: 1,
+            fmp_flags: 0,
+            fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fmp_plaintext_len: plaintext_len,
+            fallback_tx,
+        }
     }
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {

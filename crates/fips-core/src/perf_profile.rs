@@ -61,6 +61,11 @@
 //!   * `DECRYPT_FSP_WORKER_SERVICE` — FSP owner-worker decrypt/decode/output prep
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_HEAD_WAIT` — bulk FSP owner enqueue → batch item service start
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_TAIL_WAIT` — FSP batch item service start → individual job handling
+//!   * `FMP_AEAD_HELPER_QUEUE_WAIT` — FMP owner-worker helper dispatch → AEAD helper
+//!   * `FMP_AEAD_HELPER_COMPLETION_WAIT` — AEAD helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_PRIORITY_COMPLETION_WAIT` — priority helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_BULK_COMPLETION_WAIT` — bulk helper completion → owner-worker
+//!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP helper completions
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -75,7 +80,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 49;
+const N_STAGES: usize = 54;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -206,6 +211,16 @@ pub enum Stage {
     FmpWorkerFspSeal = 47,
     /// Worker-side outer FMP seal for pipelined endpoint sends.
     FmpWorkerFmpSeal = 48,
+    /// FMP AEAD helper job residence before a helper thread starts opening it.
+    FmpAeadHelperQueueWait = 49,
+    /// FMP AEAD helper completion residence before the owning decrypt worker handles it.
+    FmpAeadHelperCompletionWait = 50,
+    /// Priority FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperPriorityCompletionWait = 51,
+    /// Bulk FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperBulkCompletionWait = 52,
+    /// FMP owner-worker residence waiting for ordered helper completions.
+    FmpReceiveOrderWindowWait = 53,
 }
 
 impl Stage {
@@ -262,6 +277,13 @@ impl Stage {
             Stage::FspAeadHelperCompletionWait => "fsp_aead_helper_completion_wait",
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
+            Stage::FmpAeadHelperQueueWait => "fmp_aead_helper_queue_wait",
+            Stage::FmpAeadHelperCompletionWait => "fmp_aead_helper_completion_wait",
+            Stage::FmpAeadHelperPriorityCompletionWait => {
+                "fmp_aead_helper_priority_completion_wait"
+            }
+            Stage::FmpAeadHelperBulkCompletionWait => "fmp_aead_helper_bulk_completion_wait",
+            Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
         }
     }
 }
@@ -317,6 +339,11 @@ fn stage_from_index(idx: usize) -> Stage {
         46 => Stage::FspAeadHelperCompletionWait,
         47 => Stage::FmpWorkerFspSeal,
         48 => Stage::FmpWorkerFmpSeal,
+        49 => Stage::FmpAeadHelperQueueWait,
+        50 => Stage::FmpAeadHelperCompletionWait,
+        51 => Stage::FmpAeadHelperPriorityCompletionWait,
+        52 => Stage::FmpAeadHelperBulkCompletionWait,
+        53 => Stage::FmpReceiveOrderWindowWait,
         _ => unreachable!(),
     }
 }
