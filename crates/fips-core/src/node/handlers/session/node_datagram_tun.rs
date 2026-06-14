@@ -31,6 +31,7 @@ impl Node {
             payload.len(),
             Self::now_ms(),
         ) {
+            crate::perf_profile::record_endpoint_direct_fmp_receive_dropped(1);
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 "Dropping direct-FMP endpoint data for missing or non-established session"
@@ -64,6 +65,7 @@ impl Node {
             payload_len,
             Self::now_ms(),
         ) {
+            crate::perf_profile::record_endpoint_direct_fmp_receive_dropped(1);
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 "Dropping worker-authenticated direct-FMP endpoint data for missing or non-established session"
@@ -156,6 +158,7 @@ impl Node {
             bytes,
             now_ms,
         ) {
+            crate::perf_profile::record_endpoint_direct_fmp_receive_dropped(endpoints.len());
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 packets = endpoints.len(),

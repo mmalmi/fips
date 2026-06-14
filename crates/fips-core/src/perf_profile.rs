@@ -124,7 +124,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 81;
-const N_EVENTS: usize = 95;
+const N_EVENTS: usize = 97;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -600,6 +600,8 @@ pub enum Event {
     EndpointDirectFmpBatchPartial = 92,
     FmpLinuxBulkContainerQueueFull = 93,
     FmpLinuxBulkContainerQueueFullPackets = 94,
+    EndpointDirectFmpReceiveDropped = 95,
+    EndpointDirectFmpReceiveDroppedPackets = 96,
 }
 
 impl Event {
@@ -730,6 +732,10 @@ impl Event {
             Event::FmpLinuxBulkContainerQueueFullPackets => {
                 "fmp_linux_bulk_container_queue_full_packets"
             }
+            Event::EndpointDirectFmpReceiveDropped => "endpoint_direct_fmp_receive_dropped",
+            Event::EndpointDirectFmpReceiveDroppedPackets => {
+                "endpoint_direct_fmp_receive_dropped_packets"
+            }
         }
     }
 }
@@ -831,6 +837,8 @@ fn event_from_index(idx: usize) -> Event {
         92 => Event::EndpointDirectFmpBatchPartial,
         93 => Event::FmpLinuxBulkContainerQueueFull,
         94 => Event::FmpLinuxBulkContainerQueueFullPackets,
+        95 => Event::EndpointDirectFmpReceiveDropped,
+        96 => Event::EndpointDirectFmpReceiveDroppedPackets,
         _ => unreachable!(),
     }
 }
@@ -1118,6 +1126,18 @@ pub(crate) fn record_endpoint_direct_fmp_batch(fast_path_packets: usize, fallbac
     if fast_path_packets > 0 && fallback_packets > 0 {
         record_event_count_sample(Event::EndpointDirectFmpBatchPartial, 1);
     }
+}
+
+#[inline]
+pub(crate) fn record_endpoint_direct_fmp_receive_dropped(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::EndpointDirectFmpReceiveDropped, 1);
+    record_event_count_sample(
+        Event::EndpointDirectFmpReceiveDroppedPackets,
+        packets as u64,
+    );
 }
 
 #[inline]

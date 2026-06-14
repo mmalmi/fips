@@ -32,7 +32,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 95);
+    assert_eq!(N_EVENTS, 97);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -300,6 +300,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FmpLinuxBulkContainerQueueFullPackets as usize).name(),
         "fmp_linux_bulk_container_queue_full_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpReceiveDropped as usize).name(),
+        "endpoint_direct_fmp_receive_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointDirectFmpReceiveDroppedPackets as usize).name(),
+        "endpoint_direct_fmp_receive_dropped_packets"
     );
 }
 
@@ -613,6 +621,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::EndpointDirectFmpBatchFallbackPackets as usize].load(Relaxed);
     let direct_fmp_partial_before =
         EVENTS[Event::EndpointDirectFmpBatchPartial as usize].load(Relaxed);
+    let direct_fmp_receive_dropped_before =
+        EVENTS[Event::EndpointDirectFmpReceiveDropped as usize].load(Relaxed);
+    let direct_fmp_receive_dropped_packets_before =
+        EVENTS[Event::EndpointDirectFmpReceiveDroppedPackets as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -669,6 +681,8 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::EndpointDirectFmpBatchFallback, 2);
     record_event_count_sample(Event::EndpointDirectFmpBatchFallbackPackets, 65);
     record_event_count_sample(Event::EndpointDirectFmpBatchPartial, 1);
+    record_event_count_sample(Event::EndpointDirectFmpReceiveDropped, 2);
+    record_event_count_sample(Event::EndpointDirectFmpReceiveDroppedPackets, 129);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -925,5 +939,15 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::EndpointDirectFmpBatchPartial as usize].load(Relaxed)
             - direct_fmp_partial_before,
         1
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpReceiveDropped as usize].load(Relaxed)
+            - direct_fmp_receive_dropped_before,
+        2
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointDirectFmpReceiveDroppedPackets as usize].load(Relaxed)
+            - direct_fmp_receive_dropped_packets_before,
+        129
     );
 }
