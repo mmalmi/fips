@@ -173,12 +173,73 @@ enum DecryptWorkerQueueItem {
     Closed,
 }
 
+#[allow(clippy::large_enum_variant)]
+enum DecryptWorkerAeadCompletion {
+    Fmp(FmpAeadCompletion),
+    Fsp(FspAeadCompletion),
+}
+
+fn try_recv_aead_completion_fair(
+    fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
+    fsp_aead_completion_rx: &Receiver<FspAeadCompletion>,
+) -> Option<DecryptWorkerAeadCompletion> {
+    let prefer_fsp =
+        fsp_aead_completion_rx.len() > fmp_aead_completion_rx.len();
+    if prefer_fsp {
+        if let Ok(completion) = fsp_aead_completion_rx.try_recv() {
+            return Some(DecryptWorkerAeadCompletion::Fsp(completion));
+        }
+        if let Ok(completion) = fmp_aead_completion_rx.try_recv() {
+            return Some(DecryptWorkerAeadCompletion::Fmp(completion));
+        }
+    } else {
+        if let Ok(completion) = fmp_aead_completion_rx.try_recv() {
+            return Some(DecryptWorkerAeadCompletion::Fmp(completion));
+        }
+        if let Ok(completion) = fsp_aead_completion_rx.try_recv() {
+            return Some(DecryptWorkerAeadCompletion::Fsp(completion));
+        }
+    }
+    None
+}
+
+fn handle_aead_completion(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    completion: DecryptWorkerAeadCompletion,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+) {
+    match completion {
+        DecryptWorkerAeadCompletion::Fmp(completion) => {
+            shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+        }
+        DecryptWorkerAeadCompletion::Fsp(completion) => {
+            shard.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+        }
+    }
+}
+
 fn recv_worker_item_biased(
     priority_rx: &Receiver<WorkerMsg>,
     fmp_aead_completion_rx: &Receiver<FmpAeadCompletion>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletion>,
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
 ) -> DecryptWorkerQueueItem {
+    if let Ok(msg) = priority_rx.try_recv() {
+        return DecryptWorkerQueueItem::Priority(msg);
+    }
+    if let Some(completion) =
+        try_recv_aead_completion_fair(fmp_aead_completion_rx, fsp_aead_completion_rx)
+    {
+        return match completion {
+            DecryptWorkerAeadCompletion::Fmp(completion) => {
+                DecryptWorkerQueueItem::FmpAeadCompletion(completion)
+            }
+            DecryptWorkerAeadCompletion::Fsp(completion) => {
+                DecryptWorkerQueueItem::FspAeadCompletion(completion)
+            }
+        };
+    }
     crossbeam_channel::select_biased! {
         recv(priority_rx) -> msg => match msg {
             Ok(msg) => DecryptWorkerQueueItem::Priority(msg),
@@ -222,14 +283,11 @@ fn drain_worker_queues(
             shard.handle_msg(idx, msg);
             continue;
         }
-        if let Ok(completion) = fmp_aead_completion_rx.try_recv() {
+        if let Some(completion) =
+            try_recv_aead_completion_fair(fmp_aead_completion_rx, fsp_aead_completion_rx)
+        {
             drained_bulk_jobs += 1;
-            shard.handle_fmp_aead_completion_msg(idx, completion, &mut plaintext_batch);
-            continue;
-        }
-        if let Ok(completion) = fsp_aead_completion_rx.try_recv() {
-            drained_bulk_jobs += 1;
-            shard.handle_fsp_aead_completion_msg(idx, completion, &mut plaintext_batch);
+            handle_aead_completion(idx, shard, completion, &mut plaintext_batch);
             continue;
         }
         match bulk_rx.try_recv() {
@@ -410,13 +468,11 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                while let Ok(completion) = fmp_aead_completion_rx.try_recv() {
+                while let Some(completion) =
+                    try_recv_aead_completion_fair(fmp_aead_completion_rx, fsp_aead_completion_rx)
+                {
                     fsp_batcher.flush(&shard.pool, plaintext_batch);
-                    shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
-                }
-                while let Ok(completion) = fsp_aead_completion_rx.try_recv() {
-                    fsp_batcher.flush(&shard.pool, plaintext_batch);
-                    shard.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+                    handle_aead_completion(idx, shard, completion, plaintext_batch);
                 }
                 if !wait_for_fmp_receive_order_window(
                     idx,
@@ -458,11 +514,10 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                while let Ok(completion) = fmp_aead_completion_rx.try_recv() {
-                    shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
-                }
-                while let Ok(completion) = fsp_aead_completion_rx.try_recv() {
-                    shard.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+                while let Some(completion) =
+                    try_recv_aead_completion_fair(fmp_aead_completion_rx, fsp_aead_completion_rx)
+                {
+                    handle_aead_completion(idx, shard, completion, plaintext_batch);
                 }
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
                 shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
