@@ -722,6 +722,7 @@
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
             }

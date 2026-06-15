@@ -477,6 +477,52 @@
         }
     }
 
+    fn dummy_routed_direct_data_output(
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        fmp_counter: u64,
+        payload: &[u8],
+    ) -> DecryptWorkerOutput {
+        let source_addr = *source_peer.node_addr();
+        let payload_len = payload.len();
+        let direct = DecryptDirectSessionData::for_test(
+            DecryptFmpBookkeeping {
+                source_peer,
+                transport_id: TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 1_000,
+                packet_len: payload_len,
+                fmp_counter,
+                inner_timestamp_ms: fmp_counter as u32,
+                fmp_flags: 0,
+            },
+            source_addr,
+            source_peer,
+            false,
+            FspReceiveSync {
+                counter: fmp_counter,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: fmp_counter as u32,
+                plaintext_len: payload_len,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            payload_len,
+            DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                source_peer,
+                payload.to_vec(),
+            )),
+        );
+
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::DirectSessionData(direct),
+            direct_delivery: None,
+        }
+    }
+
     #[test]
     fn decrypt_worker_return_drop_metric_splits_fallback_and_authenticated_outputs() {
         let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;

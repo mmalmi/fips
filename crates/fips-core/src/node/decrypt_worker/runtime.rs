@@ -620,4 +620,12 @@ impl DecryptWorkerOutput {
             ) if matches!(commit.lane, DecryptWorkerLane::Bulk) && delivery.is_ipv6_packet()
         )
     }
+
+    fn is_batchable_direct_data(&self) -> bool {
+        matches!(
+            (&self.event, &self.direct_delivery),
+            (DecryptWorkerEvent::DirectSessionData(direct), None)
+                if matches!(direct.lane, DecryptWorkerLane::Bulk)
+        )
+    }
 }

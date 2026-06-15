@@ -1730,6 +1730,7 @@ pub(crate) enum DecryptWorkerEvent {
     DirectSessionCommit(DecryptDirectSessionCommit),
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
     DirectSessionData(DecryptDirectSessionData),
+    DirectSessionDataBatch(Vec<DecryptDirectSessionData>),
     FspDecryptFailure(DecryptFspFailureReport),
     DecryptFailure(DecryptFailureReport),
 }
@@ -1747,6 +1748,7 @@ impl DecryptWorkerEvent {
             Self::DirectSessionCommit(_) => 1,
             Self::DirectSessionCommitBatch(commits) => commits.len(),
             Self::DirectSessionData(_) => 1,
+            Self::DirectSessionDataBatch(directs) => directs.len(),
             Self::FspDecryptFailure(_) => 1,
             Self::PlaintextBatch(fallbacks) => fallbacks.len(),
         }
@@ -1769,6 +1771,11 @@ impl DecryptWorkerEvent {
                 }
             }
             Self::DirectSessionData(direct) => direct.trace_enqueued_at = queued_at,
+            Self::DirectSessionDataBatch(directs) => {
+                for direct in directs {
+                    direct.trace_enqueued_at = queued_at;
+                }
+            }
             Self::FspDecryptFailure(report) => report.trace_enqueued_at = queued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at = queued_at,
         }
@@ -1787,6 +1794,9 @@ impl DecryptWorkerEvent {
                 commits.first().and_then(|commit| commit.trace_enqueued_at)
             }
             Self::DirectSessionData(direct) => direct.trace_enqueued_at,
+            Self::DirectSessionDataBatch(directs) => {
+                directs.first().and_then(|direct| direct.trace_enqueued_at)
+            }
             Self::FspDecryptFailure(report) => report.trace_enqueued_at,
             Self::DecryptFailure(report) => report.trace_enqueued_at,
         }
@@ -1804,7 +1814,8 @@ impl DecryptWorkerEvent {
             | Self::AuthenticatedSession(_)
             | Self::DirectSessionCommit(_)
             | Self::DirectSessionCommitBatch(_)
-            | Self::DirectSessionData(_) => (
+            | Self::DirectSessionData(_)
+            | Self::DirectSessionDataBatch(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,

@@ -61,6 +61,7 @@
             | DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected a direct commit batch"),
         }
@@ -604,6 +605,9 @@
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::DirectSessionData(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => {

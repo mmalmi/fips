@@ -248,6 +248,7 @@
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionData(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected failure report"),
         }
     }
@@ -551,6 +552,7 @@
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected plaintext fallback batch")
@@ -635,4 +637,67 @@
         assert_eq!(event.packet_count(), 1);
         fallback_rx.release_dequeued_event(&event);
         assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
+    #[test]
+    fn decrypt_worker_routed_direct_data_batches_authenticated_bulk_returns() {
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let source_peer = test_source_peer();
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+
+        batch.push_output(dummy_routed_direct_data_output(
+            fallback_tx.clone(),
+            source_peer,
+            1,
+            b"routed-one",
+        ));
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "first routed direct data should wait for a batch flush"
+        );
+
+        batch.push_output(dummy_routed_direct_data_output(
+            fallback_tx,
+            source_peer,
+            2,
+            b"routed-two",
+        ));
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "second routed direct data should still wait below batch cap"
+        );
+        batch.flush();
+
+        assert_eq!(
+            fallback_rx.authenticated_bulk_queued_packets(),
+            2,
+            "one routed data batch should reserve two authenticated bulk packet slots"
+        );
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("routed direct data batch");
+        assert_eq!(event.packet_count(), 2);
+        fallback_rx.release_dequeued_event(&event);
+        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+        match event {
+            DecryptWorkerEvent::DirectSessionDataBatch(directs) => {
+                assert_eq!(directs.len(), 2);
+                assert_eq!(directs[0].source_addr, *source_peer.node_addr());
+                assert_eq!(directs[1].source_addr, *source_peer.node_addr());
+                assert_eq!(directs[0].fmp.fmp_counter, 1);
+                assert_eq!(directs[1].fmp.fmp_counter, 2);
+            }
+            DecryptWorkerEvent::DirectSessionData(_) => {
+                panic!("expected routed direct data batch")
+            }
+            DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected routed direct data batch"),
+        }
     }

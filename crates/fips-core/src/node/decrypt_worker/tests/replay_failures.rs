@@ -56,6 +56,9 @@
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("invalid packet must fail FMP AEAD")
             }
@@ -165,6 +168,7 @@
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("timestamp-only receive should be a compact bookkeeping event")
@@ -927,6 +931,9 @@
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -1011,6 +1018,9 @@
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::DirectSessionData(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected decrypt failure report"),

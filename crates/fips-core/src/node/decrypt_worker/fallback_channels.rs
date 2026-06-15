@@ -173,6 +173,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::DirectSessionCommit(commit) => commit.lane,
         DecryptWorkerEvent::DirectSessionCommitBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
+        DecryptWorkerEvent::DirectSessionDataBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
         DecryptWorkerEvent::DecryptFailure(_) => DecryptWorkerLane::Priority,
     }
@@ -192,7 +193,10 @@ fn decrypt_worker_event_return_bulk_lane(
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
-        | DecryptWorkerEvent::DirectSessionData(_) => DecryptWorkerReturnBulkLane::Authenticated,
+        | DecryptWorkerEvent::DirectSessionData(_)
+        | DecryptWorkerEvent::DirectSessionDataBatch(_) => {
+            DecryptWorkerReturnBulkLane::Authenticated
+        }
         DecryptWorkerEvent::Plaintext(_)
         | DecryptWorkerEvent::PlaintextBatch(_)
         | DecryptWorkerEvent::FspDecryptFailure(_)
@@ -209,7 +213,8 @@ fn decrypt_worker_event_drop_event(
         | DecryptWorkerEvent::AuthenticatedSession(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
-        | DecryptWorkerEvent::DirectSessionData(_) => match lane {
+        | DecryptWorkerEvent::DirectSessionData(_)
+        | DecryptWorkerEvent::DirectSessionDataBatch(_) => match lane {
             DecryptWorkerLane::Priority => {
                 crate::perf_profile::Event::DecryptAuthenticatedSessionPriorityDropped
             }

@@ -768,6 +768,11 @@ impl Node {
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 self.process_direct_session_data_from_worker(direct).await;
             }
+            DecryptWorkerEvent::DirectSessionDataBatch(directs) => {
+                for direct in directs {
+                    self.process_direct_session_data_from_worker(direct).await;
+                }
+            }
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 self.process_fsp_decrypt_failure_from_worker(report).await;
             }
