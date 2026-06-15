@@ -42,6 +42,83 @@ mod tests {
         )
     }
 
+    fn test_linux_send_flow(target: SelectedSendTarget) -> Arc<LinuxSequencedSendFlow> {
+        let key = target.key();
+        Arc::new(LinuxSequencedSendFlow {
+            key,
+            send_target: target,
+            next_seq: std::sync::atomic::AtomicU64::new(0),
+            last_used_ms: std::sync::atomic::AtomicU64::new(0),
+            state: Mutex::new(LinuxSendFlowState::default()),
+            ready_cv: Condvar::new(),
+            space_cv: Condvar::new(),
+        })
+    }
+
+    #[test]
+    fn linux_completion_group_owns_flow_key_and_fifo_items() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (target_a, key_a) = test_send_target().await;
+            let (target_b, key_b) = test_send_target().await;
+            assert_ne!(key_a, key_b);
+
+            let flow_a = test_linux_send_flow(target_a);
+            let flow_b = test_linux_send_flow(target_b);
+            let mut groups = Vec::new();
+            push_linux_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                7,
+                LinuxSendItem::Packet {
+                    packet: vec![1],
+                    drop_on_backpressure: true,
+                },
+            );
+            push_linux_completion(&mut groups, Arc::clone(&flow_b), 3, LinuxSendItem::Skip);
+            push_linux_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                8,
+                LinuxSendItem::Packet {
+                    packet: vec![2],
+                    drop_on_backpressure: false,
+                },
+            );
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].target_key(), key_a);
+            assert_eq!(groups[1].target_key(), key_b);
+            assert_eq!(groups[0].items.len(), 2);
+            assert_eq!(groups[0].items[0].0, 7);
+            assert_eq!(groups[0].items[1].0, 8);
+            match &groups[0].items[0].1 {
+                LinuxSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                } => {
+                    assert_eq!(packet.as_slice(), &[1]);
+                    assert!(*drop_on_backpressure);
+                }
+                LinuxSendItem::Skip => panic!("expected first flow item to be a packet"),
+            }
+            match &groups[0].items[1].1 {
+                LinuxSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                } => {
+                    assert_eq!(packet.as_slice(), &[2]);
+                    assert!(!*drop_on_backpressure);
+                }
+                LinuxSendItem::Skip => panic!("expected second flow item to be a packet"),
+            }
+            assert!(matches!(groups[1].items[0].1, LinuxSendItem::Skip));
+        });
+    }
+
     #[test]
     fn gso_eligible_rejects_single_packet() {
         assert!(!gso_eligible_sizes_ref(&[pkt(1500)]));

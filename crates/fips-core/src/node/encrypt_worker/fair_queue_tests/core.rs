@@ -19,6 +19,16 @@
         });
     }
 
+    fn test_encrypt_worker_pool(senders: Vec<WorkerSender>) -> EncryptWorkerPool {
+        EncryptWorkerPool {
+            senders: Arc::from(senders.into_boxed_slice()),
+            #[cfg(target_os = "linux")]
+            linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
+            #[cfg(target_os = "linux")]
+            next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
     fn queued_job(
         socket: AsyncUdpSocket,
         cipher: &LessSafeKey,
@@ -496,9 +506,7 @@
             let senders: Vec<_> = (0..4)
                 .map(|_| fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES).0)
                 .collect();
-            let pool = EncryptWorkerPool {
-                senders: Arc::from(senders.into_boxed_slice()),
-            };
+            let pool = test_encrypt_worker_pool(senders);
             let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 10009));
 
             let mut owner = None;
