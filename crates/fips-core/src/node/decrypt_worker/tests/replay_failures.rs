@@ -378,7 +378,7 @@
                     &[0, 0, 0, 0, 0xAB]
                 );
             }
-            FmpAeadCompletionResult::AeadFailed { .. } => {
+            FmpAeadCompletionResult::AeadFailed(_) => {
                 panic!("valid helper packet must open")
             }
         }
@@ -399,13 +399,7 @@
             receive_order_id: stale_receive_order_id,
             ticket: FmpReceiveTicket { sequence: 0 },
             completed_at: None,
-            result: FmpAeadCompletionResult::AeadFailed {
-                fallback_tx,
-                source_peer: test_source_peer(),
-                lane: DecryptWorkerLane::Priority,
-                fmp_counter: 45,
-                fmp_replay_highest: 44,
-            },
+            result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(fallback_tx, 45)),
         };
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -424,6 +418,63 @@
             shard.fmp_replay_highest(session_key),
             Some(0),
             "stale helper completions must not mutate the replacement replay window"
+        );
+    }
+
+    #[test]
+    fn fmp_aead_failure_waits_for_receive_order_before_reporting() {
+        let session_key = test_session_key(1, 445);
+        let mut state = test_owned_session_state();
+        let receive_order_id = state.fmp_receive_order_id();
+        let first_ticket = state.issue_fmp_receive_ticket();
+        let second_ticket = state.issue_fmp_receive_ticket();
+
+        let mut shard = test_shard();
+        shard.register_session(0, session_key, state);
+
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let second_completion = FmpAeadCompletion {
+            session_key,
+            receive_order_id,
+            ticket: second_ticket,
+            completed_at: None,
+            result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(
+                fallback_tx.clone(),
+                102,
+            )),
+        };
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_fmp_aead_completion_msg(0, second_completion, &mut plaintext_batch);
+        plaintext_batch.flush();
+        assert!(
+            fallback_rx.priority.is_empty(),
+            "later helper failure must not report before the missing earlier ticket"
+        );
+
+        let first_completion = FmpAeadCompletion {
+            session_key,
+            receive_order_id,
+            ticket: first_ticket,
+            completed_at: None,
+            result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(fallback_tx, 101)),
+        };
+        shard.handle_fmp_aead_completion_msg(0, first_completion, &mut plaintext_batch);
+        plaintext_batch.flush();
+
+        let first_report = match fallback_rx.priority.try_recv().expect("first failure report") {
+            DecryptWorkerEvent::DecryptFailure(report) => report,
+            _ => panic!("expected first decrypt failure report"),
+        };
+        let second_report = match fallback_rx.priority.try_recv().expect("second failure report") {
+            DecryptWorkerEvent::DecryptFailure(report) => report,
+            _ => panic!("expected second decrypt failure report"),
+        };
+        assert_eq!(first_report.fmp_counter, 101);
+        assert_eq!(second_report.fmp_counter, 102);
+        assert!(
+            fallback_rx.priority.is_empty(),
+            "only the two ordered failure reports should be emitted"
         );
     }
 
@@ -454,13 +505,10 @@
                 receive_order_id,
                 ticket: tickets[0],
                 completed_at: None,
-                result: FmpAeadCompletionResult::AeadFailed {
+                result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(
                     fallback_tx,
-                    source_peer: test_source_peer(),
-                    lane: DecryptWorkerLane::Priority,
-                    fmp_counter: 45,
-                    fmp_replay_highest: 44,
-                },
+                    45,
+                )),
             })
             .expect("test completion lane has room");
 
@@ -565,7 +613,13 @@
         assert_eq!(drain, FmpOrderedDrain::default());
 
         let drain = state
-            .complete_ordered_fmp_open(failed_ticket, FmpOrderedCompletion::AeadFailed)
+            .complete_ordered_fmp_open(
+                failed_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(
+                    decrypt_worker_fallback_channels_with_caps(1, 1).0,
+                    21,
+                )),
+            )
             .expect("AEAD failure should close the ordering gap without consuming replay");
         assert_eq!(
             drain,
@@ -660,7 +714,12 @@
                     precheck: second_precheck,
                     value: dummy_opened_fmp_job(250),
                 },
-                |job| opened.push(job.fmp_plaintext_len),
+                |ready| match ready {
+                    FmpReadyCompletion::Opened(job) => opened.push(job.fmp_plaintext_len),
+                    FmpReadyCompletion::AeadFailed(_) => {
+                        panic!("test does not queue AEAD failures")
+                    }
+                },
             )
             .expect("second completion should buffer");
         assert_eq!(drain, FmpOrderedDrain::default());
@@ -676,7 +735,12 @@
                     precheck: first_precheck,
                     value: dummy_opened_fmp_job(240),
                 },
-                |job| opened.push(job.fmp_plaintext_len),
+                |ready| match ready {
+                    FmpReadyCompletion::Opened(job) => opened.push(job.fmp_plaintext_len),
+                    FmpReadyCompletion::AeadFailed(_) => {
+                        panic!("test does not queue AEAD failures")
+                    }
+                },
             )
             .expect("first completion should drain both opened values");
         assert_eq!(

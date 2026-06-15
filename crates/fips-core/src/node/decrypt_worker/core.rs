@@ -620,13 +620,12 @@ impl FmpReceiveOrder {
     }
 }
 
-#[derive(Debug)]
 enum FmpOrderedCompletion<T> {
     Opened {
         precheck: FmpReplayPrecheck,
         value: T,
     },
-    AeadFailed,
+    AeadFailed(FmpAeadFailure),
 }
 
 #[derive(Default, Debug, Eq, PartialEq)]
@@ -635,6 +634,19 @@ struct FmpOrderedDrain {
     accepted: usize,
     aead_failures: usize,
     replay_drops: usize,
+}
+
+struct FmpAeadFailure {
+    fallback_tx: DecryptWorkerFallbackSender,
+    source_peer: PeerIdentity,
+    lane: DecryptWorkerLane,
+    fmp_counter: u64,
+    fmp_replay_highest: u64,
+}
+
+enum FmpReadyCompletion<T> {
+    Opened(T),
+    AeadFailed(FmpAeadFailure),
 }
 
 struct FspReceiveOrder {
@@ -740,20 +752,14 @@ enum FmpAeadCompletionResult {
         precheck: FmpReplayPrecheck,
         opened: OpenedFmpJob,
     },
-    AeadFailed {
-        fallback_tx: DecryptWorkerFallbackSender,
-        source_peer: PeerIdentity,
-        lane: DecryptWorkerLane,
-        fmp_counter: u64,
-        fmp_replay_highest: u64,
-    },
+    AeadFailed(FmpAeadFailure),
 }
 
 impl FmpAeadCompletionResult {
     fn lane(&self) -> DecryptWorkerLane {
         match self {
             Self::Opened { opened, .. } => opened.lane,
-            Self::AeadFailed { lane, .. } => *lane,
+            Self::AeadFailed(failure) => failure.lane,
         }
     }
 }
@@ -787,13 +793,13 @@ impl FmpAeadHelperJob {
                 receive_order_id: self.receive_order_id,
                 ticket: self.ticket,
                 completed_at,
-                result: FmpAeadCompletionResult::AeadFailed {
+                result: FmpAeadCompletionResult::AeadFailed(FmpAeadFailure {
                     fallback_tx: self.opened.fallback_tx,
                     source_peer: self.opened.source_peer,
                     lane: self.opened.lane,
                     fmp_counter: self.opened.fmp_counter,
                     fmp_replay_highest: self.precheck.replay_highest,
-                },
+                }),
             },
         }
     }
@@ -982,7 +988,7 @@ impl OwnedSessionState {
                         drain.replay_drops += 1;
                     }
                 }
-                FmpOrderedCompletion::AeadFailed => {
+                FmpOrderedCompletion::AeadFailed(_) => {
                     drain.aead_failures += 1;
                 }
             })
@@ -994,7 +1000,7 @@ impl OwnedSessionState {
         &mut self,
         ticket: FmpReceiveTicket,
         completion: FmpOrderedCompletion<OpenedFmpJob>,
-        mut on_opened: impl FnMut(OpenedFmpJob),
+        mut on_ready: impl FnMut(FmpReadyCompletion<OpenedFmpJob>),
     ) -> Result<FmpOrderedDrain, FmpOpenError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
@@ -1004,13 +1010,14 @@ impl OwnedSessionState {
                 FmpOrderedCompletion::Opened { precheck, value } => {
                     if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
                         drain.accepted += 1;
-                        on_opened(value);
+                        on_ready(FmpReadyCompletion::Opened(value));
                     } else {
                         drain.replay_drops += 1;
                     }
                 }
-                FmpOrderedCompletion::AeadFailed => {
+                FmpOrderedCompletion::AeadFailed(failure) => {
                     drain.aead_failures += 1;
+                    on_ready(FmpReadyCompletion::AeadFailed(failure));
                 }
             })
             .map_err(|_| FmpOpenError::Replay)?;

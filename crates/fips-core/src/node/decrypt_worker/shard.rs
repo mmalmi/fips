@@ -1041,18 +1041,18 @@ impl DecryptWorkerShard {
                         precheck,
                         value: opened,
                     },
-                    |opened_job| {
-                        if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
-                            actions.push(action);
+                    |ready| match ready {
+                        FmpReadyCompletion::Opened(opened_job) => {
+                            if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                                actions.push(action);
+                            }
+                        }
+                        FmpReadyCompletion::AeadFailed(failure) => {
+                            actions.push(Self::fmp_aead_failure_action(failure));
                         }
                     },
                 ) {
-                    Ok(drain) => {
-                        debug_assert!(
-                            drain.aead_failures == 0,
-                            "opened FMP completion should not drain stale failures"
-                        );
-                    }
+                    Ok(_drain) => {}
                     Err(FmpOpenError::Replay) => return actions,
                     #[cfg(test)]
                     Err(FmpOpenError::Aead { .. }) => {
@@ -1061,38 +1061,38 @@ impl DecryptWorkerShard {
                 }
                 actions
             }
-            FmpAeadCompletionResult::AeadFailed {
-                fallback_tx,
-                source_peer,
-                lane: _,
-                fmp_counter,
-                fmp_replay_highest,
-            } => {
-                let mut actions =
-                    DecryptWorkerJobActions::one(DecryptWorkerJobAction::Output(
-                        DecryptWorkerOutput {
-                            fallback_tx,
-                            event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
-                                source_peer,
-                                fmp_counter,
-                                fmp_replay_highest,
-                                trace_enqueued_at: None,
-                            }),
-                            direct_delivery: None,
-                        },
-                    ));
+            FmpAeadCompletionResult::AeadFailed(failure) => {
+                let mut actions = DecryptWorkerJobActions::None;
                 let _ = state.complete_ordered_fmp_open_with_value(
                     ticket,
-                    FmpOrderedCompletion::AeadFailed,
-                    |opened_job| {
-                        if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
-                            actions.push(action);
+                    FmpOrderedCompletion::AeadFailed(failure),
+                    |ready| match ready {
+                        FmpReadyCompletion::Opened(opened_job) => {
+                            if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                                actions.push(action);
+                            }
+                        }
+                        FmpReadyCompletion::AeadFailed(failure) => {
+                            actions.push(Self::fmp_aead_failure_action(failure));
                         }
                     },
                 );
                 actions
             }
         }
+    }
+
+    fn fmp_aead_failure_action(failure: FmpAeadFailure) -> DecryptWorkerJobAction {
+        DecryptWorkerJobAction::Output(DecryptWorkerOutput {
+            fallback_tx: failure.fallback_tx,
+            event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
+                source_peer: failure.source_peer,
+                fmp_counter: failure.fmp_counter,
+                fmp_replay_highest: failure.fmp_replay_highest,
+                trace_enqueued_at: None,
+            }),
+            direct_delivery: None,
+        })
     }
 
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {

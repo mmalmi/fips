@@ -239,6 +239,19 @@
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
     }
 
+    fn dummy_fmp_aead_failure(
+        fallback_tx: DecryptWorkerFallbackSender,
+        counter: u64,
+    ) -> FmpAeadFailure {
+        FmpAeadFailure {
+            fallback_tx,
+            source_peer: test_source_peer(),
+            lane: DecryptWorkerLane::Priority,
+            fmp_counter: counter,
+            fmp_replay_highest: counter.saturating_sub(1),
+        }
+    }
+
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
     }
