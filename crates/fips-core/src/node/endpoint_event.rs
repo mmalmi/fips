@@ -567,6 +567,19 @@ pub(crate) fn endpoint_data_command_capacity(requested: usize) -> usize {
     requested.max(1).max(32_768)
 }
 
+// Endpoint send batches have already paid the per-packet mpsc wakeup and peer
+// identity costs at the embedded API boundary. Charge rx_loop drain budget in
+// small packet groups so full batches keep moving without letting one hot
+// endpoint queue monopolize the coordinator.
+const ENDPOINT_SEND_BATCH_DRAIN_QUANTUM: usize = 8;
+
+fn endpoint_send_batch_drain_cost(packet_count: usize) -> usize {
+    packet_count
+        .max(1)
+        .saturating_add(ENDPOINT_SEND_BATCH_DRAIN_QUANTUM - 1)
+        / ENDPOINT_SEND_BATCH_DRAIN_QUANTUM
+}
+
 /// Commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointCommand {
@@ -759,7 +772,7 @@ impl NodeEndpointCommand {
 
     pub(crate) fn drain_cost(&self) -> usize {
         match self {
-            Self::SendBatchOneway { command, .. } => command.len().max(1),
+            Self::SendBatchOneway { command, .. } => endpoint_send_batch_drain_cost(command.len()),
             Self::Send { .. }
             | Self::SendOneway { .. }
             | Self::PeerSnapshot { .. }

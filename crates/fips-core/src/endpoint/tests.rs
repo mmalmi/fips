@@ -170,6 +170,53 @@ fn endpoint_command_owns_discard_policy_selected_at_construction() {
     assert!(discardable_batch.drop_on_backpressure());
 }
 
+#[test]
+fn endpoint_batch_commands_charge_drain_budget_by_small_packet_groups() {
+    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let bulk_payload = || crate::node::EndpointDataPayload::new(ipv6_tcp_packet(0x18, 512));
+    let payloads = |count: usize| (0..count).map(|_| bulk_payload()).collect::<Vec<_>>();
+
+    let single = NodeEndpointCommand::send_oneway(remote, ipv6_tcp_packet(0x18, 512), None);
+    assert_eq!(single.drain_cost(), 1);
+
+    let batch_1 = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads(1),
+        None,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("one-packet batch command");
+    assert_eq!(batch_1.drain_cost(), 1);
+
+    let batch_8 = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads(8),
+        None,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("eight-packet batch command");
+    assert_eq!(batch_8.drain_cost(), 1);
+
+    let batch_9 = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads(9),
+        None,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("nine-packet batch command");
+    assert_eq!(batch_9.drain_cost(), 2);
+
+    let full_batch = NodeEndpointCommand::send_batch_oneway(
+        remote,
+        payloads(ENDPOINT_SEND_BATCH_COMMAND_MAX),
+        None,
+        EndpointCommandLane::Bulk,
+    )
+    .expect("full endpoint batch command");
+    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 64);
+    assert_eq!(full_batch.drain_cost(), 8);
+}
+
 #[tokio::test]
 async fn endpoint_command_enqueue_drops_only_discardable_bulk_when_full() {
     let (priority_tx, _priority_rx) = mpsc::channel(1);
