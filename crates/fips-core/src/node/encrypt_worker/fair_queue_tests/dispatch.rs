@@ -204,6 +204,37 @@
     }
 
     #[test]
+    fn endpoint_flow_dispatch_hash_spreads_adjacent_flows_across_workers() {
+        with_test_socket(|socket, cipher| {
+            let dest: SocketAddr = "127.0.0.1:10029".parse().unwrap();
+            let queued = queued_job_classified_with_flow(
+                socket,
+                &cipher,
+                dest,
+                128,
+                true,
+                false,
+                DEFAULT_SEND_WEIGHT,
+                Some(0xaaaa_0001),
+            );
+            let target_key = queued.flow_key();
+
+            let buckets: std::collections::HashSet<_> = (0..8)
+                .map(|offset| {
+                    let key =
+                        SendDispatchKey::new(target_key, Some(0xaaaa_0001_u64 + offset));
+                    (send_dispatch_fast_hash(&key) as usize) % 8
+                })
+                .collect();
+
+            assert!(
+                buckets.len() >= 4,
+                "adjacent endpoint flows should not collapse onto one encrypt worker"
+            );
+        });
+    }
+
+    #[test]
     fn boosted_flow_gets_larger_queue_budget() {
         with_test_socket(|socket, cipher| {
             let (tx, _rx) = fair_worker_channel(12, 2, 2048);

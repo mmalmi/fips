@@ -384,12 +384,24 @@ fn send_dispatch_fast_hash(target: &SendDispatchKey) -> u64 {
         return send_target_fast_hash(&target.target);
     }
 
-    let mut hash = send_target_fast_hash(&target.target);
-    if let Some(endpoint_flow) = target.endpoint_flow {
-        hash ^= endpoint_flow.wrapping_add(0x517c_c1b7_2722_0a95);
-        hash = hash.rotate_left(23).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-    hash
+    let target_hash = send_target_fast_hash(&target.target);
+    let endpoint_flow = target.endpoint_flow.unwrap_or_default();
+    send_dispatch_avalanche(
+        target_hash
+            ^ endpoint_flow
+                .rotate_left(17)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ 0x517c_c1b7_2722_0a95,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_dispatch_avalanche(mut hash: u64) -> u64 {
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^ (hash >> 33)
 }
 
 #[cfg(target_os = "macos")]
