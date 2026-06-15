@@ -189,6 +189,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
         Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
         PipelinedEndpointPeerRuntimeSendError,
     > {
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSendPlan);
         let dest_addr = *send.dest_addr;
         let next_hop_addr = runtime_route.next_hop_addr();
         let transport_id = runtime_route.transport_id();
@@ -391,6 +392,9 @@ impl PipelinedEndpointPreparedSend {
     }
 
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
+        let _t = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointSendCommit,
+        );
         let mut worker_job = self.record_bookkeeping(node);
         if worker_job.queued_at.is_none() {
             worker_job.queued_at = crate::perf_profile::stamp();
@@ -415,6 +419,9 @@ impl PipelinedEndpointPreparedSend {
             return;
         }
 
+        let _t = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointSendCommit,
+        );
         let queued_at = crate::perf_profile::stamp();
         let mut records = Vec::with_capacity(sends.len());
         let jobs = sends

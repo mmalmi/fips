@@ -250,6 +250,9 @@ impl Node {
         dest_addr: &'a NodeAddr,
         payload: &'a EndpointDataPayload,
     ) -> Result<PreparedEndpointSessionData<'a>, NodeError> {
+        let _t = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::EndpointSendPrepare,
+        );
         if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
                 node_addr: *dest_addr,

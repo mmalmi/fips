@@ -23,6 +23,9 @@
 //! Stages tracked, outbound:
 //!   * `FSP_ENCRYPT` — inner AEAD seal (`send_session_data`)
 //!   * `FMP_ENCRYPT` — outer AEAD seal (`send_encrypted_link_message`)
+//!   * `ENDPOINT_SEND_PREPARE` — rx_loop sender-side session/FSP context preparation
+//!   * `ENDPOINT_SEND_PLAN` — rx_loop sender-side runtime route/target/reservation planning
+//!   * `ENDPOINT_SEND_COMMIT` — rx_loop sender-side bookkeeping commit + worker dispatch
 //!   * `FMP_WORKER_FSP_SEAL` — pipelined worker inner FSP AEAD seal
 //!   * `FMP_WORKER_FMP_SEAL` — pipelined worker outer FMP AEAD seal
 //!   * `FMP_WORKER_DISPATCH` — rx_loop-side worker hashing/admission/channel enqueue
@@ -86,7 +89,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 61;
+const N_STAGES: usize = 64;
 const N_EVENTS: usize = 101;
 const HIST_BUCKETS: usize = 48;
 
@@ -247,6 +250,17 @@ pub enum Stage {
     /// Owner-worker service time for an FSP AEAD helper completion, including
     /// ordered drain, replay commit, inner-header decode, and output batching.
     FspAeadHelperCompletionService = 60,
+    /// Sender rx_loop work to prepare endpoint session data before pipelined
+    /// worker admission: FSP context lookup, coordinate warmup decisions, and
+    /// inner metadata assembly.
+    EndpointSendPrepare = 61,
+    /// Sender rx_loop work to turn prepared endpoint data into a worker-ready
+    /// dispatch plan: runtime route snapshot use, send-target resolution, and
+    /// FSP/FMP counter reservation.
+    EndpointSendPlan = 62,
+    /// Sender rx_loop work to commit prepared endpoint sends: session/peer
+    /// bookkeeping and enqueueing already-admitted worker jobs.
+    EndpointSendCommit = 63,
 }
 
 impl Stage {
@@ -317,6 +331,9 @@ impl Stage {
             Stage::FmpAeadHelperCompletionService => "fmp_aead_helper_completion_service",
             Stage::DecryptWorkerOutputFlush => "decrypt_worker_output_flush",
             Stage::FspAeadHelperCompletionService => "fsp_aead_helper_completion_service",
+            Stage::EndpointSendPrepare => "endpoint_send_prepare",
+            Stage::EndpointSendPlan => "endpoint_send_plan",
+            Stage::EndpointSendCommit => "endpoint_send_commit",
         }
     }
 }
@@ -384,6 +401,9 @@ fn stage_from_index(idx: usize) -> Stage {
         58 => Stage::FmpAeadHelperCompletionService,
         59 => Stage::DecryptWorkerOutputFlush,
         60 => Stage::FspAeadHelperCompletionService,
+        61 => Stage::EndpointSendPrepare,
+        62 => Stage::EndpointSendPlan,
+        63 => Stage::EndpointSendCommit,
         _ => unreachable!(),
     }
 }
