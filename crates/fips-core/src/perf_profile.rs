@@ -86,8 +86,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 60;
-const N_EVENTS: usize = 96;
+const N_STAGES: usize = 61;
+const N_EVENTS: usize = 101;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -244,6 +244,9 @@ pub enum Stage {
     /// Time spent flushing decrypt-worker output batches into rx_loop fallback
     /// and direct endpoint delivery lanes.
     DecryptWorkerOutputFlush = 59,
+    /// Owner-worker service time for an FSP AEAD helper completion, including
+    /// ordered drain, replay commit, inner-header decode, and output batching.
+    FspAeadHelperCompletionService = 60,
 }
 
 impl Stage {
@@ -313,6 +316,7 @@ impl Stage {
             Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
             Stage::FmpAeadHelperCompletionService => "fmp_aead_helper_completion_service",
             Stage::DecryptWorkerOutputFlush => "decrypt_worker_output_flush",
+            Stage::FspAeadHelperCompletionService => "fsp_aead_helper_completion_service",
         }
     }
 }
@@ -379,6 +383,7 @@ fn stage_from_index(idx: usize) -> Stage {
         57 => Stage::FmpReceiveOrderWindowWait,
         58 => Stage::FmpAeadHelperCompletionService,
         59 => Stage::DecryptWorkerOutputFlush,
+        60 => Stage::FspAeadHelperCompletionService,
         _ => unreachable!(),
     }
 }
@@ -483,6 +488,11 @@ pub enum Event {
     FmpAeadCompletionAeadFailed = 93,
     FmpAeadCompletionReplayDropped = 94,
     FmpAeadCompletionReadyMulti = 95,
+    FspAeadCompletionReady = 96,
+    FspAeadCompletionAccepted = 97,
+    FspAeadCompletionAeadFailed = 98,
+    FspAeadCompletionReplayDropped = 99,
+    FspAeadCompletionReadyMulti = 100,
 }
 
 impl Event {
@@ -590,6 +600,11 @@ impl Event {
             Event::FmpAeadCompletionAeadFailed => "fmp_aead_completion_aead_failed",
             Event::FmpAeadCompletionReplayDropped => "fmp_aead_completion_replay_dropped",
             Event::FmpAeadCompletionReadyMulti => "fmp_aead_completion_ready_multi",
+            Event::FspAeadCompletionReady => "fsp_aead_completion_ready",
+            Event::FspAeadCompletionAccepted => "fsp_aead_completion_accepted",
+            Event::FspAeadCompletionAeadFailed => "fsp_aead_completion_aead_failed",
+            Event::FspAeadCompletionReplayDropped => "fsp_aead_completion_replay_dropped",
+            Event::FspAeadCompletionReadyMulti => "fsp_aead_completion_ready_multi",
         }
     }
 }
@@ -692,6 +707,11 @@ fn event_from_index(idx: usize) -> Event {
         93 => Event::FmpAeadCompletionAeadFailed,
         94 => Event::FmpAeadCompletionReplayDropped,
         95 => Event::FmpAeadCompletionReadyMulti,
+        96 => Event::FspAeadCompletionReady,
+        97 => Event::FspAeadCompletionAccepted,
+        98 => Event::FspAeadCompletionAeadFailed,
+        99 => Event::FspAeadCompletionReplayDropped,
+        100 => Event::FspAeadCompletionReadyMulti,
         _ => unreachable!(),
     }
 }
@@ -1079,6 +1099,31 @@ pub(crate) fn record_fmp_aead_completion_drain(
     }
     if ready > 1 {
         record_event_count_sample(Event::FmpAeadCompletionReadyMulti, 1);
+    }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_drain(
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
+) {
+    if !enabled() || ready == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FspAeadCompletionReady, ready as u64);
+    if accepted > 0 {
+        record_event_count_sample(Event::FspAeadCompletionAccepted, accepted as u64);
+    }
+    if aead_failures > 0 {
+        record_event_count_sample(Event::FspAeadCompletionAeadFailed, aead_failures as u64);
+    }
+    if replay_drops > 0 {
+        record_event_count_sample(Event::FspAeadCompletionReplayDropped, replay_drops as u64);
+    }
+    if ready > 1 {
+        record_event_count_sample(Event::FspAeadCompletionReadyMulti, 1);
     }
 }
 

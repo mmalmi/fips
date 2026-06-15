@@ -415,6 +415,9 @@ impl DecryptWorkerShard {
         completion: FspAeadCompletion,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
+        let _t_service = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FspAeadHelperCompletionService,
+        );
         crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::FspAeadHelperCompletionWait,
             completion.completed_at,
@@ -446,6 +449,12 @@ impl DecryptWorkerShard {
             }
         };
         debug_assert_eq!(drain.ready, drain.accepted + drain.aead_failures + drain.replay_drops);
+        crate::perf_profile::record_fsp_aead_completion_drain(
+            drain.ready,
+            drain.accepted,
+            drain.aead_failures,
+            drain.replay_drops,
+        );
         for completion in drain.outputs {
             match completion {
                 FspReadyCompletion::Opened {
