@@ -429,11 +429,10 @@ impl FipsEndpoint {
             return Ok(());
         }
 
-        let queued_at = crate::perf_profile::stamp();
         match endpoint_payload_lane_batches(payloads) {
             EndpointPayloadLaneBatches::Empty => {}
             EndpointPayloadLaneBatches::Single { lane, payloads } => {
-                self.send_endpoint_command_batch(remote, payloads, queued_at, lane)
+                self.send_endpoint_command_batch(remote, payloads, lane)
                     .await?;
             }
             EndpointPayloadLaneBatches::Split {
@@ -443,17 +442,11 @@ impl FipsEndpoint {
                 self.send_endpoint_command_batch(
                     remote,
                     priority_payloads,
-                    queued_at,
                     EndpointCommandLane::Priority,
                 )
                 .await?;
-                self.send_endpoint_command_batch(
-                    remote,
-                    bulk_payloads,
-                    queued_at,
-                    EndpointCommandLane::Bulk,
-                )
-                .await?;
+                self.send_endpoint_command_batch(remote, bulk_payloads, EndpointCommandLane::Bulk)
+                    .await?;
             }
         }
         Ok(())
@@ -463,7 +456,6 @@ impl FipsEndpoint {
         &self,
         remote: PeerIdentity,
         mut payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
         lane: EndpointCommandLane,
     ) -> Result<(), FipsEndpointError> {
         while !payloads.is_empty() {
@@ -473,6 +465,7 @@ impl FipsEndpoint {
                 Vec::new()
             };
             let batch = std::mem::replace(&mut payloads, tail);
+            let queued_at = crate::perf_profile::stamp();
             let Some(command) =
                 NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at, lane)
             else {
