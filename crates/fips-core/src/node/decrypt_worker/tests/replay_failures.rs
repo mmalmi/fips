@@ -359,7 +359,6 @@
             },
             completion_tx: Some(completion_tx),
             helper_queued_at: None,
-            owner_queued_at: None,
         }
         .into_completion();
 

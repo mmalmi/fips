@@ -38,7 +38,6 @@
         {
             DecryptWorkerBulkItem::FspJob(job) => assert_eq!(job.lane(), DecryptWorkerLane::Bulk),
             DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadJob(_)
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => {
                 panic!("expected bulk FSP job")
@@ -80,9 +79,7 @@
                 assert!(jobs.iter().all(|job| job.source_addr == source_addr));
             }
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job FSP batch"),
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FmpAeadJob(_)
-            | DecryptWorkerBulkItem::Batch(_) => {
+            DecryptWorkerBulkItem::Job(_) | DecryptWorkerBulkItem::Batch(_) => {
                 panic!("expected a multi-job FSP batch")
             }
         }
@@ -135,7 +132,6 @@
                     assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
                 }
                 DecryptWorkerBulkItem::Job(_)
-                | DecryptWorkerBulkItem::FmpAeadJob(_)
                 | DecryptWorkerBulkItem::Batch(_)
                 | DecryptWorkerBulkItem::FspBatch(_) => {
                     panic!("partial-capacity retry should fall back to single FSP jobs")
@@ -475,7 +471,6 @@
             }
             DecryptWorkerBulkItem::Job(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected a multi-job bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadJob(_) => panic!("expected a multi-job bulk batch"),
             DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a multi-job bulk batch"),
         }
     }

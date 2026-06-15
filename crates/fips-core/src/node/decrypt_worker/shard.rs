@@ -1023,7 +1023,6 @@ impl DecryptWorkerShard {
             },
             completion_tx: None,
             helper_queued_at: None,
-            owner_queued_at: None,
         };
 
         match self.pool.dispatch_fmp_aead_helper_job(idx, helper_job) {

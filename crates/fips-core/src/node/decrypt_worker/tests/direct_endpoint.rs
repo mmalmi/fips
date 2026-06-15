@@ -389,7 +389,6 @@
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
-            DecryptWorkerBulkItem::FmpAeadJob(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspBatch(_) => panic!("expected an eight-packet bulk batch"),
         }
         assert!(
@@ -459,57 +458,6 @@
             helper_job.replay,
             FmpReplayDecision::Deferred { counter: 1 }
         ));
-    }
-
-    #[test]
-    fn preowner_fmp_helper_full_uses_ordered_owner_fallback() {
-        let (pool, _priority_rx, bulk_rx, helper_rx, _completion_rx) =
-            preowner_fmp_helper_test_pool(1);
-        let session_key = test_session_key(1, 178);
-        assert!(pool.register_session(session_key, test_owned_session_state()));
-
-        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
-        assert_eq!(helper_rx.len(), 1, "first helper job should fill helper lane");
-        assert!(
-            bulk_rx.is_empty(),
-            "first pre-owner helper dispatch should still bypass owner bulk lane"
-        );
-
-        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
-
-        assert_eq!(
-            helper_rx.len(),
-            1,
-            "full helper lane should keep the original helper job queued"
-        );
-        match bulk_rx
-            .try_recv()
-            .expect("helper pressure should enqueue ordered owner fallback")
-        {
-            DecryptWorkerBulkItem::FmpAeadJob(job) => {
-                assert_eq!(job.session_key, session_key);
-                assert_eq!(
-                    job.ticket.sequence, 1,
-                    "owner fallback must reserve the next ordered ticket"
-                );
-                assert!(
-                    job.completion_tx.is_none(),
-                    "owner fallback should complete locally, not through helper channel"
-                );
-                assert!(
-                    job.helper_queued_at.is_none(),
-                    "owner fallback must not be counted as helper queue residence"
-                );
-            }
-            DecryptWorkerBulkItem::Job(_) => {
-                panic!("helper pressure should not abandon ordered pre-owner mode")
-            }
-            DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => {
-                panic!("unexpected bulk item for FMP helper fallback")
-            }
-        }
     }
 
     #[test]

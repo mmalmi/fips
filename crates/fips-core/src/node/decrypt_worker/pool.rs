@@ -31,15 +31,6 @@ struct FspAeadHelperPool {
     tx: Sender<FspAeadHelperJob>,
 }
 
-enum FmpPreownerDispatch {
-    Helper,
-    OwnerOrdered {
-        owner_idx: usize,
-        job: FmpAeadHelperJob,
-    },
-    OwnerRaw(DecryptJob),
-}
-
 impl FmpAeadHelperPool {
     fn spawn(n: usize, channel_cap: usize) -> Option<Arc<Self>> {
         if n == 0 {
@@ -241,13 +232,9 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return;
         }
-        match self.dispatch_fmp_preowner_aead_helper(job) {
-            FmpPreownerDispatch::Helper => return,
-            FmpPreownerDispatch::OwnerOrdered { owner_idx, job } => {
-                self.dispatch_fmp_ordered_owner_job(owner_idx, job);
-                return;
-            }
-            FmpPreownerDispatch::OwnerRaw(returned) => job = returned,
+        match self.try_dispatch_fmp_preowner_aead_helper(job) {
+            Ok(()) => return,
+            Err(returned) => job = returned,
         }
         job.set_trace_enqueued_at(crate::perf_profile::stamp());
         let idx = self.worker_idx_for(job.session_key);
@@ -321,94 +308,62 @@ impl DecryptWorkerPool {
             .is_some_and(|sender| sender.fmp_aead_completion.send(completion).is_ok())
     }
 
-    fn owner_bulk_lane_has_room(&self, owner_idx: usize) -> bool {
-        self.senders.get(owner_idx).is_some_and(|sender| {
-            sender.bulk_queued_packets.load(Ordering::Relaxed) < sender.bulk_packet_cap
-        })
-    }
-
-    fn dispatch_fmp_ordered_owner_job(&self, owner_idx: usize, job: FmpAeadHelperJob) {
-        match self.dispatch_bulk_item_or_return(owner_idx, DecryptWorkerBulkItem::FmpAeadJob(job)) {
-            Ok(()) => {}
-            Err(DecryptWorkerBulkItem::FmpAeadJob(job)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFmpPreownerInlineFallback,
-                );
-                let completion = job.into_completion();
-                let _ = self.send_fmp_aead_completion_blocking(owner_idx, completion);
-            }
-            Err(_) => unreachable!("ordered FMP owner dispatch only sends FMP AEAD jobs"),
-        }
-    }
-
-    fn dispatch_fmp_preowner_aead_helper(&self, job: DecryptJob) -> FmpPreownerDispatch {
+    #[allow(clippy::result_large_err)]
+    fn try_dispatch_fmp_preowner_aead_helper(
+        &self,
+        job: DecryptJob,
+    ) -> Result<(), DecryptJob> {
         if !self.fmp_preowner_aead_helpers_enabled() || !job.is_bulk_lane() {
-            return FmpPreownerDispatch::OwnerRaw(job);
+            return Err(job);
         }
         let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
-            return FmpPreownerDispatch::OwnerRaw(job);
+            return Err(job);
         };
+        if !helpers.has_room() {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
+            );
+            return Err(job);
+        }
         let Some(shared) = self.fmp_aead_session(&job.session_key) else {
-            return FmpPreownerDispatch::OwnerRaw(job);
+            return Err(job);
         };
         if !shared.can_issue_preowner_bulk_ticket() {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
             );
-            return FmpPreownerDispatch::OwnerRaw(job);
-        }
-        let Some(sender) = self.senders.get(shared.owner_idx) else {
-            return FmpPreownerDispatch::OwnerRaw(job);
-        };
-        if !helpers.has_room() && !self.owner_bulk_lane_has_room(shared.owner_idx) {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
-            );
-            return FmpPreownerDispatch::OwnerRaw(job);
+            return Err(job);
         }
         let Some(ticket) = shared.try_issue_preowner_bulk_ticket() else {
             crate::perf_profile::record_event(
                 crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
             );
-            return FmpPreownerDispatch::OwnerRaw(job);
+            return Err(job);
         };
-        let mut helper_job = FmpAeadHelperJob::from_preowner_decrypt_job(
+        let Some(sender) = self.senders.get(shared.owner_idx) else {
+            return Err(job);
+        };
+        let helper_job = FmpAeadHelperJob::from_preowner_decrypt_job(
             job,
             &shared,
             ticket,
             sender.fmp_aead_completion.clone(),
         );
-        if !helpers.has_room() {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
-            );
-            helper_job.completion_tx = None;
-            helper_job.helper_queued_at = None;
-            helper_job.owner_queued_at = crate::perf_profile::stamp();
-            return FmpPreownerDispatch::OwnerOrdered {
-                owner_idx: shared.owner_idx,
-                job: helper_job,
-            };
-        }
         match helpers.try_dispatch(helper_job) {
             Ok(()) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFmpPreownerHelper,
                 );
-                FmpPreownerDispatch::Helper
+                Ok(())
             }
             Err(helper_job) => {
                 crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
+                    crate::perf_profile::Event::DecryptFmpPreownerInlineFallback,
                 );
-                let mut helper_job = helper_job;
-                helper_job.completion_tx = None;
-                helper_job.helper_queued_at = None;
-                helper_job.owner_queued_at = crate::perf_profile::stamp();
-                FmpPreownerDispatch::OwnerOrdered {
-                    owner_idx: shared.owner_idx,
-                    job: helper_job,
-                }
+                let owner_idx = shared.owner_idx;
+                let completion = helper_job.into_completion();
+                let _ = self.send_fmp_aead_completion_blocking(owner_idx, completion);
+                Ok(())
             }
         }
     }
@@ -635,12 +590,9 @@ impl DecryptWorkerPool {
                     owner_jobs.push(job);
                     continue;
                 }
-                match self.dispatch_fmp_preowner_aead_helper(job) {
-                    FmpPreownerDispatch::Helper => {}
-                    FmpPreownerDispatch::OwnerOrdered { owner_idx, job } => {
-                        self.dispatch_fmp_ordered_owner_job(owner_idx, job);
-                    }
-                    FmpPreownerDispatch::OwnerRaw(job) => {
+                match self.try_dispatch_fmp_preowner_aead_helper(job) {
+                    Ok(()) => {}
+                    Err(job) => {
                         keep_owner_order = true;
                         owner_jobs.push(job);
                     }
