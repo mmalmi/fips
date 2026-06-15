@@ -355,10 +355,8 @@
                 fmp_flags: flags,
                 fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
                 fmp_plaintext_len: 0,
-                preopened_fsp: None,
                 fallback_tx,
             },
-            fsp_fusion_sessions: None,
             completion_tx: Some(completion_tx),
             helper_queued_at: None,
         }

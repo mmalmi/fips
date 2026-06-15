@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 82);
+    assert_eq!(N_EVENTS, 80);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -241,14 +241,6 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptFmpPreownerInlineFallback as usize).name(),
         "decrypt_fmp_preowner_inline_fallback"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerFspFusion as usize).name(),
-        "decrypt_fmp_preowner_fsp_fusion"
-    );
-    assert_eq!(
-        event_from_index(Event::DecryptFmpPreownerFspFusionAeadFailed as usize).name(),
-        "decrypt_fmp_preowner_fsp_fusion_aead_failed"
     );
 }
 

@@ -482,10 +482,6 @@ struct DecryptWorkerOutput {
 enum DecryptWorkerJobAction {
     Output(DecryptWorkerOutput),
     FspJob(FspDecryptJob),
-    FspAeadCompletion {
-        owner_idx: usize,
-        completion: FspAeadCompletion,
-    },
 }
 
 #[allow(clippy::large_enum_variant)]
