@@ -212,6 +212,39 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
+    fn resolve_dispatch_with_batch_target(
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+        send: PipelinedEndpointSend<'a>,
+        batch_target: &PipelinedEndpointBatchTarget,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<
+        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
+        PipelinedEndpointPeerRuntimeSendError,
+    > {
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSendPlan);
+        let dest_addr = *send.dest_addr;
+        let next_hop_addr = runtime_route.next_hop_addr();
+        let runtime_plan = runtime_route
+            .runtime_send_plan_with_path_mtu(&send, batch_target.path_mtu)
+            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
+                dest_addr,
+                next_hop_addr,
+                error,
+            })?;
+
+        PipelinedEndpointRuntimeSendAttempt::new(
+            runtime_plan,
+            batch_target.send_target.clone(),
+        )
+        .reserve(sessions, peers)
+        .map_err(|error| {
+            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
+                PipelinedEndpointRuntimeSendError::Attempt(error),
+            )
+        })
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     async fn resolve_dispatch(
         self,

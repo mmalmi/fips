@@ -36,6 +36,7 @@ impl Node {
         };
         let mut prepared_sends = Vec::with_capacity(payloads.len().min(64));
         let mut use_reused_route = true;
+        let batch_target = route.batch_target(&self.transports).await.ok().flatten();
 
         for payload in payloads {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
@@ -84,10 +85,18 @@ impl Node {
                 }
             };
 
-            match self
-                .prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
-                .await
-            {
+            let prepared_send = if let Some(batch_target) = batch_target.as_ref() {
+                self.prepare_peer_runtime_endpoint_send_with_batch_target(
+                    prepared.pipelined(),
+                    &route,
+                    batch_target,
+                )
+            } else {
+                self.prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
+                    .await
+            };
+
+            match prepared_send {
                 Ok(Some(prepared_send)) => {
                     prepared_sends.push(prepared_send);
                 }
@@ -489,6 +498,28 @@ impl Node {
             &mut self.peers,
         )
         .await
+        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(dispatch.into_prepared_send(None)))
+    }
+
+    #[cfg(unix)]
+    fn prepare_peer_runtime_endpoint_send_with_batch_target(
+        &mut self,
+        send: PipelinedEndpointSend<'_>,
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+        batch_target: &PipelinedEndpointBatchTarget,
+    ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
+        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_batch_target(
+            runtime_route,
+            send,
+            batch_target,
+            &mut self.sessions,
+            &mut self.peers,
+        )
         .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
         else {
             return Ok(None);

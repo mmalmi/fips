@@ -295,6 +295,41 @@ impl PipelinedEndpointPeerRuntimeRoute {
         self.peer_snapshot.transport_id()
     }
 
+    async fn batch_target(
+        &self,
+        transports: &std::collections::HashMap<
+            crate::transport::TransportId,
+            crate::transport::TransportHandle,
+        >,
+    ) -> Result<Option<PipelinedEndpointBatchTarget>, PipelinedEndpointPeerRuntimeSendError> {
+        let transport_id = self.transport_id();
+        let transport = transports.get(&transport_id).ok_or(
+            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
+                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
+            ),
+        )?;
+        let path_mtu = self.peer_snapshot.path_mtu(transport);
+        let crate::transport::TransportHandle::Udp(udp) = transport else {
+            return Ok(None);
+        };
+
+        // Endpoint batches are already coalesced for one next-hop route.
+        // The kernel send target depends on that route, not on each FSP
+        // payload length, so resolve it once per batch while keeping per-packet
+        // FMP/FSP counter reservations below.
+        let prepared = self.peer_snapshot.prepare_send_snapshot(false, 0);
+        let Some(send_target) =
+            PipelinedEndpointSendTarget::resolve(udp, prepared.fmp_prepared()).await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(PipelinedEndpointBatchTarget {
+            send_target,
+            path_mtu,
+        }))
+    }
+
     #[cfg(test)]
     fn default_ttl(&self) -> u8 {
         self.default_ttl
@@ -314,10 +349,14 @@ impl PipelinedEndpointPeerRuntimeRoute {
         &self,
         transport: &crate::transport::TransportHandle,
     ) -> PipelinedEndpointRoutePlan {
+        self.route_plan_with_path_mtu(self.peer_snapshot.path_mtu(transport))
+    }
+
+    fn route_plan_with_path_mtu(&self, path_mtu: u16) -> PipelinedEndpointRoutePlan {
         PipelinedEndpointRoutePlan::new(
             self.source_addr,
             self.peer_snapshot.node_addr(),
-            self.peer_snapshot.path_mtu(transport),
+            path_mtu,
             self.default_ttl,
             self.scheduling_weight,
             self.direct_path_blocks_direct_payload,
@@ -330,6 +369,23 @@ impl PipelinedEndpointPeerRuntimeRoute {
         transport: &crate::transport::TransportHandle,
     ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
         let route_plan = self.route_plan(transport);
+        self.runtime_send_plan_with_route_plan(send, route_plan)
+    }
+
+    fn runtime_send_plan_with_path_mtu<'a>(
+        &self,
+        send: &PipelinedEndpointSend<'a>,
+        path_mtu: u16,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        let route_plan = self.route_plan_with_path_mtu(path_mtu);
+        self.runtime_send_plan_with_route_plan(send, route_plan)
+    }
+
+    fn runtime_send_plan_with_route_plan<'a>(
+        &self,
+        send: &PipelinedEndpointSend<'a>,
+        route_plan: PipelinedEndpointRoutePlan,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
         let send_plan = route_plan
             .build_send_plan(send)
             .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;

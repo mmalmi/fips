@@ -665,12 +665,19 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
+#[derive(Clone)]
 struct PipelinedEndpointSendTarget {
     socket: crate::transport::udp::socket::AsyncUdpSocket,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     connected_socket:
         Option<std::sync::Arc<crate::transport::udp::connected_peer::ConnectedPeerSocket>>,
     socket_addr: std::net::SocketAddr,
+}
+
+#[cfg(unix)]
+struct PipelinedEndpointBatchTarget {
+    send_target: PipelinedEndpointSendTarget,
+    path_mtu: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

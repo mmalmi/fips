@@ -320,6 +320,88 @@
             fmp_before + 1,
             "missing transport must fail before consuming another FMP counter"
         );
+
+        let batched_route_snapshot = peers
+            .prepare_peer_runtime_route_snapshot(&dest_addr)
+            .expect("active peer should prepare route snapshot for batch target");
+        let batched_route =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, batched_route_snapshot, 9, 7, false);
+        let batch_target = batched_route
+            .batch_target(&transports)
+            .await
+            .expect("batch target should resolve")
+            .expect("UDP route should provide a reusable batch target");
+        assert_eq!(
+            batch_target.path_mtu, 1234,
+            "batch target should cache the selected transport path MTU"
+        );
+
+        let batched_payload = EndpointDataPayload::new(vec![0xdd; 96]);
+        let batched_inner_plaintext = vec![0xbb; 112];
+        let batched_send = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &batched_payload,
+            now_ms: 0x2233_4455,
+            timestamp: 0x6677_8899,
+            fsp_flags: 0,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&batched_inner_plaintext),
+            my_coords: None,
+            dest_coords: None,
+        };
+        let fsp_before_batched = sessions
+            .get(&dest_addr)
+            .expect("session exists before batched send")
+            .send_counter();
+        let fmp_before_batched = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists before batched send")
+            .current_send_counter();
+
+        let batched_dispatch = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_batch_target(
+            &batched_route,
+            batched_send,
+            &batch_target,
+            &mut sessions,
+            &mut peers,
+        )
+        .expect("batch target dispatch should reserve")
+        .expect("established batched peer runtime send should dispatch");
+
+        assert_eq!(batched_dispatch.dest_addr(), dest_addr);
+        assert_eq!(batched_dispatch.next_hop_addr(), dest_addr);
+        assert_eq!(
+            batched_dispatch.fsp_reservation_input().path_mtu,
+            1234,
+            "batched dispatch should reuse the cached transport path MTU"
+        );
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after batched send")
+                .send_counter(),
+            fsp_before_batched + 1,
+            "batch target path should still consume exactly one FSP counter"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after batched send")
+                .current_send_counter(),
+            fmp_before_batched + 1,
+            "batch target path should still consume exactly one FMP counter"
+        );
+
+        let batched_prepared = batched_dispatch.into_prepared_send(None);
+        assert_eq!(batched_prepared.dest_addr, dest_addr);
+        assert_eq!(batched_prepared.next_hop_addr, dest_addr);
+        assert_eq!(
+            batched_prepared.fsp_bookkeeping.counter,
+            fsp_before_batched
+        );
+        assert_eq!(batched_prepared.fmp_counter, fmp_before_batched);
+        assert_eq!(batched_prepared.worker_job.counter, fmp_before_batched);
     }
 
     #[cfg(unix)]
