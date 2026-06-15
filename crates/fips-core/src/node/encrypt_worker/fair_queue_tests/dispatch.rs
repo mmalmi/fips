@@ -41,7 +41,9 @@
             let senders: Vec<_> = (0..4)
                 .map(|_| fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES).0)
                 .collect();
-            let pool = test_encrypt_worker_pool(senders);
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+            };
 
             let queued_a = queued_job(
                 socket_a.clone(),
@@ -127,7 +129,9 @@
             let senders: Vec<_> = (0..4)
                 .map(|_| fair_worker_channel(8, 2, WORKER_FAIR_QUANTUM_BYTES).0)
                 .collect();
-            let pool = test_encrypt_worker_pool(senders);
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(senders.into_boxed_slice()),
+            };
 
             let queued_a = queued_job_classified_with_flow(
                 socket.clone(),
@@ -305,7 +309,9 @@
                 "initial bulk job should fit"
             );
 
-            let pool = test_encrypt_worker_pool(vec![tx]);
+            let pool = EncryptWorkerPool {
+                senders: Arc::from(vec![tx].into_boxed_slice()),
+            };
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_done = Arc::clone(&done);
             let job =
