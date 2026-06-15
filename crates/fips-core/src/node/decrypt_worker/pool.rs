@@ -11,6 +11,7 @@ pub(crate) struct DecryptWorkerPool {
     fmp_aead_sessions: Arc<RwLock<HashMap<DecryptSessionKey, Arc<FmpSharedCryptoSession>>>>,
     fsp_aead_helpers: Option<Arc<FspAeadHelperPool>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
+    fsp_owner_indices: Arc<RwLock<HashMap<NodeAddr, usize>>>,
 }
 
 #[derive(Clone)]
@@ -176,6 +177,7 @@ impl DecryptWorkerPool {
             fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_helpers,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+            fsp_owner_indices: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
             i,
@@ -214,8 +216,23 @@ impl DecryptWorkerPool {
         (decrypt_session_fast_hash(session_key) as usize) % self.senders.len()
     }
 
-    fn worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
+    pub(in crate::node) fn worker_idx_for_fmp_session_key(
+        &self,
+        session_key: DecryptSessionKey,
+    ) -> usize {
+        self.worker_idx_for(session_key)
+    }
+
+    fn default_worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
         (decrypt_fsp_session_fast_hash(source_addr) as usize) % self.senders.len()
+    }
+
+    fn worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
+        self.fsp_owner_indices
+            .read()
+            .ok()
+            .and_then(|owners| owners.get(source_addr).copied())
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(source_addr))
     }
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
@@ -730,11 +747,14 @@ impl DecryptWorkerPool {
         &self,
         source_addr: NodeAddr,
         state: FspRecvSessionSnapshot,
+        preferred_owner_idx: Option<usize>,
     ) -> bool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for_fsp(&source_addr);
+        let idx = preferred_owner_idx
+            .filter(|idx| *idx < self.senders.len())
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(&source_addr));
         let state = OwnedFspSessionState::from(state);
         let shared = self
             .fsp_aead_helpers_enabled()
@@ -746,12 +766,25 @@ impl DecryptWorkerPool {
             .try_send(WorkerMsg::RegisterFspSession { source_addr, state })
         {
             Ok(()) => {
+                let old_owner = self
+                    .fsp_owner_indices
+                    .write()
+                    .ok()
+                    .and_then(|mut owners| owners.insert(source_addr, idx));
                 if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
                     if let Some(shared) = shared {
                         sessions.insert(source_addr, shared);
                     } else {
                         sessions.remove(&source_addr);
                     }
+                }
+                if let Some(old_owner) = old_owner
+                    && old_owner != idx
+                    && let Some(sender) = self.senders.get(old_owner)
+                {
+                    let _ = sender
+                        .priority
+                        .try_send(WorkerMsg::UnregisterFspSession { source_addr });
                 }
                 true
             }
@@ -782,7 +815,12 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for_fsp(&source_addr);
+        let idx = self
+            .fsp_owner_indices
+            .write()
+            .ok()
+            .and_then(|mut owners| owners.remove(&source_addr))
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(&source_addr));
         if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
             sessions.remove(&source_addr);
         }

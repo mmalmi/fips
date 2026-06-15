@@ -193,7 +193,11 @@ impl DecryptWorkerShard {
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
-                let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                let owner_idx = if self.fsp_sessions.contains_key(&job.source_addr) {
+                    idx
+                } else {
+                    self.pool.worker_idx_for_fsp(&job.source_addr)
+                };
                 record_fsp_owner_match(owner_idx == idx);
                 let job = match self.try_start_fsp_aead_helper(idx, job, plaintext_batch) {
                     Ok(()) => return,
@@ -480,7 +484,11 @@ impl DecryptWorkerShard {
         idx: usize,
         job: FspDecryptJob,
     ) -> Option<DecryptWorkerOutput> {
-        let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+        let owner_idx = if self.fsp_sessions.contains_key(&job.source_addr) {
+            idx
+        } else {
+            self.pool.worker_idx_for_fsp(&job.source_addr)
+        };
         record_fsp_owner_match(owner_idx == idx);
         if owner_idx == idx {
             crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathLocal);

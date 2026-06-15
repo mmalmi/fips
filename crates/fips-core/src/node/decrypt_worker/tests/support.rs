@@ -105,6 +105,7 @@
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+                fsp_owner_indices: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_rx,
             bulk_rx,
@@ -150,6 +151,7 @@
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+                fsp_owner_indices: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_receivers,
             bulk_receivers,
@@ -192,6 +194,7 @@
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+                fsp_owner_indices: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_rx,
             bulk_rx,
@@ -540,6 +543,23 @@
             fsp_payload_offset: 0,
             fsp_payload_len: 0,
             trace_enqueued_at: None,
+        }
+    }
+
+    fn dummy_fsp_recv_snapshot(
+        source: &crate::Identity,
+        local: &crate::Identity,
+    ) -> crate::node::session::FspRecvSessionSnapshot {
+        let (_sender, receiver) = test_xk_session_pair(source, local);
+        crate::node::session::FspRecvSessionSnapshot {
+            source_peer: PeerIdentity::from_pubkey_full(source.pubkey_full()),
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: receiver.recv_cipher_clone().unwrap(),
+                replay: receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
         }
     }
 

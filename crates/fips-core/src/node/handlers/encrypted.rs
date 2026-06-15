@@ -480,7 +480,16 @@ impl Node {
         else {
             return;
         };
-        let _accepted = workers.register_fsp_session(*node_addr, snapshot);
+        let preferred_owner_idx = self
+            .peers
+            .get(node_addr)
+            .and_then(|peer| {
+                let transport_id = peer.transport_id()?;
+                let our_index = peer.our_index()?;
+                Some(DecryptSessionKey::new(transport_id, our_index.as_u32()))
+            })
+            .map(|session_key| workers.worker_idx_for_fmp_session_key(session_key));
+        let _accepted = workers.register_fsp_session(*node_addr, snapshot, preferred_owner_idx);
     }
 
     pub(in crate::node) fn unregister_decrypt_worker_fsp_session(
