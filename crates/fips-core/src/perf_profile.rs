@@ -87,7 +87,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 61;
-const N_EVENTS: usize = 101;
+const N_EVENTS: usize = 102;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -493,6 +493,7 @@ pub enum Event {
     FspAeadCompletionAeadFailed = 98,
     FspAeadCompletionReplayDropped = 99,
     FspAeadCompletionReadyMulti = 100,
+    EndpointCommandPressureDrain = 101,
 }
 
 impl Event {
@@ -605,6 +606,7 @@ impl Event {
             Event::FspAeadCompletionAeadFailed => "fsp_aead_completion_aead_failed",
             Event::FspAeadCompletionReplayDropped => "fsp_aead_completion_replay_dropped",
             Event::FspAeadCompletionReadyMulti => "fsp_aead_completion_ready_multi",
+            Event::EndpointCommandPressureDrain => "endpoint_command_pressure_drain",
         }
     }
 }
@@ -712,6 +714,7 @@ fn event_from_index(idx: usize) -> Event {
         98 => Event::FspAeadCompletionAeadFailed,
         99 => Event::FspAeadCompletionReplayDropped,
         100 => Event::FspAeadCompletionReadyMulti,
+        101 => Event::EndpointCommandPressureDrain,
         _ => unreachable!(),
     }
 }
