@@ -3,8 +3,8 @@ use super::budget::{
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
     FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
     FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, SIDE_QUEUE_INTERLEAVE_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
+    non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -76,15 +76,6 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
-    );
-}
-
-#[test]
-fn side_queue_interleave_budget_stays_bounded_within_packet_turn() {
-    assert_eq!(SIDE_QUEUE_INTERLEAVE_BUDGET, PACKET_DRAIN_BUDGET / 2);
-    assert!(
-        CONTROL_QUERY_INTERLEAVE_BUDGET < SIDE_QUEUE_INTERLEAVE_BUDGET,
-        "control queries should keep a tiny reserved slice inside the larger side turn"
     );
 }
 

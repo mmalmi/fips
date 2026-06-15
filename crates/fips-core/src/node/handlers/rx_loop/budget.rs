@@ -20,11 +20,10 @@ pub(super) const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = FALLBACK_PRESSURE_DR
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
 pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
-/// Side-queue interleaves are a progress reserve, not a full drain. A hot
-/// endpoint sender arrives as already-batched command chunks, so give each
-/// interleave enough budget to amortize one packet-drain interruption without
-/// exceeding half of the raw receive turn.
-pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 256;
+/// Side-queue interleaves are a progress reserve, not a full drain. Keeping
+/// this smaller than the packet budget preserves raw receive throughput while
+/// avoiding tick-sized liveness stalls.
+pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
 /// Read-only control queries are status/observability work, not dataplane bulk.
 /// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
 /// convoy ahead of packet receive or endpoint/TUN progress.
