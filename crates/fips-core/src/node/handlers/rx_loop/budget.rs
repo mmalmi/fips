@@ -24,13 +24,6 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
 pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
-/// Endpoint command queues are counted in API command chunks, not packets. A
-/// single bulk command may already carry a full TUN read batch, so a hot
-/// packet drain should retime side-queue turns as soon as bulk endpoint work is
-/// queued instead of waiting for a deep mpsc backlog.
-pub(super) const SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER: usize = 1;
-pub(super) const SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY: usize = 16;
-pub(super) const SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET: usize = SIDE_QUEUE_INTERLEAVE_BUDGET;
 /// Read-only control queries are status/observability work, not dataplane bulk.
 /// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
 /// convoy ahead of packet receive or endpoint/TUN progress.
@@ -115,43 +108,6 @@ pub(super) fn fallback_drain_plan(
 
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
     transport_priority_packets == 0
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SideQueueDrainPlan {
-    pub(super) interleave_every: usize,
-    pub(super) interleave_budget: usize,
-}
-
-impl SideQueueDrainPlan {
-    const fn normal() -> Self {
-        Self {
-            interleave_every: SIDE_QUEUE_INTERLEAVE_EVERY,
-            interleave_budget: SIDE_QUEUE_INTERLEAVE_BUDGET,
-        }
-    }
-
-    const fn pressured() -> Self {
-        Self {
-            interleave_every: SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY,
-            interleave_budget: SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET,
-        }
-    }
-
-    pub(super) fn is_pressured(self) -> bool {
-        self.interleave_every < SIDE_QUEUE_INTERLEAVE_EVERY
-    }
-}
-
-pub(super) fn side_queue_drain_plan(
-    _endpoint_priority_commands: usize,
-    endpoint_bulk_commands: usize,
-) -> SideQueueDrainPlan {
-    if endpoint_bulk_commands >= SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER {
-        SideQueueDrainPlan::pressured()
-    } else {
-        SideQueueDrainPlan::normal()
-    }
 }
 
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {

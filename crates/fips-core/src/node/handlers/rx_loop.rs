@@ -404,18 +404,11 @@ impl Node {
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
         self.begin_endpoint_event_batch();
-        let mut side_queue_plan = side_queues
-            .as_ref()
-            .map(|side_queues| {
-                side_queue_drain_plan(
-                    side_queues.endpoint_priority_command_rx.len(),
-                    side_queues.endpoint_command_rx.len(),
-                )
-            })
-            .unwrap_or(SideQueueDrainPlan {
-                interleave_every: 0,
-                interleave_budget: 0,
-            });
+        let side_queue_interleave_every = if side_queues.is_some() {
+            SIDE_QUEUE_INTERLEAVE_EVERY
+        } else {
+            0
+        };
         let mut fallback_plan = fallback_drain_plan(
             packet_rx.priority_ready_packets(),
             decrypt_fallback_rx.bulk_queued_packets(),
@@ -424,29 +417,10 @@ impl Node {
             first_packet,
             budget,
             fallback_plan.interleave_every,
-            side_queue_plan.interleave_every,
+            side_queue_interleave_every,
         );
         let mut decrypt_jobs = DecryptJobBatcher::new();
-        loop {
-            if let Some(next_plan) = side_queues.as_ref().map(|side_queues| {
-                side_queue_drain_plan(
-                    side_queues.endpoint_priority_command_rx.len(),
-                    side_queues.endpoint_command_rx.len(),
-                )
-            }) && next_plan.is_pressured()
-                && !side_queue_plan.is_pressured()
-            {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::EndpointCommandPressureDrain,
-                );
-                side_queue_plan = next_plan;
-                drain.shorten_side_queue_interleave_every(side_queue_plan.interleave_every);
-            }
-
-            let Some(action) = drain.next(packet_rx) else {
-                break;
-            };
-
+        while let Some(action) = drain.next(packet_rx) {
             match action {
                 PacketDrainAction::Packet(packet) => {
                     let action = self.begin_process_packet(packet);
@@ -495,7 +469,7 @@ impl Node {
                                 side_queues.tun_outbound_rx,
                                 side_queues.endpoint_priority_command_rx,
                                 side_queues.endpoint_command_rx,
-                                side_queue_plan.interleave_budget,
+                                SIDE_QUEUE_INTERLEAVE_BUDGET,
                             )
                             .await
                         } else {
@@ -507,24 +481,6 @@ impl Node {
                     if !drained.has_drained() {
                         drain.refund_empty_interleave_turn();
                     }
-                    side_queue_plan = side_queues
-                        .as_ref()
-                        .map(|side_queues| {
-                            side_queue_drain_plan(
-                                side_queues.endpoint_priority_command_rx.len(),
-                                side_queues.endpoint_command_rx.len(),
-                            )
-                        })
-                        .unwrap_or(SideQueueDrainPlan {
-                            interleave_every: 0,
-                            interleave_budget: 0,
-                        });
-                    if side_queue_plan.is_pressured() {
-                        crate::perf_profile::record_event(
-                            crate::perf_profile::Event::EndpointCommandPressureDrain,
-                        );
-                    }
-                    drain.reset_side_queue_interleave_every(side_queue_plan.interleave_every);
                 }
             }
         }

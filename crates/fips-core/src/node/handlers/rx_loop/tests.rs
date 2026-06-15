@@ -3,11 +3,8 @@ use super::budget::{
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
     FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
     FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER,
-    SIDE_QUEUE_INTERLEAVE_BUDGET, SIDE_QUEUE_INTERLEAVE_EVERY,
-    SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET, SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY,
-    SideQueueDrainPlan, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget, side_queue_drain_plan,
+    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
+    non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -83,40 +80,6 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
 }
 
 #[test]
-fn side_queue_drain_plan_retimes_endpoint_backlog_without_expanding_turns() {
-    let normal = side_queue_drain_plan(0, SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER - 1);
-    let pressured = side_queue_drain_plan(0, SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER);
-    let priority_only = side_queue_drain_plan(1, 0);
-
-    assert_eq!(
-        normal,
-        SideQueueDrainPlan {
-            interleave_every: SIDE_QUEUE_INTERLEAVE_EVERY,
-            interleave_budget: SIDE_QUEUE_INTERLEAVE_BUDGET,
-        }
-    );
-    assert_eq!(
-        pressured,
-        SideQueueDrainPlan {
-            interleave_every: SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY,
-            interleave_budget: SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET,
-        }
-    );
-    assert_eq!(
-        priority_only, normal,
-        "priority endpoint commands already have the normal reserved-progress lane"
-    );
-    assert!(
-        pressured.interleave_every < normal.interleave_every,
-        "endpoint pressure should get more frequent side-queue turns"
-    );
-    assert_eq!(
-        pressured.interleave_budget, normal.interleave_budget,
-        "pressure mode retimes side queues without making one turn unbounded"
-    );
-}
-
-#[test]
 fn packet_drain_cursor_can_retime_fallback_interleave_under_pressure() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     for packet in 0..64 {
@@ -183,39 +146,6 @@ fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
         drain.next(&mut rx),
         Some(PacketDrainAction::InterleaveFallback),
         "priority pressure relief should restore the normal fallback cadence"
-    );
-}
-
-#[test]
-fn packet_drain_cursor_can_retime_side_queue_interleave_under_pressure() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    for packet in 0..96 {
-        tx.send(packet).unwrap();
-    }
-
-    let mut drain = PacketDrainCursor::new(None, 96, 0, SIDE_QUEUE_INTERLEAVE_EVERY);
-    for _ in 0..SIDE_QUEUE_INTERLEAVE_EVERY {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveSideQueues)
-    );
-
-    drain.shorten_side_queue_interleave_every(SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY);
-    for _ in 0..SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveSideQueues),
-        "endpoint pressure should shorten the next side-queue interval"
     );
 }
 
