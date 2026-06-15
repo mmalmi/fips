@@ -85,7 +85,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 58;
-const N_EVENTS: usize = 80;
+const N_EVENTS: usize = 82;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -455,6 +455,8 @@ pub enum Event {
     DecryptFmpPreownerHelperFallback = 77,
     DecryptFmpPreownerWindowFallback = 78,
     DecryptFmpPreownerInlineFallback = 79,
+    DecryptFmpPreownerFspFusion = 80,
+    DecryptFmpPreownerFspFusionAeadFailed = 81,
 }
 
 impl Event {
@@ -546,6 +548,10 @@ impl Event {
             Event::DecryptFmpPreownerHelperFallback => "decrypt_fmp_preowner_helper_fallback",
             Event::DecryptFmpPreownerWindowFallback => "decrypt_fmp_preowner_window_fallback",
             Event::DecryptFmpPreownerInlineFallback => "decrypt_fmp_preowner_inline_fallback",
+            Event::DecryptFmpPreownerFspFusion => "decrypt_fmp_preowner_fsp_fusion",
+            Event::DecryptFmpPreownerFspFusionAeadFailed => {
+                "decrypt_fmp_preowner_fsp_fusion_aead_failed"
+            }
         }
     }
 }
@@ -632,6 +638,8 @@ fn event_from_index(idx: usize) -> Event {
         77 => Event::DecryptFmpPreownerHelperFallback,
         78 => Event::DecryptFmpPreownerWindowFallback,
         79 => Event::DecryptFmpPreownerInlineFallback,
+        80 => Event::DecryptFmpPreownerFspFusion,
+        81 => Event::DecryptFmpPreownerFspFusionAeadFailed,
         _ => unreachable!(),
     }
 }

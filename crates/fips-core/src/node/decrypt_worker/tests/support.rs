@@ -102,6 +102,7 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_aead_helpers: None,
                 fmp_preowner_aead_helpers: false,
+                fmp_preowner_fsp_fusion: false,
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -147,6 +148,7 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_aead_helpers: None,
                 fmp_preowner_aead_helpers: false,
+                fmp_preowner_fsp_fusion: false,
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -189,6 +191,7 @@
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_aead_helpers: Some(Arc::new(FmpAeadHelperPool { tx: helper_tx })),
                 fmp_preowner_aead_helpers: true,
+                fmp_preowner_fsp_fusion: false,
                 fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -320,6 +323,7 @@
             fmp_flags: 0,
             fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fmp_plaintext_len: plaintext_len,
+            preopened_fsp: None,
             fallback_tx,
         }
     }

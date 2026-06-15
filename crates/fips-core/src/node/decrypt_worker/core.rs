@@ -205,12 +205,52 @@ fn fmp_preowner_aead_helper_enabled() -> bool {
     )
 }
 
+fn fmp_preowner_fsp_fusion_enabled_from_raw(raw: Option<&str>) -> bool {
+    fmp_preowner_aead_helper_enabled_from_raw(raw)
+}
+
+fn fmp_preowner_fsp_fusion_enabled() -> bool {
+    fmp_preowner_fsp_fusion_enabled_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_PREOWNER_FSP_FUSION")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
     } else {
         DecryptWorkerLane::Bulk
     }
+}
+
+fn local_established_fsp_meta(
+    packet_data: &[u8],
+    local_node_addr: NodeAddr,
+    link_msg_start: usize,
+    link_msg_end: usize,
+) -> Option<FspDecryptJobMeta> {
+    let link_msg = packet_data.get(link_msg_start..link_msg_end)?;
+    let (&msg_type, datagram_payload) = link_msg.split_first()?;
+    if msg_type != LinkMessageType::SessionDatagram.to_byte() {
+        return None;
+    }
+    let datagram = SessionDatagramRef::decode(datagram_payload).ok()?;
+    if datagram.ttl == 0 || datagram.dest_addr != local_node_addr {
+        return None;
+    }
+    let prefix = FspCommonPrefix::parse(datagram.payload)?;
+    if prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted() || prefix.has_coords() {
+        return None;
+    }
+    let fsp_payload_offset = link_msg_start + 1 + SessionDatagramRef::HEADER_LEN;
+    Some(FspDecryptJobMeta {
+        source_addr: datagram.src_addr,
+        path_mtu: datagram.path_mtu,
+        fsp_payload_offset,
+        fsp_payload_len: datagram.payload.len(),
+    })
 }
 
 fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
@@ -823,7 +863,60 @@ struct OpenedFmpJob {
     fmp_flags: u8,
     fmp_plaintext_offset: usize,
     fmp_plaintext_len: usize,
+    preopened_fsp: Option<PreopenedFspAead>,
     fallback_tx: DecryptWorkerFallbackSender,
+}
+
+struct PreopenedFspAead {
+    source_addr: NodeAddr,
+    path_mtu: u16,
+    fsp_payload_offset: usize,
+    fsp_payload_len: usize,
+    header: FspEncryptedHeader,
+    shared: Arc<FspSharedCryptoSession>,
+    result: PreopenedFspAeadResult,
+}
+
+enum PreopenedFspAeadResult {
+    Opened { plaintext_len: usize },
+    AeadFailed,
+}
+
+impl PreopenedFspAead {
+    fn matches_meta(&self, meta: &FspDecryptJobMeta) -> bool {
+        self.source_addr == meta.source_addr
+            && self.path_mtu == meta.path_mtu
+            && self.fsp_payload_offset == meta.fsp_payload_offset
+            && self.fsp_payload_len == meta.fsp_payload_len
+    }
+
+    fn owner_idx(&self) -> usize {
+        self.shared.owner_idx
+    }
+
+    fn into_completion(self, job: FspDecryptJob) -> FspAeadCompletion {
+        let ticket = self.shared.issue_ticket();
+        let result = match self.result {
+            PreopenedFspAeadResult::Opened { plaintext_len } => {
+                FspOrderedCompletion::Opened(FspOpenedJob {
+                    job,
+                    header: self.header,
+                    plaintext_len,
+                })
+            }
+            PreopenedFspAeadResult::AeadFailed => FspOrderedCompletion::AeadFailed {
+                job,
+                header: self.header,
+            },
+        };
+        FspAeadCompletion {
+            source_addr: self.source_addr,
+            receive_order_id: self.shared.receive_order_id,
+            ticket,
+            result,
+            completed_at: crate::perf_profile::stamp(),
+        }
+    }
 }
 
 struct FmpAeadHelperJob {
@@ -834,6 +927,7 @@ struct FmpAeadHelperJob {
     cipher: Arc<LessSafeKey>,
     fmp_header: [u8; 16],
     opened: OpenedFmpJob,
+    fsp_fusion_sessions: Option<Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>>,
     completion_tx: Option<Sender<FmpAeadCompletion>>,
     helper_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
@@ -869,6 +963,7 @@ impl FmpAeadHelperJob {
         shared: &FmpSharedCryptoSession,
         ticket: FmpReceiveTicket,
         completion_tx: Sender<FmpAeadCompletion>,
+        fsp_fusion_sessions: Option<Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>>,
     ) -> Self {
         let DecryptJob {
             packet_data,
@@ -908,11 +1003,87 @@ impl FmpAeadHelperJob {
                 fmp_flags,
                 fmp_plaintext_offset: fmp_ciphertext_offset,
                 fmp_plaintext_len: 0,
+                preopened_fsp: None,
                 fallback_tx,
             },
+            fsp_fusion_sessions,
             completion_tx: Some(completion_tx),
             helper_queued_at: crate::perf_profile::stamp(),
         }
+    }
+
+    fn try_preopen_fsp(&mut self) -> Option<PreopenedFspAead> {
+        const INNER_TIMESTAMP_LEN: usize = 4;
+        let sessions = self.fsp_fusion_sessions.as_ref()?;
+        let fmp_plaintext_start = self.opened.fmp_plaintext_offset;
+        let fmp_plaintext_end = self
+            .opened
+            .fmp_plaintext_offset
+            .checked_add(self.opened.fmp_plaintext_len)?;
+        if self.opened.fmp_plaintext_len <= INNER_TIMESTAMP_LEN {
+            return None;
+        }
+        let meta = local_established_fsp_meta(
+            &self.opened.packet_data,
+            self.opened.local_node_addr,
+            fmp_plaintext_start + INNER_TIMESTAMP_LEN,
+            fmp_plaintext_end,
+        )?;
+        let payload_end = meta.fsp_payload_offset.checked_add(meta.fsp_payload_len)?;
+        let header = {
+            let payload = self
+                .opened
+                .packet_data
+                .get(meta.fsp_payload_offset..payload_end)?;
+            FspEncryptedHeader::parse(payload)?
+        };
+        let shared = sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&meta.source_addr).cloned())?;
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        if received_k_bit != shared.current_k_bit {
+            return None;
+        }
+        let ciphertext_offset = meta.fsp_payload_offset.checked_add(FSP_HEADER_SIZE)?;
+        let result = {
+            let ciphertext = self
+                .opened
+                .packet_data
+                .get_mut(ciphertext_offset..payload_end)?;
+            let _t_fsp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+            let mut nonce_bytes = [0u8; 12];
+            nonce_bytes[4..12].copy_from_slice(&header.counter.to_le_bytes());
+            let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+            match shared
+                .cipher
+                .open_in_place(nonce, Aad::from(&header.header_bytes), ciphertext)
+            {
+                Ok(plaintext) => {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::DecryptFmpPreownerFspFusion,
+                    );
+                    PreopenedFspAeadResult::Opened {
+                        plaintext_len: plaintext.len(),
+                    }
+                }
+                Err(_) => {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::DecryptFmpPreownerFspFusionAeadFailed,
+                    );
+                    PreopenedFspAeadResult::AeadFailed
+                }
+            }
+        };
+        Some(PreopenedFspAead {
+            source_addr: meta.source_addr,
+            path_mtu: meta.path_mtu,
+            fsp_payload_offset: meta.fsp_payload_offset,
+            fsp_payload_len: meta.fsp_payload_len,
+            header,
+            shared,
+            result,
+        })
     }
 
     fn into_completion(mut self) -> FmpAeadCompletion {
@@ -927,6 +1098,7 @@ impl FmpAeadHelperJob {
         ) {
             Ok(outcome) => {
                 self.opened.fmp_plaintext_len = outcome.plaintext_len;
+                self.opened.preopened_fsp = self.try_preopen_fsp();
                 FmpAeadCompletion {
                     session_key: self.session_key,
                     receive_order_id: self.receive_order_id,

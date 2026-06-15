@@ -8,6 +8,7 @@ pub(crate) struct DecryptWorkerPool {
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
     fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
     fmp_preowner_aead_helpers: bool,
+    fmp_preowner_fsp_fusion: bool,
     fmp_aead_sessions: Arc<RwLock<HashMap<DecryptSessionKey, Arc<FmpSharedCryptoSession>>>>,
     fsp_aead_helpers: Option<Arc<FspAeadHelperPool>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
@@ -166,6 +167,8 @@ impl DecryptWorkerPool {
         let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
         let fmp_preowner_aead_helpers =
             fmp_preowner_aead_helper_enabled() && fmp_aead_helpers.is_some();
+        let fmp_preowner_fsp_fusion =
+            fmp_preowner_aead_helpers && fmp_preowner_fsp_fusion_enabled();
         let fsp_aead_helpers =
             FspAeadHelperPool::spawn(fsp_ordered_aead_helper_count(), bulk_channel_cap);
         let pool = Self {
@@ -173,6 +176,7 @@ impl DecryptWorkerPool {
             direct_delivery_sink,
             fmp_aead_helpers,
             fmp_preowner_aead_helpers,
+            fmp_preowner_fsp_fusion,
             fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_helpers,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -271,6 +275,10 @@ impl DecryptWorkerPool {
         self.fmp_preowner_aead_helpers
     }
 
+    fn fmp_preowner_fsp_fusion_enabled(&self) -> bool {
+        self.fmp_preowner_fsp_fusion
+    }
+
     fn fmp_aead_session(
         &self,
         session_key: &DecryptSessionKey,
@@ -348,6 +356,8 @@ impl DecryptWorkerPool {
             &shared,
             ticket,
             sender.fmp_aead_completion.clone(),
+            self.fmp_preowner_fsp_fusion_enabled()
+                .then(|| Arc::clone(&self.fsp_aead_sessions)),
         );
         match helpers.try_dispatch(helper_job) {
             Ok(()) => {
@@ -737,7 +747,7 @@ impl DecryptWorkerPool {
         let idx = self.worker_idx_for_fsp(&source_addr);
         let state = OwnedFspSessionState::from(state);
         let shared = self
-            .fsp_aead_helpers_enabled()
+            .fsp_shared_crypto_enabled()
             .then(|| state.shared_crypto_session(idx))
             .flatten()
             .map(Arc::new);
@@ -776,6 +786,10 @@ impl DecryptWorkerPool {
                 false
             }
         }
+    }
+
+    fn fsp_shared_crypto_enabled(&self) -> bool {
+        self.fsp_aead_helpers_enabled() || self.fmp_preowner_fsp_fusion_enabled()
     }
 
     pub fn unregister_fsp_session(&self, source_addr: NodeAddr) -> bool {

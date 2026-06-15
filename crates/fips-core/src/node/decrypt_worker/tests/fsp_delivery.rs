@@ -296,6 +296,192 @@
     }
 
     #[test]
+    fn preowner_fmp_fsp_fusion_waits_for_ordered_fmp_acceptance() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+
+        let fmp_key_bytes = [0x66; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let session_key = test_session_key(1, 19);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+
+        let mut fmp_state =
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer);
+        let fmp_shared = Arc::new(fmp_state.shared_crypto_session(0));
+        fmp_state.attach_shared_crypto_session(Arc::clone(&fmp_shared));
+
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let fsp_state = OwnedFspSessionState::from(fsp_snapshot);
+        let fsp_shared = Arc::new(
+            fsp_state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        let fsp_sessions = Arc::new(RwLock::new(HashMap::from([(
+            source_addr,
+            Arc::clone(&fsp_shared),
+        )])));
+
+        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_session(0, session_key, fmp_state);
+        shard.register_fsp_session(0, source_addr, fsp_state);
+
+        let mut make_completion = |outer_counter: u64, body: &[u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            let datagram =
+                crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_payload);
+            let mut fmp_plaintext = Vec::new();
+            fmp_plaintext.extend_from_slice(&0x0a0b_0c0d_u32.to_le_bytes());
+            fmp_plaintext.extend_from_slice(&datagram.encode());
+            let (wire, fmp_header) =
+                sealed_fmp_test_packet_with_plaintext(&fmp_seal, outer_counter, 0, &fmp_plaintext);
+            let job = DecryptJob::new(
+                wire,
+                session_key,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                local_addr,
+                1_000,
+                outer_counter,
+                0,
+                fmp_header,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                fallback_tx.clone(),
+            );
+            let ticket = fmp_shared
+                .try_issue_preowner_bulk_ticket()
+                .expect("test FMP order window should have room");
+            let (completion_tx, _completion_rx) = bounded::<FmpAeadCompletion>(1);
+            FmpAeadHelperJob::from_preowner_decrypt_job(
+                job,
+                &fmp_shared,
+                ticket,
+                completion_tx,
+                Some(Arc::clone(&fsp_sessions)),
+            )
+            .into_completion()
+        };
+
+        let first_payload = vec![0x11; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1];
+        let second_payload = vec![0x22; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1];
+        let first = make_completion(77, &first_payload);
+        let second = make_completion(78, &second_payload);
+        match &first.result {
+            FmpAeadCompletionResult::Opened { opened, .. } => {
+                assert!(
+                    opened.preopened_fsp.is_some(),
+                    "first completion should carry fused FSP AEAD output"
+                );
+            }
+            FmpAeadCompletionResult::AeadFailed(_) => panic!("first FMP frame should authenticate"),
+        }
+        match &second.result {
+            FmpAeadCompletionResult::Opened { opened, .. } => {
+                assert!(
+                    opened.preopened_fsp.is_some(),
+                    "second completion should carry fused FSP AEAD output"
+                );
+            }
+            FmpAeadCompletionResult::AeadFailed(_) => {
+                panic!("second FMP frame should authenticate")
+            }
+        }
+
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_fmp_aead_completion_msg(0, second, &mut batch);
+        batch.flush();
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "out-of-order fused FSP output must wait for the earlier FMP ticket"
+        );
+
+        let mut batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_fmp_aead_completion_msg(0, first, &mut batch);
+        batch.flush();
+
+        let first_event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("first fused FSP output should release after FMP order drains");
+        match first_event {
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                assert_eq!(direct.fmp.fmp_counter, 77);
+                match direct.delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.payload, first_payload);
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("expected endpoint data")
+                    }
+                }
+            }
+            other => panic!(
+                "expected first direct session data, got {:?}",
+                other.packet_count()
+            ),
+        }
+        let second_event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("second fused FSP output should drain after first");
+        match second_event {
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                assert_eq!(direct.fmp.fmp_counter, 78);
+                match direct.delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.payload, second_payload);
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("expected endpoint data")
+                    }
+                }
+            }
+            other => panic!(
+                "expected second direct session data, got {:?}",
+                other.packet_count()
+            ),
+        }
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "only the two ordered fused completions should be emitted"
+        );
+    }
+
+    #[test]
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();

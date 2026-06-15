@@ -167,6 +167,19 @@ impl DecryptWorkerShard {
                     let _ = output.send();
                 }
             }
+            DecryptWorkerJobAction::FspAeadCompletion {
+                owner_idx,
+                completion,
+            } => {
+                let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+                self.dispatch_or_handle_fsp_aead_completion(
+                    idx,
+                    owner_idx,
+                    completion,
+                    &mut plaintext_batch,
+                );
+                plaintext_batch.flush();
+            }
         }
     }
 
@@ -225,35 +238,34 @@ impl DecryptWorkerShard {
                     }
                 }
             }
+            DecryptWorkerJobAction::FspAeadCompletion {
+                owner_idx,
+                completion,
+            } => {
+                self.dispatch_or_handle_fsp_aead_completion(
+                    idx,
+                    owner_idx,
+                    completion,
+                    plaintext_batch,
+                );
+            }
         }
     }
 
-    fn local_established_fsp_meta(
-        packet_data: &[u8],
-        local_node_addr: NodeAddr,
-        link_msg_start: usize,
-        link_msg_end: usize,
-    ) -> Option<FspDecryptJobMeta> {
-        let link_msg = packet_data.get(link_msg_start..link_msg_end)?;
-        let (&msg_type, datagram_payload) = link_msg.split_first()?;
-        if msg_type != LinkMessageType::SessionDatagram.to_byte() {
-            return None;
+    fn dispatch_or_handle_fsp_aead_completion(
+        &mut self,
+        idx: usize,
+        owner_idx: usize,
+        completion: FspAeadCompletion,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        if owner_idx == idx {
+            self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+        } else {
+            let _ = self
+                .pool
+                .send_fsp_aead_completion_blocking(owner_idx, completion);
         }
-        let datagram = SessionDatagramRef::decode(datagram_payload).ok()?;
-        if datagram.ttl == 0 || datagram.dest_addr != local_node_addr {
-            return None;
-        }
-        let prefix = FspCommonPrefix::parse(datagram.payload)?;
-        if prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted() || prefix.has_coords() {
-            return None;
-        }
-        let fsp_payload_offset = link_msg_start + 1 + SessionDatagramRef::HEADER_LEN;
-        Some(FspDecryptJobMeta {
-            source_addr: datagram.src_addr,
-            path_mtu: datagram.path_mtu,
-            fsp_payload_offset,
-            fsp_payload_len: datagram.payload.len(),
-        })
     }
 
     #[allow(clippy::result_large_err)]
@@ -943,6 +955,7 @@ impl DecryptWorkerShard {
                 fmp_flags,
                 fmp_plaintext_offset: fmp_ciphertext_offset,
                 fmp_plaintext_len,
+                preopened_fsp: None,
                 fallback_tx,
             };
             return Ok(Self::handle_opened_fmp_job(opened)
@@ -1010,8 +1023,10 @@ impl DecryptWorkerShard {
                 fmp_flags,
                 fmp_plaintext_offset: fmp_ciphertext_offset,
                 fmp_plaintext_len: 0,
+                preopened_fsp: None,
                 fallback_tx,
             },
+            fsp_fusion_sessions: None,
             completion_tx: None,
             helper_queued_at: None,
         };
@@ -1157,6 +1172,7 @@ impl DecryptWorkerShard {
             fmp_flags,
             fmp_plaintext_offset,
             fmp_plaintext_len,
+            preopened_fsp,
             fallback_tx,
         } = job;
 
@@ -1202,7 +1218,7 @@ impl DecryptWorkerShard {
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
         let link_msg_end = fmp_plaintext_end;
-        let fsp_meta = Self::local_established_fsp_meta(
+        let fsp_meta = local_established_fsp_meta(
             &packet_data,
             local_node_addr,
             link_msg_start,
@@ -1225,6 +1241,7 @@ impl DecryptWorkerShard {
         );
 
         if let Some(meta) = fsp_meta {
+            let preopened_fsp = preopened_fsp.filter(|preopened| preopened.matches_meta(&meta));
             let fsp_job = FspDecryptJob {
                 fallback_tx: fallback_tx.clone(),
                 fallback,
@@ -1238,6 +1255,13 @@ impl DecryptWorkerShard {
                 fsp_payload_len: meta.fsp_payload_len,
                 trace_enqueued_at: None,
             };
+            if let Some(preopened_fsp) = preopened_fsp {
+                let owner_idx = preopened_fsp.owner_idx();
+                return Some(DecryptWorkerJobAction::FspAeadCompletion {
+                    owner_idx,
+                    completion: preopened_fsp.into_completion(fsp_job),
+                });
+            }
             return Some(DecryptWorkerJobAction::FspJob(fsp_job));
         }
 
@@ -1276,6 +1300,20 @@ impl DecryptWorkerShard {
             let output = match action {
                 DecryptWorkerJobAction::Output(output) => Some(output),
                 DecryptWorkerJobAction::FspJob(job) => self.dispatch_or_handle_fsp_job(idx, job),
+                DecryptWorkerJobAction::FspAeadCompletion {
+                    owner_idx,
+                    completion,
+                } => {
+                    let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+                    self.dispatch_or_handle_fsp_aead_completion(
+                        idx,
+                        owner_idx,
+                        completion,
+                        &mut plaintext_batch,
+                    );
+                    plaintext_batch.flush();
+                    None
+                }
             };
             if first_output.is_none() {
                 first_output = output;
