@@ -62,6 +62,9 @@
 //!   * `DECRYPT_FSP_WORKER_SERVICE` — FSP owner-worker decrypt/decode/output prep
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_HEAD_WAIT` — bulk FSP owner enqueue → batch item service start
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_TAIL_WAIT` — FSP batch item service start → individual job handling
+//!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt-worker enqueue → batch item service start
+//!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
+//!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -76,8 +79,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 50;
-const N_EVENTS: usize = 67;
+const N_STAGES: usize = 53;
+const N_EVENTS: usize = 70;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -209,6 +212,15 @@ pub enum Stage {
     FmpWorkerFmpSeal = 48,
     /// Producer-side cost to hash, admit, and enqueue FMP worker jobs.
     FmpWorkerDispatch = 49,
+    /// Bulk decrypt-worker residence before the worker starts servicing the
+    /// dequeued item. This isolates producer/worker backlog from time spent
+    /// behind earlier jobs in one dequeued batch item.
+    DecryptWorkerBulkInputHeadWait = 50,
+    /// Bulk decrypt-worker residence after a dequeued item starts but before
+    /// an individual job begins service.
+    DecryptWorkerBulkInputTailWait = 51,
+    /// Time a decrypt worker spends servicing one dequeued bulk item.
+    DecryptWorkerBulkItemService = 52,
 }
 
 impl Stage {
@@ -266,6 +278,9 @@ impl Stage {
             Stage::FmpWorkerFspSeal => "fmp_worker_fsp_seal",
             Stage::FmpWorkerFmpSeal => "fmp_worker_fmp_seal",
             Stage::FmpWorkerDispatch => "fmp_worker_dispatch",
+            Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
+            Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
+            Stage::DecryptWorkerBulkItemService => "decrypt_worker_bulk_item_service",
         }
     }
 }
@@ -322,6 +337,9 @@ fn stage_from_index(idx: usize) -> Stage {
         47 => Stage::FmpWorkerFspSeal,
         48 => Stage::FmpWorkerFmpSeal,
         49 => Stage::FmpWorkerDispatch,
+        50 => Stage::DecryptWorkerBulkInputHeadWait,
+        51 => Stage::DecryptWorkerBulkInputTailWait,
+        52 => Stage::DecryptWorkerBulkItemService,
         _ => unreachable!(),
     }
 }
@@ -397,6 +415,9 @@ pub enum Event {
     EncryptWorkerBulkQueueFull = 64,
     FmpWorkerDispatchBatch = 65,
     FmpWorkerDispatchPackets = 66,
+    DecryptWorkerBulkInputWaitGe250us = 67,
+    DecryptWorkerBulkInputWaitGe500us = 68,
+    DecryptWorkerBulkInputWaitGe1ms = 69,
 }
 
 impl Event {
@@ -475,6 +496,9 @@ impl Event {
             Event::EncryptWorkerBulkQueueFull => "encrypt_worker_bulk_queue_full",
             Event::FmpWorkerDispatchBatch => "fmp_worker_dispatch_batch",
             Event::FmpWorkerDispatchPackets => "fmp_worker_dispatch_packets",
+            Event::DecryptWorkerBulkInputWaitGe250us => "decrypt_worker_bulk_input_wait_ge250us",
+            Event::DecryptWorkerBulkInputWaitGe500us => "decrypt_worker_bulk_input_wait_ge500us",
+            Event::DecryptWorkerBulkInputWaitGe1ms => "decrypt_worker_bulk_input_wait_ge1ms",
         }
     }
 }
@@ -548,6 +572,9 @@ fn event_from_index(idx: usize) -> Event {
         64 => Event::EncryptWorkerBulkQueueFull,
         65 => Event::FmpWorkerDispatchBatch,
         66 => Event::FmpWorkerDispatchPackets,
+        67 => Event::DecryptWorkerBulkInputWaitGe250us,
+        68 => Event::DecryptWorkerBulkInputWaitGe500us,
+        69 => Event::DecryptWorkerBulkInputWaitGe1ms,
         _ => unreachable!(),
     }
 }
@@ -805,6 +832,49 @@ pub(crate) fn record_fmp_worker_dispatch(elapsed_ns: u64, packets: usize) {
     );
     record_event_count_sample(Event::FmpWorkerDispatchBatch, 1);
     record_event_count_sample(Event::FmpWorkerDispatchPackets, packets_u64);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_bulk_input_wait(start: Option<TraceStamp>, count: u64) {
+    if !enabled() || count == 0 {
+        return;
+    }
+    let Some(start) = start else {
+        return;
+    };
+    let elapsed_ns = start.elapsed_ns().max(1);
+    let bucket = bucket_for_ns(elapsed_ns);
+    record_count_sample(
+        Stage::DecryptWorkerBulkInputHeadWait,
+        elapsed_ns,
+        count,
+        bucket,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe250us,
+        elapsed_ns,
+        count,
+        250_000,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe500us,
+        elapsed_ns,
+        count,
+        500_000,
+    );
+    record_wait_threshold(
+        Event::DecryptWorkerBulkInputWaitGe1ms,
+        elapsed_ns,
+        count,
+        1_000_000,
+    );
+}
+
+#[inline]
+fn record_wait_threshold(event: Event, elapsed_ns: u64, count: u64, threshold_ns: u64) {
+    if elapsed_ns >= threshold_ns {
+        record_event_count_sample(event, count);
+    }
 }
 
 /// Record how much packet work a decrypt worker handled before yielding.

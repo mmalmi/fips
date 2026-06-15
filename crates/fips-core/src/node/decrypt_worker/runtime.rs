@@ -254,6 +254,37 @@ fn record_fsp_worker_bulk_input_tail_wait(
     );
 }
 
+#[inline]
+fn record_decrypt_worker_bulk_input_head_wait(
+    queued_at: Option<crate::perf_profile::TraceStamp>,
+    count: usize,
+) {
+    crate::perf_profile::record_decrypt_worker_bulk_input_wait(queued_at, count as u64);
+}
+
+#[inline]
+fn record_decrypt_worker_bulk_input_tail_wait(
+    item_started_at: Option<crate::perf_profile::TraceStamp>,
+) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::DecryptWorkerBulkInputTailWait,
+        item_started_at,
+        1,
+    );
+}
+
+#[inline]
+fn record_decrypt_worker_bulk_item_service(
+    item_started_at: Option<crate::perf_profile::TraceStamp>,
+    count: usize,
+) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::DecryptWorkerBulkItemService,
+        item_started_at,
+        count as u64,
+    );
+}
+
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -265,7 +296,12 @@ fn handle_bulk_item(
 ) -> usize {
     match item {
         DecryptWorkerBulkItem::Job(job) => {
+            let item_service_started_at = crate::perf_profile::stamp();
+            let item_started_at = crate::perf_profile::stamp();
+            record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, 1);
+            record_decrypt_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_job_msg(idx, job, plaintext_batch);
+            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
         DecryptWorkerBulkItem::FspJob(job) => {
@@ -276,7 +312,12 @@ fn handle_bulk_item(
             1
         }
         DecryptWorkerBulkItem::Batch(jobs) => {
+            let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
+            let item_started_at = crate::perf_profile::stamp();
+            if let Some(job) = jobs.first() {
+                record_decrypt_worker_bulk_input_head_wait(job.trace_enqueued_at, count);
+            }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             for job in jobs {
                 while let Ok(msg) = priority_rx.try_recv() {
@@ -289,6 +330,7 @@ fn handle_bulk_item(
                     fsp_batcher.flush(&shard.pool, plaintext_batch);
                     shard.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
                 }
+                record_decrypt_worker_bulk_input_tail_wait(item_started_at);
                 match shard.handle_job_action(idx, job) {
                     Ok(Some(action)) => {
                         shard.push_job_action_output(
@@ -305,6 +347,7 @@ fn handle_bulk_item(
                 }
             }
             fsp_batcher.flush(&shard.pool, plaintext_batch);
+            record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
         DecryptWorkerBulkItem::FspBatch(jobs) => {

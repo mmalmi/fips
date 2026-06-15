@@ -2,7 +2,8 @@
 use super::udp_send_batch_tail_bucket_flags;
 use super::{
     EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
-    event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample, stage_from_index,
+    event_from_index, fmt_rate_per_sec, percentile_ns, record_event_count_sample,
+    record_wait_threshold, stage_from_index,
 };
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
@@ -32,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 67);
+    assert_eq!(N_EVENTS, 70);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -189,6 +190,18 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::FmpWorkerDispatchPackets as usize).name(),
         "fmp_worker_dispatch_packets"
     );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInputWaitGe250us as usize).name(),
+        "decrypt_worker_bulk_input_wait_ge250us"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInputWaitGe500us as usize).name(),
+        "decrypt_worker_bulk_input_wait_ge500us"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInputWaitGe1ms as usize).name(),
+        "decrypt_worker_bulk_input_wait_ge1ms"
+    );
 }
 
 #[test]
@@ -205,7 +218,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 50);
+    assert_eq!(N_STAGES, 53);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -282,6 +295,18 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         stage_from_index(Stage::FmpWorkerDispatch as usize).name(),
         "fmp_worker_dispatch"
     );
+    assert_eq!(
+        stage_from_index(Stage::DecryptWorkerBulkInputHeadWait as usize).name(),
+        "decrypt_worker_bulk_input_head_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptWorkerBulkInputTailWait as usize).name(),
+        "decrypt_worker_bulk_input_tail_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptWorkerBulkItemService as usize).name(),
+        "decrypt_worker_bulk_item_service"
+    );
 }
 
 #[test]
@@ -320,6 +345,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBatchBulkPackets as usize].load(Relaxed);
     let dispatch_batch_before = EVENTS[Event::FmpWorkerDispatchBatch as usize].load(Relaxed);
     let dispatch_packets_before = EVENTS[Event::FmpWorkerDispatchPackets as usize].load(Relaxed);
+    let decrypt_input_wait_ge250_before =
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe250us as usize].load(Relaxed);
+    let decrypt_input_wait_ge500_before =
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe500us as usize].load(Relaxed);
+    let decrypt_input_wait_ge1ms_before =
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe1ms as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -348,6 +379,9 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptWorkerBatchBulkPackets, 62);
     record_event_count_sample(Event::FmpWorkerDispatchBatch, 5);
     record_event_count_sample(Event::FmpWorkerDispatchPackets, 320);
+    record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe250us, 3);
+    record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe500us, 2);
+    record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe1ms, 1);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -464,4 +498,31 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpWorkerDispatchPackets as usize].load(Relaxed) - dispatch_packets_before,
         320
     );
+    assert_eq!(
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe250us as usize].load(Relaxed)
+            - decrypt_input_wait_ge250_before,
+        3
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe500us as usize].load(Relaxed)
+            - decrypt_input_wait_ge500_before,
+        2
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptWorkerBulkInputWaitGe1ms as usize].load(Relaxed)
+            - decrypt_input_wait_ge1ms_before,
+        1
+    );
+}
+
+#[test]
+fn wait_threshold_events_only_count_samples_at_or_above_threshold() {
+    let event = Event::ConnectedUdpActivationFailed;
+    let before = EVENTS[event as usize].load(Relaxed);
+
+    record_wait_threshold(event, 499_999, 3, 500_000);
+    record_wait_threshold(event, 500_000, 5, 500_000);
+    record_wait_threshold(event, 750_000, 7, 500_000);
+
+    assert_eq!(EVENTS[event as usize].load(Relaxed) - before, 12);
 }
