@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.60] - 2026-06-15
+
+### Fixed
+
+- Tightened idle connected-UDP activation and slow-maintenance receive-loop
+  slices together so packets arriving during idle maintenance stay inside the
+  app release-gate priority wait budget.
+- Bumped `fips-endpoint` to 0.3.35 so app-facing consumers pick up the
+  `fips-core` 0.3.60 idle maintenance latency fix.
+
 ## [0.3.59] - 2026-06-15
 
 ### Fixed
