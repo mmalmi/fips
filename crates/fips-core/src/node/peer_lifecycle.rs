@@ -635,14 +635,14 @@ impl PeerLifecycleRegistry {
         let Some(cipher) = session.send_cipher_clone() else {
             return Ok(None);
         };
+        let counter_authority = session.send_counter_authority();
 
-        let iter = prepared.into_iter();
-        let (lower, _) = iter.size_hint();
-        let mut reservations = Vec::with_capacity(lower);
-        for prepared in iter {
-            let counter = session
-                .take_send_counter()
-                .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
+        let prepared = prepared.into_iter().collect::<Vec<_>>();
+        let counters = counter_authority
+            .reserve_range(prepared.len())
+            .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
+        let mut reservations = Vec::with_capacity(prepared.len());
+        for (prepared, counter) in prepared.into_iter().zip(counters) {
             let header = build_established_header(
                 prepared.their_index,
                 counter,

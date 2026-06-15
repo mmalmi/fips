@@ -625,12 +625,12 @@ impl SessionEntry {
         let Some(cipher) = session.send_cipher_clone() else {
             return Ok(None);
         };
+        let counter_authority = session.send_counter_authority();
 
-        let iter = inputs.into_iter();
-        let (lower, _) = iter.size_hint();
-        let mut reservations = Vec::with_capacity(lower);
-        for (flags, payload_len) in iter {
-            let counter = session.take_send_counter()?;
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        let counters = counter_authority.reserve_range(inputs.len())?;
+        let mut reservations = Vec::with_capacity(inputs.len());
+        for ((flags, payload_len), counter) in inputs.into_iter().zip(counters) {
             let header = build_fsp_header(counter, flags, payload_len);
             reservations.push(FspSendReservation {
                 counter,

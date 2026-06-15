@@ -82,13 +82,13 @@ fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
     let msg2 = resp.write_message_2().unwrap();
     init.read_message_2(&msg2).unwrap();
 
-    let mut sender = init.into_session().unwrap();
+    let sender = init.into_session().unwrap();
     let mut receiver = resp.into_session().unwrap();
 
     let aad = b"outer header bytes";
     let plaintext = b"pipelined send";
 
-    // Dispatcher: reserve counter under sender's &mut.
+    // Dispatcher: reserve counter through the session's shared authority.
     let counter = sender.take_send_counter().unwrap();
     assert_eq!(counter, 0);
     assert_eq!(sender.send_nonce(), 1, "counter reserved → nonce advanced");
@@ -111,10 +111,9 @@ fn test_encrypt_with_counter_and_aad_roundtrip_via_session() {
 
 #[test]
 fn test_pipelined_send_counter_reservation_is_single_owner() {
-    // Dataplane send workers may own cloned AEAD keys, but the session remains
-    // the sole owner of counter sequencing until a later shard explicitly moves
-    // that state. Reserved counters must be unique, and clone-side AEAD must not
-    // advance or reuse the session's next counter.
+    // Dataplane send workers may own cloned AEAD keys, but counters are still
+    // reserved through one shared authority. Reserved counters must be unique,
+    // and clone-side AEAD must not advance or reuse the next counter.
     let keypair1 = generate_keypair();
     let keypair2 = generate_keypair();
 
@@ -189,6 +188,70 @@ fn test_pipelined_send_counter_reservation_is_single_owner() {
             .decrypt_with_replay_check_and_aad(&third, third_counter, aad)
             .unwrap(),
         b"inline packet after workers"
+    );
+}
+
+#[test]
+fn test_send_counter_authority_clone_reserves_unique_contiguous_ranges() {
+    let keypair1 = generate_keypair();
+    let keypair2 = generate_keypair();
+
+    let mut init = HandshakeState::new_initiator(keypair1, keypair2.public_key());
+    init.set_local_epoch(generate_epoch());
+    let mut resp = HandshakeState::new_responder(keypair2);
+    resp.set_local_epoch(generate_epoch());
+
+    let msg1 = init.write_message_1().unwrap();
+    resp.read_message_1(&msg1).unwrap();
+    let msg2 = resp.write_message_2().unwrap();
+    init.read_message_2(&msg2).unwrap();
+
+    let mut sender = init.into_session().unwrap();
+    let mut receiver = resp.into_session().unwrap();
+
+    let primary = sender.send_counter_authority();
+    let mover_clone = primary.clone();
+    let range = mover_clone.reserve_range(3).unwrap();
+    assert_eq!(range, 0..3);
+    assert_eq!(primary.reserve().unwrap(), 3);
+    assert_eq!(sender.current_send_counter(), 4);
+
+    let aad = b"shared counter authority";
+    let cipher = sender.send_cipher_clone().unwrap();
+    let mut worker_ciphertexts = Vec::new();
+    for counter in 0..4 {
+        let plaintext = format!("worker packet {counter}");
+        let mut buf = plaintext.as_bytes().to_vec();
+        cipher
+            .seal_in_place_append_tag(
+                CipherState::counter_to_nonce(counter),
+                ring::aead::Aad::from(aad),
+                &mut buf,
+            )
+            .unwrap();
+        worker_ciphertexts.push((counter, plaintext, buf));
+    }
+
+    let inline_counter = sender.current_send_counter();
+    let inline_ciphertext = sender
+        .encrypt_with_aad(b"inline after cloned authority", aad)
+        .unwrap();
+    assert_eq!(inline_counter, 4);
+    assert_eq!(sender.current_send_counter(), 5);
+
+    for (counter, plaintext, ciphertext) in worker_ciphertexts {
+        assert_eq!(
+            receiver
+                .decrypt_with_replay_check_and_aad(&ciphertext, counter, aad)
+                .unwrap(),
+            plaintext.as_bytes()
+        );
+    }
+    assert_eq!(
+        receiver
+            .decrypt_with_replay_check_and_aad(&inline_ciphertext, inline_counter, aad)
+            .unwrap(),
+        b"inline after cloned authority"
     );
 }
 
