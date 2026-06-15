@@ -86,7 +86,7 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
 fn side_queue_drain_plan_retimes_endpoint_backlog_without_expanding_turns() {
     let normal = side_queue_drain_plan(0, SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER - 1);
     let pressured = side_queue_drain_plan(0, SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER);
-    let priority_pressured = side_queue_drain_plan(1, 0);
+    let priority_only = side_queue_drain_plan(1, 0);
 
     assert_eq!(
         normal,
@@ -102,7 +102,10 @@ fn side_queue_drain_plan_retimes_endpoint_backlog_without_expanding_turns() {
             interleave_budget: SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET,
         }
     );
-    assert_eq!(priority_pressured, pressured);
+    assert_eq!(
+        priority_only, normal,
+        "priority endpoint commands already have the normal reserved-progress lane"
+    );
     assert!(
         pressured.interleave_every < normal.interleave_every,
         "endpoint pressure should get more frequent side-queue turns"

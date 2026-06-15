@@ -24,13 +24,11 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_EVERY: usize = 64;
 /// this smaller than the packet budget preserves raw receive throughput while
 /// avoiding tick-sized liveness stalls.
 pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
-/// Endpoint command queues are counted in API command chunks, not packets. At
-/// the current endpoint batch sizes, a few dozen queued bulk commands already
-/// represents thousands of packets and shows up as millisecond-scale
-/// `endpoint_bulk_command_wait`, so start giving endpoint commands more
-/// frequent packet-drain turns before the bounded mpsc queue is anywhere near
-/// full.
-pub(super) const SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER: usize = 32;
+/// Endpoint command queues are counted in API command chunks, not packets. A
+/// single bulk command may already carry a full TUN read batch, so a hot
+/// packet drain should retime side-queue turns as soon as bulk endpoint work is
+/// queued instead of waiting for a deep mpsc backlog.
+pub(super) const SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER: usize = 1;
 pub(super) const SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY: usize = 16;
 pub(super) const SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET: usize = SIDE_QUEUE_INTERLEAVE_BUDGET;
 /// Read-only control queries are status/observability work, not dataplane bulk.
@@ -142,12 +140,10 @@ impl SideQueueDrainPlan {
 }
 
 pub(super) fn side_queue_drain_plan(
-    endpoint_priority_commands: usize,
+    _endpoint_priority_commands: usize,
     endpoint_bulk_commands: usize,
 ) -> SideQueueDrainPlan {
-    if endpoint_priority_commands > 0
-        || endpoint_bulk_commands >= SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER
-    {
+    if endpoint_bulk_commands >= SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER {
         crate::perf_profile::record_event(crate::perf_profile::Event::EndpointCommandPressureDrain);
         SideQueueDrainPlan::pressured()
     } else {
