@@ -48,6 +48,8 @@ const DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+const DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM: usize = 8;
+const DEFAULT_DECRYPT_AEAD_HELPERS: usize = 2;
 static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -160,10 +162,35 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
-fn fsp_ordered_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(64)
+fn available_parallelism_count() -> usize {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+}
+
+fn default_decrypt_aead_helper_count(available_parallelism: usize) -> usize {
+    if available_parallelism >= DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM {
+        DEFAULT_DECRYPT_AEAD_HELPERS
+    } else {
+        0
+    }
+}
+
+fn decrypt_aead_helper_count_from_raw(
+    raw: Option<&str>,
+    available_parallelism: usize,
+) -> usize {
+    match raw {
+        Some(raw) => raw.trim().parse::<usize>().unwrap_or(0).min(64),
+        None => default_decrypt_aead_helper_count(available_parallelism),
+    }
+}
+
+fn fsp_ordered_aead_helper_count_from_raw(
+    raw: Option<&str>,
+    available_parallelism: usize,
+) -> usize {
+    decrypt_aead_helper_count_from_raw(raw, available_parallelism)
 }
 
 fn fsp_ordered_aead_helper_count() -> usize {
@@ -171,13 +198,12 @@ fn fsp_ordered_aead_helper_count() -> usize {
         std::env::var("FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS")
             .ok()
             .as_deref(),
+        available_parallelism_count(),
     )
 }
 
-fn fmp_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(0)
-        .min(64)
+fn fmp_aead_helper_count_from_raw(raw: Option<&str>, available_parallelism: usize) -> usize {
+    decrypt_aead_helper_count_from_raw(raw, available_parallelism)
 }
 
 fn fmp_aead_helper_count() -> usize {
@@ -185,23 +211,26 @@ fn fmp_aead_helper_count() -> usize {
         std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS")
             .ok()
             .as_deref(),
+        available_parallelism_count(),
     )
 }
 
-fn fmp_preowner_aead_helper_enabled_from_raw(raw: Option<&str>) -> bool {
-    raw.is_some_and(|raw| {
-        !matches!(
+fn fmp_preowner_aead_helper_enabled_from_raw(raw: Option<&str>, fmp_helper_count: usize) -> bool {
+    match raw {
+        Some(raw) => !matches!(
             raw.trim().to_ascii_lowercase().as_str(),
             "" | "0" | "false" | "no" | "off"
-        )
-    })
+        ),
+        None => fmp_helper_count > 0,
+    }
 }
 
-fn fmp_preowner_aead_helper_enabled() -> bool {
+fn fmp_preowner_aead_helper_enabled(fmp_helper_count: usize) -> bool {
     fmp_preowner_aead_helper_enabled_from_raw(
         std::env::var("FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS")
             .ok()
             .as_deref(),
+        fmp_helper_count,
     )
 }
 

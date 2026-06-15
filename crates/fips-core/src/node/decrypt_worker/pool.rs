@@ -163,11 +163,12 @@ impl DecryptWorkerPool {
                 bulk_packet_cap: bulk_channel_cap,
             });
         }
-        let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
+        let fmp_aead_helper_count = fmp_aead_helper_count();
+        let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count, bulk_channel_cap);
         let fmp_preowner_aead_helpers =
-            fmp_preowner_aead_helper_enabled() && fmp_aead_helpers.is_some();
-        let fsp_aead_helpers =
-            FspAeadHelperPool::spawn(fsp_ordered_aead_helper_count(), bulk_channel_cap);
+            fmp_preowner_aead_helper_enabled(fmp_aead_helper_count) && fmp_aead_helpers.is_some();
+        let fsp_aead_helper_count = fsp_ordered_aead_helper_count();
+        let fsp_aead_helpers = FspAeadHelperPool::spawn(fsp_aead_helper_count, bulk_channel_cap);
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,

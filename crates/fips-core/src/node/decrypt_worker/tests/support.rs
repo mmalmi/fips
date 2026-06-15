@@ -27,12 +27,53 @@
     }
 
     #[test]
-    fn fmp_aead_helper_env_defaults_off_and_caps_override() {
-        assert_eq!(fmp_aead_helper_count_from_raw(None), 0);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("0")), 0);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("2")), 2);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("99")), 64);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("bad")), 0);
+    fn decrypt_aead_helper_env_defaults_are_host_scaled_and_overridable() {
+        assert_eq!(default_decrypt_aead_helper_count(1), 0);
+        assert_eq!(
+            default_decrypt_aead_helper_count(
+                DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM.saturating_sub(1)
+            ),
+            0
+        );
+        assert_eq!(
+            default_decrypt_aead_helper_count(DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM),
+            DEFAULT_DECRYPT_AEAD_HELPERS
+        );
+
+        assert_eq!(fmp_aead_helper_count_from_raw(None, 1), 0);
+        assert_eq!(
+            fmp_aead_helper_count_from_raw(None, DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM),
+            DEFAULT_DECRYPT_AEAD_HELPERS
+        );
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("0"), 64), 0);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("2"), 1), 2);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("99"), 64), 64);
+        assert_eq!(fmp_aead_helper_count_from_raw(Some("bad"), 64), 0);
+
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(None, 1), 0);
+        assert_eq!(
+            fsp_ordered_aead_helper_count_from_raw(
+                None,
+                DEFAULT_DECRYPT_AEAD_HELPERS_MIN_PARALLELISM
+            ),
+            DEFAULT_DECRYPT_AEAD_HELPERS
+        );
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("0"), 64), 0);
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("2"), 1), 2);
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("99"), 64), 64);
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("bad"), 64), 0);
+    }
+
+    #[test]
+    fn fmp_preowner_helper_default_follows_fmp_helper_count_and_env_override() {
+        assert!(!fmp_preowner_aead_helper_enabled_from_raw(None, 0));
+        assert!(fmp_preowner_aead_helper_enabled_from_raw(None, 2));
+        assert!(!fmp_preowner_aead_helper_enabled_from_raw(Some("0"), 2));
+        assert!(!fmp_preowner_aead_helper_enabled_from_raw(Some("off"), 2));
+        assert!(!fmp_preowner_aead_helper_enabled_from_raw(Some("false"), 2));
+        assert!(!fmp_preowner_aead_helper_enabled_from_raw(Some("no"), 2));
+        assert!(fmp_preowner_aead_helper_enabled_from_raw(Some("1"), 0));
+        assert!(fmp_preowner_aead_helper_enabled_from_raw(Some("bad"), 0));
     }
 
     #[test]
