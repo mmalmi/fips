@@ -201,7 +201,7 @@ impl Node {
                 let _ = self.handle_endpoint_send_command(command).await;
             }
             NodeEndpointCommand::SendBatchOneway { command, .. } => {
-                self.handle_endpoint_send_batch_command(command).await;
+                self.handle_endpoint_send_batch_commands(vec![command]).await;
             }
             NodeEndpointCommand::UpdatePeers { peers, response_tx } => {
                 let result = self.update_peers(peers).await;
@@ -368,14 +368,36 @@ impl Node {
         self.send_endpoint_data_send(send).await
     }
 
-    async fn handle_endpoint_send_batch_command(&mut self, command: EndpointSendBatchCommand) {
-        let lane = command.lane();
-        let count = command.len() as u64;
-        let (remote, payloads, queued_at) = command.into_parts();
-        // The command queue wait ends when rx_loop starts handling the batch.
-        // Count one sample per payload without charging earlier payload send
-        // work to later payloads' queue residence.
-        record_endpoint_command_wait(queued_at, lane, count);
+    pub(in crate::node) async fn handle_endpoint_send_batch_commands(
+        &mut self,
+        commands: Vec<EndpointSendBatchCommand>,
+    ) {
+        let Some(first) = commands.first() else {
+            return;
+        };
+        let lane = first.lane();
+        let remote = first.remote();
+        let mut payload_count = 0usize;
+        let mut payloads = Vec::new();
+
+        for command in commands {
+            debug_assert_eq!(command.lane(), lane);
+            debug_assert_eq!(command.remote(), remote);
+            let count = command.len();
+            let (command_remote, command_payloads, queued_at) = command.into_parts();
+            debug_assert_eq!(command_remote, remote);
+            // The command queue wait ends when rx_loop starts handling the
+            // batch. Preserve per-command queue residence before coalescing
+            // same-peer batches for shared route/session preparation.
+            record_endpoint_command_wait(queued_at, lane, count as u64);
+            payload_count = payload_count.saturating_add(count);
+            payloads.extend(command_payloads);
+        }
+
+        if payload_count == 0 {
+            return;
+        }
+
         let dest_addr = *remote.node_addr();
         let dest_pubkey = remote.pubkey_full();
         self.register_identity(dest_addr, dest_pubkey);

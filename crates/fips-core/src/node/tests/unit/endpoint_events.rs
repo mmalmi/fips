@@ -179,6 +179,39 @@ fn release_endpoint_event_messages_subtracts_exact_count() {
 }
 
 #[test]
+fn endpoint_send_batch_coalesce_predicate_requires_same_peer_lane_and_cap() {
+    let peer_a = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let peer_b = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let bulk_payload = || EndpointDataPayload::new(vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]);
+    let priority_payload = || {
+        let mut packet = vec![0u8; 28];
+        let total_len = packet.len() as u16;
+        packet[0] = 0x45;
+        packet[2..4].copy_from_slice(&total_len.to_be_bytes());
+        packet[9] = 1;
+        EndpointDataPayload::new(packet)
+    };
+
+    let bulk_a =
+        EndpointSendBatchCommand::new(peer_a, vec![bulk_payload()], None).expect("bulk batch");
+    let bulk_a_more = EndpointSendBatchCommand::new(
+        peer_a,
+        vec![bulk_payload(), bulk_payload(), bulk_payload()],
+        None,
+    )
+    .expect("second bulk batch");
+    let bulk_b =
+        EndpointSendBatchCommand::new(peer_b, vec![bulk_payload()], None).expect("other peer bulk");
+    let priority_a = EndpointSendBatchCommand::new(peer_a, vec![priority_payload()], None)
+        .expect("priority batch");
+
+    assert!(bulk_a.can_coalesce_with(&bulk_a_more, 4));
+    assert!(!bulk_a.can_coalesce_with(&bulk_a_more, 3));
+    assert!(!bulk_a.can_coalesce_with(&bulk_b, 4));
+    assert!(!bulk_a.can_coalesce_with(&priority_a, 4));
+}
+
+#[test]
 fn endpoint_event_queue_splits_mixed_batch_into_priority_and_bulk_lanes() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());

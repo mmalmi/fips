@@ -691,6 +691,16 @@ impl EndpointSendBatchCommand {
         self.payloads.len()
     }
 
+    pub(crate) fn can_coalesce_with(&self, other: &Self, max_payloads: usize) -> bool {
+        self.remote == other.remote
+            && self.lane() == other.lane()
+            && self.len().saturating_add(other.len()) <= max_payloads
+    }
+
+    pub(crate) fn remote(&self) -> PeerIdentity {
+        self.remote
+    }
+
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.payloads
             .iter()
@@ -779,6 +789,15 @@ impl NodeEndpointCommand {
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
             | Self::UpdatePeers { .. } => 1,
+        }
+    }
+
+    pub(crate) fn into_send_batch_oneway(
+        self,
+    ) -> Result<(EndpointSendBatchCommand, EndpointCommandLane), Self> {
+        match self {
+            Self::SendBatchOneway { command, lane } => Ok((command, lane)),
+            other => Err(other),
         }
     }
 }

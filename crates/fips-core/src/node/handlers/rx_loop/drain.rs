@@ -348,6 +348,31 @@ impl<T> PriorityBulkDrainCursor<T> {
         Some(item)
     }
 
+    pub(super) fn next_bulk_if_no_priority(
+        &mut self,
+        priority_rx: &mut Receiver<T>,
+        bulk_rx: &mut Receiver<T>,
+    ) -> Option<T> {
+        if self.remaining == 0 || self.first_priority.is_some() || !priority_rx.is_empty() {
+            return None;
+        }
+
+        let item = self.first_bulk.take().or_else(|| bulk_rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    pub(super) fn defer_bulk(&mut self, item: T) {
+        debug_assert!(
+            self.first_bulk.is_none(),
+            "priority/bulk drain already has a deferred bulk item"
+        );
+        self.first_bulk = Some(item);
+        self.remaining = self.remaining.saturating_add(1);
+        self.drained = self.drained.saturating_sub(1);
+    }
+
     pub(super) fn drained(&self) -> usize {
         self.drained
     }

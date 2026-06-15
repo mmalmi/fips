@@ -11,7 +11,9 @@ use crate::node::handlers::encrypted::EncryptedFrameFastPath;
 use crate::node::wire::{
     COMMON_PREFIX_SIZE, CommonPrefix, FMP_VERSION, PHASE_ESTABLISHED, PHASE_MSG1, PHASE_MSG2,
 };
-use crate::node::{AuthenticatedFmpPlaintext, Node, NodeEndpointCommand, NodeError};
+use crate::node::{
+    AuthenticatedFmpPlaintext, EndpointSendBatchCommand, Node, NodeEndpointCommand, NodeError,
+};
 use crate::transport::PacketRx;
 use crate::transport::ReceivedPacket;
 use crate::upper::tun::TunOutboundRx;
@@ -601,11 +603,68 @@ impl Node {
             PriorityBulkDrainCursor::new(first_priority_command, first_bulk_command, budget);
         while let Some(command) = drain.next(endpoint_priority_command_rx, endpoint_command_rx) {
             let drain_cost = command.drain_cost();
-            self.handle_endpoint_data_command(command).await;
+            match command.into_send_batch_oneway() {
+                Ok((batch, _lane)) => {
+                    let mut batch_commands = vec![batch];
+                    self.coalesce_endpoint_send_batch_commands(
+                        &mut drain,
+                        endpoint_priority_command_rx,
+                        endpoint_command_rx,
+                        &mut batch_commands,
+                    );
+                    self.handle_endpoint_send_batch_commands(batch_commands)
+                        .await;
+                }
+                Err(command) => {
+                    self.handle_endpoint_data_command(command).await;
+                }
+            }
             drain.charge_extra(drain_cost.saturating_sub(1));
         }
 
         drain.drained()
+    }
+
+    fn coalesce_endpoint_send_batch_commands(
+        &mut self,
+        drain: &mut PriorityBulkDrainCursor<NodeEndpointCommand>,
+        endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
+        endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
+        batch_commands: &mut Vec<EndpointSendBatchCommand>,
+    ) {
+        let mut payloads = batch_commands
+            .iter()
+            .fold(0usize, |total, command| total.saturating_add(command.len()));
+        while payloads < ENDPOINT_COMMAND_COALESCE_MAX_PACKETS {
+            let Some(command) =
+                drain.next_bulk_if_no_priority(endpoint_priority_command_rx, endpoint_command_rx)
+            else {
+                break;
+            };
+            let drain_cost = command.drain_cost();
+            match command.into_send_batch_oneway() {
+                Ok((batch, _lane))
+                    if batch_commands.last().is_some_and(|last| {
+                        last.can_coalesce_with(&batch, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS)
+                    }) =>
+                {
+                    payloads = payloads.saturating_add(batch.len());
+                    batch_commands.push(batch);
+                    drain.charge_extra(drain_cost.saturating_sub(1));
+                }
+                Ok((batch, lane)) => {
+                    drain.defer_bulk(NodeEndpointCommand::SendBatchOneway {
+                        command: batch,
+                        lane,
+                    });
+                    break;
+                }
+                Err(command) => {
+                    drain.defer_bulk(command);
+                    break;
+                }
+            }
+        }
     }
 
     async fn run_rx_loop_maintenance_tick(&mut self, plan: RxLoopMaintenancePlan) -> bool {
