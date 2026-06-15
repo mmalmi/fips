@@ -34,24 +34,6 @@ impl Node {
                 .await;
             return;
         };
-        let batch_send_target = match self.resolve_peer_runtime_endpoint_send_target(&route).await {
-            Ok(Some(send_target)) => send_target,
-            Ok(None) => {
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                    .await;
-                return;
-            }
-            Err(error) => {
-                debug!(
-                    dest = %self.peer_display_name(&dest_addr),
-                    error = %error,
-                    "Established endpoint-data batch could not resolve worker send target; falling back"
-                );
-                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, payloads)
-                    .await;
-                return;
-            }
-        };
         let mut prepared_sends = Vec::with_capacity(payloads.len().min(64));
         let mut use_reused_route = true;
 
@@ -103,11 +85,8 @@ impl Node {
             };
 
             match self
-                .prepare_peer_runtime_endpoint_send_with_route_target(
-                    prepared.pipelined(),
-                    &route,
-                    batch_send_target.clone(),
-                )
+                .prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
+                .await
             {
                 Ok(Some(prepared_send)) => {
                     prepared_sends.push(prepared_send);
@@ -493,31 +472,20 @@ impl Node {
     }
 
     #[cfg(unix)]
-    async fn resolve_peer_runtime_endpoint_send_target(
-        &self,
-        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
-    ) -> Result<Option<PipelinedEndpointSendTarget>, NodeError> {
-        runtime_route
-            .resolve_send_target(&self.transports)
-            .await
-            .map_err(Self::map_pipelined_endpoint_runtime_send_error)
-    }
-
-    #[cfg(unix)]
-    fn prepare_peer_runtime_endpoint_send_with_route_target(
+    #[cfg_attr(not(test), allow(dead_code))]
+    async fn prepare_peer_runtime_endpoint_send_with_route(
         &mut self,
         send: PipelinedEndpointSend<'_>,
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
-        send_target: PipelinedEndpointSendTarget,
     ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
-        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route_and_target(
+        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_route(
             runtime_route,
             send,
             &self.transports,
             &mut self.sessions,
             &mut self.peers,
-            send_target,
         )
+        .await
         .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
         else {
             return Ok(None);

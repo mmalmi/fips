@@ -665,7 +665,6 @@ struct PipelinedEndpointWorkerWire {
 }
 
 #[cfg(unix)]
-#[derive(Clone)]
 struct PipelinedEndpointSendTarget {
     socket: crate::transport::udp::socket::AsyncUdpSocket,
     #[cfg(any(target_os = "linux", target_os = "macos"))]

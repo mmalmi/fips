@@ -340,29 +340,6 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
-    async fn resolve_send_target(
-        &self,
-        transports: &std::collections::HashMap<
-            crate::transport::TransportId,
-            crate::transport::TransportHandle,
-        >,
-    ) -> Result<Option<PipelinedEndpointSendTarget>, PipelinedEndpointRuntimeSendError> {
-        let transport_id = self.transport_id();
-        let transport = transports
-            .get(&transport_id)
-            .ok_or(PipelinedEndpointRuntimeSendError::TransportNotFound(
-                transport_id,
-            ))?;
-        let crate::transport::TransportHandle::Udp(udp) = transport else {
-            return Ok(None);
-        };
-
-        // Send targets are just socket/address ownership; counter reservations
-        // and FMP/FSP headers remain per-packet.
-        let target_snapshot = self.peer_snapshot.prepare_send_snapshot(false, 0);
-        Ok(PipelinedEndpointSendTarget::resolve(udp, target_snapshot.fmp_prepared()).await)
-    }
-
     #[cfg(test)]
     fn into_runtime_send_plan<'a>(
         self,

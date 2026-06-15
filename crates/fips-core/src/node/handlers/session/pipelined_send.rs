@@ -211,45 +211,6 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
-    fn resolve_dispatch_with_route_and_target(
-        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
-        send: PipelinedEndpointSend<'a>,
-        transports: &std::collections::HashMap<
-            crate::transport::TransportId,
-            crate::transport::TransportHandle,
-        >,
-        sessions: &mut crate::node::SessionRegistry,
-        peers: &mut crate::node::PeerLifecycleRegistry,
-        send_target: PipelinedEndpointSendTarget,
-    ) -> Result<
-        Option<PipelinedEndpointRuntimeSendDispatch<'a>>,
-        PipelinedEndpointPeerRuntimeSendError,
-    > {
-        let dest_addr = *send.dest_addr;
-        let next_hop_addr = runtime_route.next_hop_addr();
-        let transport_id = runtime_route.transport_id();
-        let transport = transports.get(&transport_id).ok_or(
-            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
-                PipelinedEndpointRuntimeSendError::TransportNotFound(transport_id),
-            ),
-        )?;
-        let runtime_plan = runtime_route
-            .runtime_send_plan(&send, transport)
-            .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
-                dest_addr,
-                next_hop_addr,
-                error,
-            })?;
-
-        PipelinedEndpointRuntimeSendAttempt::new(runtime_plan, send_target)
-            .reserve(sessions, peers)
-            .map_err(|error| {
-                PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
-                    PipelinedEndpointRuntimeSendError::Attempt(error),
-                )
-            })
-    }
-
     #[cfg_attr(not(test), allow(dead_code))]
     async fn resolve_dispatch(
         self,
