@@ -213,8 +213,8 @@ fn endpoint_batch_commands_charge_drain_budget_by_small_packet_groups() {
         EndpointCommandLane::Bulk,
     )
     .expect("full endpoint batch command");
-    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 64);
-    assert_eq!(full_batch.drain_cost(), 8);
+    assert_eq!(ENDPOINT_SEND_BATCH_COMMAND_MAX, 128);
+    assert_eq!(full_batch.drain_cost(), 16);
 }
 
 #[tokio::test]
