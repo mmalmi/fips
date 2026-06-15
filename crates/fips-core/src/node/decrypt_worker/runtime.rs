@@ -453,6 +453,14 @@ fn handle_bulk_item(
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             1
         }
+        DecryptWorkerBulkItem::FmpAeadJob(job) => {
+            let item_service_started_at = crate::perf_profile::stamp();
+            record_decrypt_worker_bulk_input_head_wait(job.owner_queued_at, 1);
+            let completion = job.into_completion();
+            shard.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
+            1
+        }
         DecryptWorkerBulkItem::Batch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();

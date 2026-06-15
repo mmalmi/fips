@@ -31,6 +31,7 @@ enum WorkerMsg {
 enum DecryptWorkerBulkItem {
     Job(DecryptJob),
     FspJob(FspDecryptJob),
+    FmpAeadJob(FmpAeadHelperJob),
     Batch(Vec<DecryptJob>),
     FspBatch(Vec<FspDecryptJob>),
 }
@@ -38,7 +39,7 @@ enum DecryptWorkerBulkItem {
 impl DecryptWorkerBulkItem {
     fn packet_count(&self) -> usize {
         match self {
-            Self::Job(_) | Self::FspJob(_) => 1,
+            Self::Job(_) | Self::FspJob(_) | Self::FmpAeadJob(_) => 1,
             Self::Batch(jobs) => jobs.len(),
             Self::FspBatch(jobs) => jobs.len(),
         }
@@ -110,6 +111,7 @@ impl DecryptWorkerBatchStats {
         match item {
             DecryptWorkerBulkItem::Job(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::FspJob(job) => self.add_lane(job.lane(), 1),
+            DecryptWorkerBulkItem::FmpAeadJob(job) => self.add_lane(job.lane(), 1),
             DecryptWorkerBulkItem::Batch(jobs) => {
                 self.add_lane(DecryptWorkerLane::Bulk, jobs.len());
             }

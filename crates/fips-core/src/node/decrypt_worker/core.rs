@@ -836,6 +836,7 @@ struct FmpAeadHelperJob {
     opened: OpenedFmpJob,
     completion_tx: Option<Sender<FmpAeadCompletion>>,
     helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+    owner_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 struct FmpAeadCompletion {
@@ -912,6 +913,7 @@ impl FmpAeadHelperJob {
             },
             completion_tx: Some(completion_tx),
             helper_queued_at: crate::perf_profile::stamp(),
+            owner_queued_at: None,
         }
     }
 
@@ -952,6 +954,10 @@ impl FmpAeadHelperJob {
                 }),
             },
         }
+    }
+
+    fn lane(&self) -> DecryptWorkerLane {
+        self.opened.lane
     }
 }
 
