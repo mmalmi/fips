@@ -1,3 +1,12 @@
+#[inline]
+fn record_fsp_owner_match(owner_matches_current_worker: bool) {
+    crate::perf_profile::record_event(if owner_matches_current_worker {
+        crate::perf_profile::Event::DecryptFspOwnerSame
+    } else {
+        crate::perf_profile::Event::DecryptFspOwnerMismatch
+    });
+}
+
 struct DecryptWorkerShard {
     pool: DecryptWorkerPool,
     // Lives entirely on this OS thread — never observed by any other thread.
@@ -184,23 +193,36 @@ impl DecryptWorkerShard {
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
+                let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                record_fsp_owner_match(owner_idx == idx);
                 let job = match self.try_start_fsp_aead_helper(idx, job, plaintext_batch) {
                     Ok(()) => return,
                     Err(job) => job,
                 };
-                if self.pool.worker_idx_for_fsp(&job.source_addr) == idx {
+                if owner_idx == idx {
+                    crate::perf_profile::record_event(
+                        crate::perf_profile::Event::DecryptFspPathLocal,
+                    );
                     if let Some(output) = self.handle_fsp_job_output(job) {
                         plaintext_batch.push_output(output);
                     }
                     return;
                 }
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspPathHandoff,
+                );
                 if let Some(fsp_batcher) = fsp_batcher {
                     fsp_batcher.push(&self.pool, job, plaintext_batch);
                     return;
                 }
                 match self.pool.dispatch_fsp_job_or_return(job) {
                     Ok(()) => {}
-                    Err(job) => plaintext_batch.push_fsp_job_fallback(job),
+                    Err(job) => {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::DecryptFspPathFallback,
+                        );
+                        plaintext_batch.push_fsp_job_fallback(job);
+                    }
                 }
             }
         }
@@ -370,6 +392,7 @@ impl DecryptWorkerShard {
             helper_queued_at: None,
         };
 
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHelper);
         match self.pool.dispatch_fsp_aead_helper_job(owner_idx, helper_job) {
             Ok(()) => Ok(()),
             Err(helper_job) => {
@@ -448,16 +471,25 @@ impl DecryptWorkerShard {
         idx: usize,
         job: FspDecryptJob,
     ) -> Option<DecryptWorkerOutput> {
-        if self.pool.worker_idx_for_fsp(&job.source_addr) == idx {
+        let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+        record_fsp_owner_match(owner_idx == idx);
+        if owner_idx == idx {
+            crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathLocal);
             return self.handle_fsp_job_output(job);
         }
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHandoff);
         match self.pool.dispatch_fsp_job_or_return(job) {
             Ok(()) => None,
-            Err(job) => Some(DecryptWorkerOutput {
-                fallback_tx: job.fallback_tx,
-                event: DecryptWorkerEvent::Plaintext(job.fallback),
-                direct_delivery: None,
-            }),
+            Err(job) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspPathFallback,
+                );
+                Some(DecryptWorkerOutput {
+                    fallback_tx: job.fallback_tx,
+                    event: DecryptWorkerEvent::Plaintext(job.fallback),
+                    direct_delivery: None,
+                })
+            }
         }
     }
 

@@ -265,6 +265,9 @@ impl FspDecryptJobBatcher {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers, plaintext_batch);
             if let Err(job) = workers.dispatch_fsp_job_or_return(job) {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspPathFallback,
+                );
                 plaintext_batch.push_fsp_job_fallback(job);
             }
             return;
@@ -298,6 +301,9 @@ impl FspDecryptJobBatcher {
         if self.jobs.len() == 1 {
             let job = self.jobs.pop().expect("checked single pending FSP job");
             if let Err(job) = workers.dispatch_bulk_fsp_job_or_return(worker_idx, job) {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspPathFallback,
+                );
                 plaintext_batch.push_fsp_job_fallback(job);
             }
             return;
@@ -308,6 +314,10 @@ impl FspDecryptJobBatcher {
             Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         );
         if let Err(jobs) = workers.dispatch_bulk_fsp_job_batch_or_return(worker_idx, jobs) {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::DecryptFspPathFallback,
+                jobs.len() as u64,
+            );
             for job in jobs {
                 plaintext_batch.push_fsp_job_fallback(job);
             }

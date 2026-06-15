@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 70);
+    assert_eq!(N_EVENTS, 76);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -201,6 +201,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerBulkInputWaitGe1ms as usize).name(),
         "decrypt_worker_bulk_input_wait_ge1ms"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOwnerSame as usize).name(),
+        "decrypt_fsp_owner_same"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOwnerMismatch as usize).name(),
+        "decrypt_fsp_owner_mismatch"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathLocal as usize).name(),
+        "decrypt_fsp_path_local"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathHandoff as usize).name(),
+        "decrypt_fsp_path_handoff"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathHelper as usize).name(),
+        "decrypt_fsp_path_helper"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathFallback as usize).name(),
+        "decrypt_fsp_path_fallback"
     );
 }
 
@@ -371,6 +395,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBulkInputWaitGe500us as usize].load(Relaxed);
     let decrypt_input_wait_ge1ms_before =
         EVENTS[Event::DecryptWorkerBulkInputWaitGe1ms as usize].load(Relaxed);
+    let fsp_owner_same_before = EVENTS[Event::DecryptFspOwnerSame as usize].load(Relaxed);
+    let fsp_owner_mismatch_before = EVENTS[Event::DecryptFspOwnerMismatch as usize].load(Relaxed);
+    let fsp_path_local_before = EVENTS[Event::DecryptFspPathLocal as usize].load(Relaxed);
+    let fsp_path_handoff_before = EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed);
+    let fsp_path_helper_before = EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed);
+    let fsp_path_fallback_before = EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -402,6 +432,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe250us, 3);
     record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe500us, 2);
     record_event_count_sample(Event::DecryptWorkerBulkInputWaitGe1ms, 1);
+    record_event_count_sample(Event::DecryptFspOwnerSame, 71);
+    record_event_count_sample(Event::DecryptFspOwnerMismatch, 73);
+    record_event_count_sample(Event::DecryptFspPathLocal, 79);
+    record_event_count_sample(Event::DecryptFspPathHandoff, 83);
+    record_event_count_sample(Event::DecryptFspPathHelper, 89);
+    record_event_count_sample(Event::DecryptFspPathFallback, 97);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -532,6 +568,30 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptWorkerBulkInputWaitGe1ms as usize].load(Relaxed)
             - decrypt_input_wait_ge1ms_before,
         1
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspOwnerSame as usize].load(Relaxed) - fsp_owner_same_before,
+        71
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspOwnerMismatch as usize].load(Relaxed) - fsp_owner_mismatch_before,
+        73
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathLocal as usize].load(Relaxed) - fsp_path_local_before,
+        79
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed) - fsp_path_handoff_before,
+        83
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed) - fsp_path_helper_before,
+        89
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed) - fsp_path_fallback_before,
+        97
     );
 }
 

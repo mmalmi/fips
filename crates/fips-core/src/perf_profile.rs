@@ -85,7 +85,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 58;
-const N_EVENTS: usize = 70;
+const N_EVENTS: usize = 76;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -445,6 +445,12 @@ pub enum Event {
     DecryptWorkerBulkInputWaitGe250us = 67,
     DecryptWorkerBulkInputWaitGe500us = 68,
     DecryptWorkerBulkInputWaitGe1ms = 69,
+    DecryptFspOwnerSame = 70,
+    DecryptFspOwnerMismatch = 71,
+    DecryptFspPathLocal = 72,
+    DecryptFspPathHandoff = 73,
+    DecryptFspPathHelper = 74,
+    DecryptFspPathFallback = 75,
 }
 
 impl Event {
@@ -526,6 +532,12 @@ impl Event {
             Event::DecryptWorkerBulkInputWaitGe250us => "decrypt_worker_bulk_input_wait_ge250us",
             Event::DecryptWorkerBulkInputWaitGe500us => "decrypt_worker_bulk_input_wait_ge500us",
             Event::DecryptWorkerBulkInputWaitGe1ms => "decrypt_worker_bulk_input_wait_ge1ms",
+            Event::DecryptFspOwnerSame => "decrypt_fsp_owner_same",
+            Event::DecryptFspOwnerMismatch => "decrypt_fsp_owner_mismatch",
+            Event::DecryptFspPathLocal => "decrypt_fsp_path_local",
+            Event::DecryptFspPathHandoff => "decrypt_fsp_path_handoff",
+            Event::DecryptFspPathHelper => "decrypt_fsp_path_helper",
+            Event::DecryptFspPathFallback => "decrypt_fsp_path_fallback",
         }
     }
 }
@@ -602,6 +614,12 @@ fn event_from_index(idx: usize) -> Event {
         67 => Event::DecryptWorkerBulkInputWaitGe250us,
         68 => Event::DecryptWorkerBulkInputWaitGe500us,
         69 => Event::DecryptWorkerBulkInputWaitGe1ms,
+        70 => Event::DecryptFspOwnerSame,
+        71 => Event::DecryptFspOwnerMismatch,
+        72 => Event::DecryptFspPathLocal,
+        73 => Event::DecryptFspPathHandoff,
+        74 => Event::DecryptFspPathHelper,
+        75 => Event::DecryptFspPathFallback,
         _ => unreachable!(),
     }
 }
