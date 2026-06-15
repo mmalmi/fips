@@ -432,6 +432,35 @@
     }
 
     #[test]
+    fn preowner_fmp_helper_dispatch_bypasses_owner_bulk_lane() {
+        let (pool, priority_rx, bulk_rx, helper_rx, _completion_rx) =
+            preowner_fmp_helper_test_pool(4);
+        let session_key = test_session_key(1, 177);
+        assert!(pool.register_session(session_key, test_owned_session_state()));
+        assert_eq!(
+            priority_rx.len(),
+            1,
+            "registration should still use the owner priority lane"
+        );
+
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
+
+        assert!(
+            bulk_rx.is_empty(),
+            "pre-owner helper dispatch should not enqueue the packet on the owner bulk lane"
+        );
+        let helper_job = helper_rx
+            .try_recv()
+            .expect("bulk packet should be sent to the FMP helper");
+        assert_eq!(helper_job.session_key, session_key);
+        assert_eq!(helper_job.ticket.sequence, 0);
+        assert!(matches!(
+            helper_job.replay,
+            FmpReplayDecision::Deferred { counter: 1 }
+        ));
+    }
+
+    #[test]
     fn decrypt_worker_unregister_uses_priority_lane_when_bulk_queue_is_full() {
         let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 78);

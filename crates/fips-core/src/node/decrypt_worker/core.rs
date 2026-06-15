@@ -44,6 +44,7 @@ const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
 const DECRYPT_WORKER_FMP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
+const DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
@@ -187,6 +188,23 @@ fn fmp_aead_helper_count() -> usize {
     )
 }
 
+fn fmp_preowner_aead_helper_enabled_from_raw(raw: Option<&str>) -> bool {
+    raw.is_some_and(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+fn fmp_preowner_aead_helper_enabled() -> bool {
+    fmp_preowner_aead_helper_enabled_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
@@ -218,6 +236,7 @@ pub(crate) struct OwnedSessionState {
     source_peer: PeerIdentity,
     fmp_receive_order_id: u64,
     fmp_receive_order: FmpReceiveOrder,
+    fmp_shared_crypto: Option<Arc<FmpSharedCryptoSession>>,
 }
 
 struct OwnedFspEpochState {
@@ -248,6 +267,71 @@ struct FspOpenInPlaceSuccess {
 enum FspOpenError {
     Replay,
     Aead,
+}
+
+struct FmpSharedCryptoSession {
+    owner_idx: usize,
+    receive_order_id: u64,
+    source_peer: PeerIdentity,
+    cipher: Arc<LessSafeKey>,
+    next_ticket: AtomicU64,
+    next_ready: AtomicU64,
+}
+
+impl FmpSharedCryptoSession {
+    fn new(
+        owner_idx: usize,
+        receive_order_id: u64,
+        source_peer: PeerIdentity,
+        cipher: Arc<LessSafeKey>,
+    ) -> Self {
+        Self {
+            owner_idx,
+            receive_order_id,
+            source_peer,
+            cipher,
+            next_ticket: AtomicU64::new(0),
+            next_ready: AtomicU64::new(0),
+        }
+    }
+
+    fn can_issue_ticket(&self) -> bool {
+        self.can_issue_ticket_with_reserve(0)
+    }
+
+    fn can_issue_preowner_bulk_ticket(&self) -> bool {
+        self.can_issue_ticket_with_reserve(DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE)
+    }
+
+    fn can_issue_ticket_with_reserve(&self, reserve: usize) -> bool {
+        self.next_ticket
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.next_ready.load(Ordering::Relaxed))
+            < DECRYPT_WORKER_FMP_RECEIVE_WINDOW.saturating_sub(reserve) as u64
+    }
+
+    fn try_issue_ticket(&self) -> Option<FmpReceiveTicket> {
+        self.try_issue_ticket_with_reserve(0)
+    }
+
+    fn try_issue_preowner_bulk_ticket(&self) -> Option<FmpReceiveTicket> {
+        self.try_issue_ticket_with_reserve(DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE)
+    }
+
+    fn try_issue_ticket_with_reserve(&self, reserve: usize) -> Option<FmpReceiveTicket> {
+        self.next_ticket
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current.saturating_sub(self.next_ready.load(Ordering::Relaxed))
+                    < DECRYPT_WORKER_FMP_RECEIVE_WINDOW.saturating_sub(reserve) as u64)
+                    .then(|| current.saturating_add(1))
+            })
+            .ok()
+            .map(|sequence| FmpReceiveTicket { sequence })
+    }
+
+    fn mark_next_ready(&self, next_ready: u64) {
+        self.next_ready.store(next_ready, Ordering::Relaxed);
+    }
 }
 
 impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
@@ -622,7 +706,7 @@ impl FmpReceiveOrder {
 
 enum FmpOrderedCompletion<T> {
     Opened {
-        precheck: FmpReplayPrecheck,
+        replay: FmpReplayDecision,
         value: T,
     },
     AeadFailed(FmpAeadFailure),
@@ -641,7 +725,7 @@ struct FmpAeadFailure {
     source_peer: PeerIdentity,
     lane: DecryptWorkerLane,
     fmp_counter: u64,
-    fmp_replay_highest: u64,
+    fmp_replay_highest: Option<u64>,
 }
 
 enum FmpReadyCompletion<T> {
@@ -711,6 +795,21 @@ struct FmpReplayPrecheck {
     replay_highest: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FmpReplayDecision {
+    Prechecked(FmpReplayPrecheck),
+    Deferred { counter: u64 },
+}
+
+impl FmpReplayDecision {
+    fn prechecked_highest(self) -> Option<u64> {
+        match self {
+            Self::Prechecked(precheck) => Some(precheck.replay_highest),
+            Self::Deferred { .. } => None,
+        }
+    }
+}
+
 struct OpenedFmpJob {
     packet_data: Vec<u8>,
     lane: DecryptWorkerLane,
@@ -731,7 +830,7 @@ struct FmpAeadHelperJob {
     session_key: DecryptSessionKey,
     receive_order_id: u64,
     ticket: FmpReceiveTicket,
-    precheck: FmpReplayPrecheck,
+    replay: FmpReplayDecision,
     cipher: Arc<LessSafeKey>,
     fmp_header: [u8; 16],
     opened: OpenedFmpJob,
@@ -749,7 +848,7 @@ struct FmpAeadCompletion {
 
 enum FmpAeadCompletionResult {
     Opened {
-        precheck: FmpReplayPrecheck,
+        replay: FmpReplayDecision,
         opened: OpenedFmpJob,
     },
     AeadFailed(FmpAeadFailure),
@@ -765,6 +864,57 @@ impl FmpAeadCompletionResult {
 }
 
 impl FmpAeadHelperJob {
+    fn from_preowner_decrypt_job(
+        job: DecryptJob,
+        shared: &FmpSharedCryptoSession,
+        ticket: FmpReceiveTicket,
+        completion_tx: Sender<FmpAeadCompletion>,
+    ) -> Self {
+        let DecryptJob {
+            packet_data,
+            lane,
+            session_key,
+            _transport_id: transport_id,
+            _remote_addr: remote_addr,
+            local_node_addr,
+            timestamp_ms,
+            fmp_counter,
+            fmp_flags,
+            fmp_header,
+            fmp_ciphertext_offset,
+            fallback_tx,
+            trace_enqueued_at: _,
+        } = job;
+        let packet_len = packet_data.len();
+        Self {
+            session_key,
+            receive_order_id: shared.receive_order_id,
+            ticket,
+            replay: FmpReplayDecision::Deferred {
+                counter: fmp_counter,
+            },
+            cipher: Arc::clone(&shared.cipher),
+            fmp_header,
+            opened: OpenedFmpJob {
+                packet_data,
+                lane,
+                source_peer: shared.source_peer,
+                transport_id,
+                remote_addr,
+                local_node_addr,
+                timestamp_ms,
+                packet_len,
+                fmp_counter,
+                fmp_flags,
+                fmp_plaintext_offset: fmp_ciphertext_offset,
+                fmp_plaintext_len: 0,
+                fallback_tx,
+            },
+            completion_tx: Some(completion_tx),
+            helper_queued_at: crate::perf_profile::stamp(),
+        }
+    }
+
     fn into_completion(mut self) -> FmpAeadCompletion {
         let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
         let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
@@ -783,7 +933,7 @@ impl FmpAeadHelperJob {
                     ticket: self.ticket,
                     completed_at,
                     result: FmpAeadCompletionResult::Opened {
-                        precheck: self.precheck,
+                        replay: self.replay,
                         opened: self.opened,
                     },
                 }
@@ -798,7 +948,7 @@ impl FmpAeadHelperJob {
                     source_peer: self.opened.source_peer,
                     lane: self.opened.lane,
                     fmp_counter: self.opened.fmp_counter,
-                    fmp_replay_highest: self.precheck.replay_highest,
+                    fmp_replay_highest: self.replay.prechecked_highest(),
                 }),
             },
         }
@@ -906,7 +1056,21 @@ impl OwnedSessionState {
             source_peer,
             fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fmp_receive_order: FmpReceiveOrder::new(),
+            fmp_shared_crypto: None,
         }
+    }
+
+    fn shared_crypto_session(&self, owner_idx: usize) -> FmpSharedCryptoSession {
+        FmpSharedCryptoSession::new(
+            owner_idx,
+            self.fmp_receive_order_id,
+            self.source_peer,
+            Arc::clone(&self.fmp_cipher),
+        )
+    }
+
+    fn attach_shared_crypto_session(&mut self, shared: Arc<FmpSharedCryptoSession>) {
+        self.fmp_shared_crypto = Some(shared);
     }
 
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
@@ -950,6 +1114,24 @@ impl OwnedSessionState {
         Ok(())
     }
 
+    fn accept_fmp_replay_on(
+        fmp_replay: &mut ReplayWindow,
+        replay: FmpReplayDecision,
+    ) -> Result<(), FmpOpenError> {
+        match replay {
+            FmpReplayDecision::Prechecked(precheck) => {
+                Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck)
+            }
+            FmpReplayDecision::Deferred { counter } => {
+                if !fmp_replay.check(counter) {
+                    return Err(FmpOpenError::Replay);
+                }
+                fmp_replay.accept(counter);
+                Ok(())
+            }
+        }
+    }
+
     #[cfg(test)]
     fn accept_prechecked_fmp_replay(
         &mut self,
@@ -958,8 +1140,12 @@ impl OwnedSessionState {
         Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)
     }
 
-    fn issue_fmp_receive_ticket(&mut self) -> FmpReceiveTicket {
-        self.fmp_receive_order.issue()
+    fn issue_fmp_receive_ticket(&mut self) -> Option<FmpReceiveTicket> {
+        if let Some(shared) = &self.fmp_shared_crypto
+        {
+            return shared.try_issue_ticket();
+        }
+        Some(self.fmp_receive_order.issue())
     }
 
     fn fmp_receive_order_id(&self) -> u64 {
@@ -967,7 +1153,14 @@ impl OwnedSessionState {
     }
 
     fn can_issue_fmp_receive_ticket(&self) -> bool {
+        if let Some(shared) = &self.fmp_shared_crypto {
+            return shared.can_issue_ticket();
+        }
         self.fmp_receive_order.can_issue()
+    }
+
+    fn fmp_receive_order_next_ready(&self) -> u64 {
+        self.fmp_receive_order.completions.next_ready()
     }
 
     #[cfg(test)]
@@ -981,8 +1174,8 @@ impl OwnedSessionState {
         drain.ready = self
             .fmp_receive_order
             .complete(ticket, completion, |completion| match completion {
-                FmpOrderedCompletion::Opened { precheck, .. } => {
-                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                FmpOrderedCompletion::Opened { replay, .. } => {
+                    if Self::accept_fmp_replay_on(fmp_replay, replay).is_ok() {
                         drain.accepted += 1;
                     } else {
                         drain.replay_drops += 1;
@@ -1007,15 +1200,18 @@ impl OwnedSessionState {
         drain.ready = self
             .fmp_receive_order
             .complete(ticket, completion, |completion| match completion {
-                FmpOrderedCompletion::Opened { precheck, value } => {
-                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                FmpOrderedCompletion::Opened { replay, value } => {
+                    if Self::accept_fmp_replay_on(fmp_replay, replay).is_ok() {
                         drain.accepted += 1;
                         on_ready(FmpReadyCompletion::Opened(value));
                     } else {
                         drain.replay_drops += 1;
                     }
                 }
-                FmpOrderedCompletion::AeadFailed(failure) => {
+                FmpOrderedCompletion::AeadFailed(mut failure) => {
+                    failure
+                        .fmp_replay_highest
+                        .get_or_insert_with(|| fmp_replay.highest());
                     drain.aead_failures += 1;
                     on_ready(FmpReadyCompletion::AeadFailed(failure));
                 }

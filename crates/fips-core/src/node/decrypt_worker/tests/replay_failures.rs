@@ -339,7 +339,7 @@
             session_key,
             receive_order_id: 42,
             ticket,
-            precheck,
+            replay: FmpReplayDecision::Prechecked(precheck),
             cipher: open_cipher.into(),
             fmp_header,
             opened: OpenedFmpJob {
@@ -367,10 +367,10 @@
         assert_eq!(completion.ticket, ticket);
         match completion.result {
             FmpAeadCompletionResult::Opened {
-                precheck: got_precheck,
+                replay: got_replay,
                 opened,
             } => {
-                assert_eq!(got_precheck, precheck);
+                assert_eq!(got_replay, FmpReplayDecision::Prechecked(precheck));
                 assert_eq!(opened.fmp_plaintext_len, 5);
                 assert_eq!(
                     &opened.packet_data[opened.fmp_plaintext_offset
@@ -426,8 +426,8 @@
         let session_key = test_session_key(1, 445);
         let mut state = test_owned_session_state();
         let receive_order_id = state.fmp_receive_order_id();
-        let first_ticket = state.issue_fmp_receive_ticket();
-        let second_ticket = state.issue_fmp_receive_ticket();
+        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
+        let second_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, state);
@@ -484,7 +484,7 @@
         let mut state = test_owned_session_state();
         let receive_order_id = state.fmp_receive_order_id();
         let tickets = (0..DECRYPT_WORKER_FMP_RECEIVE_WINDOW)
-            .map(|_| state.issue_fmp_receive_ticket())
+            .map(|_| state.issue_fmp_receive_ticket().expect("test ticket"))
             .collect::<Vec<_>>();
 
         let mut shard = test_shard();
@@ -545,17 +545,17 @@
         let first_precheck = state
             .precheck_fmp_replay(20)
             .expect("first fresh counter should pass precheck");
-        let first_ticket = state.issue_fmp_receive_ticket();
+        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
         let second_precheck = state
             .precheck_fmp_replay(21)
             .expect("second fresh counter should pass precheck");
-        let second_ticket = state.issue_fmp_receive_ticket();
+        let second_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
 
         let drain = state
             .complete_ordered_fmp_open(
                 second_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: second_precheck,
+                    replay: FmpReplayDecision::Prechecked(second_precheck),
                     value: dummy_opened_fmp_job(21),
                 },
             )
@@ -571,7 +571,7 @@
             .complete_ordered_fmp_open(
                 first_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: first_precheck,
+                    replay: FmpReplayDecision::Prechecked(first_precheck),
                     value: dummy_opened_fmp_job(20),
                 },
             )
@@ -595,17 +595,17 @@
         let mut state =
             OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
 
-        let failed_ticket = state.issue_fmp_receive_ticket();
+        let failed_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
         let later_precheck = state
             .precheck_fmp_replay(22)
             .expect("later fresh counter should pass precheck");
-        let later_ticket = state.issue_fmp_receive_ticket();
+        let later_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
 
         let drain = state
             .complete_ordered_fmp_open(
                 later_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: later_precheck,
+                    replay: FmpReplayDecision::Prechecked(later_precheck),
                     value: dummy_opened_fmp_job(22),
                 },
             )
@@ -648,17 +648,17 @@
         let first_precheck = state
             .precheck_fmp_replay(counter)
             .expect("first duplicate candidate should pass before either completion drains");
-        let first_ticket = state.issue_fmp_receive_ticket();
+        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
         let duplicate_precheck = state
             .precheck_fmp_replay(counter)
             .expect("duplicate can pass precheck while the first completion is pending");
-        let duplicate_ticket = state.issue_fmp_receive_ticket();
+        let duplicate_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
 
         let drain = state
             .complete_ordered_fmp_open(
                 duplicate_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: duplicate_precheck,
+                    replay: FmpReplayDecision::Prechecked(duplicate_precheck),
                     value: dummy_opened_fmp_job(230),
                 },
             )
@@ -669,7 +669,7 @@
             .complete_ordered_fmp_open(
                 first_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: first_precheck,
+                    replay: FmpReplayDecision::Prechecked(first_precheck),
                     value: dummy_opened_fmp_job(23),
                 },
             )
@@ -691,6 +691,53 @@
     }
 
     #[test]
+    fn fmp_ordered_completion_rechecks_deferred_duplicate_counter_at_drain() {
+        let key_bytes = [0x5au8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+        let counter = 33;
+
+        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
+        let duplicate_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
+
+        let drain = state
+            .complete_ordered_fmp_open(
+                duplicate_ticket,
+                FmpOrderedCompletion::Opened {
+                    replay: FmpReplayDecision::Deferred { counter },
+                    value: dummy_opened_fmp_job(330),
+                },
+            )
+            .expect("duplicate completion should buffer behind first ticket");
+        assert_eq!(drain, FmpOrderedDrain::default());
+
+        let drain = state
+            .complete_ordered_fmp_open(
+                first_ticket,
+                FmpOrderedCompletion::Opened {
+                    replay: FmpReplayDecision::Deferred { counter },
+                    value: dummy_opened_fmp_job(33),
+                },
+            )
+            .expect("first completion should accept and duplicate should drain as replay");
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 1,
+                aead_failures: 0,
+                replay_drops: 1,
+            }
+        );
+        assert_eq!(state.fmp_replay.highest(), counter);
+        assert!(
+            !state.fmp_replay.check(counter),
+            "deferred ordered drain must leave the duplicate counter rejected"
+        );
+    }
+
+    #[test]
     fn fmp_ordered_completion_drains_opened_values_in_receive_order() {
         let key_bytes = [0x59u8; 32];
         let open_cipher = test_chacha_key(key_bytes);
@@ -700,18 +747,18 @@
         let first_precheck = state
             .precheck_fmp_replay(24)
             .expect("first fresh counter should pass precheck");
-        let first_ticket = state.issue_fmp_receive_ticket();
+        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
         let second_precheck = state
             .precheck_fmp_replay(25)
             .expect("second fresh counter should pass precheck");
-        let second_ticket = state.issue_fmp_receive_ticket();
+        let second_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
         let mut opened = Vec::new();
 
         let drain = state
             .complete_ordered_fmp_open_with_value(
                 second_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: second_precheck,
+                    replay: FmpReplayDecision::Prechecked(second_precheck),
                     value: dummy_opened_fmp_job(250),
                 },
                 |ready| match ready {
@@ -732,7 +779,7 @@
             .complete_ordered_fmp_open_with_value(
                 first_ticket,
                 FmpOrderedCompletion::Opened {
-                    precheck: first_precheck,
+                    replay: FmpReplayDecision::Prechecked(first_precheck),
                     value: dummy_opened_fmp_job(240),
                 },
                 |ready| match ready {

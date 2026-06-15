@@ -101,6 +101,8 @@
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_aead_helpers: None,
+                fmp_preowner_aead_helpers: false,
+                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -144,11 +146,57 @@
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
                 fmp_aead_helpers: None,
+                fmp_preowner_aead_helpers: false,
+                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_helpers: None,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_receivers,
             bulk_receivers,
+        )
+    }
+
+    fn preowner_fmp_helper_test_pool(
+        cap: usize,
+    ) -> (
+        DecryptWorkerPool,
+        Receiver<WorkerMsg>,
+        Receiver<DecryptWorkerBulkItem>,
+        Receiver<FmpAeadHelperJob>,
+        Receiver<FmpAeadCompletion>,
+    ) {
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
+        let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+        let (fmp_aead_completion_tx, fmp_aead_completion_rx) =
+            bounded::<FmpAeadCompletion>(cap);
+        let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletion>(cap);
+        let (helper_tx, helper_rx) = bounded::<FmpAeadHelperJob>(cap);
+        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+        (
+            DecryptWorkerPool {
+                senders: std::sync::Arc::from(
+                    vec![DecryptWorkerSender {
+                        priority: priority_tx,
+                        bulk: bulk_tx,
+                        fmp_aead_completion: fmp_aead_completion_tx,
+                        fsp_aead_completion: fsp_aead_completion_tx,
+                        bulk_queued_packets,
+                        bulk_packet_cap: cap,
+                    }]
+                    .into_boxed_slice(),
+                ),
+                direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fmp_aead_helpers: Some(Arc::new(FmpAeadHelperPool { tx: helper_tx })),
+                fmp_preowner_aead_helpers: true,
+                fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+                fsp_aead_helpers: None,
+                fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+            },
+            priority_rx,
+            bulk_rx,
+            helper_rx,
+            fmp_aead_completion_rx,
         )
     }
 
@@ -248,7 +296,7 @@
             source_peer: test_source_peer(),
             lane: DecryptWorkerLane::Priority,
             fmp_counter: counter,
-            fmp_replay_highest: counter.saturating_sub(1),
+            fmp_replay_highest: Some(counter.saturating_sub(1)),
         }
     }
 

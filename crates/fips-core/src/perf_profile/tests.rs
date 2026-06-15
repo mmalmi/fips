@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 76);
+    assert_eq!(N_EVENTS, 80);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -226,6 +226,22 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::DecryptFspPathFallback as usize).name(),
         "decrypt_fsp_path_fallback"
     );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerHelper as usize).name(),
+        "decrypt_fmp_preowner_helper"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerHelperFallback as usize).name(),
+        "decrypt_fmp_preowner_helper_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerWindowFallback as usize).name(),
+        "decrypt_fmp_preowner_window_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerInlineFallback as usize).name(),
+        "decrypt_fmp_preowner_inline_fallback"
+    );
 }
 
 #[test]
@@ -401,6 +417,13 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let fsp_path_handoff_before = EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed);
     let fsp_path_helper_before = EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed);
     let fsp_path_fallback_before = EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed);
+    let fmp_preowner_helper_before = EVENTS[Event::DecryptFmpPreownerHelper as usize].load(Relaxed);
+    let fmp_preowner_helper_fallback_before =
+        EVENTS[Event::DecryptFmpPreownerHelperFallback as usize].load(Relaxed);
+    let fmp_preowner_window_fallback_before =
+        EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed);
+    let fmp_preowner_inline_fallback_before =
+        EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -438,6 +461,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFspPathHandoff, 83);
     record_event_count_sample(Event::DecryptFspPathHelper, 89);
     record_event_count_sample(Event::DecryptFspPathFallback, 97);
+    record_event_count_sample(Event::DecryptFmpPreownerHelper, 101);
+    record_event_count_sample(Event::DecryptFmpPreownerHelperFallback, 103);
+    record_event_count_sample(Event::DecryptFmpPreownerWindowFallback, 107);
+    record_event_count_sample(Event::DecryptFmpPreownerInlineFallback, 109);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -592,6 +619,25 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     assert_eq!(
         EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed) - fsp_path_fallback_before,
         97
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpPreownerHelper as usize].load(Relaxed) - fmp_preowner_helper_before,
+        101
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpPreownerHelperFallback as usize].load(Relaxed)
+            - fmp_preowner_helper_fallback_before,
+        103
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed)
+            - fmp_preowner_window_fallback_before,
+        107
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed)
+            - fmp_preowner_inline_fallback_before,
+        109
     );
 }
 

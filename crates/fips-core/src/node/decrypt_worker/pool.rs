@@ -7,6 +7,8 @@ pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
     fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
+    fmp_preowner_aead_helpers: bool,
+    fmp_aead_sessions: Arc<RwLock<HashMap<DecryptSessionKey, Arc<FmpSharedCryptoSession>>>>,
     fsp_aead_helpers: Option<Arc<FspAeadHelperPool>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
@@ -51,6 +53,10 @@ impl FmpAeadHelperPool {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
         }
+    }
+
+    fn has_room(&self) -> bool {
+        !self.tx.is_full()
     }
 }
 
@@ -158,12 +164,16 @@ impl DecryptWorkerPool {
             });
         }
         let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
+        let fmp_preowner_aead_helpers =
+            fmp_preowner_aead_helper_enabled() && fmp_aead_helpers.is_some();
         let fsp_aead_helpers =
             FspAeadHelperPool::spawn(fsp_ordered_aead_helper_count(), bulk_channel_cap);
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
             fmp_aead_helpers,
+            fmp_preowner_aead_helpers,
+            fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_helpers,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
@@ -222,6 +232,10 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return;
         }
+        match self.try_dispatch_fmp_preowner_aead_helper(job) {
+            Ok(()) => return,
+            Err(returned) => job = returned,
+        }
         job.set_trace_enqueued_at(crate::perf_profile::stamp());
         let idx = self.worker_idx_for(job.session_key);
         match decrypt_job_lane(&job) {
@@ -253,6 +267,20 @@ impl DecryptWorkerPool {
         self.fmp_aead_helpers.is_some()
     }
 
+    fn fmp_preowner_aead_helpers_enabled(&self) -> bool {
+        self.fmp_preowner_aead_helpers
+    }
+
+    fn fmp_aead_session(
+        &self,
+        session_key: &DecryptSessionKey,
+    ) -> Option<Arc<FmpSharedCryptoSession>> {
+        self.fmp_aead_sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(session_key).cloned())
+    }
+
     #[allow(clippy::result_large_err)]
     fn dispatch_fmp_aead_helper_job(
         &self,
@@ -268,6 +296,76 @@ impl DecryptWorkerPool {
         job.completion_tx = Some(sender.fmp_aead_completion.clone());
         job.helper_queued_at = crate::perf_profile::stamp();
         helpers.try_dispatch(job)
+    }
+
+    fn send_fmp_aead_completion_blocking(
+        &self,
+        owner_idx: usize,
+        completion: FmpAeadCompletion,
+    ) -> bool {
+        self.senders
+            .get(owner_idx)
+            .is_some_and(|sender| sender.fmp_aead_completion.send(completion).is_ok())
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn try_dispatch_fmp_preowner_aead_helper(
+        &self,
+        job: DecryptJob,
+    ) -> Result<(), DecryptJob> {
+        if !self.fmp_preowner_aead_helpers_enabled() || !job.is_bulk_lane() {
+            return Err(job);
+        }
+        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
+            return Err(job);
+        };
+        if !helpers.has_room() {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
+            );
+            return Err(job);
+        }
+        let Some(shared) = self.fmp_aead_session(&job.session_key) else {
+            return Err(job);
+        };
+        if !shared.can_issue_preowner_bulk_ticket() {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
+            );
+            return Err(job);
+        }
+        let Some(ticket) = shared.try_issue_preowner_bulk_ticket() else {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
+            );
+            return Err(job);
+        };
+        let Some(sender) = self.senders.get(shared.owner_idx) else {
+            return Err(job);
+        };
+        let helper_job = FmpAeadHelperJob::from_preowner_decrypt_job(
+            job,
+            &shared,
+            ticket,
+            sender.fmp_aead_completion.clone(),
+        );
+        match helpers.try_dispatch(helper_job) {
+            Ok(()) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFmpPreownerHelper,
+                );
+                Ok(())
+            }
+            Err(helper_job) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFmpPreownerInlineFallback,
+                );
+                let owner_idx = shared.owner_idx;
+                let completion = helper_job.into_completion();
+                let _ = self.send_fmp_aead_completion_blocking(owner_idx, completion);
+                Ok(())
+            }
+        }
     }
 
     fn fsp_aead_helpers_enabled(&self) -> bool {
@@ -484,6 +582,28 @@ impl DecryptWorkerPool {
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
         debug_assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
 
+        if self.fmp_preowner_aead_helpers_enabled() {
+            let mut owner_jobs = Vec::new();
+            let mut keep_owner_order = false;
+            for job in jobs {
+                if keep_owner_order {
+                    owner_jobs.push(job);
+                    continue;
+                }
+                match self.try_dispatch_fmp_preowner_aead_helper(job) {
+                    Ok(()) => {}
+                    Err(job) => {
+                        keep_owner_order = true;
+                        owner_jobs.push(job);
+                    }
+                }
+            }
+            if owner_jobs.is_empty() {
+                return;
+            }
+            jobs = owner_jobs;
+        }
+
         let queued_at = crate::perf_profile::stamp();
         for job in &mut jobs {
             job.set_trace_enqueued_at(queued_at);
@@ -556,17 +676,32 @@ impl DecryptWorkerPool {
     pub fn register_session(
         &self,
         session_key: DecryptSessionKey,
-        state: OwnedSessionState,
+        mut state: OwnedSessionState,
     ) -> bool {
         if self.senders.is_empty() {
             return false;
         }
         let idx = self.worker_idx_for(session_key);
+        let shared = self
+            .fmp_preowner_aead_helpers_enabled()
+            .then(|| Arc::new(state.shared_crypto_session(idx)));
+        if let Some(shared) = &shared {
+            state.attach_shared_crypto_session(Arc::clone(shared));
+        }
         match self.senders[idx]
             .priority
             .try_send(WorkerMsg::RegisterSession { session_key, state })
         {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Ok(mut sessions) = self.fmp_aead_sessions.write() {
+                    if let Some(shared) = shared {
+                        sessions.insert(session_key, shared);
+                    } else {
+                        sessions.remove(&session_key);
+                    }
+                }
+                true
+            }
             Err(TrySendError::Full(_)) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptWorkerQueueFull,
@@ -681,6 +816,9 @@ impl DecryptWorkerPool {
             return false;
         }
         let idx = self.worker_idx_for(session_key);
+        if let Ok(mut sessions) = self.fmp_aead_sessions.write() {
+            sessions.remove(&session_key);
+        }
         match self.senders[idx]
             .priority
             .try_send(WorkerMsg::UnregisterSession { session_key })

@@ -977,7 +977,10 @@ impl DecryptWorkerShard {
                     unreachable!("FMP replay precheck cannot run AEAD")
                 }
             };
-            let ticket = state.issue_fmp_receive_ticket();
+            let Some(ticket) = state.issue_fmp_receive_ticket() else {
+                crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
+                return Ok(DecryptWorkerJobActions::None);
+            };
             (
                 source_peer,
                 state.fmp_receive_order_id(),
@@ -991,7 +994,7 @@ impl DecryptWorkerShard {
             session_key,
             receive_order_id,
             ticket,
-            precheck: replay_precheck,
+            replay: FmpReplayDecision::Prechecked(replay_precheck),
             cipher,
             fmp_header,
             opened: OpenedFmpJob {
@@ -1065,12 +1068,12 @@ impl DecryptWorkerShard {
         }
 
         match result {
-            FmpAeadCompletionResult::Opened { precheck, opened } => {
+            FmpAeadCompletionResult::Opened { replay, opened } => {
                 let mut actions = DecryptWorkerJobActions::None;
-                match state.complete_ordered_fmp_open_with_value(
+                let drain_result = state.complete_ordered_fmp_open_with_value(
                     ticket,
                     FmpOrderedCompletion::Opened {
-                        precheck,
+                        replay,
                         value: opened,
                     },
                     |ready| match ready {
@@ -1083,8 +1086,15 @@ impl DecryptWorkerShard {
                             actions.push(Self::fmp_aead_failure_action(failure));
                         }
                     },
-                ) {
-                    Ok(_drain) => {}
+                );
+                match drain_result {
+                    Ok(_drain) => {
+                        if let Some(shared) = self.pool.fmp_aead_session(&session_key)
+                            && shared.receive_order_id == receive_order_id
+                        {
+                            shared.mark_next_ready(state.fmp_receive_order_next_ready());
+                        }
+                    }
                     Err(FmpOpenError::Replay) => return actions,
                     #[cfg(test)]
                     Err(FmpOpenError::Aead { .. }) => {
@@ -1095,7 +1105,7 @@ impl DecryptWorkerShard {
             }
             FmpAeadCompletionResult::AeadFailed(failure) => {
                 let mut actions = DecryptWorkerJobActions::None;
-                let _ = state.complete_ordered_fmp_open_with_value(
+                let drain_result = state.complete_ordered_fmp_open_with_value(
                     ticket,
                     FmpOrderedCompletion::AeadFailed(failure),
                     |ready| match ready {
@@ -1109,6 +1119,12 @@ impl DecryptWorkerShard {
                         }
                     },
                 );
+                if drain_result.is_ok()
+                    && let Some(shared) = self.pool.fmp_aead_session(&session_key)
+                    && shared.receive_order_id == receive_order_id
+                {
+                    shared.mark_next_ready(state.fmp_receive_order_next_ready());
+                }
                 actions
             }
         }
@@ -1120,7 +1136,7 @@ impl DecryptWorkerShard {
             event: DecryptWorkerEvent::DecryptFailure(DecryptFailureReport {
                 source_peer: failure.source_peer,
                 fmp_counter: failure.fmp_counter,
-                fmp_replay_highest: failure.fmp_replay_highest,
+                fmp_replay_highest: failure.fmp_replay_highest.unwrap_or(0),
                 trace_enqueued_at: None,
             }),
             direct_delivery: None,
