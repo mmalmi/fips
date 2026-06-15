@@ -367,6 +367,10 @@ fn connected_udp_activation_gets_smaller_busy_timeout() {
         RX_LOOP_CONNECTED_UDP_IDLE_TIMEOUT < RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
         "idle connected-UDP activation should stay separate from slow discovery scans"
     );
+    assert!(
+        RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT <= Duration::from_millis(40),
+        "idle slow maintenance must stay below the app priority wait budget"
+    );
 }
 
 #[tokio::test]

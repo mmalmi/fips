@@ -50,7 +50,7 @@ pub(super) const ENDPOINT_COMMAND_DRAIN_BUDGET: usize = 256;
 /// Raw receive burst cap. This amortizes select/scheduler hops across a hot
 /// transport queue; fallback/side interleaves reserve progress before the cap.
 pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
-pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
+pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(40);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_CONNECTED_UDP_IDLE_TIMEOUT: Duration = Duration::from_millis(20);
 pub(super) const RX_LOOP_CONNECTED_UDP_BUSY_TIMEOUT: Duration = Duration::from_millis(2);

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.59] - 2026-06-15
+
+### Fixed
+
+- Reduced idle receive-loop slow-maintenance slices so a newly arriving
+  priority transport packet is not held behind discovery/status work past the
+  app release-gate latency budget.
+- Bumped `fips-endpoint` to 0.3.34 so app-facing consumers pick up the
+  `fips-core` 0.3.59 receive-loop latency fix.
+
+## [0.3.58] - 2026-06-15
+
+### Fixed
+
+- Fixed Windows builds by keeping pipelined plaintext endpoint state available
+  on non-Unix targets while preserving Unix-only raw-socket send paths.
+
 ## [0.3.57] - 2026-06-14
 
 ### Fixed
