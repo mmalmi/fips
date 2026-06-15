@@ -267,6 +267,34 @@ fn run_worker(idx: usize, mut rx: FairWorkerReceiver) {
 }
 
 #[cfg(target_os = "linux")]
+fn run_linux_wg_batch_worker(idx: usize, rx: Receiver<LinuxWgEncryptBatch>, max_batch: usize) {
+    trace!(worker = idx, "FMP Linux WG-batch encrypt worker starting");
+
+    for mut batch in rx {
+        let packet_count = batch.jobs.len();
+        if packet_count == 0 {
+            batch.ready.complete(Vec::new());
+            continue;
+        }
+
+        let stats = FmpWorkerBatchStats::from_batch(&batch.jobs);
+        crate::perf_profile::record_fmp_worker_batch(
+            packet_count,
+            stats.priority_packets,
+            stats.bulk_packets,
+            max_batch,
+        );
+
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpEncrypt);
+        let groups = seal_linux_queued_batch_to_send_groups(&mut batch.jobs);
+        drop(_t);
+        batch.ready.complete(groups);
+    }
+
+    trace!(worker = idx, "FMP Linux WG-batch encrypt worker exiting");
+}
+
+#[cfg(target_os = "linux")]
 const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
 
 #[cfg(target_os = "linux")]
@@ -445,6 +473,34 @@ fn flush_linux_deferred_send_groups(groups: Vec<SelectedSendBatch>) {
             debug!(error = %err, "deferred Linux UDP send failed");
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn seal_linux_queued_batch_to_send_groups(
+    batch: &mut Vec<QueuedFmpSendJob>,
+) -> Vec<SelectedSendBatch> {
+    let group_packet_capacity = batch.len();
+    let mut groups = Vec::with_capacity(1);
+
+    for queued in batch.drain(..) {
+        let Ok(sealed) = SealedSendPacket::from_queued(queued) else {
+            continue;
+        };
+        let (send_target, target_key, lane, wire_packet, drop_on_backpressure) =
+            sealed.into_parts();
+        push_selected_send_batch_with_lane_and_capacity(
+            &mut groups,
+            send_target,
+            target_key,
+            lane,
+            wire_packet,
+            drop_on_backpressure,
+            group_packet_capacity,
+        );
+    }
+
+    record_selected_send_groups(&groups);
+    groups
 }
 
 #[cfg(target_os = "macos")]

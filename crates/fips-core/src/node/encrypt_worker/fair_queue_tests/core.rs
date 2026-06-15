@@ -496,9 +496,7 @@
             let senders: Vec<_> = (0..4)
                 .map(|_| fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES).0)
                 .collect();
-            let pool = EncryptWorkerPool {
-                senders: Arc::from(senders.into_boxed_slice()),
-            };
+            let pool = encrypt_worker_pool_for_test(senders);
             let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 10009));
 
             let mut owner = None;

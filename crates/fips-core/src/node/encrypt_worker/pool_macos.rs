@@ -16,6 +16,12 @@
 #[derive(Clone)]
 pub(crate) struct EncryptWorkerPool {
     senders: Arc<[WorkerSender]>,
+    #[cfg(target_os = "linux")]
+    linux_wg_batch_senders: Arc<[Sender<LinuxWgEncryptBatch>]>,
+    #[cfg(target_os = "linux")]
+    linux_wg_batch_flows: Arc<LinuxWgBatchSendFlows>,
+    #[cfg(target_os = "linux")]
+    next_wg_batch_worker: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(target_os = "macos")]
     macos_senders: Arc<MacSequencedSendFlows>,
     #[cfg(target_os = "macos")]
@@ -55,8 +61,32 @@ impl EncryptWorkerPool {
                 senders.push(tx);
             }
         }
+        #[cfg(target_os = "linux")]
+        let linux_wg_batch_senders = {
+            let mut batch_senders = Vec::new();
+            if linux_wg_batch_sender_enabled() {
+                let cap = linux_wg_batch_worker_channel_cap();
+                let max_batch = linux_wg_batch_chunk_size();
+                batch_senders.reserve(n);
+                for i in 0..n {
+                    let (tx, rx) = bounded(cap);
+                    std::thread::Builder::new()
+                        .name(format!("fips-linux-wg-encrypt-{i}"))
+                        .spawn(move || run_linux_wg_batch_worker(i, rx, max_batch))
+                        .expect("failed to spawn fips Linux WG-batch encrypt thread");
+                    batch_senders.push(tx);
+                }
+            }
+            Arc::<[Sender<LinuxWgEncryptBatch>]>::from(batch_senders)
+        };
         Self {
             senders: senders.into(),
+            #[cfg(target_os = "linux")]
+            linux_wg_batch_senders,
+            #[cfg(target_os = "linux")]
+            linux_wg_batch_flows: Arc::new(LinuxWgBatchSendFlows::default()),
+            #[cfg(target_os = "linux")]
+            next_wg_batch_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(target_os = "macos")]
             macos_senders: Arc::new(MacSequencedSendFlows::default()),
             #[cfg(target_os = "macos")]
@@ -83,11 +113,29 @@ impl EncryptWorkerPool {
     }
 
     pub(crate) fn dispatch_bulk_batch(&self, jobs: Vec<FmpSendJob>) {
+        #[cfg(target_os = "linux")]
+        let mut jobs = jobs;
+        #[cfg(not(target_os = "linux"))]
+        let jobs = jobs;
         let count = jobs.len();
         if count == 0 {
             return;
         }
         let started_at = encrypt_worker_dispatch_timer();
+
+        #[cfg(target_os = "linux")]
+        {
+            match self.dispatch_linux_wg_bulk_batch_unmeasured(jobs) {
+                Ok(()) => {
+                    record_encrypt_worker_dispatch(started_at, count);
+                    return;
+                }
+                Err(returned_jobs) => {
+                    jobs = returned_jobs;
+                }
+            }
+        }
+
         for job in jobs {
             self.dispatch_unmeasured(job);
         }
@@ -208,6 +256,102 @@ impl EncryptWorkerPool {
             }
         }
     }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_bulk_batch_unmeasured(
+        &self,
+        jobs: Vec<FmpSendJob>,
+    ) -> Result<(), Vec<FmpSendJob>> {
+        if self.linux_wg_batch_senders.is_empty() || jobs.len() < linux_wg_batch_min_packets() {
+            return Err(jobs);
+        }
+
+        let first = jobs.first().expect("non-empty WG batch");
+        if !first.bulk_endpoint_data {
+            return Err(jobs);
+        }
+        let target_key = first.send_target_key();
+        if jobs
+            .iter()
+            .any(|job| !job.bulk_endpoint_data || job.send_target_key() != target_key)
+        {
+            return Err(jobs);
+        }
+
+        let flow = self
+            .linux_wg_batch_flows
+            .flow_for(target_key, first.send_target.clone());
+        let chunk_size = linux_wg_batch_chunk_size();
+        let mut chunk = Vec::with_capacity(chunk_size);
+
+        for job in jobs {
+            chunk.push(QueuedFmpSendJob::direct(job));
+            if chunk.len() >= chunk_size {
+                self.dispatch_linux_wg_chunk(Arc::clone(&flow), std::mem::take(&mut chunk));
+                chunk = Vec::with_capacity(chunk_size);
+            }
+        }
+        if !chunk.is_empty() {
+            self.dispatch_linux_wg_chunk(flow, chunk);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_chunk(
+        &self,
+        flow: Arc<LinuxWgBatchSendFlow>,
+        jobs: Vec<QueuedFmpSendJob>,
+    ) {
+        if jobs.is_empty() {
+            return;
+        }
+
+        let ready = Arc::new(LinuxWgSendBatch::default());
+        if flow.try_enqueue(Arc::clone(&ready)).is_err() {
+            self.drop_linux_wg_jobs(0, &jobs);
+            return;
+        }
+
+        let idx = self
+            .next_wg_batch_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.linux_wg_batch_senders.len();
+        for job in &jobs {
+            crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
+        }
+
+        let batch = LinuxWgEncryptBatch { ready, jobs };
+        match self.linux_wg_batch_senders[idx].try_send(batch) {
+            Ok(()) => {}
+            Err(TrySendError::Full(batch)) | Err(TrySendError::Disconnected(batch)) => {
+                self.drop_linux_wg_jobs(idx, &batch.jobs);
+                batch.ready.complete(Vec::new());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn drop_linux_wg_jobs(&self, idx: usize, jobs: &[QueuedFmpSendJob]) {
+        for job in jobs {
+            record_encrypt_worker_queue_full(job.queue_lane());
+            record_encrypt_worker_backpressure_drop(idx);
+        }
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+fn encrypt_worker_pool_for_test(senders: Vec<WorkerSender>) -> EncryptWorkerPool {
+    EncryptWorkerPool {
+        senders: Arc::from(senders.into_boxed_slice()),
+        #[cfg(target_os = "linux")]
+        linux_wg_batch_senders: Arc::from(Vec::<Sender<LinuxWgEncryptBatch>>::new()),
+        #[cfg(target_os = "linux")]
+        linux_wg_batch_flows: Arc::new(LinuxWgBatchSendFlows::default()),
+        #[cfg(target_os = "linux")]
+        next_wg_batch_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    }
 }
 
 fn encrypt_worker_dispatch_timer() -> Option<std::time::Instant> {
@@ -243,6 +387,284 @@ fn record_encrypt_worker_backpressure_drop(worker: usize) {
             "EncryptWorker channel full; dropping bulk data packet"
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxWgEncryptBatch {
+    ready: Arc<LinuxWgSendBatch>,
+    jobs: Vec<QueuedFmpSendJob>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxWgSendBatch {
+    state: Mutex<LinuxWgSendBatchState>,
+    ready_cv: Condvar,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxWgSendBatchState {
+    groups: Option<Vec<SelectedSendBatch>>,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxWgSendBatch {
+    fn complete(&self, groups: Vec<SelectedSendBatch>) {
+        let mut state = self.state.lock().expect("Linux WG batch state poisoned");
+        debug_assert!(state.groups.is_none());
+        state.groups = Some(groups);
+        drop(state);
+        self.ready_cv.notify_one();
+    }
+
+    fn wait(&self) -> Vec<SelectedSendBatch> {
+        let mut state = self.state.lock().expect("Linux WG batch state poisoned");
+        loop {
+            if let Some(groups) = state.groups.take() {
+                return groups;
+            }
+            state = self
+                .ready_cv
+                .wait(state)
+                .expect("Linux WG batch state poisoned");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+type LinuxWgBatchSendFlowKey = SendTargetKey;
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxWgBatchSendFlows {
+    flows: Mutex<HashMap<LinuxWgBatchSendFlowKey, Arc<LinuxWgBatchSendFlow>>>,
+    last_prune_ms: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxWgBatchSendFlows {
+    fn flow_for(
+        &self,
+        key: LinuxWgBatchSendFlowKey,
+        send_target: SelectedSendTarget,
+    ) -> Arc<LinuxWgBatchSendFlow> {
+        let now_ms = linux_wg_batch_now_ms();
+        let mut flows = self.flows.lock().expect("Linux WG flow map poisoned");
+        self.prune_idle_locked(&mut flows, now_ms);
+        if let Some(flow) = flows.get(&key) {
+            flow.mark_used(now_ms);
+            return Arc::clone(flow);
+        }
+
+        let flow = LinuxWgBatchSendFlow::spawn(
+            key,
+            send_target,
+            now_ms,
+            linux_wg_batch_flow_channel_cap(),
+        );
+        flows.insert(key, Arc::clone(&flow));
+        flow
+    }
+
+    fn prune_idle_locked(
+        &self,
+        flows: &mut HashMap<LinuxWgBatchSendFlowKey, Arc<LinuxWgBatchSendFlow>>,
+        now_ms: u64,
+    ) {
+        let last = self
+            .last_prune_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 10_000 {
+            return;
+        }
+        if self
+            .last_prune_ms
+            .compare_exchange(
+                last,
+                now_ms,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let idle_ms = linux_wg_batch_flow_idle_ms();
+        flows.retain(|_, flow| !flow.is_idle(now_ms, idle_ms));
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxWgBatchSendFlow {
+    sender: Sender<Arc<LinuxWgSendBatch>>,
+    inflight: Arc<std::sync::atomic::AtomicUsize>,
+    last_used_ms: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxWgBatchSendFlow {
+    fn spawn(
+        key: LinuxWgBatchSendFlowKey,
+        send_target: SelectedSendTarget,
+        now_ms: u64,
+        cap: usize,
+    ) -> Arc<Self> {
+        let (sender, receiver) = bounded(cap);
+        let inflight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let thread_inflight = Arc::clone(&inflight);
+        std::thread::Builder::new()
+            .name(format!("fips-linux-wg-send-{}", key.socket_fd))
+            .spawn(move || run_linux_wg_batch_sender(key, send_target, receiver, thread_inflight))
+            .expect("failed to spawn fips Linux WG-batch sender thread");
+        Arc::new(Self {
+            sender,
+            inflight,
+            last_used_ms: std::sync::atomic::AtomicU64::new(now_ms),
+        })
+    }
+
+    fn try_enqueue(
+        &self,
+        batch: Arc<LinuxWgSendBatch>,
+    ) -> Result<(), TrySendError<Arc<LinuxWgSendBatch>>> {
+        match self.sender.try_send(batch) {
+            Ok(()) => {
+                self.inflight
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn mark_used(&self, now_ms: u64) {
+        self.last_used_ms
+            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
+        let last_used = self.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
+        now_ms.saturating_sub(last_used) >= idle_ms
+            && self.inflight.load(std::sync::atomic::Ordering::Relaxed) == 0
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_wg_batch_sender(
+    key: LinuxWgBatchSendFlowKey,
+    send_target: SelectedSendTarget,
+    receiver: Receiver<Arc<LinuxWgSendBatch>>,
+    inflight: Arc<std::sync::atomic::AtomicUsize>,
+) {
+    trace!(
+        socket_fd = key.socket_fd,
+        connected_fd = ?key.connected_fd,
+        dest = %send_target.dest_addr(),
+        "Linux WG-batch UDP sender starting"
+    );
+
+    for batch in receiver {
+        let groups = batch.wait();
+        if !groups.is_empty() {
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
+            if let Err(err) = flush_linux_send_groups_sync(groups) {
+                debug!(
+                    socket_fd = key.socket_fd,
+                    connected_fd = ?key.connected_fd,
+                    dest = %send_target.dest_addr(),
+                    error = %err,
+                    "Linux WG-batch UDP send failed"
+                );
+            }
+        }
+        inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_wg_batch_sender_enabled(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(str::trim),
+        Some("0" | "false" | "FALSE" | "False" | "no" | "NO" | "No" | "off" | "OFF" | "Off")
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_sender_enabled() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        parse_linux_wg_batch_sender_enabled(std::env::var("FIPS_LINUX_WG_BATCH_SENDER").ok().as_deref())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_chunk_size() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_CHUNK")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(DEFAULT_WORKER_BATCH_SIZE)
+            .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_worker_channel_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_WORKER_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(1024)
+            .clamp(1, 32768)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_flow_channel_cap() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_FLOW_CAP")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(1024)
+            .clamp(1, 32768)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_min_packets() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_MIN")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(16)
+            .clamp(2, LINUX_UDP_SEND_BATCH_MAX)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_flow_idle_ms() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_FLOW_IDLE_MS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(120_000)
+            .max(10_000)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(target_os = "macos")]

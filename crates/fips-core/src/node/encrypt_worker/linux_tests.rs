@@ -42,6 +42,28 @@ mod tests {
         )
     }
 
+    fn selected_test_packet_group(
+        target: SelectedSendTarget,
+        target_key: SendTargetKey,
+        byte: u8,
+    ) -> SelectedSendBatch {
+        SelectedSendBatch::new_with_capacity(
+            target,
+            target_key,
+            SelectedSendLane::Bulk,
+            vec![byte; 64],
+            true,
+            1,
+        )
+    }
+
+    fn recv_packet_first_byte(socket: &std::net::UdpSocket) -> u8 {
+        let mut buf = [0u8; 256];
+        let (len, _) = socket.recv_from(&mut buf).expect("receive packet");
+        assert_eq!(len, 64);
+        buf[0]
+    }
+
     #[test]
     fn gso_eligible_rejects_single_packet() {
         assert!(!gso_eligible_sizes_ref(&[pkt(1500)]));
@@ -91,6 +113,91 @@ mod tests {
     }
 
     #[test]
+    fn linux_wg_batch_flow_sends_fifo_even_when_completed_out_of_order() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let recv = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind receiver");
+            recv.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .expect("set read timeout");
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let target = SelectedSendTarget::new(socket, None, recv.local_addr().unwrap());
+            let target_key = target.key();
+            let flow = LinuxWgBatchSendFlow::spawn(
+                target_key,
+                target.clone(),
+                linux_wg_batch_now_ms(),
+                8,
+            );
+
+            let batch0 = Arc::new(LinuxWgSendBatch::default());
+            let batch1 = Arc::new(LinuxWgSendBatch::default());
+            flow.try_enqueue(Arc::clone(&batch0))
+                .expect("enqueue first batch");
+            flow.try_enqueue(Arc::clone(&batch1))
+                .expect("enqueue second batch");
+
+            batch1.complete(vec![selected_test_packet_group(
+                target.clone(),
+                target_key,
+                2,
+            )]);
+            batch0.complete(vec![selected_test_packet_group(target, target_key, 1)]);
+
+            assert_eq!(recv_packet_first_byte(&recv), 1);
+            assert_eq!(recv_packet_first_byte(&recv), 2);
+        });
+    }
+
+    #[test]
+    fn linux_wg_batch_flow_empty_batch_advances_sender() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let recv = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind receiver");
+            recv.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .expect("set read timeout");
+            let raw = crate::transport::udp::socket::UdpRawSocket::open(
+                "127.0.0.1:0".parse().unwrap(),
+                1 << 20,
+                1 << 20,
+            )
+            .expect("open send socket");
+            let socket = raw.into_async().expect("into_async");
+            let target = SelectedSendTarget::new(socket, None, recv.local_addr().unwrap());
+            let target_key = target.key();
+            let flow = LinuxWgBatchSendFlow::spawn(
+                target_key,
+                target.clone(),
+                linux_wg_batch_now_ms(),
+                8,
+            );
+
+            let skipped = Arc::new(LinuxWgSendBatch::default());
+            let next = Arc::new(LinuxWgSendBatch::default());
+            flow.try_enqueue(Arc::clone(&skipped))
+                .expect("enqueue skipped batch");
+            flow.try_enqueue(Arc::clone(&next))
+                .expect("enqueue next batch");
+
+            skipped.complete(Vec::new());
+            next.complete(vec![selected_test_packet_group(target, target_key, 9)]);
+
+            assert_eq!(recv_packet_first_byte(&recv), 9);
+        });
+    }
+
+    #[test]
     fn linux_deferred_sender_env_defaults_on_and_is_bounded() {
         assert!(parse_linux_deferred_sender_enabled(None));
         assert!(!parse_linux_deferred_sender_enabled(Some("0")));
@@ -112,6 +219,17 @@ mod tests {
             parse_linux_deferred_sender_cap(Some("nope")),
             DEFAULT_LINUX_DEFERRED_SENDER_CAP
         );
+    }
+
+    #[test]
+    fn linux_wg_batch_sender_env_defaults_on_with_explicit_opt_out() {
+        assert!(parse_linux_wg_batch_sender_enabled(None));
+        assert!(!parse_linux_wg_batch_sender_enabled(Some("0")));
+        assert!(!parse_linux_wg_batch_sender_enabled(Some("false")));
+        assert!(!parse_linux_wg_batch_sender_enabled(Some("OFF")));
+        assert!(parse_linux_wg_batch_sender_enabled(Some("1")));
+        assert!(parse_linux_wg_batch_sender_enabled(Some("true")));
+        assert!(parse_linux_wg_batch_sender_enabled(Some("unexpected")));
     }
 
     #[test]
