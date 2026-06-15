@@ -26,6 +26,7 @@ mod packet_channel;
 mod tests;
 
 pub use handle::TransportHandle;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use packet_channel::received_timestamp_ms;
 pub use packet_channel::{PacketRx, PacketTx, ReceivedPacket, packet_channel};
 
