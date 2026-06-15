@@ -673,7 +673,7 @@
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn peer_runtime_endpoint_send_reuses_resolved_route_for_multiple_payloads() {
+    async fn peer_runtime_endpoint_send_reuses_resolved_route_and_target_for_multiple_payloads() {
         use crate::PeerIdentity;
         use crate::peer::ActivePeer;
         use crate::transport::udp::UdpTransport;
@@ -741,6 +741,11 @@
         let route = node
             .resolve_peer_runtime_endpoint_route(dest_addr, Node::now_ms())
             .expect("established direct peer should resolve once for a batch");
+        let batch_send_target = node
+            .resolve_peer_runtime_endpoint_send_target(&route)
+            .await
+            .expect("established direct route target resolution should not error")
+            .expect("established direct route should resolve one reusable send target");
         let payload = EndpointDataPayload::new(vec![0xee; 64]);
         let inner_plaintext = vec![0xaa; 80];
         let fsp_before = node
@@ -787,10 +792,13 @@
                 dest_coords: None,
             };
             let prepared = node
-                .prepare_peer_runtime_endpoint_send_with_route(send, &route)
-                .await
-                .expect("reused endpoint route should prepare")
-                .expect("reused route should prepare worker packet");
+                .prepare_peer_runtime_endpoint_send_with_route_target(
+                    send,
+                    &route,
+                    batch_send_target.clone(),
+                )
+                .expect("reused endpoint route and target should prepare")
+                .expect("reused route and target should prepare worker packet");
             assert!(
                 prepared.worker_job.queued_at.is_none(),
                 "batch commit owns the worker queue timestamp for packet {offset}"
