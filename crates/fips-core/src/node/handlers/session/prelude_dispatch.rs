@@ -20,8 +20,10 @@ use crate::node::{
     EndpointDataSend, EndpointSendBatchCommand, EndpointSendCommand, FspSendBookkeepingInput,
     LocalSessionPayload, Node, NodeEndpointCommand, NodeEndpointPeer, NodeEndpointRelayStatus,
     NodeError, SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD, SESSION_DIRECT_DEGRADED_MIN_SAMPLE,
-    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD, endpoint_flow_dispatch_key,
+    SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD,
 };
+#[cfg(unix)]
+use crate::node::endpoint_flow_dispatch_key;
 use crate::noise::{
     HandshakeState, NoiseSession, XK_HANDSHAKE_MSG1_SIZE, XK_HANDSHAKE_MSG2_SIZE,
     XK_HANDSHAKE_MSG3_SIZE,
@@ -900,20 +902,9 @@ struct PipelinedEndpointPreparedSend {
     fmp_timestamp_ms: u32,
     fmp_wire_capacity: usize,
     originated_bytes: usize,
+    fsp_path_mtu: u16,
     fsp_bookkeeping: FspSendBookkeepingInput,
     worker_job: crate::node::encrypt_worker::FmpSendJob,
-}
-
-#[cfg(unix)]
-#[derive(Clone, Copy)]
-struct PipelinedEndpointPreparedBookkeeping {
-    dest_addr: NodeAddr,
-    next_hop_addr: NodeAddr,
-    fmp_counter: u64,
-    fmp_timestamp_ms: u32,
-    fmp_wire_capacity: usize,
-    originated_bytes: usize,
-    fsp_bookkeeping: FspSendBookkeepingInput,
 }
 
 #[cfg(unix)]

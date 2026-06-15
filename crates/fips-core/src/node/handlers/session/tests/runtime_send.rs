@@ -136,6 +136,131 @@
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn endpoint_bulk_send_lease_dispatches_feedback_before_worker_batch() {
+        use crate::PeerIdentity;
+        use crate::peer::ActivePeer;
+        use crate::transport::udp::UdpTransport;
+        use crate::transport::{LinkId, TransportAddr, TransportId, packet_channel};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let dest = Identity::generate();
+        let next_hop = Identity::generate();
+        let dest_identity = PeerIdentity::from_pubkey_full(dest.pubkey_full());
+        let next_hop_identity = PeerIdentity::from_pubkey_full(next_hop.pubkey_full());
+        let dest_addr = *dest_identity.node_addr();
+        let next_hop_addr = *next_hop_identity.node_addr();
+        let transport_id = TransportId::new(0x5A);
+
+        let mut node = Node::with_identity(local, crate::config::Config::new()).expect("node");
+        let mut session = established_entry(&node.identity, &dest);
+        session.mark_established(1_000);
+        session.init_mmp(&node.config.node.session_mmp);
+        assert!(node.sessions.insert(dest_addr, session).is_none());
+
+        let active_peer = ActivePeer::with_session(
+            next_hop_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &next_hop),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string("127.0.0.1:9"),
+            crate::transport::LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            Some([0x02; 8]),
+        );
+        node.peers
+            .insert_with_current_session_index(next_hop_addr, active_peer);
+
+        let (packet_tx, _packet_rx) = packet_channel(8);
+        let mut udp = UdpTransport::new(
+            transport_id,
+            None,
+            crate::config::UdpConfig {
+                bind_addr: Some("127.0.0.1:0".to_string()),
+                mtu: Some(1234),
+                ..Default::default()
+            },
+            packet_tx,
+        );
+        udp.start_async().await.expect("start UDP transport");
+        let prepared = crate::node::FmpSendPreparation {
+            their_index: SessionIndex::new(0x2020),
+            transport_id,
+            remote_addr: TransportAddr::from_string("127.0.0.1:9"),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            connected_socket: None,
+            timestamp_ms: 0,
+            flags: 0,
+            payload_len: 0,
+        };
+        let send_target = PipelinedEndpointSendTarget::resolve(&udp, &prepared)
+            .await
+            .expect("started UDP transport resolves send target")
+            .into_selected_send_target();
+        let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
+        let (runtime, mut feedback_rx) = crate::node::EndpointBulkSendRuntime::channel(8);
+        let fsp = node
+            .sessions
+            .get(&dest_addr)
+            .and_then(|entry| entry.endpoint_bulk_fsp_lease())
+            .expect("established session should export FSP lease state");
+        let fmp = node
+            .peers
+            .endpoint_bulk_fmp_lease(&next_hop_addr)
+            .expect("active peer should export FMP lease state");
+        runtime.publish(crate::node::EndpointBulkSendLease::new(
+            *node.node_addr(),
+            dest_addr,
+            next_hop_addr,
+            1234,
+            9,
+            3,
+            false,
+            fsp,
+            fmp,
+            send_target,
+            workers,
+            std::time::Duration::from_secs(1),
+        ));
+
+        let payload = EndpointDataPayload::new(vec![0xee; 96]);
+        assert!(
+            runtime.try_send_bulk_batch_to_peer(dest_identity, std::slice::from_ref(&payload)),
+            "published lease should dispatch the bulk batch"
+        );
+        let feedback = feedback_rx
+            .try_recv()
+            .expect("endpoint mover must enqueue feedback before worker dispatch");
+        assert_eq!(feedback.records.len(), 1);
+        assert_eq!(feedback.records[0].dest_addr, dest_addr);
+        assert_eq!(feedback.records[0].next_hop_addr, next_hop_addr);
+        assert_eq!(feedback.records[0].fsp_path_mtu, 1234);
+
+        node.apply_endpoint_bulk_send_feedback(feedback);
+        let session = node.sessions.get(&dest_addr).expect("session exists");
+        let (packets_sent, _, bytes_sent, _) = session.traffic_counters();
+        assert_eq!(packets_sent, 1);
+        assert_eq!(bytes_sent, payload.len() as u64);
+        assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
+        assert_eq!(
+            session
+                .mmp()
+                .expect("session MMP")
+                .path_mtu
+                .current_mtu(),
+            1234
+        );
+        let peer = node.peers.get(&next_hop_addr).expect("peer exists");
+        assert_eq!(peer.link_stats().packets_sent, 1);
+        assert_eq!(node.stats().forwarding.originated_packets, 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn pipelined_endpoint_peer_runtime_send_owns_transport_path_mtu_route_plan_and_runtime_dispatch()
      {
         use crate::PeerIdentity;

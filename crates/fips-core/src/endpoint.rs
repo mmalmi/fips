@@ -6,6 +6,8 @@
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN;
+#[cfg(unix)]
+use crate::node::EndpointBulkSendRuntime;
 use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
     NodeEndpointCommand, NodeEndpointEvent,
@@ -298,6 +300,8 @@ pub struct FipsEndpoint {
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_priority_commands: mpsc::Sender<NodeEndpointCommand>,
     endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
+    #[cfg(unix)]
+    endpoint_bulk_send_runtime: EndpointBulkSendRuntime,
     /// In-process loopback sender — `send()` to our own npub injects an
     /// event into the same queue without going through the wire/encrypt
     /// path. The node's rx_loop also sends into this channel directly
@@ -465,6 +469,14 @@ impl FipsEndpoint {
                 Vec::new()
             };
             let batch = std::mem::replace(&mut payloads, tail);
+            #[cfg(unix)]
+            if lane == EndpointCommandLane::Bulk
+                && self
+                    .endpoint_bulk_send_runtime
+                    .try_send_bulk_batch_to_peer(remote, &batch)
+            {
+                continue;
+            }
             let queued_at = crate::perf_profile::stamp();
             let Some(command) =
                 NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at, lane)

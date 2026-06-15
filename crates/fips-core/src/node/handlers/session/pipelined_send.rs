@@ -212,6 +212,138 @@ impl<'a> PipelinedEndpointRuntimeBatchSendAttempt<'a> {
 }
 
 #[cfg(unix)]
+impl crate::node::EndpointBulkSendRuntime {
+    pub(crate) fn try_send_bulk_batch_to_peer(
+        &self,
+        remote: PeerIdentity,
+        payloads: &[EndpointDataPayload],
+    ) -> bool {
+        if payloads.is_empty() || payloads.iter().any(|payload| !payload.bulk_endpoint_data()) {
+            return false;
+        }
+
+        let dest_addr = *remote.node_addr();
+        let Some(lease) = self.lease(&dest_addr) else {
+            return false;
+        };
+        if lease.dest_addr != dest_addr {
+            return false;
+        }
+
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
+        let queued_at = crate::perf_profile::stamp();
+        let mut records = Vec::with_capacity(payloads.len());
+        let mut jobs = Vec::with_capacity(payloads.len());
+
+        for payload in payloads {
+            let now_ms = crate::time::now_ms();
+            let timestamp = now_ms.wrapping_sub(lease.fsp.session_start_ms) as u32;
+            let inner_flags = FspInnerFlags {
+                spin_bit: lease.fsp.spin_bit,
+            }
+            .to_byte();
+            let mut fsp_flags = 0;
+            if lease.fsp.current_k_bit {
+                fsp_flags |= FSP_FLAG_K;
+            }
+
+            let send = PipelinedEndpointSend {
+                dest_addr: &lease.dest_addr,
+                payload,
+                now_ms,
+                timestamp,
+                fsp_flags,
+                body: PipelinedEndpointWireBody::EndpointPayload {
+                    timestamp,
+                    msg_type: SessionMessageType::EndpointData.to_byte(),
+                    inner_flags,
+                    payload: payload.as_slice(),
+                },
+                my_coords: None,
+                dest_coords: None,
+            };
+            let route_plan = PipelinedEndpointRoutePlan::new(
+                lease.source_addr,
+                lease.next_hop_addr,
+                lease.path_mtu,
+                lease.default_ttl,
+                lease.scheduling_weight,
+                lease.direct_path_blocks_direct_payload,
+            );
+            let Ok(send_plan) = route_plan.build_send_plan(&send) else {
+                return false;
+            };
+
+            let fsp_input = send_plan.fsp_reservation_input();
+            let Ok(fsp_counter) = lease.fsp.counter_authority.reserve() else {
+                return false;
+            };
+            let fsp_reservation = crate::node::session::FspSendReservation {
+                counter: fsp_counter,
+                header: build_fsp_header(fsp_counter, fsp_input.flags, fsp_input.payload_len),
+                cipher: lease.fsp.cipher.clone(),
+            };
+
+            let fmp_payload_len = send_plan.fmp_payload_len();
+            let Ok(fmp_counter) = lease.fmp.counter_authority.reserve() else {
+                return false;
+            };
+            let fmp_timestamp_ms = lease.fmp.session_start.elapsed().as_millis() as u32;
+            let fmp_reservation = crate::node::PreparedFmpWorkerReservation {
+                counter: fmp_counter,
+                header: crate::node::wire::build_established_header(
+                    lease.fmp.their_index,
+                    fmp_counter,
+                    lease.fmp.base_flags,
+                    fmp_payload_len,
+                ),
+                cipher: lease.fmp.cipher.clone(),
+                predicted_bytes: ESTABLISHED_HEADER_SIZE
+                    + fmp_payload_len as usize
+                    + crate::noise::TAG_SIZE,
+            };
+
+            let wire = send_plan.wire_plan.build(
+                fmp_reservation.header,
+                fsp_reservation.header,
+                fmp_timestamp_ms,
+            );
+            let worker_wire = wire.into_worker_wire(fmp_reservation, fsp_reservation);
+            let fmp_wire_capacity = worker_wire.wire_capacity;
+            let originated_bytes = send_plan.link_plaintext_len() + crate::noise::TAG_SIZE;
+            let fsp_bookkeeping = send_plan
+                .dispatch_plan
+                .fsp_bookkeeping_input(worker_wire.fsp_counter);
+            let worker_job = send_plan.dispatch_plan.into_worker_job(
+                worker_wire,
+                lease.send_target.clone(),
+                queued_at,
+            );
+
+            records.push(crate::node::EndpointBulkSendFeedbackRecord {
+                dest_addr: lease.dest_addr,
+                next_hop_addr: lease.next_hop_addr,
+                fmp_counter,
+                fmp_timestamp_ms,
+                fmp_wire_capacity,
+                originated_bytes,
+                fsp_path_mtu: lease.path_mtu,
+                fsp_bookkeeping,
+            });
+            jobs.push(worker_job);
+        }
+
+        let _commit_t =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSendCommit);
+        if !self.try_feedback(records) {
+            return false;
+        }
+        lease.workers.dispatch_bulk_batch(jobs);
+        true
+    }
+}
+
+#[cfg(unix)]
 impl<'a> PipelinedEndpointRuntimeSend<'a> {
     fn new(runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>) -> Self {
         Self { runtime_plan }
@@ -457,7 +589,7 @@ impl PipelinedEndpointPreparedSend {
     fn into_bookkeeping_and_job(
         self,
     ) -> (
-        PipelinedEndpointPreparedBookkeeping,
+        crate::node::EndpointBulkSendFeedbackRecord,
         crate::node::encrypt_worker::FmpSendJob,
     ) {
         let PipelinedEndpointPreparedSend {
@@ -467,18 +599,20 @@ impl PipelinedEndpointPreparedSend {
             fmp_timestamp_ms,
             fmp_wire_capacity,
             originated_bytes,
+            fsp_path_mtu,
             fsp_bookkeeping,
             worker_job,
         } = self;
 
         (
-            PipelinedEndpointPreparedBookkeeping {
+            crate::node::EndpointBulkSendFeedbackRecord {
                 dest_addr,
                 next_hop_addr,
                 fmp_counter,
                 fmp_timestamp_ms,
                 fmp_wire_capacity,
                 originated_bytes,
+                fsp_path_mtu,
                 fsp_bookkeeping,
             },
             worker_job,
@@ -506,10 +640,7 @@ impl PipelinedEndpointPreparedSend {
         worker_job
     }
 
-    fn record_bookkeeping_many(
-        records: &[PipelinedEndpointPreparedBookkeeping],
-        node: &mut Node,
-    ) {
+    fn record_bookkeeping_many(records: &[crate::node::EndpointBulkSendFeedbackRecord], node: &mut Node) {
         let Some(first) = records.first().copied() else {
             return;
         };
@@ -537,6 +668,10 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated_batch(records.len(), originated_bytes);
+            let _ = node.sessions.seed_endpoint_data_fsp_path_mtu_batch(
+                &first.dest_addr,
+                records.iter().map(|record| record.fsp_path_mtu),
+            );
             let _ = node.sessions.record_fsp_send_bookkeeping_batch(
                 &first.dest_addr,
                 records.iter().map(|record| record.fsp_bookkeeping),
@@ -554,6 +689,9 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated(record.originated_bytes);
+            let _ = node
+                .sessions
+                .seed_endpoint_data_fsp_path_mtu_batch(&record.dest_addr, [record.fsp_path_mtu]);
             let _ = node
                 .sessions
                 .record_fsp_send_bookkeeping(&record.dest_addr, record.fsp_bookkeeping);
@@ -604,6 +742,25 @@ impl PipelinedEndpointPreparedSend {
             .collect();
         Self::record_bookkeeping_many(&records, node);
         workers.dispatch_bulk_batch(jobs);
+    }
+}
+
+#[cfg(unix)]
+impl Node {
+    pub(in crate::node) fn apply_endpoint_bulk_send_feedback(
+        &mut self,
+        feedback: crate::node::EndpointBulkSendFeedback,
+    ) {
+        PipelinedEndpointPreparedSend::record_bookkeeping_many(&feedback.records, self);
+    }
+}
+
+#[cfg(not(unix))]
+impl Node {
+    pub(in crate::node) fn apply_endpoint_bulk_send_feedback(
+        &mut self,
+        _feedback: crate::node::EndpointBulkSendFeedback,
+    ) {
     }
 }
 

@@ -39,6 +39,191 @@ pub(crate) struct EndpointDataIo {
     /// decrypt path, while keeping every consumer reading from a single
     /// channel.
     pub(crate) event_tx: EndpointEventSender,
+    /// Shared endpoint-side bulk send runtime.
+    ///
+    /// The node publishes short-lived, invalidatable leases after it proves an
+    /// established UDP/worker route is usable. Endpoint bulk batches may use
+    /// those leases to prepare worker jobs without waiting for the rx-loop
+    /// command mailbox; priority/control packets keep using the command lane.
+    #[cfg(unix)]
+    pub(crate) bulk_send_runtime: EndpointBulkSendRuntime,
+}
+
+/// Shared endpoint-side bulk send lease store plus feedback lane.
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendRuntime {
+    leases: Arc<std::sync::RwLock<std::collections::HashMap<NodeAddr, EndpointBulkSendLease>>>,
+    feedback_tx: tokio::sync::mpsc::Sender<EndpointBulkSendFeedback>,
+    generation: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for EndpointBulkSendRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointBulkSendRuntime")
+            .field("leases", &self.lease_count())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendLease {
+    pub(in crate::node) source_addr: NodeAddr,
+    pub(in crate::node) dest_addr: NodeAddr,
+    pub(in crate::node) next_hop_addr: NodeAddr,
+    pub(in crate::node) path_mtu: u16,
+    pub(in crate::node) default_ttl: u8,
+    pub(in crate::node) scheduling_weight: u8,
+    pub(in crate::node) direct_path_blocks_direct_payload: bool,
+    pub(in crate::node) fsp: EndpointBulkSendFspLease,
+    pub(in crate::node) fmp: EndpointBulkSendFmpLease,
+    pub(in crate::node) send_target: crate::node::encrypt_worker::SelectedSendTarget,
+    pub(in crate::node) workers: crate::node::encrypt_worker::EncryptWorkerPool,
+    expires_at: crate::time::Instant,
+    generation: u64,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendFspLease {
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) counter_authority: crate::noise::SendCounterAuthority,
+    pub(in crate::node) session_start_ms: u64,
+    pub(in crate::node) current_k_bit: bool,
+    pub(in crate::node) spin_bit: bool,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendFmpLease {
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) counter_authority: crate::noise::SendCounterAuthority,
+    pub(in crate::node) their_index: crate::utils::index::SessionIndex,
+    pub(in crate::node) session_start: std::time::Instant,
+    pub(in crate::node) base_flags: u8,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct EndpointBulkSendFeedback {
+    pub(in crate::node) records: Vec<EndpointBulkSendFeedbackRecord>,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Copy)]
+pub(crate) struct EndpointBulkSendFeedbackRecord {
+    pub(in crate::node) dest_addr: NodeAddr,
+    pub(in crate::node) next_hop_addr: NodeAddr,
+    pub(in crate::node) fmp_counter: u64,
+    pub(in crate::node) fmp_timestamp_ms: u32,
+    pub(in crate::node) fmp_wire_capacity: usize,
+    pub(in crate::node) originated_bytes: usize,
+    pub(in crate::node) fsp_path_mtu: u16,
+    pub(in crate::node) fsp_bookkeeping: FspSendBookkeepingInput,
+}
+
+#[cfg(unix)]
+impl EndpointBulkSendRuntime {
+    pub(in crate::node) fn channel(
+        capacity: usize,
+    ) -> (Self, tokio::sync::mpsc::Receiver<EndpointBulkSendFeedback>) {
+        let feedback_capacity = endpoint_data_command_capacity(capacity).max(1);
+        let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel(feedback_capacity);
+        (
+            Self {
+                leases: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                feedback_tx,
+                generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            },
+            feedback_rx,
+        )
+    }
+
+    pub(in crate::node) fn publish(&self, mut lease: EndpointBulkSendLease) {
+        lease.generation = self.generation.load(Relaxed);
+        if let Ok(mut leases) = self.leases.write() {
+            leases.insert(lease.dest_addr, lease);
+        }
+    }
+
+    pub(in crate::node) fn invalidate(&self, dest_addr: &NodeAddr) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut leases) = self.leases.write() {
+            leases.remove(dest_addr);
+        }
+    }
+
+    pub(in crate::node) fn lease(&self, dest_addr: &NodeAddr) -> Option<EndpointBulkSendLease> {
+        let now = crate::time::instant_now();
+        let generation = self.generation.load(Relaxed);
+        let mut expired = false;
+        let lease = self.leases.read().ok().and_then(|leases| {
+            leases.get(dest_addr).and_then(|lease| {
+                if lease.generation != generation || lease.expires_at <= now {
+                    expired = true;
+                    None
+                } else {
+                    Some(lease.clone())
+                }
+            })
+        });
+        if expired && let Ok(mut leases) = self.leases.write() {
+            leases.remove(dest_addr);
+        }
+        lease
+    }
+
+    pub(in crate::node) fn try_feedback(
+        &self,
+        records: Vec<EndpointBulkSendFeedbackRecord>,
+    ) -> bool {
+        if records.is_empty() {
+            return true;
+        }
+        self.feedback_tx
+            .try_send(EndpointBulkSendFeedback { records })
+            .is_ok()
+    }
+
+    fn lease_count(&self) -> usize {
+        self.leases.read().map(|leases| leases.len()).unwrap_or(0)
+    }
+}
+
+#[cfg(unix)]
+impl EndpointBulkSendLease {
+    pub(in crate::node) fn new(
+        source_addr: NodeAddr,
+        dest_addr: NodeAddr,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        default_ttl: u8,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+        fsp: EndpointBulkSendFspLease,
+        fmp: EndpointBulkSendFmpLease,
+        send_target: crate::node::encrypt_worker::SelectedSendTarget,
+        workers: crate::node::encrypt_worker::EncryptWorkerPool,
+        ttl: std::time::Duration,
+    ) -> Self {
+        Self {
+            source_addr,
+            dest_addr,
+            next_hop_addr,
+            path_mtu,
+            default_ttl,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+            fsp,
+            fmp,
+            send_target,
+            workers,
+            expires_at: crate::time::instant_now() + ttl,
+            generation: 0,
+        }
+    }
 }
 
 /// Observable owner for endpoint events delivered to embedded applications.

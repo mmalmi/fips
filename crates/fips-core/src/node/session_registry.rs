@@ -134,6 +134,24 @@ impl SessionRegistry {
     }
 
     #[cfg(unix)]
+    pub(in crate::node) fn seed_endpoint_data_fsp_path_mtu_batch<I>(
+        &mut self,
+        node_addr: &NodeAddr,
+        path_mtus: I,
+    ) -> Option<()>
+    where
+        I: IntoIterator<Item = u16>,
+    {
+        let entry = self.sessions.get_mut(node_addr)?;
+        if let Some(mmp) = entry.mmp_mut() {
+            for path_mtu in path_mtus {
+                mmp.path_mtu.seed_source_mtu(path_mtu);
+            }
+        }
+        Some(())
+    }
+
+    #[cfg(unix)]
     pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send(
         &mut self,
         node_addr: &NodeAddr,

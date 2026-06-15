@@ -46,6 +46,8 @@ use thiserror::Error;
 pub use handshake::HandshakeState;
 pub use replay::ReplayWindow;
 pub use session::NoiseSession;
+#[cfg(unix)]
+pub(crate) use session::SendCounterAuthority;
 
 /// Protocol name for Noise IK with secp256k1 (link layer).
 /// Format: Noise_IK_secp256k1_ChaChaPoly_SHA256

@@ -100,6 +100,9 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            endpoint_bulk_feedback_rx: None,
+            #[cfg(unix)]
+            endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,
@@ -242,6 +245,9 @@ impl Node {
             endpoint_priority_command_rx: None,
             endpoint_command_rx: None,
             endpoint_events: EndpointEventRuntime::default(),
+            endpoint_bulk_feedback_rx: None,
+            #[cfg(unix)]
+            endpoint_bulk_send_runtime: None,
             encrypt_workers: None,
             decrypt_workers: None,
             decrypt_fallback_tx,

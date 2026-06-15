@@ -533,6 +533,7 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
         let fsp_counter = worker_wire.fsp_counter;
         let fmp_wire_capacity = worker_wire.wire_capacity;
         let originated_bytes = self.link_plaintext_len() + crate::noise::TAG_SIZE;
+        let fsp_path_mtu = self.dispatch_plan.path_mtu;
         let fsp_bookkeeping = self.dispatch_plan.fsp_bookkeeping_input(fsp_counter);
         let worker_job = self.dispatch_plan.into_worker_job(
             worker_wire,
@@ -547,6 +548,7 @@ impl<'a> PipelinedEndpointSendPlan<'a> {
             fmp_timestamp_ms: fmp_prepared.timestamp_ms,
             fmp_wire_capacity,
             originated_bytes,
+            fsp_path_mtu,
             fsp_bookkeeping,
             worker_job,
         }

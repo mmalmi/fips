@@ -92,6 +92,14 @@ impl Node {
                     (rx, Some(tx))
                 }
             };
+        let (mut endpoint_bulk_feedback_rx, _endpoint_bulk_feedback_guard) =
+            match self.endpoint_bulk_feedback_rx.take() {
+                Some(rx) => (rx, None),
+                None => {
+                    let (tx, rx) = tokio::sync::mpsc::channel(1);
+                    (rx, Some(tx))
+                }
+            };
 
         // Take the decrypt worker fallback receiver if a worker pool
         // is in use. The worker pushes non-fast-path packets (anything
@@ -260,6 +268,16 @@ impl Node {
                         Some(message),
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
+                }
+                Some(feedback) = endpoint_bulk_feedback_rx.recv() => {
+                    let drained = self.drain_endpoint_bulk_send_feedback(
+                        &mut endpoint_bulk_feedback_rx,
+                        Some(feedback),
+                        NON_PACKET_DRAIN_BUDGET,
+                    );
+                    if drained > 0 {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
                 }
                 packet = packet_rx.recv() => {
                     match packet {
@@ -620,6 +638,20 @@ impl Node {
                 }
             }
             drain.charge_extra(drain_cost.saturating_sub(1));
+        }
+
+        drain.drained()
+    }
+
+    fn drain_endpoint_bulk_send_feedback(
+        &mut self,
+        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
+        first_feedback: Option<crate::node::EndpointBulkSendFeedback>,
+        budget: usize,
+    ) -> usize {
+        let mut drain = SingleLaneDrainCursor::new(first_feedback, budget);
+        while let Some(feedback) = drain.next(endpoint_bulk_feedback_rx) {
+            self.apply_endpoint_bulk_send_feedback(feedback);
         }
 
         drain.drained()

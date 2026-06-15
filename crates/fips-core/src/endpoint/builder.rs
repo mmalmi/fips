@@ -127,6 +127,8 @@ impl FipsEndpointBuilder {
         endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
         let endpoint_priority_commands = endpoint_data_io.priority_command_tx;
         let endpoint_commands = endpoint_data_io.command_tx;
+        #[cfg(unix)]
+        let endpoint_bulk_send_runtime = endpoint_data_io.bulk_send_runtime;
 
         Ok(FipsEndpoint {
             identity,
@@ -138,6 +140,8 @@ impl FipsEndpointBuilder {
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
             endpoint_priority_commands,
             endpoint_commands,
+            #[cfg(unix)]
+            endpoint_bulk_send_runtime,
             inbound_endpoint_tx: endpoint_data_io.event_tx,
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,

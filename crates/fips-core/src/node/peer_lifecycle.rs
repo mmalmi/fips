@@ -571,6 +571,31 @@ impl PeerLifecycleRegistry {
         Self::peer_runtime_route_snapshot_from_peer(*node_addr, peer)
     }
 
+    #[cfg(unix)]
+    pub(in crate::node) fn endpoint_bulk_fmp_lease(
+        &self,
+        node_addr: &NodeAddr,
+    ) -> Option<EndpointBulkSendFmpLease> {
+        let peer = self.active.get(node_addr)?;
+        let session = peer.noise_session()?;
+        let mut base_flags = if peer.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()) {
+            FLAG_SP
+        } else {
+            0
+        };
+        if peer.current_k_bit() {
+            base_flags |= FLAG_KEY_EPOCH;
+        }
+
+        Some(EndpointBulkSendFmpLease {
+            cipher: session.send_cipher_clone()?,
+            counter_authority: session.send_counter_authority(),
+            their_index: peer.their_index()?,
+            session_start: peer.session_start(),
+            base_flags,
+        })
+    }
+
     #[cfg(all(unix, test))]
     pub(in crate::node) fn prepare_peer_runtime_send_snapshot(
         &self,
