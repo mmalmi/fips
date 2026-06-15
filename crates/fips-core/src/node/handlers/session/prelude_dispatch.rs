@@ -594,6 +594,7 @@ impl SessionDispatchCommit {
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Copy)]
 struct PipelinedEndpointSend<'a> {
     dest_addr: &'a NodeAddr,
     payload: &'a EndpointDataPayload,
@@ -605,9 +606,8 @@ struct PipelinedEndpointSend<'a> {
     dest_coords: Option<&'a crate::tree::TreeCoordinate>,
 }
 
-struct PreparedEndpointSessionData<'a> {
-    dest_addr: &'a NodeAddr,
-    payload: &'a EndpointDataPayload,
+struct PreparedEndpointSessionMeta {
+    dest_addr: NodeAddr,
     now_ms: u64,
     timestamp: u32,
     msg_type: u8,
@@ -615,6 +615,16 @@ struct PreparedEndpointSessionData<'a> {
     fsp_flags: u8,
     my_coords: Option<crate::tree::TreeCoordinate>,
     dest_coords: Option<crate::tree::TreeCoordinate>,
+}
+
+struct PreparedEndpointSessionData<'a> {
+    meta: PreparedEndpointSessionMeta,
+    payload: &'a EndpointDataPayload,
+}
+
+struct PreparedOwnedEndpointSessionData {
+    meta: PreparedEndpointSessionMeta,
+    payload: EndpointDataPayload,
 }
 
 #[cfg(unix)]
@@ -857,6 +867,12 @@ struct PipelinedEndpointRuntimeSendAttempt<'a> {
 }
 
 #[cfg(unix)]
+struct PipelinedEndpointRuntimeBatchSendAttempt<'a> {
+    runtime_plans: Vec<PipelinedEndpointRuntimeSendPlan<'a>>,
+    send_target: PipelinedEndpointSendTarget,
+}
+
+#[cfg(unix)]
 struct PipelinedEndpointRuntimeSend<'a> {
     runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>,
 }
@@ -866,6 +882,9 @@ struct PipelinedEndpointPeerRuntimeSend<'a> {
     runtime_route: PipelinedEndpointPeerRuntimeRoute,
     send: PipelinedEndpointSend<'a>,
 }
+
+#[cfg(unix)]
+struct PipelinedEndpointPeerRuntimeBatchSend;
 
 #[cfg(unix)]
 struct PipelinedEndpointPeerRuntimeSendRequest<'a> {
@@ -918,11 +937,11 @@ fn pipelined_endpoint_fmp_payload_len(link_plaintext_len: usize) -> Option<u16> 
     u16::try_from(payload_len).ok()
 }
 
-impl<'a> PreparedEndpointSessionData<'a> {
-    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
+impl PreparedEndpointSessionMeta {
+    fn pipelined<'a>(&'a self, payload: &'a EndpointDataPayload) -> PipelinedEndpointSend<'a> {
         PipelinedEndpointSend {
-            dest_addr: self.dest_addr,
-            payload: self.payload,
+            dest_addr: &self.dest_addr,
+            payload,
             now_ms: self.now_ms,
             timestamp: self.timestamp,
             fsp_flags: self.fsp_flags,
@@ -930,31 +949,47 @@ impl<'a> PreparedEndpointSessionData<'a> {
                 timestamp: self.timestamp,
                 msg_type: self.msg_type,
                 inner_flags: self.inner_flags,
-                payload: self.payload.as_slice(),
+                payload: payload.as_slice(),
             },
             my_coords: self.my_coords.as_ref(),
             dest_coords: self.dest_coords.as_ref(),
         }
     }
 
-    fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
+    fn fallback_plan<'a>(&'a self, payload: &'a EndpointDataPayload) -> SessionFspSendPlan<'a> {
         let inner_plaintext = fsp_prepend_inner_header(
             self.timestamp,
             self.msg_type,
             self.inner_flags,
-            self.payload.as_slice(),
+            payload.as_slice(),
         );
         SessionFspSendPlan::new_owned(
-            *self.dest_addr,
+            self.dest_addr,
             self.timestamp,
             self.fsp_flags,
             inner_plaintext,
             self.my_coords.as_ref().zip(self.dest_coords.as_ref()),
             SessionFspSendBookkeeping::Data {
-                payload_len: self.payload.len(),
+                payload_len: payload.len(),
                 now_ms: self.now_ms,
             },
         )
+    }
+}
+
+impl<'a> PreparedEndpointSessionData<'a> {
+    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
+        self.meta.pipelined(self.payload)
+    }
+
+    fn fallback_plan(&self) -> SessionFspSendPlan<'_> {
+        self.meta.fallback_plan(self.payload)
+    }
+}
+
+impl PreparedOwnedEndpointSessionData {
+    fn pipelined(&self) -> PipelinedEndpointSend<'_> {
+        self.meta.pipelined(&self.payload)
     }
 }
 

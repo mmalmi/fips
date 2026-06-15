@@ -672,6 +672,7 @@
             .expect("active peer session exists")
             .current_send_counter();
 
+        let send_target_for_batch = send_target.clone();
         let dispatch = PipelinedEndpointRuntimeSendAttempt::new(runtime, send_target)
             .reserve(&mut sessions, &mut peers)
             .expect("runtime send attempt should reserve from both registries")
@@ -704,6 +705,87 @@
         assert_eq!(prepared.fmp_counter, fmp_before);
         assert_eq!(prepared.worker_job.counter, fmp_before);
 
+        let batch_payload_a = EndpointDataPayload::new(vec![0x11; 96]);
+        let batch_payload_b = EndpointDataPayload::new(vec![0x22; 48]);
+        let batch_inner_a = vec![0xa1; 112];
+        let batch_inner_b = vec![0xb2; 64];
+        let batch_send_a = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &batch_payload_a,
+            now_ms: 0x1122_3345,
+            timestamp: 0x5566_7789,
+            fsp_flags: 0,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&batch_inner_a),
+            my_coords: None,
+            dest_coords: None,
+        };
+        let batch_send_b = PipelinedEndpointSend {
+            dest_addr: &dest_addr,
+            payload: &batch_payload_b,
+            now_ms: 0x1122_3346,
+            timestamp: 0x5566_7790,
+            fsp_flags: 0,
+            body: PipelinedEndpointWireBody::InnerPlaintext(&batch_inner_b),
+            my_coords: None,
+            dest_coords: None,
+        };
+        let route_snapshot = peers
+            .prepare_peer_runtime_route_snapshot(&dest_addr)
+            .expect("active peer should prepare route snapshot for batch");
+        let batch_target = PipelinedEndpointBatchTarget {
+            send_target: send_target_for_batch,
+            path_mtu: route_snapshot.path_mtu(&transport),
+        };
+        let batch_route =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, route_snapshot, 9, 7, false);
+        let batch_fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists before batch")
+            .send_counter();
+        let batch_fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists before batch")
+            .current_send_counter();
+
+        let prepared_batch =
+            PipelinedEndpointPeerRuntimeBatchSend::resolve_prepared_sends_with_batch_target(
+                &batch_route,
+                [batch_send_a, batch_send_b],
+                &batch_target,
+                &mut sessions,
+                &mut peers,
+            )
+            .expect("batch send should reserve from both registries")
+            .expect("available worker batch should dispatch");
+        assert_eq!(prepared_batch.len(), 2);
+        assert_eq!(prepared_batch[0].fsp_bookkeeping.counter, batch_fsp_before);
+        assert_eq!(
+            prepared_batch[1].fsp_bookkeeping.counter,
+            batch_fsp_before + 1
+        );
+        assert_eq!(prepared_batch[0].fmp_counter, batch_fmp_before);
+        assert_eq!(prepared_batch[1].fmp_counter, batch_fmp_before + 1);
+        assert_eq!(prepared_batch[0].worker_job.counter, batch_fmp_before);
+        assert_eq!(prepared_batch[1].worker_job.counter, batch_fmp_before + 1);
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after batch")
+                .send_counter(),
+            batch_fsp_before + 2,
+            "batch should consume exactly one FSP counter per packet"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after batch")
+                .current_send_counter(),
+            batch_fmp_before + 2,
+            "batch should consume exactly one FMP counter per packet"
+        );
+
         let blocked_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
             dest_addr,
             SessionIndex::new(0x2020),
@@ -723,6 +805,15 @@
             .resolve_send_target(udp)
             .await
             .expect("started UDP transport resolves blocked send target");
+        let blocked_attempt_fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists before blocked attempt")
+            .send_counter();
+        let blocked_attempt_fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists before blocked attempt")
+            .current_send_counter();
 
         assert!(
             PipelinedEndpointRuntimeSendAttempt::new(blocked_runtime, blocked_target)
@@ -735,7 +826,7 @@
                 .get(&dest_addr)
                 .expect("session still exists after blocked attempt")
                 .send_counter(),
-            fsp_before + 1,
+            blocked_attempt_fsp_before,
             "blocked attempt must not consume another FSP counter"
         );
         assert_eq!(
@@ -744,8 +835,59 @@
                 .and_then(|peer| peer.noise_session())
                 .expect("active peer session still exists after blocked attempt")
                 .current_send_counter(),
-            fmp_before + 1,
+            blocked_attempt_fmp_before,
             "blocked attempt must not consume another FMP counter"
+        );
+
+        let blocked_batch_fsp_before = sessions
+            .get(&dest_addr)
+            .expect("session exists before blocked batch")
+            .send_counter();
+        let blocked_batch_fmp_before = peers
+            .get(&dest_addr)
+            .and_then(|peer| peer.noise_session())
+            .expect("active peer session exists before blocked batch")
+            .current_send_counter();
+        let blocked_snapshot = crate::node::PeerRuntimeRouteSnapshot::new(
+            dest_addr,
+            SessionIndex::new(0x2020),
+            transport_id,
+            TransportAddr::from_string(&fallback_addr.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            None,
+            0x0102_0304,
+            0,
+            false,
+        );
+        let blocked_batch_route =
+            PipelinedEndpointPeerRuntimeRoute::new(source_addr, blocked_snapshot, 9, 7, false);
+        assert!(
+            PipelinedEndpointPeerRuntimeBatchSend::resolve_prepared_sends_with_batch_target(
+                &blocked_batch_route,
+                [batch_send_a],
+                &batch_target,
+                &mut sessions,
+                &mut peers,
+            )
+            .expect("unavailable worker batch is a recoverable no-dispatch result")
+            .is_none()
+        );
+        assert_eq!(
+            sessions
+                .get(&dest_addr)
+                .expect("session still exists after blocked batch")
+                .send_counter(),
+            blocked_batch_fsp_before,
+            "blocked batch must not consume FSP counters"
+        );
+        assert_eq!(
+            peers
+                .get(&dest_addr)
+                .and_then(|peer| peer.noise_session())
+                .expect("active peer session still exists after blocked batch")
+                .current_send_counter(),
+            blocked_batch_fmp_before,
+            "blocked batch must not consume FMP counters"
         );
     }
 

@@ -617,11 +617,75 @@ impl PeerLifecycleRegistry {
     }
 
     #[cfg(unix)]
+    pub(in crate::node) fn reserve_prepared_fmp_worker_send_batch<'a, I>(
+        &mut self,
+        node_addr: &NodeAddr,
+        prepared: I,
+    ) -> Result<Option<Vec<PreparedFmpWorkerReservation>>, FmpSendPreparationError>
+    where
+        I: IntoIterator<Item = &'a FmpSendPreparation>,
+    {
+        let peer = self
+            .active
+            .get_mut(node_addr)
+            .ok_or(FmpSendPreparationError::MissingPeer)?;
+        let session = peer
+            .noise_session_mut()
+            .ok_or(FmpSendPreparationError::MissingNoiseSession)?;
+        let Some(cipher) = session.send_cipher_clone() else {
+            return Ok(None);
+        };
+
+        let iter = prepared.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut reservations = Vec::with_capacity(lower);
+        for prepared in iter {
+            let counter = session
+                .take_send_counter()
+                .map_err(|_| FmpSendPreparationError::CounterReservationFailed)?;
+            let header = build_established_header(
+                prepared.their_index,
+                counter,
+                prepared.flags,
+                prepared.payload_len,
+            );
+            let predicted_bytes =
+                ESTABLISHED_HEADER_SIZE + prepared.payload_len as usize + crate::noise::TAG_SIZE;
+            reservations.push(PreparedFmpWorkerReservation {
+                counter,
+                header,
+                cipher: cipher.clone(),
+                predicted_bytes,
+            });
+        }
+
+        Ok(Some(reservations))
+    }
+
+    #[cfg(unix)]
     pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send(
         &mut self,
         snapshot: &PeerRuntimeSendSnapshot,
     ) -> Result<Option<PreparedFmpWorkerReservation>, FmpSendPreparationError> {
         self.reserve_prepared_fmp_worker_send(&snapshot.node_addr(), snapshot.fmp_prepared())
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_peer_runtime_fmp_worker_send_batch<'a, I>(
+        &mut self,
+        node_addr: &NodeAddr,
+        snapshots: I,
+    ) -> Result<Option<Vec<PreparedFmpWorkerReservation>>, FmpSendPreparationError>
+    where
+        I: IntoIterator<Item = &'a PeerRuntimeSendSnapshot>,
+    {
+        self.reserve_prepared_fmp_worker_send_batch(
+            node_addr,
+            snapshots.into_iter().map(|snapshot| {
+                debug_assert_eq!(snapshot.node_addr(), *node_addr);
+                snapshot.fmp_prepared()
+            }),
+        )
     }
 
     #[cfg(unix)]

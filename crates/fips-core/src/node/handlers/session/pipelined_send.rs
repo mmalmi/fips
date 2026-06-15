@@ -118,6 +118,100 @@ impl<'a> PipelinedEndpointRuntimeSendAttempt<'a> {
 }
 
 #[cfg(unix)]
+impl<'a> PipelinedEndpointRuntimeBatchSendAttempt<'a> {
+    fn new(
+        runtime_plans: Vec<PipelinedEndpointRuntimeSendPlan<'a>>,
+        send_target: PipelinedEndpointSendTarget,
+    ) -> Self {
+        Self {
+            runtime_plans,
+            send_target,
+        }
+    }
+
+    fn reserve(
+        self,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<Option<Vec<PipelinedEndpointPreparedSend>>, PipelinedEndpointRuntimeSendAttemptError>
+    {
+        let Self {
+            runtime_plans,
+            send_target,
+        } = self;
+
+        let Some(first) = runtime_plans.first() else {
+            return Ok(Some(Vec::new()));
+        };
+        if runtime_plans
+            .iter()
+            .any(|runtime_plan| !runtime_plan.fmp_worker_send_available())
+        {
+            return Ok(None);
+        }
+
+        let dest_addr = first.dest_addr();
+        let next_hop_addr = first.next_hop_addr();
+        debug_assert!(runtime_plans.iter().all(|runtime_plan| {
+            runtime_plan.dest_addr() == dest_addr
+                && runtime_plan.next_hop_addr() == next_hop_addr
+        }));
+
+        let fsp_inputs = runtime_plans
+            .iter()
+            .map(|runtime_plan| runtime_plan.fsp_reservation_input())
+            .collect::<Vec<_>>();
+        let Some(fsp_reservations) = sessions
+            .reserve_endpoint_data_fsp_worker_send_batch(&dest_addr, &fsp_inputs)
+            .map_err(
+                |error| PipelinedEndpointRuntimeSendAttemptError::FspReservation {
+                    dest_addr,
+                    error,
+                },
+            )?
+        else {
+            return Ok(None);
+        };
+
+        let Some(fmp_reservations) = peers
+            .reserve_peer_runtime_fmp_worker_send_batch(
+                &next_hop_addr,
+                runtime_plans
+                    .iter()
+                    .map(|runtime_plan| runtime_plan.peer_snapshot()),
+            )
+            .map_err(
+                |error| PipelinedEndpointRuntimeSendAttemptError::FmpReservation {
+                    next_hop_addr,
+                    error,
+                },
+            )?
+        else {
+            return Ok(None);
+        };
+
+        debug_assert_eq!(runtime_plans.len(), fsp_reservations.len());
+        debug_assert_eq!(runtime_plans.len(), fmp_reservations.len());
+
+        let prepared_sends = runtime_plans
+            .into_iter()
+            .zip(fmp_reservations)
+            .zip(fsp_reservations)
+            .map(|((runtime_plan, fmp_reservation), fsp_reservation)| {
+                runtime_plan.into_prepared_worker_send(
+                    fmp_reservation,
+                    fsp_reservation,
+                    send_target.clone(),
+                    None,
+                )
+            })
+            .collect();
+
+        Ok(Some(prepared_sends))
+    }
+}
+
+#[cfg(unix)]
 impl<'a> PipelinedEndpointRuntimeSend<'a> {
     fn new(runtime_plan: PipelinedEndpointRuntimeSendPlan<'a>) -> Self {
         Self { runtime_plan }
@@ -212,6 +306,7 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             .map_err(PipelinedEndpointPeerRuntimeSendError::RuntimeSend)
     }
 
+    #[cfg(test)]
     fn resolve_dispatch_with_batch_target(
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
         send: PipelinedEndpointSend<'a>,
@@ -266,6 +361,47 @@ impl<'a> PipelinedEndpointPeerRuntimeSend<'a> {
             peers,
         )
         .await
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointPeerRuntimeBatchSend {
+    fn resolve_prepared_sends_with_batch_target<'a, I>(
+        runtime_route: &PipelinedEndpointPeerRuntimeRoute,
+        sends: I,
+        batch_target: &PipelinedEndpointBatchTarget,
+        sessions: &mut crate::node::SessionRegistry,
+        peers: &mut crate::node::PeerLifecycleRegistry,
+    ) -> Result<Option<Vec<PipelinedEndpointPreparedSend>>, PipelinedEndpointPeerRuntimeSendError>
+    where
+        I: IntoIterator<Item = PipelinedEndpointSend<'a>>,
+    {
+        let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSendPlan);
+        let next_hop_addr = runtime_route.next_hop_addr();
+        let mut runtime_plans = Vec::new();
+
+        for send in sends {
+            let dest_addr = *send.dest_addr;
+            let runtime_plan = runtime_route
+                .runtime_send_plan_with_path_mtu(&send, batch_target.path_mtu)
+                .map_err(|error| PipelinedEndpointPeerRuntimeSendError::RuntimePlan {
+                    dest_addr,
+                    next_hop_addr,
+                    error,
+                })?;
+            runtime_plans.push(runtime_plan);
+        }
+
+        PipelinedEndpointRuntimeBatchSendAttempt::new(
+            runtime_plans,
+            batch_target.send_target.clone(),
+        )
+        .reserve(sessions, peers)
+        .map_err(|error| {
+            PipelinedEndpointPeerRuntimeSendError::RuntimeSend(
+                PipelinedEndpointRuntimeSendError::Attempt(error),
+            )
+        })
     }
 }
 

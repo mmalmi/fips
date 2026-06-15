@@ -609,6 +609,39 @@ impl SessionEntry {
         }))
     }
 
+    /// Reserve a contiguous batch of FSP send counters for worker-side
+    /// encryption under one mutable borrow of the session-owned send state.
+    #[cfg(unix)]
+    pub(crate) fn reserve_fsp_worker_send_batch<I>(
+        &mut self,
+        inputs: I,
+    ) -> Result<Option<Vec<FspSendReservation>>, crate::noise::NoiseError>
+    where
+        I: IntoIterator<Item = (u8, u16)>,
+    {
+        let Some(session) = self.current_noise_session_mut() else {
+            return Ok(None);
+        };
+        let Some(cipher) = session.send_cipher_clone() else {
+            return Ok(None);
+        };
+
+        let iter = inputs.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut reservations = Vec::with_capacity(lower);
+        for (flags, payload_len) in iter {
+            let counter = session.take_send_counter()?;
+            let header = build_fsp_header(counter, flags, payload_len);
+            reservations.push(FspSendReservation {
+                counter,
+                header,
+                cipher: cipher.clone(),
+            });
+        }
+
+        Ok(Some(reservations))
+    }
+
     /// When the FSP rekey handshake completed (initiator sent msg3).
     pub(crate) fn rekey_completed_ms(&self) -> u64 {
         self.rekey_completed_ms

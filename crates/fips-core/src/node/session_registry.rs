@@ -154,6 +154,31 @@ impl SessionRegistry {
             .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
 
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send_batch(
+        &mut self,
+        node_addr: &NodeAddr,
+        inputs: &[FspWorkerSendReservationInput],
+    ) -> Result<Option<Vec<FspSendReservation>>, FspWorkerSendReservationError> {
+        let entry = self
+            .sessions
+            .get_mut(node_addr)
+            .ok_or(FspWorkerSendReservationError::MissingSession)?;
+        if let Some(mmp) = entry.mmp_mut() {
+            for input in inputs {
+                mmp.path_mtu.seed_source_mtu(input.path_mtu);
+            }
+        }
+        if !entry.is_established() {
+            return Err(FspWorkerSendReservationError::NotEstablished);
+        }
+        entry
+            .reserve_fsp_worker_send_batch(
+                inputs.iter().map(|input| (input.flags, input.payload_len)),
+            )
+            .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
+    }
+
     pub(in crate::node) fn record_worker_registration(
         &mut self,
         session_key: DecryptSessionKey,

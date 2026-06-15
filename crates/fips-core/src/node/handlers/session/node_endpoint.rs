@@ -38,6 +38,19 @@ impl Node {
         let mut use_reused_route = true;
         let batch_target = route.batch_target(&self.transports).await.ok().flatten();
 
+        if let Some(batch_target) = batch_target.as_ref() {
+            self.handle_established_endpoint_send_batch_with_batch_target(
+                dest_addr,
+                dest_pubkey,
+                payloads,
+                &route,
+                batch_target,
+                &workers,
+            )
+            .await;
+            return;
+        }
+
         for payload in payloads {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
 
@@ -85,16 +98,9 @@ impl Node {
                 }
             };
 
-            let prepared_send = if let Some(batch_target) = batch_target.as_ref() {
-                self.prepare_peer_runtime_endpoint_send_with_batch_target(
-                    prepared.pipelined(),
-                    &route,
-                    batch_target,
-                )
-            } else {
-                self.prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
-                    .await
-            };
+            let prepared_send = self
+                .prepare_peer_runtime_endpoint_send_with_route(prepared.pipelined(), &route)
+                .await;
 
             match prepared_send {
                 Ok(Some(prepared_send)) => {
@@ -154,6 +160,69 @@ impl Node {
         }
 
         PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, &workers);
+    }
+
+    #[cfg(unix)]
+    async fn handle_established_endpoint_send_batch_with_batch_target(
+        &mut self,
+        dest_addr: NodeAddr,
+        dest_pubkey: secp256k1::PublicKey,
+        payloads: Vec<EndpointDataPayload>,
+        route: &PipelinedEndpointPeerRuntimeRoute,
+        batch_target: &PipelinedEndpointBatchTarget,
+        workers: &crate::node::encrypt_worker::EncryptWorkerPool,
+    ) {
+        let mut prepared_payloads = Vec::with_capacity(payloads.len());
+        let mut payloads = payloads.into_iter();
+
+        while let Some(payload) = payloads.next() {
+            let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSend);
+            match self
+                .prepare_owned_session_endpoint_data(dest_addr, payload)
+                .await
+            {
+                Ok(prepared) => prepared_payloads.push(prepared),
+                Err((_, payload)) => {
+                    let mut fallback_payloads = Vec::with_capacity(
+                        prepared_payloads.len() + 1 + payloads.size_hint().0,
+                    );
+                    fallback_payloads.extend(
+                        prepared_payloads
+                            .into_iter()
+                            .map(|prepared| prepared.payload),
+                    );
+                    fallback_payloads.push(payload);
+                    fallback_payloads.extend(payloads);
+                    self.handle_endpoint_send_batch_slow_path(
+                        dest_addr,
+                        dest_pubkey,
+                        fallback_payloads,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+
+        let prepared_sends = self.prepare_peer_runtime_endpoint_send_batch_with_batch_target(
+            &prepared_payloads,
+            route,
+            batch_target,
+        );
+
+        match prepared_sends {
+            Ok(Some(prepared_sends)) => {
+                PipelinedEndpointPreparedSend::commit_many(prepared_sends, self, workers);
+            }
+            Ok(None) | Err(_) => {
+                let fallback_payloads = prepared_payloads
+                    .into_iter()
+                    .map(|prepared| prepared.payload)
+                    .collect();
+                self.handle_endpoint_send_batch_slow_path(dest_addr, dest_pubkey, fallback_payloads)
+                    .await;
+            }
+        }
     }
 
     #[cfg(test)]
@@ -259,12 +328,37 @@ impl Node {
         dest_addr: &'a NodeAddr,
         payload: &'a EndpointDataPayload,
     ) -> Result<PreparedEndpointSessionData<'a>, NodeError> {
+        let meta = self
+            .prepare_session_endpoint_meta(*dest_addr, payload.len())
+            .await?;
+        Ok(PreparedEndpointSessionData { meta, payload })
+    }
+
+    async fn prepare_owned_session_endpoint_data(
+        &mut self,
+        dest_addr: NodeAddr,
+        payload: EndpointDataPayload,
+    ) -> Result<PreparedOwnedEndpointSessionData, (NodeError, EndpointDataPayload)> {
+        match self
+            .prepare_session_endpoint_meta(dest_addr, payload.len())
+            .await
+        {
+            Ok(meta) => Ok(PreparedOwnedEndpointSessionData { meta, payload }),
+            Err(error) => Err((error, payload)),
+        }
+    }
+
+    async fn prepare_session_endpoint_meta(
+        &mut self,
+        dest_addr: NodeAddr,
+        payload_len: usize,
+    ) -> Result<PreparedEndpointSessionMeta, NodeError> {
         let _t = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::EndpointSendPrepare,
         );
-        if payload.len() > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
+        if payload_len > u16::MAX as usize - FSP_INNER_HEADER_SIZE {
             return Err(NodeError::SendFailed {
-                node_addr: *dest_addr,
+                node_addr: dest_addr,
                 reason: "endpoint data payload too long".into(),
             });
         }
@@ -272,8 +366,8 @@ impl Node {
         let now_ms = Self::now_ms();
         let send_context = self
             .sessions
-            .session_fsp_send_context(dest_addr, now_ms)
-            .map_err(|error| error.into_node_error(*dest_addr))?;
+            .session_fsp_send_context(&dest_addr, now_ms)
+            .map_err(|error| error.into_node_error(dest_addr))?;
         let wants_coords = send_context.wants_coords();
         let timestamp = send_context.timestamp;
 
@@ -282,14 +376,14 @@ impl Node {
 
         let (include_coords, my_coords, dest_coords) = if wants_coords {
             let src = self.tree_state.my_coords().clone();
-            let dst = self.get_dest_coords(dest_addr);
+            let dst = self.get_dest_coords(&dest_addr);
             let coords_size = coords_wire_size(&src) + coords_wire_size(&dst);
-            let total_wire = FIPS_OVERHEAD as usize + coords_size + payload.len();
+            let total_wire = FIPS_OVERHEAD as usize + coords_size + payload_len;
             if total_wire <= self.transport_mtu() as usize {
                 (true, Some(src), Some(dst))
             } else {
-                if let Err(e) = self.send_coords_warmup(dest_addr).await {
-                    debug!(dest = %self.peer_display_name(dest_addr), error = %e,
+                if let Err(e) = self.send_coords_warmup(&dest_addr).await {
+                    debug!(dest = %self.peer_display_name(&dest_addr), error = %e,
                         "Failed to send standalone CoordsWarmup before endpoint data");
                 }
                 (false, None, None)
@@ -301,14 +395,13 @@ impl Node {
         // Consume one warmup opportunity for either piggybacked coords or the
         // standalone warmup attempt, preserving the previous retry behavior.
         if wants_coords {
-            self.sessions.consume_coords_warmup_packet(dest_addr);
+            self.sessions.consume_coords_warmup_packet(&dest_addr);
         }
 
         let flags = send_context.fsp_flags(include_coords);
 
-        Ok(PreparedEndpointSessionData {
+        Ok(PreparedEndpointSessionMeta {
             dest_addr,
-            payload,
             now_ms,
             timestamp,
             msg_type,
@@ -507,25 +600,20 @@ impl Node {
     }
 
     #[cfg(unix)]
-    fn prepare_peer_runtime_endpoint_send_with_batch_target(
+    fn prepare_peer_runtime_endpoint_send_batch_with_batch_target(
         &mut self,
-        send: PipelinedEndpointSend<'_>,
+        prepared: &[PreparedOwnedEndpointSessionData],
         runtime_route: &PipelinedEndpointPeerRuntimeRoute,
         batch_target: &PipelinedEndpointBatchTarget,
-    ) -> Result<Option<PipelinedEndpointPreparedSend>, NodeError> {
-        let Some(dispatch) = PipelinedEndpointPeerRuntimeSend::resolve_dispatch_with_batch_target(
+    ) -> Result<Option<Vec<PipelinedEndpointPreparedSend>>, NodeError> {
+        PipelinedEndpointPeerRuntimeBatchSend::resolve_prepared_sends_with_batch_target(
             runtime_route,
-            send,
+            prepared.iter().map(|prepared| prepared.pipelined()),
             batch_target,
             &mut self.sessions,
             &mut self.peers,
         )
-        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)?
-        else {
-            return Ok(None);
-        };
-
-        Ok(Some(dispatch.into_prepared_send(None)))
+        .map_err(Self::map_pipelined_endpoint_peer_runtime_send_error)
     }
 
     #[cfg(unix)]
