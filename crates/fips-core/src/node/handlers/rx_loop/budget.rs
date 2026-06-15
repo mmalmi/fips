@@ -137,6 +137,10 @@ impl SideQueueDrainPlan {
             interleave_budget: SIDE_QUEUE_PRESSURE_INTERLEAVE_BUDGET,
         }
     }
+
+    pub(super) fn is_pressured(self) -> bool {
+        self.interleave_every < SIDE_QUEUE_INTERLEAVE_EVERY
+    }
 }
 
 pub(super) fn side_queue_drain_plan(
@@ -144,7 +148,6 @@ pub(super) fn side_queue_drain_plan(
     endpoint_bulk_commands: usize,
 ) -> SideQueueDrainPlan {
     if endpoint_bulk_commands >= SIDE_QUEUE_ENDPOINT_BULK_PRESSURE_HIGH_WATER {
-        crate::perf_profile::record_event(crate::perf_profile::Event::EndpointCommandPressureDrain);
         SideQueueDrainPlan::pressured()
     } else {
         SideQueueDrainPlan::normal()

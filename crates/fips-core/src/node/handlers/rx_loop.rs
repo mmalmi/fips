@@ -427,7 +427,26 @@ impl Node {
             side_queue_plan.interleave_every,
         );
         let mut decrypt_jobs = DecryptJobBatcher::new();
-        while let Some(action) = drain.next(packet_rx) {
+        loop {
+            if let Some(next_plan) = side_queues.as_ref().map(|side_queues| {
+                side_queue_drain_plan(
+                    side_queues.endpoint_priority_command_rx.len(),
+                    side_queues.endpoint_command_rx.len(),
+                )
+            }) && next_plan.is_pressured()
+                && !side_queue_plan.is_pressured()
+            {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::EndpointCommandPressureDrain,
+                );
+                side_queue_plan = next_plan;
+                drain.shorten_side_queue_interleave_every(side_queue_plan.interleave_every);
+            }
+
+            let Some(action) = drain.next(packet_rx) else {
+                break;
+            };
+
             match action {
                 PacketDrainAction::Packet(packet) => {
                     let action = self.begin_process_packet(packet);
@@ -500,6 +519,11 @@ impl Node {
                             interleave_every: 0,
                             interleave_budget: 0,
                         });
+                    if side_queue_plan.is_pressured() {
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::EndpointCommandPressureDrain,
+                        );
+                    }
                     drain.reset_side_queue_interleave_every(side_queue_plan.interleave_every);
                 }
             }

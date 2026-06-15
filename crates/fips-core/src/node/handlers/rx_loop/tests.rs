@@ -205,7 +205,7 @@ fn packet_drain_cursor_can_retime_side_queue_interleave_under_pressure() {
         Some(PacketDrainAction::InterleaveSideQueues)
     );
 
-    drain.reset_side_queue_interleave_every(SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY);
+    drain.shorten_side_queue_interleave_every(SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY);
     for _ in 0..SIDE_QUEUE_PRESSURE_INTERLEAVE_EVERY {
         assert!(matches!(
             drain.next(&mut rx),

@@ -294,6 +294,19 @@ impl<T> PacketDrainCursor<T> {
         self.side_queue_interleave_every = side_queue_interleave_every;
         self.packets_until_side_queue_interleave = side_queue_interleave_every;
     }
+
+    pub(super) fn shorten_side_queue_interleave_every(
+        &mut self,
+        side_queue_interleave_every: usize,
+    ) {
+        if side_queue_interleave_every == 0 {
+            return;
+        }
+        self.side_queue_interleave_every = side_queue_interleave_every;
+        self.packets_until_side_queue_interleave = self
+            .packets_until_side_queue_interleave
+            .min(side_queue_interleave_every);
+    }
 }
 
 pub(super) trait PacketDrainReceiver<T> {
