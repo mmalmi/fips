@@ -183,6 +183,8 @@ impl DecryptPlaintextFallbackBatch {
         if self.fallbacks.is_empty() {
             return;
         }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
         let Some(fallback_tx) = self.fallback_tx.take() else {
             return;
         };
@@ -202,6 +204,8 @@ impl DecryptPlaintextFallbackBatch {
         if self.endpoint_commits.is_empty() {
             return;
         }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
         let Some(fallback_tx) = self.endpoint_fallback_tx.take() else {
             return;
         };
@@ -275,6 +279,8 @@ impl DecryptPlaintextFallbackBatch {
         if self.direct_commits.is_empty() {
             return;
         }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
         let Some(fallback_tx) = self.direct_fallback_tx.take() else {
             self.direct_commits.clear();
             self.direct_deliveries.clear();

@@ -1031,6 +1031,8 @@ impl DecryptWorkerShard {
         completion: FmpAeadCompletion,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
+        let _t_service =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpAeadHelperCompletionService);
         let actions = self.handle_fmp_aead_completion_action(completion);
         self.push_job_actions_output(idx, actions, plaintext_batch, None);
     }
@@ -1088,7 +1090,13 @@ impl DecryptWorkerShard {
                     },
                 );
                 match drain_result {
-                    Ok(_drain) => {
+                    Ok(drain) => {
+                        crate::perf_profile::record_fmp_aead_completion_drain(
+                            drain.ready,
+                            drain.accepted,
+                            drain.aead_failures,
+                            drain.replay_drops,
+                        );
                         if let Some(shared) = self.pool.fmp_aead_session(&session_key)
                             && shared.receive_order_id == receive_order_id
                         {
@@ -1119,11 +1127,18 @@ impl DecryptWorkerShard {
                         }
                     },
                 );
-                if drain_result.is_ok()
-                    && let Some(shared) = self.pool.fmp_aead_session(&session_key)
-                    && shared.receive_order_id == receive_order_id
-                {
-                    shared.mark_next_ready(state.fmp_receive_order_next_ready());
+                if let Ok(drain) = drain_result {
+                    crate::perf_profile::record_fmp_aead_completion_drain(
+                        drain.ready,
+                        drain.accepted,
+                        drain.aead_failures,
+                        drain.replay_drops,
+                    );
+                    if let Some(shared) = self.pool.fmp_aead_session(&session_key)
+                        && shared.receive_order_id == receive_order_id
+                    {
+                        shared.mark_next_ready(state.fmp_receive_order_next_ready());
+                    }
                 }
                 actions
             }

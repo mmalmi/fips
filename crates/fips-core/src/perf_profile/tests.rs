@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 91);
+    assert_eq!(N_EVENTS, 96);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -262,6 +262,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::FmpWorkerDispatchWorkerOther as usize).name(),
         "fmp_worker_dispatch_worker_other"
     );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReady as usize).name(),
+        "fmp_aead_completion_ready"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionAccepted as usize).name(),
+        "fmp_aead_completion_accepted"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionAeadFailed as usize).name(),
+        "fmp_aead_completion_aead_failed"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDropped as usize).name(),
+        "fmp_aead_completion_replay_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReadyMulti as usize).name(),
+        "fmp_aead_completion_ready_multi"
+    );
 }
 
 #[test]
@@ -278,7 +298,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 58);
+    assert_eq!(N_STAGES, 60);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -386,6 +406,14 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::FmpReceiveOrderWindowWait as usize).name(),
         "fmp_receive_order_window_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::FmpAeadHelperCompletionService as usize).name(),
+        "fmp_aead_helper_completion_service"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptWorkerOutputFlush as usize).name(),
+        "decrypt_worker_output_flush"
     );
 }
 
