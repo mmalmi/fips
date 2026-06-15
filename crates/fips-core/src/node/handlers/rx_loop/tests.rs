@@ -1,10 +1,12 @@
 use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-    FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-    FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget,
+    ENDPOINT_COMMAND_PRESSURE_BUDGET, ENDPOINT_COMMAND_PRESSURE_HIGH_WATER,
+    ENDPOINT_COMMAND_PRESSURE_INTERLEAVE_EVERY, FALLBACK_INTERLEAVE_BUDGET,
+    FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER, FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
+    FALLBACK_PRESSURE_INTERLEAVE_EVERY, FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
+    endpoint_command_drain_plan, fallback_drain_plan, non_packet_drain_budget,
+    split_side_queue_budget, split_side_queue_budget_with_endpoint_pressure,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -80,6 +82,45 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
 }
 
 #[test]
+fn endpoint_command_drain_plan_expands_bulk_turns_only_without_endpoint_priority() {
+    let normal = endpoint_command_drain_plan(0, ENDPOINT_COMMAND_PRESSURE_HIGH_WATER - 1);
+    let pressured = endpoint_command_drain_plan(0, ENDPOINT_COMMAND_PRESSURE_HIGH_WATER);
+
+    assert_eq!(
+        pressured.side_interleave_every,
+        ENDPOINT_COMMAND_PRESSURE_INTERLEAVE_EVERY
+    );
+    assert_eq!(
+        pressured.side_interleave_budget,
+        ENDPOINT_COMMAND_PRESSURE_BUDGET
+    );
+    assert_eq!(pressured.direct_budget, ENDPOINT_COMMAND_PRESSURE_BUDGET);
+    assert!(pressured.endpoint_pressure());
+    assert!(
+        pressured.side_interleave_every < normal.side_interleave_every,
+        "endpoint pressure should give outbound bulk more frequent receive-loop turns"
+    );
+    assert!(
+        pressured.side_interleave_budget > normal.side_interleave_budget,
+        "endpoint pressure should drain more already-batched outbound bulk per turn"
+    );
+    assert!(
+        !endpoint_command_drain_plan(1, ENDPOINT_COMMAND_PRESSURE_HIGH_WATER).endpoint_pressure(),
+        "ready endpoint priority commands must disable bulk pressure mode"
+    );
+}
+
+#[test]
+fn side_queue_budget_favors_endpoint_only_under_endpoint_pressure() {
+    assert_eq!(split_side_queue_budget(64), (32, 32));
+    assert_eq!(
+        split_side_queue_budget_with_endpoint_pressure(64, true),
+        (48, 16),
+        "endpoint pressure should keep a TUN reserve while favoring outbound endpoint bulk"
+    );
+}
+
+#[test]
 fn packet_drain_cursor_can_retime_fallback_interleave_under_pressure() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     for packet in 0..64 {
@@ -146,6 +187,39 @@ fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
         drain.next(&mut rx),
         Some(PacketDrainAction::InterleaveFallback),
         "priority pressure relief should restore the normal fallback cadence"
+    );
+}
+
+#[test]
+fn packet_drain_cursor_can_retime_side_queue_interleave_under_endpoint_pressure() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    for packet in 0..32 {
+        tx.send(packet).unwrap();
+    }
+
+    let mut drain = PacketDrainCursor::new(None, 32, 0, 16);
+    for _ in 0..16 {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues)
+    );
+
+    drain.reset_side_queue_interleave_every(4);
+    for _ in 0..4 {
+        assert!(matches!(
+            drain.next(&mut rx),
+            Some(PacketDrainAction::Packet(_))
+        ));
+    }
+    assert_eq!(
+        drain.next(&mut rx),
+        Some(PacketDrainAction::InterleaveSideQueues),
+        "endpoint pressure should shorten the next side-queue interval"
     );
 }
 

@@ -28,6 +28,16 @@ pub(super) const SIDE_QUEUE_INTERLEAVE_BUDGET: usize = 64;
 /// Keep their reserved slice tiny so a burst of fipstop/fipsctl reads cannot
 /// convoy ahead of packet receive or endpoint/TUN progress.
 pub(super) const CONTROL_QUERY_INTERLEAVE_BUDGET: usize = 4;
+/// Start giving the embedded endpoint bulk sender pressure-mode service once
+/// the rx-loop-visible bulk queue spans many API batch commands. This is
+/// intentionally measured in commands, not packets: each command can already
+/// carry a WireGuard-sized packet batch.
+pub(super) const ENDPOINT_COMMAND_PRESSURE_HIGH_WATER: usize = 16;
+/// Under endpoint bulk pressure, interleave outbound endpoint work more often
+/// inside a hot packet receive turn. Priority endpoint commands disable this
+/// pressure mode so liveness/control-shaped packets keep their reserved lane.
+pub(super) const ENDPOINT_COMMAND_PRESSURE_INTERLEAVE_EVERY: usize = 16;
+pub(super) const ENDPOINT_COMMAND_PRESSURE_BUDGET: usize = 256;
 /// Max endpoint payloads coalesced from consecutive same-peer batch commands
 /// during one rx-loop endpoint turn. This is intentionally only a few public
 /// API command chunks: enough to amortize route/session bookkeeping, but still
@@ -50,9 +60,22 @@ pub(super) fn non_packet_drain_budget(packet_budget: usize) -> usize {
     packet_budget.min(NON_PACKET_DRAIN_BUDGET)
 }
 
+#[cfg(test)]
 pub(super) fn split_side_queue_budget(budget: usize) -> (usize, usize) {
+    split_side_queue_budget_with_endpoint_pressure(budget, false)
+}
+
+pub(super) fn split_side_queue_budget_with_endpoint_pressure(
+    budget: usize,
+    endpoint_pressure: bool,
+) -> (usize, usize) {
     if budget == 0 {
         return (0, 0);
+    }
+
+    if endpoint_pressure && budget > 1 {
+        let tun_budget = (budget / 4).max(1);
+        return (budget.saturating_sub(tun_budget).max(1), tun_budget);
     }
 
     let endpoint_budget = (budget / 2).max(1);
@@ -108,6 +131,51 @@ pub(super) fn fallback_drain_plan(
 
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {
     transport_priority_packets == 0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EndpointCommandDrainPlan {
+    pub(super) side_interleave_every: usize,
+    pub(super) side_interleave_budget: usize,
+    pub(super) direct_budget: usize,
+    endpoint_pressure: bool,
+}
+
+impl EndpointCommandDrainPlan {
+    const fn normal() -> Self {
+        Self {
+            side_interleave_every: SIDE_QUEUE_INTERLEAVE_EVERY,
+            side_interleave_budget: SIDE_QUEUE_INTERLEAVE_BUDGET,
+            direct_budget: NON_PACKET_DRAIN_BUDGET,
+            endpoint_pressure: false,
+        }
+    }
+
+    const fn pressured() -> Self {
+        Self {
+            side_interleave_every: ENDPOINT_COMMAND_PRESSURE_INTERLEAVE_EVERY,
+            side_interleave_budget: ENDPOINT_COMMAND_PRESSURE_BUDGET,
+            direct_budget: ENDPOINT_COMMAND_PRESSURE_BUDGET,
+            endpoint_pressure: true,
+        }
+    }
+
+    pub(super) fn endpoint_pressure(self) -> bool {
+        self.endpoint_pressure
+    }
+}
+
+pub(super) fn endpoint_command_drain_plan(
+    endpoint_priority_commands: usize,
+    endpoint_bulk_commands: usize,
+) -> EndpointCommandDrainPlan {
+    if endpoint_priority_commands == 0
+        && endpoint_bulk_commands >= ENDPOINT_COMMAND_PRESSURE_HIGH_WATER
+    {
+        EndpointCommandDrainPlan::pressured()
+    } else {
+        EndpointCommandDrainPlan::normal()
+    }
 }
 
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {

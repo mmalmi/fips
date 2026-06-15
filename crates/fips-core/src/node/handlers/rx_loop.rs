@@ -163,12 +163,16 @@ impl Node {
                         Some(event),
                         PACKET_DRAIN_BUDGET,
                     ).await;
+                    let endpoint_plan = endpoint_command_drain_plan(
+                        endpoint_priority_command_rx.len(),
+                        endpoint_command_rx.len(),
+                    );
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        endpoint_plan.side_interleave_budget,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -243,12 +247,16 @@ impl Node {
                         None,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
+                    let endpoint_plan = endpoint_command_drain_plan(
+                        endpoint_priority_command_rx.len(),
+                        endpoint_command_rx.len(),
+                    );
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        endpoint_plan.side_interleave_budget,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -284,12 +292,16 @@ impl Node {
                     }
                 }
                 Some(command) = endpoint_priority_command_rx.recv() => {
+                    let endpoint_plan = endpoint_command_drain_plan(
+                        endpoint_priority_command_rx.len().saturating_add(1),
+                        endpoint_command_rx.len(),
+                    );
                     let drained = self.drain_endpoint_commands(
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         Some(command),
                         None,
-                        NON_PACKET_DRAIN_BUDGET,
+                        endpoint_plan.direct_budget,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -307,12 +319,16 @@ impl Node {
                         Some(event),
                         fallback_plan.trailing_budget,
                     ).await;
+                    let endpoint_plan = endpoint_command_drain_plan(
+                        endpoint_priority_command_rx.len(),
+                        endpoint_command_rx.len(),
+                    );
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
-                        SIDE_QUEUE_INTERLEAVE_BUDGET,
+                        endpoint_plan.side_interleave_budget,
                     ).await;
                     if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
@@ -336,12 +352,16 @@ impl Node {
                     self.register_identity(identity.node_addr, identity.pubkey);
                 }
                 Some(command) = endpoint_command_rx.recv() => {
+                    let endpoint_plan = endpoint_command_drain_plan(
+                        endpoint_priority_command_rx.len(),
+                        endpoint_command_rx.len().saturating_add(1),
+                    );
                     let drained = self.drain_endpoint_commands(
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
                         None,
                         Some(command),
-                        NON_PACKET_DRAIN_BUDGET,
+                        endpoint_plan.direct_budget,
                     ).await;
                     if drained > 0 {
                         maintenance_state.record_data_activity(Instant::now());
@@ -404,11 +424,16 @@ impl Node {
         // wake. Caps at a batch boundary so other branches eventually get a
         // turn even under sustained load.
         self.begin_endpoint_event_batch();
-        let side_queue_interleave_every = if side_queues.is_some() {
-            SIDE_QUEUE_INTERLEAVE_EVERY
-        } else {
-            0
-        };
+        let side_queue_interleave_every = side_queues
+            .as_ref()
+            .map(|side_queues| {
+                endpoint_command_drain_plan(
+                    side_queues.endpoint_priority_command_rx.len(),
+                    side_queues.endpoint_command_rx.len(),
+                )
+                .side_interleave_every
+            })
+            .unwrap_or(0);
         let mut fallback_plan = fallback_drain_plan(
             packet_rx.priority_ready_packets(),
             decrypt_fallback_rx.bulk_queued_packets(),
@@ -463,13 +488,19 @@ impl Node {
                 PacketDrainAction::InterleaveSideQueues => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
                     let drained = if let Some(side_queues) = side_queues.as_mut() {
+                        let endpoint_plan = endpoint_command_drain_plan(
+                            side_queues.endpoint_priority_command_rx.len(),
+                            side_queues.endpoint_command_rx.len(),
+                        );
+                        drain
+                            .reset_side_queue_interleave_every(endpoint_plan.side_interleave_every);
                         if rx_loop_side_queues_have_ready(side_queues) {
                             self.drain_rx_loop_side_queues(
                                 side_queues.control_query_rx,
                                 side_queues.tun_outbound_rx,
                                 side_queues.endpoint_priority_command_rx,
                                 side_queues.endpoint_command_rx,
-                                SIDE_QUEUE_INTERLEAVE_BUDGET,
+                                endpoint_plan.side_interleave_budget,
                             )
                             .await
                         } else {
@@ -524,7 +555,14 @@ impl Node {
             .drain_control_queries(control_query_rx, None, control_budget)
             .await;
         let remaining_budget = budget.saturating_sub(drained_control);
-        let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
+        let endpoint_plan = endpoint_command_drain_plan(
+            endpoint_priority_command_rx.len(),
+            endpoint_command_rx.len(),
+        );
+        let (endpoint_budget, tun_budget) = split_side_queue_budget_with_endpoint_pressure(
+            remaining_budget,
+            endpoint_plan.endpoint_pressure(),
+        );
         let mut drained_endpoint = self
             .drain_endpoint_commands(
                 endpoint_priority_command_rx,
