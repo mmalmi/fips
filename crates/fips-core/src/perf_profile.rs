@@ -85,7 +85,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 58;
-const N_EVENTS: usize = 80;
+const N_EVENTS: usize = 91;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -455,6 +455,17 @@ pub enum Event {
     DecryptFmpPreownerHelperFallback = 77,
     DecryptFmpPreownerWindowFallback = 78,
     DecryptFmpPreownerInlineFallback = 79,
+    FmpWorkerDispatchFlowKeyed = 80,
+    FmpWorkerDispatchTargetOnly = 81,
+    FmpWorkerDispatchWorker0 = 82,
+    FmpWorkerDispatchWorker1 = 83,
+    FmpWorkerDispatchWorker2 = 84,
+    FmpWorkerDispatchWorker3 = 85,
+    FmpWorkerDispatchWorker4 = 86,
+    FmpWorkerDispatchWorker5 = 87,
+    FmpWorkerDispatchWorker6 = 88,
+    FmpWorkerDispatchWorker7 = 89,
+    FmpWorkerDispatchWorkerOther = 90,
 }
 
 impl Event {
@@ -546,6 +557,17 @@ impl Event {
             Event::DecryptFmpPreownerHelperFallback => "decrypt_fmp_preowner_helper_fallback",
             Event::DecryptFmpPreownerWindowFallback => "decrypt_fmp_preowner_window_fallback",
             Event::DecryptFmpPreownerInlineFallback => "decrypt_fmp_preowner_inline_fallback",
+            Event::FmpWorkerDispatchFlowKeyed => "fmp_worker_dispatch_flow_keyed",
+            Event::FmpWorkerDispatchTargetOnly => "fmp_worker_dispatch_target_only",
+            Event::FmpWorkerDispatchWorker0 => "fmp_worker_dispatch_worker0",
+            Event::FmpWorkerDispatchWorker1 => "fmp_worker_dispatch_worker1",
+            Event::FmpWorkerDispatchWorker2 => "fmp_worker_dispatch_worker2",
+            Event::FmpWorkerDispatchWorker3 => "fmp_worker_dispatch_worker3",
+            Event::FmpWorkerDispatchWorker4 => "fmp_worker_dispatch_worker4",
+            Event::FmpWorkerDispatchWorker5 => "fmp_worker_dispatch_worker5",
+            Event::FmpWorkerDispatchWorker6 => "fmp_worker_dispatch_worker6",
+            Event::FmpWorkerDispatchWorker7 => "fmp_worker_dispatch_worker7",
+            Event::FmpWorkerDispatchWorkerOther => "fmp_worker_dispatch_worker_other",
         }
     }
 }
@@ -632,6 +654,17 @@ fn event_from_index(idx: usize) -> Event {
         77 => Event::DecryptFmpPreownerHelperFallback,
         78 => Event::DecryptFmpPreownerWindowFallback,
         79 => Event::DecryptFmpPreownerInlineFallback,
+        80 => Event::FmpWorkerDispatchFlowKeyed,
+        81 => Event::FmpWorkerDispatchTargetOnly,
+        82 => Event::FmpWorkerDispatchWorker0,
+        83 => Event::FmpWorkerDispatchWorker1,
+        84 => Event::FmpWorkerDispatchWorker2,
+        85 => Event::FmpWorkerDispatchWorker3,
+        86 => Event::FmpWorkerDispatchWorker4,
+        87 => Event::FmpWorkerDispatchWorker5,
+        88 => Event::FmpWorkerDispatchWorker6,
+        89 => Event::FmpWorkerDispatchWorker7,
+        90 => Event::FmpWorkerDispatchWorkerOther,
         _ => unreachable!(),
     }
 }
@@ -889,6 +922,33 @@ pub(crate) fn record_fmp_worker_dispatch(elapsed_ns: u64, packets: usize) {
     );
     record_event_count_sample(Event::FmpWorkerDispatchBatch, 1);
     record_event_count_sample(Event::FmpWorkerDispatchPackets, packets_u64);
+}
+
+#[inline]
+pub(crate) fn record_fmp_worker_dispatch_target(worker_idx: usize, flow_keyed: bool) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(
+        if flow_keyed {
+            Event::FmpWorkerDispatchFlowKeyed
+        } else {
+            Event::FmpWorkerDispatchTargetOnly
+        },
+        1,
+    );
+    let worker_event = match worker_idx {
+        0 => Event::FmpWorkerDispatchWorker0,
+        1 => Event::FmpWorkerDispatchWorker1,
+        2 => Event::FmpWorkerDispatchWorker2,
+        3 => Event::FmpWorkerDispatchWorker3,
+        4 => Event::FmpWorkerDispatchWorker4,
+        5 => Event::FmpWorkerDispatchWorker5,
+        6 => Event::FmpWorkerDispatchWorker6,
+        7 => Event::FmpWorkerDispatchWorker7,
+        _ => Event::FmpWorkerDispatchWorkerOther,
+    };
+    record_event_count_sample(worker_event, 1);
 }
 
 #[inline]

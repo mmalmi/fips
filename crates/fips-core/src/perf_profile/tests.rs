@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 80);
+    assert_eq!(N_EVENTS, 91);
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
@@ -242,6 +242,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
         event_from_index(Event::DecryptFmpPreownerInlineFallback as usize).name(),
         "decrypt_fmp_preowner_inline_fallback"
     );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchFlowKeyed as usize).name(),
+        "fmp_worker_dispatch_flow_keyed"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchTargetOnly as usize).name(),
+        "fmp_worker_dispatch_target_only"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchWorker0 as usize).name(),
+        "fmp_worker_dispatch_worker0"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchWorker7 as usize).name(),
+        "fmp_worker_dispatch_worker7"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchWorkerOther as usize).name(),
+        "fmp_worker_dispatch_worker_other"
+    );
 }
 
 #[test]
@@ -424,6 +444,14 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed);
     let fmp_preowner_inline_fallback_before =
         EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed);
+    let dispatch_flow_keyed_before =
+        EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed);
+    let dispatch_target_only_before =
+        EVENTS[Event::FmpWorkerDispatchTargetOnly as usize].load(Relaxed);
+    let dispatch_worker0_before = EVENTS[Event::FmpWorkerDispatchWorker0 as usize].load(Relaxed);
+    let dispatch_worker7_before = EVENTS[Event::FmpWorkerDispatchWorker7 as usize].load(Relaxed);
+    let dispatch_worker_other_before =
+        EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed);
 
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
@@ -465,6 +493,11 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFmpPreownerHelperFallback, 103);
     record_event_count_sample(Event::DecryptFmpPreownerWindowFallback, 107);
     record_event_count_sample(Event::DecryptFmpPreownerInlineFallback, 109);
+    record_event_count_sample(Event::FmpWorkerDispatchFlowKeyed, 113);
+    record_event_count_sample(Event::FmpWorkerDispatchTargetOnly, 127);
+    record_event_count_sample(Event::FmpWorkerDispatchWorker0, 131);
+    record_event_count_sample(Event::FmpWorkerDispatchWorker7, 137);
+    record_event_count_sample(Event::FmpWorkerDispatchWorkerOther, 139);
 
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
@@ -638,6 +671,29 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed)
             - fmp_preowner_inline_fallback_before,
         109
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed)
+            - dispatch_flow_keyed_before,
+        113
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchTargetOnly as usize].load(Relaxed)
+            - dispatch_target_only_before,
+        127
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchWorker0 as usize].load(Relaxed) - dispatch_worker0_before,
+        131
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchWorker7 as usize].load(Relaxed) - dispatch_worker7_before,
+        137
+    );
+    assert_eq!(
+        EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed)
+            - dispatch_worker_other_before,
+        139
     );
 }
 

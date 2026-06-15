@@ -155,6 +155,10 @@ impl QueuedFmpSendJob {
         self.lane
     }
 
+    fn endpoint_flow_keyed(&self) -> bool {
+        self.job.endpoint_flow_dispatch_key.is_some()
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn mark_fair_reserved(&mut self, reservation: FairAdmissionReservation) {
         self.fair_reservation = Some(reservation);

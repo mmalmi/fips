@@ -100,6 +100,7 @@ impl EncryptWorkerPool {
             return;
         }
         let (idx, job) = self.prepare_dispatch(job);
+        crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
         self.dispatch_to_worker(idx, job);
     }
 
