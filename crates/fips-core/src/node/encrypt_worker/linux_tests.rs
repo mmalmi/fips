@@ -91,13 +91,15 @@ mod tests {
     }
 
     #[test]
-    fn linux_deferred_sender_env_is_default_off_and_bounded() {
-        assert!(!parse_linux_deferred_sender_enabled(None));
+    fn linux_deferred_sender_env_defaults_on_and_is_bounded() {
+        assert!(parse_linux_deferred_sender_enabled(None));
         assert!(!parse_linux_deferred_sender_enabled(Some("0")));
         assert!(!parse_linux_deferred_sender_enabled(Some("false")));
+        assert!(!parse_linux_deferred_sender_enabled(Some("OFF")));
         assert!(parse_linux_deferred_sender_enabled(Some("1")));
         assert!(parse_linux_deferred_sender_enabled(Some("true")));
         assert!(parse_linux_deferred_sender_enabled(Some("YES")));
+        assert!(parse_linux_deferred_sender_enabled(Some("unexpected")));
 
         assert_eq!(
             parse_linux_deferred_sender_cap(None),

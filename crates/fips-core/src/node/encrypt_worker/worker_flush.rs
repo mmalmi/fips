@@ -271,9 +271,9 @@ const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
 
 #[cfg(target_os = "linux")]
 fn parse_linux_deferred_sender_enabled(raw: Option<&str>) -> bool {
-    matches!(
+    !matches!(
         raw.map(str::trim),
-        Some("1" | "true" | "TRUE" | "True" | "yes" | "YES" | "Yes" | "on" | "ON" | "On")
+        Some("0" | "false" | "FALSE" | "False" | "no" | "NO" | "No" | "off" | "OFF" | "Off")
     )
 }
 
