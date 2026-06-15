@@ -534,11 +534,13 @@
         );
 
         let mut shard = test_shard();
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         drain_worker_queues(
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -605,11 +607,13 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         drain_worker_queues(
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -651,8 +655,14 @@
             DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
         );
 
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
-        match recv_worker_item_biased(&priority_rx, &fsp_aead_completion_rx, &bulk_rx) {
+        match recv_worker_item_biased(
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+        ) {
             DecryptWorkerQueueItem::Priority(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
@@ -665,6 +675,9 @@
             }
             DecryptWorkerQueueItem::FspAeadCompletion(_) => {
                 panic!("blocking receive must not select FSP AEAD completion while priority is ready")
+            }
+            DecryptWorkerQueueItem::FmpAeadCompletion(_) => {
+                panic!("blocking receive must not select FMP AEAD completion while priority is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -716,11 +729,13 @@
         }
 
         let mut shard = test_shard();
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         drain_worker_queues(
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,

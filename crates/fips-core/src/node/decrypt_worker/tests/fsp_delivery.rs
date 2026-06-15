@@ -115,11 +115,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -554,11 +550,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -692,11 +684,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: fmp_open,
-                fmp_replay: ReplayWindow::new(),
-                source_peer: previous_hop_peer,
-            },
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,

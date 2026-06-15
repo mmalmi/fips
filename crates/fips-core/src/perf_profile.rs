@@ -65,6 +65,11 @@
 //!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt-worker enqueue → batch item service start
 //!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
 //!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
+//!   * `FMP_AEAD_HELPER_QUEUE_WAIT` — FMP owner-worker helper dispatch → AEAD helper
+//!   * `FMP_AEAD_HELPER_COMPLETION_WAIT` — AEAD helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_PRIORITY_COMPLETION_WAIT` — priority helper completion → owner-worker
+//!   * `FMP_AEAD_HELPER_BULK_COMPLETION_WAIT` — bulk helper completion → owner-worker
+//!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP helper completions
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -79,7 +84,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 53;
+const N_STAGES: usize = 58;
 const N_EVENTS: usize = 70;
 const HIST_BUCKETS: usize = 48;
 
@@ -221,6 +226,16 @@ pub enum Stage {
     DecryptWorkerBulkInputTailWait = 51,
     /// Time a decrypt worker spends servicing one dequeued bulk item.
     DecryptWorkerBulkItemService = 52,
+    /// FMP AEAD helper job residence before a helper thread starts opening it.
+    FmpAeadHelperQueueWait = 53,
+    /// FMP AEAD helper completion residence before the owning decrypt worker handles it.
+    FmpAeadHelperCompletionWait = 54,
+    /// Priority FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperPriorityCompletionWait = 55,
+    /// Bulk FMP AEAD helper completion residence before the owner worker handles it.
+    FmpAeadHelperBulkCompletionWait = 56,
+    /// FMP owner-worker residence waiting for ordered helper completions.
+    FmpReceiveOrderWindowWait = 57,
 }
 
 impl Stage {
@@ -281,6 +296,13 @@ impl Stage {
             Stage::DecryptWorkerBulkInputHeadWait => "decrypt_worker_bulk_input_head_wait",
             Stage::DecryptWorkerBulkInputTailWait => "decrypt_worker_bulk_input_tail_wait",
             Stage::DecryptWorkerBulkItemService => "decrypt_worker_bulk_item_service",
+            Stage::FmpAeadHelperQueueWait => "fmp_aead_helper_queue_wait",
+            Stage::FmpAeadHelperCompletionWait => "fmp_aead_helper_completion_wait",
+            Stage::FmpAeadHelperPriorityCompletionWait => {
+                "fmp_aead_helper_priority_completion_wait"
+            }
+            Stage::FmpAeadHelperBulkCompletionWait => "fmp_aead_helper_bulk_completion_wait",
+            Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
         }
     }
 }
@@ -340,6 +362,11 @@ fn stage_from_index(idx: usize) -> Stage {
         50 => Stage::DecryptWorkerBulkInputHeadWait,
         51 => Stage::DecryptWorkerBulkInputTailWait,
         52 => Stage::DecryptWorkerBulkItemService,
+        53 => Stage::FmpAeadHelperQueueWait,
+        54 => Stage::FmpAeadHelperCompletionWait,
+        55 => Stage::FmpAeadHelperPriorityCompletionWait,
+        56 => Stage::FmpAeadHelperBulkCompletionWait,
+        57 => Stage::FmpReceiveOrderWindowWait,
         _ => unreachable!(),
     }
 }

@@ -484,11 +484,7 @@
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState {
-                fmp_cipher: cipher.clone(),
-                fmp_replay: ReplayWindow::new(),
-                source_peer,
-            },
+            OwnedSessionState::new(cipher.clone(), ReplayWindow::new(), source_peer),
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
@@ -501,11 +497,13 @@
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         let mut batch_stats = DecryptWorkerBatchStats::default();
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let processed = handle_bulk_item(
             0,
             &mut shard,
             &priority_rx,
+            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(

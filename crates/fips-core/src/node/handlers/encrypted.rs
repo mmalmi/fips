@@ -511,11 +511,11 @@ impl Node {
         let fmp_cipher = fmp_session.recv_cipher_clone()?;
         let fmp_replay = fmp_session.recv_replay_snapshot_owned();
         let source_peer = *peer.identity();
-        Some(crate::node::decrypt_worker::OwnedSessionState {
+        Some(crate::node::decrypt_worker::OwnedSessionState::new(
             fmp_cipher,
             fmp_replay,
             source_peer,
-        })
+        ))
     }
 
     /// Log a decryption failure with replay suppression.

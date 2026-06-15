@@ -43,9 +43,11 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
+const DECRYPT_WORKER_FMP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,6 +173,20 @@ fn fsp_ordered_aead_helper_count() -> usize {
     )
 }
 
+fn fmp_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+        .min(64)
+}
+
+fn fmp_aead_helper_count() -> usize {
+    fmp_aead_helper_count_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn decrypt_worker_packet_lane(len: usize) -> DecryptWorkerLane {
     if len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN {
         DecryptWorkerLane::Priority
@@ -197,9 +213,11 @@ fn decrypt_job_lane(job: &DecryptJob) -> DecryptWorkerLane {
 /// Built at FMP-session establishment time (`promote_connection`)
 /// and shipped to the assigned worker via `WorkerMsg::RegisterSession`.
 pub(crate) struct OwnedSessionState {
-    pub fmp_cipher: LessSafeKey,
-    pub fmp_replay: ReplayWindow,
-    pub source_peer: PeerIdentity,
+    fmp_cipher: Arc<LessSafeKey>,
+    fmp_replay: ReplayWindow,
+    source_peer: PeerIdentity,
+    fmp_receive_order_id: u64,
+    fmp_receive_order: FmpReceiveOrder,
 }
 
 struct OwnedFspEpochState {
@@ -485,6 +503,8 @@ struct FspReceiveTicket {
     sequence: u64,
 }
 
+type FmpReceiveTicket = FspReceiveTicket;
+
 #[derive(Debug)]
 enum OrderedCompletionError {
     Stale,
@@ -553,6 +573,68 @@ impl<T> OrderedCompletionBuffer<T> {
         self.pending[offset] = Some(completion);
         Ok(0)
     }
+
+    fn next_ready(&self) -> u64 {
+        self.next_ready
+    }
+
+    fn pending_limit(&self) -> usize {
+        self.pending_limit
+    }
+}
+
+struct FmpReceiveOrder {
+    next_ticket: u64,
+    completions: OrderedCompletionBuffer<FmpOrderedCompletion<OpenedFmpJob>>,
+}
+
+impl FmpReceiveOrder {
+    fn new() -> Self {
+        Self {
+            next_ticket: 0,
+            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FMP_RECEIVE_WINDOW),
+        }
+    }
+
+    fn issue(&mut self) -> FmpReceiveTicket {
+        let ticket = FmpReceiveTicket {
+            sequence: self.next_ticket,
+        };
+        self.next_ticket = self.next_ticket.saturating_add(1);
+        ticket
+    }
+
+    fn can_issue(&self) -> bool {
+        self.next_ticket
+            .saturating_sub(self.completions.next_ready())
+            < self.completions.pending_limit() as u64
+    }
+
+    fn complete(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        on_ready: impl FnMut(FmpOrderedCompletion<OpenedFmpJob>),
+    ) -> Result<usize, OrderedCompletionError> {
+        self.completions.complete(ticket, completion, on_ready)
+    }
+}
+
+#[derive(Debug)]
+enum FmpOrderedCompletion<T> {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        value: T,
+    },
+    AeadFailed,
+}
+
+#[derive(Default, Debug, Eq, PartialEq)]
+struct FmpOrderedDrain {
+    ready: usize,
+    accepted: usize,
+    aead_failures: usize,
+    replay_drops: usize,
 }
 
 struct FspReceiveOrder {
@@ -609,6 +691,112 @@ struct FspOrderedDrain {
     aead_failures: usize,
     replay_drops: usize,
     outputs: Vec<FspReadyCompletion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReplayPrecheck {
+    counter: u64,
+    replay_highest: u64,
+}
+
+struct OpenedFmpJob {
+    packet_data: Vec<u8>,
+    lane: DecryptWorkerLane,
+    source_peer: PeerIdentity,
+    transport_id: TransportId,
+    remote_addr: TransportAddr,
+    local_node_addr: NodeAddr,
+    timestamp_ms: u64,
+    packet_len: usize,
+    fmp_counter: u64,
+    fmp_flags: u8,
+    fmp_plaintext_offset: usize,
+    fmp_plaintext_len: usize,
+    fallback_tx: DecryptWorkerFallbackSender,
+}
+
+struct FmpAeadHelperJob {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    precheck: FmpReplayPrecheck,
+    cipher: Arc<LessSafeKey>,
+    fmp_header: [u8; 16],
+    opened: OpenedFmpJob,
+    completion_tx: Option<Sender<FmpAeadCompletion>>,
+    helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+struct FmpAeadCompletion {
+    session_key: DecryptSessionKey,
+    receive_order_id: u64,
+    ticket: FmpReceiveTicket,
+    completed_at: Option<crate::perf_profile::TraceStamp>,
+    result: FmpAeadCompletionResult,
+}
+
+enum FmpAeadCompletionResult {
+    Opened {
+        precheck: FmpReplayPrecheck,
+        opened: OpenedFmpJob,
+    },
+    AeadFailed {
+        fallback_tx: DecryptWorkerFallbackSender,
+        source_peer: PeerIdentity,
+        lane: DecryptWorkerLane,
+        fmp_counter: u64,
+        fmp_replay_highest: u64,
+    },
+}
+
+impl FmpAeadCompletionResult {
+    fn lane(&self) -> DecryptWorkerLane {
+        match self {
+            Self::Opened { opened, .. } => opened.lane,
+            Self::AeadFailed { lane, .. } => *lane,
+        }
+    }
+}
+
+impl FmpAeadHelperJob {
+    fn into_completion(mut self) -> FmpAeadCompletion {
+        let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
+        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        match OwnedSessionState::open_fmp_aead_in_place(
+            &self.cipher,
+            &mut self.opened.packet_data,
+            self.opened.fmp_plaintext_offset,
+            self.opened.fmp_counter,
+            &self.fmp_header,
+        ) {
+            Ok(outcome) => {
+                self.opened.fmp_plaintext_len = outcome.plaintext_len;
+                FmpAeadCompletion {
+                    session_key: self.session_key,
+                    receive_order_id: self.receive_order_id,
+                    ticket: self.ticket,
+                    completed_at,
+                    result: FmpAeadCompletionResult::Opened {
+                        precheck: self.precheck,
+                        opened: self.opened,
+                    },
+                }
+            }
+            Err(()) => FmpAeadCompletion {
+                session_key: self.session_key,
+                receive_order_id: self.receive_order_id,
+                ticket: self.ticket,
+                completed_at,
+                result: FmpAeadCompletionResult::AeadFailed {
+                    fallback_tx: self.opened.fallback_tx,
+                    source_peer: self.opened.source_peer,
+                    lane: self.opened.lane,
+                    fmp_counter: self.opened.fmp_counter,
+                    fmp_replay_highest: self.precheck.replay_highest,
+                },
+            },
+        }
+    }
 }
 
 struct FspAeadHelperJob {
@@ -696,10 +884,140 @@ struct FmpOpenOutcome {
 #[derive(Debug, PartialEq, Eq)]
 enum FmpOpenError {
     Replay,
+    #[cfg(test)]
     Aead { fmp_replay_highest: u64 },
 }
 
 impl OwnedSessionState {
+    pub(crate) fn new(
+        fmp_cipher: LessSafeKey,
+        fmp_replay: ReplayWindow,
+        source_peer: PeerIdentity,
+    ) -> Self {
+        Self {
+            fmp_cipher: Arc::new(fmp_cipher),
+            fmp_replay,
+            source_peer,
+            fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
+            fmp_receive_order: FmpReceiveOrder::new(),
+        }
+    }
+
+    fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
+        let replay_highest = self.fmp_replay.highest();
+        if !self.fmp_replay.check(fmp_counter) {
+            return Err(FmpOpenError::Replay);
+        }
+        Ok(FmpReplayPrecheck {
+            counter: fmp_counter,
+            replay_highest,
+        })
+    }
+
+    fn open_fmp_aead_in_place(
+        cipher: &LessSafeKey,
+        packet_data: &mut [u8],
+        fmp_ciphertext_offset: usize,
+        fmp_counter: u64,
+        fmp_header: &[u8; 16],
+    ) -> Result<FmpOpenOutcome, ()> {
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let buf = &mut packet_data[fmp_ciphertext_offset..];
+        let plaintext_len = cipher
+            .open_in_place(nonce, Aad::from(fmp_header), buf)
+            .map_err(|_| ())?
+            .len();
+
+        Ok(FmpOpenOutcome { plaintext_len })
+    }
+
+    fn accept_prechecked_fmp_replay_on(
+        fmp_replay: &mut ReplayWindow,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        if !fmp_replay.check(precheck.counter) {
+            return Err(FmpOpenError::Replay);
+        }
+        fmp_replay.accept(precheck.counter);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn accept_prechecked_fmp_replay(
+        &mut self,
+        precheck: FmpReplayPrecheck,
+    ) -> Result<(), FmpOpenError> {
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)
+    }
+
+    fn issue_fmp_receive_ticket(&mut self) -> FmpReceiveTicket {
+        self.fmp_receive_order.issue()
+    }
+
+    fn fmp_receive_order_id(&self) -> u64 {
+        self.fmp_receive_order_id
+    }
+
+    fn can_issue_fmp_receive_ticket(&self) -> bool {
+        self.fmp_receive_order.can_issue()
+    }
+
+    #[cfg(test)]
+    fn complete_ordered_fmp_open(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened { precheck, .. } => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
+    }
+
+    fn complete_ordered_fmp_open_with_value(
+        &mut self,
+        ticket: FmpReceiveTicket,
+        completion: FmpOrderedCompletion<OpenedFmpJob>,
+        mut on_opened: impl FnMut(OpenedFmpJob),
+    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+        let fmp_replay = &mut self.fmp_replay;
+        let mut drain = FmpOrderedDrain::default();
+        drain.ready = self
+            .fmp_receive_order
+            .complete(ticket, completion, |completion| match completion {
+                FmpOrderedCompletion::Opened { precheck, value } => {
+                    if Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck).is_ok() {
+                        drain.accepted += 1;
+                        on_opened(value);
+                    } else {
+                        drain.replay_drops += 1;
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed => {
+                    drain.aead_failures += 1;
+                }
+            })
+            .map_err(|_| FmpOpenError::Replay)?;
+        Ok(drain)
+    }
+
+    #[cfg(test)]
     fn open_fmp_in_place(
         &mut self,
         packet_data: &mut [u8],
@@ -707,23 +1025,19 @@ impl OwnedSessionState {
         fmp_counter: u64,
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
-        let fmp_replay_highest = self.fmp_replay.highest();
-        if !self.fmp_replay.check(fmp_counter) {
-            return Err(FmpOpenError::Replay);
-        }
-
-        let mut nonce_bytes = [0u8; 12];
-        nonce_bytes[4..12].copy_from_slice(&fmp_counter.to_le_bytes());
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let buf = &mut packet_data[fmp_ciphertext_offset..];
-        let plaintext_len = self
-            .fmp_cipher
-            .open_in_place(nonce, Aad::from(fmp_header), buf)
-            .map_err(|_| FmpOpenError::Aead { fmp_replay_highest })?
-            .len();
-
-        self.fmp_replay.accept(fmp_counter);
-        Ok(FmpOpenOutcome { plaintext_len })
+        let precheck = self.precheck_fmp_replay(fmp_counter)?;
+        let outcome = Self::open_fmp_aead_in_place(
+            &self.fmp_cipher,
+            packet_data,
+            fmp_ciphertext_offset,
+            fmp_counter,
+            fmp_header,
+        )
+        .map_err(|_| FmpOpenError::Aead {
+            fmp_replay_highest: precheck.replay_highest,
+        })?;
+        Self::accept_prechecked_fmp_replay_on(&mut self.fmp_replay, precheck)?;
+        Ok(outcome)
     }
 }
 
