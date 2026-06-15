@@ -426,6 +426,12 @@ impl SessionEntry {
         self.bytes_sent += bytes as u64;
     }
 
+    /// Record multiple sent data packets.
+    pub(crate) fn record_sent_batch(&mut self, packets: usize, bytes: usize) {
+        self.packets_sent += packets as u64;
+        self.bytes_sent += bytes as u64;
+    }
+
     /// Record a received data packet.
     pub(crate) fn record_recv(&mut self, bytes: usize) {
         self.packets_recv += 1;

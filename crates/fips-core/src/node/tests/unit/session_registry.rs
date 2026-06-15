@@ -182,6 +182,66 @@ fn session_registry_owns_fsp_send_bookkeeping() {
     );
 }
 
+#[test]
+fn session_registry_owns_batched_fsp_send_bookkeeping() {
+    use crate::node::session::{EndToEndState, SessionEntry};
+
+    let local = Identity::generate();
+    let peer = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let first_next_hop = make_node_addr(77);
+    let second_next_hop = make_node_addr(88);
+
+    let mut registry = SessionRegistry::default();
+    let mut entry = SessionEntry::new(
+        peer_addr,
+        peer.pubkey_full(),
+        EndToEndState::Established(make_test_fmp_session(&local, &peer, [0x01; 8], [0x02; 8])),
+        1_000,
+        true,
+    );
+    entry.init_mmp(&crate::config::SessionMmpConfig::default());
+    assert!(registry.insert(peer_addr, entry).is_none());
+
+    let recorded = registry
+        .record_fsp_send_bookkeeping_batch(
+            &peer_addr,
+            [
+                FspSendBookkeepingInput::data(10, 9, 3_000, 40, 4_000)
+                    .with_next_hop(first_next_hop),
+                FspSendBookkeepingInput::control(11, 3_100, 24),
+                FspSendBookkeepingInput::data(20, 12, 3_200, 60, 5_000)
+                    .with_next_hop(second_next_hop),
+            ],
+        )
+        .expect("batched FSP send bookkeeping should find session entry");
+    assert_eq!(
+        recorded, 2,
+        "only data frames should contribute to data counter batch size"
+    );
+
+    let entry = registry
+        .get(&peer_addr)
+        .expect("batched bookkeeping must keep session storage");
+    assert_eq!(entry.traffic_counters(), (2, 0, 30, 0));
+    assert_eq!(entry.last_activity(), 5_000);
+    assert_eq!(entry.last_outbound_next_hop(), Some(second_next_hop));
+    let mmp = entry.mmp().expect("session should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 3);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 124);
+
+    assert!(
+        registry
+            .record_fsp_send_bookkeeping_batch(
+                &make_node_addr(99),
+                [FspSendBookkeepingInput::data(10, 1, 3_300, 32, 6_000)],
+            )
+            .is_none(),
+        "missing sessions should not record batched FSP send bookkeeping"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn session_registry_owns_endpoint_fsp_worker_reservation_and_path_mtu_seed() {

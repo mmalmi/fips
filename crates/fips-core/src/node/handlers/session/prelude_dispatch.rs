@@ -879,6 +879,18 @@ struct PipelinedEndpointPreparedSend {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy)]
+struct PipelinedEndpointPreparedBookkeeping {
+    dest_addr: NodeAddr,
+    next_hop_addr: NodeAddr,
+    fmp_counter: u64,
+    fmp_timestamp_ms: u32,
+    fmp_wire_capacity: usize,
+    originated_bytes: usize,
+    fsp_bookkeeping: FspSendBookkeepingInput,
+}
+
+#[cfg(unix)]
 fn pipelined_endpoint_link_plaintext_len(
     inner_plaintext_len: usize,
     my_coords: Option<&crate::tree::TreeCoordinate>,

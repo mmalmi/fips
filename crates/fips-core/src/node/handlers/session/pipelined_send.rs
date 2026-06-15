@@ -284,7 +284,12 @@ impl<'a> PipelinedEndpointPeerRuntimeSendRequest<'a> {
 
 #[cfg(unix)]
 impl PipelinedEndpointPreparedSend {
-    fn record_bookkeeping(self, node: &mut Node) -> crate::node::encrypt_worker::FmpSendJob {
+    fn into_bookkeeping_and_job(
+        self,
+    ) -> (
+        PipelinedEndpointPreparedBookkeeping,
+        crate::node::encrypt_worker::FmpSendJob,
+    ) {
         let PipelinedEndpointPreparedSend {
             dest_addr,
             next_hop_addr,
@@ -296,21 +301,93 @@ impl PipelinedEndpointPreparedSend {
             worker_job,
         } = self;
 
+        (
+            PipelinedEndpointPreparedBookkeeping {
+                dest_addr,
+                next_hop_addr,
+                fmp_counter,
+                fmp_timestamp_ms,
+                fmp_wire_capacity,
+                originated_bytes,
+                fsp_bookkeeping,
+            },
+            worker_job,
+        )
+    }
+
+    fn record_bookkeeping(self, node: &mut Node) -> crate::node::encrypt_worker::FmpSendJob {
+        let (bookkeeping, worker_job) = self.into_bookkeeping_and_job();
+
         let _ = node.peers.record_fmp_send_bookkeeping(
-            &next_hop_addr,
-            fmp_counter,
-            fmp_timestamp_ms,
-            fmp_wire_capacity,
+            &bookkeeping.next_hop_addr,
+            bookkeeping.fmp_counter,
+            bookkeeping.fmp_timestamp_ms,
+            bookkeeping.fmp_wire_capacity,
         );
         node.stats_mut()
             .forwarding
-            .record_originated(originated_bytes);
+            .record_originated(bookkeeping.originated_bytes);
 
-        let _ = node
-            .sessions
-            .record_fsp_send_bookkeeping(&dest_addr, fsp_bookkeeping);
+        let _ = node.sessions.record_fsp_send_bookkeeping(
+            &bookkeeping.dest_addr,
+            bookkeeping.fsp_bookkeeping,
+        );
 
         worker_job
+    }
+
+    fn record_bookkeeping_many(
+        records: &[PipelinedEndpointPreparedBookkeeping],
+        node: &mut Node,
+    ) {
+        let Some(first) = records.first().copied() else {
+            return;
+        };
+
+        if records
+            .iter()
+            .all(|record| {
+                record.dest_addr == first.dest_addr && record.next_hop_addr == first.next_hop_addr
+            })
+        {
+            let _ = node.peers.record_fmp_send_bookkeeping_batch(
+                &first.next_hop_addr,
+                records.iter().map(|record| {
+                    (
+                        record.fmp_counter,
+                        record.fmp_timestamp_ms,
+                        record.fmp_wire_capacity,
+                    )
+                }),
+            );
+            let originated_bytes = records
+                .iter()
+                .map(|record| record.originated_bytes)
+                .sum::<usize>();
+            node.stats_mut()
+                .forwarding
+                .record_originated_batch(records.len(), originated_bytes);
+            let _ = node.sessions.record_fsp_send_bookkeeping_batch(
+                &first.dest_addr,
+                records.iter().map(|record| record.fsp_bookkeeping),
+            );
+            return;
+        }
+
+        for record in records {
+            let _ = node.peers.record_fmp_send_bookkeeping(
+                &record.next_hop_addr,
+                record.fmp_counter,
+                record.fmp_timestamp_ms,
+                record.fmp_wire_capacity,
+            );
+            node.stats_mut()
+                .forwarding
+                .record_originated(record.originated_bytes);
+            let _ = node
+                .sessions
+                .record_fsp_send_bookkeeping(&record.dest_addr, record.fsp_bookkeeping);
+        }
     }
 
     fn commit(self, node: &mut Node, workers: &crate::node::encrypt_worker::EncryptWorkerPool) {
@@ -339,14 +416,17 @@ impl PipelinedEndpointPreparedSend {
         }
 
         let queued_at = crate::perf_profile::stamp();
+        let mut records = Vec::with_capacity(sends.len());
         let jobs = sends
             .into_iter()
             .map(|send| {
-                let mut worker_job = send.record_bookkeeping(node);
+                let (bookkeeping, mut worker_job) = send.into_bookkeeping_and_job();
+                records.push(bookkeeping);
                 worker_job.queued_at = queued_at;
                 worker_job
             })
             .collect();
+        Self::record_bookkeeping_many(&records, node);
         workers.dispatch_bulk_batch(jobs);
     }
 }
