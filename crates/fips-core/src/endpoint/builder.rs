@@ -143,8 +143,8 @@ impl FipsEndpointBuilder {
                 endpoint_data_io.event_rx,
             ))),
             peer_identity_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
-            shutdown_tx: Some(shutdown_tx),
-            task,
+            shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
+            task: std::sync::Mutex::new(Some(task)),
         })
     }
 }

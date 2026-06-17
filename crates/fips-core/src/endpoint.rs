@@ -14,7 +14,7 @@ use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -347,8 +347,8 @@ pub struct FipsEndpoint {
     /// without this cache the bulk-data send hot path spends ~10–30% of CPU
     /// re-validating identity bytes the application has already configured.
     peer_identity_cache: std::sync::Mutex<std::collections::HashMap<String, PeerIdentity>>,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    task: JoinHandle<Result<(), NodeError>>,
+    shutdown_tx: StdMutex<Option<oneshot::Sender<()>>>,
+    task: StdMutex<Option<JoinHandle<Result<(), NodeError>>>>,
 }
 
 impl FipsEndpoint {
@@ -905,12 +905,39 @@ impl FipsEndpoint {
     }
 
     /// Shut down the endpoint and wait for the node task to stop.
-    pub async fn shutdown(mut self) -> Result<(), FipsEndpointError> {
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+    pub async fn shutdown(&self) -> Result<(), FipsEndpointError> {
+        let shutdown_tx = self
+            .shutdown_tx
+            .lock()
+            .map_err(|_| FipsEndpointError::Closed)?
+            .take();
+        if let Some(shutdown_tx) = shutdown_tx {
             let _ = shutdown_tx.send(());
         }
-        self.task.await??;
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| FipsEndpointError::Closed)?
+            .take();
+        if let Some(task) = task {
+            task.await??;
+        }
         Ok(())
+    }
+}
+
+impl Drop for FipsEndpoint {
+    fn drop(&mut self) {
+        if let Ok(mut shutdown_tx) = self.shutdown_tx.lock()
+            && let Some(shutdown_tx) = shutdown_tx.take()
+        {
+            let _ = shutdown_tx.send(());
+        }
+        if let Ok(mut task) = self.task.lock()
+            && let Some(task) = task.take()
+        {
+            task.abort();
+        }
     }
 }
 
