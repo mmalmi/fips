@@ -100,7 +100,7 @@ fn peer_lifecycle_registry_owns_connected_udp_activation_plan() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() {
+fn connected_udp_decrypt_fast_path_prepares_matching_established_packets() {
     let transport_id = TransportId::new(7);
     let receiver_idx = SessionIndex::new(0x0a0b_0c0d);
     let session_key =
@@ -108,8 +108,13 @@ fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() 
     let workers = crate::node::decrypt_worker::DecryptWorkerPool::spawn(1);
     let (fallback_tx, _fallback_rx) =
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
-    let fast_path =
-        ConnectedUdpDecryptFastPath::new(session_key, make_node_addr(0x77), workers, fallback_tx);
+    let fast_path = ConnectedUdpDecryptFastPath::new(
+        session_key,
+        false,
+        make_node_addr(0x77),
+        workers,
+        fallback_tx,
+    );
     let remote_addr = TransportAddr::from_string("127.0.0.1:2121");
 
     let header = build_established_header(receiver_idx, 99, FLAG_CE | FLAG_SP, 0);
@@ -123,6 +128,34 @@ fn connected_udp_decrypt_fast_path_only_prepares_matching_established_packets() 
     assert_eq!(job.fmp_flags, FLAG_CE | FLAG_SP);
     assert_eq!(job.fmp_header, header);
     assert_eq!(job.fmp_ciphertext_offset, ESTABLISHED_HEADER_SIZE);
+
+    let bulk_packet = build_encrypted(
+        &header,
+        &vec![0u8; crate::transport::udp::peer_drain::CONNECTED_UDP_PRIORITY_MAX_LEN],
+    );
+    let bulk_job = fast_path
+        .prepare_job(
+            transport_id,
+            remote_addr.clone(),
+            bulk_packet.clone(),
+            1_235,
+        )
+        .expect("matching established bulk packet should use the connected owner path");
+    assert_eq!(bulk_job.packet_data, bulk_packet);
+    assert_eq!(bulk_job.session_key, session_key);
+
+    let wrong_epoch_header =
+        build_established_header(receiver_idx, 100, FLAG_CE | FLAG_KEY_EPOCH, 0);
+    let wrong_epoch_packet = build_encrypted(&wrong_epoch_header, &[0u8; 16]);
+    match fast_path.prepare_job(
+        transport_id,
+        remote_addr.clone(),
+        wrong_epoch_packet.clone(),
+        1_235,
+    ) {
+        Ok(_) => panic!("wrong FMP epoch must stay on rx_loop for rekey handling"),
+        Err(returned) => assert_eq!(returned, wrong_epoch_packet),
+    }
 
     let wrong_header = build_established_header(SessionIndex::new(0x0102_0304), 100, 0, 0);
     let wrong_packet = build_encrypted(&wrong_header, &[0u8; 16]);

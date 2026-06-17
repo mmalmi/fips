@@ -1,15 +1,16 @@
 use super::FipsEndpointMessage;
 use crate::PeerIdentity;
 use crate::node::{ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointEventReceiver, NodeEndpointEvent};
+use crate::transport::PacketBuffer;
 use std::collections::VecDeque;
 
 struct EndpointQueuedMessage {
     source_peer: PeerIdentity,
-    payload: Vec<u8>,
+    payload: PacketBuffer,
 }
 
 impl EndpointQueuedMessage {
-    pub(super) fn new(source_peer: PeerIdentity, payload: Vec<u8>) -> Self {
+    pub(super) fn new(source_peer: PeerIdentity, payload: PacketBuffer) -> Self {
         Self {
             source_peer,
             payload,
@@ -19,7 +20,7 @@ impl EndpointQueuedMessage {
     fn into_public(self) -> FipsEndpointMessage {
         FipsEndpointMessage {
             source_peer: self.source_peer,
-            data: self.payload,
+            data: self.payload.into_vec(),
         }
     }
 }

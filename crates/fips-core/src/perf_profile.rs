@@ -59,6 +59,8 @@
 //!   * `DECRYPT_AUTHENTICATED_SESSION_WAIT` — FSP-authenticated worker completion → rx_loop dispatch
 //!   * `DECRYPT_AUTHENTICATED_SESSION_PRIORITY_WAIT` — priority FSP-authenticated completions
 //!   * `DECRYPT_AUTHENTICATED_SESSION_BULK_WAIT` — bulk FSP-authenticated completions
+//!   * `DECRYPT_DIRECT_SESSION_COMMIT_WAIT` — direct worker session commit → rx_loop bookkeeping
+//!   * `DECRYPT_DIRECT_SESSION_DATA_WAIT` — direct worker session data → rx_loop delivery
 //!   * `DECRYPT_FSP_WORKER_QUEUE_WAIT` — FMP worker → FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_PRIORITY_QUEUE_WAIT` — priority FSP owner-worker handoff
 //!   * `DECRYPT_FSP_WORKER_BULK_QUEUE_WAIT` — bulk FSP owner-worker handoff
@@ -75,6 +77,11 @@
 //!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP helper completions
 //!   * `FMP_AEAD_HELPER_COMPLETION_SERVICE` — owner-worker completion handling + output prep
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
+//!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
+//!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
+//!   * `CONNECTED_UDP_DRAIN_RECV` — connected peer socket `recvmmsg` drain batch
+//!   * `CONNECTED_UDP_DRAIN_RING_WAIT` — connected peer socket drain → userspace dispatch
+//!   * `CONNECTED_UDP_FAST_PATH_DISPATCH` — drained connected peer packet dispatch + flush
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -89,8 +96,8 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 64;
-const N_EVENTS: usize = 101;
+const N_STAGES: usize = 74;
+const N_EVENTS: usize = 199;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -261,6 +268,39 @@ pub enum Stage {
     /// Sender rx_loop work to commit prepared endpoint sends: session/peer
     /// bookkeeping and enqueueing already-admitted worker jobs.
     EndpointSendCommit = 63,
+    /// Time spent after a decrypt worker authenticates a plain FMP receive
+    /// until the rx loop records link/MMP liveness.
+    DecryptAuthenticatedFmpReceiveWait = 64,
+    /// Worker-open FSP AEAD job residence before the opener worker starts
+    /// opening it. Recorded in addition to the aggregate FSP AEAD queue wait.
+    FspAeadWorkerOpenQueueWait = 65,
+    /// Worker-open FSP AEAD completion residence before the owner worker
+    /// handles it. Recorded in addition to the aggregate FSP AEAD completion wait.
+    FspAeadWorkerOpenCompletionWait = 66,
+    /// Direct session commit residence before the rx loop applies receive-sync
+    /// and session/peer bookkeeping. Recorded in addition to the aggregate
+    /// `decrypt_authenticated_session_wait` to keep old bench comparisons intact.
+    DecryptDirectSessionCommitWait = 67,
+    /// Direct session data residence before the rx loop applies bookkeeping and
+    /// delivers payloads through the configured direct sink. Recorded in
+    /// addition to the aggregate `decrypt_authenticated_session_wait`.
+    DecryptDirectSessionDataWait = 68,
+    /// Connected UDP peer-drain socket receive syscall batch time. Separates
+    /// kernel drain cadence from userspace dispatch residence.
+    ConnectedUdpDrainRecv = 69,
+    /// Connected UDP peer-drain userspace dispatch time after packets have
+    /// left the kernel: punch filtering, fast-path admission/flush, and
+    /// fallback packet-channel handoff.
+    ConnectedUdpFastPathDispatch = 70,
+    /// Time a drained connected UDP packet spends in the owned userspace ring
+    /// before the dispatch thread starts handling it.
+    ConnectedUdpDrainRingWait = 71,
+    /// Priority-sized connected UDP ring residence, split from the aggregate
+    /// ring wait so control/liveness progress stays independently visible.
+    ConnectedUdpDrainPriorityRingWait = 72,
+    /// Bulk-sized connected UDP ring residence, split from the aggregate ring
+    /// wait so bulk burst absorption cannot hide priority behavior.
+    ConnectedUdpDrainBulkRingWait = 73,
 }
 
 impl Stage {
@@ -334,6 +374,16 @@ impl Stage {
             Stage::EndpointSendPrepare => "endpoint_send_prepare",
             Stage::EndpointSendPlan => "endpoint_send_plan",
             Stage::EndpointSendCommit => "endpoint_send_commit",
+            Stage::DecryptAuthenticatedFmpReceiveWait => "decrypt_authenticated_fmp_receive_wait",
+            Stage::FspAeadWorkerOpenQueueWait => "fsp_aead_worker_open_queue_wait",
+            Stage::FspAeadWorkerOpenCompletionWait => "fsp_aead_worker_open_completion_wait",
+            Stage::DecryptDirectSessionCommitWait => "decrypt_direct_session_commit_wait",
+            Stage::DecryptDirectSessionDataWait => "decrypt_direct_session_data_wait",
+            Stage::ConnectedUdpDrainRecv => "connected_udp_drain_recv",
+            Stage::ConnectedUdpFastPathDispatch => "connected_udp_fast_path_dispatch",
+            Stage::ConnectedUdpDrainRingWait => "connected_udp_drain_ring_wait",
+            Stage::ConnectedUdpDrainPriorityRingWait => "connected_udp_drain_priority_ring_wait",
+            Stage::ConnectedUdpDrainBulkRingWait => "connected_udp_drain_bulk_ring_wait",
         }
     }
 }
@@ -404,6 +454,16 @@ fn stage_from_index(idx: usize) -> Stage {
         61 => Stage::EndpointSendPrepare,
         62 => Stage::EndpointSendPlan,
         63 => Stage::EndpointSendCommit,
+        64 => Stage::DecryptAuthenticatedFmpReceiveWait,
+        65 => Stage::FspAeadWorkerOpenQueueWait,
+        66 => Stage::FspAeadWorkerOpenCompletionWait,
+        67 => Stage::DecryptDirectSessionCommitWait,
+        68 => Stage::DecryptDirectSessionDataWait,
+        69 => Stage::ConnectedUdpDrainRecv,
+        70 => Stage::ConnectedUdpFastPathDispatch,
+        71 => Stage::ConnectedUdpDrainRingWait,
+        72 => Stage::ConnectedUdpDrainPriorityRingWait,
+        73 => Stage::ConnectedUdpDrainBulkRingWait,
         _ => unreachable!(),
     }
 }
@@ -513,6 +573,114 @@ pub enum Event {
     FspAeadCompletionAeadFailed = 98,
     FspAeadCompletionReplayDropped = 99,
     FspAeadCompletionReadyMulti = 100,
+    EndpointBulkFastPathPrepareFailed = 101,
+    EndpointBulkFastPathStageFull = 102,
+    EndpointBulkFastPathFeedbackFull = 103,
+    EndpointBulkFastPathAttempt = 104,
+    EndpointBulkFastPathDispatched = 105,
+    EndpointBulkFastPathLeaseMiss = 106,
+    EndpointBulkFastPathIneligible = 107,
+    LinuxWgBatchChunk = 108,
+    LinuxWgBatchChunkPackets = 109,
+    LinuxWgBatchChunkFull = 110,
+    LinuxWgBatchSenderWaitGe250us = 111,
+    LinuxWgBatchSenderWaitGe1ms = 112,
+    LinuxWgBatchSenderWaitGe4ms = 113,
+    FmpSendGroupSplitTarget = 114,
+    FmpSendGroupSplitLane = 115,
+    FmpSendGroupSplitBackpressure = 116,
+    FmpSendGroupSplitPacketCap = 117,
+    EndpointCommittedBulkDispatchBatch = 118,
+    EndpointCommittedBulkDispatchPackets = 119,
+    EndpointCommittedBulkDispatchMergedBatch = 120,
+    EndpointCommittedBulkDispatchMergedPackets = 121,
+    FspAeadCompletionStaleSession = 122,
+    FspAeadCompletionStaleOrder = 123,
+    FspAeadCompletionStaleTicket = 124,
+    FspAeadCompletionDuplicateTicket = 125,
+    FspAeadCompletionWindowExceeded = 126,
+    DecryptFspHelperWindowFallback = 127,
+    DecryptWorkerSelectPriority = 128,
+    DecryptWorkerSelectFmpCompletion = 129,
+    DecryptWorkerSelectFspCompletionPackets = 130,
+    DecryptWorkerSelectBulkPackets = 131,
+    DecryptWorkerDrainPriority = 132,
+    DecryptWorkerDrainAeadCompletionPackets = 133,
+    DecryptWorkerDrainBulkPackets = 134,
+    DecryptWorkerBulkInterleaveAeadCompletionPackets = 135,
+    DecryptWorkerBulkInterleaveBudgetExhausted = 136,
+    DecryptFspPathWorkerOpen = 137,
+    DecryptWorkerControlDropped = 138,
+    DecryptWorkerSelectControl = 139,
+    DecryptWorkerDrainControl = 140,
+    DecryptFspHelperCompletionBacklogFallback = 141,
+    DecryptFspHelperQueueFullFallback = 142,
+    DecryptFmpHelperCompletionBacklogFallback = 143,
+    DecryptFmpPreownerCompletionBacklogFallback = 144,
+    DecryptFspOpenWorkerCompletionBacklogFallback = 145,
+    FspAeadCompletionReplayDroppedHelper = 146,
+    FspAeadCompletionReplayDroppedHelperReturned = 147,
+    FspAeadCompletionReplayDroppedWorkerOpen = 148,
+    FspAeadCompletionReplayDroppedWorkerOpenReturned = 149,
+    FspAeadCompletionReplayDroppedDuplicate = 150,
+    FspAeadCompletionReplayDroppedTooOld = 151,
+    FspAeadCompletionReplayDroppedTooOldLagGe2xWindow = 152,
+    FspAeadCompletionReplayDroppedTooOldLagGe4xWindow = 153,
+    FspAeadCompletionReplayDroppedTooOldLagGe16xWindow = 154,
+    FspAeadCompletionReplayDroppedTooOldLagGe64xWindow = 155,
+    ConnectedUdpDirectDecryptBulkShed = 156,
+    DecryptFspOpenPoolQueueFullFallback = 157,
+    /// Legacy pipeline name for transport UDP kernel receive drops sampled
+    /// once per node tick from SO_RXQ_OVFL-backed transport counters.
+    ConnectedUdpKernelDropped = 158,
+    /// Per-peer connected UDP socket receive drops sampled directly from
+    /// SO_RXQ_OVFL ancillary data on the connected socket drain path.
+    ConnectedUdpPeerKernelDropped = 159,
+    DecryptFspPathWorkerOpenStriped = 160,
+    DecryptAuthenticatedBacklogHigh = 161,
+    EndpointEventBulkBacklogHigh = 162,
+    PacketBatchPoolFresh = 163,
+    PacketBatchPoolReuse = 164,
+    PacketBatchPoolReturn = 165,
+    PacketBatchPoolDiscard = 166,
+    PacketBufferPoolFresh = 167,
+    PacketBufferPoolReuse = 168,
+    PacketBufferPoolReturn = 169,
+    PacketBufferPoolDiscard = 170,
+    LinuxBulkUdpPaceWait = 171,
+    /// Transport UDP kernel receive drops sampled from the wildcard/listener
+    /// UDP transport congestion counter.
+    UdpKernelDropped = 172,
+    /// Wildcard/listener UDP socket-local receive drops from `SO_RXQ_OVFL`.
+    UdpSocketKernelDropped = 173,
+    /// Linux namespace-wide UDP `RcvbufErrors` from `/proc/net/snmp`.
+    UdpNamespaceRcvbufErrors = 174,
+    /// Bulk packets drained from a connected UDP socket but shed by the
+    /// userspace connected-drain ring before decrypt/dispatch could catch up.
+    ConnectedUdpDrainBulkDropped = 175,
+    DecryptFspWorkerReplayDroppedDuplicate = 176,
+    DecryptFspWorkerReplayDroppedTooOld = 177,
+    DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow = 178,
+    DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow = 179,
+    DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow = 180,
+    DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow = 181,
+    DecryptFspPathLocalPriority = 182,
+    DecryptFspPathLocalBulk = 183,
+    DecryptFspPathHandoffPriority = 184,
+    DecryptFspPathHandoffBulk = 185,
+    DecryptFspPathHelperBulk = 186,
+    DecryptFspPathWorkerOpenBulk = 187,
+    FspAeadCompletionReturnedHelper = 188,
+    FspAeadCompletionReturnedWorkerOpen = 189,
+    DecryptFspOwnerHandoffDropped = 190,
+    FmpAeadCompletionReplayDroppedPrechecked = 191,
+    FmpAeadCompletionReplayDroppedDeferred = 192,
+    FmpAeadCompletionReplayDroppedDuplicate = 193,
+    FmpAeadCompletionReplayDroppedTooOld = 194,
+    FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow = 195,
+    FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow = 196,
+    FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow = 197,
+    FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow = 198,
 }
 
 impl Event {
@@ -625,6 +793,178 @@ impl Event {
             Event::FspAeadCompletionAeadFailed => "fsp_aead_completion_aead_failed",
             Event::FspAeadCompletionReplayDropped => "fsp_aead_completion_replay_dropped",
             Event::FspAeadCompletionReadyMulti => "fsp_aead_completion_ready_multi",
+            Event::EndpointBulkFastPathPrepareFailed => "endpoint_bulk_fast_path_prepare_failed",
+            Event::EndpointBulkFastPathStageFull => "endpoint_bulk_fast_path_stage_full",
+            Event::EndpointBulkFastPathFeedbackFull => "endpoint_bulk_fast_path_feedback_full",
+            Event::EndpointBulkFastPathAttempt => "endpoint_bulk_fast_path_attempt",
+            Event::EndpointBulkFastPathDispatched => "endpoint_bulk_fast_path_dispatched",
+            Event::EndpointBulkFastPathLeaseMiss => "endpoint_bulk_fast_path_lease_miss",
+            Event::EndpointBulkFastPathIneligible => "endpoint_bulk_fast_path_ineligible",
+            Event::LinuxWgBatchChunk => "linux_wg_batch_chunk",
+            Event::LinuxWgBatchChunkPackets => "linux_wg_batch_chunk_packets",
+            Event::LinuxWgBatchChunkFull => "linux_wg_batch_chunk_full",
+            Event::LinuxWgBatchSenderWaitGe250us => "linux_wg_batch_sender_wait_ge250us",
+            Event::LinuxWgBatchSenderWaitGe1ms => "linux_wg_batch_sender_wait_ge1ms",
+            Event::LinuxWgBatchSenderWaitGe4ms => "linux_wg_batch_sender_wait_ge4ms",
+            Event::FmpSendGroupSplitTarget => "fmp_send_group_split_target",
+            Event::FmpSendGroupSplitLane => "fmp_send_group_split_lane",
+            Event::FmpSendGroupSplitBackpressure => "fmp_send_group_split_backpressure",
+            Event::FmpSendGroupSplitPacketCap => "fmp_send_group_split_packet_cap",
+            Event::EndpointCommittedBulkDispatchBatch => "endpoint_committed_bulk_dispatch_batch",
+            Event::EndpointCommittedBulkDispatchPackets => {
+                "endpoint_committed_bulk_dispatch_packets"
+            }
+            Event::EndpointCommittedBulkDispatchMergedBatch => {
+                "endpoint_committed_bulk_dispatch_merged_batch"
+            }
+            Event::EndpointCommittedBulkDispatchMergedPackets => {
+                "endpoint_committed_bulk_dispatch_merged_packets"
+            }
+            Event::FspAeadCompletionStaleSession => "fsp_aead_completion_stale_session",
+            Event::FspAeadCompletionStaleOrder => "fsp_aead_completion_stale_order",
+            Event::FspAeadCompletionStaleTicket => "fsp_aead_completion_stale_ticket",
+            Event::FspAeadCompletionDuplicateTicket => "fsp_aead_completion_duplicate_ticket",
+            Event::FspAeadCompletionWindowExceeded => "fsp_aead_completion_window_exceeded",
+            Event::DecryptFspHelperWindowFallback => "decrypt_fsp_helper_window_fallback",
+            Event::DecryptWorkerSelectPriority => "decrypt_worker_select_priority",
+            Event::DecryptWorkerSelectFmpCompletion => "decrypt_worker_select_fmp_completion",
+            Event::DecryptWorkerSelectFspCompletionPackets => {
+                "decrypt_worker_select_fsp_completion_packets"
+            }
+            Event::DecryptWorkerSelectBulkPackets => "decrypt_worker_select_bulk_packets",
+            Event::DecryptWorkerDrainPriority => "decrypt_worker_drain_priority",
+            Event::DecryptWorkerDrainAeadCompletionPackets => {
+                "decrypt_worker_drain_aead_completion_packets"
+            }
+            Event::DecryptWorkerDrainBulkPackets => "decrypt_worker_drain_bulk_packets",
+            Event::DecryptWorkerBulkInterleaveAeadCompletionPackets => {
+                "decrypt_worker_bulk_interleave_aead_completion_packets"
+            }
+            Event::DecryptWorkerBulkInterleaveBudgetExhausted => {
+                "decrypt_worker_bulk_interleave_budget_exhausted"
+            }
+            Event::DecryptFspPathWorkerOpen => "decrypt_fsp_path_worker_open",
+            Event::DecryptFspPathWorkerOpenStriped => "decrypt_fsp_path_worker_open_striped",
+            Event::DecryptWorkerControlDropped => "decrypt_worker_control_dropped",
+            Event::DecryptWorkerSelectControl => "decrypt_worker_select_control",
+            Event::DecryptWorkerDrainControl => "decrypt_worker_drain_control",
+            Event::DecryptFspHelperCompletionBacklogFallback => {
+                "decrypt_fsp_helper_completion_backlog_fallback"
+            }
+            Event::DecryptFspHelperQueueFullFallback => "decrypt_fsp_helper_queue_full_fallback",
+            Event::DecryptFmpHelperCompletionBacklogFallback => {
+                "decrypt_fmp_helper_completion_backlog_fallback"
+            }
+            Event::DecryptFmpPreownerCompletionBacklogFallback => {
+                "decrypt_fmp_preowner_completion_backlog_fallback"
+            }
+            Event::DecryptFspOpenWorkerCompletionBacklogFallback => {
+                "decrypt_fsp_open_worker_completion_backlog_fallback"
+            }
+            Event::FspAeadCompletionReplayDroppedHelper => {
+                "fsp_aead_completion_replay_dropped_helper"
+            }
+            Event::FspAeadCompletionReplayDroppedHelperReturned => {
+                "fsp_aead_completion_replay_dropped_helper_returned"
+            }
+            Event::FspAeadCompletionReplayDroppedWorkerOpen => {
+                "fsp_aead_completion_replay_dropped_worker_open"
+            }
+            Event::FspAeadCompletionReplayDroppedWorkerOpenReturned => {
+                "fsp_aead_completion_replay_dropped_worker_open_returned"
+            }
+            Event::FspAeadCompletionReplayDroppedDuplicate => {
+                "fsp_aead_completion_replay_dropped_duplicate"
+            }
+            Event::FspAeadCompletionReplayDroppedTooOld => {
+                "fsp_aead_completion_replay_dropped_too_old"
+            }
+            Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow => {
+                "fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window"
+            }
+            Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow => {
+                "fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window"
+            }
+            Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow => {
+                "fsp_aead_completion_replay_dropped_too_old_lag_ge_16x_window"
+            }
+            Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow => {
+                "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
+            }
+            Event::ConnectedUdpDirectDecryptBulkShed => "connected_udp_direct_decrypt_bulk_shed",
+            Event::DecryptFspOpenPoolQueueFullFallback => {
+                "decrypt_fsp_open_pool_queue_full_fallback"
+            }
+            Event::ConnectedUdpKernelDropped => "connected_udp_kernel_dropped",
+            Event::ConnectedUdpPeerKernelDropped => "connected_udp_peer_kernel_dropped",
+            Event::DecryptAuthenticatedBacklogHigh => "decrypt_authenticated_backlog_high",
+            Event::EndpointEventBulkBacklogHigh => "endpoint_event_bulk_backlog_high",
+            Event::PacketBatchPoolFresh => "packet_batch_pool_fresh",
+            Event::PacketBatchPoolReuse => "packet_batch_pool_reuse",
+            Event::PacketBatchPoolReturn => "packet_batch_pool_return",
+            Event::PacketBatchPoolDiscard => "packet_batch_pool_discard",
+            Event::PacketBufferPoolFresh => "packet_buffer_pool_fresh",
+            Event::PacketBufferPoolReuse => "packet_buffer_pool_reuse",
+            Event::PacketBufferPoolReturn => "packet_buffer_pool_return",
+            Event::PacketBufferPoolDiscard => "packet_buffer_pool_discard",
+            Event::LinuxBulkUdpPaceWait => "linux_bulk_udp_pace_wait",
+            Event::UdpKernelDropped => "udp_kernel_dropped",
+            Event::UdpSocketKernelDropped => "udp_socket_kernel_dropped",
+            Event::UdpNamespaceRcvbufErrors => "udp_namespace_rcvbuf_errors",
+            Event::ConnectedUdpDrainBulkDropped => "connected_udp_drain_bulk_dropped",
+            Event::DecryptFspWorkerReplayDroppedDuplicate => {
+                "decrypt_fsp_worker_replay_dropped_duplicate"
+            }
+            Event::DecryptFspWorkerReplayDroppedTooOld => {
+                "decrypt_fsp_worker_replay_dropped_too_old"
+            }
+            Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow => {
+                "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window"
+            }
+            Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow => {
+                "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_4x_window"
+            }
+            Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow => {
+                "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_16x_window"
+            }
+            Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow => {
+                "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_64x_window"
+            }
+            Event::DecryptFspPathLocalPriority => "decrypt_fsp_path_local_priority",
+            Event::DecryptFspPathLocalBulk => "decrypt_fsp_path_local_bulk",
+            Event::DecryptFspPathHandoffPriority => "decrypt_fsp_path_handoff_priority",
+            Event::DecryptFspPathHandoffBulk => "decrypt_fsp_path_handoff_bulk",
+            Event::DecryptFspPathHelperBulk => "decrypt_fsp_path_helper_bulk",
+            Event::DecryptFspPathWorkerOpenBulk => "decrypt_fsp_path_worker_open_bulk",
+            Event::FspAeadCompletionReturnedHelper => "fsp_aead_completion_returned_helper",
+            Event::FspAeadCompletionReturnedWorkerOpen => {
+                "fsp_aead_completion_returned_worker_open"
+            }
+            Event::DecryptFspOwnerHandoffDropped => "decrypt_fsp_owner_handoff_dropped",
+            Event::FmpAeadCompletionReplayDroppedPrechecked => {
+                "fmp_aead_completion_replay_dropped_prechecked"
+            }
+            Event::FmpAeadCompletionReplayDroppedDeferred => {
+                "fmp_aead_completion_replay_dropped_deferred"
+            }
+            Event::FmpAeadCompletionReplayDroppedDuplicate => {
+                "fmp_aead_completion_replay_dropped_duplicate"
+            }
+            Event::FmpAeadCompletionReplayDroppedTooOld => {
+                "fmp_aead_completion_replay_dropped_too_old"
+            }
+            Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow => {
+                "fmp_aead_completion_replay_dropped_too_old_lag_ge_2x_window"
+            }
+            Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow => {
+                "fmp_aead_completion_replay_dropped_too_old_lag_ge_4x_window"
+            }
+            Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow => {
+                "fmp_aead_completion_replay_dropped_too_old_lag_ge_16x_window"
+            }
+            Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow => {
+                "fmp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
+            }
         }
     }
 }
@@ -732,6 +1072,104 @@ fn event_from_index(idx: usize) -> Event {
         98 => Event::FspAeadCompletionAeadFailed,
         99 => Event::FspAeadCompletionReplayDropped,
         100 => Event::FspAeadCompletionReadyMulti,
+        101 => Event::EndpointBulkFastPathPrepareFailed,
+        102 => Event::EndpointBulkFastPathStageFull,
+        103 => Event::EndpointBulkFastPathFeedbackFull,
+        104 => Event::EndpointBulkFastPathAttempt,
+        105 => Event::EndpointBulkFastPathDispatched,
+        106 => Event::EndpointBulkFastPathLeaseMiss,
+        107 => Event::EndpointBulkFastPathIneligible,
+        108 => Event::LinuxWgBatchChunk,
+        109 => Event::LinuxWgBatchChunkPackets,
+        110 => Event::LinuxWgBatchChunkFull,
+        111 => Event::LinuxWgBatchSenderWaitGe250us,
+        112 => Event::LinuxWgBatchSenderWaitGe1ms,
+        113 => Event::LinuxWgBatchSenderWaitGe4ms,
+        114 => Event::FmpSendGroupSplitTarget,
+        115 => Event::FmpSendGroupSplitLane,
+        116 => Event::FmpSendGroupSplitBackpressure,
+        117 => Event::FmpSendGroupSplitPacketCap,
+        118 => Event::EndpointCommittedBulkDispatchBatch,
+        119 => Event::EndpointCommittedBulkDispatchPackets,
+        120 => Event::EndpointCommittedBulkDispatchMergedBatch,
+        121 => Event::EndpointCommittedBulkDispatchMergedPackets,
+        122 => Event::FspAeadCompletionStaleSession,
+        123 => Event::FspAeadCompletionStaleOrder,
+        124 => Event::FspAeadCompletionStaleTicket,
+        125 => Event::FspAeadCompletionDuplicateTicket,
+        126 => Event::FspAeadCompletionWindowExceeded,
+        127 => Event::DecryptFspHelperWindowFallback,
+        128 => Event::DecryptWorkerSelectPriority,
+        129 => Event::DecryptWorkerSelectFmpCompletion,
+        130 => Event::DecryptWorkerSelectFspCompletionPackets,
+        131 => Event::DecryptWorkerSelectBulkPackets,
+        132 => Event::DecryptWorkerDrainPriority,
+        133 => Event::DecryptWorkerDrainAeadCompletionPackets,
+        134 => Event::DecryptWorkerDrainBulkPackets,
+        135 => Event::DecryptWorkerBulkInterleaveAeadCompletionPackets,
+        136 => Event::DecryptWorkerBulkInterleaveBudgetExhausted,
+        137 => Event::DecryptFspPathWorkerOpen,
+        138 => Event::DecryptWorkerControlDropped,
+        139 => Event::DecryptWorkerSelectControl,
+        140 => Event::DecryptWorkerDrainControl,
+        141 => Event::DecryptFspHelperCompletionBacklogFallback,
+        142 => Event::DecryptFspHelperQueueFullFallback,
+        143 => Event::DecryptFmpHelperCompletionBacklogFallback,
+        144 => Event::DecryptFmpPreownerCompletionBacklogFallback,
+        145 => Event::DecryptFspOpenWorkerCompletionBacklogFallback,
+        146 => Event::FspAeadCompletionReplayDroppedHelper,
+        147 => Event::FspAeadCompletionReplayDroppedHelperReturned,
+        148 => Event::FspAeadCompletionReplayDroppedWorkerOpen,
+        149 => Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
+        150 => Event::FspAeadCompletionReplayDroppedDuplicate,
+        151 => Event::FspAeadCompletionReplayDroppedTooOld,
+        152 => Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow,
+        153 => Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow,
+        154 => Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow,
+        155 => Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow,
+        156 => Event::ConnectedUdpDirectDecryptBulkShed,
+        157 => Event::DecryptFspOpenPoolQueueFullFallback,
+        158 => Event::ConnectedUdpKernelDropped,
+        159 => Event::ConnectedUdpPeerKernelDropped,
+        160 => Event::DecryptFspPathWorkerOpenStriped,
+        161 => Event::DecryptAuthenticatedBacklogHigh,
+        162 => Event::EndpointEventBulkBacklogHigh,
+        163 => Event::PacketBatchPoolFresh,
+        164 => Event::PacketBatchPoolReuse,
+        165 => Event::PacketBatchPoolReturn,
+        166 => Event::PacketBatchPoolDiscard,
+        167 => Event::PacketBufferPoolFresh,
+        168 => Event::PacketBufferPoolReuse,
+        169 => Event::PacketBufferPoolReturn,
+        170 => Event::PacketBufferPoolDiscard,
+        171 => Event::LinuxBulkUdpPaceWait,
+        172 => Event::UdpKernelDropped,
+        173 => Event::UdpSocketKernelDropped,
+        174 => Event::UdpNamespaceRcvbufErrors,
+        175 => Event::ConnectedUdpDrainBulkDropped,
+        176 => Event::DecryptFspWorkerReplayDroppedDuplicate,
+        177 => Event::DecryptFspWorkerReplayDroppedTooOld,
+        178 => Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow,
+        179 => Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow,
+        180 => Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow,
+        181 => Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow,
+        182 => Event::DecryptFspPathLocalPriority,
+        183 => Event::DecryptFspPathLocalBulk,
+        184 => Event::DecryptFspPathHandoffPriority,
+        185 => Event::DecryptFspPathHandoffBulk,
+        186 => Event::DecryptFspPathHelperBulk,
+        187 => Event::DecryptFspPathWorkerOpenBulk,
+        188 => Event::FspAeadCompletionReturnedHelper,
+        189 => Event::FspAeadCompletionReturnedWorkerOpen,
+        190 => Event::DecryptFspOwnerHandoffDropped,
+        191 => Event::FmpAeadCompletionReplayDroppedPrechecked,
+        192 => Event::FmpAeadCompletionReplayDroppedDeferred,
+        193 => Event::FmpAeadCompletionReplayDroppedDuplicate,
+        194 => Event::FmpAeadCompletionReplayDroppedTooOld,
+        195 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow,
+        196 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow,
+        197 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow,
+        198 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow,
         _ => unreachable!(),
     }
 }
@@ -900,6 +1338,33 @@ pub fn record_event_count(event: Event, count: u64) {
 }
 
 #[inline]
+pub(crate) fn record_udp_kernel_drops(drops: u64) {
+    record_event_count(Event::UdpKernelDropped, drops);
+}
+
+#[inline]
+pub(crate) fn record_udp_socket_kernel_drops(drops: u64) {
+    record_event_count(Event::UdpSocketKernelDropped, drops);
+}
+
+#[inline]
+pub(crate) fn record_udp_namespace_rcvbuf_errors(drops: u64) {
+    record_event_count(Event::UdpNamespaceRcvbufErrors, drops);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_connected_udp_peer_kernel_drops(drops: u64) {
+    record_event_count(Event::ConnectedUdpPeerKernelDropped, drops);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_bulk_udp_pace_wait() {
+    record_event(Event::LinuxBulkUdpPaceWait);
+}
+
+#[inline]
 pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
     record_event(Event::EncryptWorkerQueueFull);
     record_event(if priority {
@@ -968,6 +1433,60 @@ pub(crate) fn record_fmp_send_groups(groups: usize, packets: usize, single_group
     }
 }
 
+#[inline]
+pub(crate) fn record_fmp_send_group_split_target() {
+    record_fmp_send_group_split(Event::FmpSendGroupSplitTarget);
+}
+
+#[inline]
+pub(crate) fn record_fmp_send_group_split_lane() {
+    record_fmp_send_group_split(Event::FmpSendGroupSplitLane);
+}
+
+#[inline]
+pub(crate) fn record_fmp_send_group_split_backpressure() {
+    record_fmp_send_group_split(Event::FmpSendGroupSplitBackpressure);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_fmp_send_group_split_packet_cap() {
+    record_fmp_send_group_split(Event::FmpSendGroupSplitPacketCap);
+}
+
+#[inline]
+fn record_fmp_send_group_split(event: Event) {
+    if !enabled() {
+        return;
+    }
+    record_event_count_sample(event, 1);
+}
+
+#[inline]
+pub(crate) fn record_endpoint_committed_bulk_dispatch(
+    packets: usize,
+    merged_batches: usize,
+    merged_packets: usize,
+) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::EndpointCommittedBulkDispatchBatch, 1);
+    record_event_count_sample(Event::EndpointCommittedBulkDispatchPackets, packets as u64);
+    if merged_batches > 0 {
+        record_event_count_sample(
+            Event::EndpointCommittedBulkDispatchMergedBatch,
+            merged_batches as u64,
+        );
+    }
+    if merged_packets > 0 {
+        record_event_count_sample(
+            Event::EndpointCommittedBulkDispatchMergedPackets,
+            merged_packets as u64,
+        );
+    }
+}
+
 /// Record rx-loop producer-side cost for handing prepared packets to the
 /// encrypt worker queues.
 ///
@@ -1016,6 +1535,41 @@ pub(crate) fn record_fmp_worker_dispatch_target(worker_idx: usize, flow_keyed: b
         _ => Event::FmpWorkerDispatchWorkerOther,
     };
     record_event_count_sample(worker_event, 1);
+}
+
+/// Record Linux WG-batch worker chunk width before crypto starts.
+///
+/// This separates producer/container geometry from the final UDP send group
+/// shape. Wider chunks can look promising in GSO counters while increasing
+/// ordered-sender HOL or burst loss, so keep the input chunk width observable.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_chunk(packets: usize, chunk_size: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchChunk, 1);
+    record_event_count_sample(Event::LinuxWgBatchChunkPackets, packets as u64);
+    if packets >= chunk_size.max(1) {
+        record_event_count_sample(Event::LinuxWgBatchChunkFull, 1);
+    }
+}
+
+/// Record batches whose ordered WG sender had to wait for crypto completion.
+///
+/// The sender thread intentionally preserves per-flow order. If a wider chunk
+/// or worker skew makes the front batch slow, the flow can stall without direct
+/// queue drops; threshold counters make that head-of-line wait visible in raw
+/// pipeline logs and soak summaries.
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_sender_wait(elapsed_ns: u64) {
+    if !enabled() {
+        return;
+    }
+    record_wait_threshold(Event::LinuxWgBatchSenderWaitGe250us, elapsed_ns, 1, 250_000);
+    record_wait_threshold(Event::LinuxWgBatchSenderWaitGe1ms, elapsed_ns, 1, 1_000_000);
+    record_wait_threshold(Event::LinuxWgBatchSenderWaitGe4ms, elapsed_ns, 1, 4_000_000);
 }
 
 #[inline]
@@ -1098,6 +1652,70 @@ pub(crate) fn record_decrypt_worker_batch(
 }
 
 #[inline]
+pub(crate) fn record_decrypt_worker_select_priority() {
+    record_event(Event::DecryptWorkerSelectPriority);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_select_control() {
+    record_event(Event::DecryptWorkerSelectControl);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_select_fmp_completion() {
+    record_event(Event::DecryptWorkerSelectFmpCompletion);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
+    record_event_count(
+        Event::DecryptWorkerSelectFspCompletionPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_select_bulk(packets: usize) {
+    record_event_count(Event::DecryptWorkerSelectBulkPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_drain_priority() {
+    record_event(Event::DecryptWorkerDrainPriority);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_drain_control() {
+    record_event(Event::DecryptWorkerDrainControl);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_drain_aead_completion(packets: usize) {
+    record_event_count(
+        Event::DecryptWorkerDrainAeadCompletionPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_drain_bulk(packets: usize) {
+    record_event_count(Event::DecryptWorkerDrainBulkPackets, packets as u64);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(packets: usize) {
+    record_event_count(
+        Event::DecryptWorkerBulkInterleaveAeadCompletionPackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_bulk_interleave_budget_exhausted() {
+    record_event(Event::DecryptWorkerBulkInterleaveBudgetExhausted);
+}
+
+#[inline]
 pub(crate) fn record_fmp_aead_completion_drain(
     ready: usize,
     accepted: usize,
@@ -1144,6 +1762,156 @@ pub(crate) fn record_fsp_aead_completion_drain(
     }
     if ready > 1 {
         record_event_count_sample(Event::FspAeadCompletionReadyMulti, 1);
+    }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_source_replay_drops(
+    helper: usize,
+    helper_returned: usize,
+    worker_open: usize,
+    worker_open_returned: usize,
+) {
+    if !enabled() {
+        return;
+    }
+    if helper > 0 {
+        record_event_count_sample(Event::FspAeadCompletionReplayDroppedHelper, helper as u64);
+    }
+    if helper_returned > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionReplayDroppedHelperReturned,
+            helper_returned as u64,
+        );
+    }
+    if worker_open > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionReplayDroppedWorkerOpen,
+            worker_open as u64,
+        );
+    }
+    if worker_open_returned > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
+            worker_open_returned as u64,
+        );
+    }
+}
+
+#[inline]
+pub(crate) fn record_fmp_aead_completion_replay_drop_mode(deferred: bool) {
+    if !enabled() {
+        return;
+    }
+    record_event(if deferred {
+        Event::FmpAeadCompletionReplayDroppedDeferred
+    } else {
+        Event::FmpAeadCompletionReplayDroppedPrechecked
+    });
+}
+
+#[inline]
+pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::FspAeadCompletionReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::FspAeadCompletionReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_fsp_aead_completion_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
+pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
+    reason: crate::noise::ReplayRejection,
+    counter_lag: u64,
+) {
+    if !enabled() {
+        return;
+    }
+    let event = match reason {
+        crate::noise::ReplayRejection::Duplicate => Event::DecryptFspWorkerReplayDroppedDuplicate,
+        crate::noise::ReplayRejection::TooOld => Event::DecryptFspWorkerReplayDroppedTooOld,
+    };
+    record_event(event);
+    if reason == crate::noise::ReplayRejection::TooOld {
+        record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
+    }
+}
+
+#[inline]
+fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
+    }
+}
+
+#[inline]
+fn record_fsp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow);
+    }
+}
+
+#[inline]
+fn record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag: u64) {
+    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
+    if counter_lag >= window.saturating_mul(2) {
+        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow);
+    }
+    if counter_lag >= window.saturating_mul(4) {
+        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow);
+    }
+    if counter_lag >= window.saturating_mul(16) {
+        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow);
+    }
+    if counter_lag >= window.saturating_mul(64) {
+        record_event(Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow);
     }
 }
 

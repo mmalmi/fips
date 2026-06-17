@@ -43,22 +43,39 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
 
 #[cfg(target_os = "linux")]
-pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
-    Vec::with_capacity(size)
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn fresh_recv_buffer(size: usize) -> Vec<u8> {
-    vec![0u8; size]
-}
-
-#[cfg(target_os = "linux")]
 pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
     buffer.clear();
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn reset_recv_buffer(_buffer: &mut Vec<u8>) {}
+
+#[cfg(target_os = "linux")]
+fn linux_udp_rcvbuf_errors() -> Option<u64> {
+    let contents = std::fs::read_to_string("/proc/net/snmp").ok()?;
+    parse_proc_net_snmp_udp_rcvbuf_errors(&contents)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_net_snmp_udp_rcvbuf_errors(contents: &str) -> Option<u64> {
+    let mut lines = contents.lines();
+    while let Some(header) = lines.next() {
+        if !header.starts_with("Udp:") {
+            continue;
+        }
+        let values = lines.next()?;
+        if !values.starts_with("Udp:") {
+            continue;
+        }
+        let header_fields: Vec<&str> = header.split_whitespace().collect();
+        let value_fields: Vec<&str> = values.split_whitespace().collect();
+        let idx = header_fields
+            .iter()
+            .position(|field| *field == "RcvbufErrors")?;
+        return value_fields.get(idx)?.parse().ok();
+    }
+    None
+}
 
 fn socket_addr_families_compatible(local: SocketAddr, remote: SocketAddr) -> bool {
     matches!(
@@ -114,6 +131,13 @@ pub struct UdpTransport {
     local_addr: Option<SocketAddr>,
     /// Transport statistics.
     stats: Arc<UdpStats>,
+    /// Linux namespace-level UDP receive-buffer error baseline.
+    ///
+    /// This is broader than the wildcard socket. It is reported separately
+    /// from `SO_RXQ_OVFL` so benchmark artifacts can distinguish this socket
+    /// dropping from unrelated UDP receive-buffer pressure in the namespace.
+    #[cfg(target_os = "linux")]
+    udp_rcvbuf_error_baseline: u64,
     /// DNS resolution cache for hostname addresses.
     dns_cache: StdMutex<HashMap<TransportAddr, (SocketAddr, Instant)>>,
 }
@@ -136,6 +160,8 @@ impl UdpTransport {
             recv_task: None,
             local_addr: None,
             stats: Arc::new(UdpStats::new()),
+            #[cfg(target_os = "linux")]
+            udp_rcvbuf_error_baseline: linux_udp_rcvbuf_errors().unwrap_or(0),
             dns_cache: StdMutex::new(HashMap::new()),
         }
     }
@@ -239,12 +265,26 @@ impl UdpTransport {
 
     /// Query transport-local congestion indicators.
     pub fn congestion(&self) -> super::TransportCongestion {
+        let socket_drops = self
+            .stats
+            .kernel_drops
+            .load(std::sync::atomic::Ordering::Relaxed);
+        #[cfg(target_os = "linux")]
+        let namespace_drops = linux_udp_rcvbuf_errors()
+            .unwrap_or(self.udp_rcvbuf_error_baseline)
+            .saturating_sub(self.udp_rcvbuf_error_baseline);
+        #[cfg(target_os = "linux")]
+        let recv_drops = socket_drops.max(namespace_drops);
+        #[cfg(not(target_os = "linux"))]
+        let recv_drops = socket_drops;
+
         super::TransportCongestion {
-            recv_drops: Some(
-                self.stats
-                    .kernel_drops
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            ),
+            recv_drops: Some(recv_drops),
+            socket_recv_drops: Some(socket_drops),
+            #[cfg(target_os = "linux")]
+            namespace_recv_drops: Some(namespace_drops),
+            #[cfg(not(target_os = "linux"))]
+            namespace_recv_drops: None,
         }
     }
 
@@ -568,7 +608,9 @@ async fn udp_receive_loop(
         // refill the slot) but zero per-packet memcpy and no per-refill
         // memset on Linux — the receive buffer becomes the packet buffer
         // in one move.
-        let mut backing: Vec<Vec<u8>> = (0..BATCH).map(|_| fresh_recv_buffer(buf_size)).collect();
+        let mut backing: Vec<Vec<u8>> = (0..BATCH)
+            .map(|_| packet_tx.recv_buffer(buf_size))
+            .collect();
         let mut addrs: [Option<std::net::SocketAddr>; BATCH] = std::array::from_fn(|_| None);
 
         loop {
@@ -581,7 +623,7 @@ async fn udp_receive_loop(
                     stats.set_kernel_drops(kernel_drops as u64);
                     let timestamp_ms = received_timestamp_ms();
                     let trace_enqueued_at = crate::perf_profile::stamp();
-                    let mut packets = Vec::with_capacity(count);
+                    let mut packets = packet_tx.packet_batch(count);
                     for i in 0..count {
                         let len = backing[i].len();
                         let Some(remote_addr) = addrs[i].take() else {
@@ -607,12 +649,13 @@ async fn udp_receive_loop(
                         // refill with a fresh one. `mem::replace`
                         // returns the OLD value and writes the new one
                         // — single pointer swap, no copy.
-                        let data = std::mem::replace(&mut backing[i], fresh_recv_buffer(buf_size));
+                        let data =
+                            std::mem::replace(&mut backing[i], packet_tx.recv_buffer(buf_size));
                         let addr = TransportAddr::from_socket_addr(remote_addr);
                         let packet = ReceivedPacket::with_trace_timestamp(
                             transport_id,
                             addr,
-                            data,
+                            packet_tx.packet_buffer(data),
                             timestamp_ms,
                             trace_enqueued_at,
                         );
@@ -627,7 +670,7 @@ async fn udp_receive_loop(
                         packets.push(packet);
                     }
 
-                    if !packets.is_empty() && packet_tx.send_batch(packets).is_err() {
+                    if !packets.is_empty() && packet_tx.send_packet_batch(packets).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"

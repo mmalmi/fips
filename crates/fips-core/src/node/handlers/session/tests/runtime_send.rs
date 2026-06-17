@@ -238,7 +238,11 @@
         assert_eq!(feedback.records.len(), 1);
         assert_eq!(feedback.records[0].dest_addr, dest_addr);
         assert_eq!(feedback.records[0].next_hop_addr, next_hop_addr);
-        assert_eq!(feedback.records[0].fsp_path_mtu, 1234);
+        let crate::node::EndpointBulkSendSessionBookkeeping::Fsp { path_mtu, .. } =
+            feedback.records[0].session_bookkeeping;
+        {
+            assert_eq!(path_mtu, 1234);
+        }
 
         node.apply_endpoint_bulk_send_feedback(feedback);
         let session = node.sessions.get(&dest_addr).expect("session exists");

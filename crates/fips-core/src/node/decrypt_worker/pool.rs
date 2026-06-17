@@ -1,24 +1,27 @@
 /// Handle to the decrypt worker pool. Shard-style: each worker is one
-/// OS thread that owns its sessions outright. Dispatch is
-/// deterministic on `session_key` so a session always reaches the same
-/// shard.
+/// OS thread that owns its sessions outright. FMP dispatch follows the
+/// registered owner for the session key, falling back to the old session-key
+/// hash only before registration has reached the pool.
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
     fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
-    fmp_preowner_aead_helpers: bool,
-    fmp_aead_sessions: Arc<RwLock<HashMap<DecryptSessionKey, Arc<FmpSharedCryptoSession>>>>,
+    fmp_source_affine_session_owner: bool,
+    fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_aead_helpers: Option<Arc<FspAeadHelperPool>>,
+    fsp_local_bulk_open_worker: bool,
+    fsp_remote_bulk_open_worker: bool,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
 
 #[derive(Clone)]
 struct DecryptWorkerSender {
+    control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
-    fmp_aead_completion: Sender<FmpAeadCompletion>,
-    fsp_aead_completion: Sender<FspAeadCompletion>,
+    fmp_aead_completion: Sender<FmpAeadCompletionBatch>,
+    fsp_aead_completion: Sender<FspAeadCompletionBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
 }
@@ -54,10 +57,6 @@ impl FmpAeadHelperPool {
             Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
         }
     }
-
-    fn has_room(&self) -> bool {
-        !self.tx.is_full()
-    }
 }
 
 impl FspAeadHelperPool {
@@ -83,21 +82,60 @@ impl FspAeadHelperPool {
             Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
         }
     }
+
+    fn has_room(&self) -> bool {
+        !self.tx.is_full()
+    }
 }
 
 fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperJob>) {
     trace!(helper = idx, "FMP AEAD helper thread starting");
+    let completion_batch_max = fmp_aead_completion_batch_max();
     while let Ok(mut job) = rx.recv() {
         crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::FmpAeadHelperQueueWait,
             job.helper_queued_at,
             1,
         );
-        let Some(completion_tx) = job.completion_tx.take() else {
+        let Some(mut completion_tx) = job.completion_tx.take() else {
             continue;
         };
-        let completion = job.into_completion();
-        if completion_tx.send(completion).is_err() {
+        let mut batch_session_key = job.session_key;
+        let mut batch_receive_order_id = job.receive_order_id;
+        let mut batch = FmpAeadCompletionBatch::one(job.into_completion());
+        while batch.len() < completion_batch_max {
+            let Ok(mut next_job) = rx.try_recv() else {
+                break;
+            };
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FmpAeadHelperQueueWait,
+                next_job.helper_queued_at,
+                1,
+            );
+            let Some(next_completion_tx) = next_job.completion_tx.take() else {
+                continue;
+            };
+            let next_session_key = next_job.session_key;
+            let next_receive_order_id = next_job.receive_order_id;
+            if !completion_tx.same_channel(&next_completion_tx)
+                || next_session_key != batch_session_key
+                || next_receive_order_id != batch_receive_order_id
+            {
+                if completion_tx.send(batch).is_err() {
+                    debug!(
+                        helper = idx,
+                        "FMP AEAD helper completion owner gone; dropping completion"
+                    );
+                }
+                completion_tx = next_completion_tx;
+                batch_session_key = next_session_key;
+                batch_receive_order_id = next_receive_order_id;
+                batch = FmpAeadCompletionBatch::one(next_job.into_completion());
+                continue;
+            }
+            batch.push(next_job.into_completion());
+        }
+        if completion_tx.send(batch).is_err() {
             debug!(
                 helper = idx,
                 "FMP AEAD helper completion owner gone; dropping completion"
@@ -109,12 +147,42 @@ fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperJob>) {
 
 fn run_fsp_aead_helper(idx: usize, rx: Receiver<FspAeadHelperJob>) {
     trace!(helper = idx, "FSP AEAD helper thread starting");
+    let completion_batch_max = fsp_aead_completion_batch_max();
     while let Ok(mut job) = rx.recv() {
-        let Some(completion_tx) = job.completion_tx.take() else {
+        let Some(mut completion_tx) = job.completion_tx.take() else {
             continue;
         };
-        let completion = job.into_completion();
-        if completion_tx.send(completion).is_err() {
+        let mut batch_source_addr = job.source_addr;
+        let mut batch_receive_order_id = job.receive_order_id;
+        let mut batch = FspAeadCompletionBatch::one(job.into_completion());
+        while batch.len() < completion_batch_max {
+            let Ok(mut next_job) = rx.try_recv() else {
+                break;
+            };
+            let Some(next_completion_tx) = next_job.completion_tx.take() else {
+                continue;
+            };
+            let next_source_addr = next_job.source_addr;
+            let next_receive_order_id = next_job.receive_order_id;
+            if !completion_tx.same_channel(&next_completion_tx)
+                || next_source_addr != batch_source_addr
+                || next_receive_order_id != batch_receive_order_id
+            {
+                if completion_tx.send(batch).is_err() {
+                    debug!(
+                        helper = idx,
+                        "FSP AEAD helper completion owner gone; dropping completion"
+                    );
+                }
+                completion_tx = next_completion_tx;
+                batch_source_addr = next_source_addr;
+                batch_receive_order_id = next_receive_order_id;
+                batch = FspAeadCompletionBatch::one(next_job.into_completion());
+                continue;
+            }
+            batch.push(next_job.into_completion());
+        }
+        if completion_tx.send(batch).is_err() {
             debug!(
                 helper = idx,
                 "FSP AEAD helper completion owner gone; dropping completion"
@@ -122,6 +190,35 @@ fn run_fsp_aead_helper(idx: usize, rx: Receiver<FspAeadHelperJob>) {
         }
     }
     trace!(helper = idx, "FSP AEAD helper thread exiting");
+}
+
+fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
+    if count == 0 {
+        return;
+    }
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptWorkerQueueFull,
+        count as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspBulkQueueFullFallback,
+        count as u64,
+    );
+}
+
+fn record_decrypt_worker_control_drop(worker: usize, kind: &'static str) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerControlDropped);
+    static FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+    let n = FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < 8 || n.is_multiple_of(10000) {
+        warn!(
+            worker,
+            kind,
+            drops = n + 1,
+            "DecryptWorker control channel full; dropping control item"
+        );
+    }
 }
 
 impl DecryptWorkerPool {
@@ -136,18 +233,25 @@ impl DecryptWorkerPool {
     ) -> Self {
         let n = n.max(1);
         let bulk_channel_cap = bulk_channel_cap();
+        let control_channel_cap = control_channel_cap();
         let priority_channel_cap = priority_channel_cap();
         let mut senders = Vec::with_capacity(n);
         let mut receivers = Vec::with_capacity(n);
         for _ in 0..n {
+            let (control_tx, control_rx) = bounded::<WorkerMsg>(control_channel_cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
             let (fmp_aead_completion_tx, fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletion>(bulk_channel_cap);
+                bounded::<FmpAeadCompletionBatch>(
+                    fmp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
+                );
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
-                bounded::<FspAeadCompletion>(bulk_channel_cap);
+                bounded::<FspAeadCompletionBatch>(
+                    fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
+                );
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             receivers.push((
+                control_rx,
                 priority_rx,
                 fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
@@ -155,6 +259,7 @@ impl DecryptWorkerPool {
                 Arc::clone(&bulk_queued_packets),
             ));
             senders.push(DecryptWorkerSender {
+                control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
                 fmp_aead_completion: fmp_aead_completion_tx,
@@ -164,22 +269,25 @@ impl DecryptWorkerPool {
             });
         }
         let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
-        let fmp_preowner_aead_helpers =
-            fmp_preowner_aead_helper_enabled() && fmp_aead_helpers.is_some();
         let fsp_aead_helpers =
             FspAeadHelperPool::spawn(fsp_ordered_aead_helper_count(), bulk_channel_cap);
+        let fsp_local_bulk_open_worker = fsp_local_bulk_open_worker_enabled();
+        let fsp_remote_bulk_open_worker = fsp_remote_bulk_open_worker_enabled();
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
             fmp_aead_helpers,
-            fmp_preowner_aead_helpers,
-            fmp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
+            fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
+            fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_helpers,
+            fsp_local_bulk_open_worker,
+            fsp_remote_bulk_open_worker,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
             i,
             (
+                control_rx,
                 priority_rx,
                 fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
@@ -195,6 +303,7 @@ impl DecryptWorkerPool {
                     run_worker(
                         i,
                         worker_pool,
+                        control_rx,
                         priority_rx,
                         fmp_aead_completion_rx,
                         fsp_aead_completion_rx,
@@ -218,10 +327,86 @@ impl DecryptWorkerPool {
         (decrypt_fsp_session_fast_hash(source_addr) as usize) % self.senders.len()
     }
 
+    fn registered_fmp_session_owner(&self, session_key: DecryptSessionKey) -> Option<usize> {
+        self.fmp_session_owners
+            .read()
+            .ok()
+            .and_then(|owners| owners.get(&session_key).copied())
+            .filter(|idx| *idx < self.senders.len())
+    }
+
+    fn worker_idx_for_new_fmp_session(
+        &self,
+        session_key: DecryptSessionKey,
+        source_peer: &PeerIdentity,
+    ) -> usize {
+        if self.fmp_source_affine_session_owner {
+            self.worker_idx_for_fsp(source_peer.node_addr())
+        } else {
+            self.worker_idx_for(session_key)
+        }
+    }
+
+    fn worker_idx_for_fmp_session(&self, session_key: DecryptSessionKey) -> usize {
+        if !self.fmp_source_affine_session_owner {
+            return self.worker_idx_for(session_key);
+        }
+        self.registered_fmp_session_owner(session_key)
+            .unwrap_or_else(|| self.worker_idx_for(session_key))
+    }
+
+    fn worker_idx_for_fsp_open_avoiding(
+        &self,
+        source_addr: &NodeAddr,
+        avoid_idx: usize,
+    ) -> Option<usize> {
+        let worker_count = self.senders.len();
+        if worker_count <= 1 || avoid_idx >= worker_count {
+            return None;
+        }
+        let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 1);
+        if idx >= avoid_idx {
+            idx += 1;
+        }
+        Some(idx)
+    }
+
+    fn worker_idx_for_fsp_open_avoiding_pair(
+        &self,
+        source_addr: &NodeAddr,
+        avoid_a: usize,
+        avoid_b: usize,
+    ) -> Option<usize> {
+        if avoid_a == avoid_b {
+            return self.worker_idx_for_fsp_open_avoiding(source_addr, avoid_a);
+        }
+        let worker_count = self.senders.len();
+        if worker_count <= 2 || avoid_a >= worker_count || avoid_b >= worker_count {
+            return None;
+        }
+
+        let mut offset =
+            (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 2);
+        for idx in 0..worker_count {
+            if idx == avoid_a || idx == avoid_b {
+                continue;
+            }
+            if offset == 0 {
+                return Some(idx);
+            }
+            offset -= 1;
+        }
+        None
+    }
+
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
         self.senders[idx]
             .bulk_packet_cap
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
+    }
+
+    fn fsp_open_batch_packet_max_for(&self, idx: usize) -> usize {
+        self.bulk_batch_packet_max_for(idx)
     }
 
     /// Dispatch a per-packet decrypt job. Drops if the per-worker
@@ -232,12 +417,8 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return;
         }
-        match self.try_dispatch_fmp_preowner_aead_helper(job) {
-            Ok(()) => return,
-            Err(returned) => job = returned,
-        }
         job.set_trace_enqueued_at(crate::perf_profile::stamp());
-        let idx = self.worker_idx_for(job.session_key);
+        let idx = self.worker_idx_for_fmp_session(job.session_key);
         match decrypt_job_lane(&job) {
             DecryptWorkerLane::Priority => self.dispatch_priority_job(idx, job),
             DecryptWorkerLane::Bulk => self.dispatch_bulk_job(idx, job),
@@ -267,20 +448,6 @@ impl DecryptWorkerPool {
         self.fmp_aead_helpers.is_some()
     }
 
-    fn fmp_preowner_aead_helpers_enabled(&self) -> bool {
-        self.fmp_preowner_aead_helpers
-    }
-
-    fn fmp_aead_session(
-        &self,
-        session_key: &DecryptSessionKey,
-    ) -> Option<Arc<FmpSharedCryptoSession>> {
-        self.fmp_aead_sessions
-            .read()
-            .ok()
-            .and_then(|sessions| sessions.get(session_key).cloned())
-    }
-
     #[allow(clippy::result_large_err)]
     fn dispatch_fmp_aead_helper_job(
         &self,
@@ -293,83 +460,112 @@ impl DecryptWorkerPool {
         let Some(sender) = self.senders.get(owner_idx) else {
             return Err(job);
         };
+        if !self.fmp_aead_helper_owner_completion_backlog_ready_for(
+            owner_idx,
+            fmp_aead_helper_max_completion_backlog(),
+        ) {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFmpHelperCompletionBacklogFallback,
+            );
+            return Err(job);
+        }
         job.completion_tx = Some(sender.fmp_aead_completion.clone());
         job.helper_queued_at = crate::perf_profile::stamp();
         helpers.try_dispatch(job)
     }
 
-    fn send_fmp_aead_completion_blocking(
+    fn fmp_aead_helper_owner_completion_backlog_ready_for(
         &self,
         owner_idx: usize,
-        completion: FmpAeadCompletion,
+        max_completion_backlog: usize,
     ) -> bool {
-        self.senders
-            .get(owner_idx)
-            .is_some_and(|sender| sender.fmp_aead_completion.send(completion).is_ok())
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn try_dispatch_fmp_preowner_aead_helper(
-        &self,
-        job: DecryptJob,
-    ) -> Result<(), DecryptJob> {
-        if !self.fmp_preowner_aead_helpers_enabled() || !job.is_bulk_lane() {
-            return Err(job);
-        }
-        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
-            return Err(job);
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return false;
         };
-        if !helpers.has_room() {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpPreownerHelperFallback,
-            );
-            return Err(job);
-        }
-        let Some(shared) = self.fmp_aead_session(&job.session_key) else {
-            return Err(job);
-        };
-        if !shared.can_issue_preowner_bulk_ticket() {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
-            );
-            return Err(job);
-        }
-        let Some(ticket) = shared.try_issue_preowner_bulk_ticket() else {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpPreownerWindowFallback,
-            );
-            return Err(job);
-        };
-        let Some(sender) = self.senders.get(shared.owner_idx) else {
-            return Err(job);
-        };
-        let helper_job = FmpAeadHelperJob::from_preowner_decrypt_job(
-            job,
-            &shared,
-            ticket,
-            sender.fmp_aead_completion.clone(),
-        );
-        match helpers.try_dispatch(helper_job) {
-            Ok(()) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFmpPreownerHelper,
-                );
-                Ok(())
-            }
-            Err(helper_job) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFmpPreownerInlineFallback,
-                );
-                let owner_idx = shared.owner_idx;
-                let completion = helper_job.into_completion();
-                let _ = self.send_fmp_aead_completion_blocking(owner_idx, completion);
-                Ok(())
-            }
-        }
+        sender.fmp_aead_completion.len() <= max_completion_backlog
     }
 
     fn fsp_aead_helpers_enabled(&self) -> bool {
         self.fsp_aead_helpers.is_some()
+    }
+
+    fn fsp_local_bulk_open_worker_enabled(&self) -> bool {
+        self.senders.len() > 1 && self.fsp_local_bulk_open_worker
+    }
+
+    fn fsp_remote_bulk_open_worker_enabled(&self) -> bool {
+        self.senders.len() > 2 && self.fsp_remote_bulk_open_worker
+    }
+
+    fn fsp_bulk_open_worker_enabled(&self) -> bool {
+        self.fsp_local_bulk_open_worker_enabled() || self.fsp_remote_bulk_open_worker_enabled()
+    }
+
+    fn fsp_aead_helper_owner_backlog_ready_for(
+        &self,
+        owner_idx: usize,
+        min_backlog: usize,
+    ) -> bool {
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return false;
+        };
+        min_backlog == 0 || sender.bulk_queued_packets.load(Ordering::Relaxed) >= min_backlog
+    }
+
+    fn fsp_aead_helper_owner_backlog_ready(&self, owner_idx: usize) -> bool {
+        self.fsp_aead_helper_owner_backlog_ready_for(
+            owner_idx,
+            fsp_aead_helper_min_owner_backlog(),
+        )
+    }
+
+    fn fsp_aead_helper_owner_completion_backlog_ready_for(
+        &self,
+        owner_idx: usize,
+        max_completion_backlog: usize,
+    ) -> bool {
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return false;
+        };
+        sender.fsp_aead_completion.len() <= max_completion_backlog
+    }
+
+    fn fsp_open_worker_owner_completion_backlog_ready(&self, owner_idx: usize) -> bool {
+        self.fsp_aead_helper_owner_completion_backlog_ready_for(
+            owner_idx,
+            fsp_open_worker_max_completion_backlog(),
+        )
+    }
+
+    fn fsp_aead_completion_sender_is(&self, idx: usize, tx: &Sender<FspAeadCompletionBatch>) -> bool {
+        self.senders
+            .get(idx)
+            .is_some_and(|sender| sender.fsp_aead_completion.same_channel(tx))
+    }
+
+    fn fsp_aead_helper_admission_ready(&self, owner_idx: usize) -> bool {
+        if !self.fsp_aead_helper_owner_backlog_ready(owner_idx) {
+            return false;
+        }
+        if !self.fsp_aead_helper_owner_completion_backlog_ready_for(
+            owner_idx,
+            fsp_aead_helper_max_completion_backlog(),
+        ) {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFspHelperCompletionBacklogFallback,
+            );
+            return false;
+        }
+        let Some(helpers) = self.fsp_aead_helpers.as_ref() else {
+            return false;
+        };
+        if !helpers.has_room() {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::DecryptFspHelperQueueFullFallback,
+            );
+            return false;
+        }
+        true
     }
 
     fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
@@ -396,6 +592,147 @@ impl DecryptWorkerPool {
         helpers.try_dispatch(job)
     }
 
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fsp_aead_open_worker_job(
+        &self,
+        open_idx: usize,
+        owner_idx: usize,
+        job: FspAeadHelperJob,
+    ) -> Result<(), FspAeadHelperJob> {
+        self.dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, vec![job])
+            .map_err(|mut jobs| {
+                jobs.pop()
+                    .expect("single opener dispatch should return one job")
+            })
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fsp_aead_open_decrypt_worker_job(
+        &self,
+        open_idx: usize,
+        owner_idx: usize,
+        mut job: FspAeadHelperJob,
+    ) -> Result<(), FspAeadHelperJob> {
+        let Some(open_sender) = self.senders.get(open_idx) else {
+            return Err(job);
+        };
+        let Some(owner_sender) = self.senders.get(owner_idx) else {
+            return Err(job);
+        };
+        job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
+        job.helper_queued_at = crate::perf_profile::stamp();
+        if !try_reserve_bulk_packets(
+            &open_sender.bulk_queued_packets,
+            open_sender.bulk_packet_cap,
+            1,
+        ) {
+            record_decrypt_fsp_bulk_queue_full_fallback_count(1);
+            return Err(job);
+        }
+
+        match open_sender
+            .bulk
+            .try_send(DecryptWorkerBulkItem::FspAeadOpen(job))
+        {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
+                record_decrypt_fsp_bulk_queue_full_fallback_count(1);
+                Err(job)
+            }
+            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspAeadOpen(job))) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, 1);
+                debug!(
+                    worker = open_idx,
+                    "DecryptWorker opener thread gone; completing FSP open inline"
+                );
+                Err(job)
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                unreachable!("FSP AEAD opener dispatch only sends FspAeadOpen jobs")
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn dispatch_fsp_aead_open_worker_job_batch_or_return(
+        &self,
+        open_idx: usize,
+        owner_idx: usize,
+        mut jobs: Vec<FspAeadHelperJob>,
+    ) -> Result<(), Vec<FspAeadHelperJob>> {
+        debug_assert!(!jobs.is_empty());
+        debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
+
+        let Some(open_sender) = self.senders.get(open_idx) else {
+            return Err(jobs);
+        };
+        let Some(owner_sender) = self.senders.get(owner_idx) else {
+            return Err(jobs);
+        };
+        let queued_at = crate::perf_profile::stamp();
+        for job in &mut jobs {
+            job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
+            job.helper_queued_at = queued_at;
+        }
+
+        if jobs.len() == 1 {
+            let job = jobs.pop().expect("checked non-empty opener batch");
+            return self
+                .dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
+                .map_err(|job| vec![job]);
+        }
+
+        let packet_count = jobs.len();
+        let reserved_packets = try_reserve_bulk_packets_partial(
+            &open_sender.bulk_queued_packets,
+            open_sender.bulk_packet_cap,
+            packet_count,
+        );
+        if reserved_packets == 0 {
+            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
+            return Err(jobs);
+        }
+
+        let overflow = if reserved_packets < packet_count {
+            Some(jobs.split_off(reserved_packets))
+        } else {
+            None
+        };
+        let reserved_item = decrypt_worker_bulk_item_from_fsp_aead_open_jobs(jobs);
+
+        match open_sender.bulk.try_send(reserved_item) {
+            Ok(()) => match overflow {
+                Some(overflow) => {
+                    record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
+                    Err(overflow)
+                }
+                None => Ok(()),
+            },
+            Err(TrySendError::Full(item)) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, reserved_packets);
+                let mut returned = fsp_aead_open_jobs_from_decrypt_worker_bulk_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
+                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
+                Err(returned)
+            }
+            Err(TrySendError::Disconnected(item)) => {
+                release_bulk_packets(&open_sender.bulk_queued_packets, reserved_packets);
+                let mut returned = fsp_aead_open_jobs_from_decrypt_worker_bulk_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
+                debug!(
+                    worker = open_idx,
+                    "DecryptWorker opener thread gone; completing FSP open batch inline"
+                );
+                Err(returned)
+            }
+        }
+    }
+
     fn send_fsp_aead_completion_blocking(
         &self,
         owner_idx: usize,
@@ -403,7 +740,12 @@ impl DecryptWorkerPool {
     ) -> bool {
         self.senders
             .get(owner_idx)
-            .is_some_and(|sender| sender.fsp_aead_completion.send(completion).is_ok())
+            .is_some_and(|sender| {
+                sender
+                    .fsp_aead_completion
+                    .send(FspAeadCompletionBatch::one(completion))
+                    .is_ok()
+            })
     }
 
     #[allow(clippy::result_large_err)]
@@ -471,10 +813,7 @@ impl DecryptWorkerPool {
         job.set_trace_enqueued_at(queued_at);
         let sender = &self.senders[idx];
         if !try_reserve_bulk_packets(&sender.bulk_queued_packets, sender.bulk_packet_cap, 1) {
-            crate::perf_profile::record_event(crate::perf_profile::Event::DecryptWorkerQueueFull);
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFspBulkQueueFullFallback,
-            );
+            record_decrypt_fsp_bulk_queue_full_fallback_count(1);
             return Err(job);
         }
 
@@ -482,12 +821,7 @@ impl DecryptWorkerPool {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(DecryptWorkerBulkItem::FspJob(job))) => {
                 release_bulk_packets(&sender.bulk_queued_packets, 1);
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerQueueFull,
-                );
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFspBulkQueueFullFallback,
-                );
+                record_decrypt_fsp_bulk_queue_full_fallback_count(1);
                 Err(job)
             }
             Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspJob(job))) => {
@@ -501,25 +835,6 @@ impl DecryptWorkerPool {
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 unreachable!("bulk FSP dispatch only sends FSP jobs")
             }
-        }
-    }
-
-    fn dispatch_bulk_fsp_jobs_individually_or_return(
-        &self,
-        idx: usize,
-        jobs: Vec<FspDecryptJob>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Result<(), Vec<FspDecryptJob>> {
-        let mut returned = Vec::new();
-        for job in jobs {
-            if let Err(job) = self.dispatch_bulk_fsp_job_with_stamp_or_return(idx, job, queued_at) {
-                returned.push(job);
-            }
-        }
-        if returned.is_empty() {
-            Ok(())
-        } else {
-            Err(returned)
         }
     }
 
@@ -549,30 +864,51 @@ impl DecryptWorkerPool {
 
         let packet_count = jobs.len();
         let sender = &self.senders[idx];
-        if !try_reserve_bulk_packets(
+        let reserved_packets = try_reserve_bulk_packets_partial(
             &sender.bulk_queued_packets,
             sender.bulk_packet_cap,
             packet_count,
-        ) {
-            return self.dispatch_bulk_fsp_jobs_individually_or_return(idx, jobs, queued_at);
+        );
+        if reserved_packets == 0 {
+            record_decrypt_fsp_bulk_queue_full_fallback_count(packet_count);
+            return Err(jobs);
         }
 
-        match sender.bulk.try_send(DecryptWorkerBulkItem::FspBatch(jobs)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(DecryptWorkerBulkItem::FspBatch(jobs))) => {
-                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
-                self.dispatch_bulk_fsp_jobs_individually_or_return(idx, jobs, queued_at)
+        let overflow = if reserved_packets < packet_count {
+            Some(jobs.split_off(reserved_packets))
+        } else {
+            None
+        };
+        let reserved_item = decrypt_worker_bulk_item_from_fsp_jobs(jobs);
+
+        match sender.bulk.try_send(reserved_item) {
+            Ok(()) => match overflow {
+                Some(overflow) => {
+                    record_decrypt_fsp_bulk_queue_full_fallback_count(overflow.len());
+                    Err(overflow)
+                }
+                None => Ok(()),
+            },
+            Err(TrySendError::Full(item)) => {
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+                let mut returned = fsp_jobs_from_decrypt_worker_bulk_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
+                record_decrypt_fsp_bulk_queue_full_fallback_count(returned.len());
+                Err(returned)
             }
-            Err(TrySendError::Disconnected(DecryptWorkerBulkItem::FspBatch(jobs))) => {
-                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
+            Err(TrySendError::Disconnected(item)) => {
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+                let mut returned = fsp_jobs_from_decrypt_worker_bulk_item(item);
+                if let Some(overflow) = overflow {
+                    returned.extend(overflow);
+                }
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; falling FSP bulk job batch back to rx_loop"
                 );
-                Err(jobs)
-            }
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                unreachable!("bulk FSP batch dispatch only sends FSP batches")
+                Err(returned)
             }
         }
     }
@@ -581,28 +917,6 @@ impl DecryptWorkerPool {
         debug_assert!(!jobs.is_empty());
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
         debug_assert!(jobs.iter().all(DecryptJob::is_bulk_lane));
-
-        if self.fmp_preowner_aead_helpers_enabled() {
-            let mut owner_jobs = Vec::new();
-            let mut keep_owner_order = false;
-            for job in jobs {
-                if keep_owner_order {
-                    owner_jobs.push(job);
-                    continue;
-                }
-                match self.try_dispatch_fmp_preowner_aead_helper(job) {
-                    Ok(()) => {}
-                    Err(job) => {
-                        keep_owner_order = true;
-                        owner_jobs.push(job);
-                    }
-                }
-            }
-            if owner_jobs.is_empty() {
-                return;
-            }
-            jobs = owner_jobs;
-        }
 
         let queued_at = crate::perf_profile::stamp();
         for job in &mut jobs {
@@ -630,25 +944,42 @@ impl DecryptWorkerPool {
     ) -> Result<(), DecryptWorkerBulkItem> {
         let packet_count = item.packet_count();
         let sender = &self.senders[idx];
-        if !try_reserve_bulk_packets(
+        let reserved_packets = try_reserve_bulk_packets_partial(
             &sender.bulk_queued_packets,
             sender.bulk_packet_cap,
             packet_count,
-        ) {
+        );
+        if reserved_packets == 0 {
             record_decrypt_worker_bulk_drop_count(idx, packet_count);
             return Err(item);
         }
 
-        match sender.bulk.try_send(item) {
-            Ok(()) => Ok(()),
+        let (reserved_item, overflow_item) = item.split_at_packet_count(reserved_packets);
+        let reserved_item = reserved_item.expect("positive reservation must produce a bulk item");
+
+        match sender.bulk.try_send(reserved_item) {
+            Ok(()) => {
+                if let Some(overflow_item) = overflow_item {
+                    record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
+                    Err(overflow_item)
+                } else {
+                    Ok(())
+                }
+            }
             Err(TrySendError::Full(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
-                record_decrypt_worker_bulk_drop_count(idx, packet_count);
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
+                record_decrypt_worker_bulk_drop_count(idx, reserved_packets);
+                if let Some(overflow_item) = overflow_item {
+                    record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
+                }
                 Err(item)
             }
             Err(TrySendError::Disconnected(item)) => {
-                release_bulk_packets(&sender.bulk_queued_packets, packet_count);
+                release_bulk_packets(&sender.bulk_queued_packets, reserved_packets);
                 debug!(worker = idx, "DecryptWorker thread gone; dropping bulk job");
+                if let Some(overflow_item) = overflow_item {
+                    record_decrypt_worker_bulk_drop_count(idx, overflow_item.packet_count());
+                }
                 Err(item)
             }
         }
@@ -676,36 +1007,28 @@ impl DecryptWorkerPool {
     pub fn register_session(
         &self,
         session_key: DecryptSessionKey,
-        mut state: OwnedSessionState,
+        state: OwnedSessionState,
     ) -> bool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for(session_key);
-        let shared = self
-            .fmp_preowner_aead_helpers_enabled()
-            .then(|| Arc::new(state.shared_crypto_session(idx)));
-        if let Some(shared) = &shared {
-            state.attach_shared_crypto_session(Arc::clone(shared));
-        }
+        let idx = self.registered_fmp_session_owner(session_key).unwrap_or_else(|| {
+            self.worker_idx_for_new_fmp_session(session_key, &state.source_peer)
+        });
         match self.senders[idx]
-            .priority
+            .control
             .try_send(WorkerMsg::RegisterSession { session_key, state })
         {
             Ok(()) => {
-                if let Ok(mut sessions) = self.fmp_aead_sessions.write() {
-                    if let Some(shared) = shared {
-                        sessions.insert(session_key, shared);
-                    } else {
-                        sessions.remove(&session_key);
-                    }
+                if self.fmp_source_affine_session_owner
+                    && let Ok(mut owners) = self.fmp_session_owners.write()
+                {
+                    owners.insert(session_key, idx);
                 }
                 true
             }
             Err(TrySendError::Full(_)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerQueueFull,
-                );
+                record_decrypt_worker_control_drop(idx, "register");
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptWorkerRegisterFull,
                 );
@@ -735,14 +1058,16 @@ impl DecryptWorkerPool {
             return false;
         }
         let idx = self.worker_idx_for_fsp(&source_addr);
-        let state = OwnedFspSessionState::from(state);
-        let shared = self
-            .fsp_aead_helpers_enabled()
+        let mut state = OwnedFspSessionState::from(state);
+        let shared = (self.fsp_aead_helpers_enabled() || self.fsp_bulk_open_worker_enabled())
             .then(|| state.shared_crypto_session(idx))
             .flatten()
             .map(Arc::new);
+        if let Some(shared) = &shared {
+            state.attach_shared_crypto_session(Arc::clone(shared));
+        }
         match self.senders[idx]
-            .priority
+            .control
             .try_send(WorkerMsg::RegisterFspSession { source_addr, state })
         {
             Ok(()) => {
@@ -756,9 +1081,7 @@ impl DecryptWorkerPool {
                 true
             }
             Err(TrySendError::Full(_)) => {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptWorkerQueueFull,
-                );
+                record_decrypt_worker_control_drop(idx, "register-fsp");
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptWorkerRegisterFull,
                 );
@@ -787,12 +1110,12 @@ impl DecryptWorkerPool {
             sessions.remove(&source_addr);
         }
         match self.senders[idx]
-            .priority
+            .control
             .try_send(WorkerMsg::UnregisterFspSession { source_addr })
         {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                record_decrypt_worker_priority_drop(idx, "unregister-fsp");
+                record_decrypt_worker_control_drop(idx, "unregister-fsp");
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
@@ -808,27 +1131,36 @@ impl DecryptWorkerPool {
     /// Drop a session from its worker (rekey, peer removed).
     ///
     /// Returns `true` iff the unregister control message reached the worker's
-    /// bounded priority lane. A full priority lane is still non-blocking, but
-    /// it records visible pressure instead of silently hiding stale
-    /// worker-owned session state.
+    /// bounded control lane. A full control lane is still non-blocking, but it
+    /// records visible pressure instead of silently hiding stale worker-owned
+    /// session state.
     pub fn unregister_session(&self, session_key: DecryptSessionKey) -> bool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for(session_key);
-        if let Ok(mut sessions) = self.fmp_aead_sessions.write() {
-            sessions.remove(&session_key);
-        }
+        let idx = self.worker_idx_for_fmp_session(session_key);
         match self.senders[idx]
-            .priority
+            .control
             .try_send(WorkerMsg::UnregisterSession { session_key })
         {
-            Ok(()) => true,
+            Ok(()) => {
+                if self.fmp_source_affine_session_owner
+                    && let Ok(mut owners) = self.fmp_session_owners.write()
+                {
+                    owners.remove(&session_key);
+                }
+                true
+            }
             Err(TrySendError::Full(_)) => {
-                record_decrypt_worker_priority_drop(idx, "unregister");
+                record_decrypt_worker_control_drop(idx, "unregister");
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
+                if self.fmp_source_affine_session_owner
+                    && let Ok(mut owners) = self.fmp_session_owners.write()
+                {
+                    owners.remove(&session_key);
+                }
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring unregister"

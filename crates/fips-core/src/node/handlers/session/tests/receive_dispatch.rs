@@ -643,6 +643,203 @@
         assert_eq!(entry.current_highest_counter(), Some(7));
     }
 
+    #[tokio::test]
+    async fn worker_direct_session_commit_batch_flushes_pending_after_ordered_commits() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let body_len = b"already delivered".len();
+        let plaintext_len = FSP_INNER_HEADER_SIZE + body_len;
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        assert!(
+            !node
+                .pending_session_traffic
+                .push_endpoint_data(source_addr, vec![0xaa], 8, 8)
+                .destination_dropped()
+        );
+
+        let commit = |counter| {
+            DecryptDirectSessionCommit::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                source_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len,
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                body_len,
+                false,
+            )
+        };
+
+        node.process_direct_session_commit_batch_from_worker(vec![commit(7), commit(8)])
+            .await;
+
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "compact direct commit batch must not bounce payload bytes through rx_loop"
+        );
+        assert!(
+            !node.pending_session_traffic.has_traffic_for(&source_addr),
+            "batch boundary should flush pending session traffic once receive commits are applied"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.current_highest_counter(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn worker_direct_session_data_batch_delivers_endpoint_data_then_flushes_pending() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let previous_hop = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *peer.node_addr();
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        assert!(
+            !node
+                .pending_session_traffic
+                .push_endpoint_data(source_addr, vec![0xbb], 8, 8)
+                .destination_dropped()
+        );
+
+        let direct = |counter, payload: &[u8]| {
+            DecryptDirectSessionData::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer: previous_hop_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                previous_hop_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len: FSP_INNER_HEADER_SIZE + payload.len(),
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                payload.len(),
+                DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                    source_peer,
+                    payload.to_vec(),
+                )),
+            )
+        };
+
+        node.process_direct_session_data_batch_from_worker(vec![
+            direct(7, b"batch one"),
+            direct(8, b"batch two"),
+        ])
+        .await;
+
+        for expected in [b"batch one".to_vec(), b"batch two".to_vec()] {
+            match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+                crate::node::NodeEndpointEvent::Data {
+                    source_peer: delivered_source,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(delivered_source, source_peer);
+                    assert_eq!(payload, expected);
+                }
+                event => panic!("expected worker-decoded endpoint data event, got {event:?}"),
+            }
+        }
+        assert!(
+            !node.pending_session_traffic.has_traffic_for(&source_addr),
+            "batch boundary should flush pending session traffic after direct deliveries"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.current_highest_counter(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn reserved_link_type_0x03_does_not_deliver_endpoint_data() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let payload = b"reserved endpoint-shaped payload".to_vec();
+        let mut plaintext = 0x0102_0304u32.to_le_bytes().to_vec();
+        plaintext.push(0x03);
+        plaintext.extend_from_slice(&payload);
+        let remote_addr = crate::transport::TransportAddr::from_string("127.0.0.1:1234");
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        node.process_authentic_fmp_plaintext(crate::node::AuthenticatedFmpPlaintext::new(
+            source_peer,
+            crate::transport::TransportId::new(1),
+            &remote_addr,
+            2_100,
+            plaintext.len() + crate::node::wire::ESTABLISHED_HEADER_SIZE + crate::noise::TAG_SIZE,
+            12,
+            0,
+            &plaintext,
+        ))
+        .await;
+
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "reserved 0x03 link payload must not bypass FSP session data"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.traffic_counters(), (0, 0, 0, 0));
+    }
+
     #[test]
     fn session_runtime_receive_owns_decrypt_failure_recovery_gate() {
         let local = Identity::generate();

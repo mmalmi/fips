@@ -713,6 +713,8 @@ impl Node {
 
         self.bootstrap_transports.remove(&transport_id);
         self.transport_drops.remove(&transport_id);
+        self.transport_socket_drops.remove(&transport_id);
+        self.transport_namespace_drops.remove(&transport_id);
         self.transports.remove(&transport_id);
     }
 

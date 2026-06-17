@@ -284,11 +284,6 @@ impl<T> PacketDrainCursor<T> {
     pub(super) fn refund_empty_interleave_turn(&mut self) {
         self.remaining += 1;
     }
-
-    pub(super) fn reset_fallback_interleave_every(&mut self, fallback_interleave_every: usize) {
-        self.fallback_interleave_every = fallback_interleave_every;
-        self.packets_until_fallback_interleave = fallback_interleave_every;
-    }
 }
 
 pub(super) trait PacketDrainReceiver<T> {

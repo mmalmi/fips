@@ -54,6 +54,10 @@ pub(crate) struct ConnectedPeerSocket {
     fd: RawFd,
     peer_addr: SocketAddr,
     local_addr: SocketAddr,
+    requested_recv_buf: usize,
+    requested_send_buf: usize,
+    actual_recv_buf: usize,
+    actual_send_buf: usize,
 }
 
 impl ConnectedPeerSocket {
@@ -96,10 +100,14 @@ impl ConnectedPeerSocket {
             return Err(io::Error::last_os_error());
         }
         // Take ownership of the fd so we close it on any error below.
-        let sock = ConnectedPeerSocket {
+        let mut sock = ConnectedPeerSocket {
             fd,
             peer_addr,
             local_addr,
+            requested_recv_buf: recv_buf,
+            requested_send_buf: send_buf,
+            actual_recv_buf: 0,
+            actual_send_buf: 0,
         };
         #[cfg(not(target_os = "linux"))]
         sock.set_nonblocking_cloexec()?;
@@ -131,6 +139,15 @@ impl ConnectedPeerSocket {
             sock.set_buf_size(libc::SO_RCVBUF, recv_buf);
             sock.set_buf_size(libc::SO_SNDBUF, send_buf);
         }
+        sock.actual_recv_buf = sock.buf_size(libc::SO_RCVBUF).unwrap_or(0);
+        sock.actual_send_buf = sock.buf_size(libc::SO_SNDBUF).unwrap_or(0);
+
+        // Match the wildcard listener's Linux drop-counter support. Once the
+        // kernel demuxes steady-state peer traffic to this connected socket,
+        // SO_RXQ_OVFL has to be enabled here too or receive-buffer overruns
+        // disappear from the dataplane profiler.
+        #[cfg(target_os = "linux")]
+        let _ = sock.set_sockopt_int(libc::SOL_SOCKET, libc::SO_RXQ_OVFL, 1);
 
         // Bind to the wildcard local address (same port as listen socket).
         let local_sa: socket2::SockAddr = local_addr.into();
@@ -253,9 +270,44 @@ impl ConnectedPeerSocket {
         self.peer_addr
     }
 
+    pub fn requested_recv_buf(&self) -> usize {
+        self.requested_recv_buf
+    }
+
+    pub fn requested_send_buf(&self) -> usize {
+        self.requested_send_buf
+    }
+
+    pub fn actual_recv_buf(&self) -> usize {
+        self.actual_recv_buf
+    }
+
+    pub fn actual_send_buf(&self) -> usize {
+        self.actual_send_buf
+    }
+
     #[allow(dead_code)] // wired up by future per-peer recv loops
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    fn buf_size(&self, name: libc::c_int) -> io::Result<usize> {
+        let mut value: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let r = unsafe {
+            libc::getsockopt(
+                self.fd,
+                libc::SOL_SOCKET,
+                name,
+                &mut value as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(value.max(0) as usize)
+        }
     }
 }
 
@@ -307,6 +359,10 @@ mod tests {
             /* send_buf */ 1 << 20,
         )
         .expect("ConnectedPeerSocket::open");
+        assert_eq!(sock.requested_recv_buf(), 1 << 20);
+        assert_eq!(sock.requested_send_buf(), 1 << 20);
+        assert!(sock.actual_recv_buf() > 0);
+        assert!(sock.actual_send_buf() > 0);
 
         // Confirm the socket is in fact connected: `send(2)` should
         // succeed without specifying a destination.

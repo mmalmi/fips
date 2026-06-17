@@ -217,7 +217,11 @@ const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
 #[cfg(target_os = "linux")]
 const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
 #[cfg(target_os = "linux")]
+const DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE: usize = 16;
+#[cfg(target_os = "linux")]
 const LINUX_UDP_SEND_BATCH_MAX: usize = 64;
+#[cfg(target_os = "linux")]
+const LINUX_UDP_GSO_MAX_PAYLOAD: usize = u16::MAX as usize - 8;
 #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
 pub(crate) const DEFAULT_SEND_WEIGHT: u8 = 1;

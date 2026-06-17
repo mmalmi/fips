@@ -7,6 +7,136 @@ fn record_fsp_owner_match(owner_matches_current_worker: bool) {
     });
 }
 
+#[inline]
+fn record_fsp_path_local(lane: DecryptWorkerLane) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathLocal);
+    crate::perf_profile::record_event(match lane {
+        DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptFspPathLocalPriority,
+        DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFspPathLocalBulk,
+    });
+}
+
+#[inline]
+fn record_fsp_path_handoff(lane: DecryptWorkerLane) {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHandoff);
+    crate::perf_profile::record_event(match lane {
+        DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptFspPathHandoffPriority,
+        DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptFspPathHandoffBulk,
+    });
+}
+
+#[inline]
+fn record_fsp_path_helper_bulk() {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHelper);
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHelperBulk);
+}
+
+#[inline]
+fn record_fsp_path_worker_open_bulk() {
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpen);
+    crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk);
+}
+
+fn drop_fsp_owner_handoff_job(job: FspDecryptJob) {
+    record_fsp_owner_handoff_drop(job.lane(), 1);
+}
+
+fn drop_fsp_owner_handoff_jobs(jobs: Vec<FspDecryptJob>) {
+    let mut priority = 0usize;
+    let mut bulk = 0usize;
+    for job in jobs {
+        match job.lane() {
+            DecryptWorkerLane::Priority => priority += 1,
+            DecryptWorkerLane::Bulk => bulk += 1,
+        }
+    }
+    if priority > 0 {
+        record_fsp_owner_handoff_drop(DecryptWorkerLane::Priority, priority);
+    }
+    if bulk > 0 {
+        record_fsp_owner_handoff_drop(DecryptWorkerLane::Bulk, bulk);
+    }
+}
+
+fn record_fsp_owner_handoff_drop(lane: DecryptWorkerLane, count: usize) {
+    if count == 0 {
+        return;
+    }
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspOwnerHandoffDropped,
+        count as u64,
+    );
+    let lane_event = match lane {
+        DecryptWorkerLane::Priority => crate::perf_profile::Event::DecryptWorkerPriorityDropped,
+        DecryptWorkerLane::Bulk => crate::perf_profile::Event::DecryptWorkerBulkDropped,
+    };
+    crate::perf_profile::record_event_count(lane_event, count as u64);
+}
+
+#[inline]
+fn record_fsp_open_worker_completion_backlog_fallback() {
+    crate::perf_profile::record_event(
+        crate::perf_profile::Event::DecryptFspOpenWorkerCompletionBacklogFallback,
+    );
+}
+
+#[inline]
+fn record_fsp_open_pool_bulk_drop(count: usize) {
+    if count == 0 {
+        return;
+    }
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptFspOpenPoolQueueFullFallback,
+        count as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::DecryptWorkerBulkDropped,
+        count as u64,
+    );
+}
+
+#[inline]
+fn record_fsp_aead_completion_drop(event: crate::perf_profile::Event, count: usize) {
+    crate::perf_profile::record_event_count(event, count as u64);
+}
+
+#[inline]
+fn record_fsp_aead_completion_order_error(error: &OrderedCompletionError) {
+    let event = match error {
+        OrderedCompletionError::Stale => crate::perf_profile::Event::FspAeadCompletionStaleTicket,
+        OrderedCompletionError::Duplicate => {
+            crate::perf_profile::Event::FspAeadCompletionDuplicateTicket
+        }
+        OrderedCompletionError::WindowExceeded => {
+            crate::perf_profile::Event::FspAeadCompletionWindowExceeded
+        }
+    };
+    crate::perf_profile::record_event(event);
+}
+
+fn record_fsp_aead_completion_wait(
+    source: FspAeadCompletionSource,
+    completed_at: Option<crate::perf_profile::TraceStamp>,
+) {
+    crate::perf_profile::record_since_count(
+        crate::perf_profile::Stage::FspAeadHelperCompletionWait,
+        completed_at,
+        1,
+    );
+    if source.is_worker_open() {
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FspAeadWorkerOpenCompletionWait,
+            completed_at,
+            1,
+        );
+    }
+}
+
+enum FspOpenWorkerPrepareError {
+    Ineligible(FspDecryptJob),
+    OwnerCompletionBacklog(FspDecryptJob),
+}
+
 struct DecryptWorkerShard {
     pool: DecryptWorkerPool,
     // Lives entirely on this OS thread — never observed by any other thread.
@@ -63,7 +193,7 @@ impl DecryptWorkerShard {
     ) {
         match self.handle_job_action(idx, job) {
             Ok(actions) => {
-                self.push_job_actions_output(idx, actions, plaintext_batch, None);
+                self.push_job_actions_output(idx, actions, plaintext_batch, None, None);
             }
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
@@ -75,9 +205,9 @@ impl DecryptWorkerShard {
         job.record_queue_wait();
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        if let Some(output) = self.handle_fsp_job_output(job) {
-            let _ = output.send();
-        }
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
+        plaintext_batch.flush();
         trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
@@ -90,9 +220,7 @@ impl DecryptWorkerShard {
         job.record_queue_wait();
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        if let Some(output) = self.handle_fsp_job_output(job) {
-            plaintext_batch.push_output(output);
-        }
+        self.push_fsp_job_outputs(idx, job, plaintext_batch);
         trace!(worker = idx, "processed bulk FSP decrypt worker job");
     }
 
@@ -163,7 +291,7 @@ impl DecryptWorkerShard {
                 let _ = output.send();
             }
             DecryptWorkerJobAction::FspJob(job) => {
-                if let Some(output) = self.dispatch_or_handle_fsp_job(idx, job) {
+                for output in self.dispatch_or_handle_fsp_job(idx, job) {
                     let _ = output.send();
                 }
             }
@@ -176,10 +304,18 @@ impl DecryptWorkerShard {
         actions: DecryptWorkerJobActions,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
         fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+        fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     ) {
         let mut fsp_batcher = fsp_batcher;
+        let mut fsp_open_batcher = fsp_open_batcher;
         actions.for_each(|action| {
-            self.push_job_action_output(idx, action, plaintext_batch, fsp_batcher.as_deref_mut());
+            self.push_job_action_output(
+                idx,
+                action,
+                plaintext_batch,
+                fsp_batcher.as_deref_mut(),
+                fsp_open_batcher.as_deref_mut(),
+            );
         });
     }
 
@@ -189,6 +325,7 @@ impl DecryptWorkerShard {
         action: DecryptWorkerJobAction,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
         fsp_batcher: Option<&mut FspDecryptJobBatcher>,
+        fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     ) {
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
@@ -199,20 +336,51 @@ impl DecryptWorkerShard {
                     Ok(()) => return,
                     Err(job) => job,
                 };
-                if owner_idx == idx {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::DecryptFspPathLocal,
-                    );
-                    if let Some(output) = self.handle_fsp_job_output(job) {
-                        plaintext_batch.push_output(output);
+                let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
+                    match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
+                        Ok((open_idx, owner_idx, helper_job)) => {
+                            record_fsp_path_worker_open_bulk();
+                            let returned = fsp_open_batcher.push(
+                                &self.pool,
+                                open_idx,
+                                owner_idx,
+                                helper_job,
+                            );
+                            if !returned.is_empty() {
+                                self.drop_returned_fsp_aead_open_jobs(
+                                    idx,
+                                    returned,
+                                    plaintext_batch,
+                                );
+                            }
+                            return;
+                        }
+                        Err(FspOpenWorkerPrepareError::Ineligible(job)) => job,
+                        Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
+                            if owner_idx == idx {
+                                record_fsp_path_local(job.lane());
+                                self.push_fsp_job_outputs(idx, job, plaintext_batch);
+                                return;
+                            }
+                            record_fsp_open_worker_completion_backlog_fallback();
+                            drop_fsp_owner_handoff_job(job);
+                            return;
+                        }
                     }
+                } else {
+                    match self.try_start_fsp_bulk_open_worker(idx, job, plaintext_batch) {
+                        Ok(()) => return,
+                        Err(job) => job,
+                    }
+                };
+                if owner_idx == idx {
+                    record_fsp_path_local(job.lane());
+                    self.push_fsp_job_outputs(idx, job, plaintext_batch);
                     return;
                 }
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFspPathHandoff,
-                );
+                record_fsp_path_handoff(job.lane());
                 if let Some(fsp_batcher) = fsp_batcher {
-                    fsp_batcher.push(&self.pool, job, plaintext_batch);
+                    fsp_batcher.push(&self.pool, job);
                     return;
                 }
                 match self.pool.dispatch_fsp_job_or_return(job) {
@@ -221,10 +389,32 @@ impl DecryptWorkerShard {
                         crate::perf_profile::record_event(
                             crate::perf_profile::Event::DecryptFspPathFallback,
                         );
-                        plaintext_batch.push_fsp_job_fallback(job);
+                        drop_fsp_owner_handoff_job(job);
                     }
                 }
             }
+        }
+    }
+
+    fn push_job_actions_output_with_fsp_batchers(
+        &mut self,
+        idx: usize,
+        actions: DecryptWorkerJobActions,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let mut fsp_batcher = FspDecryptJobBatcher::new();
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+        self.push_job_actions_output(
+            idx,
+            actions,
+            plaintext_batch,
+            Some(&mut fsp_batcher),
+            Some(&mut fsp_open_batcher),
+        );
+        fsp_batcher.flush(&self.pool);
+        let returned = fsp_open_batcher.flush(&self.pool);
+        if !returned.is_empty() {
+            self.drop_returned_fsp_aead_open_jobs(idx, returned, plaintext_batch);
         }
     }
 
@@ -234,26 +424,12 @@ impl DecryptWorkerShard {
         link_msg_start: usize,
         link_msg_end: usize,
     ) -> Option<FspDecryptJobMeta> {
-        let link_msg = packet_data.get(link_msg_start..link_msg_end)?;
-        let (&msg_type, datagram_payload) = link_msg.split_first()?;
-        if msg_type != LinkMessageType::SessionDatagram.to_byte() {
-            return None;
-        }
-        let datagram = SessionDatagramRef::decode(datagram_payload).ok()?;
-        if datagram.ttl == 0 || datagram.dest_addr != local_node_addr {
-            return None;
-        }
-        let prefix = FspCommonPrefix::parse(datagram.payload)?;
-        if prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted() || prefix.has_coords() {
-            return None;
-        }
-        let fsp_payload_offset = link_msg_start + 1 + SessionDatagramRef::HEADER_LEN;
-        Some(FspDecryptJobMeta {
-            source_addr: datagram.src_addr,
-            path_mtu: datagram.path_mtu,
-            fsp_payload_offset,
-            fsp_payload_len: datagram.payload.len(),
-        })
+        local_established_fsp_datagram_meta(
+            packet_data,
+            local_node_addr,
+            link_msg_start,
+            link_msg_end,
+        )
     }
 
     #[allow(clippy::result_large_err)]
@@ -351,6 +527,227 @@ impl DecryptWorkerShard {
     }
 
     #[allow(clippy::result_large_err)]
+    fn try_prepare_fsp_bulk_open_worker_job(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+    ) -> Result<(usize, usize, FspAeadHelperJob), FspOpenWorkerPrepareError> {
+        if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        }
+
+        let source_addr = job.source_addr;
+        let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
+        let owner_idx = shared.owner_idx;
+        let eligible_open_idx = if owner_idx == idx {
+            if !self.pool.fsp_local_bulk_open_worker_enabled() {
+                return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            }
+            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
+        } else {
+            if !self.pool.fsp_remote_bulk_open_worker_enabled() {
+                return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            }
+            self.pool
+                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
+        };
+        if eligible_open_idx.is_none() {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        }
+        if !self
+            .pool
+            .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
+        {
+            return Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job));
+        }
+        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+        let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
+        else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
+        let Some(header) = FspEncryptedHeader::parse(payload) else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
+        let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        if received_k_bit != shared.current_k_bit {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        }
+        let Some(ticket) = shared.try_issue_ticket() else {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::DecryptFspHelperWindowFallback,
+                1,
+            );
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
+        let open_idx = if owner_idx == idx {
+            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
+        } else {
+            self.pool
+                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
+        }
+        .unwrap_or_else(|| eligible_open_idx.expect("checked eligible FSP open worker"));
+
+        let helper_job = FspAeadHelperJob {
+            source_addr,
+            receive_order_id: shared.receive_order_id,
+            ticket,
+            cipher: Arc::clone(&shared.cipher),
+            job,
+            header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            helper_queued_at: None,
+        };
+        Ok((open_idx, owner_idx, helper_job))
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn try_start_fsp_bulk_open_worker(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) -> Result<(), FspDecryptJob> {
+        let (open_idx, owner_idx, helper_job) = match self.try_prepare_fsp_bulk_open_worker_job(
+            idx, job,
+        ) {
+            Ok(prepared) => prepared,
+            Err(FspOpenWorkerPrepareError::Ineligible(job)) => return Err(job),
+            Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
+                let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                if owner_idx == idx {
+                    record_fsp_path_local(job.lane());
+                    self.push_fsp_job_outputs(idx, job, plaintext_batch);
+                    return Ok(());
+                }
+                record_fsp_open_worker_completion_backlog_fallback();
+                drop_fsp_owner_handoff_job(job);
+                return Ok(());
+            }
+        };
+        record_fsp_path_worker_open_bulk();
+        match self
+            .pool
+            .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, helper_job)
+        {
+            Ok(()) => Ok(()),
+            Err(helper_job) => {
+                self.drop_returned_fsp_aead_open_job(idx, helper_job, plaintext_batch);
+                Ok(())
+            }
+        }
+    }
+
+    fn drop_returned_fsp_aead_open_job(
+        &mut self,
+        idx: usize,
+        mut helper_job: FspAeadHelperJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        record_fsp_open_pool_bulk_drop(1);
+        let completion_tx = helper_job.completion_tx.take();
+        helper_job.mark_returned_completion();
+        let completion = helper_job.into_dropped_completion();
+        if completion_tx
+            .as_ref()
+            .is_some_and(|tx| self.pool.fsp_aead_completion_sender_is(idx, tx))
+            || completion_tx.is_none()
+        {
+            self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+            return;
+        }
+        if let Some(tx) = completion_tx {
+            let _ = tx.send(FspAeadCompletionBatch::one(completion));
+        }
+    }
+
+    fn drop_returned_fsp_aead_open_jobs(
+        &mut self,
+        idx: usize,
+        jobs: Vec<FspAeadHelperJob>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        record_fsp_open_pool_bulk_drop(jobs.len());
+        let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
+        let mut current_local = false;
+        let mut current_source_addr = None;
+        let mut current_receive_order_id = None;
+        let mut current_batch: Option<FspAeadCompletionBatch> = None;
+        let completion_batch_max = fsp_aead_completion_batch_max();
+
+        for mut job in jobs {
+            let completion_tx = job.completion_tx.take();
+            let local_completion = completion_tx
+                .as_ref()
+                .is_some_and(|tx| self.pool.fsp_aead_completion_sender_is(idx, tx))
+                || completion_tx.is_none();
+            let source_addr = job.source_addr;
+            let receive_order_id = job.receive_order_id;
+            job.mark_returned_completion();
+            let same_batch = current_batch
+                .as_ref()
+                .is_some_and(|batch| batch.len() < completion_batch_max)
+                && current_local == local_completion
+                && current_source_addr == Some(source_addr)
+                && current_receive_order_id == Some(receive_order_id)
+                && (local_completion
+                    || current_tx
+                        .as_ref()
+                        .zip(completion_tx.as_ref())
+                        .is_some_and(|(current, next)| current.same_channel(next)));
+
+            if !same_batch {
+                self.flush_dropped_fsp_aead_open_completion_batch(
+                    idx,
+                    current_local,
+                    current_tx.take(),
+                    current_batch.take(),
+                    plaintext_batch,
+                );
+                current_local = local_completion;
+                current_tx = completion_tx.filter(|_| !local_completion);
+                current_source_addr = Some(source_addr);
+                current_receive_order_id = Some(receive_order_id);
+                current_batch = Some(FspAeadCompletionBatch::one(job.into_dropped_completion()));
+                continue;
+            }
+
+            let Some(batch) = current_batch.as_mut() else {
+                unreachable!("same_batch requires an active completion batch")
+            };
+            batch.push(job.into_dropped_completion());
+        }
+
+        self.flush_dropped_fsp_aead_open_completion_batch(
+            idx,
+            current_local,
+            current_tx,
+            current_batch,
+            plaintext_batch,
+        );
+    }
+
+    fn flush_dropped_fsp_aead_open_completion_batch(
+        &mut self,
+        idx: usize,
+        local_completion: bool,
+        completion_tx: Option<Sender<FspAeadCompletionBatch>>,
+        batch: Option<FspAeadCompletionBatch>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let Some(batch) = batch else { return };
+        if local_completion {
+            self.handle_fsp_aead_completion_batch_msg(idx, batch, plaintext_batch);
+            return;
+        }
+        if let Some(tx) = completion_tx {
+            let _ = tx.send(batch);
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
     fn try_start_fsp_aead_helper(
         &mut self,
         idx: usize,
@@ -362,40 +759,59 @@ impl DecryptWorkerShard {
         {
             return Err(job);
         }
-        let Some(shared) = self.pool.fsp_aead_session(&job.source_addr) else {
+
+        let source_addr = job.source_addr;
+        let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
             return Err(job);
         };
+        let owner_idx = shared.owner_idx;
+        if !self.pool.fsp_aead_helper_admission_ready(owner_idx) {
+            return Err(job);
+        }
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
-        let header = {
-            let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
-            else {
-                return Err(job);
-            };
-            let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return Err(job);
-            };
-            header
+        let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
+        else {
+            return Err(job);
+        };
+        let Some(header) = FspEncryptedHeader::parse(payload) else {
+            return Err(job);
         };
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         if received_k_bit != shared.current_k_bit {
             return Err(job);
         }
-        let owner_idx = shared.owner_idx;
+        let Some(ticket) = shared.try_issue_ticket() else {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::DecryptFspHelperWindowFallback,
+                1,
+            );
+            return Err(job);
+        };
         let helper_job = FspAeadHelperJob {
-            source_addr: job.source_addr,
+            source_addr,
             receive_order_id: shared.receive_order_id,
-            ticket: shared.issue_ticket(),
+            ticket,
             cipher: Arc::clone(&shared.cipher),
             job,
             header,
+            completion_source: FspAeadCompletionSource::Helper,
             completion_tx: None,
             helper_queued_at: None,
         };
 
-        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHelper);
-        match self.pool.dispatch_fsp_aead_helper_job(owner_idx, helper_job) {
-            Ok(()) => Ok(()),
-            Err(helper_job) => {
+        match self
+            .pool
+            .dispatch_fsp_aead_helper_job(owner_idx, helper_job)
+        {
+            Ok(()) => {
+                record_fsp_path_helper_bulk();
+                Ok(())
+            }
+            Err(mut helper_job) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspHelperQueueFullFallback,
+                );
+                helper_job.mark_returned_completion();
                 let completion = helper_job.into_completion();
                 if owner_idx == idx {
                     self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
@@ -418,27 +834,33 @@ impl DecryptWorkerShard {
         let _t_service = crate::perf_profile::Timer::start(
             crate::perf_profile::Stage::FspAeadHelperCompletionService,
         );
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FspAeadHelperCompletionWait,
-            completion.completed_at,
-            1,
-        );
+        record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         let FspAeadCompletion {
             source_addr,
             receive_order_id,
             ticket,
+            source: _,
             result,
             completed_at: _,
         } = completion;
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            record_fsp_aead_completion_drop(
+                crate::perf_profile::Event::FspAeadCompletionStaleSession,
+                1,
+            );
             return;
         };
         if state.fsp_receive_order_id() != receive_order_id {
+            record_fsp_aead_completion_drop(
+                crate::perf_profile::Event::FspAeadCompletionStaleOrder,
+                1,
+            );
             return;
         }
         let drain = match state.complete_ordered_fsp_open(ticket, result) {
             Ok(drain) => drain,
             Err(error) => {
+                record_fsp_aead_completion_order_error(&error);
                 debug!(
                     worker = idx,
                     ?error,
@@ -448,14 +870,161 @@ impl DecryptWorkerShard {
                 return;
             }
         };
-        debug_assert_eq!(drain.ready, drain.accepted + drain.aead_failures + drain.replay_drops);
+        let next_ready = state.fsp_receive_order_next_ready();
+        debug_assert_eq!(
+            drain.ready,
+            drain.accepted + drain.aead_failures + drain.replay_drops + drain.dropped
+        );
         crate::perf_profile::record_fsp_aead_completion_drain(
             drain.ready,
             drain.accepted,
             drain.aead_failures,
             drain.replay_drops,
         );
-        for completion in drain.outputs {
+        drain.replay_drop_sources.record();
+        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
+            && shared.receive_order_id == receive_order_id
+        {
+            shared.mark_next_ready(next_ready);
+        }
+        self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
+    }
+
+    fn handle_fsp_aead_completion_batch_msg(
+        &mut self,
+        idx: usize,
+        completions: FspAeadCompletionBatch,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let Some((source_addr, receive_order_id)) = completions.common_source_order() else {
+            completions.for_each(|completion| {
+                self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+            });
+            return;
+        };
+        let completions = completions.into_vec();
+        if completions.len() <= 1 {
+            for completion in completions {
+                self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+            }
+            return;
+        }
+        self.handle_fsp_aead_completion_same_source_batch(
+            idx,
+            source_addr,
+            receive_order_id,
+            completions,
+            plaintext_batch,
+        );
+    }
+
+    fn handle_fsp_aead_completion_same_source_batch(
+        &mut self,
+        idx: usize,
+        source_addr: NodeAddr,
+        receive_order_id: u64,
+        completions: Vec<FspAeadCompletion>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let _t_service = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FspAeadHelperCompletionService,
+        );
+        for completion in &completions {
+            record_fsp_aead_completion_wait(completion.source, completion.completed_at);
+        }
+
+        let mut ready = 0usize;
+        let mut accepted = 0usize;
+        let mut aead_failures = 0usize;
+        let mut replay_drops = 0usize;
+        let mut dropped = 0usize;
+        let mut replay_drop_sources = FspReplayDropSources::default();
+        let mut outputs = Vec::new();
+        let next_ready;
+        {
+            let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+                record_fsp_aead_completion_drop(
+                    crate::perf_profile::Event::FspAeadCompletionStaleSession,
+                    completions.len(),
+                );
+                return;
+            };
+            if state.fsp_receive_order_id() != receive_order_id {
+                record_fsp_aead_completion_drop(
+                    crate::perf_profile::Event::FspAeadCompletionStaleOrder,
+                    completions.len(),
+                );
+                return;
+            }
+            for completion in completions {
+                let FspAeadCompletion {
+                    source_addr: _,
+                    receive_order_id: _,
+                    ticket,
+                    source: _,
+                    result,
+                    completed_at: _,
+                } = completion;
+                let drain = match state.complete_ordered_fsp_open(ticket, result) {
+                    Ok(drain) => drain,
+                    Err(error) => {
+                        record_fsp_aead_completion_order_error(&error);
+                        debug!(
+                            worker = idx,
+                            ?error,
+                            %source_addr,
+                            "dropping invalid ordered FSP AEAD completion"
+                        );
+                        continue;
+                    }
+                };
+                debug_assert_eq!(
+                    drain.ready,
+                    drain.accepted + drain.aead_failures + drain.replay_drops
+                );
+                ready += drain.ready;
+                accepted += drain.accepted;
+                aead_failures += drain.aead_failures;
+                replay_drops += drain.replay_drops;
+                dropped += drain.dropped;
+                replay_drop_sources.add_sources(drain.replay_drop_sources);
+                outputs.extend(drain.outputs);
+            }
+            next_ready = state.fsp_receive_order_next_ready();
+        }
+
+        debug_assert_eq!(ready, accepted + aead_failures + replay_drops + dropped);
+        crate::perf_profile::record_fsp_aead_completion_drain(
+            ready,
+            accepted,
+            aead_failures,
+            replay_drops,
+        );
+        replay_drop_sources.record();
+        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
+            && shared.receive_order_id == receive_order_id
+        {
+            shared.mark_next_ready(next_ready);
+        }
+        self.push_fsp_ready_completion_outputs(outputs, plaintext_batch);
+    }
+
+    fn push_fsp_ready_completion_outputs(
+        &self,
+        outputs: Vec<FspReadyCompletion>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        for output in self.outputs_for_fsp_ready_completions(outputs) {
+            plaintext_batch.push_output(output);
+        }
+    }
+
+    fn outputs_for_fsp_ready_completions(
+        &self,
+        outputs: Vec<FspReadyCompletion>,
+    ) -> Vec<DecryptWorkerOutput> {
+        let mut ready = Vec::with_capacity(outputs.len());
+        for completion in outputs {
             match completion {
                 FspReadyCompletion::Opened {
                     opened,
@@ -465,39 +1034,37 @@ impl DecryptWorkerShard {
                     if let Some(output) =
                         self.output_for_opened_fsp_job(source_peer, opened, slot)
                     {
-                        plaintext_batch.push_output(output);
+                        ready.push(output);
                     }
                 }
                 FspReadyCompletion::AeadFailed { job, header } => {
-                    plaintext_batch.push_output(self.output_for_fsp_aead_failure(job, &header));
+                    ready.push(self.output_for_fsp_aead_failure(job, &header));
                 }
             }
         }
+        ready
     }
 
     fn dispatch_or_handle_fsp_job(
         &mut self,
         idx: usize,
         job: FspDecryptJob,
-    ) -> Option<DecryptWorkerOutput> {
+    ) -> Vec<DecryptWorkerOutput> {
         let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
         record_fsp_owner_match(owner_idx == idx);
         if owner_idx == idx {
-            crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathLocal);
-            return self.handle_fsp_job_output(job);
+            record_fsp_path_local(job.lane());
+            return self.handle_fsp_job_outputs(idx, job);
         }
-        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathHandoff);
+        record_fsp_path_handoff(job.lane());
         match self.pool.dispatch_fsp_job_or_return(job) {
-            Ok(()) => None,
+            Ok(()) => Vec::new(),
             Err(job) => {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspPathFallback,
                 );
-                Some(DecryptWorkerOutput {
-                    fallback_tx: job.fallback_tx,
-                    event: DecryptWorkerEvent::Plaintext(job.fallback),
-                    direct_delivery: None,
-                })
+                drop_fsp_owner_handoff_job(job);
+                Vec::new()
             }
         }
     }
@@ -645,7 +1212,22 @@ impl DecryptWorkerShard {
         }
     }
 
-    fn handle_fsp_job_output(&mut self, job: FspDecryptJob) -> Option<DecryptWorkerOutput> {
+    fn push_fsp_job_outputs(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        for output in self.handle_fsp_job_outputs(idx, job) {
+            plaintext_batch.push_output(output);
+        }
+    }
+
+    fn handle_fsp_job_outputs(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+    ) -> Vec<DecryptWorkerOutput> {
         let FspDecryptJob {
             fallback_tx,
             mut fallback,
@@ -661,27 +1243,27 @@ impl DecryptWorkerShard {
         } = job;
 
         let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-            return Some(DecryptWorkerOutput {
+            return vec![DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
-            });
+            }];
         };
         let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                return Some(DecryptWorkerOutput {
+                return vec![DecryptWorkerOutput {
                     fallback_tx,
                     event: DecryptWorkerEvent::Plaintext(fallback),
                     direct_delivery: None,
-                });
+                }];
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return Some(DecryptWorkerOutput {
+                return vec![DecryptWorkerOutput {
                     fallback_tx,
                     event: DecryptWorkerEvent::Plaintext(fallback),
                     direct_delivery: None,
-                });
+                }];
             };
             header
         };
@@ -698,77 +1280,96 @@ impl DecryptWorkerShard {
         };
 
         if state.has_single_current_epoch() {
+            let Some(ticket) = state.issue_fsp_receive_ticket() else {
+                match lane {
+                    DecryptWorkerLane::Priority => {
+                        record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+                    }
+                    DecryptWorkerLane::Bulk => {
+                        record_decrypt_worker_bulk_drop_count(idx, 1);
+                    }
+                }
+                return Vec::new();
+            };
             let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
             let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end)
             else {
-                return Some(DecryptWorkerOutput {
+                return vec![DecryptWorkerOutput {
                     fallback_tx,
                     event: DecryptWorkerEvent::Plaintext(fallback),
                     direct_delivery: None,
-                });
+                }];
             };
-            let received_k_bit = header.flags & FSP_FLAG_K != 0;
             let open_result = {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                state.open_current_established_frame_in_place(&header, ciphertext)
+                state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
             };
-            let FspOpenInPlaceSuccess {
-                plaintext_len,
-                slot,
-            } = match open_result {
-                Ok(success) => success,
-                Err(FspOpenError::Replay) => {
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
-                    );
-                    return None;
-                }
-                Err(FspOpenError::Aead) => {
-                    return Some(DecryptWorkerOutput {
-                        fallback_tx,
-                        event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
-                            fmp,
-                            source_addr,
-                            counter: header.counter,
-                            received_k_bit,
-                            lane,
-                            trace_enqueued_at: None,
-                        }),
-                        direct_delivery: None,
-                    });
-                }
+            let job = FspDecryptJob {
+                fallback_tx,
+                fallback,
+                local_node_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu,
+                ce_flag,
+                inner_timestamp_ms,
+                fsp_payload_offset,
+                fsp_payload_len,
+                trace_enqueued_at: None,
             };
-            let source_peer = state.source_peer;
-            return self.output_for_opened_fsp_job(
-                source_peer,
-                FspOpenedJob {
-                    job: FspDecryptJob {
-                        fallback_tx,
-                        fallback,
-                        local_node_addr,
-                        source_addr,
-                        previous_hop_peer,
-                        path_mtu,
-                        ce_flag,
-                        inner_timestamp_ms,
-                        fsp_payload_offset,
-                        fsp_payload_len,
-                        trace_enqueued_at: None,
+            let completion = match open_result {
+                Ok(plaintext_len) => FspOrderedCompletion::Opened {
+                    opened: FspOpenedJob {
+                        job,
+                        header,
+                        plaintext_len,
                     },
-                    header,
-                    plaintext_len,
+                    source: FspAeadCompletionSource::Local,
                 },
-                slot,
+                Err(FspOpenError::Aead) | Err(FspOpenError::Replay) => {
+                    FspOrderedCompletion::AeadFailed { job, header }
+                }
+            };
+            let drain = match state.complete_ordered_fsp_open(ticket, completion) {
+                Ok(drain) => drain,
+                Err(error) => {
+                    record_fsp_aead_completion_order_error(&error);
+                    debug!(
+                        worker = idx,
+                        ?error,
+                        %source_addr,
+                        "dropping invalid local ordered FSP completion"
+                    );
+                    return Vec::new();
+                }
+            };
+            let next_ready = state.fsp_receive_order_next_ready();
+            debug_assert_eq!(
+                drain.ready,
+                drain.accepted + drain.aead_failures + drain.replay_drops + drain.dropped
             );
+            crate::perf_profile::record_fsp_aead_completion_drain(
+                drain.ready,
+                drain.accepted,
+                drain.aead_failures,
+                drain.replay_drops,
+            );
+            drain.replay_drop_sources.record();
+            if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
+                && shared.receive_order_id == state.fsp_receive_order_id()
+            {
+                shared.mark_next_ready(next_ready);
+            }
+            return self.outputs_for_fsp_ready_completions(drain.outputs);
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-            return Some(DecryptWorkerOutput {
+            return vec![DecryptWorkerOutput {
                 fallback_tx,
                 event: DecryptWorkerEvent::Plaintext(fallback),
                 direct_delivery: None,
-            });
+            }];
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
@@ -783,17 +1384,21 @@ impl DecryptWorkerShard {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                 );
-                return None;
+                return Vec::new();
             }
             Err(FspOpenError::Aead) => {
-                return Some(DecryptWorkerOutput {
+                return vec![DecryptWorkerOutput {
                     fallback_tx,
                     event: DecryptWorkerEvent::Plaintext(fallback),
                     direct_delivery: None,
-                });
+                }];
             }
         };
-        let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(&plaintext)?;
+        let Some((timestamp, msg_type, inner_flags_byte, _body)) =
+            fsp_strip_inner_header(&plaintext)
+        else {
+            return Vec::new();
+        };
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
         let lane = fallback.lane();
@@ -831,11 +1436,11 @@ impl DecryptWorkerShard {
                         sync,
                         lane,
                     );
-                    return Some(DecryptWorkerOutput {
+                    return vec![DecryptWorkerOutput {
                         fallback_tx,
                         event,
                         direct_delivery,
-                    });
+                    }];
                 }
                 Err(message) => {
                     DecryptWorkerEvent::AuthenticatedSession(DecryptAuthenticatedSession {
@@ -851,11 +1456,11 @@ impl DecryptWorkerShard {
                 }
             };
 
-        Some(DecryptWorkerOutput {
+        vec![DecryptWorkerOutput {
             fallback_tx,
             event,
             direct_delivery: None,
-        })
+        }]
     }
 
     fn handle_job_action(
@@ -908,6 +1513,7 @@ impl DecryptWorkerShard {
                     &mut packet_data,
                     fmp_ciphertext_offset,
                     fmp_counter,
+                    fmp_flags,
                     &fmp_header,
                 ) {
                     Ok(outcome) => outcome,
@@ -1043,7 +1649,132 @@ impl DecryptWorkerShard {
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpAeadHelperCompletionService);
         let actions = self.handle_fmp_aead_completion_action(completion);
-        self.push_job_actions_output(idx, actions, plaintext_batch, None);
+        self.push_job_actions_output_with_fsp_batchers(idx, actions, plaintext_batch);
+    }
+
+    fn handle_fmp_aead_completion_batch_msg(
+        &mut self,
+        idx: usize,
+        completions: FmpAeadCompletionBatch,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let Some((session_key, receive_order_id)) = completions.common_session_order() else {
+            completions.for_each(|completion| {
+                self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+            });
+            return;
+        };
+        let completions = completions.into_vec();
+        if completions.len() <= 1 {
+            for completion in completions {
+                self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+            }
+            return;
+        }
+        self.handle_fmp_aead_completion_same_session_batch(
+            idx,
+            session_key,
+            receive_order_id,
+            completions,
+            plaintext_batch,
+        );
+    }
+
+    fn handle_fmp_aead_completion_same_session_batch(
+        &mut self,
+        idx: usize,
+        session_key: DecryptSessionKey,
+        receive_order_id: u64,
+        completions: Vec<FmpAeadCompletion>,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let _t_service = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FmpAeadHelperCompletionService,
+        );
+        for completion in &completions {
+            let (priority_count, bulk_count) = match completion.result.lane() {
+                DecryptWorkerLane::Priority => (1, 0),
+                DecryptWorkerLane::Bulk => (0, 1),
+            };
+            crate::perf_profile::record_since_split_count(
+                crate::perf_profile::Stage::FmpAeadHelperCompletionWait,
+                crate::perf_profile::Stage::FmpAeadHelperPriorityCompletionWait,
+                crate::perf_profile::Stage::FmpAeadHelperBulkCompletionWait,
+                completion.completed_at,
+                1,
+                priority_count,
+                bulk_count,
+            );
+        }
+
+        let mut ready = 0usize;
+        let mut accepted = 0usize;
+        let mut aead_failures = 0usize;
+        let mut replay_drops = 0usize;
+        let mut actions = DecryptWorkerJobActions::None;
+        {
+            let Some(state) = self.sessions.get_mut(&session_key) else {
+                return;
+            };
+            if state.fmp_receive_order_id() != receive_order_id {
+                return;
+            }
+            for completion in completions {
+                let FmpAeadCompletion {
+                    session_key: _,
+                    receive_order_id: _,
+                    ticket,
+                    completed_at: _,
+                    result,
+                } = completion;
+                let ordered = match result {
+                    FmpAeadCompletionResult::Opened { replay, opened } => {
+                        FmpOrderedCompletion::Opened {
+                            replay,
+                            value: opened,
+                        }
+                    }
+                    FmpAeadCompletionResult::AeadFailed(failure) => {
+                        FmpOrderedCompletion::AeadFailed(failure)
+                    }
+                };
+                let drain_result =
+                    state.complete_ordered_fmp_open_with_value(ticket, ordered, |ready| {
+                        match ready {
+                            FmpReadyCompletion::Opened(opened_job) => {
+                                if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                                    actions.push(action);
+                                }
+                            }
+                            FmpReadyCompletion::AeadFailed(failure) => {
+                                actions.push(Self::fmp_aead_failure_action(failure));
+                            }
+                        }
+                    });
+                match drain_result {
+                    Ok(drain) => {
+                        ready += drain.ready;
+                        accepted += drain.accepted;
+                        aead_failures += drain.aead_failures;
+                        replay_drops += drain.replay_drops;
+                    }
+                    Err(FmpOpenError::Replay) => {}
+                    #[cfg(test)]
+                    Err(FmpOpenError::Aead { .. }) => {
+                        unreachable!("ordered FMP completion cannot run AEAD")
+                    }
+                }
+            }
+        }
+
+        debug_assert_eq!(ready, accepted + aead_failures + replay_drops);
+        crate::perf_profile::record_fmp_aead_completion_drain(
+            ready,
+            accepted,
+            aead_failures,
+            replay_drops,
+        );
+        self.push_job_actions_output_with_fsp_batchers(idx, actions, plaintext_batch);
     }
 
     fn handle_fmp_aead_completion_action(
@@ -1106,11 +1837,6 @@ impl DecryptWorkerShard {
                             drain.aead_failures,
                             drain.replay_drops,
                         );
-                        if let Some(shared) = self.pool.fmp_aead_session(&session_key)
-                            && shared.receive_order_id == receive_order_id
-                        {
-                            shared.mark_next_ready(state.fmp_receive_order_next_ready());
-                        }
                     }
                     Err(FmpOpenError::Replay) => return actions,
                     #[cfg(test)]
@@ -1143,11 +1869,6 @@ impl DecryptWorkerShard {
                         drain.aead_failures,
                         drain.replay_drops,
                     );
-                    if let Some(shared) = self.pool.fmp_aead_session(&session_key)
-                        && shared.receive_order_id == receive_order_id
-                    {
-                        shared.mark_next_ready(state.fmp_receive_order_next_ready());
-                    }
                 }
                 actions
             }
@@ -1297,14 +2018,16 @@ impl DecryptWorkerShard {
     ) -> Option<DecryptWorkerOutput> {
         let mut first_output = None;
         actions.for_each(|action| {
-            let output = match action {
-                DecryptWorkerJobAction::Output(output) => Some(output),
+            let outputs = match action {
+                DecryptWorkerJobAction::Output(output) => vec![output],
                 DecryptWorkerJobAction::FspJob(job) => self.dispatch_or_handle_fsp_job(idx, job),
             };
-            if first_output.is_none() {
-                first_output = output;
-            } else if let Some(output) = output {
-                let _ = output.send();
+            for output in outputs {
+                if first_output.is_none() {
+                    first_output = Some(output);
+                } else {
+                    let _ = output.send();
+                }
             }
         });
         first_output

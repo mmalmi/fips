@@ -219,14 +219,18 @@ impl crate::node::EndpointBulkSendRuntime {
         payloads: &[EndpointDataPayload],
     ) -> bool {
         if payloads.is_empty() || payloads.iter().any(|payload| !payload.bulk_endpoint_data()) {
+            record_endpoint_bulk_fast_path_ineligible(payloads.len());
             return false;
         }
+        record_endpoint_bulk_fast_path_attempt(payloads.len());
 
         let dest_addr = *remote.node_addr();
         let Some(lease) = self.lease(&dest_addr) else {
+            record_endpoint_bulk_fast_path_lease_miss(payloads.len());
             return false;
         };
         if lease.dest_addr != dest_addr {
+            record_endpoint_bulk_fast_path_lease_miss(payloads.len());
             return false;
         }
 
@@ -271,11 +275,13 @@ impl crate::node::EndpointBulkSendRuntime {
                 lease.direct_path_blocks_direct_payload,
             );
             let Ok(send_plan) = route_plan.build_send_plan(&send) else {
+                record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
                 return false;
             };
 
             let fsp_input = send_plan.fsp_reservation_input();
             let Ok(fsp_counter) = lease.fsp.counter_authority.reserve() else {
+                record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
                 return false;
             };
             let fsp_reservation = crate::node::session::FspSendReservation {
@@ -286,6 +292,7 @@ impl crate::node::EndpointBulkSendRuntime {
 
             let fmp_payload_len = send_plan.fmp_payload_len();
             let Ok(fmp_counter) = lease.fmp.counter_authority.reserve() else {
+                record_endpoint_bulk_fast_path_prepare_failed(payloads.len());
                 return false;
             };
             let fmp_timestamp_ms = lease.fmp.session_start.elapsed().as_millis() as u32;
@@ -327,20 +334,145 @@ impl crate::node::EndpointBulkSendRuntime {
                 fmp_timestamp_ms,
                 fmp_wire_capacity,
                 originated_bytes,
-                fsp_path_mtu: lease.path_mtu,
-                fsp_bookkeeping,
+                session_bookkeeping: crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
+                    path_mtu: lease.path_mtu,
+                    bookkeeping: fsp_bookkeeping,
+                },
             });
             jobs.push(worker_job);
         }
 
         let _commit_t =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointSendCommit);
+        let Some(commit) =
+            self.try_stage_committed_bulk_dispatch(lease.workers.clone(), jobs)
+        else {
+            record_endpoint_bulk_fast_path_stage_full(payloads.len());
+            return false;
+        };
         if !self.try_feedback(records) {
+            record_endpoint_bulk_fast_path_feedback_full(payloads.len());
+            commit.cancel();
             return false;
         }
-        lease.workers.dispatch_bulk_batch(jobs);
+        // Feedback has committed counters/bookkeeping back to the node; release
+        // the staged container to the dedicated bulk dispatcher. Any worker
+        // queue blocking now happens off the caller that must keep priority
+        // endpoint/control work moving.
+        commit.commit();
+        record_endpoint_bulk_fast_path_dispatched(payloads.len());
         true
     }
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_attempt(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathAttempt,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_dispatched(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathDispatched,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_lease_miss(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathLeaseMiss,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_ineligible(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathIneligible,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_prepare_failed(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathPrepareFailed,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_stage_full(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathStageFull,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+#[cold]
+#[inline(never)]
+fn record_endpoint_bulk_fast_path_feedback_full(count: usize) {
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::EndpointBulkFastPathFeedbackFull,
+        count as u64,
+    );
+}
+
+#[cfg(unix)]
+fn record_endpoint_bulk_session_bookkeeping(
+    node: &mut Node,
+    record: &crate::node::EndpointBulkSendFeedbackRecord,
+) {
+    match record.session_bookkeeping {
+        crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
+            path_mtu,
+            bookkeeping,
+        } => {
+            let _ = node
+                .sessions
+                .seed_endpoint_data_fsp_path_mtu_batch(&record.dest_addr, [path_mtu]);
+            let _ = node
+                .sessions
+                .record_fsp_send_bookkeeping(&record.dest_addr, bookkeeping);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn record_endpoint_bulk_session_bookkeeping_batch(
+    node: &mut Node,
+    dest_addr: &NodeAddr,
+    records: &[crate::node::EndpointBulkSendFeedbackRecord],
+) {
+    let _ = node.sessions.seed_endpoint_data_fsp_path_mtu_batch(
+        dest_addr,
+        records.iter().map(|record| match record.session_bookkeeping {
+            crate::node::EndpointBulkSendSessionBookkeeping::Fsp { path_mtu, .. } => path_mtu,
+        }),
+    );
+    let _ = node.sessions.record_fsp_send_bookkeeping_batch(
+        dest_addr,
+        records.iter().map(|record| match record.session_bookkeeping {
+            crate::node::EndpointBulkSendSessionBookkeeping::Fsp { bookkeeping, .. } => bookkeeping,
+        }),
+    );
 }
 
 #[cfg(unix)]
@@ -612,8 +744,10 @@ impl PipelinedEndpointPreparedSend {
                 fmp_timestamp_ms,
                 fmp_wire_capacity,
                 originated_bytes,
-                fsp_path_mtu,
-                fsp_bookkeeping,
+                session_bookkeeping: crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
+                    path_mtu: fsp_path_mtu,
+                    bookkeeping: fsp_bookkeeping,
+                },
             },
             worker_job,
         )
@@ -632,15 +766,15 @@ impl PipelinedEndpointPreparedSend {
             .forwarding
             .record_originated(bookkeeping.originated_bytes);
 
-        let _ = node.sessions.record_fsp_send_bookkeeping(
-            &bookkeeping.dest_addr,
-            bookkeeping.fsp_bookkeeping,
-        );
+        record_endpoint_bulk_session_bookkeeping(node, &bookkeeping);
 
         worker_job
     }
 
-    fn record_bookkeeping_many(records: &[crate::node::EndpointBulkSendFeedbackRecord], node: &mut Node) {
+    fn record_bookkeeping_many(
+        records: &[crate::node::EndpointBulkSendFeedbackRecord],
+        node: &mut Node,
+    ) {
         let Some(first) = records.first().copied() else {
             return;
         };
@@ -668,14 +802,7 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated_batch(records.len(), originated_bytes);
-            let _ = node.sessions.seed_endpoint_data_fsp_path_mtu_batch(
-                &first.dest_addr,
-                records.iter().map(|record| record.fsp_path_mtu),
-            );
-            let _ = node.sessions.record_fsp_send_bookkeeping_batch(
-                &first.dest_addr,
-                records.iter().map(|record| record.fsp_bookkeeping),
-            );
+            record_endpoint_bulk_session_bookkeeping_batch(node, &first.dest_addr, records);
             return;
         }
 
@@ -689,12 +816,7 @@ impl PipelinedEndpointPreparedSend {
             node.stats_mut()
                 .forwarding
                 .record_originated(record.originated_bytes);
-            let _ = node
-                .sessions
-                .seed_endpoint_data_fsp_path_mtu_batch(&record.dest_addr, [record.fsp_path_mtu]);
-            let _ = node
-                .sessions
-                .record_fsp_send_bookkeeping(&record.dest_addr, record.fsp_bookkeeping);
+            record_endpoint_bulk_session_bookkeeping(node, record);
         }
     }
 

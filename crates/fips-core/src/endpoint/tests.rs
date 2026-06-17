@@ -217,6 +217,22 @@ fn endpoint_batch_commands_charge_drain_budget_by_small_packet_groups() {
     assert_eq!(full_batch.drain_cost(), 16);
 }
 
+#[test]
+fn endpoint_command_drop_accounting_counts_packets_not_drain_quanta() {
+    let remote = PeerIdentity::from_pubkey_full(crate::Identity::generate().pubkey_full());
+    let discardable_payload = || crate::node::EndpointDataPayload::new(vec![0, 1, 2, 3]);
+    let payloads = (0..ENDPOINT_SEND_BATCH_COMMAND_MAX)
+        .map(|_| discardable_payload())
+        .collect::<Vec<_>>();
+    let full_batch =
+        NodeEndpointCommand::send_batch_oneway(remote, payloads, None, EndpointCommandLane::Bulk)
+            .expect("full discardable endpoint batch command");
+
+    assert!(full_batch.drop_on_backpressure());
+    assert_eq!(full_batch.drain_cost(), 16);
+    assert_eq!(full_batch.packet_count(), ENDPOINT_SEND_BATCH_COMMAND_MAX);
+}
+
 #[tokio::test]
 async fn endpoint_command_enqueue_drops_only_discardable_bulk_when_full() {
     let (priority_tx, _priority_rx) = mpsc::channel(1);

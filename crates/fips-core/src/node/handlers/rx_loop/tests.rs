@@ -1,10 +1,8 @@
 use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
-    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FALLBACK_PRESSURE_HIGH_WATER,
-    FALLBACK_PRESSURE_INTERLEAVE_BUDGET, FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-    FALLBACK_PRESSURE_TRAILING_BUDGET, FallbackDrainPlan, NON_PACKET_DRAIN_BUDGET,
-    PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx, fallback_drain_plan,
-    non_packet_drain_budget,
+    FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -25,26 +23,10 @@ fn non_packet_drain_budget_caps_large_packet_turns() {
 }
 
 #[test]
-fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
+fn fallback_drain_plan_stays_bounded_under_return_pressure() {
+    let plan = fallback_drain_plan();
     assert_eq!(
-        FALLBACK_PRESSURE_HIGH_WATER,
-        PACKET_DRAIN_BUDGET / 2,
-        "bulk fallback pressure should start before already-decrypted backlog spans a full raw receive turn"
-    );
-
-    let normal = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER - 1);
-    let pressured = fallback_drain_plan(0, FALLBACK_PRESSURE_HIGH_WATER);
-
-    assert_eq!(
-        pressured,
-        FallbackDrainPlan {
-            interleave_every: FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
-            trailing_budget: FALLBACK_PRESSURE_TRAILING_BUDGET,
-        }
-    );
-    assert_eq!(
-        normal,
+        plan,
         FallbackDrainPlan {
             interleave_every: FALLBACK_INTERLEAVE_EVERY,
             interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
@@ -52,21 +34,12 @@ fn fallback_drain_plan_expands_bulk_turns_only_without_transport_priority() {
         }
     );
     assert!(
-        pressured.interleave_budget > normal.interleave_budget,
-        "pressure mode should drain already-decrypted bulk faster than the normal cadence"
+        plan.interleave_budget <= NON_PACKET_DRAIN_BUDGET,
+        "fallback returns should keep a bounded normal turn even when bulk is backlogged"
     );
     assert!(
-        pressured.trailing_budget <= PACKET_DRAIN_BUDGET / 2,
-        "pressure mode stays bounded so endpoint/timer progress returns within a packet turn"
-    );
-    assert_eq!(
-        fallback_drain_plan(1, FALLBACK_PRESSURE_HIGH_WATER),
-        FallbackDrainPlan {
-            interleave_every: FALLBACK_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_INTERLEAVE_BUDGET,
-            trailing_budget: NON_PACKET_DRAIN_BUDGET,
-        },
-        "fresh transport priority packets must keep the normal bulk-fallback cadence"
+        plan.trailing_budget <= NON_PACKET_DRAIN_BUDGET,
+        "trailing fallback returns should not grow into a pressure side path"
     );
 }
 
@@ -76,76 +49,6 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
-    );
-}
-
-#[test]
-fn packet_drain_cursor_can_retime_fallback_interleave_under_pressure() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    for packet in 0..64 {
-        tx.send(packet).unwrap();
-    }
-
-    let mut drain = PacketDrainCursor::new(None, 64, FALLBACK_INTERLEAVE_EVERY, 0);
-    for _ in 0..FALLBACK_INTERLEAVE_EVERY {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-
-    drain.reset_fallback_interleave_every(FALLBACK_PRESSURE_INTERLEAVE_EVERY);
-    for _ in 0..FALLBACK_PRESSURE_INTERLEAVE_EVERY {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveFallback),
-        "new fallback pressure should shorten the next raw-packet interval"
-    );
-}
-
-#[test]
-fn packet_drain_cursor_restores_normal_fallback_interleave_after_pressure() {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    for packet in 0..80 {
-        tx.send(packet).unwrap();
-    }
-
-    let mut drain = PacketDrainCursor::new(None, 80, FALLBACK_PRESSURE_INTERLEAVE_EVERY, 0);
-    for _ in 0..FALLBACK_PRESSURE_INTERLEAVE_EVERY {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveFallback)
-    );
-
-    drain.reset_fallback_interleave_every(FALLBACK_INTERLEAVE_EVERY);
-    for _ in 0..(FALLBACK_INTERLEAVE_EVERY - 1) {
-        assert!(matches!(
-            drain.next(&mut rx),
-            Some(PacketDrainAction::Packet(_))
-        ));
-    }
-    assert!(matches!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::Packet(_)),
-    ));
-    assert_eq!(
-        drain.next(&mut rx),
-        Some(PacketDrainAction::InterleaveFallback),
-        "priority pressure relief should restore the normal fallback cadence"
     );
 }
 

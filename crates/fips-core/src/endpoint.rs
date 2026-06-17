@@ -519,7 +519,7 @@ impl FipsEndpoint {
         self.inbound_endpoint_tx
             .send(NodeEndpointEvent::Data {
                 source_peer: self.identity,
-                payload: data,
+                payload: data.into(),
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| FipsEndpointError::Closed)
@@ -965,7 +965,7 @@ async fn send_endpoint_command(
             Err(mpsc::error::TrySendError::Full(command)) => {
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::EndpointCommandBulkDropped,
-                    command.drain_cost() as u64,
+                    command.packet_count() as u64,
                 );
                 return Ok(());
             }

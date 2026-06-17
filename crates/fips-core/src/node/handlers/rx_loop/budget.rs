@@ -1,4 +1,3 @@
-use crate::node::decrypt_worker::DECRYPT_FALLBACK_BACKLOG_HIGH_WATER;
 use std::time::Duration;
 
 /// How often the raw-packet drain loop yields a slice of work to the
@@ -8,14 +7,6 @@ pub(super) const FALLBACK_INTERLEAVE_EVERY: usize = 32;
 /// Cap on the per-interleave fallback drain so a hot inbound spike
 /// can't starve the outer raw-packet drain in the opposite direction.
 pub(super) const FALLBACK_INTERLEAVE_BUDGET: usize = 64;
-/// Start the pressure drain at the same point where the decrypt fallback lane
-/// emits its backlog-high event. The pressure path is gated off whenever raw
-/// priority packets are queued.
-pub(super) const FALLBACK_PRESSURE_HIGH_WATER: usize = DECRYPT_FALLBACK_BACKLOG_HIGH_WATER;
-pub(super) const FALLBACK_PRESSURE_INTERLEAVE_EVERY: usize = 16;
-const FALLBACK_PRESSURE_DRAIN_BUDGET: usize = 256;
-pub(super) const FALLBACK_PRESSURE_INTERLEAVE_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;
-pub(super) const FALLBACK_PRESSURE_TRAILING_BUDGET: usize = FALLBACK_PRESSURE_DRAIN_BUDGET;
 /// How often a hot inbound packet drain gives outbound side queues a bounded
 /// turn. This keeps TUN egress and endpoint control sends moving when
 /// `packet_rx` remains ready for many consecutive biased select iterations.
@@ -79,31 +70,10 @@ impl FallbackDrainPlan {
             trailing_budget: NON_PACKET_DRAIN_BUDGET,
         }
     }
-
-    const fn pressured() -> Self {
-        Self {
-            interleave_every: FALLBACK_PRESSURE_INTERLEAVE_EVERY,
-            interleave_budget: FALLBACK_PRESSURE_INTERLEAVE_BUDGET,
-            trailing_budget: FALLBACK_PRESSURE_TRAILING_BUDGET,
-        }
-    }
 }
 
-pub(super) fn fallback_drain_plan(
-    transport_priority_packets: usize,
-    decrypt_fallback_bulk_packets: usize,
-) -> FallbackDrainPlan {
-    if decrypt_fallback_bulk_packets < FALLBACK_PRESSURE_HIGH_WATER {
-        return FallbackDrainPlan::normal();
-    }
-
-    if transport_priority_packets == 0 {
-        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFallbackPressureDrain);
-        FallbackDrainPlan::pressured()
-    } else {
-        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFallbackPriorityGated);
-        FallbackDrainPlan::normal()
-    }
+pub(super) fn fallback_drain_plan() -> FallbackDrainPlan {
+    FallbackDrainPlan::normal()
 }
 
 pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: usize) -> bool {

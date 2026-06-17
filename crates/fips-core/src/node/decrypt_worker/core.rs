@@ -12,7 +12,7 @@ use crate::node::{
     EndpointDataDelivery, EndpointEventSender, NodeDeliveredPacket, NodeEndpointEvent,
 };
 use crate::protocol::{LinkMessageType, SessionDatagramRef, SessionMessageType};
-use crate::transport::{TransportAddr, TransportId};
+use crate::transport::{PacketBuffer, TransportAddr, TransportId};
 use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
@@ -29,25 +29,56 @@ use tracing::{debug, trace, warn};
 // use. Keep it pool-owned instead: workers may deliver direct-hop endpoint data
 // after the direct-session commit is accepted by the rx-loop bookkeeping lane.
 
-use crate::noise::ReplayWindow;
+use crate::noise::{ReplayRejection, ReplayWindow};
 
 const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
+const DEFAULT_DECRYPT_WORKER_CONTROL_CHANNEL_CAP: usize = 1024;
 const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
-/// Fallback completions are pressure-drained by rx_loop before a full raw
-/// receive turn's worth of already-decrypted bulk packets can accumulate. Emit
-/// the backlog-high event at that same point so long-run soak evidence reports
-/// the pressure signal when the adaptive path first matters.
+/// Emit the backlog-high event before already-decrypted bulk completions can
+/// crowd out priority/control work. The receive loop no longer expands its
+/// drain budget under pressure, so this is an observability threshold, not a
+/// trigger for a second packet path.
 pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
-const DECRYPT_WORKER_FMP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
-const DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE: usize = 64;
-const DECRYPT_WORKER_FSP_RECEIVE_WINDOW: usize = DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP + 64;
-const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BURST_BUDGET;
+const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
+const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
+const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
+const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+const DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS: usize = 0;
+const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG: usize = 0;
+const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
+const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
+/// Match the WireGuard-style packet mover for the common same-owner case:
+/// the peer/session owner keeps replay and delivery order, while bulk FSP
+/// AEAD can run on another worker and return through the owner's ordered
+/// completion lane. If that lane is pressured, the same owner opens locally
+/// instead of handing the packet to a different replay owner.
+const DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER: bool = true;
+/// Remote FSP bulk packets commonly arrive on an FMP owner that is not the FSP
+/// session owner. Keep the default on the owner handoff lane so pressure cannot
+/// create a second completion/backlog path; the remote open worker remains an
+/// explicit throughput experiment that preserves the FIPS wire protocol.
+const DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER: bool = false;
+/// Keep FMP receive sessions on the same peer-derived owner as FSP receive
+/// sessions by default. This removes the direct-peer hash lottery between
+/// local and handoff FSP lanes while preserving the wire protocol.
+const DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER: bool = true;
+const DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
+/// Match one owner-side completion interleave slice so a helper can return a
+/// full bounded packet-mover turn without spending it across multiple messages.
+const DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX: usize =
+    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
+    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+/// Keep FMP opens on the session owner by default. The helper lane remains an
+/// explicit experiment, but the simpler owner path avoids a second ordered
+/// completion queue and has been more reliable under connected UDP pressure.
+const DEFAULT_DECRYPT_FMP_AEAD_HELPERS: usize = 0;
 static NEXT_FMP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -104,6 +135,11 @@ fn decrypt_fsp_session_fast_hash(source_addr: &NodeAddr) -> u64 {
 }
 
 #[inline]
+fn decrypt_fsp_open_worker_fast_hash(source_addr: &NodeAddr) -> u64 {
+    mix_decrypt_session_hash(decrypt_fsp_session_fast_hash(source_addr) ^ 0xd1b5_4a32_d192_ed03)
+}
+
+#[inline]
 fn mix_decrypt_session_hash(mut value: u64) -> u64 {
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -128,6 +164,85 @@ fn bulk_channel_cap() -> usize {
         shared_cap.as_deref(),
         DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP,
     )
+}
+
+fn control_channel_cap() -> usize {
+    let control_cap = std::env::var("FIPS_DECRYPT_WORKER_CONTROL_CHANNEL_CAP").ok();
+    parse_channel_cap(
+        control_cap.as_deref(),
+        None,
+        DEFAULT_DECRYPT_WORKER_CONTROL_CHANNEL_CAP,
+    )
+}
+
+fn fmp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
+    bulk_cap
+        .max(1)
+        .saturating_add(DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE)
+        .min(crate::noise::REPLAY_WINDOW_SIZE)
+}
+
+fn fmp_receive_window() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| fmp_receive_window_from_bulk_cap(bulk_channel_cap()))
+}
+
+fn fmp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
+    // Keep completion headroom aligned with the ordered ticket window.
+    fmp_receive_window_from_bulk_cap(bulk_cap)
+}
+
+fn fsp_receive_window_from_bulk_cap(bulk_cap: usize) -> usize {
+    bulk_cap
+        .max(1)
+        .saturating_add(DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE)
+}
+
+fn fsp_receive_window() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| fsp_receive_window_from_bulk_cap(bulk_channel_cap()))
+}
+
+fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
+    // The channel stores completion batches, but pressure safety has to hold
+    // when completions arrive singly. Match the ordered ticket window so a
+    // helper/open worker cannot block merely because it used the advertised
+    // FSP receive headroom.
+    fsp_receive_window_from_bulk_cap(bulk_cap)
+}
+
+fn fsp_aead_completion_batch_max_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
+        .clamp(1, 64)
+}
+
+fn fsp_aead_completion_batch_max() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fsp_aead_completion_batch_max_from_raw(
+            std::env::var("FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn fmp_aead_completion_batch_max_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX)
+        .clamp(1, 64)
+}
+
+fn fmp_aead_completion_batch_max() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fmp_aead_completion_batch_max_from_raw(
+            std::env::var("FIPS_DECRYPT_FMP_AEAD_COMPLETION_BATCH_MAX")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 fn priority_channel_cap() -> usize {
@@ -162,7 +277,7 @@ fn fallback_priority_channel_cap() -> usize {
 
 fn fsp_ordered_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(0)
+        .unwrap_or(DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS)
         .min(64)
 }
 
@@ -174,32 +289,141 @@ fn fsp_ordered_aead_helper_count() -> usize {
     )
 }
 
+fn fsp_aead_helper_min_owner_backlog_from_raw(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG)
+        .min(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP)
+}
+
+fn fsp_aead_helper_min_owner_backlog() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fsp_aead_helper_min_owner_backlog_from_raw(
+            std::env::var("FIPS_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG")
+                .ok()
+                .as_deref(),
+        )
+    })
+}
+
+fn fsp_aead_helper_max_completion_backlog_from_raw(
+    raw: Option<&str>,
+    completion_cap: usize,
+) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG)
+        .min(completion_cap)
+}
+
+fn fsp_aead_helper_max_completion_backlog() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fsp_aead_helper_max_completion_backlog_from_raw(
+            std::env::var("FIPS_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG")
+                .ok()
+                .as_deref(),
+            fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
+        )
+    })
+}
+
+fn fsp_open_worker_max_completion_backlog_from_raw(
+    raw: Option<&str>,
+    completion_cap: usize,
+) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG)
+        .min(completion_cap)
+}
+
+fn fsp_open_worker_max_completion_backlog() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fsp_open_worker_max_completion_backlog_from_raw(
+            std::env::var("FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG")
+                .ok()
+                .as_deref(),
+            fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
+        )
+    })
+}
+
+fn fmp_aead_helper_max_completion_backlog_from_raw(
+    raw: Option<&str>,
+    completion_cap: usize,
+) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG)
+        .min(completion_cap)
+}
+
+fn fmp_aead_helper_max_completion_backlog() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        fmp_aead_helper_max_completion_backlog_from_raw(
+            std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG")
+                .ok()
+                .as_deref(),
+            fmp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
+        )
+    })
+}
+
+fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
+    raw.map(|raw| {
+        !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+    .unwrap_or(default)
+}
+
+fn fsp_local_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
+    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER)
+}
+
+fn fsp_local_bulk_open_worker_enabled() -> bool {
+    fsp_local_bulk_open_worker_enabled_from_raw(
+        std::env::var("FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn fsp_remote_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
+    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER)
+}
+
+fn fsp_remote_bulk_open_worker_enabled() -> bool {
+    fsp_remote_bulk_open_worker_enabled_from_raw(
+        std::env::var("FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn fmp_source_affine_session_owner_enabled_from_raw(raw: Option<&str>) -> bool {
+    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER)
+}
+
+fn fmp_source_affine_session_owner_enabled() -> bool {
+    fmp_source_affine_session_owner_enabled_from_raw(
+        std::env::var("FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER")
+            .ok()
+            .as_deref(),
+    )
+}
+
 fn fmp_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(0)
+        .unwrap_or(DEFAULT_DECRYPT_FMP_AEAD_HELPERS)
         .min(64)
 }
 
 fn fmp_aead_helper_count() -> usize {
     fmp_aead_helper_count_from_raw(
         std::env::var("FIPS_DECRYPT_FMP_AEAD_HELPERS")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn fmp_preowner_aead_helper_enabled_from_raw(raw: Option<&str>) -> bool {
-    raw.is_some_and(|raw| {
-        !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        )
-    })
-}
-
-fn fmp_preowner_aead_helper_enabled() -> bool {
-    fmp_preowner_aead_helper_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FMP_PREOWNER_AEAD_HELPERS")
             .ok()
             .as_deref(),
     )
@@ -236,7 +460,6 @@ pub(crate) struct OwnedSessionState {
     source_peer: PeerIdentity,
     fmp_receive_order_id: u64,
     fmp_receive_order: FmpReceiveOrder,
-    fmp_shared_crypto: Option<Arc<FmpSharedCryptoSession>>,
 }
 
 struct OwnedFspEpochState {
@@ -252,6 +475,7 @@ pub(crate) struct OwnedFspSessionState {
     previous: Option<OwnedFspEpochState>,
     fsp_receive_order_id: u64,
     fsp_receive_order: FspReceiveOrder,
+    fsp_shared_crypto: Option<Arc<FspSharedCryptoSession>>,
 }
 
 struct FspOpenSuccess {
@@ -259,79 +483,9 @@ struct FspOpenSuccess {
     slot: EpochSlot,
 }
 
-struct FspOpenInPlaceSuccess {
-    plaintext_len: usize,
-    slot: EpochSlot,
-}
-
 enum FspOpenError {
     Replay,
     Aead,
-}
-
-struct FmpSharedCryptoSession {
-    owner_idx: usize,
-    receive_order_id: u64,
-    source_peer: PeerIdentity,
-    cipher: Arc<LessSafeKey>,
-    next_ticket: AtomicU64,
-    next_ready: AtomicU64,
-}
-
-impl FmpSharedCryptoSession {
-    fn new(
-        owner_idx: usize,
-        receive_order_id: u64,
-        source_peer: PeerIdentity,
-        cipher: Arc<LessSafeKey>,
-    ) -> Self {
-        Self {
-            owner_idx,
-            receive_order_id,
-            source_peer,
-            cipher,
-            next_ticket: AtomicU64::new(0),
-            next_ready: AtomicU64::new(0),
-        }
-    }
-
-    fn can_issue_ticket(&self) -> bool {
-        self.can_issue_ticket_with_reserve(0)
-    }
-
-    fn can_issue_preowner_bulk_ticket(&self) -> bool {
-        self.can_issue_ticket_with_reserve(DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE)
-    }
-
-    fn can_issue_ticket_with_reserve(&self, reserve: usize) -> bool {
-        self.next_ticket
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.next_ready.load(Ordering::Relaxed))
-            < DECRYPT_WORKER_FMP_RECEIVE_WINDOW.saturating_sub(reserve) as u64
-    }
-
-    fn try_issue_ticket(&self) -> Option<FmpReceiveTicket> {
-        self.try_issue_ticket_with_reserve(0)
-    }
-
-    fn try_issue_preowner_bulk_ticket(&self) -> Option<FmpReceiveTicket> {
-        self.try_issue_ticket_with_reserve(DECRYPT_WORKER_FMP_PREOWNER_PRIORITY_RESERVE)
-    }
-
-    fn try_issue_ticket_with_reserve(&self, reserve: usize) -> Option<FmpReceiveTicket> {
-        self.next_ticket
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                (current.saturating_sub(self.next_ready.load(Ordering::Relaxed))
-                    < DECRYPT_WORKER_FMP_RECEIVE_WINDOW.saturating_sub(reserve) as u64)
-                    .then(|| current.saturating_add(1))
-            })
-            .ok()
-            .map(|sequence| FmpReceiveTicket { sequence })
-    }
-
-    fn mark_next_ready(&self, next_ready: u64) {
-        self.next_ready.store(next_ready, Ordering::Relaxed);
-    }
 }
 
 impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
@@ -353,6 +507,7 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
             }),
             fsp_receive_order_id: NEXT_FSP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fsp_receive_order: FspReceiveOrder::new(),
+            fsp_shared_crypto: None,
         }
     }
 }
@@ -363,6 +518,7 @@ struct FspSharedCryptoSession {
     current_k_bit: bool,
     cipher: Arc<LessSafeKey>,
     next_ticket: AtomicU64,
+    next_ready: AtomicU64,
 }
 
 impl FspSharedCryptoSession {
@@ -378,13 +534,37 @@ impl FspSharedCryptoSession {
             current_k_bit,
             cipher,
             next_ticket: AtomicU64::new(0),
+            next_ready: AtomicU64::new(0),
         }
     }
 
+    #[cfg(test)]
+    fn can_issue_ticket(&self) -> bool {
+        self.next_ticket
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.next_ready.load(Ordering::Relaxed))
+            < fsp_receive_window() as u64
+    }
+
+    fn try_issue_ticket(&self) -> Option<FspReceiveTicket> {
+        self
+            .next_ticket
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                let in_flight = current.saturating_sub(self.next_ready.load(Ordering::Relaxed));
+                (in_flight < fsp_receive_window() as u64).then(|| current.saturating_add(1))
+            })
+            .ok()
+            .map(|sequence| FspReceiveTicket { sequence })
+    }
+
+    #[cfg(test)]
     fn issue_ticket(&self) -> FspReceiveTicket {
-        FspReceiveTicket {
-            sequence: self.next_ticket.fetch_add(1, Ordering::Relaxed),
-        }
+        self.try_issue_ticket()
+            .expect("FSP receive-order test ticket window is full")
+    }
+
+    fn mark_next_ready(&self, next_ready: u64) {
+        self.next_ready.store(next_ready, Ordering::Relaxed);
     }
 }
 
@@ -412,25 +592,19 @@ impl OwnedFspEpochState {
         Ok(plaintext)
     }
 
-    fn open_in_place(
-        &mut self,
+    fn open_in_place_deferred_replay(
+        &self,
         ciphertext: &mut [u8],
         counter: u64,
         aad: &[u8],
     ) -> Result<usize, FspOpenError> {
-        if !self.replay.check(counter) {
-            return Err(FspOpenError::Replay);
-        }
         let mut nonce_bytes = [0u8; 12];
         nonce_bytes[4..12].copy_from_slice(&counter.to_le_bytes());
         let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-        let plaintext_len = self
-            .cipher
+        self.cipher
             .open_in_place(nonce, Aad::from(aad), ciphertext)
-            .map_err(|_| FspOpenError::Aead)?
-            .len();
-        self.replay.accept(counter);
-        Ok(plaintext_len)
+            .map(|plaintext| plaintext.len())
+            .map_err(|_| FspOpenError::Aead)
     }
 }
 
@@ -450,8 +624,23 @@ impl OwnedFspSessionState {
         })
     }
 
+    fn attach_shared_crypto_session(&mut self, shared: Arc<FspSharedCryptoSession>) {
+        self.fsp_shared_crypto = Some(shared);
+    }
+
     fn fsp_receive_order_id(&self) -> u64 {
         self.fsp_receive_order_id
+    }
+
+    fn fsp_receive_order_next_ready(&self) -> u64 {
+        self.fsp_receive_order.completions.next_ready()
+    }
+
+    fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
+        if let Some(shared) = &self.fsp_shared_crypto {
+            return shared.try_issue_ticket();
+        }
+        self.fsp_receive_order.issue()
     }
 
     fn open_established_frame(
@@ -468,6 +657,7 @@ impl OwnedFspSessionState {
         };
 
         let mut saw_replay = false;
+        let mut replay_rejection = None;
         for slot in order {
             let epoch = match slot {
                 EpochSlot::Current => Some(&mut self.current),
@@ -491,31 +681,42 @@ impl OwnedFspSessionState {
                     }
                     return Ok(FspOpenSuccess { plaintext, slot });
                 }
-                Err(FspOpenError::Replay) => saw_replay = true,
+                Err(FspOpenError::Replay) => {
+                    saw_replay = true;
+                    if replay_rejection.is_none()
+                        && let Some(reason) = epoch.replay.rejection_reason(header.counter)
+                    {
+                        replay_rejection = Some((
+                            reason,
+                            epoch.replay.highest().saturating_sub(header.counter),
+                        ));
+                    }
+                }
                 Err(FspOpenError::Aead) => {}
             }
         }
 
         if saw_replay {
+            if let Some((reason, counter_lag)) = replay_rejection {
+                crate::perf_profile::record_decrypt_fsp_worker_replay_drop_reason(
+                    reason,
+                    counter_lag,
+                );
+            }
             Err(FspOpenError::Replay)
         } else {
             Err(FspOpenError::Aead)
         }
     }
 
-    fn open_current_established_frame_in_place(
+    fn open_current_established_frame_in_place_deferred_replay(
         &mut self,
         header: &FspEncryptedHeader,
         ciphertext: &mut [u8],
-    ) -> Result<FspOpenInPlaceSuccess, FspOpenError> {
+    ) -> Result<usize, FspOpenError> {
         debug_assert!(self.has_single_current_epoch());
-        let plaintext_len =
-            self.current
-                .open_in_place(ciphertext, header.counter, &header.header_bytes)?;
-        Ok(FspOpenInPlaceSuccess {
-            plaintext_len,
-            slot: EpochSlot::Current,
-        })
+        self.current
+            .open_in_place_deferred_replay(ciphertext, header.counter, &header.header_bytes)
     }
 
     fn accept_opened_current_established_frame(
@@ -526,7 +727,12 @@ impl OwnedFspSessionState {
         if header.flags & FSP_FLAG_K != u8::from(self.current_k_bit) * FSP_FLAG_K {
             return Err(FspOpenError::Aead);
         }
-        if !self.current.replay.check(header.counter) {
+        if let Some(rejection) = self.current.replay.rejection_reason(header.counter) {
+            let counter_lag = self.current.replay.highest().saturating_sub(header.counter);
+            crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
+                rejection,
+                counter_lag,
+            );
             return Err(FspOpenError::Replay);
         }
         self.current.replay.accept(header.counter);
@@ -549,7 +755,7 @@ impl OwnedFspSessionState {
         };
         for completion in ready {
             match completion {
-                FspOrderedCompletion::Opened(opened) => {
+                FspOrderedCompletion::Opened { opened, source } => {
                     match self.accept_opened_current_established_frame(&opened.header) {
                         Ok(slot) => {
                             drain.accepted += 1;
@@ -561,6 +767,7 @@ impl OwnedFspSessionState {
                         }
                         Err(FspOpenError::Replay) => {
                             drain.replay_drops += 1;
+                            drain.replay_drop_sources.add(source);
                             crate::perf_profile::record_event(
                                 crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
                             );
@@ -575,6 +782,10 @@ impl OwnedFspSessionState {
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
+                }
+                FspOrderedCompletion::Dropped { source } => {
+                    let _ = source;
+                    drain.dropped += 1;
                 }
             }
         }
@@ -676,7 +887,7 @@ impl FmpReceiveOrder {
     fn new() -> Self {
         Self {
             next_ticket: 0,
-            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FMP_RECEIVE_WINDOW),
+            completions: OrderedCompletionBuffer::new(fmp_receive_window()),
         }
     }
 
@@ -734,14 +945,31 @@ enum FmpReadyCompletion<T> {
 }
 
 struct FspReceiveOrder {
+    next_ticket: u64,
     completions: OrderedCompletionBuffer<FspOrderedCompletion>,
 }
 
 impl FspReceiveOrder {
     fn new() -> Self {
         Self {
-            completions: OrderedCompletionBuffer::new(DECRYPT_WORKER_FSP_RECEIVE_WINDOW),
+            next_ticket: 0,
+            completions: OrderedCompletionBuffer::new(fsp_receive_window()),
         }
+    }
+
+    fn issue(&mut self) -> Option<FspReceiveTicket> {
+        if self
+            .next_ticket
+            .saturating_sub(self.completions.next_ready())
+            >= self.completions.pending_limit() as u64
+        {
+            return None;
+        }
+        let ticket = FspReceiveTicket {
+            sequence: self.next_ticket,
+        };
+        self.next_ticket = self.next_ticket.saturating_add(1);
+        Some(ticket)
     }
 
     fn complete(
@@ -761,10 +989,16 @@ struct FspOpenedJob {
 }
 
 enum FspOrderedCompletion {
-    Opened(FspOpenedJob),
+    Opened {
+        opened: FspOpenedJob,
+        source: FspAeadCompletionSource,
+    },
     AeadFailed {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
+    },
+    Dropped {
+        source: FspAeadCompletionSource,
     },
 }
 
@@ -786,7 +1020,45 @@ struct FspOrderedDrain {
     accepted: usize,
     aead_failures: usize,
     replay_drops: usize,
+    dropped: usize,
+    replay_drop_sources: FspReplayDropSources,
     outputs: Vec<FspReadyCompletion>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FspReplayDropSources {
+    helper: usize,
+    helper_returned: usize,
+    worker_open: usize,
+    worker_open_returned: usize,
+}
+
+impl FspReplayDropSources {
+    fn add(&mut self, source: FspAeadCompletionSource) {
+        match source {
+            FspAeadCompletionSource::Local => {}
+            FspAeadCompletionSource::Helper => self.helper += 1,
+            FspAeadCompletionSource::HelperReturned => self.helper_returned += 1,
+            FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
+            FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
+        }
+    }
+
+    fn add_sources(&mut self, other: Self) {
+        self.helper += other.helper;
+        self.helper_returned += other.helper_returned;
+        self.worker_open += other.worker_open;
+        self.worker_open_returned += other.worker_open_returned;
+    }
+
+    fn record(self) {
+        crate::perf_profile::record_fsp_aead_completion_source_replay_drops(
+            self.helper,
+            self.helper_returned,
+            self.worker_open,
+            self.worker_open_returned,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -798,20 +1070,31 @@ struct FmpReplayPrecheck {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FmpReplayDecision {
     Prechecked(FmpReplayPrecheck),
-    Deferred { counter: u64 },
 }
 
 impl FmpReplayDecision {
     fn prechecked_highest(self) -> Option<u64> {
         match self {
             Self::Prechecked(precheck) => Some(precheck.replay_highest),
-            Self::Deferred { .. } => None,
+        }
+    }
+
+    fn counter(self) -> u64 {
+        match self {
+            Self::Prechecked(precheck) => precheck.counter,
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FmpReplayReject {
+    reason: ReplayRejection,
+    counter_lag: u64,
+    deferred: bool,
+}
+
 struct OpenedFmpJob {
-    packet_data: Vec<u8>,
+    packet_data: PacketBuffer,
     lane: DecryptWorkerLane,
     source_peer: PeerIdentity,
     transport_id: TransportId,
@@ -834,7 +1117,7 @@ struct FmpAeadHelperJob {
     cipher: Arc<LessSafeKey>,
     fmp_header: [u8; 16],
     opened: OpenedFmpJob,
-    completion_tx: Option<Sender<FmpAeadCompletion>>,
+    completion_tx: Option<Sender<FmpAeadCompletionBatch>>,
     helper_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
@@ -854,6 +1137,78 @@ enum FmpAeadCompletionResult {
     AeadFailed(FmpAeadFailure),
 }
 
+enum FmpAeadCompletionBatch {
+    One(FmpAeadCompletion),
+    Many(Vec<FmpAeadCompletion>),
+}
+
+impl FmpAeadCompletionBatch {
+    fn one(completion: FmpAeadCompletion) -> Self {
+        Self::One(completion)
+    }
+
+    fn common_session_order(&self) -> Option<(DecryptSessionKey, u64)> {
+        let first = match self {
+            Self::One(completion) => completion,
+            Self::Many(completions) => completions.first()?,
+        };
+        let session_key = first.session_key;
+        let receive_order_id = first.receive_order_id;
+        let all_same = match self {
+            Self::One(_) => true,
+            Self::Many(completions) => completions.iter().all(|completion| {
+                completion.session_key == session_key
+                    && completion.receive_order_id == receive_order_id
+            }),
+        };
+        all_same.then_some((session_key, receive_order_id))
+    }
+
+    fn push(&mut self, completion: FmpAeadCompletion) {
+        match self {
+            Self::One(_) => {
+                let Self::One(existing) = std::mem::replace(
+                    self,
+                    Self::Many(Vec::with_capacity(fmp_aead_completion_batch_max())),
+                ) else {
+                    unreachable!("replaced One with Many")
+                };
+                let Self::Many(completions) = self else {
+                    unreachable!("batch was replaced with Many")
+                };
+                completions.push(existing);
+                completions.push(completion);
+            }
+            Self::Many(completions) => completions.push(completion),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(completions) => completions.len(),
+        }
+    }
+
+    fn into_vec(self) -> Vec<FmpAeadCompletion> {
+        match self {
+            Self::One(completion) => vec![completion],
+            Self::Many(completions) => completions,
+        }
+    }
+
+    fn for_each(self, mut on_completion: impl FnMut(FmpAeadCompletion)) {
+        match self {
+            Self::One(completion) => on_completion(completion),
+            Self::Many(completions) => {
+                for completion in completions {
+                    on_completion(completion);
+                }
+            }
+        }
+    }
+}
+
 impl FmpAeadCompletionResult {
     fn lane(&self) -> DecryptWorkerLane {
         match self {
@@ -863,58 +1218,35 @@ impl FmpAeadCompletionResult {
     }
 }
 
-impl FmpAeadHelperJob {
-    fn from_preowner_decrypt_job(
-        job: DecryptJob,
-        shared: &FmpSharedCryptoSession,
-        ticket: FmpReceiveTicket,
-        completion_tx: Sender<FmpAeadCompletion>,
-    ) -> Self {
-        let DecryptJob {
-            packet_data,
-            lane,
-            session_key,
-            _transport_id: transport_id,
-            _remote_addr: remote_addr,
-            local_node_addr,
-            timestamp_ms,
-            fmp_counter,
-            fmp_flags,
-            fmp_header,
-            fmp_ciphertext_offset,
-            fallback_tx,
-            trace_enqueued_at: _,
-        } = job;
-        let packet_len = packet_data.len();
-        Self {
-            session_key,
-            receive_order_id: shared.receive_order_id,
-            ticket,
-            replay: FmpReplayDecision::Deferred {
-                counter: fmp_counter,
-            },
-            cipher: Arc::clone(&shared.cipher),
-            fmp_header,
-            opened: OpenedFmpJob {
-                packet_data,
-                lane,
-                source_peer: shared.source_peer,
-                transport_id,
-                remote_addr,
-                local_node_addr,
-                timestamp_ms,
-                packet_len,
-                fmp_counter,
-                fmp_flags,
-                fmp_plaintext_offset: fmp_ciphertext_offset,
-                fmp_plaintext_len: 0,
-                fallback_tx,
-            },
-            completion_tx: Some(completion_tx),
-            helper_queued_at: crate::perf_profile::stamp(),
-        }
+fn local_established_fsp_datagram_meta(
+    packet_data: &[u8],
+    local_node_addr: NodeAddr,
+    link_msg_start: usize,
+    link_msg_end: usize,
+) -> Option<FspDecryptJobMeta> {
+    let link_msg = packet_data.get(link_msg_start..link_msg_end)?;
+    let (&msg_type, datagram_payload) = link_msg.split_first()?;
+    if msg_type != LinkMessageType::SessionDatagram.to_byte() {
+        return None;
     }
+    let datagram = SessionDatagramRef::decode(datagram_payload).ok()?;
+    if datagram.ttl == 0 || datagram.dest_addr != local_node_addr {
+        return None;
+    }
+    let prefix = FspCommonPrefix::parse(datagram.payload)?;
+    if prefix.phase != FSP_PHASE_ESTABLISHED || prefix.is_unencrypted() || prefix.has_coords() {
+        return None;
+    }
+    let fsp_payload_offset = link_msg_start + 1 + SessionDatagramRef::HEADER_LEN;
+    Some(FspDecryptJobMeta {
+        source_addr: datagram.src_addr,
+        path_mtu: datagram.path_mtu,
+        fsp_payload_offset,
+        fsp_payload_len: datagram.payload.len(),
+    })
+}
 
+impl FmpAeadHelperJob {
     fn into_completion(mut self) -> FmpAeadCompletion {
         let _t_fmp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpDecrypt);
         let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
@@ -923,6 +1255,7 @@ impl FmpAeadHelperJob {
             &mut self.opened.packet_data,
             self.opened.fmp_plaintext_offset,
             self.opened.fmp_counter,
+            self.opened.fmp_flags,
             &self.fmp_header,
         ) {
             Ok(outcome) => {
@@ -953,6 +1286,7 @@ impl FmpAeadHelperJob {
             },
         }
     }
+
 }
 
 struct FspAeadHelperJob {
@@ -962,25 +1296,146 @@ struct FspAeadHelperJob {
     cipher: Arc<LessSafeKey>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
-    completion_tx: Option<Sender<FspAeadCompletion>>,
+    completion_source: FspAeadCompletionSource,
+    completion_tx: Option<Sender<FspAeadCompletionBatch>>,
     helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FspAeadCompletionSource {
+    Local,
+    Helper,
+    HelperReturned,
+    WorkerOpen,
+    WorkerOpenReturned,
+}
+
+impl FspAeadCompletionSource {
+    fn returned(self) -> Self {
+        match self {
+            Self::Local => Self::Local,
+            Self::Helper => Self::HelperReturned,
+            Self::WorkerOpen => Self::WorkerOpenReturned,
+            already_returned => already_returned,
+        }
+    }
+
+    fn is_worker_open(self) -> bool {
+        matches!(self, Self::WorkerOpen | Self::WorkerOpenReturned)
+    }
 }
 
 struct FspAeadCompletion {
     source_addr: NodeAddr,
     receive_order_id: u64,
     ticket: FspReceiveTicket,
+    source: FspAeadCompletionSource,
     result: FspOrderedCompletion,
     completed_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+enum FspAeadCompletionBatch {
+    One(FspAeadCompletion),
+    Many(Vec<FspAeadCompletion>),
+}
+
+impl FspAeadCompletionBatch {
+    fn one(completion: FspAeadCompletion) -> Self {
+        Self::One(completion)
+    }
+
+    fn common_source_order(&self) -> Option<(NodeAddr, u64)> {
+        let first = match self {
+            Self::One(completion) => completion,
+            Self::Many(completions) => completions.first()?,
+        };
+        let source_addr = first.source_addr;
+        let receive_order_id = first.receive_order_id;
+        let all_same = match self {
+            Self::One(_) => true,
+            Self::Many(completions) => completions.iter().all(|completion| {
+                completion.source_addr == source_addr
+                    && completion.receive_order_id == receive_order_id
+            }),
+        };
+        all_same.then_some((source_addr, receive_order_id))
+    }
+
+    fn push(&mut self, completion: FspAeadCompletion) {
+        match self {
+            Self::One(_) => {
+                let Self::One(existing) = std::mem::replace(
+                    self,
+                    Self::Many(Vec::with_capacity(fsp_aead_completion_batch_max())),
+                ) else {
+                    unreachable!("replaced One with Many")
+                };
+                let Self::Many(completions) = self else {
+                    unreachable!("batch was replaced with Many")
+                };
+                completions.push(existing);
+                completions.push(completion);
+            }
+            Self::Many(completions) => completions.push(completion),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(completions) => completions.len(),
+        }
+    }
+
+    fn into_vec(self) -> Vec<FspAeadCompletion> {
+        match self {
+            Self::One(completion) => vec![completion],
+            Self::Many(completions) => completions,
+        }
+    }
+
+    fn for_each(self, mut on_completion: impl FnMut(FspAeadCompletion)) {
+        match self {
+            Self::One(completion) => on_completion(completion),
+            Self::Many(completions) => {
+                for completion in completions {
+                    on_completion(completion);
+                }
+            }
+        }
+    }
+}
+
 impl FspAeadHelperJob {
+    fn mark_returned_completion(&mut self) {
+        match self.completion_source {
+            FspAeadCompletionSource::Helper => crate::perf_profile::record_event(
+                crate::perf_profile::Event::FspAeadCompletionReturnedHelper,
+            ),
+            FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
+                crate::perf_profile::Event::FspAeadCompletionReturnedWorkerOpen,
+            ),
+            FspAeadCompletionSource::Local
+            | FspAeadCompletionSource::HelperReturned
+            | FspAeadCompletionSource::WorkerOpenReturned => {}
+        }
+        self.completion_source = self.completion_source.returned();
+    }
+
     fn into_completion(mut self) -> FspAeadCompletion {
+        let source = self.completion_source;
         crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::FspAeadHelperQueueWait,
             self.helper_queued_at,
             1,
         );
+        if source.is_worker_open() {
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
+                self.helper_queued_at,
+                1,
+            );
+        }
         let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
         let payload_end = self
             .job
@@ -1005,11 +1460,14 @@ impl FspAeadHelperJob {
                 {
                     Ok(plaintext) => {
                         let plaintext_len = plaintext.len();
-                        FspOrderedCompletion::Opened(FspOpenedJob {
-                            job: self.job,
-                            header: self.header,
-                            plaintext_len,
-                        })
+                        FspOrderedCompletion::Opened {
+                            opened: FspOpenedJob {
+                                job: self.job,
+                                header: self.header,
+                                plaintext_len,
+                            },
+                            source,
+                        }
                     }
                     Err(_) => FspOrderedCompletion::AeadFailed {
                         job: self.job,
@@ -1026,7 +1484,33 @@ impl FspAeadHelperJob {
             source_addr: self.source_addr,
             receive_order_id: self.receive_order_id,
             ticket: self.ticket,
+            source,
             result,
+            completed_at,
+        }
+    }
+
+    fn into_dropped_completion(self) -> FspAeadCompletion {
+        let source = self.completion_source;
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FspAeadHelperQueueWait,
+            self.helper_queued_at,
+            1,
+        );
+        if source.is_worker_open() {
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
+                self.helper_queued_at,
+                1,
+            );
+        }
+        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        FspAeadCompletion {
+            source_addr: self.source_addr,
+            receive_order_id: self.receive_order_id,
+            ticket: self.ticket,
+            source,
+            result: FspOrderedCompletion::Dropped { source },
             completed_at,
         }
     }
@@ -1056,21 +1540,7 @@ impl OwnedSessionState {
             source_peer,
             fmp_receive_order_id: NEXT_FMP_RECEIVE_ORDER_ID.fetch_add(1, Ordering::Relaxed),
             fmp_receive_order: FmpReceiveOrder::new(),
-            fmp_shared_crypto: None,
         }
-    }
-
-    fn shared_crypto_session(&self, owner_idx: usize) -> FmpSharedCryptoSession {
-        FmpSharedCryptoSession::new(
-            owner_idx,
-            self.fmp_receive_order_id,
-            self.source_peer,
-            Arc::clone(&self.fmp_cipher),
-        )
-    }
-
-    fn attach_shared_crypto_session(&mut self, shared: Arc<FmpSharedCryptoSession>) {
-        self.fmp_shared_crypto = Some(shared);
     }
 
     fn precheck_fmp_replay(&self, fmp_counter: u64) -> Result<FmpReplayPrecheck, FmpOpenError> {
@@ -1089,6 +1559,7 @@ impl OwnedSessionState {
         packet_data: &mut [u8],
         fmp_ciphertext_offset: usize,
         fmp_counter: u64,
+        _fmp_flags: u8,
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, ()> {
         let mut nonce_bytes = [0u8; 12];
@@ -1114,22 +1585,20 @@ impl OwnedSessionState {
         Ok(())
     }
 
-    fn accept_fmp_replay_on(
+    fn accept_or_classify_fmp_replay_on(
         fmp_replay: &mut ReplayWindow,
         replay: FmpReplayDecision,
-    ) -> Result<(), FmpOpenError> {
-        match replay {
-            FmpReplayDecision::Prechecked(precheck) => {
-                Self::accept_prechecked_fmp_replay_on(fmp_replay, precheck)
-            }
-            FmpReplayDecision::Deferred { counter } => {
-                if !fmp_replay.check(counter) {
-                    return Err(FmpOpenError::Replay);
-                }
-                fmp_replay.accept(counter);
-                Ok(())
-            }
+    ) -> Result<(), FmpReplayReject> {
+        let counter = replay.counter();
+        if let Some(reason) = fmp_replay.rejection_reason(counter) {
+            return Err(FmpReplayReject {
+                reason,
+                counter_lag: fmp_replay.highest().saturating_sub(counter),
+                deferred: false,
+            });
         }
+        fmp_replay.accept(counter);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1141,10 +1610,6 @@ impl OwnedSessionState {
     }
 
     fn issue_fmp_receive_ticket(&mut self) -> Option<FmpReceiveTicket> {
-        if let Some(shared) = &self.fmp_shared_crypto
-        {
-            return shared.try_issue_ticket();
-        }
         Some(self.fmp_receive_order.issue())
     }
 
@@ -1153,14 +1618,7 @@ impl OwnedSessionState {
     }
 
     fn can_issue_fmp_receive_ticket(&self) -> bool {
-        if let Some(shared) = &self.fmp_shared_crypto {
-            return shared.can_issue_ticket();
-        }
         self.fmp_receive_order.can_issue()
-    }
-
-    fn fmp_receive_order_next_ready(&self) -> u64 {
-        self.fmp_receive_order.completions.next_ready()
     }
 
     #[cfg(test)]
@@ -1175,10 +1633,18 @@ impl OwnedSessionState {
             .fmp_receive_order
             .complete(ticket, completion, |completion| match completion {
                 FmpOrderedCompletion::Opened { replay, .. } => {
-                    if Self::accept_fmp_replay_on(fmp_replay, replay).is_ok() {
-                        drain.accepted += 1;
-                    } else {
+                    if let Err(reject) = Self::accept_or_classify_fmp_replay_on(fmp_replay, replay)
+                    {
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_mode(
+                            reject.deferred,
+                        );
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_reason(
+                            reject.reason,
+                            reject.counter_lag,
+                        );
                         drain.replay_drops += 1;
+                    } else {
+                        drain.accepted += 1;
                     }
                 }
                 FmpOrderedCompletion::AeadFailed(_) => {
@@ -1201,11 +1667,19 @@ impl OwnedSessionState {
             .fmp_receive_order
             .complete(ticket, completion, |completion| match completion {
                 FmpOrderedCompletion::Opened { replay, value } => {
-                    if Self::accept_fmp_replay_on(fmp_replay, replay).is_ok() {
+                    if let Err(reject) = Self::accept_or_classify_fmp_replay_on(fmp_replay, replay)
+                    {
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_mode(
+                            reject.deferred,
+                        );
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_reason(
+                            reject.reason,
+                            reject.counter_lag,
+                        );
+                        drain.replay_drops += 1;
+                    } else {
                         drain.accepted += 1;
                         on_ready(FmpReadyCompletion::Opened(value));
-                    } else {
-                        drain.replay_drops += 1;
                     }
                 }
                 FmpOrderedCompletion::AeadFailed(mut failure) => {
@@ -1226,6 +1700,7 @@ impl OwnedSessionState {
         packet_data: &mut [u8],
         fmp_ciphertext_offset: usize,
         fmp_counter: u64,
+        fmp_flags: u8,
         fmp_header: &[u8; 16],
     ) -> Result<FmpOpenOutcome, FmpOpenError> {
         let precheck = self.precheck_fmp_replay(fmp_counter)?;
@@ -1234,6 +1709,7 @@ impl OwnedSessionState {
             packet_data,
             fmp_ciphertext_offset,
             fmp_counter,
+            fmp_flags,
             fmp_header,
         )
         .map_err(|_| FmpOpenError::Aead {
@@ -1252,7 +1728,7 @@ pub(crate) struct DecryptJob {
     /// The raw packet bytes (incl. the 16-byte FMP outer header).
     /// Mutated in place during AEAD open — must reach the worker
     /// with the full ciphertext + tag intact.
-    pub packet_data: Vec<u8>,
+    pub packet_data: PacketBuffer,
     /// Lane selected when rx_loop builds the worker message. Dispatch consumes
     /// this queued value instead of recalculating lane policy later.
     lane: DecryptWorkerLane,
@@ -1282,7 +1758,6 @@ pub(crate) struct DecryptJob {
     pub fmp_header: [u8; 16],
     /// Offset within `packet_data` where the FMP ciphertext+tag begins.
     pub fmp_ciphertext_offset: usize,
-
     /// Worker completions return through this channel. Control-shaped link
     /// plaintext still falls back to rx_loop dispatch; local established FSP
     /// data can return as a worker-decoded direct-data completion whose final
@@ -1296,7 +1771,7 @@ pub(crate) struct DecryptJob {
 impl DecryptJob {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        packet_data: Vec<u8>,
+        packet_data: impl Into<PacketBuffer>,
         session_key: DecryptSessionKey,
         transport_id: TransportId,
         remote_addr: TransportAddr,
@@ -1308,6 +1783,7 @@ impl DecryptJob {
         fmp_ciphertext_offset: usize,
         fallback_tx: DecryptWorkerFallbackSender,
     ) -> Self {
+        let packet_data = packet_data.into();
         let lane = decrypt_worker_packet_lane(packet_data.len());
         Self {
             packet_data,
@@ -1402,7 +1878,7 @@ pub(crate) struct DecryptFallback {
     /// per-packet allocator round-trip. Passing the original Vec
     /// through unmodified lets the consumer borrow a slice; zero
     /// alloc, zero memcpy.
-    pub packet_data: Vec<u8>,
+    pub packet_data: PacketBuffer,
     pub fmp_plaintext_offset: usize,
     pub fmp_plaintext_len: usize,
     /// Monotonic timestamp captured immediately before the worker queues this
@@ -1420,10 +1896,11 @@ impl DecryptFallback {
         packet_len: usize,
         fmp_counter: u64,
         fmp_flags: u8,
-        packet_data: Vec<u8>,
+        packet_data: impl Into<PacketBuffer>,
         fmp_plaintext_offset: usize,
         fmp_plaintext_len: usize,
     ) -> Self {
+        let packet_data = packet_data.into();
         let lane = decrypt_worker_packet_lane(packet_len);
         Self {
             source_peer,
@@ -1727,6 +2204,7 @@ pub(crate) enum DecryptWorkerEvent {
     PlaintextBatch(Vec<DecryptFallback>),
     AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive),
     AuthenticatedSession(DecryptAuthenticatedSession),
+    AuthenticatedSessionBatch(Vec<DecryptAuthenticatedSession>),
     DirectSessionCommit(DecryptDirectSessionCommit),
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
     DirectSessionData(DecryptDirectSessionData),
@@ -1745,6 +2223,7 @@ impl DecryptWorkerEvent {
             Self::Plaintext(_) | Self::DecryptFailure(_) => 1,
             Self::AuthenticatedFmpReceive(_) => 1,
             Self::AuthenticatedSession(_) => 1,
+            Self::AuthenticatedSessionBatch(sessions) => sessions.len(),
             Self::DirectSessionCommit(_) => 1,
             Self::DirectSessionCommitBatch(commits) => commits.len(),
             Self::DirectSessionData(_) => 1,
@@ -1764,6 +2243,11 @@ impl DecryptWorkerEvent {
             }
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at = queued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at = queued_at,
+            Self::AuthenticatedSessionBatch(sessions) => {
+                for session in sessions {
+                    session.trace_enqueued_at = queued_at;
+                }
+            }
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at = queued_at,
             Self::DirectSessionCommitBatch(commits) => {
                 for commit in commits {
@@ -1789,6 +2273,9 @@ impl DecryptWorkerEvent {
                 .and_then(|fallback| fallback.trace_enqueued_at),
             Self::AuthenticatedFmpReceive(receive) => receive.trace_enqueued_at,
             Self::AuthenticatedSession(session) => session.trace_enqueued_at,
+            Self::AuthenticatedSessionBatch(sessions) => sessions
+                .first()
+                .and_then(|session| session.trace_enqueued_at),
             Self::DirectSessionCommit(commit) => commit.trace_enqueued_at,
             Self::DirectSessionCommitBatch(commits) => {
                 commits.first().and_then(|commit| commit.trace_enqueued_at)
@@ -1810,8 +2297,13 @@ impl DecryptWorkerEvent {
         crate::perf_profile::Stage,
     ) {
         match self {
-            Self::AuthenticatedFmpReceive(_)
-            | Self::AuthenticatedSession(_)
+            Self::AuthenticatedFmpReceive(_) => (
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
+            ),
+            Self::AuthenticatedSession(_)
+            | Self::AuthenticatedSessionBatch(_)
             | Self::DirectSessionCommit(_)
             | Self::DirectSessionCommitBatch(_)
             | Self::DirectSessionData(_)
@@ -1828,6 +2320,18 @@ impl DecryptWorkerEvent {
                 crate::perf_profile::Stage::DecryptFallbackPriorityWait,
                 crate::perf_profile::Stage::DecryptFallbackBulkWait,
             ),
+        }
+    }
+
+    fn direct_queue_wait_stage(&self) -> Option<crate::perf_profile::Stage> {
+        match self {
+            Self::DirectSessionCommit(_) | Self::DirectSessionCommitBatch(_) => {
+                Some(crate::perf_profile::Stage::DecryptDirectSessionCommitWait)
+            }
+            Self::DirectSessionData(_) | Self::DirectSessionDataBatch(_) => {
+                Some(crate::perf_profile::Stage::DecryptDirectSessionDataWait)
+            }
+            _ => None,
         }
     }
 
@@ -1851,5 +2355,8 @@ impl DecryptWorkerEvent {
             priority_count,
             bulk_count,
         );
+        if let Some(direct_stage) = self.direct_queue_wait_stage() {
+            crate::perf_profile::record_since_count(direct_stage, queued_at, count);
+        }
     }
 }

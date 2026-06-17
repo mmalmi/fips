@@ -44,7 +44,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub use handshake::HandshakeState;
-pub use replay::ReplayWindow;
+pub use replay::{ReplayRejection, ReplayWindow};
 pub use session::NoiseSession;
 #[cfg(unix)]
 pub(crate) use session::SendCounterAuthority;
@@ -87,8 +87,11 @@ pub const XK_HANDSHAKE_MSG2_SIZE: usize = PUBKEY_SIZE + EPOCH_ENCRYPTED_SIZE;
 /// XK msg3: encrypted static (33 + 16 tag) + encrypted epoch (8 + 16 tag) = 73 bytes.
 pub const XK_HANDSHAKE_MSG3_SIZE: usize = PUBKEY_SIZE + TAG_SIZE + EPOCH_ENCRYPTED_SIZE;
 
-/// Replay window size in packets (matching WireGuard).
-pub const REPLAY_WINDOW_SIZE: usize = 2048;
+/// Replay window size in packets.
+///
+/// This is local receiver state, not a wire-format value. Keep it wide enough
+/// to tolerate bounded userspace queue/reorder tails under CPU pressure.
+pub const REPLAY_WINDOW_SIZE: usize = 8192;
 
 /// Errors from Noise protocol operations.
 #[derive(Debug, Error)]

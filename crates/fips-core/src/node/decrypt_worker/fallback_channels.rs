@@ -89,13 +89,18 @@ impl DecryptWorkerFallbackSender {
                 return false;
             };
             let queued = previous.saturating_add(packet_count);
-            if bulk_lane == DecryptWorkerReturnBulkLane::Fallback
-                && previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
+            if previous < DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
                 && queued >= DECRYPT_FALLBACK_BACKLOG_HIGH_WATER
             {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::DecryptFallbackBacklogHigh,
-                );
+                let event = match bulk_lane {
+                    DecryptWorkerReturnBulkLane::Fallback => {
+                        crate::perf_profile::Event::DecryptFallbackBacklogHigh
+                    }
+                    DecryptWorkerReturnBulkLane::Authenticated => {
+                        crate::perf_profile::Event::DecryptAuthenticatedBacklogHigh
+                    }
+                };
+                crate::perf_profile::record_event(event);
             }
         }
         let result = match lane {
@@ -146,12 +151,19 @@ impl DecryptWorkerFallbackReceivers {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn bulk_queued_packets(&self) -> usize {
         self.bulk_queued_packets.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    fn authenticated_bulk_queued_packets(&self) -> usize {
+    pub(crate) fn bulk_pressure_queued_packets(&self) -> usize {
+        self.bulk_queued_packets()
+            .saturating_add(self.authenticated_bulk_queued_packets())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn authenticated_bulk_queued_packets(&self) -> usize {
         self.authenticated_bulk_queued_packets
             .load(Ordering::Relaxed)
     }
@@ -170,6 +182,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::Plaintext(fallback) => fallback.lane(),
         DecryptWorkerEvent::PlaintextBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::AuthenticatedSession(session) => session.lane,
+        DecryptWorkerEvent::AuthenticatedSessionBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionCommit(commit) => commit.lane,
         DecryptWorkerEvent::DirectSessionCommitBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
@@ -191,6 +204,7 @@ fn decrypt_worker_event_return_bulk_lane(
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
+        | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_)
@@ -211,6 +225,7 @@ fn decrypt_worker_event_drop_event(
     match event {
         DecryptWorkerEvent::AuthenticatedFmpReceive(_)
         | DecryptWorkerEvent::AuthenticatedSession(_)
+        | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_)

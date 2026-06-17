@@ -25,6 +25,36 @@ mod tests {
         (target, target_key)
     }
 
+    fn test_cipher() -> LessSafeKey {
+        let unbound = ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0u8; 32])
+            .expect("build key");
+        LessSafeKey::new(unbound)
+    }
+
+    fn linux_wg_test_job(
+        target: SelectedSendTarget,
+        cipher: &LessSafeKey,
+        counter: u64,
+        bulk_endpoint_data: bool,
+    ) -> FmpSendJob {
+        let payload_len = 128;
+        let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + 16);
+        wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
+        wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
+        FmpSendJob {
+            cipher: cipher.clone(),
+            counter,
+            wire_buf,
+            fsp_seal: None,
+            send_target: target,
+            endpoint_flow_dispatch_key: None,
+            bulk_endpoint_data,
+            drop_on_backpressure: true,
+            scheduling_weight: DEFAULT_SEND_WEIGHT,
+            queued_at: None,
+        }
+    }
+
     fn selected_test_group(
         target: SelectedSendTarget,
         target_key: SendTargetKey,
@@ -55,6 +85,29 @@ mod tests {
             true,
             1,
         )
+    }
+
+    fn selected_test_multi_packet_group(
+        target: SelectedSendTarget,
+        target_key: SendTargetKey,
+        lane: SelectedSendLane,
+        bytes: usize,
+        drop_on_backpressure: bool,
+        packets: usize,
+    ) -> SelectedSendBatch {
+        let packets = packets.max(1);
+        let mut group = SelectedSendBatch::new_with_capacity(
+            target,
+            target_key,
+            lane,
+            pkt(bytes),
+            drop_on_backpressure,
+            packets,
+        );
+        for _ in 1..packets {
+            group.push(pkt(bytes), drop_on_backpressure);
+        }
+        group
     }
 
     fn recv_packet_first_byte(socket: &std::net::UdpSocket) -> u8 {
@@ -198,6 +251,204 @@ mod tests {
     }
 
     #[test]
+    fn linux_wg_send_batch_try_take_only_after_completion() {
+        let batch = LinuxWgSendBatch::default();
+        assert!(batch.try_take().is_none());
+        batch.complete(Vec::new());
+        assert_eq!(batch.try_take().expect("completed batch").len(), 0);
+        assert!(batch.try_take().is_none());
+    }
+
+    #[test]
+    fn linux_wg_bulk_batch_dispatch_keeps_enough_target_runs_on_wg_lane() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let pool = EncryptWorkerPool::spawn(1);
+            let cipher = test_cipher();
+            let (target_a, key_a) = test_send_target().await;
+            let (target_b, key_b) = test_send_target().await;
+            let min_packets = linux_wg_batch_min_packets();
+            let first_a_run = min_packets / 2;
+            let second_a_run = min_packets - first_a_run;
+
+            let mut jobs = Vec::new();
+            for i in 0..first_a_run {
+                jobs.push(linux_wg_test_job(
+                    target_a.clone(),
+                    &cipher,
+                    i as u64,
+                    true,
+                ));
+            }
+            jobs.push(linux_wg_test_job(target_b, &cipher, 10_000, true));
+            for i in 0..second_a_run {
+                jobs.push(linux_wg_test_job(
+                    target_a.clone(),
+                    &cipher,
+                    (first_a_run + i) as u64,
+                    true,
+                ));
+            }
+
+            let selected = linux_wg_bulk_batch_selected_targets(&jobs, min_packets)
+                .expect("target A has enough packets across adjacent runs");
+            assert_eq!(selected.get(&key_a), Some(&min_packets));
+            assert!(!selected.contains_key(&key_b));
+
+            let returned = pool
+                .dispatch_linux_wg_bulk_batch_unmeasured(jobs)
+                .expect_err("underfilled target B should stay on fallback dispatch");
+            assert_eq!(returned.len(), 1);
+            assert_eq!(returned[0].send_target_key(), key_b);
+        });
+    }
+
+    #[test]
+    fn linux_wg_bulk_batch_dispatch_rejects_mixed_priority_batch() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let pool = EncryptWorkerPool::spawn(1);
+            let cipher = test_cipher();
+            let (target, _key) = test_send_target().await;
+            let min_packets = linux_wg_batch_min_packets();
+            let mut jobs = Vec::new();
+            for i in 0..min_packets {
+                jobs.push(linux_wg_test_job(
+                    target.clone(),
+                    &cipher,
+                    i as u64,
+                    true,
+                ));
+            }
+            jobs.push(linux_wg_test_job(target, &cipher, 10_000, false));
+
+            let returned = pool
+                .dispatch_linux_wg_bulk_batch_unmeasured(jobs)
+                .expect_err("priority-like work must keep the existing worker path");
+            assert_eq!(returned.len(), min_packets + 1);
+        });
+    }
+
+    #[test]
+    fn linux_wg_ready_group_coalescing_merges_adjacent_bulk_to_cap() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (target, target_key) = test_send_target().await;
+            let mut groups = vec![selected_test_multi_packet_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                true,
+                32,
+            )];
+            let next = selected_test_multi_packet_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                true,
+                32,
+            );
+
+            append_linux_wg_ready_send_groups(&mut groups, vec![next], LINUX_UDP_SEND_BATCH_MAX);
+
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].packet_count(), LINUX_UDP_SEND_BATCH_MAX);
+            assert!(groups[0].gso_eligible_sizes());
+
+            let overflow = selected_test_multi_packet_group(
+                target,
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                true,
+                1,
+            );
+            append_linux_wg_ready_send_groups(
+                &mut groups,
+                vec![overflow],
+                LINUX_UDP_SEND_BATCH_MAX,
+            );
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].packet_count(), LINUX_UDP_SEND_BATCH_MAX);
+            assert_eq!(groups[1].packet_count(), 1);
+        });
+    }
+
+    #[test]
+    fn linux_wg_ready_group_coalescing_respects_lane_and_drop_policy() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (target, target_key) = test_send_target().await;
+            let mut groups = vec![selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                true,
+            )];
+            let retry_bulk = selected_test_group(
+                target.clone(),
+                target_key,
+                SelectedSendLane::Bulk,
+                1500,
+                false,
+            );
+            let priority = selected_test_group(
+                target,
+                target_key,
+                SelectedSendLane::Priority,
+                160,
+                false,
+            );
+
+            append_linux_wg_ready_send_groups(
+                &mut groups,
+                vec![retry_bulk, priority],
+                LINUX_UDP_SEND_BATCH_MAX,
+            );
+
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[0].lane(), SelectedSendLane::Bulk);
+            assert!(groups[0].drop_on_backpressure());
+            assert_eq!(groups[1].lane(), SelectedSendLane::Bulk);
+            assert!(!groups[1].drop_on_backpressure());
+            assert_eq!(groups[2].lane(), SelectedSendLane::Priority);
+        });
+    }
+
+    #[test]
+    fn linux_gso_chunk_len_respects_udp_payload_limit_and_packet_cap() {
+        let full_size_packets: Vec<Vec<u8>> = (0..64).map(|_| pkt(1500)).collect();
+        let chunk = linux_gso_safe_chunk_len(&full_size_packets);
+        assert_eq!(
+            chunk, 43,
+            "43 * 1500 fits below the UDP payload limit; 44 * 1500 does not"
+        );
+
+        let tiny_packets: Vec<Vec<u8>> = (0..80).map(|_| pkt(200)).collect();
+        assert_eq!(
+            linux_gso_safe_chunk_len(&tiny_packets),
+            LINUX_UDP_SEND_BATCH_MAX,
+            "small packets should still use the syscall packet-count cap"
+        );
+    }
+
+    #[test]
     fn linux_deferred_sender_env_defaults_on_and_is_bounded() {
         assert!(parse_linux_deferred_sender_enabled(None));
         assert!(!parse_linux_deferred_sender_enabled(Some("0")));
@@ -222,6 +473,49 @@ mod tests {
     }
 
     #[test]
+    fn linux_bulk_udp_pacer_env_defaults_off_with_explicit_opt_in() {
+        assert_eq!(
+            parse_linux_bulk_udp_pace_mbps(None),
+            DEFAULT_LINUX_BULK_UDP_PACE_MBPS
+        );
+        assert_eq!(parse_linux_bulk_udp_pace_mbps(Some("0")), 0);
+        assert_eq!(parse_linux_bulk_udp_pace_mbps(Some("2500")), 2500);
+        assert_eq!(
+            parse_linux_bulk_udp_pace_mbps(Some("999999")),
+            100_000
+        );
+        assert_eq!(
+            parse_linux_bulk_udp_pace_mbps(Some("nope")),
+            DEFAULT_LINUX_BULK_UDP_PACE_MBPS
+        );
+
+        assert_eq!(
+            parse_linux_bulk_udp_pace_burst_bytes(None),
+            DEFAULT_LINUX_BULK_UDP_PACE_BURST_BYTES
+        );
+        assert_eq!(parse_linux_bulk_udp_pace_burst_bytes(Some("1")), 8 * 1024);
+        assert_eq!(
+            parse_linux_bulk_udp_pace_burst_bytes(Some("131072")),
+            131_072
+        );
+        assert_eq!(
+            parse_linux_bulk_udp_pace_burst_bytes(Some("99999999")),
+            4 * 1024 * 1024
+        );
+
+        assert_eq!(
+            parse_linux_bulk_udp_pace_spin_ns(None),
+            DEFAULT_LINUX_BULK_UDP_PACE_SPIN_NS
+        );
+        assert_eq!(parse_linux_bulk_udp_pace_spin_ns(Some("0")), 0);
+        assert_eq!(parse_linux_bulk_udp_pace_spin_ns(Some("50000")), 50_000);
+        assert_eq!(
+            parse_linux_bulk_udp_pace_spin_ns(Some("99999999")),
+            1_000_000
+        );
+    }
+
+    #[test]
     fn linux_wg_batch_sender_env_defaults_on_with_explicit_opt_out() {
         assert!(parse_linux_wg_batch_sender_enabled(None));
         assert!(!parse_linux_wg_batch_sender_enabled(Some("0")));
@@ -230,6 +524,24 @@ mod tests {
         assert!(parse_linux_wg_batch_sender_enabled(Some("1")));
         assert!(parse_linux_wg_batch_sender_enabled(Some("true")));
         assert!(parse_linux_wg_batch_sender_enabled(Some("unexpected")));
+    }
+
+    #[test]
+    fn linux_wg_batch_chunk_default_keeps_burst_size_conservative() {
+        assert_eq!(
+            parse_linux_wg_batch_chunk_size(None),
+            DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE
+        );
+        assert_eq!(
+            parse_linux_wg_batch_chunk_size(Some("unexpected")),
+            DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE
+        );
+        assert_eq!(parse_linux_wg_batch_chunk_size(Some("1")), 1);
+        assert_eq!(parse_linux_wg_batch_chunk_size(Some("16")), 16);
+        assert_eq!(
+            parse_linux_wg_batch_chunk_size(Some("128")),
+            LINUX_UDP_SEND_BATCH_MAX
+        );
     }
 
     #[test]
@@ -396,12 +708,15 @@ mod tests {
             assert_eq!(priority.len(), 1);
             assert_eq!(priority[0].lane(), SelectedSendLane::Priority);
             assert_eq!(priority[0].packet_count(), 1);
+            assert_eq!(priority[0].bulk_wire_bytes(), None);
             assert_eq!(bulk.len(), 2);
             assert!(bulk
                 .iter()
                 .all(|group| group.lane() == SelectedSendLane::Bulk));
             assert_eq!(bulk[0].packet_count(), 1);
             assert_eq!(bulk[1].packet_count(), 1);
+            assert_eq!(bulk[0].bulk_wire_bytes(), Some(1500));
+            assert_eq!(bulk[1].bulk_wire_bytes(), Some(1200));
         });
     }
 

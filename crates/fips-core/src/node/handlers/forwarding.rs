@@ -415,15 +415,36 @@ impl Node {
         let mut new_drop_events = Vec::new();
         for (&tid, transport) in &self.transports {
             let congestion = transport.congestion();
-            if self.transport_drops.sample(tid, congestion.recv_drops) {
-                new_drop_events.push(tid);
+            let drop_delta = self.transport_drops.sample(tid, congestion.recv_drops);
+            let socket_drop_delta = self
+                .transport_socket_drops
+                .sample(tid, congestion.socket_recv_drops);
+            let namespace_drop_delta = self
+                .transport_namespace_drops
+                .sample(tid, congestion.namespace_recv_drops);
+            if drop_delta.is_some() || socket_drop_delta.is_some() || namespace_drop_delta.is_some()
+            {
+                new_drop_events.push((
+                    tid,
+                    drop_delta.unwrap_or(0),
+                    socket_drop_delta.unwrap_or(0),
+                    namespace_drop_delta.unwrap_or(0),
+                ));
             }
         }
-        for tid in new_drop_events {
-            self.stats_mut().congestion.record_kernel_drop_event();
+        for (tid, drop_delta, socket_drop_delta, namespace_drop_delta) in new_drop_events {
+            if drop_delta > 0 {
+                self.stats_mut().congestion.record_kernel_drop_event();
+                crate::perf_profile::record_udp_kernel_drops(drop_delta);
+            }
+            crate::perf_profile::record_udp_socket_kernel_drops(socket_drop_delta);
+            crate::perf_profile::record_udp_namespace_rcvbuf_errors(namespace_drop_delta);
             warn!(
                 transport_id = tid.as_u32(),
-                "Kernel recv drops first observed on transport"
+                drops = drop_delta,
+                socket_drops = socket_drop_delta,
+                namespace_rcvbuf_errors = namespace_drop_delta,
+                "Kernel recv drops observed on transport"
             );
         }
     }

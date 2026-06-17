@@ -142,6 +142,49 @@ impl EncryptWorkerPool {
         record_encrypt_worker_dispatch(started_at, count);
     }
 
+    /// Dispatch bulk jobs after the caller has committed node-side
+    /// bookkeeping. Unlike [`Self::dispatch_bulk_batch`], this path never
+    /// turns a full bulk worker queue into a silent packet drop: it applies
+    /// backpressure to the app-side bulk mover and lets the upstream bulk queue
+    /// slow/drop before control, rekey, and liveness work lose service.
+    pub(crate) fn dispatch_bulk_batch_blocking(&self, jobs: Vec<FmpSendJob>) -> bool {
+        #[cfg(target_os = "linux")]
+        let mut jobs = jobs;
+        #[cfg(not(target_os = "linux"))]
+        let jobs = jobs;
+        let count = jobs.len();
+        if count == 0 {
+            return true;
+        }
+        debug_assert!(
+            jobs.iter().all(|job| job.bulk_endpoint_data),
+            "committed bulk dispatch should only receive bulk endpoint data"
+        );
+        let started_at = encrypt_worker_dispatch_timer();
+
+        #[cfg(target_os = "linux")]
+        {
+            match self.dispatch_linux_wg_bulk_batch_blocking_unmeasured(jobs) {
+                Ok(all_enqueued) => {
+                    record_encrypt_worker_dispatch(started_at, count);
+                    return all_enqueued;
+                }
+                Err(returned_jobs) => {
+                    jobs = returned_jobs;
+                }
+            }
+        }
+
+        let mut all_enqueued = true;
+        for job in jobs {
+            if !self.dispatch_unmeasured_blocking(job) {
+                all_enqueued = false;
+            }
+        }
+        record_encrypt_worker_dispatch(started_at, count);
+        all_enqueued
+    }
+
     fn dispatch_unmeasured(&self, job: FmpSendJob) {
         if self.senders.is_empty() {
             debug!("EncryptWorkerPool has no workers; dropping job");
@@ -150,6 +193,16 @@ impl EncryptWorkerPool {
         let (idx, job) = self.prepare_dispatch(job);
         crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
         self.dispatch_to_worker(idx, job);
+    }
+
+    fn dispatch_unmeasured_blocking(&self, job: FmpSendJob) -> bool {
+        if self.senders.is_empty() {
+            debug!("EncryptWorkerPool has no workers; dropping committed bulk job");
+            return false;
+        }
+        let (idx, job) = self.prepare_dispatch(job);
+        crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
+        self.dispatch_to_worker_blocking(idx, job)
     }
 
     #[cfg(target_os = "macos")]
@@ -225,6 +278,21 @@ impl EncryptWorkerPool {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn dispatch_to_worker_blocking(&self, idx: usize, job: QueuedFmpSendJob) -> bool {
+        let lane = job.queue_lane();
+        match self.senders[idx].push_blocking(job) {
+            Ok(()) => true,
+            Err(MacWorkerPushError) => {
+                if lane == EncryptWorkerLane::Bulk {
+                    record_encrypt_worker_backpressure_drop(idx);
+                }
+                debug!(worker = idx, "EncryptWorker thread gone; dropping committed bulk job");
+                false
+            }
+        }
+    }
+
     #[cfg(not(target_os = "macos"))]
     fn dispatch_to_worker(&self, idx: usize, job: QueuedFmpSendJob) {
         let sender = &self.senders[idx];
@@ -257,6 +325,21 @@ impl EncryptWorkerPool {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
+    fn dispatch_to_worker_blocking(&self, idx: usize, job: QueuedFmpSendJob) -> bool {
+        let lane = job.queue_lane();
+        match self.senders[idx].push_blocking(job) {
+            Ok(()) => true,
+            Err(FairWorkerPushError) => {
+                if lane == EncryptWorkerLane::Bulk {
+                    record_encrypt_worker_backpressure_drop(idx);
+                }
+                debug!(worker = idx, "EncryptWorker thread gone; dropping committed bulk job");
+                false
+            }
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn dispatch_linux_wg_bulk_batch_unmeasured(
         &self,
@@ -266,17 +349,134 @@ impl EncryptWorkerPool {
             return Err(jobs);
         }
 
-        let first = jobs.first().expect("non-empty WG batch");
-        if !first.bulk_endpoint_data {
+        let Some(selected_targets) =
+            linux_wg_bulk_batch_selected_targets(&jobs, linux_wg_batch_min_packets())
+        else {
+            return Err(jobs);
+        };
+
+        let mut dispatched_wg_run = false;
+        let mut fallback_jobs = Vec::new();
+        let mut run = Vec::new();
+        let mut run_target = None;
+        for job in jobs {
+            let target_key = job.send_target_key();
+            if selected_targets.contains_key(&target_key) {
+                if run_target.is_some_and(|current| current != target_key) {
+                    self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
+                }
+                run_target = Some(target_key);
+                run.push(job);
+            } else {
+                self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
+                run_target = None;
+                fallback_jobs.push(job);
+            }
+        }
+        self.dispatch_pending_linux_wg_bulk_run(&mut run, &mut dispatched_wg_run);
+
+        if dispatched_wg_run {
+            if fallback_jobs.is_empty() {
+                Ok(())
+            } else {
+                Err(fallback_jobs)
+            }
+        } else {
+            Err(fallback_jobs)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_bulk_batch_blocking_unmeasured(
+        &self,
+        jobs: Vec<FmpSendJob>,
+    ) -> Result<bool, Vec<FmpSendJob>> {
+        if self.linux_wg_batch_senders.is_empty() || jobs.len() < linux_wg_batch_min_packets() {
             return Err(jobs);
         }
+
+        let Some(selected_targets) =
+            linux_wg_bulk_batch_selected_targets(&jobs, linux_wg_batch_min_packets())
+        else {
+            return Err(jobs);
+        };
+
+        let mut dispatched_wg_run = false;
+        let mut fallback_jobs = Vec::new();
+        let mut run = Vec::new();
+        let mut run_target = None;
+        let mut all_enqueued = true;
+
+        for job in jobs {
+            let target_key = job.send_target_key();
+            if selected_targets.contains_key(&target_key) {
+                if run_target.is_some_and(|current| current != target_key) {
+                    all_enqueued &= self.dispatch_pending_linux_wg_bulk_run_blocking(
+                        &mut run,
+                        &mut dispatched_wg_run,
+                    );
+                }
+                run_target = Some(target_key);
+                run.push(job);
+            } else {
+                all_enqueued &= self
+                    .dispatch_pending_linux_wg_bulk_run_blocking(&mut run, &mut dispatched_wg_run);
+                run_target = None;
+                fallback_jobs.push(job);
+            }
+        }
+        all_enqueued &=
+            self.dispatch_pending_linux_wg_bulk_run_blocking(&mut run, &mut dispatched_wg_run);
+
+        if dispatched_wg_run {
+            if fallback_jobs.is_empty() {
+                Ok(all_enqueued)
+            } else {
+                Err(fallback_jobs)
+            }
+        } else {
+            Err(fallback_jobs)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_pending_linux_wg_bulk_run(
+        &self,
+        run: &mut Vec<FmpSendJob>,
+        dispatched_wg_run: &mut bool,
+    ) {
+        if run.is_empty() {
+            return;
+        }
+        let jobs = std::mem::take(run);
+        self.dispatch_linux_wg_bulk_run_unmeasured(jobs);
+        *dispatched_wg_run = true;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_pending_linux_wg_bulk_run_blocking(
+        &self,
+        run: &mut Vec<FmpSendJob>,
+        dispatched_wg_run: &mut bool,
+    ) -> bool {
+        if run.is_empty() {
+            return true;
+        }
+        let jobs = std::mem::take(run);
+        *dispatched_wg_run = true;
+        self.dispatch_linux_wg_bulk_run_blocking_unmeasured(jobs)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_bulk_run_unmeasured(&self, jobs: Vec<FmpSendJob>) {
+        debug_assert!(!jobs.is_empty());
+        let first = jobs.first().expect("non-empty WG run");
+        debug_assert!(first.bulk_endpoint_data);
         let target_key = first.send_target_key();
-        if jobs
-            .iter()
-            .any(|job| !job.bulk_endpoint_data || job.send_target_key() != target_key)
-        {
-            return Err(jobs);
-        }
+        debug_assert!(
+            jobs.iter()
+                .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
+        );
 
         let flow = self
             .linux_wg_batch_flows
@@ -294,8 +494,39 @@ impl EncryptWorkerPool {
         if !chunk.is_empty() {
             self.dispatch_linux_wg_chunk(flow, chunk);
         }
+    }
 
-        Ok(())
+    #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_bulk_run_blocking_unmeasured(&self, jobs: Vec<FmpSendJob>) -> bool {
+        debug_assert!(!jobs.is_empty());
+        let first = jobs.first().expect("non-empty WG run");
+        debug_assert!(first.bulk_endpoint_data);
+        let target_key = first.send_target_key();
+        debug_assert!(
+            jobs.iter()
+                .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
+        );
+
+        let flow = self
+            .linux_wg_batch_flows
+            .flow_for(target_key, first.send_target.clone());
+        let chunk_size = linux_wg_batch_chunk_size();
+        let mut chunk = Vec::with_capacity(chunk_size);
+        let mut all_enqueued = true;
+
+        for job in jobs {
+            chunk.push(QueuedFmpSendJob::direct(job));
+            if chunk.len() >= chunk_size {
+                all_enqueued &= self
+                    .dispatch_linux_wg_chunk_blocking(Arc::clone(&flow), std::mem::take(&mut chunk));
+                chunk = Vec::with_capacity(chunk_size);
+            }
+        }
+        if !chunk.is_empty() {
+            all_enqueued &= self.dispatch_linux_wg_chunk_blocking(flow, chunk);
+        }
+
+        all_enqueued
     }
 
     #[cfg(target_os = "linux")]
@@ -307,6 +538,7 @@ impl EncryptWorkerPool {
         if jobs.is_empty() {
             return;
         }
+        crate::perf_profile::record_linux_wg_batch_chunk(jobs.len(), linux_wg_batch_chunk_size());
 
         let ready = Arc::new(LinuxWgSendBatch::default());
         if flow.try_enqueue(Arc::clone(&ready)).is_err() {
@@ -333,12 +565,70 @@ impl EncryptWorkerPool {
     }
 
     #[cfg(target_os = "linux")]
+    fn dispatch_linux_wg_chunk_blocking(
+        &self,
+        flow: Arc<LinuxWgBatchSendFlow>,
+        jobs: Vec<QueuedFmpSendJob>,
+    ) -> bool {
+        if jobs.is_empty() {
+            return true;
+        }
+        crate::perf_profile::record_linux_wg_batch_chunk(jobs.len(), linux_wg_batch_chunk_size());
+
+        let ready = Arc::new(LinuxWgSendBatch::default());
+        if !flow.enqueue_blocking(Arc::clone(&ready)) {
+            self.drop_linux_wg_jobs(0, &jobs);
+            return false;
+        }
+
+        let idx = self
+            .next_wg_batch_worker
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.linux_wg_batch_senders.len();
+        for job in &jobs {
+            crate::perf_profile::record_fmp_worker_dispatch_target(idx, job.endpoint_flow_keyed());
+        }
+
+        let batch = LinuxWgEncryptBatch { ready, jobs };
+        match self.linux_wg_batch_senders[idx].send(batch) {
+            Ok(()) => true,
+            Err(SendError(batch)) => {
+                self.drop_linux_wg_jobs(idx, &batch.jobs);
+                batch.ready.complete(Vec::new());
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn drop_linux_wg_jobs(&self, idx: usize, jobs: &[QueuedFmpSendJob]) {
         for job in jobs {
             record_encrypt_worker_queue_full(job.queue_lane());
             record_encrypt_worker_backpressure_drop(idx);
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_bulk_batch_selected_targets(
+    jobs: &[FmpSendJob],
+    min_packets: usize,
+) -> Option<HashMap<SendTargetKey, usize>> {
+    if jobs.len() < min_packets {
+        return None;
+    }
+
+    let mut targets = HashMap::new();
+    for job in jobs {
+        if !job.bulk_endpoint_data {
+            return None;
+        }
+        let count = targets.entry(job.send_target_key()).or_insert(0usize);
+        *count = count.saturating_add(1);
+    }
+
+    targets.retain(|_, count| *count >= min_packets);
+    (!targets.is_empty()).then_some(targets)
 }
 
 #[cfg(all(test, not(target_os = "macos")))]
@@ -429,6 +719,11 @@ impl LinuxWgSendBatch {
                 .wait(state)
                 .expect("Linux WG batch state poisoned");
         }
+    }
+
+    fn try_take(&self) -> Option<Vec<SelectedSendBatch>> {
+        let mut state = self.state.lock().expect("Linux WG batch state poisoned");
+        state.groups.take()
     }
 }
 
@@ -539,6 +834,17 @@ impl LinuxWgBatchSendFlow {
         }
     }
 
+    fn enqueue_blocking(&self, batch: Arc<LinuxWgSendBatch>) -> bool {
+        match self.sender.send(batch) {
+            Ok(()) => {
+                self.inflight
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     fn mark_used(&self, now_ms: u64) {
         self.last_used_ms
             .store(now_ms, std::sync::atomic::Ordering::Relaxed);
@@ -565,11 +871,57 @@ fn run_linux_wg_batch_sender(
         "Linux WG-batch UDP sender starting"
     );
 
-    for batch in receiver {
-        let groups = batch.wait();
+    let max_ready_batches = linux_wg_batch_send_coalesce_batches();
+    let max_packets_per_group = linux_wg_batch_send_coalesce_packets();
+    let mut pending: Option<Arc<LinuxWgSendBatch>> = None;
+    let mut bulk_pacer = LinuxBulkUdpPacer::from_env();
+    let mut disconnected = false;
+
+    loop {
+        let Some(batch) = pending.take().or_else(|| receiver.recv().ok()) else {
+            break;
+        };
+        let wait_started_at = crate::perf_profile::enabled().then(std::time::Instant::now);
+        let mut groups = batch.wait();
+        if let Some(wait_started_at) = wait_started_at {
+            crate::perf_profile::record_linux_wg_batch_sender_wait(
+                wait_started_at.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            );
+        }
+        let mut completed_batches = 1usize;
+
+        while completed_batches < max_ready_batches
+            && groups
+                .last()
+                .map(|group| group.packet_count() < max_packets_per_group)
+                .unwrap_or(true)
+        {
+            match receiver.try_recv() {
+                Ok(next_batch) => {
+                    let Some(next_groups) = next_batch.try_take() else {
+                        pending = Some(next_batch);
+                        break;
+                    };
+                    completed_batches = completed_batches.saturating_add(1);
+                    append_linux_wg_ready_send_groups(
+                        &mut groups,
+                        next_groups,
+                        max_packets_per_group,
+                    );
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
         if !groups.is_empty() {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-            if let Err(err) = flush_linux_send_groups_sync(groups) {
+            if let Err(err) =
+                flush_linux_send_groups_sync_with_pacer(groups, bulk_pacer.as_mut())
+            {
                 debug!(
                     socket_fd = key.socket_fd,
                     connected_fd = ?key.connected_fd,
@@ -579,7 +931,10 @@ fn run_linux_wg_batch_sender(
                 );
             }
         }
-        inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        inflight.fetch_sub(completed_batches, std::sync::atomic::Ordering::Relaxed);
+        if disconnected && pending.is_none() {
+            break;
+        }
     }
 }
 
@@ -603,12 +958,21 @@ fn linux_wg_batch_sender_enabled() -> bool {
 fn linux_wg_batch_chunk_size() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
-        std::env::var("FIPS_LINUX_WG_BATCH_CHUNK")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(DEFAULT_WORKER_BATCH_SIZE)
-            .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
+        parse_linux_wg_batch_chunk_size(std::env::var("FIPS_LINUX_WG_BATCH_CHUNK").ok().as_deref())
     })
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_wg_batch_chunk_size(raw: Option<&str>) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        // Keep the sender super-skb turn smaller than the worker drain turn.
+        // Docker stress soaks with deterministic worker-open placement showed
+        // the old 32-packet sender chunk preserved peak Gbps but allowed
+        // ping/SRTT drift under CPU contention; 16 kept control/data freshness
+        // and sub-2 ms ping tails, with the env override left for clean-LAN
+        // throughput studies.
+        .unwrap_or(DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE)
+        .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
 }
 
 #[cfg(target_os = "linux")]
@@ -644,6 +1008,32 @@ fn linux_wg_batch_min_packets() -> usize {
             .and_then(|raw| raw.trim().parse::<usize>().ok())
             .unwrap_or(16)
             .clamp(2, LINUX_UDP_SEND_BATCH_MAX)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_send_coalesce_batches() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        // Default off: Docker A/B showed opportunistic ready-batch coalescing
+        // creates burst loss before it improves GSO shape.
+        std::env::var("FIPS_LINUX_WG_BATCH_SEND_COALESCE_BATCHES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 8)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_wg_batch_send_coalesce_packets() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_LINUX_WG_BATCH_SEND_COALESCE_PACKETS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(LINUX_UDP_SEND_BATCH_MAX)
+            .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
     })
 }
 

@@ -47,6 +47,9 @@
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
+            DecryptWorkerEvent::AuthenticatedSessionBatch(_) => {
+                panic!("invalid packet must not produce plaintext")
+            }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
                 panic!("invalid packet must not produce plaintext")
             }
@@ -165,6 +168,7 @@
                 panic!("timestamp-only receive must not bounce plaintext bytes")
             }
             DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
@@ -201,6 +205,7 @@
                 &mut invalid_packet,
                 crate::node::wire::ESTABLISHED_HEADER_SIZE,
                 counter,
+                flags,
                 &invalid_header,
             )
             .expect_err("invalid AEAD must not open");
@@ -222,6 +227,7 @@
                 &mut valid_packet,
                 crate::node::wire::ESTABLISHED_HEADER_SIZE,
                 counter,
+                flags,
                 &valid_header,
             )
             .expect("valid AEAD must open");
@@ -239,6 +245,7 @@
                 &mut replay_packet,
                 crate::node::wire::ESTABLISHED_HEADER_SIZE,
                 counter,
+                flags,
                 &replay_header,
             )
             .expect_err("replayed counter must be rejected before AEAD");
@@ -281,6 +288,7 @@
                 &mut invalid_packet,
                 crate::node::wire::ESTABLISHED_HEADER_SIZE,
                 counter,
+                flags,
                 &invalid_header,
             )
             .expect_err("failed AEAD must be reported without consuming replay");
@@ -304,6 +312,7 @@
             &mut valid_packet,
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             counter,
+            flags,
             &valid_header,
         )
         .expect("worker-side AEAD should authenticate independently");
@@ -332,7 +341,7 @@
         let flags = crate::node::wire::FLAG_SP;
         let (packet_data, fmp_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        let (completion_tx, _completion_rx) = bounded::<FmpAeadCompletion>(1);
+        let (completion_tx, _completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
         let precheck = FmpReplayPrecheck {
             counter,
             replay_highest: 0,
@@ -347,7 +356,7 @@
             cipher: open_cipher.into(),
             fmp_header,
             opened: OpenedFmpJob {
-                packet_data,
+                packet_data: packet_data.into(),
                 lane: DecryptWorkerLane::Bulk,
                 source_peer: test_source_peer(),
                 transport_id: TransportId::new(1),
@@ -487,7 +496,8 @@
         let session_key = test_session_key(1, 443);
         let mut state = test_owned_session_state();
         let receive_order_id = state.fmp_receive_order_id();
-        let tickets = (0..DECRYPT_WORKER_FMP_RECEIVE_WINDOW)
+        let receive_window = fmp_receive_window();
+        let tickets = (0..receive_window)
             .map(|_| state.issue_fmp_receive_ticket().expect("test ticket"))
             .collect::<Vec<_>>();
 
@@ -500,11 +510,12 @@
             "issuing one full receive-order window must stop further ticket issue"
         );
 
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (completion_tx, completion_rx) = bounded::<FmpAeadCompletion>(1);
+        let (completion_tx, completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
         let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         completion_tx
-            .try_send(FmpAeadCompletion {
+            .try_send(FmpAeadCompletionBatch::one(FmpAeadCompletion {
                 session_key,
                 receive_order_id,
                 ticket: tickets[0],
@@ -513,7 +524,7 @@
                     fallback_tx,
                     45,
                 )),
-            })
+            }))
             .expect("test completion lane has room");
 
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -521,6 +532,7 @@
         assert!(wait_for_fmp_receive_order_window(
             0,
             &mut shard,
+            &control_rx,
             &priority_rx,
             &completion_rx,
             session_key,
@@ -691,53 +703,6 @@
         assert!(
             !state.fmp_replay.check(counter),
             "ordered drain must leave the duplicate counter rejected"
-        );
-    }
-
-    #[test]
-    fn fmp_ordered_completion_rechecks_deferred_duplicate_counter_at_drain() {
-        let key_bytes = [0x5au8; 32];
-        let open_cipher = test_chacha_key(key_bytes);
-        let mut state =
-            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
-        let counter = 33;
-
-        let first_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
-        let duplicate_ticket = state.issue_fmp_receive_ticket().expect("test ticket");
-
-        let drain = state
-            .complete_ordered_fmp_open(
-                duplicate_ticket,
-                FmpOrderedCompletion::Opened {
-                    replay: FmpReplayDecision::Deferred { counter },
-                    value: dummy_opened_fmp_job(330),
-                },
-            )
-            .expect("duplicate completion should buffer behind first ticket");
-        assert_eq!(drain, FmpOrderedDrain::default());
-
-        let drain = state
-            .complete_ordered_fmp_open(
-                first_ticket,
-                FmpOrderedCompletion::Opened {
-                    replay: FmpReplayDecision::Deferred { counter },
-                    value: dummy_opened_fmp_job(33),
-                },
-            )
-            .expect("first completion should accept and duplicate should drain as replay");
-        assert_eq!(
-            drain,
-            FmpOrderedDrain {
-                ready: 2,
-                accepted: 1,
-                aead_failures: 0,
-                replay_drops: 1,
-            }
-        );
-        assert_eq!(state.fmp_replay.highest(), counter);
-        assert!(
-            !state.fmp_replay.check(counter),
-            "deferred ordered drain must leave the duplicate counter rejected"
         );
     }
 
@@ -922,6 +887,9 @@
             DecryptWorkerEvent::AuthenticatedSession(_) => {
                 panic!("expected plaintext fallback event")
             }
+            DecryptWorkerEvent::AuthenticatedSessionBatch(_) => {
+                panic!("expected plaintext fallback event")
+            }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
                 panic!("expected plaintext fallback event")
             }
@@ -1009,6 +977,9 @@
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
+                panic!("expected decrypt failure report")
+            }
+            DecryptWorkerEvent::AuthenticatedSessionBatch(_) => {
                 panic!("expected decrypt failure report")
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => {

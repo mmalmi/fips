@@ -314,10 +314,7 @@ impl Node {
                     }
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
-                    let fallback_plan = fallback_drain_plan(
-                        packet_rx.priority_ready_packets(),
-                        decrypt_fallback_rx.bulk_queued_packets(),
-                    );
+                    let fallback_plan = fallback_drain_plan();
                     let fallback_drained = self.drain_decrypt_fallback(
                         &mut decrypt_fallback_rx,
                         None,
@@ -427,10 +424,7 @@ impl Node {
         } else {
             0
         };
-        let mut fallback_plan = fallback_drain_plan(
-            packet_rx.priority_ready_packets(),
-            decrypt_fallback_rx.bulk_queued_packets(),
-        );
+        let fallback_plan = fallback_drain_plan();
         let mut drain = PacketDrainCursor::new(
             first_packet,
             budget,
@@ -457,11 +451,6 @@ impl Node {
                 }
                 PacketDrainAction::InterleaveFallback => {
                     self.flush_decrypt_job_batcher(&mut decrypt_jobs);
-                    fallback_plan = fallback_drain_plan(
-                        packet_rx.priority_ready_packets(),
-                        decrypt_fallback_rx.bulk_queued_packets(),
-                    );
-                    drain.reset_fallback_interleave_every(fallback_plan.interleave_every);
                     let drained = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
                         self.drain_decrypt_fallback(
                             decrypt_fallback_rx,
@@ -506,10 +495,6 @@ impl Node {
         self.flush_decrypt_job_batcher(&mut decrypt_jobs);
         let drained = drain.drained();
         if drained > 0 {
-            fallback_plan = fallback_drain_plan(
-                packet_rx.priority_ready_packets(),
-                decrypt_fallback_rx.bulk_queued_packets(),
-            );
             // One trailing fallback slice so the last bounced packets of the
             // burst aren't held up by the post-burst send flush. Keep it a
             // non-packet turn: bulk fallback should not convoy ahead of fresh
@@ -789,21 +774,23 @@ impl Node {
                 self.process_authenticated_session_from_worker(session)
                     .await;
             }
+            DecryptWorkerEvent::AuthenticatedSessionBatch(sessions) => {
+                self.process_authenticated_session_batch_from_worker(sessions)
+                    .await;
+            }
             DecryptWorkerEvent::DirectSessionCommit(commit) => {
                 self.process_direct_session_commit_from_worker(commit).await;
             }
             DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
-                for commit in commits {
-                    self.process_direct_session_commit_from_worker(commit).await;
-                }
+                self.process_direct_session_commit_batch_from_worker(commits)
+                    .await;
             }
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 self.process_direct_session_data_from_worker(direct).await;
             }
             DecryptWorkerEvent::DirectSessionDataBatch(directs) => {
-                for direct in directs {
-                    self.process_direct_session_data_from_worker(direct).await;
-                }
+                self.process_direct_session_data_batch_from_worker(directs)
+                    .await;
             }
             DecryptWorkerEvent::FspDecryptFailure(report) => {
                 self.process_fsp_decrypt_failure_from_worker(report).await;

@@ -1,6 +1,8 @@
 struct DecryptPlaintextFallbackBatch {
     fallback_tx: Option<DecryptWorkerFallbackSender>,
     fallbacks: Vec<DecryptFallback>,
+    authenticated_session_fallback_tx: Option<DecryptWorkerFallbackSender>,
+    authenticated_sessions: Vec<DecryptAuthenticatedSession>,
     endpoint_fallback_tx: Option<DecryptWorkerFallbackSender>,
     endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
     endpoint_commits: Vec<DecryptDirectSessionCommit>,
@@ -17,6 +19,8 @@ impl DecryptPlaintextFallbackBatch {
         Self {
             fallback_tx: None,
             fallbacks: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            authenticated_session_fallback_tx: None,
+            authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_fallback_tx: None,
             endpoint_sink: None,
             endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
@@ -49,6 +53,7 @@ impl DecryptPlaintextFallbackBatch {
 
     fn push_output(&mut self, output: DecryptWorkerOutput) {
         if output.is_batchable_bulk_plaintext() {
+            self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct();
             self.flush_direct_data();
@@ -82,8 +87,44 @@ impl DecryptPlaintextFallbackBatch {
             }
             return;
         }
+        if output.is_batchable_authenticated_session() {
+            self.flush_plaintext();
+            self.flush_endpoint();
+            self.flush_direct();
+            self.flush_direct_data();
+            let DecryptWorkerOutput {
+                fallback_tx,
+                event,
+                direct_delivery,
+            } = output;
+            debug_assert!(direct_delivery.is_none());
+            let DecryptWorkerEvent::AuthenticatedSession(session) = event else {
+                unreachable!("checked batchable authenticated session output")
+            };
+            if self
+                .authenticated_session_fallback_tx
+                .as_ref()
+                .is_some_and(|current| !current.same_channels(&fallback_tx))
+            {
+                self.flush_authenticated_sessions();
+            }
+            if self.authenticated_session_fallback_tx.is_none() {
+                self.authenticated_session_fallback_tx = Some(fallback_tx);
+            }
+            let batch_max = Self::batch_max_for(
+                self.authenticated_session_fallback_tx
+                    .as_ref()
+                    .expect("fallback sender set before batching authenticated sessions"),
+            );
+            self.authenticated_sessions.push(session);
+            if self.authenticated_sessions.len() >= batch_max {
+                self.flush_authenticated_sessions();
+            }
+            return;
+        }
         if output.is_batchable_direct_endpoint() {
             self.flush_plaintext();
+            self.flush_authenticated_sessions();
             self.flush_direct();
             self.flush_direct_data();
             let DecryptWorkerOutput {
@@ -132,6 +173,7 @@ impl DecryptPlaintextFallbackBatch {
         }
         if output.is_batchable_direct_ipv6() {
             self.flush_plaintext();
+            self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct_data();
             let DecryptWorkerOutput {
@@ -170,6 +212,7 @@ impl DecryptPlaintextFallbackBatch {
         }
         if output.is_batchable_direct_data() {
             self.flush_plaintext();
+            self.flush_authenticated_sessions();
             self.flush_endpoint();
             self.flush_direct();
             let DecryptWorkerOutput {
@@ -206,16 +249,9 @@ impl DecryptPlaintextFallbackBatch {
         let _ = output.send();
     }
 
-    fn push_fsp_job_fallback(&mut self, job: FspDecryptJob) {
-        self.push_output(DecryptWorkerOutput {
-            fallback_tx: job.fallback_tx,
-            event: DecryptWorkerEvent::Plaintext(job.fallback),
-            direct_delivery: None,
-        });
-    }
-
     fn flush(&mut self) {
         self.flush_plaintext();
+        self.flush_authenticated_sessions();
         self.flush_endpoint();
         self.flush_direct();
         self.flush_direct_data();
@@ -238,6 +274,32 @@ impl DecryptPlaintextFallbackBatch {
                 Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             );
             DecryptWorkerEvent::PlaintextBatch(fallbacks)
+        };
+        let _ = fallback_tx.send(event);
+    }
+
+    fn flush_authenticated_sessions(&mut self) {
+        if self.authenticated_sessions.is_empty() {
+            return;
+        }
+        let _t_flush =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptWorkerOutputFlush);
+        let Some(fallback_tx) = self.authenticated_session_fallback_tx.take() else {
+            self.authenticated_sessions.clear();
+            return;
+        };
+        let event = if self.authenticated_sessions.len() == 1 {
+            DecryptWorkerEvent::AuthenticatedSession(
+                self.authenticated_sessions
+                    .pop()
+                    .expect("checked single authenticated session"),
+            )
+        } else {
+            let sessions = std::mem::replace(
+                &mut self.authenticated_sessions,
+                Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+            );
+            DecryptWorkerEvent::AuthenticatedSessionBatch(sessions)
         };
         let _ = fallback_tx.send(event);
     }

@@ -38,6 +38,7 @@ use crate::protocol::{LinkMessageType, SESSION_DATAGRAM_HEADER_SIZE};
 use crate::protocol::{coords_wire_size, encode_coords};
 #[cfg(unix)]
 use crate::transport::TransportHandle;
+use crate::transport::PacketBuffer;
 use crate::upper::icmp::FIPS_OVERHEAD;
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
@@ -216,7 +217,7 @@ enum DiscoveryRetrySessionDecision {
 #[derive(Debug)]
 pub(in crate::node) struct AuthenticatedSessionMessage {
     source_peer: PeerIdentity,
-    buffer: Vec<u8>,
+    buffer: PacketBuffer,
     plaintext_offset: usize,
     plaintext_len: usize,
     msg_type: u8,
@@ -229,11 +230,12 @@ pub(in crate::node) struct AuthenticatedSessionMessage {
 impl AuthenticatedSessionMessage {
     pub(in crate::node) fn new(
         source_peer: PeerIdentity,
-        plaintext: Vec<u8>,
+        plaintext: impl Into<PacketBuffer>,
         msg_type: u8,
         inner_flags_byte: u8,
         timestamp: u32,
     ) -> Self {
+        let plaintext = plaintext.into();
         debug_assert!(plaintext.len() >= FSP_INNER_HEADER_SIZE);
         let plaintext_len = plaintext.len();
         Self {
@@ -249,13 +251,14 @@ impl AuthenticatedSessionMessage {
 
     pub(in crate::node) fn from_buffer(
         source_peer: PeerIdentity,
-        buffer: Vec<u8>,
+        buffer: impl Into<PacketBuffer>,
         plaintext_offset: usize,
         plaintext_len: usize,
         msg_type: u8,
         inner_flags_byte: u8,
         timestamp: u32,
     ) -> Self {
+        let buffer = buffer.into();
         debug_assert!(plaintext_len >= FSP_INNER_HEADER_SIZE);
         debug_assert!(
             plaintext_offset

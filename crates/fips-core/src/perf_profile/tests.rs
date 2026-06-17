@@ -33,10 +33,22 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 101);
+    assert_eq!(N_EVENTS, 199);
+    assert!(
+        (Event::DecryptFspPathWorkerOpenBulk as usize) < N_EVENTS,
+        "last event must fit in the EVENTS table"
+    );
     assert_eq!(
         event_from_index(Event::DecryptFallbackBacklogHigh as usize).name(),
         "decrypt_fallback_backlog_high"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptAuthenticatedBacklogHigh as usize).name(),
+        "decrypt_authenticated_backlog_high"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventBulkBacklogHigh as usize).name(),
+        "endpoint_event_bulk_backlog_high"
     );
     assert_eq!(
         event_from_index(Event::RxLoopSlowMaintenanceTimeout as usize).name(),
@@ -227,6 +239,42 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_fsp_path_fallback"
     );
     assert_eq!(
+        event_from_index(Event::DecryptFspPathWorkerOpen as usize).name(),
+        "decrypt_fsp_path_worker_open"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathWorkerOpenStriped as usize).name(),
+        "decrypt_fsp_path_worker_open_striped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathLocalPriority as usize).name(),
+        "decrypt_fsp_path_local_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathLocalBulk as usize).name(),
+        "decrypt_fsp_path_local_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathHandoffPriority as usize).name(),
+        "decrypt_fsp_path_handoff_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathHandoffBulk as usize).name(),
+        "decrypt_fsp_path_handoff_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathHelperBulk as usize).name(),
+        "decrypt_fsp_path_helper_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspPathWorkerOpenBulk as usize).name(),
+        "decrypt_fsp_path_worker_open_bulk"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerControlDropped as usize).name(),
+        "decrypt_worker_control_dropped"
+    );
+    assert_eq!(
         event_from_index(Event::DecryptFmpPreownerHelper as usize).name(),
         "decrypt_fmp_preowner_helper"
     );
@@ -241,6 +289,18 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptFmpPreownerInlineFallback as usize).name(),
         "decrypt_fmp_preowner_inline_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpHelperCompletionBacklogFallback as usize).name(),
+        "decrypt_fmp_helper_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerCompletionBacklogFallback as usize).name(),
+        "decrypt_fmp_preowner_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
+        "decrypt_fsp_open_worker_completion_backlog_fallback"
     );
     assert_eq!(
         event_from_index(Event::FmpWorkerDispatchFlowKeyed as usize).name(),
@@ -279,6 +339,38 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fmp_aead_completion_replay_dropped"
     );
     assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedPrechecked as usize).name(),
+        "fmp_aead_completion_replay_dropped_prechecked"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedDeferred as usize).name(),
+        "fmp_aead_completion_replay_dropped_deferred"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedDuplicate as usize).name(),
+        "fmp_aead_completion_replay_dropped_duplicate"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedTooOld as usize).name(),
+        "fmp_aead_completion_replay_dropped_too_old"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow as usize).name(),
+        "fmp_aead_completion_replay_dropped_too_old_lag_ge_2x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow as usize).name(),
+        "fmp_aead_completion_replay_dropped_too_old_lag_ge_4x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow as usize).name(),
+        "fmp_aead_completion_replay_dropped_too_old_lag_ge_16x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow as usize).name(),
+        "fmp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
+    );
+    assert_eq!(
         event_from_index(Event::FmpAeadCompletionReadyMulti as usize).name(),
         "fmp_aead_completion_ready_multi"
     );
@@ -299,8 +391,328 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_replay_dropped"
     );
     assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedHelper as usize).name(),
+        "fsp_aead_completion_replay_dropped_helper"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedHelperReturned as usize).name(),
+        "fsp_aead_completion_replay_dropped_helper_returned"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedWorkerOpen as usize).name(),
+        "fsp_aead_completion_replay_dropped_worker_open"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedWorkerOpenReturned as usize).name(),
+        "fsp_aead_completion_replay_dropped_worker_open_returned"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedDuplicate as usize).name(),
+        "fsp_aead_completion_replay_dropped_duplicate"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedTooOld as usize).name(),
+        "fsp_aead_completion_replay_dropped_too_old"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow as usize).name(),
+        "fsp_aead_completion_replay_dropped_too_old_lag_ge_2x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow as usize).name(),
+        "fsp_aead_completion_replay_dropped_too_old_lag_ge_4x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow as usize).name(),
+        "fsp_aead_completion_replay_dropped_too_old_lag_ge_16x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow as usize).name(),
+        "fsp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::ConnectedUdpDirectDecryptBulkShed as usize).name(),
+        "connected_udp_direct_decrypt_bulk_shed"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
+        "decrypt_fsp_open_pool_queue_full_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::ConnectedUdpKernelDropped as usize).name(),
+        "connected_udp_kernel_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::ConnectedUdpPeerKernelDropped as usize).name(),
+        "connected_udp_peer_kernel_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::UdpKernelDropped as usize).name(),
+        "udp_kernel_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::UdpSocketKernelDropped as usize).name(),
+        "udp_socket_kernel_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::UdpNamespaceRcvbufErrors as usize).name(),
+        "udp_namespace_rcvbuf_errors"
+    );
+    assert_eq!(
+        event_from_index(Event::ConnectedUdpDrainBulkDropped as usize).name(),
+        "connected_udp_drain_bulk_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedDuplicate as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_duplicate"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedTooOld as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_too_old"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_2x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_4x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_16x_window"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow as usize).name(),
+        "decrypt_fsp_worker_replay_dropped_too_old_lag_ge_64x_window"
+    );
+    assert_eq!(
         event_from_index(Event::FspAeadCompletionReadyMulti as usize).name(),
         "fsp_aead_completion_ready_multi"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathPrepareFailed as usize).name(),
+        "endpoint_bulk_fast_path_prepare_failed"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathStageFull as usize).name(),
+        "endpoint_bulk_fast_path_stage_full"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathFeedbackFull as usize).name(),
+        "endpoint_bulk_fast_path_feedback_full"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathAttempt as usize).name(),
+        "endpoint_bulk_fast_path_attempt"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathDispatched as usize).name(),
+        "endpoint_bulk_fast_path_dispatched"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathLeaseMiss as usize).name(),
+        "endpoint_bulk_fast_path_lease_miss"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointBulkFastPathIneligible as usize).name(),
+        "endpoint_bulk_fast_path_ineligible"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchChunk as usize).name(),
+        "linux_wg_batch_chunk"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchChunkPackets as usize).name(),
+        "linux_wg_batch_chunk_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchChunkFull as usize).name(),
+        "linux_wg_batch_chunk_full"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchSenderWaitGe250us as usize).name(),
+        "linux_wg_batch_sender_wait_ge250us"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchSenderWaitGe1ms as usize).name(),
+        "linux_wg_batch_sender_wait_ge1ms"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchSenderWaitGe4ms as usize).name(),
+        "linux_wg_batch_sender_wait_ge4ms"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpSendGroupSplitTarget as usize).name(),
+        "fmp_send_group_split_target"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpSendGroupSplitLane as usize).name(),
+        "fmp_send_group_split_lane"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpSendGroupSplitBackpressure as usize).name(),
+        "fmp_send_group_split_backpressure"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpSendGroupSplitPacketCap as usize).name(),
+        "fmp_send_group_split_packet_cap"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointCommittedBulkDispatchBatch as usize).name(),
+        "endpoint_committed_bulk_dispatch_batch"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointCommittedBulkDispatchPackets as usize).name(),
+        "endpoint_committed_bulk_dispatch_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointCommittedBulkDispatchMergedBatch as usize).name(),
+        "endpoint_committed_bulk_dispatch_merged_batch"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointCommittedBulkDispatchMergedPackets as usize).name(),
+        "endpoint_committed_bulk_dispatch_merged_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionStaleSession as usize).name(),
+        "fsp_aead_completion_stale_session"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionStaleOrder as usize).name(),
+        "fsp_aead_completion_stale_order"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionStaleTicket as usize).name(),
+        "fsp_aead_completion_stale_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionDuplicateTicket as usize).name(),
+        "fsp_aead_completion_duplicate_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionWindowExceeded as usize).name(),
+        "fsp_aead_completion_window_exceeded"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspHelperWindowFallback as usize).name(),
+        "decrypt_fsp_helper_window_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectPriority as usize).name(),
+        "decrypt_worker_select_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectControl as usize).name(),
+        "decrypt_worker_select_control"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectFmpCompletion as usize).name(),
+        "decrypt_worker_select_fmp_completion"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectFspCompletionPackets as usize).name(),
+        "decrypt_worker_select_fsp_completion_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectBulkPackets as usize).name(),
+        "decrypt_worker_select_bulk_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerDrainPriority as usize).name(),
+        "decrypt_worker_drain_priority"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerDrainControl as usize).name(),
+        "decrypt_worker_drain_control"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerDrainAeadCompletionPackets as usize).name(),
+        "decrypt_worker_drain_aead_completion_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerDrainBulkPackets as usize).name(),
+        "decrypt_worker_drain_bulk_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInterleaveAeadCompletionPackets as usize).name(),
+        "decrypt_worker_bulk_interleave_aead_completion_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInterleaveBudgetExhausted as usize).name(),
+        "decrypt_worker_bulk_interleave_budget_exhausted"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspHelperCompletionBacklogFallback as usize).name(),
+        "decrypt_fsp_helper_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspHelperQueueFullFallback as usize).name(),
+        "decrypt_fsp_helper_queue_full_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpHelperCompletionBacklogFallback as usize).name(),
+        "decrypt_fmp_helper_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFmpPreownerCompletionBacklogFallback as usize).name(),
+        "decrypt_fmp_preowner_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize).name(),
+        "decrypt_fsp_open_worker_completion_backlog_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOpenPoolQueueFullFallback as usize).name(),
+        "decrypt_fsp_open_pool_queue_full_fallback"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReturnedHelper as usize).name(),
+        "fsp_aead_completion_returned_helper"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionReturnedWorkerOpen as usize).name(),
+        "fsp_aead_completion_returned_worker_open"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspOwnerHandoffDropped as usize).name(),
+        "decrypt_fsp_owner_handoff_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBatchPoolFresh as usize).name(),
+        "packet_batch_pool_fresh"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBatchPoolReuse as usize).name(),
+        "packet_batch_pool_reuse"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBatchPoolReturn as usize).name(),
+        "packet_batch_pool_return"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBatchPoolDiscard as usize).name(),
+        "packet_batch_pool_discard"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBufferPoolFresh as usize).name(),
+        "packet_buffer_pool_fresh"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBufferPoolReuse as usize).name(),
+        "packet_buffer_pool_reuse"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBufferPoolReturn as usize).name(),
+        "packet_buffer_pool_return"
+    );
+    assert_eq!(
+        event_from_index(Event::PacketBufferPoolDiscard as usize).name(),
+        "packet_buffer_pool_discard"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxBulkUdpPaceWait as usize).name(),
+        "linux_bulk_udp_pace_wait"
     );
 }
 
@@ -318,7 +730,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 64);
+    assert_eq!(N_STAGES, 74);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -342,6 +754,10 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::DecryptAuthenticatedSessionBulkWait as usize).name(),
         "decrypt_authenticated_session_bulk_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedFmpReceiveWait as usize).name(),
+        "decrypt_authenticated_fmp_receive_wait"
     );
     assert_eq!(
         stage_from_index(Stage::DecryptFspWorkerQueueWait as usize).name(),
@@ -451,6 +867,46 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         stage_from_index(Stage::EndpointSendCommit as usize).name(),
         "endpoint_send_commit"
     );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedFmpReceiveWait as usize).name(),
+        "decrypt_authenticated_fmp_receive_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::FspAeadWorkerOpenQueueWait as usize).name(),
+        "fsp_aead_worker_open_queue_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::FspAeadWorkerOpenCompletionWait as usize).name(),
+        "fsp_aead_worker_open_completion_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptDirectSessionCommitWait as usize).name(),
+        "decrypt_direct_session_commit_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptDirectSessionDataWait as usize).name(),
+        "decrypt_direct_session_data_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::ConnectedUdpDrainRecv as usize).name(),
+        "connected_udp_drain_recv"
+    );
+    assert_eq!(
+        stage_from_index(Stage::ConnectedUdpFastPathDispatch as usize).name(),
+        "connected_udp_fast_path_dispatch"
+    );
+    assert_eq!(
+        stage_from_index(Stage::ConnectedUdpDrainRingWait as usize).name(),
+        "connected_udp_drain_ring_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::ConnectedUdpDrainPriorityRingWait as usize).name(),
+        "connected_udp_drain_priority_ring_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::ConnectedUdpDrainBulkRingWait as usize).name(),
+        "connected_udp_drain_bulk_ring_wait"
+    );
 }
 
 #[test]
@@ -501,6 +957,10 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let fsp_path_handoff_before = EVENTS[Event::DecryptFspPathHandoff as usize].load(Relaxed);
     let fsp_path_helper_before = EVENTS[Event::DecryptFspPathHelper as usize].load(Relaxed);
     let fsp_path_fallback_before = EVENTS[Event::DecryptFspPathFallback as usize].load(Relaxed);
+    let fsp_owner_handoff_dropped_before =
+        EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed);
+    let fsp_path_worker_open_before =
+        EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed);
     let fmp_preowner_helper_before = EVENTS[Event::DecryptFmpPreownerHelper as usize].load(Relaxed);
     let fmp_preowner_helper_fallback_before =
         EVENTS[Event::DecryptFmpPreownerHelperFallback as usize].load(Relaxed);
@@ -508,6 +968,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFmpPreownerWindowFallback as usize].load(Relaxed);
     let fmp_preowner_inline_fallback_before =
         EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed);
+    let fmp_helper_completion_backlog_fallback_before =
+        EVENTS[Event::DecryptFmpHelperCompletionBacklogFallback as usize].load(Relaxed);
+    let fmp_preowner_completion_backlog_fallback_before =
+        EVENTS[Event::DecryptFmpPreownerCompletionBacklogFallback as usize].load(Relaxed);
+    let fsp_open_worker_completion_backlog_fallback_before =
+        EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed);
+    let fsp_open_pool_queue_full_fallback_before =
+        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed);
+    let fsp_path_worker_open_striped_before =
+        EVENTS[Event::DecryptFspPathWorkerOpenStriped as usize].load(Relaxed);
     let dispatch_flow_keyed_before =
         EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed);
     let dispatch_target_only_before =
@@ -516,7 +986,12 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     let dispatch_worker7_before = EVENTS[Event::FmpWorkerDispatchWorker7 as usize].load(Relaxed);
     let dispatch_worker_other_before =
         EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed);
-
+    let endpoint_bulk_prepare_failed_before =
+        EVENTS[Event::EndpointBulkFastPathPrepareFailed as usize].load(Relaxed);
+    let endpoint_bulk_stage_full_before =
+        EVENTS[Event::EndpointBulkFastPathStageFull as usize].load(Relaxed);
+    let endpoint_bulk_feedback_full_before =
+        EVENTS[Event::EndpointBulkFastPathFeedbackFull as usize].load(Relaxed);
     record_event_count_sample(Event::RxLoopSlowMaintenanceTimeout, 3);
     record_event_count_sample(Event::RxLoopSlowMaintenanceSkipped, 5);
     record_event_count_sample(Event::DecryptFallbackPressureDrain, 7);
@@ -553,16 +1028,25 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
     record_event_count_sample(Event::DecryptFspPathHandoff, 83);
     record_event_count_sample(Event::DecryptFspPathHelper, 89);
     record_event_count_sample(Event::DecryptFspPathFallback, 97);
+    record_event_count_sample(Event::DecryptFspOwnerHandoffDropped, 98);
+    record_event_count_sample(Event::DecryptFspPathWorkerOpen, 99);
     record_event_count_sample(Event::DecryptFmpPreownerHelper, 101);
     record_event_count_sample(Event::DecryptFmpPreownerHelperFallback, 103);
     record_event_count_sample(Event::DecryptFmpPreownerWindowFallback, 107);
     record_event_count_sample(Event::DecryptFmpPreownerInlineFallback, 109);
+    record_event_count_sample(Event::DecryptFmpHelperCompletionBacklogFallback, 111);
+    record_event_count_sample(Event::DecryptFmpPreownerCompletionBacklogFallback, 112);
+    record_event_count_sample(Event::DecryptFspOpenWorkerCompletionBacklogFallback, 116);
+    record_event_count_sample(Event::DecryptFspOpenPoolQueueFullFallback, 117);
+    record_event_count_sample(Event::DecryptFspPathWorkerOpenStriped, 118);
     record_event_count_sample(Event::FmpWorkerDispatchFlowKeyed, 113);
     record_event_count_sample(Event::FmpWorkerDispatchTargetOnly, 127);
     record_event_count_sample(Event::FmpWorkerDispatchWorker0, 131);
     record_event_count_sample(Event::FmpWorkerDispatchWorker7, 137);
     record_event_count_sample(Event::FmpWorkerDispatchWorkerOther, 139);
-
+    record_event_count_sample(Event::EndpointBulkFastPathPrepareFailed, 149);
+    record_event_count_sample(Event::EndpointBulkFastPathStageFull, 151);
+    record_event_count_sample(Event::EndpointBulkFastPathFeedbackFull, 157);
     assert_eq!(
         EVENTS[Event::RxLoopSlowMaintenanceTimeout as usize].load(Relaxed) - timeout_before,
         3
@@ -718,6 +1202,16 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         97
     );
     assert_eq!(
+        EVENTS[Event::DecryptFspOwnerHandoffDropped as usize].load(Relaxed)
+            - fsp_owner_handoff_dropped_before,
+        98
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathWorkerOpen as usize].load(Relaxed)
+            - fsp_path_worker_open_before,
+        99
+    );
+    assert_eq!(
         EVENTS[Event::DecryptFmpPreownerHelper as usize].load(Relaxed) - fmp_preowner_helper_before,
         101
     );
@@ -735,6 +1229,31 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::DecryptFmpPreownerInlineFallback as usize].load(Relaxed)
             - fmp_preowner_inline_fallback_before,
         109
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpHelperCompletionBacklogFallback as usize].load(Relaxed)
+            - fmp_helper_completion_backlog_fallback_before,
+        111
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFmpPreownerCompletionBacklogFallback as usize].load(Relaxed)
+            - fmp_preowner_completion_backlog_fallback_before,
+        112
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspOpenWorkerCompletionBacklogFallback as usize].load(Relaxed)
+            - fsp_open_worker_completion_backlog_fallback_before,
+        116
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspOpenPoolQueueFullFallback as usize].load(Relaxed)
+            - fsp_open_pool_queue_full_fallback_before,
+        117
+    );
+    assert_eq!(
+        EVENTS[Event::DecryptFspPathWorkerOpenStriped as usize].load(Relaxed)
+            - fsp_path_worker_open_striped_before,
+        118
     );
     assert_eq!(
         EVENTS[Event::FmpWorkerDispatchFlowKeyed as usize].load(Relaxed)
@@ -758,6 +1277,21 @@ fn rx_loop_liveness_and_fallback_pressure_events_increment_counters() {
         EVENTS[Event::FmpWorkerDispatchWorkerOther as usize].load(Relaxed)
             - dispatch_worker_other_before,
         139
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointBulkFastPathPrepareFailed as usize].load(Relaxed)
+            - endpoint_bulk_prepare_failed_before,
+        149
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointBulkFastPathStageFull as usize].load(Relaxed)
+            - endpoint_bulk_stage_full_before,
+        151
+    );
+    assert_eq!(
+        EVENTS[Event::EndpointBulkFastPathFeedbackFull as usize].load(Relaxed)
+            - endpoint_bulk_feedback_full_before,
+        157
     );
 }
 

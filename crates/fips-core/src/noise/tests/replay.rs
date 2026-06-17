@@ -5,11 +5,13 @@ fn test_replay_window_basic() {
     let mut window = ReplayWindow::new();
 
     // First packet is always acceptable
+    assert_eq!(window.rejection_reason(0), None);
     assert!(window.check(0));
     window.accept(0);
     assert_eq!(window.highest(), 0);
 
     // Replay of 0 should fail
+    assert_eq!(window.rejection_reason(0), Some(ReplayRejection::Duplicate));
     assert!(!window.check(0));
 
     // New higher counter is acceptable
@@ -24,6 +26,7 @@ fn test_replay_window_basic() {
     window.accept(5);
 
     // Replay of 5 should now fail
+    assert_eq!(window.rejection_reason(5), Some(ReplayRejection::Duplicate));
     assert!(!window.check(5));
 }
 
@@ -38,10 +41,16 @@ fn test_replay_window_large_jump() {
     window.accept(REPLAY_WINDOW_SIZE as u64 + 100);
 
     // Old counter should be outside window
+    assert_eq!(window.rejection_reason(0), Some(ReplayRejection::TooOld));
     assert!(!window.check(0));
+    assert_eq!(window.rejection_reason(50), Some(ReplayRejection::TooOld));
     assert!(!window.check(50));
 
     // Counters within window should work
+    assert_eq!(
+        window.rejection_reason(REPLAY_WINDOW_SIZE as u64 + 99),
+        None
+    );
     assert!(window.check(REPLAY_WINDOW_SIZE as u64 + 99));
     assert!(window.check(REPLAY_WINDOW_SIZE as u64 + 50));
 }

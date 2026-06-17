@@ -152,6 +152,93 @@ async fn packet_channel_batch_send_amortizes_bulk_channel_items() {
     assert_eq!(rx.recv().await.unwrap().data[0], 0xcc);
 }
 
+#[tokio::test]
+async fn packet_channel_reuses_pooled_batch_container_after_rx_drain() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+    let mut batch = tx.packet_batch(2);
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ));
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+    ));
+    let batch_ptr = batch.packets.as_ptr();
+    let batch_capacity = batch.packets.capacity();
+
+    tx.send_packet_batch(batch)
+        .expect("pooled bulk batch send should succeed");
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+
+    let reused = tx.packet_batch(2);
+    assert_eq!(reused.packets.len(), 0);
+    assert_eq!(reused.packets.capacity(), batch_capacity);
+    assert_eq!(reused.packets.as_ptr(), batch_ptr);
+}
+
+#[test]
+fn packet_channel_does_not_retain_oversized_batch_container() {
+    let pool = PacketBatchPool::new();
+    {
+        let mut batch = pool.take(PACKET_BATCH_MAX_RETAINED_CAPACITY + 1);
+        batch.push(ReceivedPacket::new(
+            TransportId::new(1),
+            TransportAddr::from_string("test"),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ));
+    }
+
+    assert_eq!(
+        pool.cached_len(),
+        0,
+        "oversized receive batches should not stay pinned in the hot-path pool"
+    );
+}
+
+#[test]
+fn packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped() {
+    let (tx, _rx) = packet_channel(1);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ))
+    .expect("first bulk packet should fill bounded bulk lane");
+
+    let mut buffer = tx.recv_buffer(1600);
+    buffer.clear();
+    buffer.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xbb);
+    let original_ptr = buffer.as_ptr();
+    let mut batch = tx.packet_batch(1);
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        tx.packet_buffer(buffer),
+    ));
+
+    tx.send_packet_batch(batch)
+        .expect("full bulk lane should shed pooled overload without closing sender");
+
+    assert_eq!(
+        tx.buffer_pool.cached_len(),
+        1,
+        "dropped receive-owned bulk packet should return its byte buffer"
+    );
+    let reused = tx.recv_buffer(1600);
+    assert_eq!(
+        reused.as_ptr(),
+        original_ptr,
+        "next receive refill should reuse the dropped packet buffer"
+    );
+}
+
 #[test]
 fn packet_channel_keeps_single_lane_batches_grouped() {
     let (tx, mut rx) = packet_channel(10);
@@ -222,10 +309,10 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
         }
     );
 
-    let item = PacketQueueItem::Batch(vec![
+    let item = PacketQueueItem::Batch(PacketBatch::from(vec![
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
-    ]);
+    ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Priority),
         PacketQueueDequeueCounts {
@@ -235,7 +322,7 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
         }
     );
 
-    let item = PacketQueueItem::Batch(vec![
+    let item = PacketQueueItem::Batch(PacketBatch::from(vec![
         ReceivedPacket::new(
             TransportId::new(1),
             addr.clone(),
@@ -246,7 +333,7 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
             addr,
             vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
         ),
-    ]);
+    ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Bulk),
         PacketQueueDequeueCounts {
@@ -261,11 +348,10 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
 fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
     let addr = TransportAddr::from_string("test");
     let rx_loop_owned_at = Some(crate::perf_profile::test_stamp());
-    let packets = vec![
+    let packets = PacketBatch::from(vec![
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0xaa; 32]),
         ReceivedPacket::new(TransportId::new(1), addr, vec![0xbb; 48]),
-    ]
-    .into_iter();
+    ]);
     let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at));
 
     let first = PacketRx::take_pending(&mut pending).expect("first pending packet");

@@ -750,26 +750,20 @@ fn test_detect_congestion_with_transport_drops() {
 }
 
 #[test]
-fn transport_drop_tracker_owns_rising_edge_state_and_cleanup() {
+fn transport_drop_tracker_owns_drop_delta_state_and_cleanup() {
     let tid = TransportId::new(1);
     let other_tid = TransportId::new(2);
     let mut drops = TransportDropTracker::default();
 
     assert!(!drops.any_dropping());
-    assert!(
-        drops.sample(tid, Some(10)),
-        "first observed drops should be a rising edge"
-    );
+    assert_eq!(drops.sample(tid, Some(10)), Some(10));
     assert!(drops.any_dropping());
-    assert!(
-        !drops.sample(tid, Some(12)),
-        "continued dropping should stay observable without duplicating rising-edge events"
-    );
+    assert_eq!(drops.sample(tid, Some(12)), Some(2));
     assert!(drops.any_dropping());
-    assert!(!drops.sample(tid, Some(12)));
+    assert_eq!(drops.sample(tid, Some(12)), None);
     assert!(!drops.any_dropping());
 
-    assert!(drops.sample(tid, Some(13)));
+    assert_eq!(drops.sample(tid, Some(13)), Some(1));
     drops.sample(other_tid, None);
     assert!(drops.any_dropping());
     drops.remove(&tid);

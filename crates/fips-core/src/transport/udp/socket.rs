@@ -494,12 +494,12 @@ mod platform {
             }
             let fd = self.inner.as_raw_fd();
 
-            // CMSG buffer wired to msgs[0] only. SO_RXQ_OVFL delivers a
-            // monotonic u32 drop counter; sampling once per batch gives
-            // the 1Hz congestion detector ample fresh values under load
-            // (one batch = up to 32 datagrams).
+            // CMSG buffers for every batch slot. SO_RXQ_OVFL is attached to
+            // individual datagrams, not guaranteed to the first datagram in a
+            // recvmmsg batch, so parse all returned messages and keep the
+            // newest monotonic counter sample.
             const CMSG_BUF_SIZE: usize = unsafe { libc::CMSG_SPACE(4) } as usize;
-            let mut cmsg_buf = [0u8; CMSG_BUF_SIZE];
+            let mut cmsg_bufs = [[0u8; CMSG_BUF_SIZE]; BATCH_SIZE];
 
             // Stack-allocated parallel arrays; lifetime tied to this call.
             let mut iovs: [libc::iovec; BATCH_SIZE] = unsafe { std::mem::zeroed() };
@@ -522,12 +522,10 @@ mod platform {
                     std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
                 msgs[i].msg_hdr.msg_iov = &mut iovs[i];
                 msgs[i].msg_hdr.msg_iovlen = 1;
+                msgs[i].msg_hdr.msg_control = cmsg_bufs[i].as_mut_ptr() as *mut libc::c_void;
+                msgs[i].msg_hdr.msg_controllen = cmsg_bufs[i].len() as _;
                 msgs[i].msg_len = 0;
             }
-            // Only msgs[0] carries a cmsg buffer — sampling the OVFL counter
-            // there is enough since it is socket-wide and monotonic.
-            msgs[0].msg_hdr.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-            msgs[0].msg_hdr.msg_controllen = cmsg_buf.len() as _;
 
             let r = unsafe {
                 libc::recvmmsg(
@@ -559,20 +557,22 @@ mod platform {
                 addrs[i] = sockaddr_to_socket_addr(&storages[i]).ok();
             }
 
-            // Walk msgs[0] cmsg chain for SO_RXQ_OVFL. Skip when no
-            // datagram landed (cmsg buffer is undefined in that case).
+            // Walk every cmsg chain for SO_RXQ_OVFL. Skip when no datagram
+            // landed (cmsg buffers are undefined in that case).
             let mut drops: u32 = 0;
             if count > 0 {
-                unsafe {
-                    let mut cmsg = libc::CMSG_FIRSTHDR(&msgs[0].msg_hdr);
-                    while !cmsg.is_null() {
-                        if (*cmsg).cmsg_level == libc::SOL_SOCKET
-                            && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL
-                        {
-                            let data = libc::CMSG_DATA(cmsg);
-                            drops = std::ptr::read_unaligned(data as *const u32);
+                for msg in msgs.iter().take(count) {
+                    unsafe {
+                        let mut cmsg = libc::CMSG_FIRSTHDR(&msg.msg_hdr);
+                        while !cmsg.is_null() {
+                            if (*cmsg).cmsg_level == libc::SOL_SOCKET
+                                && (*cmsg).cmsg_type == libc::SO_RXQ_OVFL
+                            {
+                                let data = libc::CMSG_DATA(cmsg);
+                                drops = std::ptr::read_unaligned(data as *const u32);
+                            }
+                            cmsg = libc::CMSG_NXTHDR(&msg.msg_hdr, cmsg);
                         }
-                        cmsg = libc::CMSG_NXTHDR(&msgs[0].msg_hdr, cmsg);
                     }
                 }
             }

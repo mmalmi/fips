@@ -51,13 +51,15 @@ pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
 pub(crate) use endpoint_event::EndpointBulkSendFeedback;
-#[cfg(unix)]
-pub(crate) use endpoint_event::EndpointBulkSendFeedbackRecord;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::release_endpoint_event_messages;
+#[cfg(unix)]
+pub(in crate::node) use endpoint_event::{
+    EndpointBulkSendFeedbackRecord, EndpointBulkSendSessionBookkeeping,
+};
 #[cfg(unix)]
 pub(crate) use endpoint_event::{
     EndpointBulkSendFmpLease, EndpointBulkSendFspLease, EndpointBulkSendLease,
@@ -229,6 +231,10 @@ pub struct Node {
     transports: HashMap<TransportId, TransportHandle>,
     /// Per-transport kernel drop tracking for congestion detection.
     transport_drops: TransportDropTracker,
+    /// Per-transport wildcard socket-local drop tracking for observability.
+    transport_socket_drops: TransportDropTracker,
+    /// Per-transport Linux namespace receive-buffer error tracking for observability.
+    transport_namespace_drops: TransportDropTracker,
     /// Active links plus reverse address dispatch index.
     links: LinkRegistry,
 

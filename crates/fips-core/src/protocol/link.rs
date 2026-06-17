@@ -78,6 +78,8 @@ pub enum LinkMessageType {
     SenderReport = 0x01,
     /// Receiver-side MMP report (stub).
     ReceiverReport = 0x02,
+    // 0x03 is intentionally reserved. Endpoint data stays inside
+    // `SessionDatagram` + FSP even for direct neighbors.
 
     // Tree protocol (0x10-0x1F)
     /// Spanning tree state announcement.
@@ -477,6 +479,7 @@ mod tests {
     fn test_link_message_type_invalid() {
         assert!(LinkMessageType::from_byte(0xFF).is_none());
         assert!(LinkMessageType::from_byte(0x03).is_none());
+        assert!(LinkMessageType::from_byte(0x04).is_none());
         assert!(LinkMessageType::from_byte(0x40).is_none());
     }
 
