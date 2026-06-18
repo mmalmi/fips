@@ -452,6 +452,153 @@
     }
 
     #[test]
+    fn fsp_ordered_completion_tracks_ready_aead_failure_source() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let mut make_payload = |body: &'static [u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            (fsp_payload, inner_plaintext.len())
+        };
+
+        let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
+        let first_payload_len = first_payload.len();
+        let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
+        let first_completion = FspAeadHelperJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(first_payload, first_payload_len),
+            header: first_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            helper_queued_at: None,
+        }
+        .into_completion();
+
+        let (mut second_payload, second_plaintext_len) = make_payload(b"second worker-open");
+        *second_payload
+            .last_mut()
+            .expect("test FSP frame has ciphertext") ^= 0x55;
+        let second_payload_len = second_payload.len();
+        let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
+        let second_completion = FspAeadHelperJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(second_payload, second_payload_len),
+            header: second_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            helper_queued_at: None,
+        }
+        .into_completion();
+
+        let second_drain = state
+            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+            .expect("later failed completion should wait behind missing first ticket");
+        assert_eq!(second_drain.ready, 0);
+        assert_eq!(second_drain.aead_failures, 0);
+        assert_eq!(
+            second_drain.aead_failure_sources,
+            FspAeadFailureSources::default()
+        );
+
+        let first_drain = state
+            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+            .expect("first completion should release the queued AEAD failure");
+        assert_eq!(first_drain.ready, 2);
+        assert_eq!(first_drain.accepted, 1);
+        assert_eq!(first_drain.aead_failures, 1);
+        assert_eq!(
+            first_drain.aead_failure_sources,
+            FspAeadFailureSources {
+                worker_open: 1,
+                ..FspAeadFailureSources::default()
+            }
+        );
+        assert_eq!(first_drain.outputs.len(), 2);
+        match (&first_drain.outputs[0], &first_drain.outputs[1]) {
+            (
+                FspReadyCompletion::Opened { opened, .. },
+                FspReadyCompletion::AeadFailed { .. },
+            ) => assert_eq!(opened.plaintext_len, first_plaintext_len),
+            _ => panic!("first packet should open, second packet should fail AEAD"),
+        }
+        assert!(
+            second_plaintext_len > 0,
+            "test should corrupt a non-empty encrypted frame"
+        );
+    }
+
+    #[test]
     fn fsp_local_owner_open_uses_shared_order_with_helper_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

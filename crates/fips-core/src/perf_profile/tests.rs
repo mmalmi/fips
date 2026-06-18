@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 200);
+    assert_eq!(N_EVENTS, 205);
     assert!(
-        (Event::DecryptFspPathWorkerOpenBulk as usize) < N_EVENTS,
+        (Event::FspAeadCompletionAeadFailedWorkerOpenReturned as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -385,6 +385,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FspAeadCompletionAeadFailed as usize).name(),
         "fsp_aead_completion_aead_failed"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedLocal as usize).name(),
+        "fsp_aead_completion_aead_failed_local"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedHelper as usize).name(),
+        "fsp_aead_completion_aead_failed_helper"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedHelperReturned as usize).name(),
+        "fsp_aead_completion_aead_failed_helper_returned"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedWorkerOpen as usize).name(),
+        "fsp_aead_completion_aead_failed_worker_open"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedWorkerOpenReturned as usize).name(),
+        "fsp_aead_completion_aead_failed_worker_open_returned"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDropped as usize).name(),

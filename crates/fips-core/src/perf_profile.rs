@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 200;
+const N_EVENTS: usize = 205;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -682,6 +682,11 @@ pub enum Event {
     FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow = 197,
     FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow = 198,
     DecryptFspMalformedDropped = 199,
+    FspAeadCompletionAeadFailedLocal = 200,
+    FspAeadCompletionAeadFailedHelper = 201,
+    FspAeadCompletionAeadFailedHelperReturned = 202,
+    FspAeadCompletionAeadFailedWorkerOpen = 203,
+    FspAeadCompletionAeadFailedWorkerOpenReturned = 204,
 }
 
 impl Event {
@@ -967,6 +972,17 @@ impl Event {
                 "fmp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
             }
             Event::DecryptFspMalformedDropped => "decrypt_fsp_malformed_dropped",
+            Event::FspAeadCompletionAeadFailedLocal => "fsp_aead_completion_aead_failed_local",
+            Event::FspAeadCompletionAeadFailedHelper => "fsp_aead_completion_aead_failed_helper",
+            Event::FspAeadCompletionAeadFailedHelperReturned => {
+                "fsp_aead_completion_aead_failed_helper_returned"
+            }
+            Event::FspAeadCompletionAeadFailedWorkerOpen => {
+                "fsp_aead_completion_aead_failed_worker_open"
+            }
+            Event::FspAeadCompletionAeadFailedWorkerOpenReturned => {
+                "fsp_aead_completion_aead_failed_worker_open_returned"
+            }
         }
     }
 }
@@ -1173,6 +1189,11 @@ fn event_from_index(idx: usize) -> Event {
         197 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow,
         198 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow,
         199 => Event::DecryptFspMalformedDropped,
+        200 => Event::FspAeadCompletionAeadFailedLocal,
+        201 => Event::FspAeadCompletionAeadFailedHelper,
+        202 => Event::FspAeadCompletionAeadFailedHelperReturned,
+        203 => Event::FspAeadCompletionAeadFailedWorkerOpen,
+        204 => Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
         _ => unreachable!(),
     }
 }
@@ -1796,6 +1817,43 @@ pub(crate) fn record_fsp_aead_completion_source_replay_drops(
     if worker_open_returned > 0 {
         record_event_count_sample(
             Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
+            worker_open_returned as u64,
+        );
+    }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_source_aead_failures(
+    local: usize,
+    helper: usize,
+    helper_returned: usize,
+    worker_open: usize,
+    worker_open_returned: usize,
+) {
+    if !enabled() {
+        return;
+    }
+    if local > 0 {
+        record_event_count_sample(Event::FspAeadCompletionAeadFailedLocal, local as u64);
+    }
+    if helper > 0 {
+        record_event_count_sample(Event::FspAeadCompletionAeadFailedHelper, helper as u64);
+    }
+    if helper_returned > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionAeadFailedHelperReturned,
+            helper_returned as u64,
+        );
+    }
+    if worker_open > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionAeadFailedWorkerOpen,
+            worker_open as u64,
+        );
+    }
+    if worker_open_returned > 0 {
+        record_event_count_sample(
+            Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
             worker_open_returned as u64,
         );
     }

@@ -882,6 +882,7 @@ impl DecryptWorkerShard {
             drain.aead_failures,
             drain.replay_drops,
         );
+        drain.aead_failure_sources.record();
         drain.replay_drop_sources.record();
         if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
             && shared.receive_order_id == receive_order_id
@@ -939,6 +940,7 @@ impl DecryptWorkerShard {
         let mut aead_failures = 0usize;
         let mut replay_drops = 0usize;
         let mut dropped = 0usize;
+        let mut aead_failure_sources = FspAeadFailureSources::default();
         let mut replay_drop_sources = FspReplayDropSources::default();
         let mut outputs = Vec::new();
         let next_ready;
@@ -981,13 +983,14 @@ impl DecryptWorkerShard {
                 };
                 debug_assert_eq!(
                     drain.ready,
-                    drain.accepted + drain.aead_failures + drain.replay_drops
+                    drain.accepted + drain.aead_failures + drain.replay_drops + drain.dropped
                 );
                 ready += drain.ready;
                 accepted += drain.accepted;
                 aead_failures += drain.aead_failures;
                 replay_drops += drain.replay_drops;
                 dropped += drain.dropped;
+                aead_failure_sources.add_sources(drain.aead_failure_sources);
                 replay_drop_sources.add_sources(drain.replay_drop_sources);
                 outputs.extend(drain.outputs);
             }
@@ -1001,6 +1004,7 @@ impl DecryptWorkerShard {
             aead_failures,
             replay_drops,
         );
+        aead_failure_sources.record();
         replay_drop_sources.record();
         if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
             && shared.receive_order_id == receive_order_id
@@ -1351,7 +1355,11 @@ impl DecryptWorkerShard {
                     source: FspAeadCompletionSource::Local,
                 },
                 Err(FspOpenError::Aead) | Err(FspOpenError::Replay) => {
-                    FspOrderedCompletion::AeadFailed { job, header }
+                    FspOrderedCompletion::AeadFailed {
+                        job,
+                        header,
+                        source: FspAeadCompletionSource::Local,
+                    }
                 }
             };
             let drain = match state.complete_ordered_fsp_open(ticket, completion) {
@@ -1378,6 +1386,7 @@ impl DecryptWorkerShard {
                 drain.aead_failures,
                 drain.replay_drops,
             );
+            drain.aead_failure_sources.record();
             drain.replay_drop_sources.record();
             if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
                 && shared.receive_order_id == state.fsp_receive_order_id()

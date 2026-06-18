@@ -1340,7 +1340,11 @@
             receive_order_id: 7,
             ticket: FspReceiveTicket { sequence },
             source: FspAeadCompletionSource::Helper,
-            result: FspOrderedCompletion::AeadFailed { job, header },
+            result: FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source: FspAeadCompletionSource::Helper,
+            },
             completed_at: None,
         })
     }

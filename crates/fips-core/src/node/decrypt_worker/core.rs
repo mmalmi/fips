@@ -775,11 +775,17 @@ impl OwnedFspSessionState {
                         }
                         Err(FspOpenError::Aead) => {
                             drain.aead_failures += 1;
+                            drain.aead_failure_sources.add(source);
                         }
                     }
                 }
-                FspOrderedCompletion::AeadFailed { job, header } => {
+                FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source,
+                } => {
                     drain.aead_failures += 1;
+                    drain.aead_failure_sources.add(source);
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
@@ -997,6 +1003,7 @@ enum FspOrderedCompletion {
     AeadFailed {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
+        source: FspAeadCompletionSource,
     },
     Dropped {
         source: FspAeadCompletionSource,
@@ -1022,8 +1029,48 @@ struct FspOrderedDrain {
     aead_failures: usize,
     replay_drops: usize,
     dropped: usize,
+    aead_failure_sources: FspAeadFailureSources,
     replay_drop_sources: FspReplayDropSources,
     outputs: Vec<FspReadyCompletion>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FspAeadFailureSources {
+    local: usize,
+    helper: usize,
+    helper_returned: usize,
+    worker_open: usize,
+    worker_open_returned: usize,
+}
+
+impl FspAeadFailureSources {
+    fn add(&mut self, source: FspAeadCompletionSource) {
+        match source {
+            FspAeadCompletionSource::Local => self.local += 1,
+            FspAeadCompletionSource::Helper => self.helper += 1,
+            FspAeadCompletionSource::HelperReturned => self.helper_returned += 1,
+            FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
+            FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
+        }
+    }
+
+    fn add_sources(&mut self, other: Self) {
+        self.local += other.local;
+        self.helper += other.helper;
+        self.helper_returned += other.helper_returned;
+        self.worker_open += other.worker_open;
+        self.worker_open_returned += other.worker_open_returned;
+    }
+
+    fn record(self) {
+        crate::perf_profile::record_fsp_aead_completion_source_aead_failures(
+            self.local,
+            self.helper,
+            self.helper_returned,
+            self.worker_open,
+            self.worker_open_returned,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1473,12 +1520,14 @@ impl FspAeadHelperJob {
                     Err(_) => FspOrderedCompletion::AeadFailed {
                         job: self.job,
                         header: self.header,
+                        source,
                     },
                 }
             }
             None => FspOrderedCompletion::AeadFailed {
                 job: self.job,
                 header: self.header,
+                source,
             },
         };
         FspAeadCompletion {
