@@ -1184,7 +1184,6 @@ impl DecryptWorkerShard {
             job,
             header,
             plaintext_len,
-            prepared_direct_ipv6,
         } = opened;
         let FspDecryptJob {
             fallback_tx,
@@ -1199,7 +1198,13 @@ impl DecryptWorkerShard {
             fsp_payload_len: _,
             trace_enqueued_at: _,
         } = job;
+        let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
+        let plaintext = fallback
+            .packet_data
+            .get(ciphertext_offset..ciphertext_offset + plaintext_len)?;
+        let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(plaintext)?;
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
+        let spin_bit = inner_flags_byte & 0x01 != 0;
         let lane = fallback.lane();
         let fmp = DecryptFmpBookkeeping {
             source_peer: fallback.source_peer,
@@ -1211,47 +1216,6 @@ impl DecryptWorkerShard {
             inner_timestamp_ms,
             fmp_flags: fallback.fmp_flags,
         };
-        if let Some(prepared) = prepared_direct_ipv6 {
-            let PreparedFspDirectIpv6 {
-                packet,
-                timestamp,
-                inner_flags_byte,
-                body_len,
-            } = prepared;
-            let sync = FspReceiveSync {
-                counter: header.counter,
-                slot,
-                received_k_bit,
-                timestamp,
-                plaintext_len,
-                ce_flag,
-                path_mtu,
-                spin_bit: inner_flags_byte & 0x01 != 0,
-            };
-            let (event, direct_delivery) = Self::direct_session_event(
-                &self.pool.direct_delivery_sink,
-                fmp,
-                source_addr,
-                previous_hop_peer,
-                ce_flag,
-                body_len,
-                DecryptDirectSessionDelivery::Ipv6Packet(packet),
-                sync,
-                lane,
-            );
-            return Some(DecryptWorkerOutput {
-                fallback_tx,
-                event,
-                direct_delivery,
-            });
-        }
-
-        let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
-        let plaintext = fallback
-            .packet_data
-            .get(ciphertext_offset..ciphertext_offset + plaintext_len)?;
-        let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(plaintext)?;
-        let spin_bit = inner_flags_byte & 0x01 != 0;
         let sync = FspReceiveSync {
             counter: header.counter,
             slot,
@@ -1411,7 +1375,11 @@ impl DecryptWorkerShard {
             };
             let completion = match open_result {
                 Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
-                    opened: FspOpenedJob::new(job, header, plaintext_len),
+                    opened: FspOpenedJob {
+                        job,
+                        header,
+                        plaintext_len,
+                    },
                     source: FspAeadCompletionSource::Local,
                 },
                 Some(Err(FspOpenError::Aead)) => {
