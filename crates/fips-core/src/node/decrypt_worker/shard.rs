@@ -1113,6 +1113,34 @@ impl DecryptWorkerShard {
         }
     }
 
+    fn output_for_malformed_fsp_drop(
+        &self,
+        fallback_tx: DecryptWorkerFallbackSender,
+        fallback: DecryptFallback,
+        inner_timestamp_ms: u32,
+    ) -> DecryptWorkerOutput {
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspMalformedDropped);
+        let lane = fallback.lane();
+        DecryptWorkerOutput {
+            fallback_tx,
+            event: DecryptWorkerEvent::AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive {
+                fmp: DecryptFmpBookkeeping {
+                    source_peer: fallback.source_peer,
+                    transport_id: fallback.transport_id,
+                    remote_addr: fallback.remote_addr,
+                    packet_timestamp_ms: fallback.timestamp_ms,
+                    packet_len: fallback.packet_len,
+                    fmp_counter: fallback.fmp_counter,
+                    inner_timestamp_ms,
+                    fmp_flags: fallback.fmp_flags,
+                },
+                lane,
+                trace_enqueued_at: None,
+            }),
+            direct_delivery: None,
+        }
+    }
+
     fn output_for_opened_fsp_job(
         &self,
         source_peer: PeerIdentity,
@@ -1252,18 +1280,14 @@ impl DecryptWorkerShard {
         let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                return vec![DecryptWorkerOutput {
-                    fallback_tx,
-                    event: DecryptWorkerEvent::Plaintext(fallback),
-                    direct_delivery: None,
-                }];
+                return vec![
+                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
+                ];
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return vec![DecryptWorkerOutput {
-                    fallback_tx,
-                    event: DecryptWorkerEvent::Plaintext(fallback),
-                    direct_delivery: None,
-                }];
+                return vec![
+                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
+                ];
             };
             header
         };
@@ -1294,11 +1318,9 @@ impl DecryptWorkerShard {
             let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
             let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end)
             else {
-                return vec![DecryptWorkerOutput {
-                    fallback_tx,
-                    event: DecryptWorkerEvent::Plaintext(fallback),
-                    direct_delivery: None,
-                }];
+                return vec![
+                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
+                ];
             };
             let open_result = {
                 let _t_fsp =
@@ -1365,11 +1387,9 @@ impl DecryptWorkerShard {
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-            return vec![DecryptWorkerOutput {
-                fallback_tx,
-                event: DecryptWorkerEvent::Plaintext(fallback),
-                direct_delivery: None,
-            }];
+            return vec![
+                self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
+            ];
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;

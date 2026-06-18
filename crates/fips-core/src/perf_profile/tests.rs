@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 199);
+    assert_eq!(N_EVENTS, 200);
     assert!(
         (Event::DecryptFspPathWorkerOpenBulk as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
@@ -677,6 +677,10 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptFspOwnerHandoffDropped as usize).name(),
         "decrypt_fsp_owner_handoff_dropped"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptFspMalformedDropped as usize).name(),
+        "decrypt_fsp_malformed_dropped"
     );
     assert_eq!(
         event_from_index(Event::PacketBatchPoolFresh as usize).name(),

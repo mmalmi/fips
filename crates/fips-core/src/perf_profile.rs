@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 199;
+const N_EVENTS: usize = 200;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -681,6 +681,7 @@ pub enum Event {
     FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow = 196,
     FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow = 197,
     FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow = 198,
+    DecryptFspMalformedDropped = 199,
 }
 
 impl Event {
@@ -965,6 +966,7 @@ impl Event {
             Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow => {
                 "fmp_aead_completion_replay_dropped_too_old_lag_ge_64x_window"
             }
+            Event::DecryptFspMalformedDropped => "decrypt_fsp_malformed_dropped",
         }
     }
 }
@@ -1170,6 +1172,7 @@ fn event_from_index(idx: usize) -> Event {
         196 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow,
         197 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow,
         198 => Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow,
+        199 => Event::DecryptFspMalformedDropped,
         _ => unreachable!(),
     }
 }
