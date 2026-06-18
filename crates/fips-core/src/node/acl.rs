@@ -421,11 +421,7 @@ impl Node {
     }
 
     fn is_configured_peer_identity(&self, peer_identity: &PeerIdentity) -> bool {
-        self.config.peers().iter().any(|peer| {
-            PeerIdentity::from_npub(&peer.npub)
-                .map(|configured| configured.node_addr() == peer_identity.node_addr())
-                .unwrap_or(false)
-        })
+        self.configured_peer(peer_identity.node_addr()).is_some()
     }
 
     fn open_discovery_active_or_pending_for_peer(&self, peer_identity: &PeerIdentity) -> bool {

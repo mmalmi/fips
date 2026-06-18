@@ -129,6 +129,12 @@ async fn update_peers_adds_new_peer_and_registers_alias() {
         node.peer_aliases.get(identity.node_addr()),
         Some(&"alice".to_string())
     );
+    assert_eq!(
+        node.configured_peer(identity.node_addr())
+            .and_then(|cached| cached.alias.as_deref()),
+        Some("alice"),
+        "runtime configured-peer cache must refresh with update_peers"
+    );
 }
 
 #[tokio::test]

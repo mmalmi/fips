@@ -825,11 +825,7 @@ impl Node {
     }
 
     pub(crate) fn configured_peer(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
-        self.config.peers().iter().find(|peer| {
-            PeerIdentity::from_npub(&peer.npub)
-                .ok()
-                .is_some_and(|identity| identity.node_addr() == peer_addr)
-        })
+        self.configured_peer_send_weights.peer_config(peer_addr)
     }
 
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(

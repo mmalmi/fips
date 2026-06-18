@@ -44,12 +44,8 @@ impl Node {
             return false;
         }
 
-        self.config.peers().iter().any(|peer| {
-            peer.is_auto_connect()
-                && PeerIdentity::from_npub(&peer.npub)
-                    .map(|identity| identity.node_addr() == peer_node_addr)
-                    .unwrap_or(false)
-        })
+        self.configured_peer(peer_node_addr)
+            .is_some_and(PeerConfig::is_auto_connect)
     }
 
     pub(in crate::node) async fn warm_auto_connect_graph_sessions(&mut self) -> usize {

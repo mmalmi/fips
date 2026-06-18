@@ -431,4 +431,17 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         1,
         "invalid peer identities must not create phantom scheduling policy"
     );
+    assert_eq!(
+        weights
+            .peer_config(&configured_addr)
+            .expect("configured peer metadata")
+            .addresses[0]
+            .addr,
+        "127.0.0.1:1",
+        "configured peer metadata is parsed once into the runtime lookup cache"
+    );
+    assert!(
+        weights.peer_config(&unknown_addr).is_none(),
+        "unconfigured peers must not have cached peer metadata"
+    );
 }

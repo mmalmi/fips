@@ -273,23 +273,25 @@ impl DecryptSessionRegistrations {
 #[derive(Debug, Default)]
 pub(in crate::node) struct ConfiguredPeerSendWeights {
     entries: HashMap<NodeAddr, u8>,
+    peer_configs: HashMap<NodeAddr, PeerConfig>,
 }
 
 impl ConfiguredPeerSendWeights {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
-        let entries = config
-            .peers()
-            .iter()
-            .filter_map(|peer| {
-                PeerIdentity::from_npub(&peer.npub).ok().map(|identity| {
-                    (
-                        *identity.node_addr(),
-                        encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
-                    )
-                })
-            })
-            .collect();
-        Self { entries }
+        let mut entries = HashMap::with_capacity(config.peers().len());
+        let mut peer_configs = HashMap::with_capacity(config.peers().len());
+        for peer in config.peers() {
+            let Ok(identity) = PeerIdentity::from_npub(&peer.npub) else {
+                continue;
+            };
+            let node_addr = *identity.node_addr();
+            entries.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
+            peer_configs.insert(node_addr, peer.clone());
+        }
+        Self {
+            entries,
+            peer_configs,
+        }
     }
 
     pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
@@ -299,14 +301,18 @@ impl ConfiguredPeerSendWeights {
             .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
     }
 
+    pub(in crate::node) fn peer_config(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
+        self.peer_configs.get(peer_addr)
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
-        self.entries.contains_key(peer_addr)
+        self.peer_configs.contains_key(peer_addr)
     }
 
     #[cfg(test)]
     pub(in crate::node) fn len(&self) -> usize {
-        self.entries.len()
+        self.peer_configs.len()
     }
 }
 

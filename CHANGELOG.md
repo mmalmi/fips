@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Made the macOS sender use the ordered parallel-encrypt path by default and
   disabled the per-packet send pacer unless explicitly requested, restoring
   LAN tunnel throughput while keeping env opt-outs for hardware-specific A/Bs.
+- Cached parsed configured peer metadata for route/config checks so hot
+  endpoint traffic no longer reparses configured npubs while choosing direct
+  versus fallback paths.
 - Demoted routine Bloom and traversal backpressure logs from warning level so
   low-power nodes do not spend excessive CPU on repeated expected drops.
 
