@@ -694,6 +694,10 @@ impl PacketTx {
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
+        if matches!(tx, PacketQueueTx::Bulk) {
+            return self.send_bulk_packet_items(packets);
+        }
+
         let item = match packets.len() {
             0 => return Ok(()),
             1 if !packets.is_pooled() => {
@@ -704,25 +708,77 @@ impl PacketTx {
         self.send_item(tx, item).map_err(|_| ())
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
+        let packet_count = packets.len();
+        if packet_count == 0 {
+            return Ok(());
+        }
+
+        let granted = self.try_reserve_bulk_packet_prefix(packet_count);
+        if granted == 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::TransportBulkDropped,
+                packet_count as u64,
+            );
+            return Ok(());
+        }
+
+        if granted < packet_count {
+            let dropped = packet_count - granted;
+            let _dropped_tail = packets.packets.split_off(granted);
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::TransportBulkDropped,
+                dropped as u64,
+            );
+        }
+
+        let item = match packets.len() {
+            0 => return Ok(()),
+            1 if !packets.is_pooled() => {
+                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
+            }
+            _ => PacketQueueItem::Batch(packets),
+        };
+        self.send_reserved_item(PacketQueueTx::Bulk, item, Some(granted))
+            .map_err(|_| ())
+    }
+
     fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
         let packet_count = item.packet_count();
-        let bulk_reserved = matches!(tx, PacketQueueTx::Bulk)
-            .then_some(packet_count)
-            .filter(|count| *count > 0);
+        let bulk_reserved = if matches!(tx, PacketQueueTx::Bulk) && packet_count > 0 {
+            if !self.try_reserve_bulk_packets(packet_count) {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::TransportBulkDropped,
+                    packet_count as u64,
+                );
+                return Ok(());
+            }
+            Some(packet_count)
+        } else {
+            None
+        };
+        self.send_reserved_item(tx, item, bulk_reserved)
+    }
+
+    fn send_reserved_item(
+        &self,
+        tx: PacketQueueTx,
+        item: PacketQueueItem,
+        bulk_reserved: Option<usize>,
+    ) -> Result<(), PacketQueueItem> {
+        let packet_count = item.packet_count();
+        debug_assert_eq!(
+            bulk_reserved,
+            matches!(tx, PacketQueueTx::Bulk)
+                .then_some(packet_count)
+                .filter(|count| *count > 0)
+        );
         let priority_reserved = matches!(tx, PacketQueueTx::Priority)
             .then_some(packet_count)
             .filter(|count| *count > 0);
         if let Some(count) = priority_reserved {
             self.priority_queued_packets.fetch_add(count, Relaxed);
-        }
-        if let Some(count) = bulk_reserved
-            && !self.try_reserve_bulk_packets(count)
-        {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportBulkDropped,
-                count as u64,
-            );
-            return Ok(());
         }
 
         let tracked_count = if self.track_backlog {
@@ -784,6 +840,30 @@ impl PacketTx {
                     .filter(|next| *next <= self.bulk_packet_capacity)
             })
             .is_ok()
+    }
+
+    fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
+        if requested == 0 {
+            return 0;
+        }
+
+        let mut current = self.bulk_queued_packets.load(Relaxed);
+        loop {
+            let available = self.bulk_packet_capacity.saturating_sub(current);
+            let granted = requested.min(available);
+            if granted == 0 {
+                return 0;
+            }
+            match self.bulk_queued_packets.compare_exchange_weak(
+                current,
+                current + granted,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => return granted,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     fn release_bulk_packets(&self, count: usize) {
