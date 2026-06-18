@@ -965,12 +965,10 @@ fn linux_wg_batch_chunk_size() -> usize {
 #[cfg(target_os = "linux")]
 fn parse_linux_wg_batch_chunk_size(raw: Option<&str>) -> usize {
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        // Keep the sender super-skb turn smaller than the worker drain turn.
-        // Docker stress soaks with deterministic worker-open placement showed
-        // the old 32-packet sender chunk preserved peak Gbps but allowed
-        // ping/SRTT drift under CPU contention; 16 kept control/data freshness
-        // and sub-2 ms ping tails, with the env override left for clean-LAN
-        // throughput studies.
+        // Preserve the committed bulk run shape through the Linux WG-style
+        // sender without jumping all the way to the packet cap. Endpoint event
+        // bulk delivery now splits at the message-credit boundary, so 32 avoids
+        // the old 16-packet GSO chop while keeping burst pressure bounded.
         .unwrap_or(DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE)
         .clamp(1, LINUX_UDP_SEND_BATCH_MAX)
 }

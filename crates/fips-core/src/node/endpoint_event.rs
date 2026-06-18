@@ -33,10 +33,11 @@ pub(crate) struct EndpointDataIo {
     ///
     /// Priority endpoint events use an unbounded lane so small control-shaped
     /// packets keep a wait-free push from the rx loop. Bulk endpoint messages
-    /// are bounded by the endpoint-data capacity and drop on pressure, with
-    /// drops visible through `endpoint_event_bulk_dropped`. Backpressure is
-    /// still visible through `endpoint_event_wait` latency and
-    /// `endpoint_event_backlog_high` when the consumer falls materially behind.
+    /// are bounded by the endpoint-data capacity; oversized batches split at
+    /// the message-credit boundary before any remaining tail drops visibly via
+    /// `endpoint_event_bulk_dropped`. Backpressure is still visible through
+    /// `endpoint_event_wait` latency and `endpoint_event_backlog_high` when the
+    /// consumer falls materially behind.
     pub(crate) event_rx: EndpointEventReceiver,
     /// Clone of the event_tx exposed for in-process loopback (e.g.
     /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
@@ -705,66 +706,111 @@ impl EndpointEventSender {
         event: NodeEndpointEvent,
         lane: EndpointEventLane,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if matches!(lane, EndpointEventLane::Bulk) {
+            return self.send_bulk_to_lane(event, true);
+        }
+
         let count = event.message_count();
-        let bulk_reserved = if matches!(lane, EndpointEventLane::Bulk) {
-            try_reserve_endpoint_event_bulk_messages(
-                &self.bulk_queued_messages,
-                self.bulk_message_cap,
-                count,
-            )
-        } else {
-            None
-        };
-        if matches!(lane, EndpointEventLane::Bulk) && bulk_reserved.is_none() {
+        let previous = self.queued_messages.fetch_add(count, Relaxed);
+        let queued = previous.saturating_add(count);
+        match self.priority.send(event) {
+            Ok(()) => {
+                self.note_send_success(previous, queued);
+                Ok(())
+            }
+            Err(error) => {
+                self.note_send_rejected(count);
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn send_bulk_to_lane(
+        &self,
+        event: NodeEndpointEvent,
+        split_on_pressure: bool,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let count = event.message_count();
+        let Some(previous_bulk) = try_reserve_endpoint_event_bulk_messages(
+            &self.bulk_queued_messages,
+            self.bulk_message_cap,
+            count,
+        ) else {
+            if split_on_pressure && count > 1 {
+                return self.split_and_send_bulk_event(event);
+            }
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointEventBulkDropped,
                 count as u64,
             );
             return Ok(());
-        }
-        if let Some(previous) = bulk_reserved {
-            let queued = previous.saturating_add(count);
-            if previous < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
-                && queued >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
-            {
-                crate::perf_profile::record_event(
-                    crate::perf_profile::Event::EndpointEventBulkBacklogHigh,
-                );
-            }
+        };
+
+        let queued_bulk = previous_bulk.saturating_add(count);
+        if previous_bulk < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+            && queued_bulk >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+        {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::EndpointEventBulkBacklogHigh,
+            );
         }
 
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
-        match lane {
-            EndpointEventLane::Priority => match self.priority.send(event) {
-                Ok(()) => {
-                    self.note_send_success(previous, queued);
-                    Ok(())
-                }
-                Err(error) => {
-                    self.note_send_rejected(count);
-                    Err(error)
-                }
-            },
-            EndpointEventLane::Bulk => match self.bulk.try_send(event) {
-                Ok(()) => {
-                    self.note_send_success(previous, queued);
-                    Ok(())
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
-                    self.note_bulk_send_rejected(count);
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::EndpointEventBulkDropped,
-                        count as u64,
-                    );
-                    Ok(())
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
-                    self.note_bulk_send_rejected(count);
-                    Err(tokio::sync::mpsc::error::SendError(event))
-                }
-            },
+        match self.bulk.try_send(event) {
+            Ok(()) => {
+                self.note_send_success(previous, queued);
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
+                self.note_bulk_send_rejected(count);
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointEventBulkDropped,
+                    count as u64,
+                );
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
+                self.note_bulk_send_rejected(count);
+                Err(tokio::sync::mpsc::error::SendError(event))
+            }
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn split_and_send_bulk_event(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let (mut messages, queued_at) = match event {
+            NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            } => (messages, queued_at),
+            event => {
+                let count = event.message_count();
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointEventBulkDropped,
+                    count as u64,
+                );
+                return Ok(());
+            }
+        };
+        if messages.len() <= 1 {
+            let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
+                .expect("non-empty split endpoint batch should produce an event");
+            return self.send_bulk_to_lane(event, false);
+        }
+
+        let right = messages.split_off(messages.len() / 2);
+        if let Some(left) = NodeEndpointEvent::from_delivery_messages(messages, queued_at) {
+            self.send_bulk_to_lane(left, true)?;
+        }
+        if let Some(right) = NodeEndpointEvent::from_delivery_messages(right, queued_at) {
+            self.send_bulk_to_lane(right, true)?;
+        }
+        Ok(())
     }
 
     fn note_send_success(&self, previous: usize, queued: usize) {

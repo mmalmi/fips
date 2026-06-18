@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_wg_batch_chunk_default_keeps_burst_size_conservative() {
+    fn linux_wg_batch_chunk_default_preserves_sender_batch_shape() {
         assert_eq!(
             parse_linux_wg_batch_chunk_size(None),
             DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE
@@ -538,6 +538,7 @@ mod tests {
         );
         assert_eq!(parse_linux_wg_batch_chunk_size(Some("1")), 1);
         assert_eq!(parse_linux_wg_batch_chunk_size(Some("16")), 16);
+        assert_eq!(parse_linux_wg_batch_chunk_size(Some("32")), 32);
         assert_eq!(
             parse_linux_wg_batch_chunk_size(Some("128")),
             LINUX_UDP_SEND_BATCH_MAX
