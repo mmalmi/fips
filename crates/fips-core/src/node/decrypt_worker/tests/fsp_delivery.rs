@@ -225,7 +225,7 @@
     }
 
     #[test]
-    fn fsp_aead_helper_completion_opens_then_owner_accepts_replay() {
+    fn fsp_aead_open_completion_opens_then_owner_accepts_replay() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
@@ -237,7 +237,7 @@
             0x0102_0304,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
             0,
-            b"ordered helper",
+            b"ordered worker-open",
         );
         let fsp_counter = fsp_sender.current_send_counter();
         let fsp_header = crate::node::session_wire::build_fsp_header(
@@ -297,7 +297,7 @@
             }
         };
 
-        let completion = FspAeadHelperJob {
+        let completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -306,13 +306,13 @@
             header: header.clone(),
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
 
         let drain = state
             .complete_ordered_fsp_open(completion.ticket, completion.result)
-            .expect("first helper completion should fit receive order");
+            .expect("first worker-open completion should fit receive order");
         assert_eq!(drain.ready, 1);
         assert_eq!(drain.accepted, 1);
         assert_eq!(drain.replay_drops, 0);
@@ -327,10 +327,10 @@
                 assert_eq!(*got_source_peer, source_peer);
                 assert_eq!(opened.plaintext_len, inner_plaintext.len());
             }
-            FspReadyCompletion::AeadFailed { .. } => panic!("valid helper frame must open"),
+            FspReadyCompletion::AeadFailed { .. } => panic!("valid worker-open frame must open"),
         }
 
-        let duplicate = FspAeadHelperJob {
+        let duplicate = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -339,12 +339,12 @@
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
         let duplicate_drain = state
             .complete_ordered_fsp_open(duplicate.ticket, duplicate.result)
-            .expect("duplicate helper completion should fit receive order");
+            .expect("duplicate worker-open completion should fit receive order");
         assert_eq!(duplicate_drain.ready, 1);
         assert_eq!(duplicate_drain.accepted, 0);
         assert_eq!(duplicate_drain.replay_drops, 1);
@@ -357,7 +357,7 @@
         );
         assert!(
             duplicate_drain.outputs.is_empty(),
-            "replayed helper completion must not emit authenticated output"
+            "replayed worker-open completion must not emit authenticated output"
         );
     }
 
@@ -488,7 +488,7 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadHelperJob {
+        let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -497,14 +497,14 @@
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
 
         let (second_payload, second_plaintext_len) = make_payload(b"second worker-open");
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadHelperJob {
+        let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -513,7 +513,7 @@
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
 
@@ -635,7 +635,7 @@
         let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
         let first_payload_len = first_payload.len();
         let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
-        let first_completion = FspAeadHelperJob {
+        let first_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -644,7 +644,7 @@
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
 
@@ -654,7 +654,7 @@
             .expect("test FSP frame has ciphertext") ^= 0x55;
         let second_payload_len = second_payload.len();
         let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
-        let second_completion = FspAeadHelperJob {
+        let second_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
@@ -663,7 +663,7 @@
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
 
@@ -809,7 +809,7 @@
     }
 
     #[test]
-    fn fsp_local_owner_open_uses_shared_order_with_helper_results() {
+    fn fsp_local_owner_open_uses_shared_order_with_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
@@ -886,13 +886,13 @@
             }
         };
 
-        let (helper_payload, helper_plaintext_len) = make_payload(b"helper first");
-        let helper_payload_len = helper_payload.len();
-        let helper_header = FspEncryptedHeader::parse(&helper_payload).expect("helper header");
-        let helper_ticket = shared
+        let (open_payload, open_plaintext_len) = make_payload(b"worker-open first");
+        let open_payload_len = open_payload.len();
+        let open_header = FspEncryptedHeader::parse(&open_payload).expect("worker-open header");
+        let open_ticket = shared
             .try_issue_ticket()
-            .expect("helper should reserve the first FSP ticket");
-        assert_eq!(helper_ticket.sequence, 0);
+            .expect("worker-open should reserve the first FSP ticket");
+        assert_eq!(open_ticket.sequence, 0);
 
         let (local_payload, local_plaintext_len) = make_payload(b"local second");
         let local_payload_len = local_payload.len();
@@ -902,7 +902,7 @@
             .expect("local owner open should reserve from the same shared ticket source");
         assert_eq!(local_ticket.sequence, 1);
 
-        let local_completion = FspAeadHelperJob {
+        let local_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: local_ticket,
@@ -911,41 +911,41 @@
             header: local_header,
             completion_source: FspAeadCompletionSource::Local,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
         let local_drain = state
             .complete_ordered_fsp_open(local_completion.ticket, local_completion.result)
-            .expect("local completion should fit behind the pending helper ticket");
+            .expect("local completion should fit behind the pending worker-open ticket");
         assert_eq!(local_drain.ready, 0);
         assert!(
             local_drain.outputs.is_empty(),
-            "local owner completion must not bypass an older helper ticket"
+            "local owner completion must not bypass an older worker-open ticket"
         );
 
-        let helper_completion = FspAeadHelperJob {
+        let open_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
-            ticket: helper_ticket,
+            ticket: open_ticket,
             cipher: Arc::clone(&shared.cipher),
-            job: make_job(helper_payload, helper_payload_len),
-            header: helper_header,
+            job: make_job(open_payload, open_payload_len),
+            header: open_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         }
         .into_completion();
-        let helper_drain = state
-            .complete_ordered_fsp_open(helper_completion.ticket, helper_completion.result)
-            .expect("oldest helper completion should drain itself and buffered local open");
-        assert_eq!(helper_drain.ready, 2);
-        assert_eq!(helper_drain.accepted, 2);
-        assert_eq!(helper_drain.replay_drops, 0);
-        assert_eq!(helper_drain.outputs.len(), 2);
-        match (&helper_drain.outputs[0], &helper_drain.outputs[1]) {
+        let open_drain = state
+            .complete_ordered_fsp_open(open_completion.ticket, open_completion.result)
+            .expect("oldest worker-open completion should drain itself and buffered local open");
+        assert_eq!(open_drain.ready, 2);
+        assert_eq!(open_drain.accepted, 2);
+        assert_eq!(open_drain.replay_drops, 0);
+        assert_eq!(open_drain.outputs.len(), 2);
+        match (&open_drain.outputs[0], &open_drain.outputs[1]) {
             (
                 FspReadyCompletion::Opened {
-                    opened: helper_opened,
+                    opened: worker_opened,
                     ..
                 },
                 FspReadyCompletion::Opened {
@@ -953,15 +953,15 @@
                     ..
                 },
             ) => {
-                assert_eq!(helper_opened.plaintext_len, helper_plaintext_len);
+                assert_eq!(worker_opened.plaintext_len, open_plaintext_len);
                 assert_eq!(local_opened.plaintext_len, local_plaintext_len);
             }
-            _ => panic!("helper and local completions should both authenticate"),
+            _ => panic!("worker-open and local completions should both authenticate"),
         }
     }
 
     #[test]
-    fn fsp_aead_helper_receive_window_tracks_owner_ready_progress() {
+    fn fsp_aead_open_receive_window_tracks_owner_ready_progress() {
         let shared = FspSharedCryptoSession::new(
             0,
             7,
@@ -973,12 +973,12 @@
         for expected in 0..receive_window as u64 {
             let ticket = shared
                 .try_issue_ticket()
-                .expect("window should admit initial helper tickets");
+                .expect("window should admit initial worker-open tickets");
             assert_eq!(ticket.sequence, expected);
         }
         assert!(
             !shared.can_issue_ticket(),
-            "full ordered-completion window must stop helper admission"
+            "full ordered-completion window must stop worker-open admission"
         );
         assert!(
             shared.try_issue_ticket().is_none(),
@@ -988,11 +988,11 @@
         shared.mark_next_ready(1);
         assert!(
             shared.can_issue_ticket(),
-            "owner completion progress should reopen helper admission"
+            "owner completion progress should reopen worker-open admission"
         );
         let ticket = shared
             .try_issue_ticket()
-            .expect("one completed ticket should free one helper slot");
+            .expect("one completed ticket should free one worker-open slot");
         assert_eq!(ticket.sequence, receive_window as u64);
     }
 

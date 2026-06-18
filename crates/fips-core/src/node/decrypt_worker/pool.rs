@@ -463,8 +463,8 @@ impl DecryptWorkerPool {
         &self,
         open_idx: usize,
         owner_idx: usize,
-        job: FspAeadHelperJob,
-    ) -> Result<(), FspAeadHelperJob> {
+        job: FspAeadOpenJob,
+    ) -> Result<(), FspAeadOpenJob> {
         self.dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, vec![job])
             .map_err(|mut jobs| {
                 jobs.pop()
@@ -477,8 +477,8 @@ impl DecryptWorkerPool {
         &self,
         open_idx: usize,
         owner_idx: usize,
-        mut job: FspAeadHelperJob,
-    ) -> Result<(), FspAeadHelperJob> {
+        mut job: FspAeadOpenJob,
+    ) -> Result<(), FspAeadOpenJob> {
         let Some(open_sender) = self.senders.get(open_idx) else {
             return Err(job);
         };
@@ -486,7 +486,7 @@ impl DecryptWorkerPool {
             return Err(job);
         };
         job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
-        job.helper_queued_at = crate::perf_profile::stamp();
+        job.open_queued_at = crate::perf_profile::stamp();
         if !try_reserve_bulk_packets(
             &open_sender.bulk_queued_packets,
             open_sender.bulk_packet_cap,
@@ -525,8 +525,8 @@ impl DecryptWorkerPool {
         &self,
         open_idx: usize,
         owner_idx: usize,
-        mut jobs: Vec<FspAeadHelperJob>,
-    ) -> Result<(), Vec<FspAeadHelperJob>> {
+        mut jobs: Vec<FspAeadOpenJob>,
+    ) -> Result<(), Vec<FspAeadOpenJob>> {
         debug_assert!(!jobs.is_empty());
         debug_assert!(jobs.len() <= DECRYPT_WORKER_BULK_BATCH_MAX);
 
@@ -539,7 +539,7 @@ impl DecryptWorkerPool {
         let queued_at = crate::perf_profile::stamp();
         for job in &mut jobs {
             job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
-            job.helper_queued_at = queued_at;
+            job.open_queued_at = queued_at;
         }
 
         if jobs.len() == 1 {

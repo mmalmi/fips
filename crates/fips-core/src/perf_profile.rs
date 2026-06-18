@@ -219,9 +219,11 @@ pub enum Stage {
     /// individual FSP job begins service. This is batch-tail residence inside
     /// one worker turn.
     DecryptFspWorkerBulkInputTailWait = 44,
-    /// FSP AEAD helper job residence before a helper thread starts opening it.
+    /// Retired FSP AEAD helper job residence. Kept as a stable historical slot;
+    /// current FSP worker-open opens use `FspAeadWorkerOpenQueueWait`.
     FspAeadHelperQueueWait = 45,
-    /// FSP AEAD helper completion residence before the owner worker handles it.
+    /// Retired FSP AEAD helper completion residence. Kept as a stable historical
+    /// slot; current FSP worker-open completions use `FspAeadWorkerOpenCompletionWait`.
     FspAeadHelperCompletionWait = 46,
     /// Worker-side inner FSP seal for pipelined endpoint sends.
     FmpWorkerFspSeal = 47,
@@ -254,9 +256,9 @@ pub enum Stage {
     /// Time spent flushing decrypt-worker output batches into rx_loop fallback
     /// and direct endpoint delivery lanes.
     DecryptWorkerOutputFlush = 59,
-    /// Owner-worker service time for an FSP AEAD helper completion, including
+    /// Owner-worker service time for an FSP AEAD open completion, including
     /// ordered drain, replay commit, inner-header decode, and output batching.
-    FspAeadHelperCompletionService = 60,
+    FspAeadCompletionService = 60,
     /// Sender rx_loop work to prepare endpoint session data before pipelined
     /// worker admission: FSP context lookup, coordinate warmup decisions, and
     /// inner metadata assembly.
@@ -370,7 +372,7 @@ impl Stage {
             Stage::FmpReceiveOrderWindowWait => "fmp_receive_order_window_wait",
             Stage::FmpAeadHelperCompletionService => "fmp_aead_helper_completion_service",
             Stage::DecryptWorkerOutputFlush => "decrypt_worker_output_flush",
-            Stage::FspAeadHelperCompletionService => "fsp_aead_helper_completion_service",
+            Stage::FspAeadCompletionService => "fsp_aead_completion_service",
             Stage::EndpointSendPrepare => "endpoint_send_prepare",
             Stage::EndpointSendPlan => "endpoint_send_plan",
             Stage::EndpointSendCommit => "endpoint_send_commit",
@@ -450,7 +452,7 @@ fn stage_from_index(idx: usize) -> Stage {
         57 => Stage::FmpReceiveOrderWindowWait,
         58 => Stage::FmpAeadHelperCompletionService,
         59 => Stage::DecryptWorkerOutputFlush,
-        60 => Stage::FspAeadHelperCompletionService,
+        60 => Stage::FspAeadCompletionService,
         61 => Stage::EndpointSendPrepare,
         62 => Stage::EndpointSendPlan,
         63 => Stage::EndpointSendCommit,

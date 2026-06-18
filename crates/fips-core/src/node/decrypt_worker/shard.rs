@@ -112,11 +112,6 @@ fn record_fsp_aead_completion_wait(
     source: FspAeadCompletionSource,
     completed_at: Option<crate::perf_profile::TraceStamp>,
 ) {
-    crate::perf_profile::record_since_count(
-        crate::perf_profile::Stage::FspAeadHelperCompletionWait,
-        completed_at,
-        1,
-    );
     if source.is_worker_open() {
         crate::perf_profile::record_since_count(
             crate::perf_profile::Stage::FspAeadWorkerOpenCompletionWait,
@@ -342,14 +337,10 @@ impl DecryptWorkerShard {
                 record_fsp_owner_match(owner_idx == idx);
                 let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
                     match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
-                        Ok((open_idx, owner_idx, helper_job)) => {
+                        Ok((open_idx, owner_idx, open_job)) => {
                             record_fsp_path_worker_open_bulk();
-                            let returned = fsp_open_batcher.push(
-                                &self.pool,
-                                open_idx,
-                                owner_idx,
-                                helper_job,
-                            );
+                            let returned =
+                                fsp_open_batcher.push(&self.pool, open_idx, owner_idx, open_job);
                             if !returned.is_empty() {
                                 self.drop_returned_fsp_aead_open_jobs(
                                     idx,
@@ -531,7 +522,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         job: FspDecryptJob,
-    ) -> Result<(usize, usize, FspAeadHelperJob), FspOpenWorkerPrepareError> {
+    ) -> Result<(usize, usize, FspAeadOpenJob), FspOpenWorkerPrepareError> {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
@@ -590,7 +581,7 @@ impl DecryptWorkerShard {
         }
         .unwrap_or_else(|| eligible_open_idx.expect("checked eligible FSP open worker"));
 
-        let helper_job = FspAeadHelperJob {
+        let open_job = FspAeadOpenJob {
             source_addr,
             receive_order_id: shared.receive_order_id,
             ticket,
@@ -599,9 +590,9 @@ impl DecryptWorkerShard {
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
-            helper_queued_at: None,
+            open_queued_at: None,
         };
-        Ok((open_idx, owner_idx, helper_job))
+        Ok((open_idx, owner_idx, open_job))
     }
 
     #[allow(clippy::result_large_err)]
@@ -611,7 +602,7 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) -> Result<(), FspDecryptJob> {
-        let (open_idx, owner_idx, helper_job) = match self.try_prepare_fsp_bulk_open_worker_job(
+        let (open_idx, owner_idx, open_job) = match self.try_prepare_fsp_bulk_open_worker_job(
             idx, job,
         ) {
             Ok(prepared) => prepared,
@@ -627,11 +618,11 @@ impl DecryptWorkerShard {
         record_fsp_path_worker_open_bulk();
         match self
             .pool
-            .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, helper_job)
+            .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, open_job)
         {
             Ok(()) => Ok(()),
-            Err(helper_job) => {
-                self.drop_returned_fsp_aead_open_job(idx, helper_job, plaintext_batch);
+            Err(open_job) => {
+                self.drop_returned_fsp_aead_open_job(idx, open_job, plaintext_batch);
                 Ok(())
             }
         }
@@ -640,13 +631,13 @@ impl DecryptWorkerShard {
     fn drop_returned_fsp_aead_open_job(
         &mut self,
         idx: usize,
-        mut helper_job: FspAeadHelperJob,
+        mut open_job: FspAeadOpenJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         record_fsp_open_pool_bulk_drop(1);
-        let completion_tx = helper_job.completion_tx.take();
-        helper_job.mark_returned_completion();
-        let completion = helper_job.into_dropped_completion();
+        let completion_tx = open_job.completion_tx.take();
+        open_job.mark_returned_completion();
+        let completion = open_job.into_dropped_completion();
         if completion_tx
             .as_ref()
             .is_some_and(|tx| self.pool.fsp_aead_completion_sender_is(idx, tx))
@@ -663,7 +654,7 @@ impl DecryptWorkerShard {
     fn drop_returned_fsp_aead_open_jobs(
         &mut self,
         idx: usize,
-        jobs: Vec<FspAeadHelperJob>,
+        jobs: Vec<FspAeadOpenJob>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         record_fsp_open_pool_bulk_drop(jobs.len());
@@ -751,7 +742,7 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         let _t_service = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::FspAeadHelperCompletionService,
+            crate::perf_profile::Stage::FspAeadCompletionService,
         );
         record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         let FspAeadCompletion {
@@ -852,7 +843,7 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         let _t_service = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::FspAeadHelperCompletionService,
+            crate::perf_profile::Stage::FspAeadCompletionService,
         );
         for completion in &completions {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);

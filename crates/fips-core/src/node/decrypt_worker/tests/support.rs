@@ -472,7 +472,7 @@
         let mut header_packet = header_bytes.to_vec();
         header_packet.extend_from_slice(&[0u8; 16]);
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-        let job = test_fsp_aead_helper_job(
+        let job = test_fsp_aead_open_job(
             source_addr,
             0,
             Arc::new(test_chacha_key([0x54; 32])),
@@ -544,14 +544,14 @@
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
         let cipher = Arc::new(test_chacha_key([0x55; 32]));
         let jobs = vec![
-            test_fsp_aead_helper_job(
+            test_fsp_aead_open_job(
                 source_addr,
                 0,
                 Arc::clone(&cipher),
                 header.clone(),
                 unused_completion_tx.clone(),
             ),
-            test_fsp_aead_helper_job(source_addr, 1, cipher, header, unused_completion_tx),
+            test_fsp_aead_open_job(source_addr, 1, cipher, header, unused_completion_tx),
         ];
 
         assert!(
@@ -635,8 +635,8 @@
             None,
             Some(&mut fsp_open_batcher),
         );
-        for helper_job in fsp_open_batcher.flush(&shard.pool) {
-            shard.drop_returned_fsp_aead_open_job(current_idx, helper_job, &mut plaintext_batch);
+        for open_job in fsp_open_batcher.flush(&shard.pool) {
+            shard.drop_returned_fsp_aead_open_job(current_idx, open_job, &mut plaintext_batch);
         }
 
         assert_eq!(bulk_receivers[owner_idx].len(), 0, "owner bulk handoff should be bypassed");
@@ -756,7 +756,7 @@
                 &pool,
                 open_idx,
                 owner_idx,
-                test_fsp_aead_helper_job(
+                test_fsp_aead_open_job(
                     source_addr,
                     sequence,
                     Arc::clone(&cipher),
@@ -953,18 +953,18 @@
         let mut header_packet = header_bytes.to_vec();
         header_packet.extend_from_slice(&[0u8; 16]);
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-        let mut helper_job = test_fsp_aead_helper_job(
+        let mut open_job = test_fsp_aead_open_job(
             source_addr,
             0,
             Arc::new(test_chacha_key([0x58; 32])),
             header,
             pool.senders[owner_idx].fsp_aead_completion.clone(),
         );
-        helper_job.completion_source = FspAeadCompletionSource::WorkerOpen;
+        open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
 
         let mut shard = DecryptWorkerShard::new(pool);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        shard.drop_returned_fsp_aead_open_job(current_idx, helper_job, &mut plaintext_batch);
+        shard.drop_returned_fsp_aead_open_job(current_idx, open_job, &mut plaintext_batch);
 
         let completion = fsp_completion_receivers[owner_idx]
             .try_recv()
@@ -1001,7 +1001,7 @@
         let cipher = Arc::new(test_chacha_key([0x59; 32]));
         let jobs = vec![
             {
-                let mut job = test_fsp_aead_helper_job(
+                let mut job = test_fsp_aead_open_job(
                     source_addr,
                     0,
                     Arc::clone(&cipher),
@@ -1012,7 +1012,7 @@
                 job
             },
             {
-                let mut job = test_fsp_aead_helper_job(
+                let mut job = test_fsp_aead_open_job(
                     source_addr,
                     1,
                     cipher,
@@ -1060,7 +1060,7 @@
     }
 
     #[test]
-    fn returned_owner_mismatch_fsp_open_jobs_legacy_helper_source_is_still_dropped() {
+    fn returned_owner_mismatch_fsp_open_jobs_are_dropped_by_owner() {
         let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(3, 4);
         let source_addr = NodeAddr::from_bytes([0x48; 16]);
@@ -1071,7 +1071,7 @@
         header_packet.extend_from_slice(&[0u8; 16]);
         let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
         let cipher = Arc::new(test_chacha_key([0x5a; 32]));
-        let jobs = vec![test_fsp_aead_helper_job(
+        let jobs = vec![test_fsp_aead_open_job(
                 source_addr,
                 0,
                 cipher,
@@ -1091,7 +1091,7 @@
                 result: FspOrderedCompletion::Dropped { .. },
                 ..
             }) => {}
-            _ => panic!("returned opener job should be dropped, regardless of legacy source label"),
+            _ => panic!("returned opener job should be dropped by the owner"),
         }
     }
 
@@ -1585,17 +1585,17 @@
         job
     }
 
-    fn test_fsp_aead_helper_job(
+    fn test_fsp_aead_open_job(
         source_addr: NodeAddr,
         ticket_sequence: u64,
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
         completion_tx: Sender<FspAeadCompletionBatch>,
-    ) -> FspAeadHelperJob {
+    ) -> FspAeadOpenJob {
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
-        FspAeadHelperJob {
+        FspAeadOpenJob {
             source_addr,
             receive_order_id: 7,
             ticket: FspReceiveTicket {
@@ -1606,7 +1606,7 @@
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: Some(completion_tx),
-            helper_queued_at: None,
+            open_queued_at: None,
         }
     }
 

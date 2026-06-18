@@ -1354,7 +1354,7 @@ impl FmpAeadHelperJob {
 
 }
 
-struct FspAeadHelperJob {
+struct FspAeadOpenJob {
     source_addr: NodeAddr,
     receive_order_id: u64,
     ticket: FspReceiveTicket,
@@ -1363,7 +1363,7 @@ struct FspAeadHelperJob {
     header: FspEncryptedHeader,
     completion_source: FspAeadCompletionSource,
     completion_tx: Option<Sender<FspAeadCompletionBatch>>,
-    helper_queued_at: Option<crate::perf_profile::TraceStamp>,
+    open_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1468,7 +1468,7 @@ impl FspAeadCompletionBatch {
     }
 }
 
-impl FspAeadHelperJob {
+impl FspAeadOpenJob {
     fn mark_returned_completion(&mut self) {
         match self.completion_source {
             FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
@@ -1481,19 +1481,14 @@ impl FspAeadHelperJob {
 
     fn into_completion(mut self) -> FspAeadCompletion {
         let source = self.completion_source;
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FspAeadHelperQueueWait,
-            self.helper_queued_at,
-            1,
-        );
         if source.is_worker_open() {
             crate::perf_profile::record_since_count(
                 crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.helper_queued_at,
+                self.open_queued_at,
                 1,
             );
         }
-        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
         let payload_end = self
             .job
             .fsp_payload_offset
@@ -1551,19 +1546,14 @@ impl FspAeadHelperJob {
 
     fn into_dropped_completion(self) -> FspAeadCompletion {
         let source = self.completion_source;
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FspAeadHelperQueueWait,
-            self.helper_queued_at,
-            1,
-        );
         if source.is_worker_open() {
             crate::perf_profile::record_since_count(
                 crate::perf_profile::Stage::FspAeadWorkerOpenQueueWait,
-                self.helper_queued_at,
+                self.open_queued_at,
                 1,
             );
         }
-        let completed_at = self.helper_queued_at.and_then(|_| crate::perf_profile::stamp());
+        let completed_at = self.open_queued_at.and_then(|_| crate::perf_profile::stamp());
         FspAeadCompletion {
             source_addr: self.source_addr,
             receive_order_id: self.receive_order_id,

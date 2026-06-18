@@ -569,7 +569,7 @@ fn send_fsp_aead_open_completion_batch(
     }
 }
 
-fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadHelperJob>) {
+fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
     let completion_batch_max = fsp_aead_completion_batch_max();
     let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
     let mut current_source_addr = None;

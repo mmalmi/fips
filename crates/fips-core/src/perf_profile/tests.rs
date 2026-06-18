@@ -908,8 +908,8 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
         "decrypt_worker_output_flush"
     );
     assert_eq!(
-        stage_from_index(Stage::FspAeadHelperCompletionService as usize).name(),
-        "fsp_aead_helper_completion_service"
+        stage_from_index(Stage::FspAeadCompletionService as usize).name(),
+        "fsp_aead_completion_service"
     );
     assert_eq!(
         stage_from_index(Stage::EndpointSendPrepare as usize).name(),

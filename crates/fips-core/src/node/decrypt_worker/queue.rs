@@ -31,8 +31,8 @@ enum WorkerMsg {
 enum DecryptWorkerBulkItem {
     Job(DecryptJob),
     FspJob(FspDecryptJob),
-    FspAeadOpen(FspAeadHelperJob),
-    FspAeadOpenBatch(Vec<FspAeadHelperJob>),
+    FspAeadOpen(FspAeadOpenJob),
+    FspAeadOpenBatch(Vec<FspAeadOpenJob>),
     Batch(Vec<DecryptJob>),
     FspBatch(Vec<FspDecryptJob>),
 }
@@ -91,7 +91,7 @@ impl DecryptWorkerBulkItem {
 }
 
 fn decrypt_worker_bulk_item_from_fsp_aead_open_jobs(
-    mut jobs: Vec<FspAeadHelperJob>,
+    mut jobs: Vec<FspAeadOpenJob>,
 ) -> DecryptWorkerBulkItem {
     if jobs.len() == 1 {
         DecryptWorkerBulkItem::FspAeadOpen(jobs.pop().expect("checked single FSP AEAD open job"))
@@ -133,7 +133,7 @@ fn fsp_jobs_from_decrypt_worker_bulk_item(item: DecryptWorkerBulkItem) -> Vec<Fs
 
 fn fsp_aead_open_jobs_from_decrypt_worker_bulk_item(
     item: DecryptWorkerBulkItem,
-) -> Vec<FspAeadHelperJob> {
+) -> Vec<FspAeadOpenJob> {
     match item {
         DecryptWorkerBulkItem::FspAeadOpen(job) => vec![job],
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => jobs,
@@ -427,7 +427,7 @@ impl FspDecryptJobBatcher {
 struct FspAeadOpenJobBatcher {
     open_idx: Option<usize>,
     owner_idx: Option<usize>,
-    jobs: Vec<FspAeadHelperJob>,
+    jobs: Vec<FspAeadOpenJob>,
 }
 
 impl FspAeadOpenJobBatcher {
@@ -444,8 +444,8 @@ impl FspAeadOpenJobBatcher {
         workers: &DecryptWorkerPool,
         open_idx: usize,
         owner_idx: usize,
-        job: FspAeadHelperJob,
-    ) -> Vec<FspAeadHelperJob> {
+        job: FspAeadOpenJob,
+    ) -> Vec<FspAeadOpenJob> {
         let mut returned = Vec::new();
         let batch_max = workers.fsp_open_batch_packet_max_for(open_idx);
         if self.open_idx != Some(open_idx)
@@ -464,7 +464,7 @@ impl FspAeadOpenJobBatcher {
         returned
     }
 
-    fn flush(&mut self, workers: &DecryptWorkerPool) -> Vec<FspAeadHelperJob> {
+    fn flush(&mut self, workers: &DecryptWorkerPool) -> Vec<FspAeadOpenJob> {
         let Some(open_idx) = self.open_idx.take() else {
             return Vec::new();
         };
