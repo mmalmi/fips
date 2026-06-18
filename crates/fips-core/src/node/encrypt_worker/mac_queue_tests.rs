@@ -295,6 +295,17 @@ mod mac_queue_tests {
     }
 
     #[test]
+    fn macos_ordered_sender_defaults_on_but_can_opt_out() {
+        assert!(parse_macos_ordered_sender_enabled(None));
+        assert!(parse_macos_ordered_sender_enabled(Some("1")));
+        assert!(parse_macos_ordered_sender_enabled(Some("true")));
+        assert!(parse_macos_ordered_sender_enabled(Some("unexpected")));
+        assert!(!parse_macos_ordered_sender_enabled(Some("0")));
+        assert!(!parse_macos_ordered_sender_enabled(Some("false")));
+        assert!(!parse_macos_ordered_sender_enabled(Some("OFF")));
+    }
+
+    #[test]
     fn mac_worker_bulk_push_blocks_until_space_is_available() {
         with_test_socket(|socket, cipher| {
             let (tx, rx) = mac_worker_channel(1);

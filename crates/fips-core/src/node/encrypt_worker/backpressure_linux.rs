@@ -303,6 +303,17 @@ mod send_backpressure_tests {
             std::io::ErrorKind::PermissionDenied
         )));
     }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_send_pace_defaults_off_but_can_opt_in() {
+        assert_eq!(macos_send_pace_mbps_from_raw(None), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("0")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("-1")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("wat")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("750")), 750.0);
+    }
 }
 
 #[cfg(unix)]
@@ -331,14 +342,14 @@ struct MacSendRatePacer {
 #[cfg(target_os = "macos")]
 impl Default for MacSendRatePacer {
     fn default() -> Self {
-        // Default-on for Darwin's direct sender: without sendmmsg/GSO, tight
-        // send bursts can wedge Wi-Fi/utun queues while the daemon is mostly
-        // idle. Keep the rate above typical Tailscale-over-LAN throughput, and
-        // leave FIPS_MACOS_SEND_PACE_MBPS=0 as the lab opt-out.
-        let mbps = std::env::var("FIPS_MACOS_SEND_PACE_MBPS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<f64>().ok())
-            .unwrap_or(350.0);
+        // Darwin has no sendmmsg/GSO path, but a per-packet sleep in the hot
+        // sender loop costs more than it saves on clean LAN/Wi-Fi links. Keep
+        // pacing as an operational escape hatch instead of the default.
+        let mbps = macos_send_pace_mbps_from_raw(
+            std::env::var("FIPS_MACOS_SEND_PACE_MBPS")
+                .ok()
+                .as_deref(),
+        );
         let bytes_per_sec = if mbps.is_finite() && mbps > 0.0 {
             mbps * 1_000_000.0 / 8.0
         } else {
@@ -356,6 +367,13 @@ impl Default for MacSendRatePacer {
             last: std::time::Instant::now(),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_send_pace_mbps_from_raw(raw: Option<&str>) -> f64 {
+    raw.and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0)
 }
 
 #[cfg(target_os = "macos")]

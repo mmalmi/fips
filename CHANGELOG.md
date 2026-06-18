@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without processing the public advert stream.
 - Kept same-owner FSP bulk decrypt on the session owner by default to avoid
   receive-side ordered-completion queue buildup during LAN TCP transfers.
+- Made the macOS sender use the ordered parallel-encrypt path by default and
+  disabled the per-packet send pacer unless explicitly requested, restoring
+  LAN tunnel throughput while keeping env opt-outs for hardware-specific A/Bs.
 - Demoted routine Bloom and traversal backpressure logs from warning level so
   low-power nodes do not spend excessive CPU on repeated expected drops.
 
