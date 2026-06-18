@@ -79,6 +79,28 @@ fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
     assert!(!degradation.is_degraded(&dest, 30_000));
 }
 
+#[test]
+fn traversal_path_liveness_has_floor_for_short_heartbeats() {
+    assert_eq!(
+        crate::node::handlers::mmp::traversal_path_liveness_timeout(
+            2,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(5),
+        ),
+        std::time::Duration::from_secs(15),
+        "nvpn's short heartbeat must not shrink traversal/recent path liveness to a 6s false-stale window"
+    );
+    assert_eq!(
+        crate::node::handlers::mmp::traversal_path_liveness_timeout(
+            10,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(5),
+        ),
+        std::time::Duration::from_secs(22),
+        "default FIPS heartbeat keeps the existing 2*heartbeat+2s liveness window"
+    );
+}
+
 #[tokio::test]
 async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_peer() {
     let local_identity = Identity::generate();

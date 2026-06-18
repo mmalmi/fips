@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cached parsed configured peer metadata for route/config checks so hot
   endpoint traffic no longer reparses configured npubs while choosing direct
   versus fallback paths.
+- Added a floor to traversal/recent-endpoint link-dead detection so short
+  heartbeat integrations do not false-stale live paths during transient load.
 - Demoted routine Bloom and traversal backpressure logs from warning level so
   low-power nodes do not spend excessive CPU on repeated expected drops.
 

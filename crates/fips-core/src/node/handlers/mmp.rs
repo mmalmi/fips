@@ -16,6 +16,8 @@ use crate::{NodeAddr, PeerIdentity};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
+const TRAVERSAL_PATH_MIN_DEAD_TIMEOUT_SECS: u64 = 15;
+
 /// Format bytes/sec as human-readable throughput.
 fn format_throughput(bps: f64) -> String {
     if bps == 0.0 {
@@ -754,9 +756,11 @@ impl Node {
             return None;
         }
 
-        let heartbeat = Duration::from_secs(self.config.node.heartbeat_interval_secs.max(1));
-        let recent_path_timeout = heartbeat.saturating_mul(2) + Duration::from_secs(2);
-        Some(recent_path_timeout.max(fast_dead_timeout).min(dead_timeout))
+        Some(traversal_path_liveness_timeout(
+            self.config.node.heartbeat_interval_secs,
+            dead_timeout,
+            fast_dead_timeout,
+        ))
     }
 
     /// Send heartbeats and remove dead peers.
@@ -892,6 +896,17 @@ impl Node {
             }
         }
     }
+}
+
+pub(in crate::node) fn traversal_path_liveness_timeout(
+    heartbeat_interval_secs: u64,
+    dead_timeout: Duration,
+    fast_dead_timeout: Duration,
+) -> Duration {
+    let heartbeat = Duration::from_secs(heartbeat_interval_secs.max(1));
+    let recent_path_timeout = (heartbeat.saturating_mul(2) + Duration::from_secs(2))
+        .max(Duration::from_secs(TRAVERSAL_PATH_MIN_DEAD_TIMEOUT_SECS));
+    recent_path_timeout.max(fast_dead_timeout).min(dead_timeout)
 }
 
 #[cfg(test)]
