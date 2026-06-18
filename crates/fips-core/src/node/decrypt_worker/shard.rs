@@ -1387,11 +1387,20 @@ impl DecryptWorkerShard {
                 return Vec::new();
             }
             Err(FspOpenError::Aead) => {
-                return vec![DecryptWorkerOutput {
+                let job = FspDecryptJob {
                     fallback_tx,
-                    event: DecryptWorkerEvent::Plaintext(fallback),
-                    direct_delivery: None,
-                }];
+                    fallback,
+                    local_node_addr,
+                    source_addr,
+                    previous_hop_peer,
+                    path_mtu,
+                    ce_flag,
+                    inner_timestamp_ms,
+                    fsp_payload_offset,
+                    fsp_payload_len,
+                    trace_enqueued_at: None,
+                };
+                return vec![self.output_for_fsp_aead_failure(job, &header)];
             }
         };
         let Some((timestamp, msg_type, inner_flags_byte, _body)) =
