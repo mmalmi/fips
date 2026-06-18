@@ -371,6 +371,33 @@ impl DecryptWorkerPool {
         Some(idx)
     }
 
+    fn worker_idx_for_fsp_open_avoiding_striped(
+        &self,
+        source_addr: &NodeAddr,
+        avoid_idx: usize,
+        ticket: FspReceiveTicket,
+    ) -> Option<(usize, bool)> {
+        let worker_count = self.senders.len();
+        if worker_count <= 1 || avoid_idx >= worker_count {
+            return None;
+        }
+        let candidate_count = worker_count - 1;
+        let base = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % candidate_count;
+        let stripe = ((ticket.sequence / DECRYPT_WORKER_BULK_BATCH_MAX as u64)
+            % candidate_count as u64) as usize;
+        let mut offset = (base + stripe) % candidate_count;
+        for idx in 0..worker_count {
+            if idx == avoid_idx {
+                continue;
+            }
+            if offset == 0 {
+                return Some((idx, candidate_count > 1));
+            }
+            offset -= 1;
+        }
+        None
+    }
+
     fn worker_idx_for_fsp_open_avoiding_pair(
         &self,
         source_addr: &NodeAddr,
@@ -393,6 +420,38 @@ impl DecryptWorkerPool {
             }
             if offset == 0 {
                 return Some(idx);
+            }
+            offset -= 1;
+        }
+        None
+    }
+
+    fn worker_idx_for_fsp_open_avoiding_pair_striped(
+        &self,
+        source_addr: &NodeAddr,
+        avoid_a: usize,
+        avoid_b: usize,
+        ticket: FspReceiveTicket,
+    ) -> Option<(usize, bool)> {
+        if avoid_a == avoid_b {
+            return self.worker_idx_for_fsp_open_avoiding_striped(source_addr, avoid_a, ticket);
+        }
+        let worker_count = self.senders.len();
+        if worker_count <= 2 || avoid_a >= worker_count || avoid_b >= worker_count {
+            return None;
+        }
+
+        let candidate_count = worker_count - 2;
+        let base = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % candidate_count;
+        let stripe = ((ticket.sequence / DECRYPT_WORKER_BULK_BATCH_MAX as u64)
+            % candidate_count as u64) as usize;
+        let mut offset = (base + stripe) % candidate_count;
+        for idx in 0..worker_count {
+            if idx == avoid_a || idx == avoid_b {
+                continue;
+            }
+            if offset == 0 {
+                return Some((idx, candidate_count > 1));
             }
             offset -= 1;
         }

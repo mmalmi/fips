@@ -37,6 +37,13 @@ fn record_fsp_path_worker_open_bulk() {
     crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathWorkerOpenBulk);
 }
 
+#[inline]
+fn record_fsp_path_worker_open_striped() {
+    crate::perf_profile::record_event(
+        crate::perf_profile::Event::DecryptFspPathWorkerOpenStriped,
+    );
+}
+
 fn drop_fsp_owner_handoff_job(job: FspDecryptJob) {
     record_fsp_owner_handoff_drop(job.lane(), 1);
 }
@@ -351,8 +358,11 @@ impl DecryptWorkerShard {
                 };
                 let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
                     match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
-                        Ok((open_idx, owner_idx, helper_job)) => {
+                        Ok((open_idx, owner_idx, helper_job, striped)) => {
                             record_fsp_path_worker_open_bulk();
+                            if striped {
+                                record_fsp_path_worker_open_striped();
+                            }
                             let returned = fsp_open_batcher.push(
                                 &self.pool,
                                 open_idx,
@@ -544,7 +554,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         job: FspDecryptJob,
-    ) -> Result<(usize, usize, FspAeadHelperJob), FspOpenWorkerPrepareError> {
+    ) -> Result<(usize, usize, FspAeadHelperJob, bool), FspOpenWorkerPrepareError> {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
@@ -595,13 +605,19 @@ impl DecryptWorkerShard {
             );
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
-        let open_idx = if owner_idx == idx {
-            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
+        let (open_idx, striped) = if owner_idx == idx {
+            self.pool
+                .worker_idx_for_fsp_open_avoiding_striped(&source_addr, idx, ticket)
         } else {
             self.pool
-                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
+                .worker_idx_for_fsp_open_avoiding_pair_striped(&source_addr, idx, owner_idx, ticket)
         }
-        .unwrap_or_else(|| eligible_open_idx.expect("checked eligible FSP open worker"));
+        .unwrap_or_else(|| {
+            (
+                eligible_open_idx.expect("checked eligible FSP open worker"),
+                false,
+            )
+        });
 
         let helper_job = FspAeadHelperJob {
             source_addr,
@@ -614,7 +630,7 @@ impl DecryptWorkerShard {
             completion_tx: None,
             helper_queued_at: None,
         };
-        Ok((open_idx, owner_idx, helper_job))
+        Ok((open_idx, owner_idx, helper_job, striped))
     }
 
     #[allow(clippy::result_large_err)]
@@ -624,7 +640,7 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) -> Result<(), FspDecryptJob> {
-        let (open_idx, owner_idx, helper_job) = match self.try_prepare_fsp_bulk_open_worker_job(
+        let (open_idx, owner_idx, helper_job, striped) = match self.try_prepare_fsp_bulk_open_worker_job(
             idx, job,
         ) {
             Ok(prepared) => prepared,
@@ -642,6 +658,9 @@ impl DecryptWorkerShard {
             }
         };
         record_fsp_path_worker_open_bulk();
+        if striped {
+            record_fsp_path_worker_open_striped();
+        }
         match self
             .pool
             .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, helper_job)
