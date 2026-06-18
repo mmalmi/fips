@@ -124,7 +124,7 @@ impl Node {
         }
     }
 
-    pub(super) async fn peer_address_candidates(
+    pub(in crate::node) async fn peer_address_candidates(
         &self,
         peer_config: &PeerConfig,
     ) -> Vec<PeerAddress> {

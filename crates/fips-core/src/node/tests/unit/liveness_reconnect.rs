@@ -480,11 +480,11 @@ async fn process_pending_retries_allows_active_direct_refresh_at_peer_capacity()
         .expect("active peer retry should remain scheduled after failed initiation");
     assert_eq!(
         state.retry_count, 0,
-        "active direct refresh should stay on quick reprobe instead of peer backoff"
+        "active direct refresh should stay out of peer backoff"
     );
     assert!(
-        (3_000..=9_000).contains(&state.retry_after_ms),
-        "active direct refresh should be quickly rescheduled, got {}",
+        state.retry_after_ms >= 31_000,
+        "no-transport active direct refresh should be cooled down, got {}",
         state.retry_after_ms
     );
 }

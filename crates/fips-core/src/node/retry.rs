@@ -17,6 +17,7 @@ const MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK: usize = 2;
 const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_JITTER_MS: u64 = 5_000;
+const ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS: u64 = 30_000;
 
 fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
     let bytes = node_addr.as_bytes();
@@ -519,6 +520,36 @@ impl Node {
         );
     }
 
+    fn schedule_active_direct_refresh_no_transport_cooldown(
+        &mut self,
+        node_addr: NodeAddr,
+        now_ms: u64,
+    ) {
+        let retry_after_ms = now_ms.saturating_add(ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS);
+        let peer_name = self.peer_display_name(&node_addr);
+        let Some(state) = self.retry_pending.get_mut(&node_addr) else {
+            return;
+        };
+
+        state.reconnect = true;
+        state.retry_count = 0;
+        state.retry_after_ms = retry_after_ms;
+        state.expires_at_ms = None;
+
+        debug!(
+            peer = %peer_name,
+            cooldown_ms = ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS,
+            "Pacing active direct refresh after no local transport candidate"
+        );
+    }
+
+    async fn active_direct_refresh_has_concrete_candidate(&self, peer_config: &PeerConfig) -> bool {
+        self.peer_address_candidates(peer_config)
+            .await
+            .into_iter()
+            .any(|addr| !(addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat")))
+    }
+
     /// Record a traversal/recent-endpoint path that authenticated but then
     /// died under MMP liveness.
     ///
@@ -679,20 +710,36 @@ impl Node {
                         .await;
                 }
 
+                let has_concrete_direct_candidate = self
+                    .active_direct_refresh_has_concrete_candidate(&peer_config)
+                    .await;
+
                 match self
                     .initiate_active_peer_direct_refresh_connection(&peer_config)
                     .await
                 {
                     Ok(true) => {
-                        self.schedule_link_dead_reprobe(node_addr, now_ms);
-                        debug!(
-                            peer = %self.peer_display_name(&node_addr),
-                            "Direct-path retry initiated while preserving active fallback peer"
-                        );
+                        if has_concrete_direct_candidate {
+                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                            debug!(
+                                peer = %self.peer_display_name(&node_addr),
+                                "Direct-path retry initiated while preserving active fallback peer"
+                            );
+                        } else {
+                            self.schedule_active_direct_refresh_no_transport_cooldown(
+                                node_addr, now_ms,
+                            );
+                            debug!(
+                                peer = %self.peer_display_name(&node_addr),
+                                "Queued traversal refresh while preserving active fallback peer"
+                            );
+                        }
                     }
                     Ok(false) => {
                         if self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
-                            self.schedule_link_dead_reprobe(node_addr, now_ms);
+                            self.schedule_active_direct_refresh_no_transport_cooldown(
+                                node_addr, now_ms,
+                            );
                         } else {
                             self.retry_pending.remove(&node_addr);
                         }
@@ -712,6 +759,10 @@ impl Node {
                         }
                         if e.is_local_route_unavailable() {
                             self.schedule_local_route_retry(node_addr, now_ms);
+                        } else if matches!(e, NodeError::NoTransportForType(_)) {
+                            self.schedule_active_direct_refresh_no_transport_cooldown(
+                                node_addr, now_ms,
+                            );
                         } else {
                             self.schedule_link_dead_reprobe(node_addr, now_ms);
                         }

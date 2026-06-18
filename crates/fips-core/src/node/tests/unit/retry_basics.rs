@@ -210,6 +210,67 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
     assert_eq!(node.retry_pending.len(), 6);
 }
 
+#[tokio::test]
+async fn active_direct_refresh_no_transport_is_cooled_down() {
+    let peer_identity = Identity::generate();
+    let npub = peer_identity.npub();
+    let peer_config = crate::config::PeerConfig {
+        npub,
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer_identity = PeerIdentity::from_npub(&peer_config.npub).unwrap();
+    let node_addr = *peer_identity.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config.clone());
+    let mut node = Node::new(config).unwrap();
+    node.nostr_discovery = Some(Arc::new(NostrDiscovery::new_for_test()));
+    node.peers
+        .insert(node_addr, ActivePeer::new(peer_identity, LinkId::new(7), 0));
+    node.retry_pending.insert(
+        node_addr,
+        crate::node::retry::RetryState {
+            peer_config,
+            retry_count: 0,
+            retry_after_ms: 0,
+            reconnect: true,
+            expires_at_ms: None,
+        },
+    );
+
+    node.process_pending_retries(1_000).await;
+
+    let retry = node
+        .retry_pending
+        .get(&node_addr)
+        .expect("active direct refresh retry should stay queued");
+    assert_eq!(
+        retry.retry_count, 0,
+        "active fallback refresh failures should not enter peer backoff"
+    );
+    assert!(
+        retry.retry_after_ms >= 31_000,
+        "no-transport active refresh should cool down instead of refiring quickly, got {}",
+        retry.retry_after_ms
+    );
+
+    node.process_pending_retries(2_000).await;
+
+    let retry = node
+        .retry_pending
+        .get(&node_addr)
+        .expect("active direct refresh retry should stay queued");
+    assert!(
+        retry.retry_after_ms >= 31_000,
+        "cooled-down no-transport refresh should not fire again on the next tick"
+    );
+}
+
 /// Test that auto-connect peers with auto-reconnect enabled retry indefinitely
 /// (never exhaust).
 #[test]
