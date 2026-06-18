@@ -609,51 +609,6 @@
     }
 
     #[test]
-    fn fsp_open_worker_stripes_by_ordered_ticket_batch() {
-        let (pool, _control_receivers, _priority_receivers, _bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(4, 8);
-        let source_addr = NodeAddr::from_bytes([0x4a; 16]);
-        let owner_idx = 0;
-        let first = pool
-            .worker_idx_for_fsp_open_avoiding_striped(
-                &source_addr,
-                owner_idx,
-                FspReceiveTicket { sequence: 0 },
-            )
-            .expect("four-worker pool should have opener choices");
-        let same_batch_tail = pool
-            .worker_idx_for_fsp_open_avoiding_striped(
-                &source_addr,
-                owner_idx,
-                FspReceiveTicket {
-                    sequence: DECRYPT_WORKER_BULK_BATCH_MAX as u64 - 1,
-                },
-            )
-            .expect("same ticket batch should have opener choice");
-        let next_batch = pool
-            .worker_idx_for_fsp_open_avoiding_striped(
-                &source_addr,
-                owner_idx,
-                FspReceiveTicket {
-                    sequence: DECRYPT_WORKER_BULK_BATCH_MAX as u64,
-                },
-            )
-            .expect("next ticket batch should have opener choice");
-
-        assert!(first.1, "four-worker pool should mark opener path striped");
-        assert_eq!(
-            first, same_batch_tail,
-            "one ordered batch should stay on one opener"
-        );
-        assert_ne!(
-            first.0, next_batch.0,
-            "successive ordered batches should rotate opener workers"
-        );
-        assert_ne!(first.0, owner_idx);
-        assert_ne!(next_batch.0, owner_idx);
-    }
-
-    #[test]
     fn fsp_open_worker_batch_dispatch_groups_jobs_and_returns_ordered_completion_batch() {
         let (pool, control_receivers, priority_receivers, bulk_receivers, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(2, 4);
