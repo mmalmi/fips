@@ -66,8 +66,8 @@
     }
 
     #[test]
-    fn fsp_local_bulk_open_worker_env_defaults_on_but_can_opt_out() {
-        assert!(fsp_local_bulk_open_worker_enabled_from_raw(None));
+    fn fsp_local_bulk_open_worker_env_defaults_off_but_can_opt_in() {
+        assert!(!fsp_local_bulk_open_worker_enabled_from_raw(None));
         assert!(!fsp_local_bulk_open_worker_enabled_from_raw(Some("0")));
         assert!(!fsp_local_bulk_open_worker_enabled_from_raw(Some("false")));
         assert!(fsp_local_bulk_open_worker_enabled_from_raw(Some("1")));
