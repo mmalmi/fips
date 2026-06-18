@@ -118,6 +118,37 @@ async fn test_m1_accepts_sub_cap_filter() {
 }
 
 #[tokio::test]
+async fn test_m1_default_cap_accepts_near_capacity_filter_above_old_cap() {
+    let mut node = make_node();
+    let peer_addr = inject_peer(&mut node);
+
+    // 565 full bytes in the fixed 1 KB / k=5 filter yields FPR just over the
+    // old 0.05 cap (~0.051), matching the live reject storm seen on small
+    // hosts. The raised default cap keeps this legitimate near-capacity
+    // aggregate in-band while all-ones poison remains rejected.
+    let mut bytes = vec![0u8; DEFAULT_FILTER_SIZE_BITS / 8];
+    bytes[..565].fill(0xFF);
+    let filter = BloomFilter::from_bytes(bytes, DEFAULT_HASH_COUNT).unwrap();
+    let fpr = filter.fill_ratio().powi(filter.hash_count() as i32);
+    assert!(fpr > 0.05, "fixture must reproduce the old-cap rejection");
+    assert!(
+        fpr < node.config.node.bloom.max_inbound_fpr,
+        "fixture must stay below the raised default cap"
+    );
+
+    let announce = FilterAnnounce::new(filter, 1);
+    node.handle_filter_announce(&peer_addr, &encode_payload(&announce))
+        .await;
+
+    let after = &node.stats().bloom;
+    assert_eq!(after.fill_exceeded, 0);
+    assert_eq!(after.accepted, 1);
+    let peer = node.get_peer(&peer_addr).expect("peer still present");
+    assert!(peer.inbound_filter().is_some());
+    assert_eq!(peer.filter_sequence(), 1);
+}
+
+#[tokio::test]
 async fn test_m1_sequence_not_advanced_allows_recovery() {
     // Confirms the "keep prior filter, don't advance seq" rejection
     // semantics: a compliant announce after a rejected one still

@@ -116,7 +116,7 @@ impl NostrDiscovery {
                         && offer.recipient_npub == self.npub
                     {
                         let Ok(permit) = self.offer_slots.clone().try_acquire_owned() else {
-                            warn!(
+                            debug!(
                                 sender_npub = %sender_npub,
                                 limit = self.config.max_concurrent_incoming_offers,
                                 "rate-limited inbound traversal offer (max_concurrent_incoming_offers reached); offer dropped"

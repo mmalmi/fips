@@ -398,9 +398,11 @@ pub struct BloomConfig {
     pub update_debounce_ms: u64,
     /// Antipoison cap: reject inbound FilterAnnounce whose FPR exceeds
     /// this value (`node.bloom.max_inbound_fpr`). Valid range `(0.0, 1.0)`.
-    /// Default `0.05` ≈ fill 0.549 at k=5 ≈ ~3,200 entries on the 1KB
-    /// filter. Conceptually distinct from future autoscaling hysteresis
-    /// setpoints — same unit, different knobs.
+    /// Default `0.10` ≈ fill 0.631 at k=5 ≈ ~1,630 entries on the 1 KB
+    /// filter. This leaves headroom for legitimate aggregates near the
+    /// fixed-filter operating ceiling while still rejecting saturated or
+    /// poisoned filters. Conceptually distinct from future autoscaling
+    /// hysteresis setpoints — same unit, different knobs.
     #[serde(default = "BloomConfig::default_max_inbound_fpr")]
     pub max_inbound_fpr: f64,
 }
@@ -409,7 +411,7 @@ impl Default for BloomConfig {
     fn default() -> Self {
         Self {
             update_debounce_ms: 500,
-            max_inbound_fpr: 0.05,
+            max_inbound_fpr: 0.10,
         }
     }
 }
@@ -419,7 +421,7 @@ impl BloomConfig {
         500
     }
     fn default_max_inbound_fpr() -> f64 {
-        0.05
+        0.10
     }
 }
 

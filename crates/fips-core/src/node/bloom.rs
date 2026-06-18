@@ -209,13 +209,13 @@ impl Node {
         let fpr = fill.powi(announce.filter.hash_count() as i32);
         if fpr > max_fpr {
             self.stats_mut().bloom.fill_exceeded += 1;
-            warn!(
+            debug!(
                 from = %self.peer_display_name(from),
                 seq = announce.sequence,
                 fill = format_args!("{:.3}", fill),
                 fpr = format_args!("{:.4}", fpr),
                 cap = format_args!("{:.4}", max_fpr),
-                "FilterAnnounce above FPR cap — rejected"
+                "FilterAnnounce above FPR cap rejected"
             );
             return;
         }

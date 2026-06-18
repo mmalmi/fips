@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- Raised the default inbound `FilterAnnounce` false-positive-rate cap so
+  legitimate near-capacity roster filters are not rejected during open Nostr
+  discovery, while saturated poison filters remain rejected.
+- Demoted routine Bloom and traversal backpressure logs from warning level so
+  low-power nodes do not spend excessive CPU on repeated expected drops.
+
 ## [0.3.60] - 2026-06-15
 
 ### Fixed
