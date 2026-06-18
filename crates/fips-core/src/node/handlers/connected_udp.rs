@@ -17,11 +17,14 @@
 //! Once the peer's session is established, Linux/macOS install the connected
 //! socket; from that moment on the kernel routes that peer's traffic
 //! to it (most-specific 5-tuple match wins under `SO_REUSEPORT`).
-//! Matching packets for the activated current epoch go straight to
+//! Matching packets for the activated current epoch normally go straight to
 //! the decrypt-worker batcher. Handshake, stale-index, wrong-transport,
 //! and rekey-epoch packets return untouched to `packet_tx`, so rx_loop
 //! remains the canonical owner for session lookup and pending-session
-//! promotion.
+//! promotion. `FIPS_CONNECTED_UDP_DECRYPT_FAST_PATH=0` keeps the connected
+//! socket and drain thread but sends every packet through the ordinary packet
+//! channel, which is useful for receive-owner A/B tests without changing the
+//! kernel demux/recv-buffer shape.
 //!
 //! macOS originally defaulted to the wildcard UDP socket because early
 //! Darwin tests found liveness regressions under load. Later testing
@@ -188,7 +191,11 @@ impl Node {
             let Some(addr) = peer.current_addr().cloned() else {
                 return Ok(false);
             };
-            let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
+            let fast_path = if connected_udp_decrypt_fast_path_enabled() {
+                self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid)
+            } else {
+                None
+            };
             (tid, addr, fast_path)
         };
 
@@ -348,11 +355,25 @@ fn connected_udp_enabled(config_enabled: bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn env_flag(name: &str) -> Option<bool> {
     let value = std::env::var(name).ok()?;
+    parse_env_flag(&value)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn parse_env_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_decrypt_fast_path_enabled() -> bool {
+    std::env::var("FIPS_CONNECTED_UDP_DECRYPT_FAST_PATH")
+        .ok()
+        .as_deref()
+        .and_then(parse_env_flag)
+        .unwrap_or(true)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -462,6 +483,17 @@ fn connected_udp_fd_budget_skipped_candidates(
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_udp_decrypt_fast_path_env_flag_parser_is_explicit() {
+        assert_eq!(parse_env_flag("1"), Some(true));
+        assert_eq!(parse_env_flag("true"), Some(true));
+        assert_eq!(parse_env_flag("ON"), Some(true));
+        assert_eq!(parse_env_flag("0"), Some(false));
+        assert_eq!(parse_env_flag("false"), Some(false));
+        assert_eq!(parse_env_flag("off"), Some(false));
+        assert_eq!(parse_env_flag("maybe"), None);
+    }
 
     #[test]
     fn fd_budget_reserves_headroom_for_other_sockets() {
