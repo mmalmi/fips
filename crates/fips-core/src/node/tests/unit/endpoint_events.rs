@@ -431,6 +431,61 @@ fn endpoint_event_queue_partially_admits_bulk_batch_at_message_boundary() {
 }
 
 #[test]
+fn endpoint_event_queue_admits_available_bulk_prefix_as_one_batch() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(5);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xaa; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xab; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("first bulk endpoint batch should enqueue");
+    assert_eq!(event_tx.bulk_queued_messages(), 2);
+
+    event_tx
+        .send(NodeEndpointEvent::DataBatch {
+            messages: vec![
+                EndpointDataDelivery::new(source, vec![0xba; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1]),
+                EndpointDataDelivery::new(source, vec![0xbb; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 2]),
+                EndpointDataDelivery::new(source, vec![0xbc; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 3]),
+                EndpointDataDelivery::new(source, vec![0xbd; ENDPOINT_EVENT_PRIORITY_MAX_LEN + 4]),
+            ],
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("second bulk endpoint batch should admit one prefix batch");
+    assert_eq!(event_tx.queued_messages(), 5);
+    assert_eq!(event_tx.bulk_queued_messages(), 5);
+
+    match event_rx.try_recv().expect("first bulk batch") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].payload[0], 0xaa);
+            assert_eq!(messages[1].payload[0], 0xab);
+        }
+        event => panic!("expected first bulk endpoint batch, got {event:?}"),
+    }
+    match event_rx.try_recv().expect("admitted prefix batch") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages[0].payload[0], 0xba);
+            assert_eq!(messages[1].payload[0], 0xbb);
+            assert_eq!(messages[2].payload[0], 0xbc);
+        }
+        event => panic!("expected one admitted prefix batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+    assert_eq!(event_tx.bulk_queued_messages(), 0);
+    assert!(matches!(
+        event_rx.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+#[test]
 fn endpoint_event_bulk_capacity_counts_messages_not_batches() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(1);
     let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
