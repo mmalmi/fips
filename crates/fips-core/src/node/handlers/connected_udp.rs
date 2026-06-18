@@ -31,7 +31,10 @@
 //! showed the problem was mismatched listener/peer `SO_REUSE*` state:
 //! with the live listener and connected sibling in the same reuse group,
 //! the connected `send(2)` path improves the MacBook Wi-Fi sender case
-//! and is now the default. Operators can configure it through
+//! and is now the default for dynamic UDP peers. Peers with a configured
+//! static UDP endpoint stay on wildcard UDP because NAT/VM paths can drift
+//! between the configured endpoint and observed source tuples, and liveness
+//! recovery must accept either path. Operators can configure it through
 //! `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
 //! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
 //! tests. `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
@@ -191,6 +194,17 @@ impl Node {
             let Some(addr) = peer.current_addr().cloned() else {
                 return Ok(false);
             };
+            if self
+                .configured_static_udp_path_for_peer(node_addr, tid)
+                .is_some()
+            {
+                debug!(
+                    peer = %self.peer_display_name(node_addr),
+                    current_addr = %addr,
+                    "connected UDP skipped for peer with configured static UDP endpoint"
+                );
+                return Ok(false);
+            }
             let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
             (tid, addr, fast_path)
         };

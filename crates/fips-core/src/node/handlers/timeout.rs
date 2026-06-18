@@ -142,7 +142,20 @@ impl Node {
                 if conn.is_outbound()
                     && let Some(identity) = conn.expected_identity()
                 {
-                    self.schedule_retry(*identity.node_addr(), now_ms);
+                    let node_addr = *identity.node_addr();
+                    if self
+                        .peers
+                        .get(&node_addr)
+                        .is_some_and(|peer| peer.is_healthy())
+                    {
+                        debug!(
+                            peer = %self.peer_display_name(&node_addr),
+                            link_id = %link_id,
+                            "Stale outbound handshake timed out while active peer is healthy; skipping retry"
+                        );
+                    } else {
+                        self.schedule_retry(node_addr, now_ms);
+                    }
                 }
             }
             self.cleanup_stale_connection(link_id, now_ms);

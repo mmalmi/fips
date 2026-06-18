@@ -758,3 +758,78 @@ async fn handle_msg1_admits_existing_peer_at_cap() {
     assert!(node.peers.contains_key(&existing_node_addr));
     assert_eq!(node.msg1_rate_limiter.pending_count(), before_pending);
 }
+
+#[tokio::test]
+async fn handle_msg1_treats_same_epoch_stale_peer_as_recovery() {
+    let mut node = make_node();
+    let peer_identity_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_identity_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let old_link_id = LinkId::new(7);
+    let transport_id = TransportId::new(1);
+    let old_addr = crate::transport::TransportAddr::from_string("127.0.0.1:5000");
+    let new_addr = crate::transport::TransportAddr::from_string("127.0.0.1:5001");
+    let remote_epoch = [0x51; 8];
+    let session = make_test_fmp_session(
+        &node.identity,
+        &peer_identity_full,
+        node.startup_epoch,
+        remote_epoch,
+    );
+    let mut active = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        transport_id,
+        old_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some(remote_epoch),
+    );
+    active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
+    active.mark_stale();
+    node.peers.insert(peer_node_addr, active);
+    node.peers
+        .insert_session_index((transport_id, 11), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            old_addr,
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+
+    let mut conn = PeerConnection::outbound(
+        LinkId::new(99),
+        PeerIdentity::from_pubkey_full(node.identity.pubkey_full()),
+        2_000,
+    );
+    let noise_msg1 = conn
+        .start_handshake(peer_identity_full.keypair(), remote_epoch, 2_000)
+        .expect("msg1");
+    let wire_msg1 =
+        crate::node::wire::build_msg1(crate::utils::index::SessionIndex::new(0x5151), &noise_msg1);
+    let packet = ReceivedPacket::with_timestamp(transport_id, new_addr.clone(), wire_msg1, 2_000);
+
+    node.handle_msg1(packet).await;
+
+    let active = node.get_peer(&peer_node_addr).expect("peer");
+    assert!(active.is_healthy());
+    assert_eq!(
+        active.current_addr(),
+        Some(&new_addr),
+        "stale same-epoch msg1 should install the freshly authenticated recovery path"
+    );
+    assert_ne!(
+        active.link_id(),
+        old_link_id,
+        "stale duplicate handling must not keep the dead link"
+    );
+}

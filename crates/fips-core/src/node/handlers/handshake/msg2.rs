@@ -275,7 +275,7 @@ impl Node {
                 let existing_path_unusable = self
                     .peers
                     .get(&peer_node_addr)
-                    .is_some_and(|peer| !peer.can_send())
+                    .is_some_and(|peer| !peer.is_healthy() || !peer.can_send())
                     || self.session_direct_path_blocks_direct_payload(
                         &peer_node_addr,
                         packet.timestamp_ms,

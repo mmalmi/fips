@@ -401,6 +401,60 @@ async fn update_peers_does_not_churn_active_peer_already_on_known_candidate() {
     }
 }
 
+#[tokio::test]
+async fn refresh_peer_paths_redials_active_peer_on_same_known_candidate() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let current_addr = TransportAddr::from_string("127.0.0.1:9");
+    let old_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
+    active_peer.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
+    node.config.peers = vec![peer.clone()];
+
+    let refreshed = node.refresh_peer_paths(vec![peer.npub]).await.unwrap();
+
+    assert_eq!(refreshed, 1);
+    assert_eq!(node.peer_count(), 1, "current peer should stay live");
+    assert_eq!(
+        node.connection_count(),
+        1,
+        "forced refresh should race a same-path handshake for liveness recovery"
+    );
+    assert!(
+        node.retry_pending.contains_key(&peer_node_addr),
+        "forced refresh should keep quick direct re-probe state alive"
+    );
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&current_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 #[test]
 fn active_peer_same_path_discovery_skips_fresh_peer() {
     let mut node = make_node();

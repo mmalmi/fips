@@ -207,6 +207,10 @@ impl Node {
                 let result = self.update_peers(peers).await;
                 let _ = response_tx.send(result);
             }
+            NodeEndpointCommand::RefreshPeerPaths { npubs, response_tx } => {
+                let result = self.refresh_peer_paths(npubs).await;
+                let _ = response_tx.send(result);
+            }
             NodeEndpointCommand::PeerSnapshot { response_tx } => {
                 let snapshot_now = Instant::now();
                 let nostr_failure_state: std::collections::HashMap<String, _> = self

@@ -472,6 +472,35 @@ impl crate::node::SessionRegistry {
 }
 
 impl Node {
+    pub(in crate::node) fn abandon_fmp_rekey_for_peer(
+        &mut self,
+        node_addr: &NodeAddr,
+        reason: &'static str,
+    ) -> bool {
+        let peer_name = self.peer_display_name(node_addr);
+        let cleanup = self.peers.get_mut(node_addr).and_then(|peer| {
+            let transport_id = peer.transport_id();
+            peer.clear_handshake_msg2();
+            peer.abandon_rekey().map(|idx| (transport_id, idx))
+        });
+
+        let Some((transport_id, idx)) = cleanup else {
+            return false;
+        };
+
+        if let Some(tid) = transport_id {
+            self.pending_outbound.remove(&(tid, idx.as_u32()));
+            self.deregister_session_index((tid, idx.as_u32()));
+        }
+        let _ = self.index_allocator.free(idx);
+        debug!(
+            peer = %peer_name,
+            reason,
+            "Abandoned FMP rekey state"
+        );
+        true
+    }
+
     /// Periodic rekey check. Called from the tick loop.
     ///
     /// For each active peer with a session:

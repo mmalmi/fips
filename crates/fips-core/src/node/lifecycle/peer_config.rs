@@ -253,6 +253,67 @@ impl Node {
         Ok(outcome)
     }
 
+    pub(in crate::node) async fn refresh_peer_paths(
+        &mut self,
+        npubs: Vec<String>,
+    ) -> Result<usize, crate::node::NodeError> {
+        let mut refreshed = 0usize;
+        let now_ms = Self::now_ms();
+
+        for npub in npubs {
+            let identity =
+                PeerIdentity::from_npub(&npub).map_err(|e| NodeError::InvalidPeerNpub {
+                    npub: npub.clone(),
+                    reason: e.to_string(),
+                })?;
+            let node_addr = *identity.node_addr();
+            let Some(peer_config) = self
+                .config
+                .auto_connect_peers()
+                .find(|pc| {
+                    PeerIdentity::from_npub(&pc.npub)
+                        .map(|id| *id.node_addr() == node_addr)
+                        .unwrap_or(false)
+                })
+                .cloned()
+            else {
+                debug!(
+                    peer = %identity.short_npub(),
+                    "Skipping peer path refresh for peer not in auto-connect config"
+                );
+                continue;
+            };
+
+            if let Some(state) = self.retry_pending.get_mut(&node_addr) {
+                state.peer_config = peer_config.clone();
+                state.reconnect = peer_config.auto_reconnect;
+            }
+
+            let attempted = if self.peers.contains_key(&node_addr) {
+                self.initiate_active_peer_direct_refresh_connection(&peer_config)
+                    .await?
+            } else {
+                match self.initiate_peer_connection(&peer_config).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        self.schedule_retry_after_error(node_addr, now_ms, &error);
+                        return Err(error);
+                    }
+                }
+            };
+
+            if attempted {
+                refreshed = refreshed.saturating_add(1);
+            }
+
+            if peer_config.auto_reconnect {
+                self.schedule_link_dead_reprobe(node_addr, now_ms);
+            }
+        }
+
+        Ok(refreshed)
+    }
+
     pub(in crate::node) async fn initiate_peer_connections(&mut self) {
         // Build display name map from all configured peers (alias or short npub),
         // and pre-seed the identity cache from each peer's npub so that TUN packets

@@ -819,15 +819,18 @@ fn peer_lifecycle_registry_owns_authenticated_fmp_receive_bookkeeping() {
 
     assert!(!skipped.address_changed);
     assert!(!skipped.path_bookkeeping_recorded);
-    assert!(!skipped.mmp_recorded);
-    assert!(skipped.spin_rtt.is_none());
+    assert!(skipped.mmp_recorded);
     let peer = registry
         .get(&peer_addr)
         .expect("skipped receive must keep active peer storage");
     assert_eq!(peer.consecutive_decrypt_failures(), 0);
     assert_eq!(peer.current_addr(), Some(&new_addr));
-    assert_eq!(peer.last_seen(), 2_000);
-    assert_eq!(peer.link_stats().packets_recv, 1);
-    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
-    assert_eq!(mmp.receiver.cumulative_packets_recv(), 1);
+    assert_eq!(peer.last_seen(), 3_000);
+    assert_eq!(peer.link_stats().packets_recv, 2);
+    assert_eq!(peer.link_stats().bytes_recv, 192);
+    assert_eq!(peer.link_stats().last_recv_ms, 3_000);
+    let mmp = peer.mmp().expect("active FMP peer should keep MMP state");
+    assert_eq!(mmp.receiver.cumulative_packets_recv(), 2);
+    assert_eq!(mmp.receiver.cumulative_bytes_recv(), 192);
+    assert_eq!(mmp.receiver.highest_counter(), 8);
 }

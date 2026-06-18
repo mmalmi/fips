@@ -807,6 +807,28 @@ impl FipsEndpoint {
         }
     }
 
+    /// Force immediate direct-path refresh attempts for configured peers.
+    ///
+    /// Unlike [`FipsEndpoint::update_peers`], this does not require a config
+    /// diff. It asks the running node to race a fresh direct handshake for the
+    /// supplied active peers while preserving existing sessions and routes.
+    pub async fn refresh_peer_paths(
+        &self,
+        peers: Vec<PeerIdentity>,
+    ) -> Result<usize, FipsEndpointError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let npubs = peers.into_iter().map(|peer| peer.npub()).collect();
+        self.endpoint_priority_commands
+            .send(NodeEndpointCommand::RefreshPeerPaths { npubs, response_tx })
+            .await
+            .map_err(|_| FipsEndpointError::Closed)?;
+
+        match response_rx.await.map_err(|_| FipsEndpointError::Closed)? {
+            Ok(refreshed) => Ok(refreshed),
+            Err(error) => Err(FipsEndpointError::Node(error)),
+        }
+    }
+
     /// Snapshot authenticated peers known by the endpoint.
     pub async fn peers(&self) -> Result<Vec<FipsEndpointPeer>, FipsEndpointError> {
         let (response_tx, response_rx) = oneshot::channel();

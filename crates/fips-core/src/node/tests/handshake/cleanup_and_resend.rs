@@ -80,6 +80,58 @@ async fn test_stale_connection_cleanup() {
     );
 }
 
+#[tokio::test]
+async fn stale_outbound_timeout_does_not_retry_healthy_active_peer() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let peer_identity = make_peer_identity();
+    let peer_node_addr = *peer_identity.node_addr();
+    let remote_addr = TransportAddr::from_string("10.0.0.2:2121");
+
+    let active_link_id = LinkId::new(7);
+    node.peers.insert(
+        peer_node_addr,
+        ActivePeer::new(peer_identity, active_link_id, 1000),
+    );
+
+    let stale_link_id = node.allocate_link_id();
+    let mut conn = PeerConnection::outbound(stale_link_id, peer_identity, 1000);
+    let our_index = node.index_allocator.allocate().unwrap();
+    let noise_msg1 = conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, 1000)
+        .unwrap();
+    conn.set_our_index(our_index);
+    conn.set_transport_id(transport_id);
+    conn.set_source_addr(remote_addr.clone());
+    conn.set_handshake_msg1(crate::node::wire::build_msg1(our_index, &noise_msg1), 2000);
+
+    node.links.insert(
+        stale_link_id,
+        Link::connectionless(
+            stale_link_id,
+            transport_id,
+            remote_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, remote_addr), stale_link_id);
+    node.pending_outbound
+        .insert((transport_id, our_index.as_u32()), stale_link_id);
+    node.peers.insert_connection(stale_link_id, conn);
+
+    node.check_timeouts();
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(
+        !node.retry_pending.contains_key(&peer_node_addr),
+        "timed-out leftover handshakes must not schedule direct reprobe for a healthy active peer"
+    );
+    assert!(node.peers.contains_key(&peer_node_addr));
+}
+
 /// Test that failed connections are cleaned up by check_timeouts().
 #[tokio::test]
 async fn test_failed_connection_cleanup() {

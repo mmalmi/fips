@@ -365,6 +365,29 @@ impl Node {
             .min()
     }
 
+    pub(in crate::node) fn configured_static_udp_path_for_peer(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+    ) -> Option<TransportAddr> {
+        self.configured_peer(peer_node_addr)?
+            .addresses
+            .iter()
+            .filter_map(|candidate| {
+                if candidate.seen_at_ms.is_some()
+                    || !candidate.transport.eq_ignore_ascii_case("udp")
+                {
+                    return None;
+                }
+                let (candidate_transport_id, candidate_addr) =
+                    self.resolve_peer_address_for_match(candidate)?;
+                (candidate_transport_id == transport_id)
+                    .then_some((candidate.priority, candidate_addr))
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, addr)| addr)
+    }
+
     pub(in crate::node) fn alternate_path_priority_allows_replace(
         &self,
         peer_node_addr: &NodeAddr,
@@ -433,11 +456,13 @@ impl Node {
             return true;
         }
 
-        self.alternate_path_priority_allows_replace(
-            peer_node_addr,
-            candidate_transport_id,
-            candidate_addr,
-        )
+        debug!(
+            peer = %self.peer_display_name(peer_node_addr),
+            candidate_transport_id = %candidate_transport_id,
+            candidate_addr = %candidate_addr,
+            "Accepting authenticated direct-path rotation"
+        );
+        true
     }
 
     pub(in crate::node) fn active_peer_uses_recent_endpoint_path(

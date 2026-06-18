@@ -262,167 +262,183 @@ impl Node {
                 }
                 _ => {
                     // Same epoch (or no epoch stored).
-                    // If the peer has an active session and rekey is enabled,
-                    // this is a rekey msg1 (not a duplicate initial msg1).
-                    // Guard: the session must be at least 30s old to avoid
-                    // misidentifying a cross-connection msg1 as a rekey.
-                    // During simultaneous connection, both sides promote
-                    // within the same tick and the peer's msg1 arrives
-                    // immediately — a genuine rekey can't fire that fast.
-                    let session_age_secs =
-                        existing_peer.session_established_at().elapsed().as_secs();
-                    if self.config.node.rekey.enabled
-                        && existing_peer.has_session()
-                        && existing_peer.is_healthy()
-                        && session_age_secs >= 30
-                    {
-                        // Guard: already have a pending session from a completed
-                        // rekey (waiting for K-bit cutover). Don't overwrite it
-                        // with a new handshake — drop this msg1.
-                        if existing_peer.pending_new_session().is_some() {
-                            debug!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                "Rekey msg1 received but already have pending session, dropping"
-                            );
-                            self.peers.remove_connection(&link_id);
-                            self.links.remove(&link_id);
-                            self.msg1_rate_limiter.complete_handshake();
-                            return;
-                        }
-
-                        // Dual-initiation detection: both sides sent msg1
-                        // simultaneously. Apply tie-breaker — smaller NodeAddr
-                        // wins as initiator (same as cross-connection resolution).
-                        if existing_peer.rekey_in_progress() {
-                            let our_addr = self.identity.node_addr();
-                            if our_addr < &peer_node_addr {
-                                // We win as initiator — drop their msg1.
-                                // Our msg2 will arrive at peer, who completes
-                                // as our responder.
+                    //
+                    // If liveness has already marked the active path stale,
+                    // a same-epoch msg1 is recovery traffic, not a duplicate
+                    // initial handshake. Falling through lets promotion
+                    // install the freshly authenticated path instead of
+                    // resending an old msg2 whose receiver index belongs to
+                    // the dead session.
+                    if !existing_peer.is_healthy() {
+                        debug!(
+                            peer = %self.peer_display_name(&peer_node_addr),
+                            "Same-epoch msg1 received from stale peer; processing as direct-path recovery"
+                        );
+                    } else {
+                        // If the peer has an active session and rekey is enabled,
+                        // this is a rekey msg1 (not a duplicate initial msg1).
+                        // Guard: the session must be at least 30s old to avoid
+                        // misidentifying a cross-connection msg1 as a rekey.
+                        // During simultaneous connection, both sides promote
+                        // within the same tick and the peer's msg1 arrives
+                        // immediately — a genuine rekey can't fire that fast.
+                        let session_age_secs =
+                            existing_peer.session_established_at().elapsed().as_secs();
+                        if self.config.node.rekey.enabled
+                            && existing_peer.has_session()
+                            && existing_peer.is_healthy()
+                            && session_age_secs >= 30
+                        {
+                            // Guard: already have a pending session from a completed
+                            // rekey (waiting for K-bit cutover). Don't overwrite it
+                            // with a new handshake — drop this msg1.
+                            if existing_peer.pending_new_session().is_some() {
                                 debug!(
                                     peer = %self.peer_display_name(&peer_node_addr),
-                                    "Dual rekey initiation: we win (smaller addr), dropping their msg1"
+                                    "Rekey msg1 received but already have pending session, dropping"
                                 );
                                 self.peers.remove_connection(&link_id);
                                 self.links.remove(&link_id);
                                 self.msg1_rate_limiter.complete_handshake();
                                 return;
                             }
-                            // We lose — abandon our rekey, become responder below.
-                            debug!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                "Dual rekey initiation: we lose (larger addr), abandoning ours"
-                            );
-                            if let Some(peer) = self.peers.get_mut(&peer_node_addr)
-                                && let Some(idx) = peer.abandon_rekey()
-                            {
-                                if let Some(tid) = peer.transport_id() {
-                                    self.deregister_session_index((tid, idx.as_u32()));
-                                    self.pending_outbound.remove(&(tid, idx.as_u32()));
-                                }
-                                let _ = self.index_allocator.free(idx);
-                            }
-                            // Fall through to respond as responder
-                        }
 
-                        // Rekey: process as responder, store new session as pending
-                        let noise_session = conn.take_session();
-                        let our_new_index = match self.index_allocator.allocate() {
-                            Ok(idx) => idx,
-                            Err(e) => {
-                                warn!(error = %e, "Failed to allocate index for rekey");
-                                self.msg1_rate_limiter.complete_handshake();
-                                return;
-                            }
-                        };
-
-                        let noise_session = match noise_session {
-                            Some(s) => s,
-                            None => {
-                                warn!("Rekey msg1: no session from handshake");
-                                let _ = self.index_allocator.free(our_new_index);
-                                self.msg1_rate_limiter.complete_handshake();
-                                return;
-                            }
-                        };
-
-                        // Send msg2 response using the new handshake
-                        let wire_msg2 =
-                            build_msg2(our_new_index, header.sender_idx, &msg2_response);
-                        if let Some(transport) = self.transports.get(&packet.transport_id) {
-                            match transport.send(&packet.remote_addr, &wire_msg2).await {
-                                Ok(_) => {
+                            // Dual-initiation detection: both sides sent msg1
+                            // simultaneously. Apply tie-breaker — smaller NodeAddr
+                            // wins as initiator (same as cross-connection resolution).
+                            if existing_peer.rekey_in_progress() {
+                                let our_addr = self.identity.node_addr();
+                                if our_addr < &peer_node_addr {
+                                    // We win as initiator — drop their msg1.
+                                    // Our msg2 will arrive at peer, who completes
+                                    // as our responder.
                                     debug!(
                                         peer = %self.peer_display_name(&peer_node_addr),
-                                        new_our_index = %our_new_index,
-                                        "Sent rekey msg2 response"
+                                        "Dual rekey initiation: we win (smaller addr), dropping their msg1"
                                     );
+                                    self.peers.remove_connection(&link_id);
+                                    self.links.remove(&link_id);
+                                    self.msg1_rate_limiter.complete_handshake();
+                                    return;
                                 }
+                                // We lose — abandon our rekey, become responder below.
+                                debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    "Dual rekey initiation: we lose (larger addr), abandoning ours"
+                                );
+                                if let Some(peer) = self.peers.get_mut(&peer_node_addr)
+                                    && let Some(idx) = peer.abandon_rekey()
+                                {
+                                    if let Some(tid) = peer.transport_id() {
+                                        self.deregister_session_index((tid, idx.as_u32()));
+                                        self.pending_outbound.remove(&(tid, idx.as_u32()));
+                                    }
+                                    let _ = self.index_allocator.free(idx);
+                                }
+                                // Fall through to respond as responder
+                            }
+
+                            // Rekey: process as responder, store new session as pending
+                            let noise_session = conn.take_session();
+                            let our_new_index = match self.index_allocator.allocate() {
+                                Ok(idx) => idx,
                                 Err(e) => {
-                                    warn!(
-                                        peer = %self.peer_display_name(&peer_node_addr),
-                                        error = %e,
-                                        "Failed to send rekey msg2"
-                                    );
+                                    warn!(error = %e, "Failed to allocate index for rekey");
+                                    self.msg1_rate_limiter.complete_handshake();
+                                    return;
+                                }
+                            };
+
+                            let noise_session = match noise_session {
+                                Some(s) => s,
+                                None => {
+                                    warn!("Rekey msg1: no session from handshake");
                                     let _ = self.index_allocator.free(our_new_index);
                                     self.msg1_rate_limiter.complete_handshake();
                                     return;
                                 }
-                            }
-                        }
+                            };
 
-                        let Some(registered) = self.peers.install_pending_rekey_session_and_index(
-                            &peer_node_addr,
-                            noise_session,
-                            our_new_index,
-                            header.sender_idx,
-                            false,
-                            None,
-                        ) else {
-                            warn!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                "Could not install responder pending rekey session"
+                            // Send msg2 response using the new handshake
+                            let wire_msg2 =
+                                build_msg2(our_new_index, header.sender_idx, &msg2_response);
+                            if let Some(transport) = self.transports.get(&packet.transport_id) {
+                                match transport.send(&packet.remote_addr, &wire_msg2).await {
+                                    Ok(_) => {
+                                        debug!(
+                                            peer = %self.peer_display_name(&peer_node_addr),
+                                            new_our_index = %our_new_index,
+                                            "Sent rekey msg2 response"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            peer = %self.peer_display_name(&peer_node_addr),
+                                            error = %e,
+                                            "Failed to send rekey msg2"
+                                        );
+                                        let _ = self.index_allocator.free(our_new_index);
+                                        self.msg1_rate_limiter.complete_handshake();
+                                        return;
+                                    }
+                                }
+                            }
+
+                            let Some(registered) =
+                                self.peers.install_pending_rekey_session_and_index(
+                                    &peer_node_addr,
+                                    noise_session,
+                                    our_new_index,
+                                    header.sender_idx,
+                                    false,
+                                    None,
+                                )
+                            else {
+                                warn!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    "Could not install responder pending rekey session"
+                                );
+                                let _ = self.index_allocator.free(our_new_index);
+                                self.peers.remove_connection(&link_id);
+                                self.links.remove(&link_id);
+                                self.msg1_rate_limiter.complete_handshake();
+                                return;
+                            };
+                            self.log_registered_peer_session_index_result(
+                                &peer_node_addr,
+                                &registered,
+                                "responder_pending_rekey",
                             );
-                            let _ = self.index_allocator.free(our_new_index);
+
+                            // Clean up any temporary connection/link state from this path.
+                            // The active peer's link registry entry must keep recognizing
+                            // future msg1s from this address as rekeys, not new connections.
                             self.peers.remove_connection(&link_id);
                             self.links.remove(&link_id);
+
                             self.msg1_rate_limiter.complete_handshake();
                             return;
-                        };
-                        self.log_registered_peer_session_index_result(
-                            &peer_node_addr,
-                            &registered,
-                            "responder_pending_rekey",
-                        );
+                        }
 
-                        // Clean up any temporary connection/link state from this path.
-                        // The active peer's link registry entry must keep recognizing
-                        // future msg1s from this address as rekeys, not new connections.
-                        self.peers.remove_connection(&link_id);
-                        self.links.remove(&link_id);
-
+                        // Not a rekey — duplicate msg1. Resend stored msg2.
+                        if let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
+                            && let Some(transport) = self.transports.get(&packet.transport_id)
+                        {
+                            match transport.send(&packet.remote_addr, &msg2).await {
+                                Ok(_) => debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    "Resent msg2 for duplicate msg1 (same epoch)"
+                                ),
+                                Err(e) => debug!(
+                                    peer = %self.peer_display_name(&peer_node_addr),
+                                    error = %e,
+                                    "Failed to resend msg2"
+                                ),
+                            }
+                        }
                         self.msg1_rate_limiter.complete_handshake();
                         return;
                     }
-
-                    // Not a rekey — duplicate msg1. Resend stored msg2.
-                    if let Some(msg2) = existing_peer.handshake_msg2().map(|m| m.to_vec())
-                        && let Some(transport) = self.transports.get(&packet.transport_id)
-                    {
-                        match transport.send(&packet.remote_addr, &msg2).await {
-                            Ok(_) => debug!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                "Resent msg2 for duplicate msg1 (same epoch)"
-                            ),
-                            Err(e) => debug!(
-                                peer = %self.peer_display_name(&peer_node_addr),
-                                error = %e,
-                                "Failed to resend msg2"
-                            ),
-                        }
-                    }
-                    self.msg1_rate_limiter.complete_handshake();
-                    return;
                 }
             }
         }

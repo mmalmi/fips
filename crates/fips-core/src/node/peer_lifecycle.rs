@@ -428,15 +428,14 @@ impl PeerLifecycleRegistry {
             mmp_recorded: false,
             spin_rtt: None,
         };
-        if !path_bookkeeping_allowed {
-            return Some(result);
+        if path_bookkeeping_allowed {
+            result.address_changed = peer.set_current_addr(transport_id, remote_addr);
+            result.path_bookkeeping_recorded = true;
         }
 
-        result.address_changed = peer.set_current_addr(transport_id, remote_addr);
         peer.link_stats_mut()
             .record_recv(packet_len, packet_timestamp_ms);
         peer.touch(packet_timestamp_ms);
-        result.path_bookkeeping_recorded = true;
         if let Some(mmp) = peer.mmp_mut() {
             mmp.receiver
                 .record_recv(fmp_counter, inner_timestamp_ms, packet_len, ce_flag, now);

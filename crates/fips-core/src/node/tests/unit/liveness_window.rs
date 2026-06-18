@@ -702,6 +702,7 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
         false,
         std::time::Instant::now() - std::time::Duration::from_secs(31),
     );
+    active.set_handshake_msg2(vec![0x02, 0x03, 0x04]);
     node.peers.insert(peer_addr, active);
     node.peers.insert(
         transit_addr,
@@ -741,6 +742,13 @@ async fn link_dead_marks_direct_path_stale_and_preserves_queued_packets() {
     assert!(
         !node.get_peer(&peer_addr).expect("peer").is_healthy(),
         "link-dead should remove the dead direct path from healthy-direct routing"
+    );
+    assert!(
+        node.get_peer(&peer_addr)
+            .expect("peer")
+            .handshake_msg2()
+            .is_none(),
+        "link-dead recovery must not answer fresh retry msg1 with stale msg2"
     );
     assert!(
         node.sessions

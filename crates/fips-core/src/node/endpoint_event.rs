@@ -1125,6 +1125,16 @@ pub(crate) enum NodeEndpointCommand {
         peers: Vec<crate::config::PeerConfig>,
         response_tx: tokio::sync::oneshot::Sender<Result<UpdatePeersOutcome, NodeError>>,
     },
+    /// Force immediate direct-path refresh attempts for configured peers.
+    ///
+    /// This is intentionally separate from `UpdatePeers`: callers may need to
+    /// reprobe a stale active path even when the configured address set is
+    /// unchanged, and `update_peers` avoids churning an active peer that is
+    /// already on a known candidate.
+    RefreshPeerPaths {
+        npubs: Vec<String>,
+        response_tx: tokio::sync::oneshot::Sender<Result<usize, NodeError>>,
+    },
 }
 
 /// Message payload for outbound endpoint data handed from an embedded
@@ -1261,7 +1271,8 @@ impl NodeEndpointCommand {
             Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
-            | Self::UpdatePeers { .. } => EndpointCommandLane::Priority,
+            | Self::UpdatePeers { .. }
+            | Self::RefreshPeerPaths { .. } => EndpointCommandLane::Priority,
         }
     }
 
@@ -1277,7 +1288,8 @@ impl NodeEndpointCommand {
             | Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
-            | Self::UpdatePeers { .. } => false,
+            | Self::UpdatePeers { .. }
+            | Self::RefreshPeerPaths { .. } => false,
         }
     }
 
@@ -1289,7 +1301,8 @@ impl NodeEndpointCommand {
             | Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
-            | Self::UpdatePeers { .. } => 1,
+            | Self::UpdatePeers { .. }
+            | Self::RefreshPeerPaths { .. } => 1,
         }
     }
 
@@ -1301,7 +1314,8 @@ impl NodeEndpointCommand {
             | Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
-            | Self::UpdatePeers { .. } => 1,
+            | Self::UpdatePeers { .. }
+            | Self::RefreshPeerPaths { .. } => 1,
         }
     }
 

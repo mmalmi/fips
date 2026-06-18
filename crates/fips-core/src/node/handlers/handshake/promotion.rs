@@ -43,7 +43,7 @@ impl Node {
                 link_id,
                 reason: "missing transport_id".into(),
             })?;
-        let current_addr = connection
+        let observed_addr = connection
             .source_addr()
             .ok_or_else(|| NodeError::PromotionFailed {
                 link_id,
@@ -55,13 +55,14 @@ impl Node {
 
         let peer_node_addr = *verified_identity.node_addr();
         let is_outbound = connection.is_outbound();
+        let current_addr = observed_addr;
         let discovery_fallback_transit_allowed =
             self.discovery_fallback_transit_for_promotion(&peer_node_addr);
 
         // Check for cross-connection
         if let Some(existing_peer) = self.peers.get(&peer_node_addr) {
             let existing_link_id = existing_peer.link_id();
-            let existing_path_unusable = !existing_peer.can_send();
+            let existing_path_unusable = !existing_peer.is_healthy() || !existing_peer.can_send();
             let outbound_alternate_path = is_outbound
                 && (existing_peer.transport_id() != Some(transport_id)
                     || existing_peer.current_addr() != Some(&current_addr));

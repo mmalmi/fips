@@ -1,6 +1,56 @@
 use super::*;
 
 #[tokio::test]
+async fn promotion_keeps_authenticated_observed_path_over_configured_static_hint() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let link_id = LinkId::new(11);
+    let (mut connection, peer_identity) =
+        make_completed_connection(&mut node, link_id, transport_id, 1_000);
+    let peer_node_addr = *peer_identity.node_addr();
+    let observed_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let configured_addr = TransportAddr::from_string("127.0.0.1:5001");
+    connection.set_source_addr(observed_addr.clone());
+    node.config.peers = vec![auto_connect_peer(
+        peer_identity.npub().to_string(),
+        configured_addr.as_str().unwrap(),
+    )];
+    node.peers.insert_connection(link_id, connection);
+
+    node.promote_connection(link_id, peer_identity, 1_100)
+        .unwrap();
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(
+        active.current_addr(),
+        Some(&observed_addr),
+        "static endpoints should order dialing, while the authenticated observed source owns the live path"
+    );
+    assert_ne!(active.current_addr(), Some(&configured_addr));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lose() {
     let mut node = make_node();
     let peer_full = loop {
@@ -424,7 +474,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
 }
 
 #[tokio::test]
-async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_path() {
+async fn authenticated_packet_rotates_configured_static_path_to_observed_source() {
     let local_identity = Identity::generate();
     let peer_full = Identity::generate();
     let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
@@ -494,14 +544,10 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
         active.current_addr(),
-        Some(&static_addr),
-        "healthy static path should not be rewritten by lower-priority authenticated traffic"
+        Some(&public_addr),
+        "authenticated traffic should rotate the live path even when the configured static hint has better dial priority"
     );
-    assert_eq!(
-        active.idle_time(2_500),
-        1_500,
-        "suppressed lower-priority traffic should not refresh selected-path liveness"
-    );
+    assert_eq!(active.idle_time(2_500), 500);
 
     node.mark_session_direct_path_degraded(peer_node_addr, 3_000);
     node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
@@ -519,14 +565,10 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     let active = node.get_peer(&peer_node_addr).expect("peer");
     assert_eq!(
         active.current_addr(),
-        Some(&static_addr),
-        "session degradation alone should not rotate away from an operator-configured static path"
+        Some(&public_addr),
+        "degraded sessions should keep accepting authenticated traffic from the observed path"
     );
-    assert_eq!(
-        active.idle_time(3_100),
-        2_100,
-        "suppressed lower-priority traffic should still not refresh selected-path liveness"
-    );
+    assert_eq!(active.idle_time(3_100), 0);
 
     node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
     node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(

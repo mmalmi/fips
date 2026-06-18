@@ -833,8 +833,39 @@ impl Node {
             );
             self.record_link_dead_path_failure(&dead_peer.node_addr, now_ms)
                 .await;
+            self.abandon_fmp_rekey_for_peer(&dead_peer.node_addr, "link-dead direct path");
             self.remove_link_dead_peer(&dead_peer.node_addr);
             self.schedule_link_dead_reprobe(dead_peer.node_addr, now_ms);
+            if let Some(peer_config) = self
+                .retry_pending
+                .get(&dead_peer.node_addr)
+                .map(|state| state.peer_config.clone())
+            {
+                match self
+                    .initiate_active_peer_direct_refresh_connection(&peer_config)
+                    .await
+                {
+                    Ok(true) => {
+                        debug!(
+                            peer = %self.peer_display_name(&dead_peer.node_addr),
+                            "Started immediate direct-path refresh after link-dead timeout"
+                        );
+                    }
+                    Ok(false) => {
+                        debug!(
+                            peer = %self.peer_display_name(&dead_peer.node_addr),
+                            "Immediate direct-path refresh after link-dead timeout had no candidate"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            peer = %self.peer_display_name(&dead_peer.node_addr),
+                            error = %error,
+                            "Immediate direct-path refresh after link-dead timeout failed"
+                        );
+                    }
+                }
+            }
             self.maybe_initiate_link_dead_fallback_lookup(&dead_peer.node_addr)
                 .await;
         }
