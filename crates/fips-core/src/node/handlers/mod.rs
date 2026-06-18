@@ -11,3 +11,6 @@ mod rekey;
 mod rx_loop;
 pub(in crate::node) mod session;
 mod timeout;
+
+#[cfg(test)]
+pub(in crate::node) use mmp::traversal_path_liveness_timeout;
