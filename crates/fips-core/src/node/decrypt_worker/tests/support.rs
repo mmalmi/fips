@@ -120,7 +120,7 @@
     fn fsp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
         assert_eq!(
             DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
-            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
+            DECRYPT_WORKER_BULK_BATCH_MAX
         );
         assert_eq!(
             fsp_aead_completion_batch_max_from_raw(None),
@@ -139,7 +139,7 @@
     fn fmp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
         assert_eq!(
             DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX,
-            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
+            DECRYPT_WORKER_BULK_BATCH_MAX
         );
         assert_eq!(
             fmp_aead_completion_batch_max_from_raw(None),

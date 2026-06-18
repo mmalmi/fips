@@ -44,8 +44,9 @@ pub(crate) const DECRYPT_FALLBACK_BACKLOG_HIGH_WATER: usize = 256;
 const DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN: usize = 512;
 const DECRYPT_WORKER_BULK_BURST_BUDGET: usize = 128;
 const DECRYPT_WORKER_BULK_BATCH_MAX: usize = 32;
-const DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
-const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
+const DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET: usize = DECRYPT_WORKER_BULK_BATCH_MAX * 2;
+const DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET: usize =
+    DECRYPT_WORKER_BULK_BATCH_MAX * 2;
 const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
@@ -71,9 +72,9 @@ const DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
 /// Match one owner-side completion interleave slice so a helper can return a
 /// full bounded packet-mover turn without spending it across multiple messages.
 const DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX: usize =
-    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+    DECRYPT_WORKER_BULK_BATCH_MAX;
 const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
-    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+    DECRYPT_WORKER_BULK_BATCH_MAX;
 /// Keep FMP opens on the session owner by default. The helper lane remains an
 /// explicit experiment, but the simpler owner path avoids a second ordered
 /// completion queue and has been more reliable under connected UDP pressure.

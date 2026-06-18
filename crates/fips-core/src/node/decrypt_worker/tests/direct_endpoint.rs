@@ -790,13 +790,13 @@
         );
         assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion backlog should get one reserved owner slice before bulk, not consume the whole bulk turn"
+            DECRYPT_WORKER_BULK_BATCH_MAX * 2,
+            "completion backlog should get two reserved owner slices before bulk, not consume the whole bulk turn"
         );
         assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion interleave should be bounded to one bulk item width"
+            DECRYPT_WORKER_BULK_BATCH_MAX * 2,
+            "completion interleave should let ordered completions catch up across two bulk item widths"
         );
 
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
