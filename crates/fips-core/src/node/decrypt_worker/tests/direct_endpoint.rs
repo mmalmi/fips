@@ -789,6 +789,11 @@
             "direct endpoint delivery should use the same bounded delivery slice as direct TUN delivery"
         );
         assert_eq!(
+            DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
+            DECRYPT_WORKER_BULK_BATCH_MAX,
+            "completion backlog should get one reserved owner slice before bulk, not consume the whole bulk turn"
+        );
+        assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
             DECRYPT_WORKER_BULK_BATCH_MAX,
             "completion interleave should be bounded to one bulk item width"
@@ -831,8 +836,63 @@
     }
 
     #[test]
-    fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
+    fn decrypt_worker_completion_drain_budget_does_not_spend_bulk_turn() {
         let session_key = test_session_key(1, 80);
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) =
+            test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
+        for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
+            queue_bulk_item_for_test(
+                &bulk_tx,
+                &bulk_queued_packets,
+                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+            );
+        }
+
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET + 3;
+        let (fsp_completion_tx, fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletionBatch>(completion_count);
+        let source_addr = *test_source_peer().node_addr();
+        for sequence in 0..completion_count {
+            fsp_completion_tx
+                .try_send(dummy_fsp_aead_completion_batch(
+                    source_addr,
+                    sequence as u64,
+                ))
+                .expect("completion lane should have room");
+        }
+
+        let mut shard = test_shard();
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+            &mut plaintext_batch,
+        );
+
+        assert_eq!(
+            fsp_aead_completion_rx.len(),
+            completion_count - DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
+            "one drain turn should reserve only one bounded completion slice before bulk"
+        );
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "completion backlog must not spend the bounded bulk drain turn"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
+        let session_key = test_session_key(1, 81);
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
