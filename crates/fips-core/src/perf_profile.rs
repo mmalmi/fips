@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 206;
+const N_EVENTS: usize = 208;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -688,6 +688,8 @@ pub enum Event {
     FspAeadCompletionAeadFailedWorkerOpen = 203,
     FspAeadCompletionAeadFailedWorkerOpenReturned = 204,
     FspAeadCompletionEpochMismatch = 205,
+    FspAeadCompletionAeadFailedLocalOpen = 206,
+    FspAeadCompletionAeadFailedAcceptKbitMismatch = 207,
 }
 
 impl Event {
@@ -985,6 +987,12 @@ impl Event {
                 "fsp_aead_completion_aead_failed_worker_open_returned"
             }
             Event::FspAeadCompletionEpochMismatch => "fsp_aead_completion_epoch_mismatch",
+            Event::FspAeadCompletionAeadFailedLocalOpen => {
+                "fsp_aead_completion_aead_failed_local_open"
+            }
+            Event::FspAeadCompletionAeadFailedAcceptKbitMismatch => {
+                "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
+            }
         }
     }
 }
@@ -1197,6 +1205,8 @@ fn event_from_index(idx: usize) -> Event {
         203 => Event::FspAeadCompletionAeadFailedWorkerOpen,
         204 => Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
         205 => Event::FspAeadCompletionEpochMismatch,
+        206 => Event::FspAeadCompletionAeadFailedLocalOpen,
+        207 => Event::FspAeadCompletionAeadFailedAcceptKbitMismatch,
         _ => unreachable!(),
     }
 }
@@ -1867,6 +1877,16 @@ pub(crate) fn record_fsp_aead_completion_source_aead_failures(
             worker_open_returned as u64,
         );
     }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_local_open_aead_failure() {
+    record_event(Event::FspAeadCompletionAeadFailedLocalOpen);
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
+    record_event(Event::FspAeadCompletionAeadFailedAcceptKbitMismatch);
 }
 
 #[inline]

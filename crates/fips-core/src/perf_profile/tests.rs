@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 206);
+    assert_eq!(N_EVENTS, 208);
     assert!(
-        (Event::FspAeadCompletionEpochMismatch as usize) < N_EVENTS,
+        (Event::FspAeadCompletionAeadFailedAcceptKbitMismatch as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -409,6 +409,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FspAeadCompletionEpochMismatch as usize).name(),
         "fsp_aead_completion_epoch_mismatch"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedLocalOpen as usize).name(),
+        "fsp_aead_completion_aead_failed_local_open"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadCompletionAeadFailedAcceptKbitMismatch as usize).name(),
+        "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReplayDropped as usize).name(),

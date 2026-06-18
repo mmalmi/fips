@@ -780,6 +780,7 @@ impl OwnedFspSessionState {
                         Err(FspOpenError::Aead) => {
                             drain.aead_failures += 1;
                             drain.aead_failure_sources.add(source);
+                            crate::perf_profile::record_fsp_aead_completion_accept_kbit_mismatch();
                         }
                     }
                 }

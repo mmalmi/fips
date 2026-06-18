@@ -1369,7 +1369,15 @@ impl DecryptWorkerShard {
                     },
                     source: FspAeadCompletionSource::Local,
                 },
-                Some(Err(FspOpenError::Aead)) | Some(Err(FspOpenError::Replay)) => {
+                Some(Err(FspOpenError::Aead)) => {
+                    crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
+                    FspOrderedCompletion::AeadFailed {
+                        job,
+                        header,
+                        source: FspAeadCompletionSource::Local,
+                    }
+                }
+                Some(Err(FspOpenError::Replay)) => {
                     FspOrderedCompletion::AeadFailed {
                         job,
                         header,
