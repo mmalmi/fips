@@ -56,8 +56,9 @@ const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
 /// Match the WireGuard-style packet mover for the common same-owner case:
 /// the peer/session owner keeps replay and delivery order, while bulk FSP
 /// AEAD can run on another worker and return through the owner's ordered
-/// completion lane. If that lane is pressured, the same owner opens locally
-/// instead of handing the packet to a different replay owner.
+/// completion lane. Same-owner bulk stays on this opener path; pressure is
+/// surfaced as bounded opener/completion backpressure instead of a local open
+/// fallback that would make a second semantic path for the same packet stream.
 const DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER: bool = true;
 /// Remote FSP bulk packets commonly arrive on an FMP owner that is not the FSP
 /// session owner. Keep the default on the owner handoff lane so pressure cannot

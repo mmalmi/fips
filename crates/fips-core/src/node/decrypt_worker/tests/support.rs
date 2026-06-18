@@ -818,6 +818,86 @@
     }
 
     #[test]
+    fn aead_completion_interleave_keeps_pending_fsp_open_batch_together() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, 8);
+        let source_addr = NodeAddr::from_bytes([0x4b; 16]);
+        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("three-worker pool should have a sibling opener");
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let cipher = Arc::new(test_chacha_key([0x5b; 32]));
+        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+
+        for sequence in 0..2 {
+            let returned = fsp_open_batcher.push(
+                &pool,
+                open_idx,
+                owner_idx,
+                test_fsp_aead_helper_job(
+                    source_addr,
+                    sequence,
+                    Arc::clone(&cipher),
+                    header.clone(),
+                    pool.senders[owner_idx].fsp_aead_completion.clone(),
+                ),
+            );
+            assert!(
+                returned.is_empty(),
+                "pending opener jobs should fit in the local batcher"
+            );
+        }
+        assert!(
+            bulk_receivers.iter().all(Receiver::is_empty),
+            "opener work should still be pending before explicit flush"
+        );
+
+        let mut shard = DecryptWorkerShard::new(pool.clone());
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        fsp_completion_tx
+            .try_send(dummy_fsp_aead_completion_batch(source_addr, 99))
+            .expect("test completion lane should have room");
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+
+        drain_aead_completions_for_bulk_item(
+            0,
+            &mut shard,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            &mut plaintext_batch,
+            &mut completion_interleave_budget,
+        );
+
+        assert!(
+            bulk_receivers.iter().all(Receiver::is_empty),
+            "completion interleave should not fragment a pending opener batch"
+        );
+        assert!(
+            fsp_open_batcher.flush(&shard.pool).is_empty(),
+            "explicit batch boundary should dispatch queued opener work"
+        );
+        match bulk_receivers[open_idx]
+            .try_recv()
+            .expect("opener work should dispatch at the batch boundary")
+        {
+            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => assert_eq!(jobs.len(), 2),
+            DecryptWorkerBulkItem::FspAeadOpen(_) => {
+                panic!("pending opener jobs should remain coalesced")
+            }
+            DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::FspJob(_)
+            | DecryptWorkerBulkItem::Batch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
+        }
+    }
+
+    #[test]
     fn fsp_remote_open_worker_backlog_gate_drops_bulk_instead_of_owner_handoff() {
         let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(

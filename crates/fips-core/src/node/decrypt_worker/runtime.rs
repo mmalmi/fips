@@ -278,8 +278,6 @@ fn drain_aead_completions_for_bulk_item(
     fmp_aead_completion_rx: &Receiver<FmpAeadCompletionBatch>,
     fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    mut fsp_batcher: Option<&mut FspDecryptJobBatcher>,
-    mut fsp_open_batcher: Option<&mut FspAeadOpenJobBatcher>,
     remaining_budget: &mut usize,
 ) {
     let started_with_budget = *remaining_budget;
@@ -290,12 +288,6 @@ fn drain_aead_completions_for_bulk_item(
         else {
             break;
         };
-        if let Some(fsp_batcher) = fsp_batcher.as_deref_mut() {
-            fsp_batcher.flush(&shard.pool);
-        }
-        if let Some(fsp_open_batcher) = fsp_open_batcher.as_deref_mut() {
-            flush_fsp_open_batcher(idx, shard, plaintext_batch, fsp_open_batcher);
-        }
         let handled = handle_aead_completion(idx, shard, completion, plaintext_batch);
         drained = drained.saturating_add(handled.max(1));
         *remaining_budget = remaining_budget.saturating_sub(handled.max(1));
@@ -709,8 +701,6 @@ fn handle_bulk_item(
                     fmp_aead_completion_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
-                    Some(&mut fsp_batcher),
-                    Some(&mut fsp_open_batcher),
                     &mut completion_interleave_budget,
                 );
                 if !wait_for_fmp_receive_order_window(
@@ -772,8 +762,6 @@ fn handle_bulk_item(
                     fmp_aead_completion_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
-                    None,
-                    None,
                     &mut completion_interleave_budget,
                 );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
