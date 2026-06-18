@@ -146,6 +146,10 @@ impl NostrDiscovery {
         }
     }
 
+    pub(super) fn should_subscribe_ambient_adverts(&self) -> bool {
+        self.config.policy == crate::config::NostrDiscoveryPolicy::Open
+    }
+
     pub(super) async fn subscribe(&self) -> Result<(), BootstrapError> {
         let relay_config = self.relay_config.read().await.clone();
         self.client
@@ -160,16 +164,23 @@ impl NostrDiscovery {
             .await
             .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
 
-        self.client
-            .subscribe_to(
-                relay_config.advert_relays.clone(),
-                Filter::new()
-                    .kind(Kind::Custom(ADVERT_KIND))
-                    .identifier(advert_d_tag(&self.config.app)),
-                None,
-            )
-            .await
-            .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        if self.should_subscribe_ambient_adverts() {
+            self.client
+                .subscribe_to(
+                    relay_config.advert_relays.clone(),
+                    Filter::new()
+                        .kind(Kind::Custom(ADVERT_KIND))
+                        .identifier(advert_d_tag(&self.config.app)),
+                    None,
+                )
+                .await
+                .map_err(|e| BootstrapError::Nostr(e.to_string()))?;
+        } else {
+            debug!(
+                policy = ?self.config.policy,
+                "skipping ambient Nostr advert subscription"
+            );
+        }
 
         Ok(())
     }

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Skipped Nostr advert signature verification for events whose cheap tags do
   not target the configured app, reducing open-discovery CPU on low-power
   nodes.
+- Stopped `configured_only` Nostr discovery from subscribing to ambient advert
+  traffic; it now keeps configured-peer advert fetches and encrypted signaling
+  without processing the public advert stream.
 - Demoted routine Bloom and traversal backpressure logs from warning level so
   low-power nodes do not spend excessive CPU on repeated expected drops.
 

@@ -79,6 +79,24 @@ fn mesh_signaled_initiators_use_direct_refresh_admission() {
     );
 }
 
+#[test]
+fn ambient_advert_subscription_is_open_policy_only() {
+    let discovery = NostrDiscovery::new_for_test();
+    assert!(!discovery.should_subscribe_ambient_adverts());
+
+    let open = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        policy: crate::config::NostrDiscoveryPolicy::Open,
+        ..Default::default()
+    });
+    assert!(open.should_subscribe_ambient_adverts());
+
+    let disabled = NostrDiscovery::new_for_test_with_config(NostrDiscoveryConfig {
+        policy: crate::config::NostrDiscoveryPolicy::Disabled,
+        ..Default::default()
+    });
+    assert!(!disabled.should_subscribe_ambient_adverts());
+}
+
 #[tokio::test]
 async fn duplicate_connect_request_reports_already_active() {
     let discovery = Arc::new(NostrDiscovery::new_for_test());

@@ -6,6 +6,10 @@ impl NostrDiscovery {
     /// `advert_cache` and `npub` are usable. Intended for cache-injection
     /// tests of consumers (e.g. `Node::run_open_discovery_sweep`).
     pub(crate) fn new_for_test() -> Self {
+        Self::new_for_test_with_config(NostrDiscoveryConfig::default())
+    }
+
+    pub(crate) fn new_for_test_with_config(config: NostrDiscoveryConfig) -> Self {
         let keys = nostr::Keys::generate();
         let pubkey = keys.public_key();
         let npub = pubkey.to_bech32().expect("bech32 encode");
@@ -13,7 +17,6 @@ impl NostrDiscovery {
             .signer(keys.clone())
             .opts(ClientOptions::new().autoconnect(false))
             .build();
-        let config = NostrDiscoveryConfig::default();
         let offer_slots = Arc::new(Semaphore::new(config.max_concurrent_incoming_offers));
         let (event_tx, event_rx) = mpsc::channel(event_channel_capacity(&config));
         let (mesh_signal_tx, mesh_signal_rx) = mpsc::channel(event_channel_capacity(&config));
