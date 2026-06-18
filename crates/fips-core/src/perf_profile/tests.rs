@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 211);
+    assert_eq!(N_EVENTS, 220);
     assert!(
-        (Event::DecryptWorkerBulkInterleaveAeadCompletionBatch as usize) < N_EVENTS,
+        (Event::DecryptWorkerBatchWorkerOther as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -149,6 +149,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerBatchBulkPackets as usize).name(),
         "decrypt_worker_batch_bulk_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBatchWorker0 as usize).name(),
+        "decrypt_worker_batch_worker0"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBatchWorkerOther as usize).name(),
+        "decrypt_worker_batch_worker_other"
     );
     assert_eq!(
         event_from_index(Event::UdpSendGsoBatchGe32 as usize).name(),

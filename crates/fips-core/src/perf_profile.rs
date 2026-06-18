@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 211;
+const N_EVENTS: usize = 220;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -693,6 +693,15 @@ pub enum Event {
     DecryptWorkerSelectFspCompletionBatch = 208,
     DecryptWorkerDrainAeadCompletionBatch = 209,
     DecryptWorkerBulkInterleaveAeadCompletionBatch = 210,
+    DecryptWorkerBatchWorker0 = 211,
+    DecryptWorkerBatchWorker1 = 212,
+    DecryptWorkerBatchWorker2 = 213,
+    DecryptWorkerBatchWorker3 = 214,
+    DecryptWorkerBatchWorker4 = 215,
+    DecryptWorkerBatchWorker5 = 216,
+    DecryptWorkerBatchWorker6 = 217,
+    DecryptWorkerBatchWorker7 = 218,
+    DecryptWorkerBatchWorkerOther = 219,
 }
 
 impl Event {
@@ -1005,6 +1014,15 @@ impl Event {
             Event::DecryptWorkerBulkInterleaveAeadCompletionBatch => {
                 "decrypt_worker_bulk_interleave_aead_completion_batch"
             }
+            Event::DecryptWorkerBatchWorker0 => "decrypt_worker_batch_worker0",
+            Event::DecryptWorkerBatchWorker1 => "decrypt_worker_batch_worker1",
+            Event::DecryptWorkerBatchWorker2 => "decrypt_worker_batch_worker2",
+            Event::DecryptWorkerBatchWorker3 => "decrypt_worker_batch_worker3",
+            Event::DecryptWorkerBatchWorker4 => "decrypt_worker_batch_worker4",
+            Event::DecryptWorkerBatchWorker5 => "decrypt_worker_batch_worker5",
+            Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
+            Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
+            Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
         }
     }
 }
@@ -1222,6 +1240,15 @@ fn event_from_index(idx: usize) -> Event {
         208 => Event::DecryptWorkerSelectFspCompletionBatch,
         209 => Event::DecryptWorkerDrainAeadCompletionBatch,
         210 => Event::DecryptWorkerBulkInterleaveAeadCompletionBatch,
+        211 => Event::DecryptWorkerBatchWorker0,
+        212 => Event::DecryptWorkerBatchWorker1,
+        213 => Event::DecryptWorkerBatchWorker2,
+        214 => Event::DecryptWorkerBatchWorker3,
+        215 => Event::DecryptWorkerBatchWorker4,
+        216 => Event::DecryptWorkerBatchWorker5,
+        217 => Event::DecryptWorkerBatchWorker6,
+        218 => Event::DecryptWorkerBatchWorker7,
+        219 => Event::DecryptWorkerBatchWorkerOther,
         _ => unreachable!(),
     }
 }
@@ -1701,6 +1728,25 @@ pub(crate) fn record_decrypt_worker_batch(
     if packets == 1 {
         record_event_count_sample(Event::DecryptWorkerBatchSingle, 1);
     }
+}
+
+#[inline]
+pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    let worker_event = match worker_idx {
+        0 => Event::DecryptWorkerBatchWorker0,
+        1 => Event::DecryptWorkerBatchWorker1,
+        2 => Event::DecryptWorkerBatchWorker2,
+        3 => Event::DecryptWorkerBatchWorker3,
+        4 => Event::DecryptWorkerBatchWorker4,
+        5 => Event::DecryptWorkerBatchWorker5,
+        6 => Event::DecryptWorkerBatchWorker6,
+        7 => Event::DecryptWorkerBatchWorker7,
+        _ => Event::DecryptWorkerBatchWorkerOther,
+    };
+    record_event_count_sample(worker_event, packets as u64);
 }
 
 #[inline]

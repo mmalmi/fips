@@ -226,7 +226,7 @@ impl DecryptWorkerBatchStats {
         }
     }
 
-    fn record(&self) {
+    fn record(&self, worker_idx: usize) {
         if !self.enabled {
             return;
         }
@@ -236,6 +236,7 @@ impl DecryptWorkerBatchStats {
             self.bulk_packets,
             DECRYPT_WORKER_BULK_BURST_BUDGET,
         );
+        crate::perf_profile::record_decrypt_worker_batch_target(worker_idx, self.packets);
     }
 }
 

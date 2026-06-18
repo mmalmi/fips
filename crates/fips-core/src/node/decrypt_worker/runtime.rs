@@ -148,14 +148,14 @@ fn run_worker(
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_msg(&msg);
                 shard.handle_msg(idx, msg);
-                batch_stats.record();
+                batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::Priority(msg) => {
                 crate::perf_profile::record_decrypt_worker_select_priority();
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_msg(&msg);
                 shard.handle_msg(idx, msg);
-                batch_stats.record();
+                batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::FmpAeadCompletion(completion) => {
                 crate::perf_profile::record_decrypt_worker_select_fmp_completion();
@@ -186,7 +186,7 @@ fn run_worker(
                     &mut batch_stats,
                 );
                 plaintext_batch.flush();
-                batch_stats.record();
+                batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::Closed => {
                 drain_worker_queues(
@@ -422,7 +422,7 @@ fn drain_worker_queues(
         }
     }
     plaintext_batch.flush();
-    batch_stats.record();
+    batch_stats.record(idx);
 }
 
 fn wait_for_fmp_receive_order_window(
