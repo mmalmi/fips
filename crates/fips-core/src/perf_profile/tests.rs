@@ -635,8 +635,8 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "fsp_aead_completion_window_exceeded"
     );
     assert_eq!(
-        event_from_index(Event::DecryptFspHelperWindowFallback as usize).name(),
-        "decrypt_fsp_helper_window_fallback"
+        event_from_index(Event::DecryptFspOpenWorkerWindowFallback as usize).name(),
+        "decrypt_fsp_open_worker_window_fallback"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerSelectPriority as usize).name(),

@@ -304,7 +304,7 @@
             cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload.clone()),
             header: header.clone(),
-            completion_source: FspAeadCompletionSource::Helper,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
             helper_queued_at: None,
         }
@@ -337,7 +337,7 @@
             cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload),
             header,
-            completion_source: FspAeadCompletionSource::Helper,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
             helper_queued_at: None,
         }
@@ -351,7 +351,7 @@
         assert_eq!(
             duplicate_drain.replay_drop_sources,
             FspReplayDropSources {
-                helper: 1,
+                worker_open: 1,
                 ..FspReplayDropSources::default()
             }
         );
@@ -930,7 +930,7 @@
             cipher: Arc::clone(&shared.cipher),
             job: make_job(helper_payload, helper_payload_len),
             header: helper_header,
-            completion_source: FspAeadCompletionSource::Helper,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: None,
             helper_queued_at: None,
         }
@@ -1763,136 +1763,4 @@
             bulk_receivers.iter().all(Receiver::is_empty),
             "priority session-key dispatch must not consume bulk lanes"
         );
-    }
-
-    #[test]
-    fn fsp_aead_helper_batches_completions_for_same_owner_channel() {
-        let (job_tx, job_rx) = bounded::<FspAeadHelperJob>(4);
-        let (completion_tx, completion_rx) = bounded::<FspAeadCompletionBatch>(4);
-        let source_addr = *test_source_peer().node_addr();
-        let cipher = Arc::new(test_chacha_key([0x42; 32]));
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
-        let mut header_packet = header_bytes.to_vec();
-        header_packet.extend_from_slice(&[0u8; 16]);
-        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-
-        for sequence in 0..3 {
-            job_tx
-                .try_send(test_fsp_aead_helper_job(
-                    source_addr,
-                    sequence,
-                    Arc::clone(&cipher),
-                    header.clone(),
-                    completion_tx.clone(),
-                ))
-                .expect("helper job should enqueue");
-        }
-        drop(job_tx);
-        run_fsp_aead_helper(0, job_rx);
-
-        let batch = completion_rx
-            .try_recv()
-            .expect("same-owner helper completions should batch");
-        assert_eq!(batch.len(), 3);
-        assert!(completion_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn fsp_aead_helper_splits_batches_by_owner_channel() {
-        let (job_tx, job_rx) = bounded::<FspAeadHelperJob>(4);
-        let (first_tx, first_rx) = bounded::<FspAeadCompletionBatch>(4);
-        let (second_tx, second_rx) = bounded::<FspAeadCompletionBatch>(4);
-        let source_addr = *test_source_peer().node_addr();
-        let cipher = Arc::new(test_chacha_key([0x43; 32]));
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
-        let mut header_packet = header_bytes.to_vec();
-        header_packet.extend_from_slice(&[0u8; 16]);
-        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-
-        job_tx
-            .try_send(test_fsp_aead_helper_job(
-                source_addr,
-                0,
-                Arc::clone(&cipher),
-                header.clone(),
-                first_tx,
-            ))
-            .expect("first helper job should enqueue");
-        job_tx
-            .try_send(test_fsp_aead_helper_job(
-                source_addr,
-                1,
-                cipher,
-                header,
-                second_tx,
-            ))
-            .expect("second helper job should enqueue");
-        drop(job_tx);
-        run_fsp_aead_helper(0, job_rx);
-
-        assert_eq!(
-            first_rx
-                .try_recv()
-                .expect("first owner should receive a batch")
-                .len(),
-            1
-        );
-        assert_eq!(
-            second_rx
-                .try_recv()
-                .expect("second owner should receive a batch")
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn fsp_aead_helper_splits_batches_by_source_order_on_same_owner_channel() {
-        let (job_tx, job_rx) = bounded::<FspAeadHelperJob>(4);
-        let (completion_tx, completion_rx) = bounded::<FspAeadCompletionBatch>(4);
-        let source_addr = *test_source_peer().node_addr();
-        let other_source_addr = NodeAddr::from_bytes([0x99; 16]);
-        let cipher = Arc::new(test_chacha_key([0x44; 32]));
-        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
-        let mut header_packet = header_bytes.to_vec();
-        header_packet.extend_from_slice(&[0u8; 16]);
-        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
-
-        job_tx
-            .try_send(test_fsp_aead_helper_job(
-                source_addr,
-                0,
-                Arc::clone(&cipher),
-                header.clone(),
-                completion_tx.clone(),
-            ))
-            .expect("first helper job should enqueue");
-        job_tx
-            .try_send(test_fsp_aead_helper_job(
-                other_source_addr,
-                1,
-                Arc::clone(&cipher),
-                header.clone(),
-                completion_tx.clone(),
-            ))
-            .expect("different-source helper job should enqueue");
-        let mut next_order =
-            test_fsp_aead_helper_job(source_addr, 2, cipher, header, completion_tx);
-        next_order.receive_order_id += 1;
-        job_tx
-            .try_send(next_order)
-            .expect("different-order helper job should enqueue");
-        drop(job_tx);
-        run_fsp_aead_helper(0, job_rx);
-
-        for _ in 0..3 {
-            assert_eq!(
-                completion_rx
-                    .try_recv()
-                    .expect("helper should split mixed source/order batches")
-                    .len(),
-                1
-            );
-        }
-        assert!(completion_rx.try_recv().is_err());
     }

@@ -50,11 +50,6 @@ const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
-/// The old FSP helper pool is retired: FSP bulk parallelism uses the
-/// worker-open path so completions still return through one owner/sequencer.
-const DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS: usize = 0;
-const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG: usize = 0;
-const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
 const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
 /// Match the WireGuard-style packet mover for the common same-owner case:
 /// the peer/session owner keeps replay and delivery order, while bulk FSP
@@ -277,56 +272,6 @@ fn fallback_priority_channel_cap() -> usize {
         None,
         DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP,
     )
-}
-
-fn fsp_ordered_aead_helper_count_from_raw(_raw: Option<&str>) -> usize {
-    DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS
-}
-
-fn fsp_ordered_aead_helper_count() -> usize {
-    fsp_ordered_aead_helper_count_from_raw(
-        std::env::var("FIPS_DECRYPT_FSP_ORDERED_AEAD_HELPERS")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn fsp_aead_helper_min_owner_backlog_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG)
-        .min(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP)
-}
-
-fn fsp_aead_helper_min_owner_backlog() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_aead_helper_min_owner_backlog_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-fn fsp_aead_helper_max_completion_backlog_from_raw(
-    raw: Option<&str>,
-    completion_cap: usize,
-) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG)
-        .min(completion_cap)
-}
-
-fn fsp_aead_helper_max_completion_backlog() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_aead_helper_max_completion_backlog_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG")
-                .ok()
-                .as_deref(),
-            fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
-        )
-    })
 }
 
 fn fsp_open_worker_max_completion_backlog_from_raw(
@@ -1121,8 +1066,6 @@ struct FspOrderedDrain {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct FspAeadFailureSources {
     local: usize,
-    helper: usize,
-    helper_returned: usize,
     worker_open: usize,
     worker_open_returned: usize,
 }
@@ -1131,8 +1074,6 @@ impl FspAeadFailureSources {
     fn add(&mut self, source: FspAeadCompletionSource) {
         match source {
             FspAeadCompletionSource::Local => self.local += 1,
-            FspAeadCompletionSource::Helper => self.helper += 1,
-            FspAeadCompletionSource::HelperReturned => self.helper_returned += 1,
             FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
             FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
         }
@@ -1140,8 +1081,6 @@ impl FspAeadFailureSources {
 
     fn add_sources(&mut self, other: Self) {
         self.local += other.local;
-        self.helper += other.helper;
-        self.helper_returned += other.helper_returned;
         self.worker_open += other.worker_open;
         self.worker_open_returned += other.worker_open_returned;
     }
@@ -1149,8 +1088,8 @@ impl FspAeadFailureSources {
     fn record(self) {
         crate::perf_profile::record_fsp_aead_completion_source_aead_failures(
             self.local,
-            self.helper,
-            self.helper_returned,
+            0,
+            0,
             self.worker_open,
             self.worker_open_returned,
         );
@@ -1159,8 +1098,6 @@ impl FspAeadFailureSources {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct FspReplayDropSources {
-    helper: usize,
-    helper_returned: usize,
     worker_open: usize,
     worker_open_returned: usize,
 }
@@ -1169,24 +1106,20 @@ impl FspReplayDropSources {
     fn add(&mut self, source: FspAeadCompletionSource) {
         match source {
             FspAeadCompletionSource::Local => {}
-            FspAeadCompletionSource::Helper => self.helper += 1,
-            FspAeadCompletionSource::HelperReturned => self.helper_returned += 1,
             FspAeadCompletionSource::WorkerOpen => self.worker_open += 1,
             FspAeadCompletionSource::WorkerOpenReturned => self.worker_open_returned += 1,
         }
     }
 
     fn add_sources(&mut self, other: Self) {
-        self.helper += other.helper;
-        self.helper_returned += other.helper_returned;
         self.worker_open += other.worker_open;
         self.worker_open_returned += other.worker_open_returned;
     }
 
     fn record(self) {
         crate::perf_profile::record_fsp_aead_completion_source_replay_drops(
-            self.helper,
-            self.helper_returned,
+            0,
+            0,
             self.worker_open,
             self.worker_open_returned,
         );
@@ -1436,8 +1369,6 @@ struct FspAeadHelperJob {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FspAeadCompletionSource {
     Local,
-    Helper,
-    HelperReturned,
     WorkerOpen,
     WorkerOpenReturned,
 }
@@ -1446,7 +1377,6 @@ impl FspAeadCompletionSource {
     fn returned(self) -> Self {
         match self {
             Self::Local => Self::Local,
-            Self::Helper => Self::HelperReturned,
             Self::WorkerOpen => Self::WorkerOpenReturned,
             already_returned => already_returned,
         }
@@ -1541,15 +1471,10 @@ impl FspAeadCompletionBatch {
 impl FspAeadHelperJob {
     fn mark_returned_completion(&mut self) {
         match self.completion_source {
-            FspAeadCompletionSource::Helper => crate::perf_profile::record_event(
-                crate::perf_profile::Event::FspAeadCompletionReturnedHelper,
-            ),
             FspAeadCompletionSource::WorkerOpen => crate::perf_profile::record_event(
                 crate::perf_profile::Event::FspAeadCompletionReturnedWorkerOpen,
             ),
-            FspAeadCompletionSource::Local
-            | FspAeadCompletionSource::HelperReturned
-            | FspAeadCompletionSource::WorkerOpenReturned => {}
+            FspAeadCompletionSource::Local | FspAeadCompletionSource::WorkerOpenReturned => {}
         }
         self.completion_source = self.completion_source.returned();
     }

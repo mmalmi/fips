@@ -93,60 +93,6 @@
     }
 
     #[test]
-    fn fsp_ordered_aead_helper_env_is_retired() {
-        assert_eq!(
-            fsp_ordered_aead_helper_count_from_raw(None),
-            DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS
-        );
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("0")), 0);
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("2")), 0);
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("99")), 0);
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("bad")), 0);
-    }
-
-    #[test]
-    fn fsp_aead_helper_min_owner_backlog_defaults_passthrough_and_caps() {
-        assert_eq!(
-            fsp_aead_helper_min_owner_backlog_from_raw(None),
-            DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG
-        );
-        assert_eq!(fsp_aead_helper_min_owner_backlog_from_raw(Some("0")), 0);
-        assert_eq!(fsp_aead_helper_min_owner_backlog_from_raw(Some("64")), 64);
-        assert_eq!(
-            fsp_aead_helper_min_owner_backlog_from_raw(Some("999999")),
-            DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP
-        );
-        assert_eq!(
-            fsp_aead_helper_min_owner_backlog_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG
-        );
-    }
-
-    #[test]
-    fn fsp_aead_helper_max_completion_backlog_defaults_passthrough_and_caps() {
-        assert_eq!(
-            fsp_aead_helper_max_completion_backlog_from_raw(None, 1024),
-            DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG
-        );
-        assert_eq!(
-            fsp_aead_helper_max_completion_backlog_from_raw(Some("0"), 1024),
-            0
-        );
-        assert_eq!(
-            fsp_aead_helper_max_completion_backlog_from_raw(Some("64"), 1024),
-            64
-        );
-        assert_eq!(
-            fsp_aead_helper_max_completion_backlog_from_raw(Some("999999"), 1024),
-            1024
-        );
-        assert_eq!(
-            fsp_aead_helper_max_completion_backlog_from_raw(Some("bad"), 1024),
-            DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG
-        );
-    }
-
-    #[test]
     fn fsp_open_worker_max_completion_backlog_defaults_passthrough_and_caps() {
         assert_eq!(
             fsp_open_worker_max_completion_backlog_from_raw(None, 1024),
@@ -318,7 +264,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_helpers: None,
                 fsp_local_bulk_open_worker: false,
                 fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -371,7 +316,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_helpers: None,
                 fsp_local_bulk_open_worker: false,
                 fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -427,7 +371,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_aead_helpers: None,
                 fsp_local_bulk_open_worker: false,
                 fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -476,44 +419,22 @@
     }
 
     #[test]
-    fn fsp_aead_helper_owner_backlog_gate_uses_owner_bulk_counter() {
-        let (pool, _control_receivers, _priority_receivers, _bulk_receivers) =
-            test_worker_pool(1, 4);
-
-        assert!(pool.fsp_aead_helper_owner_backlog_ready_for(0, 0));
-        assert!(!pool.fsp_aead_helper_owner_backlog_ready_for(1, 0));
-        assert!(!pool.fsp_aead_helper_owner_backlog_ready_for(0, 2));
-
-        assert!(
-            pool.dispatch_bulk_fsp_job_or_return(0, dummy_fsp_job(128))
-                .is_ok()
-        );
-        assert!(!pool.fsp_aead_helper_owner_backlog_ready_for(0, 2));
-
-        assert!(
-            pool.dispatch_bulk_fsp_job_or_return(0, dummy_fsp_job(128))
-                .is_ok()
-        );
-        assert!(pool.fsp_aead_helper_owner_backlog_ready_for(0, 2));
-    }
-
-    #[test]
-    fn fsp_aead_helper_completion_backlog_gate_uses_owner_completion_lane() {
+    fn fsp_aead_completion_backlog_gate_uses_owner_completion_lane() {
         let (pool, _control, _priority, _bulk, _fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(1, 4);
         let source_addr = NodeAddr::from_bytes([0x33; 16]);
 
-        assert!(pool.fsp_aead_helper_owner_completion_backlog_ready_for(0, 1));
+        assert!(pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
         pool.senders[0]
             .fsp_aead_completion
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 0))
             .expect("test completion lane should have room");
-        assert!(pool.fsp_aead_helper_owner_completion_backlog_ready_for(0, 1));
+        assert!(pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
         pool.senders[0]
             .fsp_aead_completion
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 1))
             .expect("test completion lane should have room");
-        assert!(!pool.fsp_aead_helper_owner_completion_backlog_ready_for(0, 1));
+        assert!(!pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
     }
 
     #[test]
@@ -1179,7 +1100,6 @@
         let (mut pool, control_receivers, priority_receivers, _bulk_receivers) =
             test_worker_pool(3, 4);
         pool.fsp_local_bulk_open_worker = true;
-        assert!(!pool.fsp_aead_helpers_enabled());
 
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
@@ -1232,7 +1152,6 @@
         let (mut pool, control_receivers, _priority_receivers, _bulk_receivers) =
             test_worker_pool(4, 4);
         pool.fsp_remote_bulk_open_worker = true;
-        assert!(!pool.fsp_aead_helpers_enabled());
 
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
@@ -1354,11 +1273,11 @@
             source_addr,
             receive_order_id: 7,
             ticket: FspReceiveTicket { sequence },
-            source: FspAeadCompletionSource::Helper,
+            source: FspAeadCompletionSource::WorkerOpen,
             result: FspOrderedCompletion::AeadFailed {
                 job,
                 header,
-                source: FspAeadCompletionSource::Helper,
+                source: FspAeadCompletionSource::WorkerOpen,
             },
             completed_at: None,
         })
@@ -1685,7 +1604,7 @@
             cipher,
             job,
             header,
-            completion_source: FspAeadCompletionSource::Helper,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
             completion_tx: Some(completion_tx),
             helper_queued_at: None,
         }
