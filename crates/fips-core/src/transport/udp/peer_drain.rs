@@ -39,7 +39,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
@@ -49,6 +49,9 @@ pub(crate) const CONNECTED_UDP_PRIORITY_MAX_LEN: usize = 512;
 const DEFAULT_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 32 * 1024;
 const MIN_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 1024;
 const MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS: usize = 256 * 1024;
+const DEFAULT_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL: usize = 8;
+const MIN_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL: usize = 1;
+const MAX_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL: usize = 64;
 const CONNECTED_UDP_DISPATCH_BATCH_LIMIT: usize = super::UDP_RECV_BATCH_SIZE;
 
 pub(crate) trait ConnectedUdpPacketFastPath: Send + Sync {
@@ -73,18 +76,42 @@ struct ConnectedUdpDrainPacket {
     enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
+struct ConnectedUdpDrainBatch {
+    packets: Vec<ConnectedUdpDrainPacket>,
+}
+
 #[derive(Clone)]
 struct ConnectedUdpDrainQueue {
     priority: Sender<ConnectedUdpDrainPacket>,
-    bulk: Sender<ConnectedUdpDrainPacket>,
+    bulk: Sender<ConnectedUdpDrainBatch>,
+    bulk_queued_packets: Arc<AtomicUsize>,
+    bulk_packet_capacity: usize,
 }
 
 enum ConnectedUdpDrainEnqueueError {
     Closed,
-    BulkFull(ConnectedUdpDrainPacket),
+}
+
+enum ConnectedUdpDispatchItem {
+    Priority(ConnectedUdpDrainPacket),
+    Bulk(ConnectedUdpDrainBatch),
 }
 
 impl ConnectedUdpDrainQueue {
+    fn new(
+        priority: Sender<ConnectedUdpDrainPacket>,
+        bulk: Sender<ConnectedUdpDrainBatch>,
+        bulk_queued_packets: Arc<AtomicUsize>,
+        bulk_packet_capacity: usize,
+    ) -> Self {
+        Self {
+            priority,
+            bulk,
+            bulk_queued_packets,
+            bulk_packet_capacity: bulk_packet_capacity.max(1),
+        }
+    }
+
     fn enqueue(
         &self,
         packet: ConnectedUdpDrainPacket,
@@ -94,11 +121,85 @@ impl ConnectedUdpDrainQueue {
                 .send(packet)
                 .map_err(|_| ConnectedUdpDrainEnqueueError::Closed)
         } else {
-            self.bulk.try_send(packet).map_err(|error| match error {
-                TrySendError::Full(packet) => ConnectedUdpDrainEnqueueError::BulkFull(packet),
-                TrySendError::Disconnected(_) => ConnectedUdpDrainEnqueueError::Closed,
+            self.enqueue_bulk_batch(ConnectedUdpDrainBatch {
+                packets: vec![packet],
             })
         }
+    }
+
+    fn enqueue_bulk_batch(
+        &self,
+        mut batch: ConnectedUdpDrainBatch,
+    ) -> Result<(), ConnectedUdpDrainEnqueueError> {
+        let requested = batch.len();
+        if requested == 0 {
+            return Ok(());
+        }
+
+        let granted = self.try_reserve_bulk_packet_prefix(requested);
+        if granted == 0 {
+            record_connected_udp_drain_bulk_drop_count(requested);
+            return Ok(());
+        }
+
+        if granted < requested {
+            let dropped = requested - granted;
+            let _dropped_tail = batch.packets.split_off(granted);
+            record_connected_udp_drain_bulk_drop_count(dropped);
+        }
+
+        match self.bulk.try_send(batch) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(batch)) => {
+                release_connected_udp_drain_bulk_packets(&self.bulk_queued_packets, granted);
+                record_connected_udp_drain_bulk_drop_count(batch.len());
+                Ok(())
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                release_connected_udp_drain_bulk_packets(&self.bulk_queued_packets, granted);
+                Err(ConnectedUdpDrainEnqueueError::Closed)
+            }
+        }
+    }
+
+    fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
+        let mut current = self.bulk_queued_packets.load(Ordering::Relaxed);
+        loop {
+            let available = self.bulk_packet_capacity.saturating_sub(current);
+            let granted = requested.min(available);
+            if granted == 0 {
+                return 0;
+            }
+            match self.bulk_queued_packets.compare_exchange_weak(
+                current,
+                current + granted,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return granted,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
+impl ConnectedUdpDrainBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            packets: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, packet: ConnectedUdpDrainPacket) {
+        self.packets.push(packet);
+    }
+
+    fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.packets.is_empty()
     }
 }
 
@@ -143,9 +244,11 @@ impl PeerRecvDrain {
         let bulk_ring_packets = connected_udp_drain_bulk_ring_packets();
         let (priority_tx, priority_rx) = unbounded();
         let (bulk_tx, bulk_rx) = bounded(bulk_ring_packets);
+        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
 
         let dispatch_stop = stop.clone();
         let dispatch_packet_tx = packet_tx.clone();
+        let dispatch_bulk_queued_packets = bulk_queued_packets.clone();
         let dispatch_thread = std::thread::Builder::new()
             .name(format!("fips-peer-dispatch-{}", socket.peer_addr()))
             .spawn(move || {
@@ -156,6 +259,7 @@ impl PeerRecvDrain {
                     fast_path,
                     priority_rx,
                     bulk_rx,
+                    dispatch_bulk_queued_packets,
                     dispatch_stop,
                 );
             });
@@ -172,10 +276,12 @@ impl PeerRecvDrain {
             }
         };
 
-        let drain_queue = ConnectedUdpDrainQueue {
-            priority: priority_tx,
-            bulk: bulk_tx,
-        };
+        let drain_queue = ConnectedUdpDrainQueue::new(
+            priority_tx,
+            bulk_tx,
+            bulk_queued_packets,
+            bulk_ring_packets,
+        );
         let stop_clone = stop.clone();
         let socket_clone = socket.clone();
         let drain_thread = std::thread::Builder::new()
@@ -269,10 +375,12 @@ fn drain_loop(
         .map(|_| packet_tx.recv_buffer(CONNECTED_UDP_RECV_BUF_SIZE))
         .collect();
     let mut lens: [usize; BATCH] = [0; BATCH];
+    let mut bulk_batch = ConnectedUdpDrainBatch::with_capacity(BATCH);
+    let drain_bursts_per_poll = connected_udp_drain_bursts_per_poll();
     #[cfg(target_os = "linux")]
     let mut kernel_drop_sampler = ConnectedUdpKernelDropSampler::new(socket_fd);
 
-    loop {
+    'outer: loop {
         if stop.load(Ordering::Acquire) {
             break;
         }
@@ -334,70 +442,87 @@ fn drain_loop(
             continue;
         }
 
-        // Drain whatever is currently queued in the kernel.
-        let drain_started_at = crate::perf_profile::stamp();
-        let drain_result = drain_packets(socket_fd, &mut backing, &mut lens);
-        let count = match drain_result {
-            Ok(count) => count,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(err) => {
-                debug!(error = %err, "fips-peer-drain: recv failed; exiting");
+        for _ in 0..drain_bursts_per_poll {
+            if stop.load(Ordering::Acquire) {
+                break 'outer;
+            }
+
+            // Drain a bounded burst of whatever is currently queued in the
+            // kernel. WireGuard-go and Tailscale both bias toward emptying a
+            // ready packet source before sleeping again; the cap keeps this
+            // from turning a hot peer into an unbounded busy loop.
+            let drain_started_at = crate::perf_profile::stamp();
+            let drain_result = drain_packets(socket_fd, &mut backing, &mut lens);
+            let count = match drain_result {
+                Ok(count) => count,
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) => {
+                    debug!(error = %err, "fips-peer-drain: recv failed; exiting");
+                    break 'outer;
+                }
+            };
+            if count == 0 {
                 break;
             }
-        };
-        #[cfg(target_os = "linux")]
-        kernel_drop_sampler.maybe_sample(socket_fd);
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::ConnectedUdpDrainRecv,
-            drain_started_at,
-            count as u64,
-        );
-
-        let timestamp_ms = received_timestamp_ms();
-        for i in 0..count {
-            let len = lens[i];
-            if len == 0 {
-                super::reset_recv_buffer(&mut backing[i]);
-                continue;
-            }
-            if is_punch_packet(&backing[i][..len]) {
-                trace!(
-                    transport_id = %transport_id,
-                    peer_addr = %peer_addr,
-                    bytes = len,
-                    "fips-peer-drain: dropping stray punch probe/ack"
-                );
-                super::reset_recv_buffer(&mut backing[i]);
-                continue;
-            }
-            // Move the filled buffer out, refill the slot with a
-            // fresh one. Same zero-copy pattern the wildcard listen
-            // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
-            let mut data = std::mem::replace(
-                &mut backing[i],
-                packet_tx.recv_buffer(CONNECTED_UDP_RECV_BUF_SIZE),
+            #[cfg(target_os = "linux")]
+            kernel_drop_sampler.maybe_sample(socket_fd);
+            crate::perf_profile::record_since_count(
+                crate::perf_profile::Stage::ConnectedUdpDrainRecv,
+                drain_started_at,
+                count as u64,
             );
-            data.truncate(len);
-            let packet = ConnectedUdpDrainPacket {
-                data: packet_tx.packet_buffer(data),
-                timestamp_ms,
-                enqueued_at: crate::perf_profile::stamp(),
-            };
-            match drain_queue.enqueue(packet) {
-                Ok(()) => {}
-                Err(ConnectedUdpDrainEnqueueError::BulkFull(packet)) => {
-                    drop(packet);
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::TransportBulkDropped,
-                    );
-                    crate::perf_profile::record_event(
-                        crate::perf_profile::Event::ConnectedUdpDrainBulkDropped,
-                    );
+
+            let timestamp_ms = received_timestamp_ms();
+            for i in 0..count {
+                let len = lens[i];
+                if len == 0 {
+                    super::reset_recv_buffer(&mut backing[i]);
+                    continue;
                 }
-                Err(ConnectedUdpDrainEnqueueError::Closed) => {
+                if is_punch_packet(&backing[i][..len]) {
+                    trace!(
+                        transport_id = %transport_id,
+                        peer_addr = %peer_addr,
+                        bytes = len,
+                        "fips-peer-drain: dropping stray punch probe/ack"
+                    );
+                    super::reset_recv_buffer(&mut backing[i]);
+                    continue;
+                }
+                // Move the filled buffer out, refill the slot with a
+                // fresh one. Same zero-copy pattern the wildcard listen
+                // socket uses (see `transport/udp/mod.rs::run_receive_loop`).
+                let mut data = std::mem::replace(
+                    &mut backing[i],
+                    packet_tx.recv_buffer(CONNECTED_UDP_RECV_BUF_SIZE),
+                );
+                data.truncate(len);
+                let packet = ConnectedUdpDrainPacket {
+                    data: packet_tx.packet_buffer(data),
+                    timestamp_ms,
+                    enqueued_at: crate::perf_profile::stamp(),
+                };
+                if packet.data.len() <= CONNECTED_UDP_PRIORITY_MAX_LEN {
+                    if drain_queue.enqueue(packet).is_err() {
+                        trace!("fips-peer-drain: dispatch channel closed; exiting");
+                        return;
+                    }
+                } else {
+                    bulk_batch.push(packet);
+                }
+            }
+            if !bulk_batch.is_empty() {
+                let batch = std::mem::replace(
+                    &mut bulk_batch,
+                    ConnectedUdpDrainBatch::with_capacity(BATCH),
+                );
+                if drain_queue.enqueue_bulk_batch(batch).is_err() {
                     trace!("fips-peer-drain: dispatch channel closed; exiting");
                     return;
                 }
+            }
+            if count < BATCH {
+                break;
             }
         }
     }
@@ -415,14 +540,17 @@ fn dispatch_loop(
     packet_tx: PacketTx,
     fast_path: Option<Arc<dyn ConnectedUdpPacketFastPath>>,
     priority_rx: Receiver<ConnectedUdpDrainPacket>,
-    bulk_rx: Receiver<ConnectedUdpDrainPacket>,
+    bulk_rx: Receiver<ConnectedUdpDrainBatch>,
+    bulk_queued_packets: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
 ) {
     let packet_addr = TransportAddr::from_socket_addr(peer_addr);
     let mut fast_path_batcher = fast_path.as_ref().map(|fast_path| fast_path.batcher());
-    let never = crossbeam_channel::never();
+    let never_priority = crossbeam_channel::never();
+    let never_bulk = crossbeam_channel::never();
     let mut priority_open = true;
     let mut bulk_open = true;
+    let mut pending_bulk: Option<ConnectedUdpDrainBatch> = None;
 
     trace!(
         transport_id = %transport_id,
@@ -430,27 +558,52 @@ fn dispatch_loop(
         "fips-peer-dispatch: starting"
     );
 
-    while priority_open || bulk_open {
+    while priority_open || bulk_open || pending_bulk.is_some() {
         let first = {
-            let priority_wait = if priority_open { &priority_rx } else { &never };
-            let bulk_wait = if bulk_open { &bulk_rx } else { &never };
+            if priority_open {
+                match priority_rx.try_recv() {
+                    Ok(packet) => Some(ConnectedUdpDispatchItem::Priority(packet)),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => {
+                        priority_open = false;
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        };
+        let first = first.or_else(|| pending_bulk.take().map(ConnectedUdpDispatchItem::Bulk));
+        let first = first.or_else(|| {
+            let priority_wait = if priority_open {
+                &priority_rx
+            } else {
+                &never_priority
+            };
+            let bulk_wait = if bulk_open { &bulk_rx } else { &never_bulk };
             crossbeam_channel::select_biased! {
                 recv(priority_wait) -> msg => match msg {
-                    Ok(packet) => Some(packet),
+                    Ok(packet) => Some(ConnectedUdpDispatchItem::Priority(packet)),
                     Err(_) => {
                         priority_open = false;
                         None
                     }
                 },
                 recv(bulk_wait) -> msg => match msg {
-                    Ok(packet) => Some(packet),
+                    Ok(batch) => {
+                        release_connected_udp_drain_bulk_packets(
+                            &bulk_queued_packets,
+                            batch.len(),
+                        );
+                        Some(ConnectedUdpDispatchItem::Bulk(batch))
+                    }
                     Err(_) => {
                         bulk_open = false;
                         None
                     }
                 },
             }
-        };
+        });
         let Some(first) = first else {
             continue;
         };
@@ -463,13 +616,15 @@ fn dispatch_loop(
             fast_path_batcher.as_mut(),
             &priority_rx,
             &bulk_rx,
+            &bulk_queued_packets,
+            &mut pending_bulk,
             &mut priority_open,
             &mut bulk_open,
         ) {
             break;
         }
 
-        if stop.load(Ordering::Acquire) && !priority_open && !bulk_open {
+        if stop.load(Ordering::Acquire) && !priority_open && !bulk_open && pending_bulk.is_none() {
             break;
         }
     }
@@ -482,13 +637,15 @@ fn dispatch_loop(
 }
 
 fn dispatch_ready_packets(
-    first: ConnectedUdpDrainPacket,
+    first: ConnectedUdpDispatchItem,
     transport_id: TransportId,
     packet_addr: &TransportAddr,
     packet_tx: &PacketTx,
     mut fast_path_batcher: Option<&mut Box<dyn ConnectedUdpPacketFastPathBatcher>>,
     priority_rx: &Receiver<ConnectedUdpDrainPacket>,
-    bulk_rx: &Receiver<ConnectedUdpDrainPacket>,
+    bulk_rx: &Receiver<ConnectedUdpDrainBatch>,
+    bulk_queued_packets: &AtomicUsize,
+    pending_bulk: &mut Option<ConnectedUdpDrainBatch>,
     priority_open: &mut bool,
     bulk_open: &mut bool,
 ) -> bool {
@@ -496,7 +653,7 @@ fn dispatch_ready_packets(
     let mut dispatch_count = 0u64;
     let mut packets = packet_tx.packet_batch(CONNECTED_UDP_DISPATCH_BATCH_LIMIT);
 
-    dispatch_one_packet(
+    dispatch_item(
         first,
         transport_id,
         packet_addr,
@@ -507,8 +664,8 @@ fn dispatch_ready_packets(
 
     while dispatch_count < CONNECTED_UDP_DISPATCH_BATCH_LIMIT as u64 {
         match priority_rx.try_recv() {
-            Ok(packet) => dispatch_one_packet(
-                packet,
+            Ok(packet) => dispatch_item(
+                ConnectedUdpDispatchItem::Priority(packet),
                 transport_id,
                 packet_addr,
                 &mut packets,
@@ -525,14 +682,24 @@ fn dispatch_ready_packets(
 
     while dispatch_count < CONNECTED_UDP_DISPATCH_BATCH_LIMIT as u64 {
         match bulk_rx.try_recv() {
-            Ok(packet) => dispatch_one_packet(
-                packet,
-                transport_id,
-                packet_addr,
-                &mut packets,
-                &mut fast_path_batcher,
-                &mut dispatch_count,
-            ),
+            Ok(batch) => {
+                release_connected_udp_drain_bulk_packets(bulk_queued_packets, batch.len());
+                if dispatch_count > 0
+                    && dispatch_count.saturating_add(batch.len() as u64)
+                        > CONNECTED_UDP_DISPATCH_BATCH_LIMIT as u64
+                {
+                    *pending_bulk = Some(batch);
+                    break;
+                }
+                dispatch_item(
+                    ConnectedUdpDispatchItem::Bulk(batch),
+                    transport_id,
+                    packet_addr,
+                    &mut packets,
+                    &mut fast_path_batcher,
+                    &mut dispatch_count,
+                );
+            }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 *bulk_open = false;
@@ -551,6 +718,38 @@ fn dispatch_ready_packets(
         dispatch_count,
     );
     !send_failed
+}
+
+fn dispatch_item(
+    item: ConnectedUdpDispatchItem,
+    transport_id: TransportId,
+    packet_addr: &TransportAddr,
+    packets: &mut PacketBatch,
+    fast_path_batcher: &mut Option<&mut Box<dyn ConnectedUdpPacketFastPathBatcher>>,
+    dispatch_count: &mut u64,
+) {
+    match item {
+        ConnectedUdpDispatchItem::Priority(packet) => dispatch_one_packet(
+            packet,
+            transport_id,
+            packet_addr,
+            packets,
+            fast_path_batcher,
+            dispatch_count,
+        ),
+        ConnectedUdpDispatchItem::Bulk(batch) => {
+            for packet in batch.packets {
+                dispatch_one_packet(
+                    packet,
+                    transport_id,
+                    packet_addr,
+                    packets,
+                    fast_path_batcher,
+                    dispatch_count,
+                );
+            }
+        }
+    }
 }
 
 fn dispatch_one_packet(
@@ -582,6 +781,31 @@ fn dispatch_one_packet(
     packets.push(packet);
 }
 
+fn record_connected_udp_drain_bulk_drop_count(count: usize) {
+    if count == 0 {
+        return;
+    }
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::TransportBulkDropped,
+        count as u64,
+    );
+    crate::perf_profile::record_event_count(
+        crate::perf_profile::Event::ConnectedUdpDrainBulkDropped,
+        count as u64,
+    );
+}
+
+fn release_connected_udp_drain_bulk_packets(counter: &AtomicUsize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let previous = counter.fetch_sub(count, Ordering::Relaxed);
+    debug_assert!(
+        previous >= count,
+        "connected UDP bulk ring packet accounting underflow"
+    );
+}
+
 fn record_connected_udp_drain_ring_wait(
     packet_len: usize,
     enqueued_at: Option<crate::perf_profile::TraceStamp>,
@@ -611,6 +835,22 @@ fn parse_connected_udp_drain_bulk_ring_packets(raw: &str) -> Option<usize> {
         value.clamp(
             MIN_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS,
             MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS,
+        )
+    })
+}
+
+fn connected_udp_drain_bursts_per_poll() -> usize {
+    std::env::var("FIPS_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL")
+        .ok()
+        .and_then(|value| parse_connected_udp_drain_bursts_per_poll(&value))
+        .unwrap_or(DEFAULT_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL)
+}
+
+fn parse_connected_udp_drain_bursts_per_poll(raw: &str) -> Option<usize> {
+    raw.trim().parse::<usize>().ok().map(|value| {
+        value.clamp(
+            MIN_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL,
+            MAX_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL,
         )
     })
 }
@@ -982,6 +1222,14 @@ mod tests {
         fn flush(&mut self) {}
     }
 
+    fn test_drain_packet(len: usize, fill: u8) -> ConnectedUdpDrainPacket {
+        ConnectedUdpDrainPacket {
+            data: vec![fill; len].into(),
+            timestamp_ms: 1,
+            enqueued_at: None,
+        }
+    }
+
     #[test]
     fn connected_udp_drain_bulk_ring_parser_is_bounded() {
         assert_eq!(parse_connected_udp_drain_bulk_ring_packets(""), None);
@@ -1001,6 +1249,63 @@ mod tests {
             parse_connected_udp_drain_bulk_ring_packets("999999999"),
             Some(MAX_CONNECTED_UDP_DRAIN_BULK_RING_PACKETS)
         );
+    }
+
+    #[test]
+    fn connected_udp_drain_bursts_per_poll_parser_is_bounded() {
+        assert_eq!(parse_connected_udp_drain_bursts_per_poll(""), None);
+        assert_eq!(
+            parse_connected_udp_drain_bursts_per_poll("not-a-number"),
+            None
+        );
+        assert_eq!(
+            parse_connected_udp_drain_bursts_per_poll("0"),
+            Some(MIN_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL)
+        );
+        assert_eq!(parse_connected_udp_drain_bursts_per_poll("8"), Some(8));
+        assert_eq!(
+            parse_connected_udp_drain_bursts_per_poll("999999999"),
+            Some(MAX_CONNECTED_UDP_DRAIN_BURSTS_PER_POLL)
+        );
+    }
+
+    #[test]
+    fn connected_udp_drain_queue_batches_bulk_by_packet_capacity() {
+        let (priority_tx, priority_rx) = unbounded();
+        let (bulk_tx, bulk_rx) = bounded(8);
+        let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
+        let queue =
+            ConnectedUdpDrainQueue::new(priority_tx, bulk_tx, bulk_queued_packets.clone(), 2);
+
+        assert!(
+            queue
+                .enqueue(test_drain_packet(CONNECTED_UDP_PRIORITY_MAX_LEN, 0x11))
+                .is_ok()
+        );
+        assert_eq!(
+            priority_rx.try_recv().expect("priority packet").data.len(),
+            512
+        );
+        assert_eq!(bulk_queued_packets.load(Ordering::Relaxed), 0);
+
+        let mut batch = ConnectedUdpDrainBatch::with_capacity(3);
+        for idx in 0..3 {
+            batch.push(test_drain_packet(
+                CONNECTED_UDP_PRIORITY_MAX_LEN + 1,
+                idx as u8,
+            ));
+        }
+
+        assert!(queue.enqueue_bulk_batch(batch).is_ok());
+        assert_eq!(bulk_queued_packets.load(Ordering::Relaxed), 2);
+        let batch = bulk_rx.try_recv().expect("bulk batch");
+        assert_eq!(
+            batch.len(),
+            2,
+            "bulk ring should admit a packet-counted prefix"
+        );
+        release_connected_udp_drain_bulk_packets(&bulk_queued_packets, batch.len());
+        assert_eq!(bulk_queued_packets.load(Ordering::Relaxed), 0);
     }
 
     /// End-to-end: open a ConnectedPeerSocket, spawn a drain thread
