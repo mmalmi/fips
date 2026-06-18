@@ -871,7 +871,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_backlog_uses_owner_ordered_open() {
+    fn fsp_local_open_worker_stays_on_opener_path_when_owner_completion_backlogged() {
         let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(
                 3,
@@ -911,6 +911,9 @@
         });
         state.fsp_receive_order_id = shared.receive_order_id;
         state.attach_shared_crypto_session(shared);
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("three-worker pool should have a sibling opener");
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
         shard.register_fsp_session(owner_idx, source_addr, state);
@@ -925,11 +928,19 @@
         );
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
-            "same-owner backlog should stop opener dispatch"
+            "same-owner backlog should not return opener work"
+        );
+        assert_eq!(
+            bulk_receivers[open_idx].len(),
+            1,
+            "same-owner bulk should stay on the opener path"
         );
         assert!(
-            bulk_receivers.iter().all(Receiver::is_empty),
-            "same-owner backlog should use local ordered open instead of queuing fallback work"
+            bulk_receivers
+                .iter()
+                .enumerate()
+                .all(|(idx, rx)| idx == open_idx || rx.is_empty()),
+            "same-owner backlog should not create owner-side fallback work"
         );
     }
 

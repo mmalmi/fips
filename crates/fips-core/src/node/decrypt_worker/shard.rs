@@ -556,9 +556,10 @@ impl DecryptWorkerShard {
         if eligible_open_idx.is_none() {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
-        if !self
-            .pool
-            .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
+        if owner_idx != idx
+            && !self
+                .pool
+                .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
         {
             return Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job));
         }
