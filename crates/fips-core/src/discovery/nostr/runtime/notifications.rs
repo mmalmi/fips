@@ -33,6 +33,9 @@ impl NostrDiscovery {
                 }
                 if let RelayPoolNotification::Event { event, .. } = notification {
                     if event.kind == Kind::Custom(ADVERT_KIND) {
+                        if !Self::advert_event_targets_app(event.as_ref(), &self.config.app) {
+                            continue;
+                        }
                         let Ok(verified_event) = VerifiedEvent::try_from(event.as_ref()) else {
                             continue;
                         };

@@ -62,7 +62,10 @@ fn signed_overlay_advert_event_for_app(app: &str) -> nostr::Event {
     let keys = nostr::Keys::generate();
     let content = r#"{"identifier":"fips-overlay-v1","version":1,"endpoints":[{"transport":"tcp","addr":"8.8.8.8:443"}]}"#;
     EventBuilder::new(Kind::Custom(ADVERT_KIND), content)
-        .tags([Tag::custom(TagKind::custom("protocol"), [app.to_string()])])
+        .tags([
+            Tag::identifier(app),
+            Tag::custom(TagKind::custom("protocol"), [app.to_string()]),
+        ])
         .sign_with_keys(&keys)
         .unwrap()
 }
@@ -242,6 +245,25 @@ fn parses_only_signed_overlay_advert_events() {
 
     assert_eq!(advert.identifier, ADVERT_IDENTIFIER);
     assert_eq!(advert.endpoints.len(), 1);
+}
+
+#[test]
+fn advert_prefilter_accepts_only_matching_app_tags() {
+    let event = signed_overlay_advert_event_for_app("fips-test");
+    assert!(NostrDiscovery::advert_event_targets_app(
+        &event,
+        "fips-test"
+    ));
+    assert!(!NostrDiscovery::advert_event_targets_app(
+        &event,
+        "other-app"
+    ));
+
+    let missing_protocol = signed_overlay_advert_event(Timestamp::now().as_secs(), None);
+    assert!(!NostrDiscovery::advert_event_targets_app(
+        &missing_protocol,
+        "fips-test"
+    ));
 }
 
 #[test]

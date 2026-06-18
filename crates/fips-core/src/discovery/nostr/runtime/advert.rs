@@ -1,6 +1,22 @@
 use super::*;
 
 impl NostrDiscovery {
+    pub(in crate::discovery::nostr) fn advert_event_targets_app(
+        event: &Event,
+        expected_app: &str,
+    ) -> bool {
+        event.kind == Kind::Custom(ADVERT_KIND)
+            && event
+                .tags
+                .identifier()
+                .is_some_and(|identifier| identifier == advert_d_tag(expected_app))
+            && event
+                .tags
+                .find(TagKind::custom("protocol"))
+                .and_then(|tag| tag.content())
+                .is_some_and(|protocol| protocol == expected_app)
+    }
+
     /// Discover (or return cached) the public-Internet address for an
     /// advert-eligible UDP transport bound to a wildcard. Used by
     /// `build_overlay_advert` to avoid emitting `udp:0.0.0.0:port`,
