@@ -127,6 +127,7 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet: vec![1],
                     drop_on_backpressure: true,
+                    priority: false,
                 },
             );
             push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
@@ -137,6 +138,7 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet: vec![2],
                     drop_on_backpressure: false,
+                    priority: false,
                 },
             );
 
@@ -150,6 +152,7 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet,
                     drop_on_backpressure,
+                    ..
                 } => {
                     assert_eq!(packet.as_slice(), &[1]);
                     assert!(*drop_on_backpressure);
@@ -160,6 +163,7 @@ mod mac_queue_tests {
                 MacSendItem::Packet {
                     packet,
                     drop_on_backpressure,
+                    ..
                 } => {
                     assert_eq!(packet.as_slice(), &[2]);
                     assert!(!*drop_on_backpressure);
@@ -167,6 +171,57 @@ mod mac_queue_tests {
                 MacSendItem::Skip => panic!("expected second flow item to be a packet"),
             }
             assert!(matches!(groups[1].items[0].1, MacSendItem::Skip));
+        });
+    }
+
+    #[test]
+    fn mac_ordered_sender_priority_bypasses_missing_bulk_sequence() {
+        with_test_socket(|socket, _cipher| {
+            let flow = test_mac_send_flow(socket, "127.0.0.1:10035".parse().unwrap());
+
+            flow.complete_many(vec![(
+                1,
+                MacSendItem::Packet {
+                    packet: vec![9],
+                    drop_on_backpressure: false,
+                    priority: true,
+                },
+            )]);
+
+            match flow.take_next_ready_for_test().expect("priority ready") {
+                MacSendItem::Packet {
+                    packet, priority, ..
+                } => {
+                    assert_eq!(packet, vec![9]);
+                    assert!(priority);
+                }
+                MacSendItem::Skip => panic!("priority packet should bypass missing bulk"),
+            }
+            assert!(flow.take_next_ready_for_test().is_none());
+
+            flow.complete_many(vec![(
+                0,
+                MacSendItem::Packet {
+                    packet: vec![1],
+                    drop_on_backpressure: true,
+                    priority: false,
+                },
+            )]);
+
+            match flow.take_next_ready_for_test().expect("bulk ready") {
+                MacSendItem::Packet {
+                    packet, priority, ..
+                } => {
+                    assert_eq!(packet, vec![1]);
+                    assert!(!priority);
+                }
+                MacSendItem::Skip => panic!("bulk packet should drain before skip"),
+            }
+            assert!(matches!(
+                flow.take_next_ready_for_test(),
+                Some(MacSendItem::Skip)
+            ));
+            assert!(flow.take_next_ready_for_test().is_none());
         });
     }
 

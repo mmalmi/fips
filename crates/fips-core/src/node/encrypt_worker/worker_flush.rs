@@ -754,7 +754,7 @@ fn flush_batch_sync(
 
         #[cfg(target_os = "macos")]
         if let Some(flow) = macos_flow {
-            let (_send_target, _target_key, _lane, wire_packet, drop_on_backpressure) =
+            let (_send_target, _target_key, lane, wire_packet, drop_on_backpressure) =
                 sealed.into_parts();
             push_mac_completion(
                 &mut macos_completions,
@@ -763,6 +763,7 @@ fn flush_batch_sync(
                 MacSendItem::Packet {
                     packet: wire_packet,
                     drop_on_backpressure,
+                    priority: lane == SelectedSendLane::Priority,
                 },
             );
             continue;
