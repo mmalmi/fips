@@ -60,11 +60,12 @@
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
         let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
         let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let endpoint_body = vec![0x42; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 256];
         let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
             0x0102_0304,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
             0x01,
-            b"direct endpoint",
+            &endpoint_body,
         );
         let fsp_counter = fsp_sender.current_send_counter();
         let fsp_header = crate::node::session_wire::build_fsp_header(
@@ -148,12 +149,12 @@
                 assert_eq!(direct.receive_sync.slot, EpochSlot::Current);
                 assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
                 assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
-                assert_eq!(direct.body_len, b"direct endpoint".len());
+                assert_eq!(direct.body_len, endpoint_body.len());
                 assert!(direct.receive_sync.spin_bit);
                 match direct.delivery {
                     DecryptDirectSessionDelivery::EndpointData(delivery) => {
                         assert_eq!(delivery.source_peer, source_peer);
-                        assert_eq!(delivery.payload, b"direct endpoint");
+                        assert_eq!(delivery.payload, endpoint_body);
                     }
                     DecryptDirectSessionDelivery::Ipv6Packet(_) => {
                         panic!("endpoint data must not become an IPv6 packet")
@@ -164,6 +165,62 @@
                 "expected direct session data event, got {:?}",
                 other.packet_count()
             ),
+        }
+    }
+
+    #[test]
+    fn worker_leaves_priority_fsp_plaintext_for_rx_loop_owner() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let fsp_header = crate::node::session_wire::build_fsp_header(7, 0, 0);
+        let mut fsp_payload = fsp_header.to_vec();
+        fsp_payload.extend_from_slice(&[0u8; 16]);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut packet_data = Vec::new();
+        packet_data.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        packet_data.extend_from_slice(&datagram.encode());
+        assert!(
+            packet_data.len() <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            "test packet must stay on the priority lane"
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
+            packet_data: packet_data.clone().into(),
+            lane: DecryptWorkerLane::Priority,
+            source_peer,
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: *local.node_addr(),
+            timestamp_ms: 1_000,
+            packet_len: packet_data.len(),
+            fmp_counter: 77,
+            fmp_flags: 0,
+            fmp_plaintext_offset: 0,
+            fmp_plaintext_len: packet_data.len(),
+            fallback_tx,
+        })
+        .expect("priority FSP plaintext should return to rx_loop");
+
+        match action {
+            DecryptWorkerJobAction::Output(output) => match output.event {
+                DecryptWorkerEvent::Plaintext(fallback) => {
+                    assert_eq!(&fallback.packet_data[..], packet_data.as_slice());
+                }
+                other => panic!(
+                    "priority FSP should return as plaintext, got {:?}",
+                    other.packet_count()
+                ),
+            },
+            DecryptWorkerJobAction::FspJob(_) => {
+                panic!("priority FSP must not use worker-owned FSP open")
+            }
         }
     }
 

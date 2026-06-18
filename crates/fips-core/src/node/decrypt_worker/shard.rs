@@ -1963,7 +1963,7 @@ impl DecryptWorkerShard {
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
         let OpenedFmpJob {
             packet_data,
-            lane: _,
+            lane,
             source_peer,
             transport_id,
             remote_addr,
@@ -2019,12 +2019,20 @@ impl DecryptWorkerShard {
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
         let link_msg_end = fmp_plaintext_end;
-        let fsp_meta = Self::local_established_fsp_meta(
-            &packet_data,
-            local_node_addr,
-            link_msg_start,
-            link_msg_end,
-        );
+        // Keep control-sized FSP on the rx-loop's canonical session owner.
+        // The worker snapshot is deliberately optimized for bulk data; rekey,
+        // MMP, and other small liveness/control packets should not depend on
+        // async worker registration freshness.
+        let fsp_meta = matches!(lane, DecryptWorkerLane::Bulk)
+            .then(|| {
+                Self::local_established_fsp_meta(
+                    &packet_data,
+                    local_node_addr,
+                    link_msg_start,
+                    link_msg_end,
+                )
+            })
+            .flatten();
 
         // Pass the buffer through by ownership + offset/length. No FMP-layer
         // allocation; rx_loop or the FSP worker slices into `packet_data`.
