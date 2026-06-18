@@ -59,9 +59,9 @@ impl Node {
         let (priority_command_tx, priority_command_rx) =
             tokio::sync::mpsc::channel(command_capacity);
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(command_capacity);
-        // Endpoint events keep priority delivery wait-free and bound bulk
-        // backlog by the caller's packet-channel capacity.
-        let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
+        // Endpoint events keep priority delivery wait-free while bulk uses
+        // the same resolved capacity as the endpoint command lane.
+        let (event_tx, event_rx) = EndpointEventSender::channel(command_capacity);
         #[cfg(unix)]
         let (bulk_send_runtime, bulk_feedback_rx) = EndpointBulkSendRuntime::channel(capacity);
         #[cfg(not(unix))]
