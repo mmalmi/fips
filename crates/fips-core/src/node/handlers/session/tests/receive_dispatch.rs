@@ -59,6 +59,61 @@
     }
 
     #[test]
+    fn fsp_receive_sync_requests_worker_refresh_only_on_epoch_promotion() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        let initial_k_bit = entry.current_k_bit();
+        entry.set_pending_session(make_xk_session(&local, &peer));
+
+        let promoted = entry.apply_fsp_receive_sync_result(
+            crate::node::session::FspReceiveSync {
+                counter: 7,
+                slot: EpochSlot::Pending,
+                received_k_bit: !initial_k_bit,
+                timestamp: 0x0102_0304,
+                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            2_000,
+            Instant::now(),
+        );
+
+        assert!(promoted.is_applied());
+        assert!(
+            promoted.refresh_worker_session(),
+            "pending promotion changes FSP epoch topology and must refresh worker snapshots"
+        );
+        assert_eq!(entry.current_k_bit(), !initial_k_bit);
+        assert!(entry.pending_new_session().is_none());
+        assert!(entry.previous_highest_counter().is_some());
+
+        let current = entry.apply_fsp_receive_sync_result(
+            crate::node::session::FspReceiveSync {
+                counter: 8,
+                slot: EpochSlot::Current,
+                received_k_bit: entry.current_k_bit(),
+                timestamp: 0x0102_0305,
+                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            2_100,
+            Instant::now(),
+        );
+
+        assert!(current.is_applied());
+        assert!(
+            !current.refresh_worker_session(),
+            "ordinary current-epoch replay mirroring must not re-register workers"
+        );
+    }
+
+    #[test]
     fn established_fsp_wire_owns_ciphertext_offset_and_coord_warmup() {
         use crate::tree::TreeCoordinate;
 

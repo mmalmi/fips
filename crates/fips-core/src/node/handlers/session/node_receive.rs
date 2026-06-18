@@ -13,6 +13,24 @@ impl Node {
         }
     }
 
+    fn apply_worker_fsp_receive_sync(
+        &mut self,
+        source_addr: NodeAddr,
+        sync: crate::node::session::FspReceiveSync,
+        now: Instant,
+    ) -> bool {
+        let apply = {
+            let Some(entry) = self.sessions.get_mut(&source_addr) else {
+                return false;
+            };
+            entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
+        };
+        if apply.refresh_worker_session() {
+            self.register_decrypt_worker_fsp_session(&source_addr);
+        }
+        apply.is_applied()
+    }
+
     /// Handle a locally-delivered session datagram payload.
     ///
     /// Called from `handle_session_datagram()` when `dest_addr == self.node_addr()`.
@@ -255,9 +273,8 @@ impl Node {
         self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
 
         let source_addr = authenticated.source_addr;
-        let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
-            entry.apply_fsp_receive_sync(authenticated.receive_sync, Self::now_ms(), now)
-        });
+        let receive_applied =
+            self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -292,9 +309,8 @@ impl Node {
             self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
 
             let source_addr = authenticated.source_addr;
-            let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
-                entry.apply_fsp_receive_sync(authenticated.receive_sync, Self::now_ms(), now)
-            });
+            let receive_applied =
+                self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
             if !receive_applied {
                 debug!(
                     src = %self.peer_display_name(&source_addr),
@@ -470,10 +486,7 @@ impl Node {
         let now = Instant::now();
         self.record_worker_authenticated_fmp_receive(fmp);
 
-        let receive_applied = self
-            .sessions
-            .get_mut(&source_addr)
-            .is_some_and(|entry| entry.apply_fsp_receive_sync(receive_sync, Self::now_ms(), now));
+        let receive_applied = self.apply_worker_fsp_receive_sync(source_addr, receive_sync, now);
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
