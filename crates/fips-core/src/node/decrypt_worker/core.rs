@@ -637,6 +637,10 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.completions.next_ready()
     }
 
+    fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
+        (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
+    }
+
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
         if let Some(shared) = &self.fsp_shared_crypto {
             return shared.try_issue_ticket();
@@ -786,6 +790,17 @@ impl OwnedFspSessionState {
                 } => {
                     drain.aead_failures += 1;
                     drain.aead_failure_sources.add(source);
+                    drain
+                        .outputs
+                        .push(FspReadyCompletion::AeadFailed { job, header });
+                }
+                FspOrderedCompletion::EpochMismatch {
+                    job,
+                    header,
+                    source,
+                } => {
+                    let _ = source;
+                    drain.epoch_mismatches += 1;
                     drain
                         .outputs
                         .push(FspReadyCompletion::AeadFailed { job, header });
@@ -1005,6 +1020,11 @@ enum FspOrderedCompletion {
         header: FspEncryptedHeader,
         source: FspAeadCompletionSource,
     },
+    EpochMismatch {
+        job: FspDecryptJob,
+        header: FspEncryptedHeader,
+        source: FspAeadCompletionSource,
+    },
     Dropped {
         source: FspAeadCompletionSource,
     },
@@ -1027,6 +1047,7 @@ struct FspOrderedDrain {
     ready: usize,
     accepted: usize,
     aead_failures: usize,
+    epoch_mismatches: usize,
     replay_drops: usize,
     dropped: usize,
     aead_failure_sources: FspAeadFailureSources,
