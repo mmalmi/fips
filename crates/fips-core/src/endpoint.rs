@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 128;
-const ENDPOINT_RECV_BATCH_MAX: usize = 128;
+const ENDPOINT_RECV_BATCH_MAX: usize = 256;
 
 mod builder;
 mod receive;
