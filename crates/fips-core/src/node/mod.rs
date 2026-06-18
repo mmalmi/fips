@@ -50,11 +50,21 @@ pub use error::NodeError;
 pub use identity_cache::NodeDeliveredPacket;
 pub use state::NodeState;
 
+pub(crate) use endpoint_event::EndpointBulkSendFeedback;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::EndpointEventDequeueCounts;
 pub(in crate::node) use endpoint_event::EndpointEventRuntime;
 #[cfg(test)]
 pub(in crate::node) use endpoint_event::release_endpoint_event_messages;
+#[cfg(unix)]
+pub(in crate::node) use endpoint_event::{
+    EndpointBulkSendFeedbackRecord, EndpointBulkSendSessionBookkeeping,
+};
+#[cfg(unix)]
+pub(crate) use endpoint_event::{
+    EndpointBulkSendFmpLease, EndpointBulkSendFspLease, EndpointBulkSendLease,
+    EndpointBulkSendRuntime,
+};
 pub(crate) use endpoint_event::{
     EndpointDataDelivery, EndpointDataIo, EndpointEventReceiver, EndpointEventSender,
     EndpointSendBatchCommand, EndpointSendCommand, NodeEndpointCommand, NodeEndpointEvent,
@@ -67,6 +77,7 @@ pub(crate) use endpoint_traffic::{
 };
 #[cfg(test)]
 pub(crate) use endpoint_traffic::{PendingEndpointDataQueue, PendingTunPacketQueue};
+#[cfg(unix)]
 pub(in crate::node) use endpoint_traffic::{
     classify_fmp_plaintext_traffic, endpoint_flow_dispatch_key,
 };
@@ -220,6 +231,10 @@ pub struct Node {
     transports: HashMap<TransportId, TransportHandle>,
     /// Per-transport kernel drop tracking for congestion detection.
     transport_drops: TransportDropTracker,
+    /// Per-transport wildcard socket-local drop tracking for observability.
+    transport_socket_drops: TransportDropTracker,
+    /// Per-transport Linux namespace receive-buffer error tracking for observability.
+    transport_namespace_drops: TransportDropTracker,
     /// Active links plus reverse address dispatch index.
     links: LinkRegistry,
 
@@ -288,6 +303,14 @@ pub struct Node {
     endpoint_command_rx: Option<tokio::sync::mpsc::Receiver<NodeEndpointCommand>>,
     /// Endpoint data event delivery runtime used by embedded/no-daemon integrations.
     endpoint_events: EndpointEventRuntime,
+    /// Priority feedback from endpoint-side bulk-send leases. The endpoint
+    /// mover must report FMP/FSP send bookkeeping before it dispatches worker
+    /// jobs; rx_loop applies this lane ahead of bulk endpoint commands so
+    /// MMP/liveness/accounting do not starve behind bulk traffic.
+    endpoint_bulk_feedback_rx: Option<tokio::sync::mpsc::Receiver<EndpointBulkSendFeedback>>,
+    /// Shared lease publisher for endpoint-side bulk sends.
+    #[cfg(unix)]
+    endpoint_bulk_send_runtime: Option<EndpointBulkSendRuntime>,
     /// Off-task FMP-encrypt + UDP-send worker pool. `None` if not yet
     /// spawned (set up in `start()` once transports are running).
     /// `Some(pool)` once available; the pool internally holds

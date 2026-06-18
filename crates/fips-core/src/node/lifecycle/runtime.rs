@@ -576,9 +576,6 @@ impl Node {
     /// Best-effort: send failures are logged and ignored since the transport
     /// may already be degraded. This runs before transports are shut down.
     pub(super) async fn send_disconnect_to_all_peers(&mut self, reason: DisconnectReason) {
-        let disconnect = Disconnect::new(reason);
-        let plaintext = disconnect.encode();
-
         // Collect node_addrs to avoid borrow conflict with send helper
         let peer_addrs: Vec<NodeAddr> = self
             .peers
@@ -597,21 +594,34 @@ impl Node {
 
         let mut sent = 0usize;
         for node_addr in &peer_addrs {
-            match self
-                .send_encrypted_link_message(node_addr, &plaintext)
-                .await
-            {
-                Ok(()) => sent += 1,
-                Err(e) => {
-                    debug!(
-                        peer = %self.peer_display_name(node_addr),
-                        error = %e,
-                        "Failed to send disconnect (transport may be down)"
-                    );
-                }
+            if self.send_disconnect_to_peer(node_addr, reason).await {
+                sent += 1;
             }
         }
 
         info!(sent, total = peer_addrs.len(), reason = %reason, "Sent disconnect notifications");
+    }
+
+    /// Send a Disconnect notification to one peer, swallowing transport failures.
+    pub(super) async fn send_disconnect_to_peer(
+        &mut self,
+        node_addr: &NodeAddr,
+        reason: DisconnectReason,
+    ) -> bool {
+        let plaintext = Disconnect::new(reason).encode();
+        match self
+            .send_encrypted_link_message(node_addr, &plaintext)
+            .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                debug!(
+                    peer = %self.peer_display_name(node_addr),
+                    error = %e,
+                    "Failed to send disconnect (transport may be down)"
+                );
+                false
+            }
+        }
     }
 }

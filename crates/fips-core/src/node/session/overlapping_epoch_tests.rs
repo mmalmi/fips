@@ -196,7 +196,9 @@ fn apply_fsp_receive_sync_rejects_rx_loop_seen_counter() {
     };
 
     assert!(
-        !entry.apply_fsp_receive_sync(sync, 2_100, Instant::now()),
+        !entry
+            .apply_fsp_receive_sync_result(sync, 2_100, Instant::now())
+            .is_applied(),
         "rx-loop mirror must not dispatch a worker-authenticated replay"
     );
 }

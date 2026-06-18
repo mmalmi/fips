@@ -44,27 +44,11 @@ mod mac_queue_tests {
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     ) -> QueuedFmpSendJob {
-        QueuedFmpSendJob::direct(fmp_job_classified(
-            socket,
-            cipher,
-            dest_addr,
-            bulk_endpoint_data,
-            drop_on_backpressure,
-        ))
-    }
-
-    fn fmp_job_classified(
-        socket: AsyncUdpSocket,
-        cipher: &LessSafeKey,
-        dest_addr: SocketAddr,
-        bulk_endpoint_data: bool,
-        drop_on_backpressure: bool,
-    ) -> FmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
-        FmpSendJob {
-            cipher: cipher.clone().into(),
+        QueuedFmpSendJob::direct(FmpSendJob {
+            cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
@@ -74,7 +58,7 @@ mod mac_queue_tests {
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
-        }
+        })
     }
 
     fn test_mac_send_flow(
@@ -142,7 +126,6 @@ mod mac_queue_tests {
                 7,
                 MacSendItem::Packet {
                     packet: vec![1],
-                    bulk_endpoint_data: true,
                     drop_on_backpressure: true,
                 },
             );
@@ -153,7 +136,6 @@ mod mac_queue_tests {
                 8,
                 MacSendItem::Packet {
                     packet: vec![2],
-                    bulk_endpoint_data: false,
                     drop_on_backpressure: false,
                 },
             );
@@ -167,11 +149,9 @@ mod mac_queue_tests {
             match &groups[0].items[0].1 {
                 MacSendItem::Packet {
                     packet,
-                    bulk_endpoint_data,
                     drop_on_backpressure,
                 } => {
                     assert_eq!(packet.as_slice(), &[1]);
-                    assert!(*bulk_endpoint_data);
                     assert!(*drop_on_backpressure);
                 }
                 MacSendItem::Skip => panic!("expected first flow item to be a packet"),
@@ -179,11 +159,9 @@ mod mac_queue_tests {
             match &groups[0].items[1].1 {
                 MacSendItem::Packet {
                     packet,
-                    bulk_endpoint_data,
                     drop_on_backpressure,
                 } => {
                     assert_eq!(packet.as_slice(), &[2]);
-                    assert!(!*bulk_endpoint_data);
                     assert!(!*drop_on_backpressure);
                 }
                 MacSendItem::Skip => panic!("expected second flow item to be a packet"),
@@ -271,7 +249,7 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn mac_dispatch_drops_discardable_bulk_on_full_bulk_queue() {
+    fn mac_dispatch_does_not_block_rx_loop_on_full_bulk_queue() {
         with_test_socket(|socket, cipher| {
             let (tx, _rx) = mac_worker_channel(1);
             let addr: SocketAddr = "127.0.0.1:10014".parse().unwrap();
@@ -282,56 +260,10 @@ mod mac_queue_tests {
                     &cipher,
                     addr,
                     true,
-                    true,
-                ))
-                .is_ok(),
-                "initial bulk job should fit"
-            );
-
-            let pool = EncryptWorkerPool {
-                senders: Arc::from(vec![tx].into_boxed_slice()),
-                macos_senders: Arc::new(MacSequencedSendFlows::default()),
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
-            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let thread_done = Arc::clone(&done);
-            let job = queued_job_classified(socket, &cipher, addr, true, true);
-            let handle = std::thread::spawn(move || {
-                pool.dispatch_to_worker(0, job);
-                thread_done.store(true, std::sync::atomic::Ordering::Release);
-            });
-
-            for _ in 0..20 {
-                if done.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-
-            assert!(
-                done.load(std::sync::atomic::Ordering::Acquire),
-                "full bulk dispatch must not block the rx loop"
-            );
-            handle.join().expect("dispatch thread should finish");
-        });
-    }
-
-    #[test]
-    fn mac_dispatch_backpressures_reliable_endpoint_bulk_until_space_is_available() {
-        with_test_socket(|socket, cipher| {
-            let (tx, rx) = mac_worker_channel(1);
-            let addr: SocketAddr = "127.0.0.1:10015".parse().unwrap();
-
-            assert!(
-                tx.try_push(queued_job_classified(
-                    socket.clone(),
-                    &cipher,
-                    addr,
-                    true,
                     false,
                 ))
                 .is_ok(),
-                "initial reliable bulk job should fit"
+                "initial bulk job should fit"
             );
 
             let pool = EncryptWorkerPool {
@@ -353,71 +285,12 @@ mod mac_queue_tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
+
             assert!(
-                !done.load(std::sync::atomic::Ordering::Acquire),
-                "reliable endpoint bulk should wait while the bulk queue is full"
+                done.load(std::sync::atomic::Ordering::Acquire),
+                "full bulk dispatch must not block the rx loop"
             );
-
-            let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 1).is_some());
-            assert_eq!(batch.len(), 1);
-            assert!(!batch[0].job.drop_on_backpressure);
-
             handle.join().expect("dispatch thread should finish");
-            assert!(done.load(std::sync::atomic::Ordering::Acquire));
-
-            batch.clear();
-            assert!(rx.recv_batch(&mut batch, 1).is_some());
-            assert_eq!(batch.len(), 1);
-            assert!(!batch[0].job.drop_on_backpressure);
-        });
-    }
-
-    #[test]
-    fn mac_dispatch_backpressures_priority_until_space_is_available() {
-        with_test_socket(|socket, cipher| {
-            let (tx, rx) = mac_worker_channel(1);
-            let addr: SocketAddr = "127.0.0.1:10035".parse().unwrap();
-
-            for _ in 0..(1 + MAC_WORKER_CONTROL_RESERVE_CAP) {
-                assert!(
-                    tx.try_push(queued_job_classified(
-                        socket.clone(),
-                        &cipher,
-                        addr,
-                        false,
-                        false,
-                    ))
-                    .is_ok(),
-                    "priority reserve should accept the initial fill"
-                );
-            }
-
-            let pool = EncryptWorkerPool {
-                senders: Arc::from(vec![tx].into_boxed_slice()),
-                macos_senders: Arc::new(MacSequencedSendFlows::default()),
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
-            let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let thread_queued = Arc::clone(&queued);
-            let job = queued_job_classified(socket, &cipher, addr, false, false);
-            let handle = std::thread::spawn(move || {
-                pool.dispatch_to_worker(0, job);
-                thread_queued.store(true, std::sync::atomic::Ordering::Release);
-            });
-
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            assert!(
-                !queued.load(std::sync::atomic::Ordering::Acquire),
-                "priority dispatch should wait while the priority reserve is full"
-            );
-
-            let mut batch = Vec::new();
-            assert!(rx.recv_batch(&mut batch, 1).is_some());
-            assert_eq!(batch.len(), 1);
-            assert_eq!(batch[0].queue_lane(), EncryptWorkerLane::Priority);
-            handle.join().expect("dispatch thread should finish");
-            assert!(queued.load(std::sync::atomic::Ordering::Acquire));
         });
     }
 
@@ -468,8 +341,8 @@ mod mac_queue_tests {
             let dest: SocketAddr = "127.0.0.1:10032".parse().unwrap();
             let target = SelectedSendTarget::new(socket.clone(), None, dest);
             let target_key = target.key();
-            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true, true);
-            batch.push(vec![2], true, true);
+            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true);
+            batch.push(vec![2], true);
 
             let mut attempt = DirectSendBatchAttempt::from_batch(batch);
             assert_eq!(attempt.target_key(), target_key);
@@ -487,11 +360,10 @@ mod mac_queue_tests {
                 "droppable backpressure advances exactly one current packet"
             );
 
-            let target = SelectedSendTarget::new(socket.clone(), None, dest);
+            let target = SelectedSendTarget::new(socket, None, dest);
             let retry_target_key = target.key();
-            let mut retry_batch =
-                SelectedSendBatch::new(target, retry_target_key, vec![3], false, false);
-            retry_batch.push(vec![4], false, false);
+            let mut retry_batch = SelectedSendBatch::new(target, retry_target_key, vec![3], false);
+            retry_batch.push(vec![4], false);
             let mut retry_attempt = DirectSendBatchAttempt::from_batch(retry_batch);
             assert_eq!(
                 retry_attempt.handle_backpressure_request(true, &err),
@@ -501,22 +373,6 @@ mod mac_queue_tests {
                 retry_attempt.remaining_packets(),
                 &[vec![3], vec![4]],
                 "non-droppable direct-send batches must not advance on a drop request"
-            );
-
-            let target = SelectedSendTarget::new(socket, None, dest);
-            let reliable_bulk_key = target.key();
-            let reliable_bulk_batch =
-                SelectedSendBatch::new(target, reliable_bulk_key, vec![5], true, false);
-            let mut reliable_bulk_attempt = DirectSendBatchAttempt::from_batch(reliable_bulk_batch);
-            assert_eq!(
-                reliable_bulk_attempt.handle_backpressure_request(true, &err),
-                SendBackpressureDecision::Retry,
-                "reliable endpoint bulk should backpressure by default"
-            );
-            assert_eq!(
-                reliable_bulk_attempt.remaining_packets(),
-                &[vec![5]],
-                "reliable endpoint bulk must keep its packet on sustained ENOBUFS"
             );
         });
     }

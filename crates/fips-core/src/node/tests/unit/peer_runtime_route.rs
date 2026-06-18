@@ -188,6 +188,56 @@ fn peer_runtime_route_snapshot_owns_path_seed_and_send_snapshot_inputs() {
     );
 }
 
+#[test]
+fn peer_lifecycle_registry_owns_batched_fmp_send_bookkeeping() {
+    let node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(17);
+    let link_id = LinkId::new(18);
+    let remote_addr = TransportAddr::from_string("peer-runtime-batch-bookkeeping");
+    let sender = make_test_fmp_session(&node.identity, &peer_full, [0x05; 8], [0x06; 8]);
+
+    let mut registry = PeerLifecycleRegistry::default();
+    let active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        sender,
+        SessionIndex::new(19),
+        SessionIndex::new(20),
+        transport_id,
+        remote_addr,
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x06; 8]),
+    );
+    registry.insert_with_current_session_index(peer_addr, active_peer);
+
+    let recorded = registry
+        .record_fmp_send_bookkeeping_batch(&peer_addr, [(7, 2_000, 64), (8, 2_100, 128)])
+        .expect("batched FMP send bookkeeping should find active peer");
+    assert_eq!(recorded, 2);
+
+    let peer = registry
+        .get(&peer_addr)
+        .expect("batched FMP bookkeeping must keep peer storage");
+    assert_eq!(peer.link_stats().packets_sent, 2);
+    assert_eq!(peer.link_stats().bytes_sent, 192);
+    let mmp = peer.mmp().expect("active peer should have MMP state");
+    assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
+    assert_eq!(mmp.sender.cumulative_bytes_sent(), 192);
+
+    assert!(
+        registry
+            .record_fmp_send_bookkeeping_batch(&make_node_addr(99), [(9, 2_200, 256)])
+            .is_none(),
+        "missing peers should not record batched FMP send bookkeeping"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn peer_runtime_route_decision_owns_next_hop_snapshot_weight_and_policy() {

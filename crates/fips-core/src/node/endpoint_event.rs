@@ -1,4 +1,9 @@
 use super::*;
+use crate::transport::PacketBuffer;
+#[cfg(unix)]
+use crossbeam_channel::{
+    Receiver as CrossbeamReceiver, Sender as CrossbeamSender, TryRecvError, TrySendError, bounded,
+};
 
 /// App-owned packet channels for embedding FIPS without a system TUN.
 #[derive(Debug)]
@@ -28,10 +33,11 @@ pub(crate) struct EndpointDataIo {
     ///
     /// Priority endpoint events use an unbounded lane so small control-shaped
     /// packets keep a wait-free push from the rx loop. Bulk endpoint messages
-    /// are bounded by the endpoint-data capacity and drop on pressure, with
-    /// drops visible through `endpoint_event_bulk_dropped`. Backpressure is
-    /// still visible through `endpoint_event_wait` latency and
-    /// `endpoint_event_backlog_high` when the consumer falls materially behind.
+    /// are bounded by the endpoint-data capacity; oversized batches split at
+    /// the message-credit boundary before any remaining tail drops visibly via
+    /// `endpoint_event_bulk_dropped`. Backpressure is still visible through
+    /// `endpoint_event_wait` latency and `endpoint_event_backlog_high` when the
+    /// consumer falls materially behind.
     pub(crate) event_rx: EndpointEventReceiver,
     /// Clone of the event_tx exposed for in-process loopback (e.g.
     /// `FipsEndpoint::send` to self_npub). Lets the endpoint inject an
@@ -39,6 +45,446 @@ pub(crate) struct EndpointDataIo {
     /// decrypt path, while keeping every consumer reading from a single
     /// channel.
     pub(crate) event_tx: EndpointEventSender,
+    /// Shared endpoint-side bulk send runtime.
+    ///
+    /// The node publishes short-lived, invalidatable leases after it proves an
+    /// established UDP/worker route is usable. Endpoint bulk batches may use
+    /// those leases to prepare worker jobs without waiting for the rx-loop
+    /// command mailbox; priority/control packets keep using the command lane.
+    #[cfg(unix)]
+    pub(crate) bulk_send_runtime: EndpointBulkSendRuntime,
+}
+
+/// Shared endpoint-side bulk send lease store plus feedback lane.
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendRuntime {
+    leases: Arc<std::sync::RwLock<std::collections::HashMap<NodeAddr, EndpointBulkSendLease>>>,
+    feedback_tx: tokio::sync::mpsc::Sender<EndpointBulkSendFeedback>,
+    committed_dispatch: EndpointCommittedBulkDispatch,
+    generation: Arc<std::sync::atomic::AtomicU64>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for EndpointBulkSendRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointBulkSendRuntime")
+            .field("leases", &self.lease_count())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendLease {
+    pub(in crate::node) source_addr: NodeAddr,
+    pub(in crate::node) dest_addr: NodeAddr,
+    pub(in crate::node) next_hop_addr: NodeAddr,
+    pub(in crate::node) path_mtu: u16,
+    pub(in crate::node) default_ttl: u8,
+    pub(in crate::node) scheduling_weight: u8,
+    pub(in crate::node) direct_path_blocks_direct_payload: bool,
+    pub(in crate::node) fsp: EndpointBulkSendFspLease,
+    pub(in crate::node) fmp: EndpointBulkSendFmpLease,
+    pub(in crate::node) send_target: crate::node::encrypt_worker::SelectedSendTarget,
+    pub(in crate::node) workers: crate::node::encrypt_worker::EncryptWorkerPool,
+    expires_at: crate::time::Instant,
+    generation: u64,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendFspLease {
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) counter_authority: crate::noise::SendCounterAuthority,
+    pub(in crate::node) session_start_ms: u64,
+    pub(in crate::node) current_k_bit: bool,
+    pub(in crate::node) spin_bit: bool,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct EndpointBulkSendFmpLease {
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
+    pub(in crate::node) counter_authority: crate::noise::SendCounterAuthority,
+    pub(in crate::node) their_index: crate::utils::index::SessionIndex,
+    pub(in crate::node) session_start: std::time::Instant,
+    pub(in crate::node) base_flags: u8,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct EndpointBulkSendFeedback {
+    pub(in crate::node) records: Vec<EndpointBulkSendFeedbackRecord>,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Copy)]
+pub(in crate::node) enum EndpointBulkSendSessionBookkeeping {
+    Fsp {
+        path_mtu: u16,
+        bookkeeping: FspSendBookkeepingInput,
+    },
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Clone, Copy)]
+pub(crate) struct EndpointBulkSendFeedbackRecord {
+    pub(in crate::node) dest_addr: NodeAddr,
+    pub(in crate::node) next_hop_addr: NodeAddr,
+    pub(in crate::node) fmp_counter: u64,
+    pub(in crate::node) fmp_timestamp_ms: u32,
+    pub(in crate::node) fmp_wire_capacity: usize,
+    pub(in crate::node) originated_bytes: usize,
+    pub(in crate::node) session_bookkeeping: EndpointBulkSendSessionBookkeeping,
+}
+
+#[cfg(unix)]
+#[derive(Clone)]
+struct EndpointCommittedBulkDispatch {
+    tx: CrossbeamSender<EndpointCommittedBulkBatch>,
+}
+
+#[cfg(unix)]
+struct EndpointCommittedBulkBatch {
+    workers: crate::node::encrypt_worker::EncryptWorkerPool,
+    jobs: Vec<crate::node::encrypt_worker::FmpSendJob>,
+    ready: Arc<EndpointCommittedBulkReady>,
+}
+
+#[cfg(unix)]
+pub(in crate::node) struct EndpointCommittedBulkHandle {
+    ready: Option<Arc<EndpointCommittedBulkReady>>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EndpointCommittedBulkState {
+    Pending,
+    Committed,
+    Canceled,
+}
+
+#[cfg(unix)]
+struct EndpointCommittedBulkReady {
+    state: std::sync::Mutex<EndpointCommittedBulkState>,
+    changed: Condvar,
+}
+
+#[cfg(unix)]
+impl EndpointCommittedBulkDispatch {
+    fn channel(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity.max(1));
+        std::thread::Builder::new()
+            .name("fips-endpoint-bulk-commit".to_string())
+            .spawn(move || run_endpoint_committed_bulk_dispatch(rx))
+            .expect("failed to spawn FIPS endpoint committed bulk dispatcher");
+        Self { tx }
+    }
+
+    fn try_stage(
+        &self,
+        workers: crate::node::encrypt_worker::EncryptWorkerPool,
+        jobs: Vec<crate::node::encrypt_worker::FmpSendJob>,
+    ) -> Option<EndpointCommittedBulkHandle> {
+        if jobs.is_empty() {
+            return Some(EndpointCommittedBulkHandle { ready: None });
+        }
+
+        let ready = Arc::new(EndpointCommittedBulkReady::new());
+        let batch = EndpointCommittedBulkBatch {
+            workers,
+            jobs,
+            ready: Arc::clone(&ready),
+        };
+        match self.tx.try_send(batch) {
+            Ok(()) => Some(EndpointCommittedBulkHandle { ready: Some(ready) }),
+            Err(TrySendError::Full(batch)) | Err(TrySendError::Disconnected(batch)) => {
+                batch.ready.cancel();
+                None
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl EndpointCommittedBulkBatch {
+    fn packet_count(&self) -> usize {
+        self.jobs.len()
+    }
+
+    fn can_merge_after(&self, other: &Self) -> bool {
+        crate::node::encrypt_worker::fmp_send_job_batches_share_bulk_target(&self.jobs, &other.jobs)
+    }
+
+    fn append_committed(&mut self, mut other: Self) {
+        self.jobs.append(&mut other.jobs);
+    }
+}
+
+#[cfg(unix)]
+impl EndpointCommittedBulkHandle {
+    pub(in crate::node) fn commit(mut self) {
+        if let Some(ready) = self.ready.take() {
+            ready.commit();
+        }
+    }
+
+    pub(in crate::node) fn cancel(mut self) {
+        if let Some(ready) = self.ready.take() {
+            ready.cancel();
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EndpointCommittedBulkHandle {
+    fn drop(&mut self) {
+        if let Some(ready) = self.ready.take() {
+            ready.cancel();
+        }
+    }
+}
+
+#[cfg(unix)]
+impl EndpointCommittedBulkReady {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(EndpointCommittedBulkState::Pending),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn commit(&self) {
+        self.complete(EndpointCommittedBulkState::Committed);
+    }
+
+    fn cancel(&self) {
+        self.complete(EndpointCommittedBulkState::Canceled);
+    }
+
+    fn complete(&self, next: EndpointCommittedBulkState) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if *state == EndpointCommittedBulkState::Pending {
+            *state = next;
+            self.changed.notify_one();
+        }
+    }
+
+    fn wait(&self) -> EndpointCommittedBulkState {
+        let Ok(mut state) = self.state.lock() else {
+            return EndpointCommittedBulkState::Canceled;
+        };
+        while *state == EndpointCommittedBulkState::Pending {
+            match self.changed.wait(state) {
+                Ok(next) => state = next,
+                Err(_) => return EndpointCommittedBulkState::Canceled,
+            }
+        }
+        *state
+    }
+
+    fn try_state(&self) -> EndpointCommittedBulkState {
+        self.state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(EndpointCommittedBulkState::Canceled)
+    }
+}
+
+#[cfg(unix)]
+fn run_endpoint_committed_bulk_dispatch(rx: CrossbeamReceiver<EndpointCommittedBulkBatch>) {
+    let mut pending: Option<EndpointCommittedBulkBatch> = None;
+    loop {
+        let Some(mut batch) = pending.take().or_else(|| rx.recv().ok()) else {
+            break;
+        };
+        if batch.ready.wait() != EndpointCommittedBulkState::Committed {
+            continue;
+        }
+
+        let mut merged_batches = 0usize;
+        let mut merged_packets = 0usize;
+        let max_batches = endpoint_committed_bulk_coalesce_batches();
+        let max_packets = endpoint_committed_bulk_coalesce_packets();
+        // Merge only already-committed adjacent bulk batches. Pending or
+        // different-target work is held for the next loop, preserving FIFO
+        // without widening UDP_GSO bursts or waiting on future commits.
+        while merged_batches + 1 < max_batches && batch.packet_count() < max_packets {
+            match rx.try_recv() {
+                Ok(next) => match next.ready.try_state() {
+                    EndpointCommittedBulkState::Committed => {
+                        if !batch.can_merge_after(&next) {
+                            pending = Some(next);
+                            break;
+                        }
+                        if batch.packet_count().saturating_add(next.packet_count()) > max_packets {
+                            pending = Some(next);
+                            break;
+                        }
+                        merged_batches = merged_batches.saturating_add(1);
+                        merged_packets = merged_packets.saturating_add(next.packet_count());
+                        batch.append_committed(next);
+                    }
+                    EndpointCommittedBulkState::Canceled => {}
+                    EndpointCommittedBulkState::Pending => {
+                        pending = Some(next);
+                        break;
+                    }
+                },
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
+        crate::perf_profile::record_endpoint_committed_bulk_dispatch(
+            batch.packet_count(),
+            merged_batches,
+            merged_packets,
+        );
+        let EndpointCommittedBulkBatch { workers, jobs, .. } = batch;
+        let _all_enqueued = workers.dispatch_bulk_batch_blocking(jobs);
+    }
+}
+
+#[cfg(unix)]
+fn endpoint_committed_bulk_coalesce_batches() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_ENDPOINT_COMMITTED_BULK_COALESCE_BATCHES")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            // Default off: the committed batches are usually large already;
+            // adjacent coalescing is kept as an explicit benchmark knob.
+            .unwrap_or(1)
+            .clamp(1, 16)
+    })
+}
+
+#[cfg(unix)]
+fn endpoint_committed_bulk_coalesce_packets() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("FIPS_ENDPOINT_COMMITTED_BULK_COALESCE_PACKETS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(128)
+            .clamp(1, 1024)
+    })
+}
+
+#[cfg(unix)]
+impl EndpointBulkSendRuntime {
+    pub(in crate::node) fn channel(
+        capacity: usize,
+    ) -> (Self, tokio::sync::mpsc::Receiver<EndpointBulkSendFeedback>) {
+        let feedback_capacity = endpoint_data_command_capacity(capacity).max(1);
+        let (feedback_tx, feedback_rx) = tokio::sync::mpsc::channel(feedback_capacity);
+        let committed_dispatch = EndpointCommittedBulkDispatch::channel(capacity);
+        (
+            Self {
+                leases: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+                feedback_tx,
+                committed_dispatch,
+                generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            },
+            feedback_rx,
+        )
+    }
+
+    pub(in crate::node) fn publish(&self, mut lease: EndpointBulkSendLease) {
+        lease.generation = self.generation.load(Relaxed);
+        if let Ok(mut leases) = self.leases.write() {
+            leases.insert(lease.dest_addr, lease);
+        }
+    }
+
+    pub(in crate::node) fn invalidate(&self, dest_addr: &NodeAddr) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut leases) = self.leases.write() {
+            leases.remove(dest_addr);
+        }
+    }
+
+    pub(in crate::node) fn lease(&self, dest_addr: &NodeAddr) -> Option<EndpointBulkSendLease> {
+        let now = crate::time::instant_now();
+        let generation = self.generation.load(Relaxed);
+        let mut expired = false;
+        let lease = self.leases.read().ok().and_then(|leases| {
+            leases.get(dest_addr).and_then(|lease| {
+                if lease.generation != generation || lease.expires_at <= now {
+                    expired = true;
+                    None
+                } else {
+                    Some(lease.clone())
+                }
+            })
+        });
+        if expired && let Ok(mut leases) = self.leases.write() {
+            leases.remove(dest_addr);
+        }
+        lease
+    }
+
+    pub(in crate::node) fn try_feedback(
+        &self,
+        records: Vec<EndpointBulkSendFeedbackRecord>,
+    ) -> bool {
+        if records.is_empty() {
+            return true;
+        }
+        self.feedback_tx
+            .try_send(EndpointBulkSendFeedback { records })
+            .is_ok()
+    }
+
+    pub(in crate::node) fn try_stage_committed_bulk_dispatch(
+        &self,
+        workers: crate::node::encrypt_worker::EncryptWorkerPool,
+        jobs: Vec<crate::node::encrypt_worker::FmpSendJob>,
+    ) -> Option<EndpointCommittedBulkHandle> {
+        self.committed_dispatch.try_stage(workers, jobs)
+    }
+
+    fn lease_count(&self) -> usize {
+        self.leases.read().map(|leases| leases.len()).unwrap_or(0)
+    }
+}
+
+#[cfg(unix)]
+impl EndpointBulkSendLease {
+    pub(in crate::node) fn new(
+        source_addr: NodeAddr,
+        dest_addr: NodeAddr,
+        next_hop_addr: NodeAddr,
+        path_mtu: u16,
+        default_ttl: u8,
+        scheduling_weight: u8,
+        direct_path_blocks_direct_payload: bool,
+        fsp: EndpointBulkSendFspLease,
+        fmp: EndpointBulkSendFmpLease,
+        send_target: crate::node::encrypt_worker::SelectedSendTarget,
+        workers: crate::node::encrypt_worker::EncryptWorkerPool,
+        ttl: std::time::Duration,
+    ) -> Self {
+        Self {
+            source_addr,
+            dest_addr,
+            next_hop_addr,
+            path_mtu,
+            default_ttl,
+            scheduling_weight,
+            direct_path_blocks_direct_payload,
+            fsp,
+            fmp,
+            send_target,
+            workers,
+            expires_at: crate::time::instant_now() + ttl,
+            generation: 0,
+        }
+    }
 }
 
 /// Observable owner for endpoint events delivered to embedded applications.
@@ -117,16 +563,16 @@ fn try_reserve_endpoint_event_bulk_messages(
     counter: &AtomicUsize,
     capacity: usize,
     count: usize,
-) -> bool {
+) -> Option<usize> {
     if count == 0 {
-        return true;
+        return Some(counter.load(Relaxed));
     }
 
     counter
         .fetch_update(Relaxed, Relaxed, |current| {
             current.checked_add(count).filter(|next| *next <= capacity)
         })
-        .is_ok()
+        .ok()
 }
 
 /// Delivery-side owner for endpoint data emitted by session receive handling.
@@ -260,56 +706,111 @@ impl EndpointEventSender {
         event: NodeEndpointEvent,
         lane: EndpointEventLane,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if matches!(lane, EndpointEventLane::Bulk) {
+            return self.send_bulk_to_lane(event, true);
+        }
+
         let count = event.message_count();
-        let bulk_reserved = if matches!(lane, EndpointEventLane::Bulk) {
-            try_reserve_endpoint_event_bulk_messages(
-                &self.bulk_queued_messages,
-                self.bulk_message_cap,
-                count,
-            )
-        } else {
-            false
-        };
-        if matches!(lane, EndpointEventLane::Bulk) && !bulk_reserved {
+        let previous = self.queued_messages.fetch_add(count, Relaxed);
+        let queued = previous.saturating_add(count);
+        match self.priority.send(event) {
+            Ok(()) => {
+                self.note_send_success(previous, queued);
+                Ok(())
+            }
+            Err(error) => {
+                self.note_send_rejected(count);
+                Err(error)
+            }
+        }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn send_bulk_to_lane(
+        &self,
+        event: NodeEndpointEvent,
+        split_on_pressure: bool,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let count = event.message_count();
+        let Some(previous_bulk) = try_reserve_endpoint_event_bulk_messages(
+            &self.bulk_queued_messages,
+            self.bulk_message_cap,
+            count,
+        ) else {
+            if split_on_pressure && count > 1 {
+                return self.split_and_send_bulk_event(event);
+            }
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::EndpointEventBulkDropped,
                 count as u64,
             );
             return Ok(());
+        };
+
+        let queued_bulk = previous_bulk.saturating_add(count);
+        if previous_bulk < ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+            && queued_bulk >= ENDPOINT_EVENT_BACKLOG_HIGH_WATER
+        {
+            crate::perf_profile::record_event(
+                crate::perf_profile::Event::EndpointEventBulkBacklogHigh,
+            );
         }
 
         let previous = self.queued_messages.fetch_add(count, Relaxed);
         let queued = previous.saturating_add(count);
-        match lane {
-            EndpointEventLane::Priority => match self.priority.send(event) {
-                Ok(()) => {
-                    self.note_send_success(previous, queued);
-                    Ok(())
-                }
-                Err(error) => {
-                    self.note_send_rejected(count);
-                    Err(error)
-                }
-            },
-            EndpointEventLane::Bulk => match self.bulk.try_send(event) {
-                Ok(()) => {
-                    self.note_send_success(previous, queued);
-                    Ok(())
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
-                    self.note_bulk_send_rejected(count);
-                    crate::perf_profile::record_event_count(
-                        crate::perf_profile::Event::EndpointEventBulkDropped,
-                        count as u64,
-                    );
-                    Ok(())
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
-                    self.note_bulk_send_rejected(count);
-                    Err(tokio::sync::mpsc::error::SendError(event))
-                }
-            },
+        match self.bulk.try_send(event) {
+            Ok(()) => {
+                self.note_send_success(previous, queued);
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_event)) => {
+                self.note_bulk_send_rejected(count);
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointEventBulkDropped,
+                    count as u64,
+                );
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(event)) => {
+                self.note_bulk_send_rejected(count);
+                Err(tokio::sync::mpsc::error::SendError(event))
+            }
         }
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn split_and_send_bulk_event(
+        &self,
+        event: NodeEndpointEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        let (mut messages, queued_at) = match event {
+            NodeEndpointEvent::DataBatch {
+                messages,
+                queued_at,
+            } => (messages, queued_at),
+            event => {
+                let count = event.message_count();
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::EndpointEventBulkDropped,
+                    count as u64,
+                );
+                return Ok(());
+            }
+        };
+        if messages.len() <= 1 {
+            let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
+                .expect("non-empty split endpoint batch should produce an event");
+            return self.send_bulk_to_lane(event, false);
+        }
+
+        let right = messages.split_off(messages.len() / 2);
+        if let Some(left) = NodeEndpointEvent::from_delivery_messages(messages, queued_at) {
+            self.send_bulk_to_lane(left, true)?;
+        }
+        if let Some(right) = NodeEndpointEvent::from_delivery_messages(right, queued_at) {
+            self.send_bulk_to_lane(right, true)?;
+        }
+        Ok(())
     }
 
     fn note_send_success(&self, previous: usize, queued: usize) {
@@ -567,6 +1068,19 @@ pub(crate) fn endpoint_data_command_capacity(requested: usize) -> usize {
     requested.max(1).max(32_768)
 }
 
+// Endpoint send batches have already paid the per-packet mpsc wakeup and peer
+// identity costs at the embedded API boundary. Charge rx_loop drain budget in
+// small packet groups so full batches keep moving without letting one hot
+// endpoint queue monopolize the coordinator.
+const ENDPOINT_SEND_BATCH_DRAIN_QUANTUM: usize = 8;
+
+fn endpoint_send_batch_drain_cost(packet_count: usize) -> usize {
+    packet_count
+        .max(1)
+        .saturating_add(ENDPOINT_SEND_BATCH_DRAIN_QUANTUM - 1)
+        / ENDPOINT_SEND_BATCH_DRAIN_QUANTUM
+}
+
 /// Commands accepted by the node endpoint data service.
 #[derive(Debug)]
 pub(crate) enum NodeEndpointCommand {
@@ -641,10 +1155,6 @@ impl EndpointSendCommand {
         self.send.payload().drop_on_backpressure()
     }
 
-    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
-        self.queued_at = queued_at;
-    }
-
     pub(crate) fn into_parts(self) -> (EndpointDataSend, Option<crate::perf_profile::TraceStamp>) {
         (self.send, self.queued_at)
     }
@@ -682,14 +1192,20 @@ impl EndpointSendBatchCommand {
         self.payloads.len()
     }
 
+    pub(crate) fn can_coalesce_with(&self, other: &Self, max_payloads: usize) -> bool {
+        self.remote == other.remote
+            && self.lane() == other.lane()
+            && self.len().saturating_add(other.len()) <= max_payloads
+    }
+
+    pub(crate) fn remote(&self) -> PeerIdentity {
+        self.remote
+    }
+
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.payloads
             .iter()
             .all(EndpointDataPayload::drop_on_backpressure)
-    }
-
-    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
-        self.queued_at = queued_at;
     }
 
     pub(crate) fn into_parts(
@@ -767,7 +1283,7 @@ impl NodeEndpointCommand {
 
     pub(crate) fn drain_cost(&self) -> usize {
         match self {
-            Self::SendBatchOneway { command, .. } => command.len().max(1),
+            Self::SendBatchOneway { command, .. } => endpoint_send_batch_drain_cost(command.len()),
             Self::Send { .. }
             | Self::SendOneway { .. }
             | Self::PeerSnapshot { .. }
@@ -777,18 +1293,24 @@ impl NodeEndpointCommand {
         }
     }
 
-    pub(crate) fn set_queued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
+    pub(crate) fn packet_count(&self) -> usize {
         match self {
-            Self::Send { command, .. } | Self::SendOneway { command } => {
-                command.set_queued_at(queued_at);
-            }
-            Self::SendBatchOneway { command, .. } => {
-                command.set_queued_at(queued_at);
-            }
-            Self::PeerSnapshot { .. }
+            Self::SendBatchOneway { command, .. } => command.len(),
+            Self::Send { .. }
+            | Self::SendOneway { .. }
+            | Self::PeerSnapshot { .. }
             | Self::RelaySnapshot { .. }
             | Self::UpdateRelays { .. }
-            | Self::UpdatePeers { .. } => {}
+            | Self::UpdatePeers { .. } => 1,
+        }
+    }
+
+    pub(crate) fn into_send_batch_oneway(
+        self,
+    ) -> Result<(EndpointSendBatchCommand, EndpointCommandLane), Self> {
+        match self {
+            Self::SendBatchOneway { command, lane } => Ok((command, lane)),
+            other => Err(other),
         }
     }
 }
@@ -810,14 +1332,14 @@ pub(crate) struct UpdatePeersOutcome {
 #[derive(Debug)]
 pub(crate) struct EndpointDataDelivery {
     pub(crate) source_peer: PeerIdentity,
-    pub(crate) payload: Vec<u8>,
+    pub(crate) payload: PacketBuffer,
 }
 
 impl EndpointDataDelivery {
-    pub(crate) fn new(source_peer: PeerIdentity, payload: Vec<u8>) -> Self {
+    pub(crate) fn new(source_peer: PeerIdentity, payload: impl Into<PacketBuffer>) -> Self {
         Self {
             source_peer,
-            payload,
+            payload: payload.into(),
         }
     }
 
@@ -834,7 +1356,7 @@ impl EndpointDataDelivery {
 pub(crate) enum NodeEndpointEvent {
     Data {
         source_peer: PeerIdentity,
-        payload: Vec<u8>,
+        payload: PacketBuffer,
         queued_at: Option<crate::perf_profile::TraceStamp>,
     },
     DataBatch {
@@ -962,4 +1484,117 @@ pub(crate) struct NodeEndpointPeer {
 pub(crate) struct NodeEndpointRelayStatus {
     pub(crate) url: String,
     pub(crate) status: String,
+}
+
+#[cfg(all(test, unix))]
+mod endpoint_committed_bulk_tests {
+    use super::*;
+    use crate::node::encrypt_worker::DEFAULT_SEND_WEIGHT;
+    use crate::transport::udp::socket::UdpRawSocket;
+    use ring::aead::{LessSafeKey, UnboundKey};
+
+    #[test]
+    fn committed_bulk_ready_waits_for_commit_or_cancel() {
+        let ready = Arc::new(EndpointCommittedBulkReady::new());
+        assert_eq!(ready.try_state(), EndpointCommittedBulkState::Pending);
+        let thread_ready = Arc::clone(&ready);
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_done = Arc::clone(&done);
+        let handle = std::thread::spawn(move || {
+            assert_eq!(thread_ready.wait(), EndpointCommittedBulkState::Committed);
+            thread_done.store(true, Relaxed);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !done.load(Relaxed),
+            "staged bulk container must stay locked until feedback commits"
+        );
+        ready.commit();
+        handle.join().expect("commit waiter should finish");
+        assert!(done.load(Relaxed));
+
+        let ready = EndpointCommittedBulkReady::new();
+        ready.cancel();
+        assert_eq!(ready.try_state(), EndpointCommittedBulkState::Canceled);
+        assert_eq!(ready.wait(), EndpointCommittedBulkState::Canceled);
+    }
+
+    fn test_cipher() -> LessSafeKey {
+        let unbound =
+            UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0u8; 32]).expect("build key");
+        LessSafeKey::new(unbound)
+    }
+
+    fn with_test_socket(
+        test: impl FnOnce(crate::transport::udp::socket::AsyncUdpSocket, LessSafeKey),
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .expect("tokio runtime");
+        rt.block_on(async {
+            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
+                .expect("open UDP socket");
+            test(raw.into_async().expect("async UDP socket"), test_cipher());
+        });
+    }
+
+    fn bulk_job(
+        socket: crate::transport::udp::socket::AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: &str,
+        bulk_endpoint_data: bool,
+    ) -> crate::node::encrypt_worker::FmpSendJob {
+        let mut wire_buf = Vec::with_capacity(crate::node::wire::ESTABLISHED_HEADER_SIZE + 32);
+        wire_buf.extend_from_slice(&[0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]);
+        crate::node::encrypt_worker::FmpSendJob {
+            cipher: cipher.clone(),
+            counter: 0,
+            wire_buf,
+            fsp_seal: None,
+            send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
+                socket,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                None,
+                dest_addr.parse().expect("socket addr"),
+            ),
+            endpoint_flow_dispatch_key: None,
+            bulk_endpoint_data,
+            drop_on_backpressure: bulk_endpoint_data,
+            scheduling_weight: DEFAULT_SEND_WEIGHT,
+            queued_at: None,
+        }
+    }
+
+    #[test]
+    fn committed_bulk_batch_merge_requires_same_bulk_target() {
+        with_test_socket(|socket, cipher| {
+            let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
+            let first = EndpointCommittedBulkBatch {
+                workers: workers.clone(),
+                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10031", true)],
+                ready: Arc::new(EndpointCommittedBulkReady::new()),
+            };
+            let same = EndpointCommittedBulkBatch {
+                workers: workers.clone(),
+                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10031", true)],
+                ready: Arc::new(EndpointCommittedBulkReady::new()),
+            };
+            let other_target = EndpointCommittedBulkBatch {
+                workers: workers.clone(),
+                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10032", true)],
+                ready: Arc::new(EndpointCommittedBulkReady::new()),
+            };
+            let priority_like = EndpointCommittedBulkBatch {
+                workers,
+                jobs: vec![bulk_job(socket, &cipher, "127.0.0.1:10031", false)],
+                ready: Arc::new(EndpointCommittedBulkReady::new()),
+            };
+
+            assert!(first.can_merge_after(&same));
+            assert!(!first.can_merge_after(&other_target));
+            assert!(!first.can_merge_after(&priority_like));
+        });
+    }
 }

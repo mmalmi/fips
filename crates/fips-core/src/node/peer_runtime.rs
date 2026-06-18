@@ -378,10 +378,6 @@ impl<'a> PeerRuntimeReceiveAction<'a> {
 }
 
 impl<'a> AuthenticatedLinkMessage<'a> {
-    pub(in crate::node) fn source_peer(&self) -> PeerIdentity {
-        self.source_peer
-    }
-
     pub(in crate::node) fn source_node_addr(&self) -> &NodeAddr {
         self.source_peer.node_addr()
     }
@@ -677,7 +673,7 @@ pub(in crate::node) struct PreparedFmpInlineSend {
 pub(in crate::node) struct PreparedFmpWorkerReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: Arc<ring::aead::LessSafeKey>,
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
     pub(in crate::node) predicted_bytes: usize,
 }
 
@@ -686,7 +682,7 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
     pub(in crate::node) counter: u64,
     #[cfg(test)]
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: Arc<ring::aead::LessSafeKey>,
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
     pub(in crate::node) wire_buf: Vec<u8>,
     pub(in crate::node) predicted_bytes: usize,
 }
@@ -694,7 +690,13 @@ pub(in crate::node) struct PreparedFmpWorkerSend {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone)]
 pub(crate) struct ConnectedUdpDecryptFastPath {
+    // Connected UDP owns established FMP receive for this peer by routing
+    // matching packets straight to the decrypt worker owner/batcher. Misses
+    // (handshake, stale index, wrong transport, rekey epoch transition) return
+    // untouched to the normal packet path, where rx_loop owns session lookup
+    // and pending-session promotion.
     session_key: decrypt_worker::DecryptSessionKey,
+    expected_k_bit: bool,
     local_node_addr: NodeAddr,
     workers: decrypt_worker::DecryptWorkerPool,
     fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
@@ -720,12 +722,14 @@ impl ConnectedUdpDecryptFastPathBatcher {
 impl ConnectedUdpDecryptFastPath {
     pub(in crate::node) fn new(
         session_key: decrypt_worker::DecryptSessionKey,
+        expected_k_bit: bool,
         local_node_addr: NodeAddr,
         workers: decrypt_worker::DecryptWorkerPool,
         fallback_tx: decrypt_worker::DecryptWorkerFallbackSender,
     ) -> Self {
         Self {
             session_key,
+            expected_k_bit,
             local_node_addr,
             workers,
             fallback_tx,
@@ -736,15 +740,20 @@ impl ConnectedUdpDecryptFastPath {
         &self,
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        packet_data: Vec<u8>,
+        packet_data: impl Into<crate::transport::PacketBuffer>,
         timestamp_ms: u64,
-    ) -> Result<decrypt_worker::DecryptJob, Vec<u8>> {
+    ) -> Result<decrypt_worker::DecryptJob, crate::transport::PacketBuffer> {
+        let packet_data = packet_data.into();
         let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
             return Err(packet_data);
         };
         let packet_session_key =
             decrypt_worker::DecryptSessionKey::new(transport_id, header.receiver_idx.as_u32());
         if packet_session_key != self.session_key {
+            return Err(packet_data);
+        }
+        let received_k_bit = header.flags & wire::FLAG_KEY_EPOCH != 0;
+        if received_k_bit != self.expected_k_bit {
             return Err(packet_data);
         }
 
@@ -781,9 +790,9 @@ impl crate::transport::udp::peer_drain::ConnectedUdpPacketFastPathBatcher
         &mut self,
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        packet_data: Vec<u8>,
+        packet_data: crate::transport::PacketBuffer,
         timestamp_ms: u64,
-    ) -> Result<(), Vec<u8>> {
+    ) -> Result<(), crate::transport::PacketBuffer> {
         match self
             .fast_path
             .prepare_job(transport_id, remote_addr, packet_data, timestamp_ms)

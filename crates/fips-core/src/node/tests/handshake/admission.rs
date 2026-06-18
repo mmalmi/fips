@@ -20,7 +20,7 @@ async fn test_duplicate_msg2_dropped() {
     let packet = ReceivedPacket {
         transport_id,
         remote_addr: TransportAddr::from_string("10.0.0.2:2121"),
-        data: wire_msg2,
+        data: wire_msg2.into(),
         timestamp_ms: 1000,
         trace_enqueued_at: None,
         trace_rx_loop_owned_at: None,

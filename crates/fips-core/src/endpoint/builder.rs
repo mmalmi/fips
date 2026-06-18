@@ -12,6 +12,7 @@ pub struct FipsEndpointBuilder {
 }
 
 const DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 4096;
+const MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY: usize = 65_536;
 
 impl Default for FipsEndpointBuilder {
     fn default() -> Self {
@@ -21,9 +22,24 @@ impl Default for FipsEndpointBuilder {
             discovery_scope: None,
             local_ethernet_interfaces: Vec::new(),
             disable_system_networking: true,
-            packet_channel_capacity: DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
+            packet_channel_capacity: default_endpoint_packet_channel_capacity(),
         }
     }
+}
+
+fn default_endpoint_packet_channel_capacity() -> usize {
+    parse_endpoint_packet_channel_capacity(
+        std::env::var("FIPS_ENDPOINT_PACKET_CHANNEL_CAP")
+            .ok()
+            .as_deref(),
+        DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY,
+    )
+}
+
+fn parse_endpoint_packet_channel_capacity(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(1, MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY)
 }
 
 impl FipsEndpointBuilder {
@@ -127,6 +143,8 @@ impl FipsEndpointBuilder {
         endpoint_debug_log("FipsEndpointBuilder::bind node task spawned");
         let endpoint_priority_commands = endpoint_data_io.priority_command_tx;
         let endpoint_commands = endpoint_data_io.command_tx;
+        #[cfg(unix)]
+        let endpoint_bulk_send_runtime = endpoint_data_io.bulk_send_runtime;
 
         Ok(FipsEndpoint {
             identity,
@@ -138,6 +156,8 @@ impl FipsEndpointBuilder {
             delivered_packets: Arc::new(Mutex::new(packet_io.inbound_rx)),
             endpoint_priority_commands,
             endpoint_commands,
+            #[cfg(unix)]
+            endpoint_bulk_send_runtime,
             inbound_endpoint_tx: endpoint_data_io.event_tx,
             inbound_endpoint_rx: Arc::new(Mutex::new(EndpointReceiveState::new(
                 endpoint_data_io.event_rx,
@@ -146,5 +166,53 @@ impl FipsEndpointBuilder {
             shutdown_tx: std::sync::Mutex::new(Some(shutdown_tx)),
             task: std::sync::Mutex::new(Some(task)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_packet_channel_capacity_env_keeps_safe_bounds() {
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(None, DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY),
+            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+        );
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(
+                Some(""),
+                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+            ),
+            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+        );
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(
+                Some("not-a-number"),
+                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+            ),
+            DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+        );
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(
+                Some("0"),
+                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+            ),
+            1
+        );
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(
+                Some("8192"),
+                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+            ),
+            8192
+        );
+        assert_eq!(
+            parse_endpoint_packet_channel_capacity(
+                Some("999999"),
+                DEFAULT_ENDPOINT_PACKET_CHANNEL_CAPACITY
+            ),
+            MAX_ENDPOINT_PACKET_CHANNEL_CAPACITY
+        );
     }
 }

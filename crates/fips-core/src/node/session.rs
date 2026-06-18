@@ -5,7 +5,6 @@
 //! (SessionSetup/SessionAck/SessionMsg3) carried inside SessionDatagram
 //! envelopes through the mesh.
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::SessionMmpConfig;
@@ -67,7 +66,7 @@ pub(crate) enum FspOpenError {
 pub(crate) struct FspSendReservation {
     pub(crate) counter: u64,
     pub(crate) header: [u8; FSP_HEADER_SIZE],
-    pub(crate) cipher: Arc<LessSafeKey>,
+    pub(crate) cipher: LessSafeKey,
 }
 
 /// Recv-side epoch state exported to the decrypt worker.
@@ -100,6 +99,36 @@ pub(crate) struct FspReceiveSync {
     pub(crate) ce_flag: bool,
     pub(crate) path_mtu: u16,
     pub(crate) spin_bit: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FspReceiveSyncApply {
+    applied: bool,
+    refresh_worker_session: bool,
+}
+
+impl FspReceiveSyncApply {
+    fn applied(refresh_worker_session: bool) -> Self {
+        Self {
+            applied: true,
+            refresh_worker_session,
+        }
+    }
+
+    fn stale() -> Self {
+        Self {
+            applied: false,
+            refresh_worker_session: false,
+        }
+    }
+
+    pub(crate) fn is_applied(self) -> bool {
+        self.applied
+    }
+
+    pub(crate) fn refresh_worker_session(self) -> bool {
+        self.refresh_worker_session
+    }
 }
 
 impl EndToEndState {
@@ -439,12 +468,6 @@ impl SessionEntry {
         self.bytes_recv += bytes as u64;
     }
 
-    /// Record multiple received data packets.
-    pub(crate) fn record_recv_batch(&mut self, packets: usize, bytes: usize) {
-        self.packets_recv += packets as u64;
-        self.bytes_recv += bytes as u64;
-    }
-
     /// Get traffic counters: (packets_sent, packets_recv, bytes_sent, bytes_recv).
     pub(crate) fn traffic_counters(&self) -> (u64, u64, u64, u64) {
         (
@@ -590,10 +613,30 @@ impl SessionEntry {
         }
     }
 
+    /// Snapshot send-side FSP material for a short-lived endpoint bulk lease.
+    ///
+    /// The lease receives cloned AEAD state plus the shared counter authority;
+    /// it does not receive mutable session state. Node-owned bookkeeping still
+    /// returns through the endpoint feedback lane.
+    #[cfg(unix)]
+    pub(crate) fn endpoint_bulk_fsp_lease(&self) -> Option<crate::node::EndpointBulkSendFspLease> {
+        if !self.is_established() {
+            return None;
+        }
+        let session = self.current_noise_session()?;
+        Some(crate::node::EndpointBulkSendFspLease {
+            cipher: session.send_cipher_clone()?,
+            counter_authority: session.send_counter_authority(),
+            session_start_ms: self.session_start_ms,
+            current_k_bit: self.current_k_bit,
+            spin_bit: self.mmp().is_some_and(|mmp| mmp.spin_bit.tx_bit()),
+        })
+    }
+
     /// Reserve FSP send state for worker-side encryption.
     ///
     /// The session entry owns the send counter sequence. Worker paths receive a
-    /// shared AEAD handle plus the already-reserved counter/header pair, so
+    /// clone of the AEAD key plus the already-reserved counter/header pair, so
     /// worker encryption cannot advance or rebuild session-owned sequencing.
     #[cfg(unix)]
     pub(crate) fn reserve_fsp_worker_send(
@@ -604,7 +647,7 @@ impl SessionEntry {
         let Some(session) = self.current_noise_session_mut() else {
             return Ok(None);
         };
-        let Some(cipher) = session.send_cipher_handle() else {
+        let Some(cipher) = session.send_cipher_clone() else {
             return Ok(None);
         };
         let counter = session.take_send_counter()?;
@@ -614,6 +657,39 @@ impl SessionEntry {
             header,
             cipher,
         }))
+    }
+
+    /// Reserve a contiguous batch of FSP send counters for worker-side
+    /// encryption under one mutable borrow of the session-owned send state.
+    #[cfg(unix)]
+    pub(crate) fn reserve_fsp_worker_send_batch<I>(
+        &mut self,
+        inputs: I,
+    ) -> Result<Option<Vec<FspSendReservation>>, crate::noise::NoiseError>
+    where
+        I: IntoIterator<Item = (u8, u16)>,
+    {
+        let Some(session) = self.current_noise_session_mut() else {
+            return Ok(None);
+        };
+        let Some(cipher) = session.send_cipher_clone() else {
+            return Ok(None);
+        };
+        let counter_authority = session.send_counter_authority();
+
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        let counters = counter_authority.reserve_range(inputs.len())?;
+        let mut reservations = Vec::with_capacity(inputs.len());
+        for ((flags, payload_len), counter) in inputs.into_iter().zip(counters) {
+            let header = build_fsp_header(counter, flags, payload_len);
+            reservations.push(FspSendReservation {
+                counter,
+                header,
+                cipher: cipher.clone(),
+            });
+        }
+
+        Ok(Some(reservations))
     }
 
     /// When the FSP rekey handshake completed (initiator sent msg3).
@@ -728,23 +804,24 @@ impl SessionEntry {
     /// replay windows are advanced for slow paths, pending epochs are
     /// promoted, MMP receive state is updated, and idle counters observe
     /// application data.
-    pub(crate) fn apply_fsp_receive_sync(
+    pub(crate) fn apply_fsp_receive_sync_result(
         &mut self,
         sync: FspReceiveSync,
         now_ms: u64,
         now: Instant,
-    ) -> bool {
+    ) -> FspReceiveSyncApply {
         if !self.is_established() {
-            return false;
+            return FspReceiveSyncApply::stale();
         }
 
+        let mut refresh_worker_session = false;
         match sync.slot {
             EpochSlot::Current => {
                 let Some(session) = self.current_noise_session_mut() else {
-                    return false;
+                    return FspReceiveSyncApply::stale();
                 };
                 if session.check_replay(sync.counter).is_err() {
-                    return false;
+                    return FspReceiveSyncApply::stale();
                 }
                 session.accept_replay(sync.counter);
                 if self.rekey_msg3_payload().is_some() && self.pending_new_session().is_none() {
@@ -754,35 +831,36 @@ impl SessionEntry {
             EpochSlot::Pending => {
                 if let Some(session) = self.pending_new_session.as_mut() {
                     if session.check_replay(sync.counter).is_err() {
-                        return false;
+                        return FspReceiveSyncApply::stale();
                     }
                     session.accept_replay(sync.counter);
                     if self.rekey_msg3_payload().is_some() {
                         self.confirm_peer_new_epoch();
                     }
                     self.handle_peer_kbit_flip(now_ms);
+                    refresh_worker_session = true;
                 } else if sync.received_k_bit == self.current_k_bit {
                     // A second pending-epoch event can reach rx_loop after an
                     // earlier event already promoted the pending session. The
                     // worker authenticated it before promotion; mirror it into
                     // the now-current slot instead of dropping good data.
                     let Some(session) = self.current_noise_session_mut() else {
-                        return false;
+                        return FspReceiveSyncApply::stale();
                     };
                     if session.check_replay(sync.counter).is_err() {
-                        return false;
+                        return FspReceiveSyncApply::stale();
                     }
                     session.accept_replay(sync.counter);
                 } else {
-                    return false;
+                    return FspReceiveSyncApply::stale();
                 }
             }
             EpochSlot::Previous => {
                 let Some(session) = self.previous_noise_session.as_mut() else {
-                    return false;
+                    return FspReceiveSyncApply::stale();
                 };
                 if session.check_replay(sync.counter).is_err() {
-                    return false;
+                    return FspReceiveSyncApply::stale();
                 }
                 session.accept_replay(sync.counter);
                 self.refresh_previous_use(now_ms);
@@ -811,7 +889,7 @@ impl SessionEntry {
             mmp.path_mtu.observe_incoming_mtu(sync.path_mtu);
         }
         self.touch_inbound_frame(now_ms);
-        true
+        FspReceiveSyncApply::applied(refresh_worker_session)
     }
 
     /// Store a completed rekey session.

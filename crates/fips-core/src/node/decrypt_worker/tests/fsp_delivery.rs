@@ -60,12 +60,12 @@
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
         let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
         let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
-        let endpoint_payload = ipv4_icmp_echo_packet(600);
+        let endpoint_body = vec![0x42; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 256];
         let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
             0x0102_0304,
             crate::protocol::SessionMessageType::EndpointData.to_byte(),
             0x01,
-            &endpoint_payload,
+            &endpoint_body,
         );
         let fsp_counter = fsp_sender.current_send_counter();
         let fsp_header = crate::node::session_wire::build_fsp_header(
@@ -95,11 +95,6 @@
         let fmp_counter = 77;
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
-        assert!(
-            wire.len() > DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
-            "test must wrap a priority endpoint payload in a bulk-sized encrypted envelope"
-        );
-        let wire_len = wire.len();
         let session_key = test_session_key(1, 9);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let job = DecryptJob::new(
@@ -116,12 +111,12 @@
             fallback_tx,
         );
 
-        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -150,18 +145,16 @@
                 assert_eq!(direct.fmp.source_peer, previous_hop_peer);
                 assert_eq!(direct.fmp.fmp_counter, fmp_counter);
                 assert_eq!(direct.fmp.inner_timestamp_ms, inner_timestamp_ms);
-                assert_eq!(direct.fmp.packet_len, wire_len);
                 assert_eq!(direct.receive_sync.counter, fsp_counter);
                 assert_eq!(direct.receive_sync.slot, EpochSlot::Current);
                 assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
                 assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
-                assert_eq!(direct.body_len, endpoint_payload.len());
+                assert_eq!(direct.body_len, endpoint_body.len());
                 assert!(direct.receive_sync.spin_bit);
-                assert_eq!(direct.lane, DecryptWorkerLane::Priority);
                 match direct.delivery {
                     DecryptDirectSessionDelivery::EndpointData(delivery) => {
                         assert_eq!(delivery.source_peer, source_peer);
-                        assert_eq!(delivery.payload, endpoint_payload);
+                        assert_eq!(delivery.payload, endpoint_body);
                     }
                     DecryptDirectSessionDelivery::Ipv6Packet(_) => {
                         panic!("endpoint data must not become an IPv6 packet")
@@ -173,6 +166,834 @@
                 other.packet_count()
             ),
         }
+    }
+
+    #[test]
+    fn worker_leaves_priority_fsp_plaintext_for_rx_loop_owner() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let fsp_header = crate::node::session_wire::build_fsp_header(7, 0, 0);
+        let mut fsp_payload = fsp_header.to_vec();
+        fsp_payload.extend_from_slice(&[0u8; 16]);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut packet_data = Vec::new();
+        packet_data.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        packet_data.extend_from_slice(&datagram.encode());
+        assert!(
+            packet_data.len() <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            "test packet must stay on the priority lane"
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
+            packet_data: packet_data.clone().into(),
+            lane: DecryptWorkerLane::Priority,
+            source_peer,
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: *local.node_addr(),
+            timestamp_ms: 1_000,
+            packet_len: packet_data.len(),
+            fmp_counter: 77,
+            fmp_flags: 0,
+            fmp_plaintext_offset: 0,
+            fmp_plaintext_len: packet_data.len(),
+            fallback_tx,
+        })
+        .expect("priority FSP plaintext should return to rx_loop");
+
+        match action {
+            DecryptWorkerJobAction::Output(output) => match output.event {
+                DecryptWorkerEvent::Plaintext(fallback) => {
+                    assert_eq!(&fallback.packet_data[..], packet_data.as_slice());
+                }
+                other => panic!(
+                    "priority FSP should return as plaintext, got {:?}",
+                    other.packet_count()
+                ),
+            },
+            DecryptWorkerJobAction::FspJob(_) => {
+                panic!("priority FSP must not use worker-owned FSP open")
+            }
+        }
+    }
+
+    #[test]
+    fn fsp_aead_open_completion_opens_then_owner_accepts_replay() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"ordered worker-open",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            0,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .expect("test FSP frame should encrypt");
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let fsp_payload_len = fsp_payload.len();
+        let header = FspEncryptedHeader::parse(&fsp_payload).expect("encrypted FSP header");
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let make_job = |packet_data: Vec<u8>| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(fsp_payload.clone()),
+            header: header.clone(),
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+
+        let drain = state
+            .complete_ordered_fsp_open(completion.ticket, completion.result)
+            .expect("first worker-open completion should fit receive order");
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.accepted, 1);
+        assert_eq!(drain.replay_drops, 0);
+        assert_eq!(drain.outputs.len(), 1);
+        match &drain.outputs[0] {
+            FspReadyCompletion::Opened {
+                opened,
+                slot,
+                source_peer: got_source_peer,
+            } => {
+                assert_eq!(*slot, EpochSlot::Current);
+                assert_eq!(*got_source_peer, source_peer);
+                assert_eq!(opened.plaintext_len, inner_plaintext.len());
+            }
+            FspReadyCompletion::AeadFailed { .. } => panic!("valid worker-open frame must open"),
+        }
+
+        let duplicate = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(fsp_payload),
+            header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+        let duplicate_drain = state
+            .complete_ordered_fsp_open(duplicate.ticket, duplicate.result)
+            .expect("duplicate worker-open completion should fit receive order");
+        assert_eq!(duplicate_drain.ready, 1);
+        assert_eq!(duplicate_drain.accepted, 0);
+        assert_eq!(duplicate_drain.replay_drops, 1);
+        assert_eq!(
+            duplicate_drain.replay_drop_sources,
+            FspReplayDropSources {
+                worker_open: 1,
+                ..FspReplayDropSources::default()
+            }
+        );
+        assert!(
+            duplicate_drain.outputs.is_empty(),
+            "replayed worker-open completion must not emit authenticated output"
+        );
+    }
+
+    #[test]
+    fn fsp_session_refresh_preserves_inflight_worker_open_order() {
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let snapshot = || crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x51; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        };
+
+        let mut state = OwnedFspSessionState::from(snapshot());
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let ticket = shared.issue_ticket();
+
+        let mut refreshed = OwnedFspSessionState::from(snapshot());
+        refreshed.preserve_receive_order_from(state);
+        assert_eq!(refreshed.fsp_receive_order_id(), receive_order_id);
+        assert_eq!(refreshed.fsp_receive_order.next_ticket(), ticket.sequence + 1);
+
+        let drain = refreshed
+            .complete_ordered_fsp_open(
+                ticket,
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+            )
+            .expect("pre-refresh worker-open completion should remain in order");
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.dropped, 1);
+        assert_eq!(refreshed.fsp_receive_order_next_ready(), ticket.sequence + 1);
+
+        let next_shared = refreshed
+            .shared_crypto_session(0)
+            .expect("refreshed single-current FSP session should expose shared crypto");
+        assert_eq!(next_shared.receive_order_id, receive_order_id);
+        assert_eq!(next_shared.issue_ticket().sequence, ticket.sequence + 1);
+    }
+
+    #[test]
+    fn fsp_ordered_completion_buffers_out_of_order_worker_open_results() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let mut make_payload = |body: &'static [u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            (fsp_payload, inner_plaintext.len())
+        };
+
+        let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
+        let first_payload_len = first_payload.len();
+        let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
+        let first_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(first_payload, first_payload_len),
+            header: first_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+
+        let (second_payload, second_plaintext_len) = make_payload(b"second worker-open");
+        let second_payload_len = second_payload.len();
+        let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
+        let second_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(second_payload, second_payload_len),
+            header: second_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+
+        let second_drain = state
+            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+            .expect("later worker-open completion should buffer behind missing first ticket");
+        assert_eq!(second_drain.ready, 0);
+        assert_eq!(second_drain.accepted, 0);
+        assert_eq!(second_drain.replay_drops, 0);
+        assert!(
+            second_drain.outputs.is_empty(),
+            "later completion must not emit before the receive-order gap closes"
+        );
+
+        let first_drain = state
+            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+            .expect("first worker-open completion should drain itself and buffered second");
+        assert_eq!(first_drain.ready, 2);
+        assert_eq!(first_drain.accepted, 2);
+        assert_eq!(first_drain.replay_drops, 0);
+        assert_eq!(first_drain.outputs.len(), 2);
+        match (&first_drain.outputs[0], &first_drain.outputs[1]) {
+            (
+                FspReadyCompletion::Opened {
+                    opened: first_opened,
+                    slot: first_slot,
+                    ..
+                },
+                FspReadyCompletion::Opened {
+                    opened: second_opened,
+                    slot: second_slot,
+                    ..
+                },
+            ) => {
+                assert_eq!(*first_slot, EpochSlot::Current);
+                assert_eq!(*second_slot, EpochSlot::Current);
+                assert_eq!(first_opened.plaintext_len, first_plaintext_len);
+                assert_eq!(second_opened.plaintext_len, second_plaintext_len);
+            }
+            _ => panic!("worker-open completions should both authenticate"),
+        }
+    }
+
+    #[test]
+    fn fsp_ordered_completion_tracks_ready_aead_failure_source() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let mut make_payload = |body: &'static [u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            (fsp_payload, inner_plaintext.len())
+        };
+
+        let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let (first_payload, first_plaintext_len) = make_payload(b"first worker-open");
+        let first_payload_len = first_payload.len();
+        let first_header = FspEncryptedHeader::parse(&first_payload).expect("first FSP header");
+        let first_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(first_payload, first_payload_len),
+            header: first_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+
+        let (mut second_payload, second_plaintext_len) = make_payload(b"second worker-open");
+        *second_payload
+            .last_mut()
+            .expect("test FSP frame has ciphertext") ^= 0x55;
+        let second_payload_len = second_payload.len();
+        let second_header = FspEncryptedHeader::parse(&second_payload).expect("second FSP header");
+        let second_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: shared.issue_ticket(),
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(second_payload, second_payload_len),
+            header: second_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+
+        let second_drain = state
+            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+            .expect("later failed completion should wait behind missing first ticket");
+        assert_eq!(second_drain.ready, 0);
+        assert_eq!(second_drain.aead_failures, 0);
+        assert_eq!(
+            second_drain.aead_failure_sources,
+            FspAeadFailureSources::default()
+        );
+
+        let first_drain = state
+            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+            .expect("first completion should release the queued AEAD failure");
+        assert_eq!(first_drain.ready, 2);
+        assert_eq!(first_drain.accepted, 1);
+        assert_eq!(first_drain.aead_failures, 1);
+        assert_eq!(
+            first_drain.aead_failure_sources,
+            FspAeadFailureSources {
+                worker_open: 1,
+                ..FspAeadFailureSources::default()
+            }
+        );
+        assert_eq!(first_drain.outputs.len(), 2);
+        match (&first_drain.outputs[0], &first_drain.outputs[1]) {
+            (
+                FspReadyCompletion::Opened { opened, .. },
+                FspReadyCompletion::AeadFailed { .. },
+            ) => assert_eq!(opened.plaintext_len, first_plaintext_len),
+            _ => panic!("first packet should open, second packet should fail AEAD"),
+        }
+        assert!(
+            second_plaintext_len > 0,
+            "test should corrupt a non-empty encrypted frame"
+        );
+    }
+
+    #[test]
+    fn fsp_ordered_completion_tracks_epoch_mismatch_separately_from_aead() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0,
+            b"key bit mismatch",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            FSP_FLAG_K,
+            inner_plaintext.len() as u16,
+        );
+        let fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .expect("test FSP frame should encrypt");
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let header = FspEncryptedHeader::parse(&fsp_payload).expect("FSP header");
+        assert!(
+            !state.current_epoch_matches(&header),
+            "test frame must carry the opposite K-bit from the worker snapshot"
+        );
+
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let job = FspDecryptJob {
+            fallback_tx,
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                fsp_payload.len(),
+                10,
+                0,
+                fsp_payload,
+                0,
+                fsp_header.len() + fsp_ciphertext.len(),
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: fsp_header.len() + fsp_ciphertext.len(),
+            trace_enqueued_at: None,
+        };
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("single-current local owner should reserve an FSP ticket");
+        let drain = state
+            .complete_ordered_fsp_open(
+                ticket,
+                FspOrderedCompletion::EpochMismatch {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::Local,
+                },
+            )
+            .expect("epoch-mismatch completion should fit receive order");
+
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.accepted, 0);
+        assert_eq!(drain.aead_failures, 0);
+        assert_eq!(drain.epoch_mismatches, 1);
+        assert_eq!(drain.replay_drops, 0);
+        assert_eq!(drain.dropped, 0);
+        assert_eq!(drain.outputs.len(), 1);
+        match &drain.outputs[0] {
+            FspReadyCompletion::AeadFailed {
+                header: reported, ..
+            } => {
+                assert_eq!(reported.counter, fsp_counter);
+                assert_eq!(reported.flags & FSP_FLAG_K, FSP_FLAG_K);
+            }
+            FspReadyCompletion::Opened { .. } => {
+                panic!("epoch mismatch must not authenticate an FSP frame")
+            }
+        }
+    }
+
+    #[test]
+    fn fsp_local_owner_open_uses_shared_order_with_worker_open_results() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+
+        let mut make_payload = |body: &'static [u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0,
+                body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            (fsp_payload, inner_plaintext.len())
+        };
+
+        let make_job = |packet_data: Vec<u8>, fsp_payload_len: usize| {
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+            FspDecryptJob {
+                fallback_tx,
+                fallback: DecryptFallback::new(
+                    previous_hop_peer,
+                    TransportId::new(1),
+                    crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    1_000,
+                    packet_data.len(),
+                    10,
+                    0,
+                    packet_data,
+                    0,
+                    fsp_payload_len,
+                ),
+                local_node_addr: local_addr,
+                source_addr,
+                previous_hop_peer,
+                path_mtu: 1_280,
+                ce_flag: false,
+                inner_timestamp_ms: 0x0a0b_0c0d,
+                fsp_payload_offset: 0,
+                fsp_payload_len,
+                trace_enqueued_at: None,
+            }
+        };
+
+        let (open_payload, open_plaintext_len) = make_payload(b"worker-open first");
+        let open_payload_len = open_payload.len();
+        let open_header = FspEncryptedHeader::parse(&open_payload).expect("worker-open header");
+        let open_ticket = shared
+            .try_issue_ticket()
+            .expect("worker-open should reserve the first FSP ticket");
+        assert_eq!(open_ticket.sequence, 0);
+
+        let (local_payload, local_plaintext_len) = make_payload(b"local second");
+        let local_payload_len = local_payload.len();
+        let local_header = FspEncryptedHeader::parse(&local_payload).expect("local header");
+        let local_ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("local owner open should reserve from the same shared ticket source");
+        assert_eq!(local_ticket.sequence, 1);
+
+        let local_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: local_ticket,
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(local_payload, local_payload_len),
+            header: local_header,
+            completion_source: FspAeadCompletionSource::Local,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+        let local_drain = state
+            .complete_ordered_fsp_open(local_completion.ticket, local_completion.result)
+            .expect("local completion should fit behind the pending worker-open ticket");
+        assert_eq!(local_drain.ready, 0);
+        assert!(
+            local_drain.outputs.is_empty(),
+            "local owner completion must not bypass an older worker-open ticket"
+        );
+
+        let open_completion = FspAeadOpenJob {
+            source_addr,
+            receive_order_id,
+            ticket: open_ticket,
+            cipher: Arc::clone(&shared.cipher),
+            job: make_job(open_payload, open_payload_len),
+            header: open_header,
+            completion_source: FspAeadCompletionSource::WorkerOpen,
+            completion_tx: None,
+            open_queued_at: None,
+        }
+        .into_completion();
+        let open_drain = state
+            .complete_ordered_fsp_open(open_completion.ticket, open_completion.result)
+            .expect("oldest worker-open completion should drain itself and buffered local open");
+        assert_eq!(open_drain.ready, 2);
+        assert_eq!(open_drain.accepted, 2);
+        assert_eq!(open_drain.replay_drops, 0);
+        assert_eq!(open_drain.outputs.len(), 2);
+        match (&open_drain.outputs[0], &open_drain.outputs[1]) {
+            (
+                FspReadyCompletion::Opened {
+                    opened: worker_opened,
+                    ..
+                },
+                FspReadyCompletion::Opened {
+                    opened: local_opened,
+                    ..
+                },
+            ) => {
+                assert_eq!(worker_opened.plaintext_len, open_plaintext_len);
+                assert_eq!(local_opened.plaintext_len, local_plaintext_len);
+            }
+            _ => panic!("worker-open and local completions should both authenticate"),
+        }
+    }
+
+    #[test]
+    fn fsp_aead_open_receive_window_tracks_owner_ready_progress() {
+        let shared = FspSharedCryptoSession::new(
+            0,
+            7,
+            false,
+            Arc::new(test_chacha_key([0x55; 32])),
+        );
+        let receive_window = fsp_receive_window();
+
+        for expected in 0..receive_window as u64 {
+            let ticket = shared
+                .try_issue_ticket()
+                .expect("window should admit initial worker-open tickets");
+            assert_eq!(ticket.sequence, expected);
+        }
+        assert!(
+            !shared.can_issue_ticket(),
+            "full ordered-completion window must stop worker-open admission"
+        );
+        assert!(
+            shared.try_issue_ticket().is_none(),
+            "full ordered-completion window must not allocate unbounded tickets"
+        );
+
+        shared.mark_next_ready(1);
+        assert!(
+            shared.can_issue_ticket(),
+            "owner completion progress should reopen worker-open admission"
+        );
+        let ticket = shared
+            .try_issue_ticket()
+            .expect("one completed ticket should free one worker-open slot");
+        assert_eq!(ticket.sequence, receive_window as u64);
     }
 
     #[test]
@@ -425,12 +1246,12 @@
         let session_key = test_session_key(1, 9);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
 
-        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -448,7 +1269,7 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let first = DecryptJob::new(
+        let mut first = DecryptJob::new(
             wire_a,
             session_key,
             TransportId::new(1),
@@ -461,7 +1282,8 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx.clone(),
         );
-        let second = DecryptJob::new(
+        first.lane = DecryptWorkerLane::Bulk;
+        let mut second = DecryptJob::new(
             wire_b,
             session_key,
             TransportId::new(1),
@@ -474,6 +1296,7 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        second.lane = DecryptWorkerLane::Bulk;
 
         assert!(matches!(
             shard
@@ -545,7 +1368,7 @@
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let job = DecryptJob::new(
+        let mut job = DecryptJob::new(
             wire,
             session_key,
             TransportId::new(1),
@@ -558,13 +1381,14 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        job.lane = DecryptWorkerLane::Bulk;
 
-        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
         shard.register_session(
             0,
             session_key,
-            OwnedSessionState::new(fmp_open.into(), ReplayWindow::new(), previous_hop_peer),
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
         );
         let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
@@ -598,12 +1422,12 @@
                 panic!("FSP AEAD failure must not bounce a possibly mutated packet")
             }
             DecryptWorkerEvent::AuthenticatedFmpReceive(_)
-            | DecryptWorkerEvent::DirectFmpEndpointData(_)
-            | DecryptWorkerEvent::DirectFmpEndpointDataBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
             }
@@ -611,16 +1435,253 @@
     }
 
     #[test]
-    fn decrypt_session_key_routes_registration_jobs_and_unregister_to_same_worker() {
-        let (pool, priority_receivers, bulk_receivers) = test_worker_pool(4, 4);
-        let session_key = test_session_key(7, 42);
-        let owner = pool.worker_idx_for(session_key);
+    fn worker_reports_multi_epoch_fsp_aead_failure_without_plaintext_fallback() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let (_pending_sender, pending_receiver) = test_xk_session_pair(&source, &local);
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0x01,
+            b"bad multi epoch tag",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header = crate::node::session_wire::build_fsp_header(
+            fsp_counter,
+            0,
+            inner_plaintext.len() as u16,
+        );
+        let mut fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .unwrap();
+        let last = fsp_ciphertext
+            .last_mut()
+            .expect("ciphertext includes authentication tag");
+        *last ^= 0x80;
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut fmp_plaintext = Vec::new();
+        fmp_plaintext.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        fmp_plaintext.extend_from_slice(&datagram.encode());
 
-        assert!(pool.register_session(session_key, test_owned_session_state()));
+        let fmp_key_bytes = [0x56; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let fmp_counter = 78;
+        let (wire, fmp_header) =
+            sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        let session_key = test_session_key(1, 10);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let mut job = DecryptJob::new(
+            wire,
+            session_key,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            *local.node_addr(),
+            1_000,
+            fmp_counter,
+            0,
+            fmp_header,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fallback_tx,
+        );
+        job.lane = DecryptWorkerLane::Bulk;
+
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
+        );
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: Some(crate::node::session::FspRecvEpochSnapshot {
+                cipher: pending_receiver.recv_cipher_clone().unwrap(),
+                replay: pending_receiver.recv_replay_snapshot_owned(),
+            }),
+            previous: None,
+        };
+        shard.register_fsp_session(
+            0,
+            *source.node_addr(),
+            OwnedFspSessionState::from(fsp_snapshot),
+        );
+
+        let output = shard
+            .handle_job_output(0, job)
+            .expect("worker job should not fail")
+            .expect("multi-epoch FSP AEAD failure should report to rx_loop");
+        match output.event {
+            DecryptWorkerEvent::FspDecryptFailure(report) => {
+                assert_eq!(report.source_addr, *source.node_addr());
+                assert_eq!(report.counter, fsp_counter);
+                assert_eq!(report.fmp.source_peer, previous_hop_peer);
+                assert_eq!(report.fmp.fmp_counter, fmp_counter);
+                assert_eq!(report.fmp.inner_timestamp_ms, inner_timestamp_ms);
+                assert!(!report.received_k_bit);
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("multi-epoch FSP AEAD failure must not bounce plaintext")
+            }
+            DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected FSP decrypt failure report")
+            }
+        }
+    }
+
+    #[test]
+    fn worker_drops_malformed_registered_fsp_without_plaintext_fallback() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let (_fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let mut fsp_payload = crate::node::session_wire::build_fsp_header(7, 0, 0).to_vec();
+        fsp_payload.truncate(crate::node::session_wire::FSP_COMMON_PREFIX_SIZE);
+        let datagram = crate::protocol::SessionDatagram::new(
+            *source.node_addr(),
+            *local.node_addr(),
+            fsp_payload,
+        );
+        let inner_timestamp_ms = 0x0a0b_0c0d_u32;
+        let mut fmp_plaintext = Vec::new();
+        fmp_plaintext.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        fmp_plaintext.extend_from_slice(&datagram.encode());
+
+        let fmp_key_bytes = [0x57; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let fmp_counter = 79;
+        let (wire, fmp_header) =
+            sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+        let session_key = test_session_key(1, 11);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let mut job = DecryptJob::new(
+            wire,
+            session_key,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            *local.node_addr(),
+            1_000,
+            fmp_counter,
+            0,
+            fmp_header,
+            crate::node::wire::ESTABLISHED_HEADER_SIZE,
+            fallback_tx,
+        );
+        job.lane = DecryptWorkerLane::Bulk;
+
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
+        );
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        shard.register_fsp_session(
+            0,
+            *source.node_addr(),
+            OwnedFspSessionState::from(fsp_snapshot),
+        );
+
+        let output = shard
+            .handle_job_output(0, job)
+            .expect("worker job should not fail")
+            .expect("malformed FSP should still record authenticated FMP receive");
+        match output.event {
+            DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
+                assert_eq!(receive.fmp.source_peer, previous_hop_peer);
+                assert_eq!(receive.fmp.fmp_counter, fmp_counter);
+                assert_eq!(receive.fmp.inner_timestamp_ms, inner_timestamp_ms);
+            }
+            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
+                panic!("malformed registered FSP must not bounce plaintext")
+            }
+            DecryptWorkerEvent::FspDecryptFailure(_) => {
+                panic!("malformed FSP without an encrypted header has no FSP counter to report")
+            }
+            DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
+            | DecryptWorkerEvent::DirectSessionCommit(_)
+            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DecryptFailure(_) => {
+                panic!("expected authenticated FMP bookkeeping event")
+            }
+        }
+    }
+
+    #[test]
+    fn registered_fmp_owner_routes_registration_jobs_and_unregister_to_same_worker() {
+        let (pool, control_receivers, priority_receivers, bulk_receivers) =
+            test_worker_pool(4, 4);
+        let source_peer = test_source_peer();
+        let owner = pool.worker_idx_for_fsp(source_peer.node_addr());
+        let session_key = (0..128)
+            .map(|receiver_idx| test_session_key(7, receiver_idx))
+            .find(|key| pool.worker_idx_for(*key) != owner)
+            .expect("test should find a session-key hash that differs from source owner");
+        let hash_owner = pool.worker_idx_for(session_key);
+
+        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        match priority_receivers[hash_owner]
+            .try_recv()
+            .expect("pre-registration packet should use hash fallback")
+        {
+            WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
+            WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::FspJob(_)
+            | WorkerMsg::RegisterFspSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {
+                panic!("expected pre-registration priority job")
+            }
+        }
+
+        assert!(pool.register_session(
+            session_key,
+            test_owned_session_state_for(source_peer)
+        ));
         pool.dispatch_job(dummy_priority_decrypt_job(session_key));
         assert!(pool.unregister_session(session_key));
 
-        match priority_receivers[owner]
+        match control_receivers[owner]
             .try_recv()
             .expect("registration should reach owner")
         {
@@ -649,7 +1710,7 @@
                 panic!("expected priority job second")
             }
         }
-        match priority_receivers[owner]
+        match control_receivers[owner]
             .try_recv()
             .expect("unregister should reach same owner")
         {
@@ -667,11 +1728,34 @@
             }
         }
 
-        for (idx, rx) in priority_receivers.iter().enumerate() {
+        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        match priority_receivers[hash_owner]
+            .try_recv()
+            .expect("post-unregister packet should use hash fallback")
+        {
+            WorkerMsg::Job(job) => assert_eq!(job.session_key, session_key),
+            WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::FspJob(_)
+            | WorkerMsg::RegisterFspSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {
+                panic!("expected post-unregister priority job")
+            }
+        }
+
+        for (idx, rx) in control_receivers.iter().enumerate() {
             if idx != owner {
                 assert!(
                     rx.is_empty(),
-                    "other worker {idx} must not receive this session key"
+                    "other worker {idx} must not receive this session key control item"
+                );
+            }
+        }
+        for (idx, rx) in priority_receivers.iter().enumerate() {
+            if idx != owner && idx != hash_owner {
+                assert!(
+                    rx.is_empty(),
+                    "other worker {idx} must not receive this session key priority item"
                 );
             }
         }

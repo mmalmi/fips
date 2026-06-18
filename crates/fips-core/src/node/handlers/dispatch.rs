@@ -2,7 +2,6 @@
 
 use crate::NodeAddr;
 use crate::node::{AuthenticatedLinkMessage, Node, PeerSessionIndexKind};
-use crate::protocol::LinkMessageType;
 use tracing::{debug, info, trace};
 
 impl Node {
@@ -15,53 +14,50 @@ impl Node {
     ) {
         let msg_type = message.msg_type();
 
-        match LinkMessageType::from_byte(msg_type) {
-            Some(LinkMessageType::SessionDatagram) => {
+        match msg_type {
+            0x00 => {
                 // SessionDatagram
                 self.handle_session_datagram(message.into_session_datagram())
                     .await;
             }
-            Some(LinkMessageType::SenderReport) => {
+            0x01 => {
                 // SenderReport
                 self.handle_sender_report(message.source_node_addr(), message.payload());
             }
-            Some(LinkMessageType::ReceiverReport) => {
+            0x02 => {
                 // ReceiverReport
                 self.handle_receiver_report(message.source_node_addr(), message.payload())
                     .await;
             }
-            Some(LinkMessageType::DirectEndpointData) => {
-                self.handle_direct_endpoint_data_link_message(message).await;
-            }
-            Some(LinkMessageType::TreeAnnounce) => {
+            0x10 => {
                 // TreeAnnounce
                 self.handle_tree_announce(message.source_node_addr(), message.payload())
                     .await;
             }
-            Some(LinkMessageType::FilterAnnounce) => {
+            0x20 => {
                 // FilterAnnounce
                 self.handle_filter_announce(message.source_node_addr(), message.payload())
                     .await;
             }
-            Some(LinkMessageType::LookupRequest) => {
+            0x30 => {
                 // LookupRequest
                 self.handle_lookup_request(message.source_node_addr(), message.payload())
                     .await;
             }
-            Some(LinkMessageType::LookupResponse) => {
+            0x31 => {
                 // LookupResponse
                 self.handle_lookup_response(message.source_node_addr(), message.payload())
                     .await;
             }
-            Some(LinkMessageType::Disconnect) => {
+            0x50 => {
                 // Disconnect
                 self.handle_disconnect(message.source_node_addr(), message.payload());
             }
-            Some(LinkMessageType::Heartbeat) => {
+            0x51 => {
                 // Heartbeat — no-op, last_recv_time already updated by record_recv()
                 trace!(peer = %self.peer_display_name(message.source_node_addr()), "Received heartbeat");
             }
-            None => {
+            _ => {
                 debug!(msg_type = msg_type, "Unknown link message type");
             }
         }

@@ -26,8 +26,9 @@ mod packet_channel;
 mod tests;
 
 pub use handle::TransportHandle;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use packet_channel::received_timestamp_ms;
-pub use packet_channel::{PacketRx, PacketTx, ReceivedPacket, packet_channel};
+pub use packet_channel::{PacketBuffer, PacketRx, PacketTx, ReceivedPacket, packet_channel};
 
 use secp256k1::XOnlyPublicKey;
 use std::fmt;
@@ -869,6 +870,13 @@ pub struct TransportCongestion {
     /// Cumulative packets dropped by kernel/OS before reaching the application.
     /// Monotonically increasing since transport start.
     pub recv_drops: Option<u64>,
+    /// Cumulative packets dropped by this transport socket before userspace
+    /// receive, when the platform exposes a socket-local counter.
+    pub socket_recv_drops: Option<u64>,
+    /// Cumulative Linux namespace UDP receive-buffer errors since transport
+    /// start. This is broader than one socket, so callers should report it
+    /// separately from socket-local drops.
+    pub namespace_recv_drops: Option<u64>,
 }
 
 // ============================================================================

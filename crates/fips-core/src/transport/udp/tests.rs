@@ -17,6 +17,21 @@ fn udp_receive_batch_width_matches_reference_packet_movers() {
     assert_eq!(UDP_RECV_BATCH_SIZE, 128);
 }
 
+#[test]
+fn proc_net_snmp_udp_parser_reads_rcvbuf_errors() {
+    let contents = "\
+Ip: Forwarding DefaultTTL InReceives\n\
+Ip: 1 64 123\n\
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors\n\
+Udp: 10 0 7 12 42 0 0 0 0\n\
+";
+    assert_eq!(parse_proc_net_snmp_udp_rcvbuf_errors(contents), Some(42));
+    assert_eq!(
+        parse_proc_net_snmp_udp_rcvbuf_errors("Udp: InDatagrams\n"),
+        None
+    );
+}
+
 #[tokio::test]
 async fn test_start_stop() {
     let (tx, _rx) = packet_channel(100);
@@ -239,6 +254,11 @@ async fn test_congestion_reports_kernel_drops() {
     // Before start, congestion should still report (from stats)
     let cong = transport.congestion();
     assert_eq!(cong.recv_drops, Some(0));
+    assert_eq!(cong.socket_recv_drops, Some(0));
+    #[cfg(target_os = "linux")]
+    assert_eq!(cong.namespace_recv_drops, Some(0));
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(cong.namespace_recv_drops, None);
 }
 
 #[test]

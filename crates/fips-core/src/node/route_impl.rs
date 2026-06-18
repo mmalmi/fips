@@ -60,16 +60,13 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
-        if let Some(direct_addr) = healthy_direct_route {
-            let low_cost_direct = self
+        if let Some(direct_addr) = healthy_direct_route
+            && self
                 .peers
                 .get(&direct_addr)
-                .is_some_and(|peer| peer.link_cost() <= 1.0 + ROUTING_FALLBACK_MIN_COST_ADVANTAGE);
-            let configured_static_direct =
-                !low_cost_direct && self.active_peer_uses_configured_static_udp_path(&direct_addr);
-            if low_cost_direct || configured_static_direct {
-                return self.peers.get(&direct_addr);
-            }
+                .is_some_and(|peer| peer.link_cost() <= 1.0 + ROUTING_FALLBACK_MIN_COST_ADVANTAGE)
+        {
+            return self.peers.get(&direct_addr);
         }
         let direct_payload_eligible = healthy_direct_route.is_some();
         let payload_candidate_can_send = |addr: &NodeAddr, peer: &ActivePeer| {

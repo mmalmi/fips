@@ -57,7 +57,7 @@ impl EndpointPayloadClass {
 pub(in crate::node) struct FmpWorkerSendReservation {
     pub(in crate::node) counter: u64,
     pub(in crate::node) header: [u8; ESTABLISHED_HEADER_SIZE],
-    pub(in crate::node) cipher: std::sync::Arc<ring::aead::LessSafeKey>,
+    pub(in crate::node) cipher: ring::aead::LessSafeKey,
 }
 
 #[cfg(unix)]
@@ -67,7 +67,7 @@ pub(in crate::node) fn reserve_fmp_worker_send(
     flags: u8,
     payload_len: u16,
 ) -> Result<Option<FmpWorkerSendReservation>, crate::noise::NoiseError> {
-    let Some(cipher) = session.send_cipher_handle() else {
+    let Some(cipher) = session.send_cipher_clone() else {
         return Ok(None);
     };
     let counter = session.take_send_counter()?;
@@ -170,7 +170,6 @@ pub(crate) fn endpoint_command_lane_for_payload(payload: &[u8]) -> EndpointComma
 pub(crate) struct EndpointDataPayload {
     bytes: Vec<u8>,
     traffic_class: EndpointPayloadClass,
-    direct_fmp_endpoint_allowed: bool,
 }
 
 impl EndpointDataPayload {
@@ -179,26 +178,14 @@ impl EndpointDataPayload {
         Self {
             bytes,
             traffic_class,
-            direct_fmp_endpoint_allowed: false,
         }
     }
 
-    pub(crate) fn from_classified_with_direct_fmp_endpoint_allowed(
-        bytes: Vec<u8>,
-        traffic_class: EndpointPayloadClass,
-        direct_fmp_endpoint_allowed: bool,
-    ) -> Self {
+    pub(crate) fn from_classified(bytes: Vec<u8>, traffic_class: EndpointPayloadClass) -> Self {
         Self {
             bytes,
             traffic_class,
-            direct_fmp_endpoint_allowed,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn allow_direct_fmp_endpoint_data(mut self) -> Self {
-        self.direct_fmp_endpoint_allowed = true;
-        self
     }
 
     pub(crate) fn lane(&self) -> EndpointCommandLane {
@@ -211,10 +198,6 @@ impl EndpointDataPayload {
 
     pub(crate) fn drop_on_backpressure(&self) -> bool {
         self.traffic_class.drop_on_backpressure()
-    }
-
-    pub(crate) fn direct_fmp_endpoint_allowed(&self) -> bool {
-        self.direct_fmp_endpoint_allowed
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {

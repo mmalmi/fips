@@ -133,106 +133,22 @@ impl SessionRegistry {
         Some(data_packets)
     }
 
-    pub(in crate::node) fn direct_endpoint_data_can_send(&self, node_addr: &NodeAddr) -> bool {
-        self.sessions
-            .get(node_addr)
-            .is_some_and(|entry| entry.is_established())
-    }
-
-    pub(in crate::node) fn record_direct_endpoint_data_send(
+    #[cfg(unix)]
+    pub(in crate::node) fn seed_endpoint_data_fsp_path_mtu_batch<I>(
         &mut self,
         node_addr: &NodeAddr,
-        payload_len: usize,
-        now_ms: u64,
-        next_hop: NodeAddr,
-    ) -> Option<()> {
-        let entry = self.sessions.get_mut(node_addr)?;
-        if !entry.is_established() {
-            return None;
-        }
-        entry.record_outbound_next_hop(next_hop);
-        entry.record_sent(payload_len);
-        entry.touch(now_ms);
-        Some(())
-    }
-
-    pub(in crate::node) fn record_direct_endpoint_data_send_batch<I>(
-        &mut self,
-        node_addr: &NodeAddr,
-        inputs: I,
-    ) -> Option<usize>
+        path_mtus: I,
+    ) -> Option<()>
     where
-        I: IntoIterator<Item = (usize, u64, NodeAddr)>,
+        I: IntoIterator<Item = u16>,
     {
         let entry = self.sessions.get_mut(node_addr)?;
-        if !entry.is_established() {
-            return None;
+        if let Some(mmp) = entry.mmp_mut() {
+            for path_mtu in path_mtus {
+                mmp.path_mtu.seed_source_mtu(path_mtu);
+            }
         }
-
-        let mut packets = 0usize;
-        let mut bytes = 0usize;
-        let mut last_touch_ms = None;
-        let mut last_next_hop = None;
-        for (payload_len, now_ms, next_hop) in inputs {
-            packets = packets.saturating_add(1);
-            bytes = bytes.saturating_add(payload_len);
-            last_touch_ms = Some(now_ms);
-            last_next_hop = Some(next_hop);
-        }
-
-        if packets == 0 {
-            return Some(0);
-        }
-        if let Some(next_hop) = last_next_hop {
-            entry.record_outbound_next_hop(next_hop);
-        }
-        entry.record_sent_batch(packets, bytes);
-        if let Some(now_ms) = last_touch_ms {
-            entry.touch(now_ms);
-        }
-        Some(packets)
-    }
-
-    pub(in crate::node) fn record_direct_endpoint_data_receive(
-        &mut self,
-        node_addr: &NodeAddr,
-        payload_len: usize,
-        now_ms: u64,
-    ) -> bool {
-        let Some(entry) = self.sessions.get_mut(node_addr) else {
-            return false;
-        };
-        if !entry.is_established() {
-            return false;
-        }
-        entry.record_recv(payload_len);
-        entry.touch(now_ms);
-        // Direct-FMP endpoint data is accepted only when the authenticated
-        // FMP peer is the session peer. Treat it as session liveness so an
-        // active direct fast path does not look outbound-only stale.
-        entry.touch_inbound_frame(now_ms);
-        true
-    }
-
-    pub(in crate::node) fn record_direct_endpoint_data_receive_batch(
-        &mut self,
-        node_addr: &NodeAddr,
-        packets: usize,
-        bytes: usize,
-        now_ms: u64,
-    ) -> bool {
-        let Some(entry) = self.sessions.get_mut(node_addr) else {
-            return false;
-        };
-        if !entry.is_established() {
-            return false;
-        }
-        if packets > 0 {
-            entry.record_recv_batch(packets, bytes);
-            entry.touch(now_ms);
-            entry.touch_inbound_frame(now_ms);
-        }
-        true
+        Some(())
     }
 
     #[cfg(unix)]
@@ -253,6 +169,31 @@ impl SessionRegistry {
         }
         entry
             .reserve_fsp_worker_send(input.flags, input.payload_len)
+            .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
+    }
+
+    #[cfg(unix)]
+    pub(in crate::node) fn reserve_endpoint_data_fsp_worker_send_batch(
+        &mut self,
+        node_addr: &NodeAddr,
+        inputs: &[FspWorkerSendReservationInput],
+    ) -> Result<Option<Vec<FspSendReservation>>, FspWorkerSendReservationError> {
+        let entry = self
+            .sessions
+            .get_mut(node_addr)
+            .ok_or(FspWorkerSendReservationError::MissingSession)?;
+        if let Some(mmp) = entry.mmp_mut() {
+            for input in inputs {
+                mmp.path_mtu.seed_source_mtu(input.path_mtu);
+            }
+        }
+        if !entry.is_established() {
+            return Err(FspWorkerSendReservationError::NotEstablished);
+        }
+        entry
+            .reserve_fsp_worker_send_batch(
+                inputs.iter().map(|input| (input.flags, input.payload_len)),
+            )
             .map_err(|_| FspWorkerSendReservationError::CounterReservationFailed)
     }
 

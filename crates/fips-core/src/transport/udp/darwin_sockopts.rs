@@ -35,10 +35,6 @@ const VPN_SERVICE_TYPE: NetServiceType = NetServiceType {
     name: "oam",
     value: NET_SERVICE_TYPE_OAM,
 };
-const DEFAULT_SERVICE_TYPE: Option<NetServiceType> = Some(NetServiceType {
-    name: "rd",
-    value: NET_SERVICE_TYPE_RD,
-});
 
 #[derive(Debug)]
 struct Tuning {
@@ -82,30 +78,23 @@ fn tuning() -> &'static Tuning {
             Ok(raw) => match parse_net_service_type(&raw) {
                 Ok(service_type) => service_type,
                 Err(()) => {
-                    let default = default_service_type()
-                        .map(|service_type| service_type.name)
-                        .unwrap_or("off");
                     warn!(
                         value = %raw,
-                        default,
+                        default = "off",
                         "invalid FIPS_MACOS_NET_SERVICE_TYPE, using default"
                     );
-                    default_service_type()
+                    None
                 }
             },
-            // Apple documents OAM as fitting VPN tunnels, but current
-            // MacBook-to-mini LAN tests show RD cuts tunnel ping queueing
-            // without the VI/RV retransmit penalty. Keep this overridable for
-            // NIC-specific throughput A/Bs.
-            Err(_) => default_service_type(),
+            // Apple documents NET_SERVICE_TYPE_OAM as fitting VPN tunnels, but
+            // measured MacBook Wi-Fi sends regressed badly with OAM/RD/VI
+            // marking in 2026-05 local LAN tests. Leave Darwin UDP sockets at
+            // the kernel default unless an experiment opts in via env.
+            Err(_) => None,
         };
 
         Tuning { service_type }
     })
-}
-
-fn default_service_type() -> Option<NetServiceType> {
-    DEFAULT_SERVICE_TYPE
 }
 
 fn parse_net_service_type(raw: &str) -> Result<Option<NetServiceType>, ()> {
@@ -199,16 +188,5 @@ mod tests {
             })
         );
         assert!(parse_net_service_type("wat").is_err());
-    }
-
-    #[test]
-    fn default_service_type_is_responsive_data() {
-        assert_eq!(
-            default_service_type(),
-            Some(NetServiceType {
-                name: "rd",
-                value: NET_SERVICE_TYPE_RD
-            })
-        );
     }
 }

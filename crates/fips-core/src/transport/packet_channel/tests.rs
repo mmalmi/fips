@@ -152,6 +152,93 @@ async fn packet_channel_batch_send_amortizes_bulk_channel_items() {
     assert_eq!(rx.recv().await.unwrap().data[0], 0xcc);
 }
 
+#[tokio::test]
+async fn packet_channel_reuses_pooled_batch_container_after_rx_drain() {
+    let (tx, mut rx) = packet_channel(10);
+    let addr = TransportAddr::from_string("test");
+    let mut batch = tx.packet_batch(2);
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ));
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+    ));
+    let batch_ptr = batch.packets.as_ptr();
+    let batch_capacity = batch.packets.capacity();
+
+    tx.send_packet_batch(batch)
+        .expect("pooled bulk batch send should succeed");
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+
+    let reused = tx.packet_batch(2);
+    assert_eq!(reused.packets.len(), 0);
+    assert_eq!(reused.packets.capacity(), batch_capacity);
+    assert_eq!(reused.packets.as_ptr(), batch_ptr);
+}
+
+#[test]
+fn packet_channel_does_not_retain_oversized_batch_container() {
+    let pool = PacketBatchPool::new();
+    {
+        let mut batch = pool.take(PACKET_BATCH_MAX_RETAINED_CAPACITY + 1);
+        batch.push(ReceivedPacket::new(
+            TransportId::new(1),
+            TransportAddr::from_string("test"),
+            vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+        ));
+    }
+
+    assert_eq!(
+        pool.cached_len(),
+        0,
+        "oversized receive batches should not stay pinned in the hot-path pool"
+    );
+}
+
+#[test]
+fn packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped() {
+    let (tx, _rx) = packet_channel(1);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ))
+    .expect("first bulk packet should fill bounded bulk lane");
+
+    let mut buffer = tx.recv_buffer(1600);
+    buffer.clear();
+    buffer.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xbb);
+    let original_ptr = buffer.as_ptr();
+    let mut batch = tx.packet_batch(1);
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        tx.packet_buffer(buffer),
+    ));
+
+    tx.send_packet_batch(batch)
+        .expect("full bulk lane should shed pooled overload without closing sender");
+
+    assert_eq!(
+        tx.buffer_pool.cached_len(),
+        1,
+        "dropped receive-owned bulk packet should return its byte buffer"
+    );
+    let reused = tx.recv_buffer(1600);
+    assert_eq!(
+        reused.as_ptr(),
+        original_ptr,
+        "next receive refill should reuse the dropped packet buffer"
+    );
+}
+
 #[test]
 fn packet_channel_keeps_single_lane_batches_grouped() {
     let (tx, mut rx) = packet_channel(10);
@@ -222,10 +309,10 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
         }
     );
 
-    let item = PacketQueueItem::Batch(vec![
+    let item = PacketQueueItem::Batch(PacketBatch::from(vec![
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x11; 32]),
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0x22; 48]),
-    ]);
+    ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Priority),
         PacketQueueDequeueCounts {
@@ -235,7 +322,7 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
         }
     );
 
-    let item = PacketQueueItem::Batch(vec![
+    let item = PacketQueueItem::Batch(PacketBatch::from(vec![
         ReceivedPacket::new(
             TransportId::new(1),
             addr.clone(),
@@ -246,7 +333,7 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
             addr,
             vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
         ),
-    ]);
+    ]));
     assert_eq!(
         item.dequeue_counts(PacketLane::Bulk),
         PacketQueueDequeueCounts {
@@ -261,11 +348,10 @@ fn packet_channel_dequeue_counts_preserve_item_and_lane_counts() {
 fn pending_packets_apply_rx_loop_owned_stamp_as_packets_are_taken() {
     let addr = TransportAddr::from_string("test");
     let rx_loop_owned_at = Some(crate::perf_profile::test_stamp());
-    let packets = vec![
+    let packets = PacketBatch::from(vec![
         ReceivedPacket::new(TransportId::new(1), addr.clone(), vec![0xaa; 32]),
         ReceivedPacket::new(TransportId::new(1), addr, vec![0xbb; 48]),
-    ]
-    .into_iter();
+    ]);
     let mut pending = Some(PendingPackets::new(packets, rx_loop_owned_at));
 
     let first = PacketRx::take_pending(&mut pending).expect("first pending packet");
@@ -360,7 +446,6 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
     .expect("priority batch send should succeed");
 
     assert_eq!(rx.priority_ready_packets(), 3);
-    assert_eq!(rx.ready_packets(), 3);
     assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
     assert_eq!(
         tx.priority_queued_packets(),
@@ -372,54 +457,10 @@ fn packet_rx_priority_ready_includes_pending_batch_tail() {
         2,
         "rx-loop scheduling must still see the priority batch tail"
     );
-    assert_eq!(
-        rx.ready_packets(),
-        2,
-        "rx-loop non-packet drains must also see the owned priority batch tail"
-    );
     assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
     assert_eq!(rx.priority_ready_packets(), 1);
-    assert_eq!(rx.ready_packets(), 1);
     assert_eq!(rx.try_recv().unwrap().data[0], 0x33);
     assert_eq!(rx.priority_ready_packets(), 0);
-    assert_eq!(rx.ready_packets(), 0);
-}
-
-#[test]
-fn packet_rx_ready_includes_bulk_pending_batch_tail() {
-    let (tx, mut rx) = packet_channel(10);
-    let addr = TransportAddr::from_string("test");
-
-    tx.send_batch(vec![
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0x11; PRIORITY_PACKET_MAX_LEN + 1],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr.clone(),
-            vec![0x22; PRIORITY_PACKET_MAX_LEN + 2],
-        ),
-        ReceivedPacket::new(
-            TransportId::new(1),
-            addr,
-            vec![0x33; PRIORITY_PACKET_MAX_LEN + 3],
-        ),
-    ])
-    .expect("bulk batch send should succeed");
-
-    assert_eq!(rx.ready_packets(), 3);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x11);
-    assert_eq!(
-        rx.ready_packets(),
-        2,
-        "non-packet drain preemption must see the owned bulk batch tail"
-    );
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x22);
-    assert_eq!(rx.ready_packets(), 1);
-    assert_eq!(rx.try_recv().unwrap().data[0], 0x33);
-    assert_eq!(rx.ready_packets(), 0);
 }
 
 #[tokio::test]
@@ -559,6 +600,125 @@ async fn packet_channel_bounded_bulk_batch_drop_counts_packets_not_items() {
     assert_eq!(tx.bulk_queued_packets(), 0);
     assert_eq!(rx.recv().await.unwrap().data[0], 0xab);
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[tokio::test]
+async fn packet_channel_bounded_bulk_batch_admits_prefix_before_dropping_tail() {
+    let (tx, mut rx) = packet_channel(3);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ))
+    .expect("first bulk packet should consume one bulk packet credit");
+    assert_eq!(tx.queued_packets(), 1);
+    assert_eq!(tx.bulk_queued_packets(), 1);
+
+    tx.send_batch(vec![
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbb; PRIORITY_PACKET_MAX_LEN + 2],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbc; PRIORITY_PACKET_MAX_LEN + 3],
+        ),
+        ReceivedPacket::new(
+            TransportId::new(1),
+            addr.clone(),
+            vec![0xbd; PRIORITY_PACKET_MAX_LEN + 4],
+        ),
+    ])
+    .expect("partial bulk admission should shed only overflow tail");
+    assert_eq!(
+        tx.queued_packets(),
+        3,
+        "only the admitted prefix should count as channel-owned"
+    );
+    assert_eq!(
+        tx.bulk_queued_packets(),
+        3,
+        "bulk packet credits should be capped at channel capacity"
+    );
+    assert_eq!(
+        rx.bulk.len(),
+        2,
+        "the admitted prefix should stay grouped behind the already queued packet"
+    );
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        vec![0x11; 32],
+    ))
+    .expect("priority packets should still enter their reserve lane");
+    assert_eq!(tx.priority_queued_packets(), 1);
+    assert_eq!(tx.bulk_queued_packets(), 3);
+
+    assert_eq!(rx.recv().await.unwrap().data[0], 0x11);
+    assert_eq!(tx.priority_queued_packets(), 0);
+    assert_eq!(tx.bulk_queued_packets(), 3);
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xaa);
+    assert_eq!(tx.bulk_queued_packets(), 2);
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xbb);
+    assert_eq!(
+        tx.bulk_queued_packets(),
+        0,
+        "dequeued bulk batch should release all admitted prefix credits"
+    );
+    assert_eq!(rx.recv().await.unwrap().data[0], 0xbc);
+    assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[test]
+fn packet_channel_partial_bulk_drop_recycles_overflow_packet_buffers() {
+    let (tx, _rx) = packet_channel(2);
+    let addr = TransportAddr::from_string("test");
+
+    tx.send(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        vec![0xaa; PRIORITY_PACKET_MAX_LEN + 1],
+    ))
+    .expect("first bulk packet should leave one credit free");
+
+    let mut admitted = tx.recv_buffer(1600);
+    admitted.clear();
+    admitted.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xbb);
+    let mut dropped = tx.recv_buffer(1600);
+    dropped.clear();
+    dropped.resize(PRIORITY_PACKET_MAX_LEN + 3, 0xbc);
+    let dropped_ptr = dropped.as_ptr();
+
+    let mut batch = tx.packet_batch(2);
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr.clone(),
+        tx.packet_buffer(admitted),
+    ));
+    batch.push(ReceivedPacket::new(
+        TransportId::new(1),
+        addr,
+        tx.packet_buffer(dropped),
+    ));
+
+    tx.send_packet_batch(batch)
+        .expect("partial bulk admission should not close sender");
+    assert_eq!(
+        tx.buffer_pool.cached_len(),
+        1,
+        "overflow tail packet should return its receive buffer immediately"
+    );
+    let reused = tx.recv_buffer(1600);
+    assert_eq!(
+        reused.as_ptr(),
+        dropped_ptr,
+        "next receive refill should reuse the dropped tail buffer"
+    );
 }
 
 #[test]

@@ -16,10 +16,15 @@
 //! path delivers the very first packets of a session (handshakes).
 //! Once the peer's session is established, Linux/macOS install the connected
 //! socket; from that moment on the kernel routes that peer's traffic
-//! to it (most-specific 5-tuple match wins under `SO_REUSEPORT`), and
-//! the drain thread feeds the existing `packet_tx` just like the
-//! wildcard listen socket does. The rx_loop dispatch sees no
-//! difference.
+//! to it (most-specific 5-tuple match wins under `SO_REUSEPORT`).
+//! Matching packets for the activated current epoch go straight to the
+//! decrypt-worker batcher. Handshake, stale-index, wrong-transport, and
+//! rekey-epoch packets return untouched to `packet_tx`, so rx_loop remains
+//! the canonical owner for session lookup and pending-session promotion. The
+//! strict normal-receive A/B kept UDP loss at zero but repeatedly showed
+//! packet-channel pressure; keeping established connected packets on the
+//! worker-owned path avoids a second bulk pressure route for the same FSP
+//! state while preserving the FIPS wire protocol.
 //!
 //! macOS originally defaulted to the wildcard UDP socket because early
 //! Darwin tests found liveness regressions under load. Later testing
@@ -230,8 +235,8 @@ impl Node {
             let local = udp
                 .local_addr()
                 .ok_or_else(|| "udp transport not started".to_string())?;
-            let recv_buf = udp.recv_buf_size();
-            let send_buf = udp.send_buf_size();
+            let recv_buf = connected_udp_recv_buf(udp.recv_buf_size());
+            let send_buf = connected_udp_send_buf(udp.send_buf_size());
             let tx = udp.clone_packet_tx();
             (peer_sa, local, recv_buf, send_buf, tx)
         };
@@ -261,6 +266,10 @@ impl Node {
         // Install on the peer through the lifecycle owner, which re-checks
         // eligibility so stale activation races cannot replace a valid pair.
         let peer = self.peer_display_name(node_addr);
+        let requested_recv_buf = socket.requested_recv_buf();
+        let actual_recv_buf = socket.actual_recv_buf();
+        let requested_send_buf = socket.requested_send_buf();
+        let actual_send_buf = socket.actual_send_buf();
         match self
             .peers
             .install_connected_udp_if_eligible(node_addr, socket, drain)
@@ -272,6 +281,10 @@ impl Node {
                 info!(
                     peer = %peer,
                     peer_addr = %peer_socket_addr,
+                    requested_recv_buf,
+                    actual_recv_buf,
+                    requested_send_buf,
+                    actual_send_buf,
                     "connected UDP socket installed"
                 );
                 Ok(true)
@@ -302,6 +315,7 @@ impl Node {
         let workers = self.decrypt_workers.as_ref()?.clone();
         let peer = self.peers.get(node_addr)?;
         let our_index = peer.our_index()?;
+        let expected_k_bit = peer.current_k_bit();
         let session_key =
             crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
         if !self.sessions.is_worker_registered(&session_key) {
@@ -309,6 +323,7 @@ impl Node {
         }
         Some(Arc::new(ConnectedUdpDecryptFastPath::new(
             session_key,
+            expected_k_bit,
             *self.node_addr(),
             workers,
             self.decrypt_fallback_tx.clone(),
@@ -336,6 +351,11 @@ fn connected_udp_enabled(config_enabled: bool) -> bool {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn env_flag(name: &str) -> Option<bool> {
     let value = std::env::var(name).ok()?;
+    parse_env_flag(&value)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn parse_env_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
@@ -357,6 +377,31 @@ fn connected_udp_peer_cap(config_max_peers: usize) -> usize {
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(config_max_peers)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_recv_buf(config_recv_buf: usize) -> usize {
+    connected_udp_buf_override("FIPS_CONNECTED_UDP_RECV_BUF_BYTES").unwrap_or(config_recv_buf)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_send_buf(config_send_buf: usize) -> usize {
+    connected_udp_buf_override("FIPS_CONNECTED_UDP_SEND_BUF_BYTES").unwrap_or(config_send_buf)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_buf_override(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| parse_connected_udp_buf_override(&value))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn parse_connected_udp_buf_override(raw: &str) -> Option<usize> {
+    raw.trim()
+        .parse::<usize>()
+        .ok()
+        .map(|value| value.clamp(64 * 1024, 512 * 1024 * 1024))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -425,6 +470,17 @@ fn connected_udp_fd_budget_skipped_candidates(
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_udp_decrypt_fast_path_env_flag_parser_is_explicit() {
+        assert_eq!(parse_env_flag("1"), Some(true));
+        assert_eq!(parse_env_flag("true"), Some(true));
+        assert_eq!(parse_env_flag("ON"), Some(true));
+        assert_eq!(parse_env_flag("0"), Some(false));
+        assert_eq!(parse_env_flag("false"), Some(false));
+        assert_eq!(parse_env_flag("off"), Some(false));
+        assert_eq!(parse_env_flag("maybe"), None);
+    }
 
     #[test]
     fn fd_budget_reserves_headroom_for_other_sockets() {
@@ -496,6 +552,21 @@ mod tests {
             connected_udp_fd_budget_skipped_candidates(0, Some(64), 128, 11),
             11,
             "reserve above the soft limit leaves no connected-UDP fd budget"
+        );
+    }
+
+    #[test]
+    fn connected_udp_buffer_override_parser_is_bounded() {
+        assert_eq!(parse_connected_udp_buf_override(""), None);
+        assert_eq!(parse_connected_udp_buf_override("not-a-number"), None);
+        assert_eq!(parse_connected_udp_buf_override("1"), Some(64 * 1024));
+        assert_eq!(
+            parse_connected_udp_buf_override("67108864"),
+            Some(64 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_connected_udp_buf_override("9999999999"),
+            Some(512 * 1024 * 1024)
         );
     }
 }

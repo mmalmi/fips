@@ -50,8 +50,8 @@ impl Node {
 
     /// Disconnect a peer via the control API.
     ///
-    /// Removes the peer and suppresses auto-reconnect.
-    pub(crate) fn api_disconnect(&mut self, npub: &str) -> Result<serde_json::Value, String> {
+    /// Notifies the peer, removes it locally, and suppresses auto-reconnect.
+    pub(crate) async fn api_disconnect(&mut self, npub: &str) -> Result<serde_json::Value, String> {
         let peer_identity =
             PeerIdentity::from_npub(npub).map_err(|e| format!("invalid npub '{npub}': {e}"))?;
         let node_addr = *peer_identity.node_addr();
@@ -59,6 +59,9 @@ impl Node {
         if !self.peers.contains_key(&node_addr) {
             return Err(format!("peer not found: {npub}"));
         }
+
+        self.send_disconnect_to_peer(&node_addr, DisconnectReason::ConfigurationChange)
+            .await;
 
         // Remove the peer (full cleanup: sessions, indices, links, tree, bloom)
         self.remove_active_peer(&node_addr);

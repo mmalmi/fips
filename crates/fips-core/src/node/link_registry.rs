@@ -167,17 +167,17 @@ impl TransportDropTracker {
         &mut self,
         transport_id: TransportId,
         recv_drops: Option<u64>,
-    ) -> bool {
+    ) -> Option<u64> {
         let state = self.states.entry(transport_id).or_default();
         let Some(current) = recv_drops else {
-            return false;
+            return None;
         };
 
-        let new_drops = current > state.prev_drops;
-        let rising_edge = new_drops && !state.dropping;
+        let dropped = current.saturating_sub(state.prev_drops);
+        let new_drops = dropped > 0;
         state.dropping = new_drops;
         state.prev_drops = current;
-        rising_edge
+        new_drops.then_some(dropped)
     }
 
     pub(in crate::node) fn remove(&mut self, transport_id: &TransportId) {

@@ -34,9 +34,7 @@ DEFAULT_FILTERS=(
   queued_fmp_send_job_owns_clamped_scheduling_weight
   selected_send_target_key_drives_dispatch_and_admission_without_endpoint_flow
   endpoint_flow_key_splits_admission_within_one_send_target
-  linux_bulk_container_sender_defaults_on_with_explicit_opt_out
   selected_send_batch_owns_target_fifo_and_drop_policy
-  uniform_target_send_batch_splits_only_on_backpressure_policy
   linux_send_batch_attempt_owns_cursor_and_backpressure_policy
   encrypt_worker_dispatch_preserves_single_flow_worker_and_fifo_order
   fair_dispatch_does_not_block_rx_loop_on_full_bulk_queue
@@ -147,7 +145,6 @@ docker run --rm \
   -w /workspace \
   "$IMAGE" \
   bash -euo pipefail -c '
-    export PATH="/usr/local/cargo/bin:$PATH"
     export DEBIAN_FRONTEND=noninteractive
     if ! dpkg -s libdbus-1-dev libclang-dev pkg-config >/dev/null 2>&1; then
       apt-get update >/dev/null

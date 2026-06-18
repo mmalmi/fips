@@ -20,7 +20,6 @@ fn send_one_with_backpressure(
     dest: &SocketAddr,
     data: &[u8],
     backpressure: &mut SendBackpressurePacer,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
 ) -> std::io::Result<()> {
     loop {
@@ -36,11 +35,7 @@ fn send_one_with_backpressure(
                 return Ok(());
             }
             Err(err) if is_send_backpressure(&err) => {
-                match send_backpressure_decision_for_lane(
-                    backpressure.pause(&err),
-                    drop_on_backpressure,
-                    bulk_endpoint_data,
-                ) {
+                match send_backpressure_decision(backpressure.pause(&err), drop_on_backpressure) {
                     SendBackpressureDecision::DropCurrentBulk => {
                         record_udp_send_backpressure_drop(&err);
                         return Err(err);

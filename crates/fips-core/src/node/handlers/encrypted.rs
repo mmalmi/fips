@@ -210,6 +210,11 @@ impl Node {
                 if did_flip {
                     self.ensure_current_session_index_registered(&node_addr, "peer K-bit flip");
                     self.register_decrypt_worker_session(&node_addr);
+                    // The connected-UDP fast path snapshots session key + K-bit
+                    // at activation. Refresh it after cutover so normal traffic
+                    // returns to the direct worker path instead of permanent
+                    // rx_loop misses.
+                    self.clear_connected_udp_for_peer(&node_addr);
                 }
                 let Some(source_peer) = self.peers.get(&node_addr).map(|peer| *peer.identity())
                 else {
@@ -512,7 +517,7 @@ impl Node {
         let fmp_replay = fmp_session.recv_replay_snapshot_owned();
         let source_peer = *peer.identity();
         Some(crate::node::decrypt_worker::OwnedSessionState::new(
-            fmp_cipher.into(),
+            fmp_cipher,
             fmp_replay,
             source_peer,
         ))

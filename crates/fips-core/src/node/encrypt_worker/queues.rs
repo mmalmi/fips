@@ -24,7 +24,7 @@ impl FmpWorkerBatchStats {
         self.priority_packets.saturating_add(self.bulk_packets)
     }
 
-    #[cfg(test)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn from_batch(batch: &[QueuedFmpSendJob]) -> Self {
         let mut stats = Self::default();
         for job in batch {
@@ -83,10 +83,6 @@ struct QueuedFmpSendJob {
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
     macos_seq: u64,
-    #[cfg(target_os = "linux")]
-    linux_container: Option<Arc<LinuxBulkSendContainer>>,
-    #[cfg(target_os = "linux")]
-    linux_container_slot: usize,
 }
 
 impl QueuedFmpSendJob {
@@ -95,8 +91,7 @@ impl QueuedFmpSendJob {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         let target_key = job.send_target_key();
         #[cfg(not(target_os = "macos"))]
-        let dispatch_key =
-            SendDispatchKey::new(target_key, job.endpoint_flow_dispatch_key);
+        let dispatch_key = SendDispatchKey::new(target_key, job.endpoint_flow_dispatch_key);
         #[cfg(not(target_os = "macos"))]
         let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
         Self {
@@ -113,10 +108,6 @@ impl QueuedFmpSendJob {
             macos_flow: None,
             #[cfg(target_os = "macos")]
             macos_seq: 0,
-            #[cfg(target_os = "linux")]
-            linux_container: None,
-            #[cfg(target_os = "linux")]
-            linux_container_slot: 0,
         }
     }
 
@@ -132,6 +123,16 @@ impl QueuedFmpSendJob {
             macos_flow: Some(macos_flow),
             macos_seq,
         }
+    }
+
+    fn complete_sequenced_skip(self) {
+        #[cfg(target_os = "macos")]
+        if let Some(flow) = self.macos_flow {
+            flow.complete_many(vec![(self.macos_seq, MacSendItem::Skip)]);
+            return;
+        }
+
+        drop(self);
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -154,13 +155,8 @@ impl QueuedFmpSendJob {
         self.lane
     }
 
-    fn drop_on_backpressure(&self) -> bool {
-        self.job.drop_on_backpressure
-    }
-
-    #[cfg(target_os = "macos")]
-    fn bulk_endpoint_data(&self) -> bool {
-        self.job.bulk_endpoint_data
+    fn endpoint_flow_keyed(&self) -> bool {
+        self.job.endpoint_flow_dispatch_key.is_some()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -192,10 +188,10 @@ impl QueuedFmpSendJob {
 /// the receiving TCP layer reacts to with dup-ACK-triggered
 /// fast-retransmits — measured in bench: 2 workers on a single-flow
 /// TCP run dropped throughput 1308 → 1069 Mbps and pushed Retr count
-/// from 0 to 8058. Hashing on the exact kernel send target keeps all
-/// packets for one flow on one worker, preserving the FIFO order TCP
-/// expects. Multi-peer / multi-flow benches still get the parallelism
-/// since different send targets hash to different workers.
+/// from 0 to 8058. Packets without an inner endpoint-flow key still hash
+/// on the exact kernel send target. Endpoint-data packets may hash on
+/// `(send target, inner flow)` so independent TCP/UDP streams can use
+/// different workers while one stream remains FIFO.
 ///
 /// macOS defaults to the same hash-by-send-target shape unless explicitly
 /// opted into the ordered sender. Live Wi-Fi sender tests showed the
@@ -216,14 +212,12 @@ const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
 const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
-// Keep the fair-admission bypass at the old one-syscall turn even when Linux
-// drains a wider worker batch; this preserves pressure signalling for bulk.
-#[cfg(not(target_os = "macos"))]
-const WORKER_FAST_LANE_BATCH_CAP: usize = 32;
-// Docker single-target TCP benches showed a 64-packet Linux drain lifts the
-// default hash-by-target path without the ordered-send experiment's collapse.
+// Keep the Linux worker turn close to the packet-mover receive width; larger
+// turns amortize sends but make tail service less predictable under pressure.
 #[cfg(target_os = "linux")]
-const DEFAULT_WORKER_BATCH_SIZE: usize = 64;
+const DEFAULT_WORKER_BATCH_SIZE: usize = 32;
+#[cfg(target_os = "linux")]
+const DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE: usize = 32;
 #[cfg(target_os = "linux")]
 const LINUX_UDP_SEND_BATCH_MAX: usize = 64;
 #[cfg(target_os = "linux")]
@@ -286,7 +280,9 @@ fn worker_fast_lane_cap_for_batch(
     batch_size: usize,
 ) -> usize {
     batch_size
-        .min(WORKER_FAST_LANE_BATCH_CAP)
+        // Larger experimental drain batches should not also widen the hidden
+        // admission bypass before fair per-flow backpressure can engage.
+        .min(DEFAULT_WORKER_BATCH_SIZE)
         .min(per_flow_cap.max(1))
         .min(total_cap.max(1))
         .max(1)
@@ -294,12 +290,14 @@ fn worker_fast_lane_cap_for_batch(
 
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 fn parse_worker_batch_size(raw: Option<&str>, default: usize) -> usize {
+    let max_batch = default.max(1);
     raw.and_then(|raw| raw.trim().parse::<usize>().ok())
         .unwrap_or(default)
-        // Linux UDP submission in this module is capped at 64 iovecs.
-        // Keep the worker drain cap aligned so a same-target group never asks
-        // the GSO path to submit a prefix while accounting the whole group.
-        .clamp(1, 64)
+        // Linux UDP submission can carry wider GSO batches, but no-direct
+        // clean/stressed runs repeatedly showed wider worker turns amplify
+        // TCP retransmits. Keep explicit env tuning inside the proven default
+        // turn until the sender shape changes.
+        .clamp(1, max_batch)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -390,12 +388,24 @@ fn send_dispatch_fast_hash(target: &SendDispatchKey) -> u64 {
         return send_target_fast_hash(&target.target);
     }
 
-    let mut hash = send_target_fast_hash(&target.target);
-    if let Some(endpoint_flow) = target.endpoint_flow {
-        hash ^= endpoint_flow.wrapping_add(0x517c_c1b7_2722_0a95);
-        hash = hash.rotate_left(23).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-    hash
+    let target_hash = send_target_fast_hash(&target.target);
+    let endpoint_flow = target.endpoint_flow.unwrap_or_default();
+    send_dispatch_avalanche(
+        target_hash
+            ^ endpoint_flow
+                .rotate_left(17)
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ 0x517c_c1b7_2722_0a95,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_dispatch_avalanche(mut hash: u64) -> u64 {
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^ (hash >> 33)
 }
 
 #[cfg(target_os = "macos")]
@@ -452,18 +462,12 @@ impl MacWorkerQueueState {
 #[cfg(target_os = "macos")]
 enum MacWorkerTryPushError {
     Full(Box<QueuedFmpSendJob>),
-    Closed(Box<QueuedFmpSendJob>),
+    Closed,
 }
 
 #[cfg(target_os = "macos")]
-struct MacWorkerPushError(Box<QueuedFmpSendJob>);
-
-#[cfg(target_os = "macos")]
-impl std::fmt::Debug for MacWorkerPushError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MacWorkerPushError")
-    }
-}
+#[derive(Debug)]
+struct MacWorkerPushError;
 
 #[cfg(target_os = "macos")]
 fn mac_worker_channel(cap: usize) -> (MacWorkerSender, MacWorkerReceiver) {
@@ -495,7 +499,8 @@ impl MacWorkerSender {
             .lock()
             .expect("encrypt worker queue poisoned");
         if state.closed {
-            return Err(MacWorkerTryPushError::Closed(Box::new(job)));
+            job.complete_sequenced_skip();
+            return Err(MacWorkerTryPushError::Closed);
         }
         let cap = match job.queue_lane() {
             EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
@@ -522,7 +527,8 @@ impl MacWorkerSender {
             .expect("encrypt worker queue poisoned");
         loop {
             if state.closed {
-                return Err(MacWorkerPushError(Box::new(job)));
+                job.complete_sequenced_skip();
+                return Err(MacWorkerPushError);
             }
             let cap = match job.queue_lane() {
                 EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
@@ -675,7 +681,7 @@ enum FairReserve {
 #[cfg(not(target_os = "macos"))]
 enum FairWorkerTryPushError {
     Full(Box<QueuedFmpSendJob>),
-    Closed(Box<QueuedFmpSendJob>),
+    Closed,
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -683,13 +689,13 @@ impl std::fmt::Debug for FairWorkerTryPushError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Full(_) => f.write_str("Full"),
-            Self::Closed(_) => f.write_str("Closed"),
+            Self::Closed => f.write_str("Closed"),
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-struct FairWorkerPushError(Box<QueuedFmpSendJob>);
+struct FairWorkerPushError;
 
 #[cfg(not(target_os = "macos"))]
 fn fair_worker_channel(
@@ -745,17 +751,14 @@ fn fair_worker_channel_with_priority_cap(
 
 #[cfg(not(target_os = "macos"))]
 impl FairWorkerSender {
-    fn queued_len(&self) -> usize {
-        self.priority_tx.len().saturating_add(self.bulk_tx.len())
-    }
-
     fn try_push(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerTryPushError> {
         if job.queue_lane() == EncryptWorkerLane::Priority {
             return match self.priority_tx.try_send(job) {
                 Ok(()) => Ok(()),
                 Err(TrySendError::Full(job)) => Err(FairWorkerTryPushError::Full(Box::new(job))),
                 Err(TrySendError::Disconnected(job)) => {
-                    Err(FairWorkerTryPushError::Closed(Box::new(job)))
+                    job.complete_sequenced_skip();
+                    Err(FairWorkerTryPushError::Closed)
                 }
             };
         }
@@ -765,7 +768,8 @@ impl FairWorkerSender {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(job)) => job,
                 Err(TrySendError::Disconnected(job)) => {
-                    return Err(FairWorkerTryPushError::Closed(Box::new(job)));
+                    job.complete_sequenced_skip();
+                    return Err(FairWorkerTryPushError::Closed);
                 }
             }
         } else {
@@ -790,19 +794,24 @@ impl FairWorkerSender {
                         if let Some(reservation) = job.take_fair_reservation() {
                             self.admission.release(reservation);
                         }
-                        Err(FairWorkerTryPushError::Closed(Box::new(job)))
+                        job.complete_sequenced_skip();
+                        Err(FairWorkerTryPushError::Closed)
                     }
                 }
             }
             FairReserve::Full => Err(FairWorkerTryPushError::Full(Box::new(job))),
-            FairReserve::Closed => Err(FairWorkerTryPushError::Closed(Box::new(job))),
+            FairReserve::Closed => {
+                job.complete_sequenced_skip();
+                Err(FairWorkerTryPushError::Closed)
+            }
         }
     }
 
     fn push_blocking(&self, job: QueuedFmpSendJob) -> Result<(), FairWorkerPushError> {
         if job.queue_lane() == EncryptWorkerLane::Priority {
             if let Err(SendError(job)) = self.priority_tx.send(job) {
-                return Err(FairWorkerPushError(Box::new(job)));
+                job.complete_sequenced_skip();
+                return Err(FairWorkerPushError);
             }
             return Ok(());
         }
@@ -810,7 +819,10 @@ impl FairWorkerSender {
         let weight = job.scheduling_weight();
         let reservation = match self.admission.reserve_blocking(key, weight) {
             Ok(reservation) => reservation,
-            Err(()) => return Err(FairWorkerPushError(Box::new(job))),
+            Err(err) => {
+                job.complete_sequenced_skip();
+                return Err(err);
+            }
         };
         let mut job = job;
         job.mark_fair_reserved(reservation);
@@ -818,7 +830,8 @@ impl FairWorkerSender {
             if let Some(reservation) = job.take_fair_reservation() {
                 self.admission.release(reservation);
             }
-            return Err(FairWorkerPushError(Box::new(job)));
+            job.complete_sequenced_skip();
+            return Err(FairWorkerPushError);
         }
         Ok(())
     }
@@ -846,14 +859,14 @@ impl FairAdmission {
         &self,
         key: SendDispatchKey,
         weight: usize,
-    ) -> Result<FairAdmissionReservation, ()> {
+    ) -> Result<FairAdmissionReservation, FairWorkerPushError> {
         let mut state = self
             .state
             .lock()
             .expect("encrypt worker fair admission poisoned");
         loop {
             if state.closed {
-                return Err(());
+                return Err(FairWorkerPushError);
             }
             if Self::reserve_locked(&mut state, self.total_cap, self.per_flow_cap, key, weight) {
                 self.reserved_len

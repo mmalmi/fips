@@ -201,7 +201,7 @@ async fn recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent::Data {
             source_peer: local,
-            payload: b"fourth".to_vec(),
+            payload: b"fourth".to_vec().into(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("inject follow-on message");
@@ -267,7 +267,7 @@ async fn recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
         .inbound_endpoint_tx
         .send(NodeEndpointEvent::Data {
             source_peer: local,
-            payload: vec![0x11; 32],
+            payload: vec![0x11; 32].into(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("inject priority follow-on");
@@ -381,7 +381,7 @@ async fn blocking_recv_batch_into_priority_overtakes_pending_bulk_batch_tail() {
         priority_tx
             .send(NodeEndpointEvent::Data {
                 source_peer: local,
-                payload: vec![0x11; 32],
+                payload: vec![0x11; 32].into(),
                 queued_at: crate::perf_profile::stamp(),
             })
             .expect("inject priority follow-on");
@@ -566,7 +566,7 @@ async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reord
         .inbound_endpoint_tx
         .send(NodeEndpointEvent::Data {
             source_peer: local,
-            payload: b"fourth".to_vec(),
+            payload: b"fourth".to_vec().into(),
             queued_at: crate::perf_profile::stamp(),
         })
         .expect("inject follow-on message");

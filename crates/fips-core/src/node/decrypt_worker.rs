@@ -7,10 +7,11 @@
 //! state is keyed by the end-to-end source peer so path drift does not split
 //! replay ownership.
 //!
-//! Dispatch is **deterministic by session key**: rx_loop computes
-//! `worker_idx = hash(session_key) % N` and routes both
-//! `RegisterSession` control messages and per-packet `Job` messages
-//! through the same hash, so a session always lands on the same shard.
+//! Dispatch is **deterministic by registered owner**: before a session is
+//! registered the rx_loop falls back to the session-key hash; once
+//! `RegisterSession` is queued, per-packet jobs and unregisters use that
+//! explicit owner. An opt-in source-affine owner mode can co-locate direct FMP
+//! and local FSP ownership for experiments without splitting replay ownership.
 //!
 //! Worker messages travel through two bounded per-worker lanes:
 //!
@@ -33,6 +34,13 @@
 //! external packet sink once that commit is accepted. Transit-delivered data
 //! still returns to rx_loop so reverse-route learning happens before local
 //! delivery.
+//!
+//! This is the FIPS equivalent of WireGuard-go's packet mover shape: packets
+//! are grouped by the peer/session owner, FSP bulk AEAD opening may happen on
+//! opener workers, and every FSP completion returns through the source-peer
+//! ordered owner before replay acceptance or TUN/endpoint delivery. Returned
+//! open-worker completions are observable pressure events, not alternate replay
+//! owners.
 
 // **Unix only at the call sites.** On Windows nothing constructs an
 // `OwnedSessionState` or spawns the pool (see `lifecycle.rs`), so
@@ -41,7 +49,6 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
 include!("decrypt_worker/core.rs");
-include!("decrypt_worker/events.rs");
 include!("decrypt_worker/fallback_channels.rs");
 include!("decrypt_worker/queue.rs");
 include!("decrypt_worker/pool.rs");

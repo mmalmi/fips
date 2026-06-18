@@ -55,6 +55,66 @@ async fn fmp_rekey_responder_pending_session_does_not_time_cutover() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn fmp_rekey_initiator_cutover_refreshes_connected_udp_fast_path() {
+    let mut node = make_node();
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+    let transport_id = TransportId::new(1);
+    let link_id = LinkId::new(1);
+    let remote_addr = TransportAddr::from_string("127.0.0.1:5000");
+    let old_our_index = SessionIndex::new(10);
+    let old_their_index = SessionIndex::new(20);
+    let pending_our_index = SessionIndex::new(11);
+    let pending_their_index = SessionIndex::new(21);
+
+    let current_session = make_test_fmp_session(&node.identity, &peer_full, [0x01; 8], [0x02; 8]);
+    let pending_session = make_test_fmp_session(&node.identity, &peer_full, [0x03; 8], [0x04; 8]);
+    let mut active_peer = ActivePeer::with_session(
+        peer_identity,
+        link_id,
+        1_000,
+        current_session,
+        old_our_index,
+        old_their_index,
+        transport_id,
+        remote_addr,
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x02; 8]),
+    );
+    let k_before = active_peer.current_k_bit();
+    active_peer.set_pending_session(
+        pending_session,
+        pending_our_index,
+        pending_their_index,
+        true,
+    );
+    let (socket, drain) = make_test_connected_udp_pair(transport_id);
+    active_peer.set_connected_udp(socket, drain);
+
+    node.peers.insert(peer_node_addr, active_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.peers
+        .insert_session_index((transport_id, pending_our_index.as_u32()), peer_node_addr);
+
+    tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+    node.check_rekey().await;
+
+    let active_peer = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active_peer.our_index(), Some(pending_our_index));
+    assert_eq!(active_peer.their_index(), Some(pending_their_index));
+    assert_eq!(active_peer.current_k_bit(), !k_before);
+    assert!(
+        active_peer.connected_udp().is_none(),
+        "connected UDP must refresh after cutover because its fast path snapshots the old session key and K-bit"
+    );
+}
+
 #[tokio::test]
 async fn fmp_kbit_flip_requires_pending_authentication_before_promotion() {
     let mut node = make_node();

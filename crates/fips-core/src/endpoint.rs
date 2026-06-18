@@ -6,6 +6,8 @@
 use crate::config::{EthernetConfig, NostrDiscoveryPolicy, TransportInstances, UdpConfig};
 #[cfg(test)]
 use crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN;
+#[cfg(unix)]
+use crate::node::EndpointBulkSendRuntime;
 use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
     NodeEndpointCommand, NodeEndpointEvent,
@@ -19,16 +21,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-// Linux TUN/vnet send drains can now deliver 128-packet bulk batches; keep
-// macOS at a shorter cap: its send path has no GSO/sendmmsg-style bulk mover,
-// so one rx-loop endpoint command must stay small enough to yield quickly to
-// inbound transport packets.
-#[cfg(target_os = "linux")]
-pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 128;
-#[cfg(target_os = "macos")]
-pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 16;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 64;
+const ENDPOINT_SEND_BATCH_COMMAND_MAX: usize = 128;
 const ENDPOINT_RECV_BATCH_MAX: usize = 128;
 
 mod builder;
@@ -52,34 +45,16 @@ pub use status::{FipsEndpointPeer, FipsEndpointRelayStatus};
 pub struct FipsEndpointPayload {
     bytes: Vec<u8>,
     class: EndpointPayloadClass,
-    direct_fmp_endpoint_allowed: bool,
 }
 
 impl FipsEndpointPayload {
     pub fn new(bytes: Vec<u8>) -> Self {
         let class = crate::node::classify_endpoint_payload(&bytes);
-        Self {
-            bytes,
-            class,
-            direct_fmp_endpoint_allowed: false,
-        }
+        Self { bytes, class }
     }
 
     pub fn from_classified(bytes: Vec<u8>, class: EndpointPayloadClass) -> Self {
-        Self {
-            bytes,
-            class,
-            direct_fmp_endpoint_allowed: false,
-        }
-    }
-
-    /// Allow this payload to use direct-FMP endpoint data when the route is direct.
-    ///
-    /// Embedders should set this only after they know the remote endpoint can
-    /// receive `DirectEndpointData`; the default remains the compatible FSP path.
-    pub fn with_direct_fmp_endpoint_allowed(mut self) -> Self {
-        self.direct_fmp_endpoint_allowed = true;
-        self
+        Self { bytes, class }
     }
 
     pub fn class(&self) -> EndpointPayloadClass {
@@ -105,11 +80,7 @@ impl FipsEndpointPayload {
 
 impl From<FipsEndpointPayload> for EndpointDataPayload {
     fn from(payload: FipsEndpointPayload) -> Self {
-        EndpointDataPayload::from_classified_with_direct_fmp_endpoint_allowed(
-            payload.bytes,
-            payload.class,
-            payload.direct_fmp_endpoint_allowed,
-        )
+        EndpointDataPayload::from_classified(payload.bytes, payload.class)
     }
 }
 
@@ -329,6 +300,8 @@ pub struct FipsEndpoint {
     delivered_packets: Arc<Mutex<mpsc::Receiver<NodeDeliveredPacket>>>,
     endpoint_priority_commands: mpsc::Sender<NodeEndpointCommand>,
     endpoint_commands: mpsc::Sender<NodeEndpointCommand>,
+    #[cfg(unix)]
+    endpoint_bulk_send_runtime: EndpointBulkSendRuntime,
     /// In-process loopback sender — `send()` to our own npub injects an
     /// event into the same queue without going through the wire/encrypt
     /// path. The node's rx_loop also sends into this channel directly
@@ -460,11 +433,10 @@ impl FipsEndpoint {
             return Ok(());
         }
 
-        let queued_at = crate::perf_profile::stamp();
         match endpoint_payload_lane_batches(payloads) {
             EndpointPayloadLaneBatches::Empty => {}
             EndpointPayloadLaneBatches::Single { lane, payloads } => {
-                self.send_endpoint_command_batch(remote, payloads, queued_at, lane)
+                self.send_endpoint_command_batch(remote, payloads, lane)
                     .await?;
             }
             EndpointPayloadLaneBatches::Split {
@@ -474,17 +446,11 @@ impl FipsEndpoint {
                 self.send_endpoint_command_batch(
                     remote,
                     priority_payloads,
-                    queued_at,
                     EndpointCommandLane::Priority,
                 )
                 .await?;
-                self.send_endpoint_command_batch(
-                    remote,
-                    bulk_payloads,
-                    queued_at,
-                    EndpointCommandLane::Bulk,
-                )
-                .await?;
+                self.send_endpoint_command_batch(remote, bulk_payloads, EndpointCommandLane::Bulk)
+                    .await?;
             }
         }
         Ok(())
@@ -494,7 +460,6 @@ impl FipsEndpoint {
         &self,
         remote: PeerIdentity,
         mut payloads: Vec<EndpointDataPayload>,
-        queued_at: Option<crate::perf_profile::TraceStamp>,
         lane: EndpointCommandLane,
     ) -> Result<(), FipsEndpointError> {
         while !payloads.is_empty() {
@@ -504,6 +469,15 @@ impl FipsEndpoint {
                 Vec::new()
             };
             let batch = std::mem::replace(&mut payloads, tail);
+            #[cfg(unix)]
+            if lane == EndpointCommandLane::Bulk
+                && self
+                    .endpoint_bulk_send_runtime
+                    .try_send_bulk_batch_to_peer(remote, &batch)
+            {
+                continue;
+            }
+            let queued_at = crate::perf_profile::stamp();
             let Some(command) =
                 NodeEndpointCommand::send_batch_oneway(remote, batch, queued_at, lane)
             else {
@@ -545,7 +519,7 @@ impl FipsEndpoint {
         self.inbound_endpoint_tx
             .send(NodeEndpointEvent::Data {
                 source_peer: self.identity,
-                payload: data,
+                payload: data.into(),
                 queued_at: crate::perf_profile::stamp(),
             })
             .map_err(|_| FipsEndpointError::Closed)
@@ -1006,24 +980,19 @@ fn endpoint_payload_lane_batches(payloads: Vec<FipsEndpointPayload>) -> Endpoint
 }
 
 async fn send_endpoint_command(
-    mut command: NodeEndpointCommand,
+    command: NodeEndpointCommand,
     priority_tx: &mpsc::Sender<NodeEndpointCommand>,
     bulk_tx: &mpsc::Sender<NodeEndpointCommand>,
 ) -> Result<(), FipsEndpointError> {
     let command_tx = endpoint_command_tx_for_command(&command, priority_tx, bulk_tx);
-    let enqueue_trace = EndpointCommandEnqueueTrace::new(&command);
 
     if command.drop_on_backpressure() {
-        command.set_queued_at(crate::perf_profile::stamp());
         match command_tx.try_send(command) {
-            Ok(()) => {
-                enqueue_trace.record();
-                return Ok(());
-            }
+            Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Full(command)) => {
                 crate::perf_profile::record_event_count(
                     crate::perf_profile::Event::EndpointCommandBulkDropped,
-                    command.drain_cost() as u64,
+                    command.packet_count() as u64,
                 );
                 return Ok(());
             }
@@ -1031,45 +1000,8 @@ async fn send_endpoint_command(
         }
     }
 
-    let permit = command_tx
-        .reserve()
+    command_tx
+        .send(command)
         .await
-        .map_err(|_| FipsEndpointError::Closed)?;
-    enqueue_trace.record();
-    command.set_queued_at(crate::perf_profile::stamp());
-    permit.send(command);
-    Ok(())
-}
-
-#[derive(Copy, Clone)]
-struct EndpointCommandEnqueueTrace {
-    started_at: Option<crate::perf_profile::TraceStamp>,
-    lane: EndpointCommandLane,
-    count: u64,
-}
-
-impl EndpointCommandEnqueueTrace {
-    fn new(command: &NodeEndpointCommand) -> Self {
-        Self {
-            started_at: crate::perf_profile::stamp(),
-            lane: command.lane(),
-            count: command.drain_cost() as u64,
-        }
-    }
-
-    fn record(self) {
-        let (priority_count, bulk_count) = match self.lane {
-            EndpointCommandLane::Priority => (self.count, 0),
-            EndpointCommandLane::Bulk => (0, self.count),
-        };
-        crate::perf_profile::record_since_split_count(
-            crate::perf_profile::Stage::EndpointCommandEnqueueWait,
-            crate::perf_profile::Stage::EndpointPriorityCommandEnqueueWait,
-            crate::perf_profile::Stage::EndpointBulkCommandEnqueueWait,
-            self.started_at,
-            self.count,
-            priority_count,
-            bulk_count,
-        );
-    }
+        .map_err(|_| FipsEndpointError::Closed)
 }

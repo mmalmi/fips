@@ -235,17 +235,6 @@ fn endpoint_payload_tcp_classifier_handles_common_ip_packets() {
 
 #[test]
 fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
-    fn ipv4_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
-        let total_len = 20 + 20 + tcp_payload_len;
-        let mut packet = vec![0u8; total_len];
-        packet[0] = 0x45;
-        packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-        packet[9] = 6;
-        packet[20 + 12] = 5 << 4;
-        packet[20 + 13] = flags;
-        packet
-    }
-
     fn ipv6_tcp_packet(flags: u8, tcp_payload_len: usize) -> Vec<u8> {
         let tcp_len = 20 + tcp_payload_len;
         let mut packet = vec![0u8; 40 + tcp_len];
@@ -266,30 +255,12 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
         EndpointCommandLane::Priority
     );
 
-    let ipv4_tcp_ack_packet = ipv4_tcp_packet(0x10, 0);
-    let ipv4_tcp_ack = classify_endpoint_payload(&ipv4_tcp_ack_packet);
-    assert_eq!(ipv4_tcp_ack.lane(), EndpointPayloadLane::Priority);
-    assert!(!ipv4_tcp_ack.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&ipv4_tcp_ack_packet),
-        EndpointCommandLane::Priority
-    );
-
     let tcp_syn_packet = ipv6_tcp_packet(0x02, 0);
     let tcp_syn = classify_endpoint_payload(&tcp_syn_packet);
     assert_eq!(tcp_syn.lane(), EndpointPayloadLane::Priority);
     assert!(!tcp_syn.drop_on_backpressure());
     assert_eq!(
         endpoint_command_lane_for_payload(&tcp_syn_packet),
-        EndpointCommandLane::Priority
-    );
-
-    let ipv4_tcp_syn_packet = ipv4_tcp_packet(0x02, 0);
-    let ipv4_tcp_syn = classify_endpoint_payload(&ipv4_tcp_syn_packet);
-    assert_eq!(ipv4_tcp_syn.lane(), EndpointPayloadLane::Priority);
-    assert!(!ipv4_tcp_syn.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&ipv4_tcp_syn_packet),
         EndpointCommandLane::Priority
     );
 
@@ -302,30 +273,12 @@ fn endpoint_payload_traffic_classifier_prioritizes_control_sized_packets() {
         EndpointCommandLane::Priority
     );
 
-    let ipv4_tiny_tcp_data_packet = ipv4_tcp_packet(0x18, 64);
-    let ipv4_tiny_tcp_data = classify_endpoint_payload(&ipv4_tiny_tcp_data_packet);
-    assert_eq!(ipv4_tiny_tcp_data.lane(), EndpointPayloadLane::Priority);
-    assert!(!ipv4_tiny_tcp_data.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&ipv4_tiny_tcp_data_packet),
-        EndpointCommandLane::Priority
-    );
-
     let bulk_tcp_data_packet = ipv6_tcp_packet(0x18, 512);
     let bulk_tcp_data = classify_endpoint_payload(&bulk_tcp_data_packet);
     assert_eq!(bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
     assert!(!bulk_tcp_data.drop_on_backpressure());
     assert_eq!(
         endpoint_command_lane_for_payload(&bulk_tcp_data_packet),
-        EndpointCommandLane::Bulk
-    );
-
-    let ipv4_bulk_tcp_data_packet = ipv4_tcp_packet(0x18, 512);
-    let ipv4_bulk_tcp_data = classify_endpoint_payload(&ipv4_bulk_tcp_data_packet);
-    assert_eq!(ipv4_bulk_tcp_data.lane(), EndpointPayloadLane::Bulk);
-    assert!(!ipv4_bulk_tcp_data.drop_on_backpressure());
-    assert_eq!(
-        endpoint_command_lane_for_payload(&ipv4_bulk_tcp_data_packet),
         EndpointCommandLane::Bulk
     );
 

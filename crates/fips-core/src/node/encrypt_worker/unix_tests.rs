@@ -12,106 +12,6 @@ mod unix_tests {
         LessSafeKey::new(unbound)
     }
 
-    fn seal_cost_iterations() -> usize {
-        std::env::var("FIPS_SEAL_COST_ITERS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(100_000)
-            .max(1)
-    }
-
-    fn seal_cost_payload_len() -> usize {
-        std::env::var("FIPS_SEAL_COST_PAYLOAD")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(1150)
-            .max(1)
-    }
-
-    fn fmp_only_wire_buf(payload_len: usize, seed: u8) -> Vec<u8> {
-        let mut wire_buf =
-            Vec::with_capacity(ESTABLISHED_HEADER_SIZE + payload_len + crate::noise::TAG_SIZE);
-        wire_buf.extend_from_slice(&[seed; ESTABLISHED_HEADER_SIZE]);
-        wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, seed ^ 0xa5);
-        wire_buf
-    }
-
-    fn fsp_fmp_wire_buf(payload_len: usize, seed: u8) -> (Vec<u8>, usize, usize) {
-        let mut wire_buf = Vec::with_capacity(
-            ESTABLISHED_HEADER_SIZE
-                + FSP_HEADER_SIZE
-                + payload_len
-                + crate::noise::TAG_SIZE
-                + crate::noise::TAG_SIZE,
-        );
-        wire_buf.extend_from_slice(&[seed; ESTABLISHED_HEADER_SIZE]);
-        let fsp_aad_offset = wire_buf.len();
-        wire_buf.extend_from_slice(&[seed ^ 0x33; FSP_HEADER_SIZE]);
-        let fsp_plaintext_offset = wire_buf.len();
-        wire_buf.resize(fsp_plaintext_offset + payload_len, seed ^ 0xa5);
-        (wire_buf, fsp_aad_offset, fsp_plaintext_offset)
-    }
-
-    #[test]
-    #[ignore = "diagnostic microbench; run with --ignored --nocapture"]
-    fn measure_worker_seal_cost_fmp_only_vs_fsp_fmp() {
-        let iters = seal_cost_iterations();
-        let payload_len = seal_cost_payload_len();
-        let fmp_cipher = test_cipher(0x11);
-        let fsp_cipher = test_cipher(0x22);
-
-        // Keep allocation out of the measured loop; production workers receive
-        // prebuilt buffers and spend their hot time in `seal_wire_packet`.
-        let mut fmp_wire_buf = fmp_only_wire_buf(payload_len, 0x44);
-        let fmp_plain_len = fmp_wire_buf.len();
-        let mut fmp_bytes = 0usize;
-        let fmp_started = std::time::Instant::now();
-        for i in 0..iters {
-            fmp_wire_buf.truncate(fmp_plain_len);
-            SealedSendPacket::seal_wire_packet(
-                fmp_cipher.clone().into(),
-                i as u64,
-                &mut fmp_wire_buf,
-                None,
-            )
-            .expect("FMP-only seal");
-            fmp_bytes = fmp_bytes.wrapping_add(std::hint::black_box(fmp_wire_buf.len()));
-        }
-        let fmp_elapsed = fmp_started.elapsed();
-
-        let (mut dual_wire_buf, fsp_aad_offset, fsp_plaintext_offset) =
-            fsp_fmp_wire_buf(payload_len, 0x55);
-        let dual_plain_len = dual_wire_buf.len();
-        let mut dual_bytes = 0usize;
-        let dual_started = std::time::Instant::now();
-        for i in 0..iters {
-            dual_wire_buf.truncate(dual_plain_len);
-            SealedSendPacket::seal_wire_packet(
-                fmp_cipher.clone().into(),
-                i as u64,
-                &mut dual_wire_buf,
-                Some(FspSealJob {
-                    cipher: fsp_cipher.clone().into(),
-                    counter: i as u64,
-                    aad_offset: fsp_aad_offset,
-                    plaintext_offset: fsp_plaintext_offset,
-                }),
-            )
-            .expect("FSP+FMP seal");
-            dual_bytes = dual_bytes.wrapping_add(std::hint::black_box(dual_wire_buf.len()));
-        }
-        let dual_elapsed = dual_started.elapsed();
-
-        let fmp_ns = fmp_elapsed.as_nanos() as f64 / iters as f64;
-        let dual_ns = dual_elapsed.as_nanos() as f64 / iters as f64;
-        let fmp_gbps = (fmp_bytes as f64 * 8.0) / fmp_elapsed.as_secs_f64() / 1_000_000_000.0;
-        let dual_gbps = (dual_bytes as f64 * 8.0) / dual_elapsed.as_secs_f64() / 1_000_000_000.0;
-        println!(
-            "seal_cost payload_len={payload_len} iters={iters} fmp_only_ns_per_packet={fmp_ns:.1} fsp_fmp_ns_per_packet={dual_ns:.1} overhead_ns_per_packet={:.1} fmp_only_gbps={fmp_gbps:.2} fsp_fmp_gbps={dual_gbps:.2}",
-            dual_ns - fmp_ns,
-        );
-    }
-
     fn queued_test_job_classified(
         socket: AsyncUdpSocket,
         cipher: &LessSafeKey,
@@ -123,7 +23,7 @@ mod unix_tests {
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
         QueuedFmpSendJob::direct(FmpSendJob {
-            cipher: cipher.clone().into(),
+            cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
@@ -298,7 +198,7 @@ mod unix_tests {
             wire_buf.extend_from_slice(plaintext);
 
             let sealed = SealedSendPacket::from_job(FmpSendJob {
-                cipher: cipher.clone().into(),
+                cipher: cipher.clone(),
                 counter,
                 wire_buf,
                 fsp_seal: None,
@@ -337,11 +237,11 @@ mod unix_tests {
                 dest,
             );
             let invalid = SealedSendPacket::from_job(FmpSendJob {
-                cipher: cipher.into(),
+                cipher,
                 counter: counter + 1,
                 wire_buf: vec![0; ESTABLISHED_HEADER_SIZE + 8],
                 fsp_seal: Some(FspSealJob {
-                    cipher: test_cipher(5).into(),
+                    cipher: test_cipher(5),
                     counter: 1,
                     aad_offset: ESTABLISHED_HEADER_SIZE,
                     plaintext_offset: ESTABLISHED_HEADER_SIZE,
@@ -382,9 +282,13 @@ mod unix_tests {
     }
 
     #[test]
-    fn worker_batch_size_parse_stays_within_sender_accounting_limit() {
+    fn worker_batch_size_parse_stays_within_safe_default_turn() {
         assert_eq!(parse_worker_batch_size(Some("0"), 32), 1);
-        assert_eq!(parse_worker_batch_size(Some("999"), 32), 64);
+        assert_eq!(
+            parse_worker_batch_size(Some("999"), 32),
+            32,
+            "wide sender turns remain opt-out until the owner/send path changes"
+        );
         assert_eq!(parse_worker_batch_size(Some("17"), 32), 17);
         assert_eq!(
             parse_worker_batch_size(Some("not-a-number"), 31),
@@ -443,7 +347,7 @@ mod unix_tests {
                 wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
                 wire_buf.resize(ESTABLISHED_HEADER_SIZE + 32, 0);
                 FmpSendJob {
-                    cipher: cipher.into(),
+                    cipher,
                     counter: 7,
                     wire_buf,
                     fsp_seal: None,
@@ -517,7 +421,7 @@ mod unix_tests {
             wire_buf.extend_from_slice(plaintext);
 
             let queued = QueuedFmpSendJob::direct(FmpSendJob {
-                cipher: cipher.clone().into(),
+                cipher: cipher.clone(),
                 counter,
                 wire_buf,
                 fsp_seal: None,
@@ -536,10 +440,9 @@ mod unix_tests {
                 target_key,
                 "sealing must consume the queued message's selected key"
             );
-            let (send_target, sealed_key, wire_packet, bulk_endpoint_data, drop_on_backpressure) =
+            let (send_target, sealed_key, _lane, wire_packet, drop_on_backpressure) =
                 sealed.into_parts();
             assert_eq!(sealed_key, target_key);
-            assert!(bulk_endpoint_data);
             assert!(drop_on_backpressure);
 
             let opened = crate::noise::open(
@@ -611,11 +514,11 @@ mod unix_tests {
                 + crate::noise::TAG_SIZE
                 + crate::noise::TAG_SIZE;
             let mut batch = vec![FmpSendJob {
-                cipher: fmp_cipher.clone().into(),
+                cipher: fmp_cipher.clone(),
                 counter: fmp_counter,
                 wire_buf,
                 fsp_seal: Some(FspSealJob {
-                    cipher: fsp_cipher.clone().into(),
+                    cipher: fsp_cipher.clone(),
                     counter: fsp_counter,
                     aad_offset: fsp_aad_offset,
                     plaintext_offset: fsp_plaintext_offset,
@@ -819,15 +722,7 @@ mod unix_tests {
             let key = target.key();
 
             let mut groups = Vec::new();
-            push_selected_send_batch_with_capacity(
-                &mut groups,
-                target,
-                key,
-                vec![1],
-                true,
-                true,
-                48,
-            );
+            push_selected_send_batch_with_capacity(&mut groups, target, key, vec![1], true, 48);
             assert_eq!(groups.len(), 1);
             assert!(
                 groups[0].wire_packet_capacity() >= 48,
@@ -839,7 +734,6 @@ mod unix_tests {
                 same_target,
                 key,
                 vec![2],
-                true,
                 true,
                 48,
             );
@@ -853,88 +747,6 @@ mod unix_tests {
                 selected_send_group_stats(&groups),
                 (1, 2, 0),
                 "coalesced same-target groups report one multi-packet send group"
-            );
-        });
-    }
-
-    #[test]
-    fn uniform_target_send_batch_splits_only_on_backpressure_policy() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .expect("tokio rt");
-        rt.block_on(async {
-            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
-                .expect("open send socket");
-            let socket = raw.into_async().expect("into_async");
-            let dest: SocketAddr = "127.0.0.1:10040".parse().unwrap();
-            let target = SelectedSendTarget::new(
-                socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
-                dest,
-            );
-            let key = target.key();
-
-            let mut groups = Vec::new();
-            push_uniform_target_send_batch_with_capacity(
-                &mut groups,
-                &target,
-                key,
-                vec![1],
-                true,
-                true,
-                32,
-            );
-            push_uniform_target_send_batch_with_capacity(
-                &mut groups,
-                &target,
-                key,
-                vec![2],
-                true,
-                true,
-                32,
-            );
-            push_uniform_target_send_batch_with_capacity(
-                &mut groups,
-                &target,
-                key,
-                vec![3],
-                true,
-                false,
-                32,
-            );
-            push_uniform_target_send_batch_with_capacity(
-                &mut groups,
-                &target,
-                key,
-                vec![4],
-                true,
-                false,
-                32,
-            );
-            push_uniform_target_send_batch_with_capacity(
-                &mut groups,
-                &target,
-                key,
-                vec![5],
-                true,
-                true,
-                32,
-            );
-
-            assert_eq!(groups.len(), 3);
-            assert_eq!(groups[0].target_key(), key);
-            assert_eq!(groups[0].wire_packets, vec![vec![1], vec![2]]);
-            assert!(groups[0].drop_on_backpressure);
-            assert_eq!(groups[1].wire_packets, vec![vec![3], vec![4]]);
-            assert!(!groups[1].drop_on_backpressure);
-            assert_eq!(groups[2].wire_packets, vec![vec![5]]);
-            assert!(groups[2].drop_on_backpressure);
-            assert_eq!(
-                selected_send_group_stats(&groups),
-                (3, 5, 1),
-                "same-target container sends keep FIFO groups while preserving retry policy"
             );
         });
     }
@@ -959,8 +771,8 @@ mod unix_tests {
                 dest,
             );
             let target_key = target.key();
-            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true, true);
-            batch.push(vec![2], true, true);
+            let mut batch = SelectedSendBatch::new(target, target_key, vec![1], true);
+            batch.push(vec![2], true);
 
             let mut attempt = LinuxSendBatchAttempt::from_batch(batch);
             assert_eq!(attempt.target_key(), target_key);
@@ -985,9 +797,8 @@ mod unix_tests {
                 dest,
             );
             let retry_target_key = target.key();
-            let mut retry_batch =
-                SelectedSendBatch::new(target, retry_target_key, vec![3], true, false);
-            retry_batch.push(vec![4], true, false);
+            let mut retry_batch = SelectedSendBatch::new(target, retry_target_key, vec![3], false);
+            retry_batch.push(vec![4], false);
             let mut retry_attempt = LinuxSendBatchAttempt::from_batch(retry_batch);
             assert_eq!(
                 retry_attempt.handle_backpressure_request(true, &err),

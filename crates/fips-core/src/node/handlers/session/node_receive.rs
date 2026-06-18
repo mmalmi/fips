@@ -1,4 +1,36 @@
 impl Node {
+    async fn flush_pending_destinations(&mut self, dests: &mut Vec<NodeAddr>) {
+        for dest_addr in std::mem::take(dests) {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
+    fn note_pending_flush_dest(dests: &mut Vec<NodeAddr>, finish: SessionDispatchFinish) {
+        if let Some(dest_addr) = finish.pending_flush_dest() {
+            if !dests.contains(&dest_addr) {
+                dests.push(dest_addr);
+            }
+        }
+    }
+
+    fn apply_worker_fsp_receive_sync(
+        &mut self,
+        source_addr: NodeAddr,
+        sync: crate::node::session::FspReceiveSync,
+        now: Instant,
+    ) -> bool {
+        let apply = {
+            let Some(entry) = self.sessions.get_mut(&source_addr) else {
+                return false;
+            };
+            entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
+        };
+        if apply.refresh_worker_session() {
+            self.register_decrypt_worker_fsp_session(&source_addr);
+        }
+        apply.is_applied()
+    }
+
     /// Handle a locally-delivered session datagram payload.
     ///
     /// Called from `handle_session_datagram()` when `dest_addr == self.node_addr()`.
@@ -241,9 +273,8 @@ impl Node {
         self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
 
         let source_addr = authenticated.source_addr;
-        let receive_applied = self.sessions.get_mut(&source_addr).is_some_and(|entry| {
-            entry.apply_fsp_receive_sync(authenticated.receive_sync, Self::now_ms(), now)
-        });
+        let receive_applied =
+            self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -268,6 +299,48 @@ impl Node {
         dispatch.dispatch(self).await;
     }
 
+    pub(in crate::node) async fn process_authenticated_session_batch_from_worker(
+        &mut self,
+        sessions: Vec<DecryptAuthenticatedSession>,
+    ) {
+        let mut pending_flush_dests = Vec::new();
+        for authenticated in sessions {
+            let now = Instant::now();
+            self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
+
+            let source_addr = authenticated.source_addr;
+            let receive_applied =
+                self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
+            if !receive_applied {
+                debug!(
+                    src = %self.peer_display_name(&source_addr),
+                    "Dropping worker-authenticated session message for missing or stale session"
+                );
+                continue;
+            }
+
+            let dispatch = AuthenticatedSessionDispatch::new(
+                source_addr,
+                *authenticated.previous_hop_peer.node_addr(),
+                authenticated.ce_flag,
+                authenticated.message,
+            );
+            if dispatch.is_endpoint_data() {
+                Self::note_pending_flush_dest(
+                    &mut pending_flush_dests,
+                    dispatch.dispatch_endpoint_data_fast(self),
+                );
+                continue;
+            }
+
+            self.flush_pending_destinations(&mut pending_flush_dests)
+                .await;
+            dispatch.dispatch(self).await;
+        }
+        self.flush_pending_destinations(&mut pending_flush_dests)
+            .await;
+    }
+
     pub(in crate::node) async fn process_direct_session_data_from_worker(
         &mut self,
         direct: DecryptDirectSessionData,
@@ -282,10 +355,26 @@ impl Node {
             return;
         };
 
-        let source_addr = direct.source_addr;
-        match direct.delivery {
+        self.deliver_direct_session_delivery_from_worker(
+            direct.source_addr,
+            direct.ce_flag,
+            direct.delivery,
+        );
+
+        if let Some(dest_addr) = finish.pending_flush_dest() {
+            self.flush_pending_packets(&dest_addr).await;
+        }
+    }
+
+    fn deliver_direct_session_delivery_from_worker(
+        &mut self,
+        source_addr: NodeAddr,
+        ce_flag: bool,
+        delivery: DecryptDirectSessionDelivery,
+    ) {
+        match delivery {
             DecryptDirectSessionDelivery::Ipv6Packet(mut packet) => {
-                if direct.ce_flag {
+                if ce_flag {
                     mark_ipv6_ecn_ce(&mut packet);
                     self.stats_mut().congestion.record_ce_received();
                 }
@@ -308,10 +397,33 @@ impl Node {
                 self.deliver_endpoint_data(delivery);
             }
         }
+    }
 
-        if let Some(dest_addr) = finish.pending_flush_dest() {
-            self.flush_pending_packets(&dest_addr).await;
+    pub(in crate::node) async fn process_direct_session_data_batch_from_worker(
+        &mut self,
+        directs: Vec<DecryptDirectSessionData>,
+    ) {
+        let mut pending_flush_dests = Vec::new();
+        for direct in directs {
+            let Some(finish) = self.commit_direct_session_data_from_worker(
+                &direct.fmp,
+                direct.source_addr,
+                direct.previous_hop_peer,
+                direct.receive_sync,
+                direct.body_len,
+            ) else {
+                continue;
+            };
+
+            self.deliver_direct_session_delivery_from_worker(
+                direct.source_addr,
+                direct.ce_flag,
+                direct.delivery,
+            );
+            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
         }
+        self.flush_pending_destinations(&mut pending_flush_dests)
+            .await;
     }
 
     pub(in crate::node) async fn process_direct_session_commit_from_worker(
@@ -337,6 +449,32 @@ impl Node {
         }
     }
 
+    pub(in crate::node) async fn process_direct_session_commit_batch_from_worker(
+        &mut self,
+        commits: Vec<DecryptDirectSessionCommit>,
+    ) {
+        let mut pending_flush_dests = Vec::new();
+        for commit in commits {
+            let Some(finish) = self.commit_direct_session_data_from_worker(
+                &commit.fmp,
+                commit.source_addr,
+                commit.previous_hop_peer,
+                commit.receive_sync,
+                commit.body_len,
+            ) else {
+                continue;
+            };
+
+            if commit.ce_flag && commit.delivered_ipv6 {
+                self.stats_mut().congestion.record_ce_received();
+            }
+
+            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
+        }
+        self.flush_pending_destinations(&mut pending_flush_dests)
+            .await;
+    }
+
     fn commit_direct_session_data_from_worker(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
@@ -348,10 +486,7 @@ impl Node {
         let now = Instant::now();
         self.record_worker_authenticated_fmp_receive(fmp);
 
-        let receive_applied = self
-            .sessions
-            .get_mut(&source_addr)
-            .is_some_and(|entry| entry.apply_fsp_receive_sync(receive_sync, Self::now_ms(), now));
+        let receive_applied = self.apply_worker_fsp_receive_sync(source_addr, receive_sync, now);
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),

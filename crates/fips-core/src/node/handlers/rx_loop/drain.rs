@@ -1,3 +1,4 @@
+use crate::control::ControlMessage;
 use crate::node::NodeEndpointCommand;
 use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
 use crate::transport::{PacketRx, ReceivedPacket};
@@ -32,6 +33,7 @@ pub(super) enum PacketDrainAction<T> {
 }
 
 pub(super) struct RxLoopSideQueues<'a> {
+    pub(super) control_query_rx: &'a mut Receiver<ControlMessage>,
     pub(super) tun_outbound_rx: &'a mut TunOutboundRx,
     pub(super) endpoint_priority_command_rx: &'a mut Receiver<NodeEndpointCommand>,
     pub(super) endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
@@ -42,13 +44,9 @@ pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) ->
 }
 
 pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
-    !side_queues.tun_outbound_rx.is_empty()
+    !side_queues.control_query_rx.is_empty()
+        || !side_queues.tun_outbound_rx.is_empty()
         || !side_queues.endpoint_priority_command_rx.is_empty()
-        || !side_queues.endpoint_command_rx.is_empty()
-}
-
-pub(super) fn rx_loop_endpoint_commands_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
-    !side_queues.endpoint_priority_command_rx.is_empty()
         || !side_queues.endpoint_command_rx.is_empty()
 }
 
@@ -57,6 +55,7 @@ pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
     pub(super) tun: usize,
     pub(super) endpoint: usize,
+    pub(super) control: usize,
 }
 
 impl RxLoopDataDrainStats {
@@ -65,19 +64,42 @@ impl RxLoopDataDrainStats {
             packets,
             tun,
             endpoint,
+            control: 0,
         }
     }
 
-    pub(super) fn total(&self) -> usize {
+    pub(super) fn with_control(
+        packets: usize,
+        tun: usize,
+        endpoint: usize,
+        control: usize,
+    ) -> Self {
+        Self {
+            packets,
+            tun,
+            endpoint,
+            control,
+        }
+    }
+
+    pub(super) fn data_total(&self) -> usize {
         self.packets + self.tun + self.endpoint
+    }
+
+    pub(super) fn total(&self) -> usize {
+        self.data_total() + self.control
     }
 
     pub(super) fn has_drained(&self) -> bool {
         self.total() > 0
     }
 
+    pub(super) fn has_data_drained(&self) -> bool {
+        self.data_total() > 0
+    }
+
     pub(super) fn data_pressure(&self, recent_data_activity: bool) -> bool {
-        self.has_drained() || recent_data_activity
+        self.has_data_drained() || recent_data_activity
     }
 }
 
@@ -262,16 +284,6 @@ impl<T> PacketDrainCursor<T> {
     pub(super) fn refund_empty_interleave_turn(&mut self) {
         self.remaining += 1;
     }
-
-    pub(super) fn reset_fallback_interleave_every(&mut self, fallback_interleave_every: usize) {
-        self.fallback_interleave_every = fallback_interleave_every;
-        self.packets_until_fallback_interleave = fallback_interleave_every;
-    }
-
-    pub(super) fn reset_side_queue_interleave_every(&mut self, side_queue_interleave_every: usize) {
-        self.side_queue_interleave_every = side_queue_interleave_every;
-        self.packets_until_side_queue_interleave = side_queue_interleave_every;
-    }
 }
 
 pub(super) trait PacketDrainReceiver<T> {
@@ -329,6 +341,31 @@ impl<T> PriorityBulkDrainCursor<T> {
         self.remaining -= 1;
         self.drained += 1;
         Some(item)
+    }
+
+    pub(super) fn next_bulk_if_no_priority(
+        &mut self,
+        priority_rx: &mut Receiver<T>,
+        bulk_rx: &mut Receiver<T>,
+    ) -> Option<T> {
+        if self.remaining == 0 || self.first_priority.is_some() || !priority_rx.is_empty() {
+            return None;
+        }
+
+        let item = self.first_bulk.take().or_else(|| bulk_rx.try_recv().ok())?;
+        self.remaining -= 1;
+        self.drained += 1;
+        Some(item)
+    }
+
+    pub(super) fn defer_bulk(&mut self, item: T) {
+        debug_assert!(
+            self.first_bulk.is_none(),
+            "priority/bulk drain already has a deferred bulk item"
+        );
+        self.first_bulk = Some(item);
+        self.remaining = self.remaining.saturating_add(1);
+        self.drained = self.drained.saturating_sub(1);
     }
 
     pub(super) fn drained(&self) -> usize {
@@ -430,10 +467,5 @@ impl<T> SingleLaneDrainCursor<T> {
 
     pub(super) fn drained(&self) -> usize {
         self.drained
-    }
-
-    pub(super) fn charge_extra(&mut self, extra: usize) {
-        self.remaining = self.remaining.saturating_sub(extra);
-        self.drained = self.drained.saturating_add(extra);
     }
 }

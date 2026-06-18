@@ -59,6 +59,61 @@
     }
 
     #[test]
+    fn fsp_receive_sync_requests_worker_refresh_only_on_epoch_promotion() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        let initial_k_bit = entry.current_k_bit();
+        entry.set_pending_session(make_xk_session(&local, &peer));
+
+        let promoted = entry.apply_fsp_receive_sync_result(
+            crate::node::session::FspReceiveSync {
+                counter: 7,
+                slot: EpochSlot::Pending,
+                received_k_bit: !initial_k_bit,
+                timestamp: 0x0102_0304,
+                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            2_000,
+            Instant::now(),
+        );
+
+        assert!(promoted.is_applied());
+        assert!(
+            promoted.refresh_worker_session(),
+            "pending promotion changes FSP epoch topology and must refresh worker snapshots"
+        );
+        assert_eq!(entry.current_k_bit(), !initial_k_bit);
+        assert!(entry.pending_new_session().is_none());
+        assert!(entry.previous_highest_counter().is_some());
+
+        let current = entry.apply_fsp_receive_sync_result(
+            crate::node::session::FspReceiveSync {
+                counter: 8,
+                slot: EpochSlot::Current,
+                received_k_bit: entry.current_k_bit(),
+                timestamp: 0x0102_0305,
+                plaintext_len: FSP_INNER_HEADER_SIZE + 16,
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            2_100,
+            Instant::now(),
+        );
+
+        assert!(current.is_applied());
+        assert!(
+            !current.refresh_worker_session(),
+            "ordinary current-epoch replay mirroring must not re-register workers"
+        );
+    }
+
+    #[test]
     fn established_fsp_wire_owns_ciphertext_offset_and_coord_warmup() {
         use crate::tree::TreeCoordinate;
 
@@ -644,14 +699,169 @@
     }
 
     #[tokio::test]
-    async fn direct_fmp_endpoint_data_requires_established_session() {
+    async fn worker_direct_session_commit_batch_flushes_pending_after_ordered_commits() {
         let local = Identity::generate();
         let peer = Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
         let source_addr = *peer.node_addr();
-        let payload = b"direct fmp endpoint".to_vec();
+        let body_len = b"already delivered".len();
+        let plaintext_len = FSP_INNER_HEADER_SIZE + body_len;
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        assert!(
+            !node
+                .pending_session_traffic
+                .push_endpoint_data(source_addr, vec![0xaa], 8, 8)
+                .destination_dropped()
+        );
+
+        let commit = |counter| {
+            DecryptDirectSessionCommit::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                source_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len,
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                body_len,
+                false,
+            )
+        };
+
+        node.process_direct_session_commit_batch_from_worker(vec![commit(7), commit(8)])
+            .await;
+
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "compact direct commit batch must not bounce payload bytes through rx_loop"
+        );
+        assert!(
+            !node.pending_session_traffic.has_traffic_for(&source_addr),
+            "batch boundary should flush pending session traffic once receive commits are applied"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.current_highest_counter(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn worker_direct_session_data_batch_delivers_endpoint_data_then_flushes_pending() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let previous_hop = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *peer.node_addr();
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+        assert!(
+            !node
+                .pending_session_traffic
+                .push_endpoint_data(source_addr, vec![0xbb], 8, 8)
+                .destination_dropped()
+        );
+
+        let direct = |counter, payload: &[u8]| {
+            DecryptDirectSessionData::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer: previous_hop_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                previous_hop_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len: FSP_INNER_HEADER_SIZE + payload.len(),
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                payload.len(),
+                DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                    source_peer,
+                    payload.to_vec(),
+                )),
+            )
+        };
+
+        node.process_direct_session_data_batch_from_worker(vec![
+            direct(7, b"batch one"),
+            direct(8, b"batch two"),
+        ])
+        .await;
+
+        for expected in [b"batch one".to_vec(), b"batch two".to_vec()] {
+            match endpoint_io.event_rx.try_recv().expect("endpoint event") {
+                crate::node::NodeEndpointEvent::Data {
+                    source_peer: delivered_source,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(delivered_source, source_peer);
+                    assert_eq!(payload, expected);
+                }
+                event => panic!("expected worker-decoded endpoint data event, got {event:?}"),
+            }
+        }
+        assert!(
+            !node.pending_session_traffic.has_traffic_for(&source_addr),
+            "batch boundary should flush pending session traffic after direct deliveries"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.current_highest_counter(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn reserved_link_type_0x03_does_not_deliver_endpoint_data() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let payload = b"reserved endpoint-shaped payload".to_vec();
         let mut plaintext = 0x0102_0304u32.to_le_bytes().to_vec();
-        plaintext.push(crate::protocol::LinkMessageType::DirectEndpointData.to_byte());
+        plaintext.push(0x03);
         plaintext.extend_from_slice(&payload);
         let remote_addr = crate::transport::TransportAddr::from_string("127.0.0.1:1234");
 
@@ -659,22 +869,6 @@
         let mut endpoint_io = node
             .attach_endpoint_data_io(8)
             .expect("endpoint I/O should attach");
-
-        node.process_authentic_fmp_plaintext(crate::node::AuthenticatedFmpPlaintext::new(
-            source_peer,
-            crate::transport::TransportId::new(1),
-            &remote_addr,
-            2_000,
-            plaintext.len() + crate::node::wire::ESTABLISHED_HEADER_SIZE + crate::noise::TAG_SIZE,
-            11,
-            0,
-            &plaintext,
-        ))
-        .await;
-        assert!(
-            endpoint_io.event_rx.try_recv().is_err(),
-            "direct-FMP endpoint data without an established session must be dropped"
-        );
 
         node.sessions
             .insert(source_addr, established_entry(&local, &peer));
@@ -690,171 +884,15 @@
         ))
         .await;
 
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            crate::node::NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload: delivered_payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(delivered_payload, payload);
-            }
-            event => panic!("expected direct-FMP endpoint data event, got {event:?}"),
-        }
-        let entry = node
-            .sessions
-            .get(&source_addr)
-            .expect("session should remain");
-        assert_eq!(entry.traffic_counters(), (0, 1, 0, payload.len() as u64));
-        assert!(entry.last_inbound_frame_ms() > 1_000);
-    }
-
-    #[tokio::test]
-    async fn worker_direct_fmp_endpoint_data_uses_established_session_gate() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let source_addr = *peer.node_addr();
-        let payload = b"worker direct fmp endpoint".to_vec();
-        let fmp = || crate::node::decrypt_worker::DecryptFmpBookkeeping {
-            source_peer,
-            transport_id: crate::transport::TransportId::new(1),
-            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            packet_timestamp_ms: 2_000,
-            packet_len: payload.len() + crate::node::wire::ESTABLISHED_HEADER_SIZE
-                + crate::noise::TAG_SIZE
-                + 5,
-            fmp_counter: 21,
-            inner_timestamp_ms: 0x0102_0304,
-            fmp_flags: 0,
-        };
-
-        let mut node = Node::new(crate::config::Config::new()).expect("node");
-        let mut endpoint_io = node
-            .attach_endpoint_data_io(8)
-            .expect("endpoint I/O should attach");
-
-        node.process_direct_fmp_endpoint_data_from_worker(
-            crate::node::decrypt_worker::DecryptDirectFmpEndpointData::for_test(
-                fmp(),
-                payload.clone(),
-            ),
-        )
-        .await;
         assert!(
             endpoint_io.event_rx.try_recv().is_err(),
-            "worker direct-FMP endpoint data without an established session must be dropped"
+            "reserved 0x03 link payload must not bypass FSP session data"
         );
-
-        node.sessions
-            .insert(source_addr, established_entry(&local, &peer));
-        node.process_direct_fmp_endpoint_data_from_worker(
-            crate::node::decrypt_worker::DecryptDirectFmpEndpointData::for_test(
-                fmp(),
-                payload.clone(),
-            ),
-        )
-        .await;
-
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            crate::node::NodeEndpointEvent::Data {
-                source_peer: delivered_source,
-                payload: delivered_payload,
-                ..
-            } => {
-                assert_eq!(delivered_source, source_peer);
-                assert_eq!(delivered_payload, payload);
-            }
-            event => panic!("expected worker direct-FMP endpoint data event, got {event:?}"),
-        }
         let entry = node
             .sessions
             .get(&source_addr)
             .expect("session should remain");
-        assert_eq!(entry.traffic_counters(), (0, 1, 0, payload.len() as u64));
-        assert!(entry.last_inbound_frame_ms() > 1_000);
-    }
-
-    #[tokio::test]
-    async fn worker_direct_fmp_endpoint_data_batch_records_receive_once_per_group() {
-        let local = Identity::generate();
-        let peer = Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
-        let source_addr = *peer.node_addr();
-        let payloads = vec![
-            b"worker batch one".to_vec(),
-            b"worker batch two".to_vec(),
-            b"worker batch three".to_vec(),
-        ];
-        let total_len = payloads.iter().map(Vec::len).sum::<usize>();
-        let fmp = |counter: u64, payload_len: usize| {
-            crate::node::decrypt_worker::DecryptFmpBookkeeping {
-                source_peer,
-                transport_id: crate::transport::TransportId::new(1),
-                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-                packet_timestamp_ms: 2_000 + counter,
-                packet_len: payload_len
-                    + crate::node::wire::ESTABLISHED_HEADER_SIZE
-                    + crate::noise::TAG_SIZE
-                    + 5,
-                fmp_counter: counter,
-                inner_timestamp_ms: 0x0102_0304,
-                fmp_flags: 0,
-            }
-        };
-        let endpoints = || {
-            payloads
-                .iter()
-                .enumerate()
-                .map(|(index, payload)| {
-                    crate::node::decrypt_worker::DecryptDirectFmpEndpointData::for_test(
-                        fmp(index as u64 + 1, payload.len()),
-                        payload.clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let mut node = Node::new(crate::config::Config::new()).expect("node");
-        let mut endpoint_io = node
-            .attach_endpoint_data_io(8)
-            .expect("endpoint I/O should attach");
-
-        node.begin_endpoint_event_batch();
-        node.process_direct_fmp_endpoint_data_batch_from_worker(endpoints())
-            .await;
-        node.finish_endpoint_event_batch();
-        assert!(
-            endpoint_io.event_rx.try_recv().is_err(),
-            "worker direct-FMP endpoint data batch without an established session must be dropped"
-        );
-
-        node.sessions
-            .insert(source_addr, established_entry(&local, &peer));
-        node.begin_endpoint_event_batch();
-        node.process_direct_fmp_endpoint_data_batch_from_worker(endpoints())
-            .await;
-        node.finish_endpoint_event_batch();
-
-        match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-            crate::node::NodeEndpointEvent::DataBatch { messages, .. } => {
-                assert_eq!(messages.len(), payloads.len());
-                for (message, expected_payload) in messages.iter().zip(payloads.iter()) {
-                    assert_eq!(message.source_peer, source_peer);
-                    assert_eq!(&message.payload, expected_payload);
-                }
-            }
-            event => panic!("expected worker direct-FMP endpoint data batch event, got {event:?}"),
-        }
-        let entry = node
-            .sessions
-            .get(&source_addr)
-            .expect("session should remain");
-        assert_eq!(
-            entry.traffic_counters(),
-            (0, payloads.len() as u64, 0, total_len as u64)
-        );
-        assert!(entry.last_inbound_frame_ms() > 1_000);
+        assert_eq!(entry.traffic_counters(), (0, 0, 0, 0));
     }
 
     #[test]

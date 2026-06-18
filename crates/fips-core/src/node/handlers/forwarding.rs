@@ -12,8 +12,8 @@ use crate::node::session_wire::{
 };
 use crate::node::{AuthenticatedSessionDatagram, Node, NodeError};
 use crate::protocol::{
-    CoordsRequired, MtuExceeded, PathBroken, SessionAck, SessionDatagram, SessionDatagramRef,
-    SessionSetup,
+    CoordsRequired, LinkMessageType, MtuExceeded, PathBroken, SessionAck, SessionDatagram,
+    SessionDatagramRef, SessionSetup,
 };
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -82,48 +82,39 @@ impl Node {
             return;
         }
 
-        // Forwarding path: materialise an owned `SessionDatagram` so
-        // existing forwarding code paths (re-encode, error signal
-        // generation, MTU enforcement) work unchanged. Cost: one alloc
-        // + one ~MTU memcpy — but only on forwarding traffic, which is
-        // off the local-delivery hot path.
-        let mut datagram = SessionDatagram {
-            src_addr: datagram_ref.src_addr,
-            dest_addr: datagram_ref.dest_addr,
-            ttl: new_ttl,
-            path_mtu: datagram_ref.path_mtu,
-            payload: datagram_ref.payload.to_vec(),
-        };
-
         // Find next hop toward destination. Transit forwarding must not send
         // a non-local datagram back to the hop it arrived from; learned
         // reverse routes are observations, not loop-free source routes.
-        let next_hop_addr = match self.find_transit_next_hop(&datagram.dest_addr, &previous_hop) {
+        let next_hop_addr = match self.find_transit_next_hop(&datagram_ref.dest_addr, &previous_hop)
+        {
             Some(next_hop_addr) => next_hop_addr,
             None => {
                 self.stats_mut()
                     .forwarding
                     .record_drop_no_route(payload.len());
                 debug!(
-                    src = %self.peer_display_name(&datagram.src_addr),
-                    dest = %self.peer_display_name(&datagram.dest_addr),
+                    src = %self.peer_display_name(&datagram_ref.src_addr),
+                    dest = %self.peer_display_name(&datagram_ref.dest_addr),
                     bytes = payload.len(),
                     "Dropping transit SessionDatagram: no route to destination"
                 );
+                let datagram =
+                    owned_session_datagram_from_ref(&datagram_ref, new_ttl, datagram_ref.path_mtu);
                 self.send_routing_error(&datagram).await;
                 return;
             }
         };
 
         // Apply path_mtu min() from the outgoing link's transport MTU
+        let mut path_mtu = datagram_ref.path_mtu;
         if let Some(peer) = self.peers.get(&next_hop_addr)
             && let Some(tid) = peer.transport_id()
             && let Some(transport) = self.transports.get(&tid)
         {
             if let Some(addr) = peer.current_addr() {
-                datagram.path_mtu = datagram.path_mtu.min(transport.link_mtu(addr));
+                path_mtu = path_mtu.min(transport.link_mtu(addr));
             } else {
-                datagram.path_mtu = datagram.path_mtu.min(transport.mtu());
+                path_mtu = path_mtu.min(transport.mtu());
             }
         }
 
@@ -143,18 +134,22 @@ impl Node {
             }
         }
 
-        // Forward: re-encode (includes 0x00 type byte) and send
-        let encoded = datagram.encode();
+        // Forward: re-encode from the borrowed datagram view (includes 0x00
+        // type byte) and send. Keep the owned `SessionDatagram` allocation on
+        // rare error paths only.
+        let encoded = encode_forwarded_session_datagram(&datagram_ref, new_ttl, path_mtu);
         if let Err(e) = self
             .send_encrypted_link_message_with_ce(&next_hop_addr, &encoded, outgoing_ce)
             .await
         {
-            self.record_route_failure(datagram.dest_addr, next_hop_addr);
+            self.record_route_failure(datagram_ref.dest_addr, next_hop_addr);
             match e {
                 NodeError::MtuExceeded { mtu, .. } => {
                     self.stats_mut()
                         .forwarding
                         .record_drop_mtu_exceeded(payload.len());
+                    let datagram =
+                        owned_session_datagram_from_ref(&datagram_ref, new_ttl, path_mtu);
                     self.send_mtu_exceeded_error(&datagram, mtu).await;
                 }
                 _ => {
@@ -163,7 +158,7 @@ impl Node {
                         .record_drop_send_error(payload.len());
                     debug!(
                         next_hop = %next_hop_addr,
-                        dest = %datagram.dest_addr,
+                        dest = %datagram_ref.dest_addr,
                         error = %e,
                         "Failed to forward SessionDatagram"
                     );
@@ -420,16 +415,96 @@ impl Node {
         let mut new_drop_events = Vec::new();
         for (&tid, transport) in &self.transports {
             let congestion = transport.congestion();
-            if self.transport_drops.sample(tid, congestion.recv_drops) {
-                new_drop_events.push(tid);
+            let drop_delta = self.transport_drops.sample(tid, congestion.recv_drops);
+            let socket_drop_delta = self
+                .transport_socket_drops
+                .sample(tid, congestion.socket_recv_drops);
+            let namespace_drop_delta = self
+                .transport_namespace_drops
+                .sample(tid, congestion.namespace_recv_drops);
+            if drop_delta.is_some() || socket_drop_delta.is_some() || namespace_drop_delta.is_some()
+            {
+                new_drop_events.push((
+                    tid,
+                    drop_delta.unwrap_or(0),
+                    socket_drop_delta.unwrap_or(0),
+                    namespace_drop_delta.unwrap_or(0),
+                ));
             }
         }
-        for tid in new_drop_events {
-            self.stats_mut().congestion.record_kernel_drop_event();
+        for (tid, drop_delta, socket_drop_delta, namespace_drop_delta) in new_drop_events {
+            if drop_delta > 0 {
+                self.stats_mut().congestion.record_kernel_drop_event();
+                crate::perf_profile::record_udp_kernel_drops(drop_delta);
+            }
+            crate::perf_profile::record_udp_socket_kernel_drops(socket_drop_delta);
+            crate::perf_profile::record_udp_namespace_rcvbuf_errors(namespace_drop_delta);
             warn!(
                 transport_id = tid.as_u32(),
-                "Kernel recv drops first observed on transport"
+                drops = drop_delta,
+                socket_drops = socket_drop_delta,
+                namespace_rcvbuf_errors = namespace_drop_delta,
+                "Kernel recv drops observed on transport"
             );
         }
+    }
+}
+
+fn encode_forwarded_session_datagram(
+    datagram: &SessionDatagramRef<'_>,
+    ttl: u8,
+    path_mtu: u16,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + SessionDatagramRef::HEADER_LEN + datagram.payload.len());
+    buf.push(LinkMessageType::SessionDatagram.to_byte());
+    buf.push(ttl);
+    buf.extend_from_slice(&path_mtu.to_le_bytes());
+    buf.extend_from_slice(datagram.src_addr.as_bytes());
+    buf.extend_from_slice(datagram.dest_addr.as_bytes());
+    buf.extend_from_slice(datagram.payload);
+    buf
+}
+
+fn owned_session_datagram_from_ref(
+    datagram: &SessionDatagramRef<'_>,
+    ttl: u8,
+    path_mtu: u16,
+) -> SessionDatagram {
+    SessionDatagram {
+        src_addr: datagram.src_addr,
+        dest_addr: datagram.dest_addr,
+        ttl,
+        path_mtu,
+        payload: datagram.payload.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod forwarding_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_forward_encoder_matches_owned_session_datagram_encode() {
+        let src = NodeAddr::from_bytes([0x11; 16]);
+        let dest = NodeAddr::from_bytes([0x22; 16]);
+        let datagram = SessionDatagram::new(src, dest, vec![1, 2, 3, 4, 5])
+            .with_ttl(12)
+            .with_path_mtu(1400);
+        let encoded = datagram.encode();
+        let decoded = SessionDatagramRef::decode(&encoded[1..]).expect("decode datagram");
+
+        let forwarded_ttl = 11;
+        let forwarded_mtu = 1280;
+        let borrowed = encode_forwarded_session_datagram(&decoded, forwarded_ttl, forwarded_mtu);
+        let owned = SessionDatagram {
+            src_addr: decoded.src_addr,
+            dest_addr: decoded.dest_addr,
+            ttl: forwarded_ttl,
+            path_mtu: forwarded_mtu,
+            payload: decoded.payload.to_vec(),
+        }
+        .encode();
+
+        assert_eq!(borrowed, owned);
     }
 }

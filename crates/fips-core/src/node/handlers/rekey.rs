@@ -512,6 +512,11 @@ impl Node {
                 );
                 self.ensure_current_session_index_registered(&node_addr, "initiator rekey cutover");
                 self.register_decrypt_worker_session(&node_addr);
+                // The connected-UDP fast path snapshots session key + K-bit
+                // at activation. Refresh it after cutover so normal traffic
+                // returns to the direct worker path instead of permanent
+                // rx_loop misses.
+                self.clear_connected_udp_for_peer(&node_addr);
             }
         }
 
@@ -662,7 +667,7 @@ impl Node {
                 }
                 let _ = self.index_allocator.free(cleanup.rekey_our_index);
             }
-            warn!(
+            debug!(
                 peer = %self.peer_display_name(&exhausted.node_addr),
                 "FMP rekey aborted: msg1 unconfirmed after max retransmissions"
             );
@@ -711,7 +716,7 @@ impl Node {
             .sessions
             .exhaust_due_rekey_msg3_resend_budgets(now_ms, max_resends)
         {
-            warn!(
+            debug!(
                 peer = %self.peer_display_name(&exhausted.dest_addr),
                 "FSP rekey aborted: msg3 unconfirmed after max retransmissions"
             );

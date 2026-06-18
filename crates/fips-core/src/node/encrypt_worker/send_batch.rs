@@ -46,10 +46,9 @@ use tracing::{debug, trace, warn};
 /// inside the worker. That second alloc + ~1.5 KB memcpy per packet at
 /// line rate cost ~150 MB/sec of memory bandwidth on the hot worker.)
 pub(crate) struct FmpSendJob {
-    /// Shared immutable FMP send cipher. The session pre-reserves a unique
-    /// counter for each job; workers only borrow this key for explicit-counter
-    /// AEAD and never mutate session nonce state.
-    pub cipher: Arc<LessSafeKey>,
+    /// Cloned FMP send cipher. `LessSafeKey` is `Clone` (`ring::aead`)
+    /// — the clone is just a refcount bump on the inner key material.
+    pub cipher: LessSafeKey,
     /// Pre-reserved monotonic counter (via `take_send_counter`).
     pub counter: u64,
     /// Pre-built wire buffer: `[16-byte FMP header][inner plaintext]`
@@ -83,9 +82,10 @@ pub(crate) struct FmpSendJob {
     /// out of this lane by the endpoint payload classifier.
     pub bulk_endpoint_data: bool,
     /// Bulk endpoint data may be dropped when the kernel reports UDP
-    /// send-queue exhaustion. Worker/container admission also uses this flag
-    /// to label full-queue drops as reliable vs discardable without blocking
-    /// the node rx_loop behind bulk egress.
+    /// send-queue exhaustion. This is separate from worker-queue admission:
+    /// this flag remains false for TCP endpoint data so kernel send
+    /// backpressure still retries TCP packets that have already reached a
+    /// worker.
     pub drop_on_backpressure: bool,
     /// Bounded scheduler weight for this send target. `1` is normal
     /// best-effort service; configured peers can get a small boost and
@@ -98,7 +98,7 @@ pub(crate) struct FmpSendJob {
 }
 
 pub(crate) struct FspSealJob {
-    pub cipher: Arc<LessSafeKey>,
+    pub cipher: LessSafeKey,
     pub counter: u64,
     pub aad_offset: usize,
     pub plaintext_offset: usize,
@@ -209,11 +209,73 @@ impl FmpSendJob {
 }
 
 #[cfg(unix)]
+pub(in crate::node) fn fmp_send_job_batches_share_bulk_target(
+    left: &[FmpSendJob],
+    right: &[FmpSendJob],
+) -> bool {
+    let Some(first) = left.first().or_else(|| right.first()) else {
+        return true;
+    };
+    if !first.bulk_endpoint_data {
+        return false;
+    }
+    let target_key = first.send_target_key();
+    left.iter()
+        .chain(right.iter())
+        .all(|job| job.bulk_endpoint_data && job.send_target_key() == target_key)
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SelectedSendLane {
+    Priority,
+    Bulk,
+}
+
+#[cfg(unix)]
+impl SelectedSendLane {
+    fn for_endpoint_data(bulk_endpoint_data: bool) -> Self {
+        if bulk_endpoint_data {
+            Self::Bulk
+        } else {
+            Self::Priority
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum SelectedSendGroupSplitReason {
+    Target,
+    Lane,
+    Backpressure,
+    #[cfg(target_os = "linux")]
+    PacketCap,
+}
+
+#[cfg(unix)]
+fn record_selected_send_group_split(reason: SelectedSendGroupSplitReason) {
+    match reason {
+        SelectedSendGroupSplitReason::Target => {
+            crate::perf_profile::record_fmp_send_group_split_target()
+        }
+        SelectedSendGroupSplitReason::Lane => crate::perf_profile::record_fmp_send_group_split_lane(),
+        SelectedSendGroupSplitReason::Backpressure => {
+            crate::perf_profile::record_fmp_send_group_split_backpressure()
+        }
+        #[cfg(target_os = "linux")]
+        SelectedSendGroupSplitReason::PacketCap => {
+            crate::perf_profile::record_fmp_send_group_split_packet_cap()
+        }
+    }
+}
+
+#[cfg(unix)]
 struct SelectedSendBatch {
     send_target: SelectedSendTarget,
     target_key: SendTargetKey,
+    lane: SelectedSendLane,
     wire_packets: Vec<Vec<u8>>,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
     #[cfg(target_os = "linux")]
     gso_segment_len: usize,
@@ -232,14 +294,13 @@ impl SelectedSendBatch {
         send_target: SelectedSendTarget,
         target_key: SendTargetKey,
         wire_packet: Vec<u8>,
-        bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     ) -> Self {
         Self::new_with_capacity(
             send_target,
             target_key,
+            SelectedSendLane::Bulk,
             wire_packet,
-            bulk_endpoint_data,
             drop_on_backpressure,
             1,
         )
@@ -248,8 +309,8 @@ impl SelectedSendBatch {
     fn new_with_capacity(
         send_target: SelectedSendTarget,
         target_key: SendTargetKey,
+        lane: SelectedSendLane,
         wire_packet: Vec<u8>,
-        bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
         packet_capacity: usize,
     ) -> Self {
@@ -265,8 +326,8 @@ impl SelectedSendBatch {
         Self {
             send_target,
             target_key,
+            lane,
             wire_packets,
-            bulk_endpoint_data,
             drop_on_backpressure,
             #[cfg(target_os = "linux")]
             gso_segment_len,
@@ -279,20 +340,35 @@ impl SelectedSendBatch {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn target_key(&self) -> SendTargetKey {
         self.target_key
     }
 
-    fn push(
-        &mut self,
-        wire_packet: Vec<u8>,
-        bulk_endpoint_data: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn lane(&self) -> SelectedSendLane {
+        self.lane
+    }
+
+    fn split_reason_for(
+        &self,
+        target_key: SendTargetKey,
+        lane: SelectedSendLane,
         drop_on_backpressure: bool,
-    ) {
-        debug_assert_eq!(
-            self.bulk_endpoint_data, bulk_endpoint_data,
-            "send batches keep one endpoint-bulk class so macOS applies one backpressure policy"
-        );
+    ) -> Option<SelectedSendGroupSplitReason> {
+        if self.target_key != target_key {
+            return Some(SelectedSendGroupSplitReason::Target);
+        }
+        if self.lane != lane {
+            return Some(SelectedSendGroupSplitReason::Lane);
+        }
+        if self.drop_on_backpressure != drop_on_backpressure {
+            return Some(SelectedSendGroupSplitReason::Backpressure);
+        }
+        None
+    }
+
+    fn push(&mut self, wire_packet: Vec<u8>, drop_on_backpressure: bool) {
         debug_assert_eq!(
             self.drop_on_backpressure, drop_on_backpressure,
             "send batches keep one backpressure policy so bulk remains droppable"
@@ -307,16 +383,79 @@ impl SelectedSendBatch {
         self.wire_packets.push(wire_packet);
     }
 
+    #[cfg_attr(any(not(target_os = "linux"), not(test)), allow(dead_code))]
     fn drop_on_backpressure(&self) -> bool {
         self.drop_on_backpressure
     }
 
-    fn bulk_endpoint_data(&self) -> bool {
-        self.bulk_endpoint_data
-    }
-
     fn packet_count(&self) -> usize {
         self.wire_packets.len()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn bulk_wire_bytes(&self) -> Option<usize> {
+        if self.lane != SelectedSendLane::Bulk {
+            return None;
+        }
+        Some(
+            self.wire_packets
+                .iter()
+                .map(Vec::len)
+                .fold(0usize, usize::saturating_add),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn append_group_up_to(
+        &mut self,
+        other: SelectedSendBatch,
+        max_packets: usize,
+    ) -> Option<SelectedSendBatch> {
+        if let Some(reason) =
+            self.split_reason_for(other.target_key, other.lane, other.drop_on_backpressure)
+        {
+            record_selected_send_group_split(reason);
+            return Some(other);
+        }
+        if self.packet_count() >= max_packets {
+            record_selected_send_group_split(SelectedSendGroupSplitReason::PacketCap);
+            return Some(other);
+        }
+
+        let SelectedSendBatch {
+            send_target,
+            target_key,
+            lane,
+            wire_packets,
+            drop_on_backpressure,
+            ..
+        } = other;
+        let original_len = wire_packets.len();
+        let available = max_packets.saturating_sub(self.packet_count());
+        let mut packets = wire_packets.into_iter();
+
+        for _ in 0..available {
+            let Some(packet) = packets.next() else {
+                return None;
+            };
+            self.push(packet, drop_on_backpressure);
+        }
+
+        let first_remaining = packets.next()?;
+        let remaining_capacity = original_len.saturating_sub(available).max(1);
+        let mut remainder = SelectedSendBatch::new_with_capacity(
+            send_target,
+            target_key,
+            lane,
+            first_remaining,
+            drop_on_backpressure,
+            remaining_capacity,
+        );
+        for packet in packets {
+            remainder.push(packet, drop_on_backpressure);
+        }
+        record_selected_send_group_split(SelectedSendGroupSplitReason::PacketCap);
+        Some(remainder)
     }
 
     #[cfg(target_os = "linux")]
@@ -329,11 +468,10 @@ impl SelectedSendBatch {
         self.wire_packets.capacity()
     }
 
-    fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool, bool) {
+    fn into_parts(self) -> (SelectedSendTarget, Vec<Vec<u8>>, bool) {
         (
             self.send_target,
             self.wire_packets,
-            self.bulk_endpoint_data,
             self.drop_on_backpressure,
         )
     }
@@ -344,7 +482,6 @@ struct LinuxSendBatchAttempt {
     send_target: SelectedSendTarget,
     wire_packets: Vec<Vec<u8>>,
     gso_eligible_sizes: bool,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
     backpressure: SendBackpressurePacer,
     sent: usize,
@@ -358,13 +495,11 @@ impl LinuxSendBatchAttempt {
             gso_eligible_sizes,
             gso_eligible_sizes_ref(&batch.wire_packets)
         );
-        let (send_target, wire_packets, bulk_endpoint_data, drop_on_backpressure) =
-            batch.into_parts();
+        let (send_target, wire_packets, drop_on_backpressure) = batch.into_parts();
         Self {
             send_target,
             wire_packets,
             gso_eligible_sizes,
-            bulk_endpoint_data,
             drop_on_backpressure,
             backpressure: SendBackpressurePacer::default(),
             sent: 0,
@@ -418,11 +553,7 @@ impl LinuxSendBatchAttempt {
         pacer_requested_drop: bool,
         err: &std::io::Error,
     ) -> SendBackpressureDecision {
-        let decision = send_backpressure_decision_for_lane(
-            pacer_requested_drop,
-            self.drop_on_backpressure,
-            self.bulk_endpoint_data,
-        );
+        let decision = send_backpressure_decision(pacer_requested_drop, self.drop_on_backpressure);
         if matches!(decision, SendBackpressureDecision::DropCurrentBulk) && !self.is_complete() {
             record_udp_send_backpressure_drop(err);
             self.sent += 1;
@@ -435,7 +566,6 @@ impl LinuxSendBatchAttempt {
 struct DirectSendBatchAttempt {
     send_target: SelectedSendTarget,
     wire_packets: Vec<Vec<u8>>,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
     backpressure: SendBackpressurePacer,
     sent: usize,
@@ -444,12 +574,10 @@ struct DirectSendBatchAttempt {
 #[cfg(all(unix, not(target_os = "linux")))]
 impl DirectSendBatchAttempt {
     fn from_batch(batch: SelectedSendBatch) -> Self {
-        let (send_target, wire_packets, bulk_endpoint_data, drop_on_backpressure) =
-            batch.into_parts();
+        let (send_target, wire_packets, drop_on_backpressure) = batch.into_parts();
         Self {
             send_target,
             wire_packets,
-            bulk_endpoint_data,
             drop_on_backpressure,
             backpressure: SendBackpressurePacer::default(),
             sent: 0,
@@ -472,10 +600,8 @@ impl DirectSendBatchAttempt {
     }
 
     #[cfg(target_os = "macos")]
-    fn current_bulk_packet_len_for_pacing(&self) -> Option<usize> {
-        self.bulk_endpoint_data
-            .then(|| self.wire_packets.get(self.sent).map(Vec::len))
-            .flatten()
+    fn current_packet_len(&self) -> Option<usize> {
+        self.wire_packets.get(self.sent).map(Vec::len)
     }
 
     fn is_complete(&self) -> bool {
@@ -502,11 +628,7 @@ impl DirectSendBatchAttempt {
         pacer_requested_drop: bool,
         err: &std::io::Error,
     ) -> SendBackpressureDecision {
-        let decision = send_backpressure_decision_for_lane(
-            pacer_requested_drop,
-            self.drop_on_backpressure,
-            self.bulk_endpoint_data,
-        );
+        let decision = send_backpressure_decision(pacer_requested_drop, self.drop_on_backpressure);
         if matches!(decision, SendBackpressureDecision::DropCurrentBulk) && !self.is_complete() {
             record_udp_send_backpressure_drop(err);
             self.sent += 1;
@@ -553,89 +675,84 @@ fn push_selected_send_batch(
     wire_packet: Vec<u8>,
     drop_on_backpressure: bool,
 ) {
-    push_selected_send_batch_with_capacity(
+    push_selected_send_batch_with_lane_and_capacity(
         groups,
         send_target,
         target_key,
+        SelectedSendLane::Bulk,
         wire_packet,
-        drop_on_backpressure,
         drop_on_backpressure,
         1,
     )
 }
 
 #[cfg(unix)]
+#[cfg(test)]
 fn push_selected_send_batch_with_capacity(
     groups: &mut Vec<SelectedSendBatch>,
     send_target: SelectedSendTarget,
     target_key: SendTargetKey,
     wire_packet: Vec<u8>,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
     packet_capacity: usize,
 ) {
-    if let Some(group) = groups.last_mut()
-        && group.target_key() == target_key
-    {
-        if group.bulk_endpoint_data() == bulk_endpoint_data
-            && group.drop_on_backpressure() == drop_on_backpressure
-        {
-            group.push(wire_packet, bulk_endpoint_data, drop_on_backpressure);
-        } else {
-            groups.push(SelectedSendBatch::new_with_capacity(
-                send_target,
-                target_key,
-                wire_packet,
-                bulk_endpoint_data,
-                drop_on_backpressure,
-                packet_capacity,
-            ));
-        }
-        return;
-    }
-
-    groups.push(SelectedSendBatch::new_with_capacity(
+    push_selected_send_batch_with_lane_and_capacity(
+        groups,
         send_target,
         target_key,
+        SelectedSendLane::Bulk,
         wire_packet,
-        bulk_endpoint_data,
         drop_on_backpressure,
         packet_capacity,
-    ));
+    );
 }
 
-#[cfg(all(unix, any(test, target_os = "linux")))]
-fn push_uniform_target_send_batch_with_capacity(
+#[cfg(unix)]
+fn push_selected_send_batch_with_lane_and_capacity(
     groups: &mut Vec<SelectedSendBatch>,
-    send_target: &SelectedSendTarget,
+    send_target: SelectedSendTarget,
     target_key: SendTargetKey,
+    lane: SelectedSendLane,
     wire_packet: Vec<u8>,
-    bulk_endpoint_data: bool,
     drop_on_backpressure: bool,
     packet_capacity: usize,
 ) {
     if let Some(group) = groups.last_mut() {
-        debug_assert_eq!(
-            group.target_key(),
-            target_key,
-            "uniform-target send batching must not mix kernel send targets"
-        );
-        if group.bulk_endpoint_data() == bulk_endpoint_data
-            && group.drop_on_backpressure() == drop_on_backpressure
-        {
-            group.push(wire_packet, bulk_endpoint_data, drop_on_backpressure);
+        if let Some(reason) = group.split_reason_for(target_key, lane, drop_on_backpressure) {
+            record_selected_send_group_split(reason);
+        } else {
+            group.push(wire_packet, drop_on_backpressure);
             return;
         }
     }
 
     groups.push(SelectedSendBatch::new_with_capacity(
-        send_target.clone(),
+        send_target,
         target_key,
+        lane,
         wire_packet,
-        bulk_endpoint_data,
         drop_on_backpressure,
         packet_capacity,
     ));
+}
+
+#[cfg(target_os = "linux")]
+fn append_linux_wg_ready_send_groups(
+    groups: &mut Vec<SelectedSendBatch>,
+    ready_groups: Vec<SelectedSendBatch>,
+    max_packets_per_group: usize,
+) {
+    let max_packets_per_group = max_packets_per_group.clamp(1, LINUX_UDP_SEND_BATCH_MAX);
+    for group in ready_groups {
+        match groups.last_mut() {
+            Some(last) => {
+                if let Some(remainder) = last.append_group_up_to(group, max_packets_per_group) {
+                    groups.push(remainder);
+                }
+            }
+            None => groups.push(group),
+        }
+    }
 }
 
 #[cfg(unix)]

@@ -62,15 +62,27 @@ impl Node {
         // Endpoint events keep priority delivery wait-free and bound bulk
         // backlog by the caller's packet-channel capacity.
         let (event_tx, event_rx) = EndpointEventSender::channel(capacity);
+        #[cfg(unix)]
+        let (bulk_send_runtime, bulk_feedback_rx) = EndpointBulkSendRuntime::channel(capacity);
+        #[cfg(not(unix))]
+        let (_bulk_feedback_tx, bulk_feedback_rx) =
+            tokio::sync::mpsc::channel(endpoint_data_command_capacity(capacity).max(1));
         self.endpoint_priority_command_rx = Some(priority_command_rx);
         self.endpoint_command_rx = Some(command_rx);
         self.endpoint_events.attach(event_tx.clone());
+        self.endpoint_bulk_feedback_rx = Some(bulk_feedback_rx);
+        #[cfg(unix)]
+        {
+            self.endpoint_bulk_send_runtime = Some(bulk_send_runtime.clone());
+        }
 
         Ok(EndpointDataIo {
             priority_command_tx,
             command_tx,
             event_rx,
             event_tx,
+            #[cfg(unix)]
+            bulk_send_runtime,
         })
     }
 

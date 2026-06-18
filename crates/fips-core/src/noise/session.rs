@@ -1,8 +1,68 @@
 use super::{CipherState, HandshakeRole, NoiseError, ReplayWindow};
 use ring::aead::LessSafeKey;
 use secp256k1::{PublicKey, XOnlyPublicKey};
-use std::fmt;
-use std::sync::Arc;
+use std::{
+    fmt,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+/// Shared send-side counter authority for one Noise transport session.
+///
+/// AEAD keys can be rebuilt for worker threads, but nonce uniqueness must stay
+/// single-owner. This authority is the small clonable object that lets a future
+/// packet mover reserve counters without borrowing the whole `NoiseSession`.
+#[derive(Clone)]
+pub(crate) struct SendCounterAuthority {
+    next: Arc<AtomicU64>,
+}
+
+impl SendCounterAuthority {
+    fn new(next: u64) -> Self {
+        Self {
+            next: Arc::new(AtomicU64::new(next)),
+        }
+    }
+
+    pub(crate) fn current(&self) -> u64 {
+        self.next.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn reserve(&self) -> Result<u64, NoiseError> {
+        self.next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                if next == u64::MAX {
+                    None
+                } else {
+                    Some(next + 1)
+                }
+            })
+            .map_err(|_| NoiseError::NonceOverflow)
+    }
+
+    pub(crate) fn reserve_range(&self, count: usize) -> Result<Range<u64>, NoiseError> {
+        let count = u64::try_from(count).map_err(|_| NoiseError::NonceOverflow)?;
+        if count == 0 {
+            let current = self.current();
+            return Ok(current..current);
+        }
+
+        let first = self
+            .next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                if next <= u64::MAX - count {
+                    Some(next + count)
+                } else {
+                    None
+                }
+            })
+            .map_err(|_| NoiseError::NonceOverflow)?;
+        Ok(first..first + count)
+    }
+}
 
 /// Completed Noise session for transport encryption.
 ///
@@ -14,6 +74,8 @@ pub struct NoiseSession {
     role: HandshakeRole,
     /// Cipher for sending.
     send_cipher: CipherState,
+    /// Monotonic send counter authority for transport nonces.
+    send_counter: SendCounterAuthority,
     /// Cipher for receiving.
     recv_cipher: CipherState,
     /// Handshake hash for channel binding.
@@ -33,9 +95,11 @@ impl NoiseSession {
         handshake_hash: [u8; 32],
         remote_static: PublicKey,
     ) -> Self {
+        let send_counter = SendCounterAuthority::new(send_cipher.nonce());
         Self {
             role,
             send_cipher,
+            send_counter,
             recv_cipher,
             handshake_hash,
             remote_static,
@@ -48,7 +112,8 @@ impl NoiseSession {
     /// Returns the ciphertext. The current send counter should be included
     /// in the wire format before calling this method.
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
-        self.send_cipher.encrypt(plaintext)
+        let counter = self.take_send_counter()?;
+        self.send_cipher.encrypt_with_counter(plaintext, counter)
     }
 
     /// Get the current send counter (before incrementing).
@@ -56,7 +121,7 @@ impl NoiseSession {
     /// Use this to get the counter to include in the wire format.
     /// The counter will be incremented when `encrypt` is called.
     pub fn current_send_counter(&self) -> u64 {
-        self.send_cipher.nonce
+        self.send_counter.current()
     }
 
     /// Decrypt a received message (using internal counter).
@@ -115,7 +180,9 @@ impl NoiseSession {
         plaintext: &[u8],
         aad: &[u8],
     ) -> Result<Vec<u8>, NoiseError> {
-        self.send_cipher.encrypt_with_aad(plaintext, aad)
+        let counter = self.take_send_counter()?;
+        self.send_cipher
+            .encrypt_with_counter_and_aad(plaintext, counter, aad)
     }
 
     /// Decrypt with explicit counter, replay protection, and AAD.
@@ -205,23 +272,19 @@ impl NoiseSession {
         self.replay_window.clone()
     }
 
-    /// Clone the send-side AEAD instance as an owned key.
+    /// Clone the send-side AEAD instance, for off-task encrypt.
     ///
     /// Returns `None` if the send cipher has no key. Pairs with
-    /// `encrypt_with_counter[_and_aad]` on `CipherState`. Hot send-worker
-    /// paths should prefer [`Self::send_cipher_handle`] so they do not rebuild
-    /// the keyed AEAD per packet. The caller must own counter sequencing —
-    /// `take_send_counter` hands out monotonic counters under the session's
-    /// own &mut.
+    /// `encrypt_with_counter[_and_aad]` on `CipherState`. The caller must
+    /// reserve counters through this session's shared counter authority before
+    /// worker-side encryption.
     pub fn send_cipher_clone(&self) -> Option<LessSafeKey> {
         self.send_cipher.cipher_clone()
     }
 
-    /// Cheap handle to the send-side AEAD for explicit-counter worker sends.
-    ///
-    /// The session still owns nonce assignment through `take_send_counter`.
-    pub(crate) fn send_cipher_handle(&self) -> Option<Arc<LessSafeKey>> {
-        self.send_cipher.cipher_handle()
+    /// Clone the send-side counter authority for an owned packet mover.
+    pub(crate) fn send_counter_authority(&self) -> SendCounterAuthority {
+        self.send_counter.clone()
     }
 
     /// Whether the send-side cipher is keyed for worker-side encryption.
@@ -230,17 +293,12 @@ impl NoiseSession {
     }
 
     /// Reserve and return the next send counter, advancing the internal
-    /// nonce. For pipelined encrypt paths, the dispatcher pre-assigns the
-    /// counter here (under the session's &mut) and the worker performs the
-    /// AEAD using the shared send-cipher handle with no further mutation of
-    /// session state.
-    pub fn take_send_counter(&mut self) -> Result<u64, NoiseError> {
-        if self.send_cipher.nonce == u64::MAX {
-            return Err(NoiseError::NonceOverflow);
-        }
-        let counter = self.send_cipher.nonce;
-        self.send_cipher.nonce += 1;
-        Ok(counter)
+    /// nonce. For pipelined encrypt paths that call `encrypt_with_counter`
+    /// on a cloned cipher: the dispatcher pre-assigns the counter here
+    /// through the session's shared authority and the worker performs the
+    /// AEAD with no further mutation of session state.
+    pub fn take_send_counter(&self) -> Result<u64, NoiseError> {
+        self.send_counter.reserve()
     }
 
     /// Accept a counter into the replay window after a successful out-of-task
@@ -276,7 +334,7 @@ impl NoiseSession {
 
     /// Get the send nonce (for debugging).
     pub fn send_nonce(&self) -> u64 {
-        self.send_cipher.nonce()
+        self.send_counter.current()
     }
 
     /// Get the receive nonce (for debugging).
@@ -289,7 +347,7 @@ impl fmt::Debug for NoiseSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NoiseSession")
             .field("role", &self.role)
-            .field("send_nonce", &self.send_cipher.nonce())
+            .field("send_nonce", &self.send_counter.current())
             .field("recv_nonce", &self.recv_cipher.nonce())
             .field("handshake_hash", &hex::encode(&self.handshake_hash[..8]))
             .finish()

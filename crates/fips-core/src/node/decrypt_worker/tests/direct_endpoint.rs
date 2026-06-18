@@ -57,14 +57,12 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected a direct commit batch")
             }
-            DecryptWorkerEvent::DirectFmpEndpointData(_) => panic!("expected a direct commit batch"),
-            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
-                panic!("expected a direct commit batch")
-            }
             DecryptWorkerEvent::Plaintext(_)
             | DecryptWorkerEvent::PlaintextBatch(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
+            | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
+            | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected a direct commit batch"),
         }
@@ -80,116 +78,6 @@
             }
             NodeEndpointEvent::Data { .. } => panic!("expected endpoint data batch"),
         }
-    }
-
-    #[test]
-    fn decrypt_worker_direct_fmp_endpoint_data_batches_authenticated_bulk_lane() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let source_peer = test_source_peer();
-        let mut batch = DecryptPlaintextFallbackBatch::new();
-
-        batch.push_output(dummy_direct_fmp_endpoint_output(
-            fallback_tx.clone(),
-            source_peer,
-            1,
-            DecryptWorkerLane::Bulk,
-            b"direct-fmp-one".to_vec(),
-        ));
-        assert!(
-            fallback_rx.authenticated_bulk.try_recv().is_err(),
-            "first bulk direct-FMP endpoint event should wait for a batch flush"
-        );
-
-        batch.push_output(dummy_direct_fmp_endpoint_output(
-            fallback_tx,
-            source_peer,
-            2,
-            DecryptWorkerLane::Bulk,
-            b"direct-fmp-two".to_vec(),
-        ));
-        batch.flush();
-
-        assert_eq!(
-            fallback_rx.authenticated_bulk_queued_packets(),
-            2,
-            "direct-FMP endpoint batch should reserve by packet count"
-        );
-        let event = fallback_rx
-            .authenticated_bulk
-            .try_recv()
-            .expect("direct-FMP endpoint batch");
-        assert_eq!(event.packet_count(), 2);
-        match &event {
-            DecryptWorkerEvent::DirectFmpEndpointDataBatch(endpoints) => {
-                assert_eq!(endpoints.len(), 2);
-                assert_eq!(endpoints[0].fmp.source_peer, source_peer);
-                assert_eq!(endpoints[1].fmp.source_peer, source_peer);
-                assert_eq!(endpoints[0].fmp.fmp_counter, 1);
-                assert_eq!(endpoints[1].fmp.fmp_counter, 2);
-                assert_eq!(endpoints[0].payload(), b"direct-fmp-one");
-                assert_eq!(endpoints[1].payload(), b"direct-fmp-two");
-            }
-            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
-                panic!("expected a direct-FMP endpoint batch")
-            }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
-            | DecryptWorkerEvent::AuthenticatedSession(_)
-            | DecryptWorkerEvent::DirectSessionCommit(_)
-            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
-            | DecryptWorkerEvent::DirectSessionData(_)
-            | DecryptWorkerEvent::FspDecryptFailure(_)
-            | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected a direct-FMP endpoint batch")
-            }
-        }
-        fallback_rx.release_dequeued_event(&event);
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
-    }
-
-    #[test]
-    fn decrypt_worker_direct_fmp_endpoint_data_priority_stays_single() {
-        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let source_peer = test_source_peer();
-        let mut batch = DecryptPlaintextFallbackBatch::new();
-
-        batch.push_output(dummy_direct_fmp_endpoint_output(
-            fallback_tx,
-            source_peer,
-            1,
-            DecryptWorkerLane::Priority,
-            b"small-control-shaped-endpoint-data".to_vec(),
-        ));
-
-        let event = fallback_rx
-            .priority
-            .try_recv()
-            .expect("priority direct-FMP endpoint data");
-        match event {
-            DecryptWorkerEvent::DirectFmpEndpointData(endpoint) => {
-                assert_eq!(endpoint.fmp.source_peer, source_peer);
-                assert_eq!(endpoint.fmp.fmp_counter, 1);
-                assert_eq!(endpoint.payload(), b"small-control-shaped-endpoint-data");
-                assert_eq!(endpoint.lane, DecryptWorkerLane::Priority);
-            }
-            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
-                panic!("priority direct-FMP endpoint data must not batch")
-            }
-            DecryptWorkerEvent::Plaintext(_)
-            | DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
-            | DecryptWorkerEvent::AuthenticatedSession(_)
-            | DecryptWorkerEvent::DirectSessionCommit(_)
-            | DecryptWorkerEvent::DirectSessionCommitBatch(_)
-            | DecryptWorkerEvent::DirectSessionData(_)
-            | DecryptWorkerEvent::FspDecryptFailure(_)
-            | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected priority direct-FMP endpoint data")
-            }
-        }
-        assert!(fallback_rx.authenticated_bulk.try_recv().is_err());
-        assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
     }
 
     #[test]
@@ -227,6 +115,11 @@
             fallback_rx.authenticated_bulk_queued_packets() == 2,
             "direct endpoint commits should reserve the authenticated lane, not the fallback lane"
         );
+        assert_eq!(
+            fallback_rx.bulk_pressure_queued_packets(),
+            3,
+            "return-lane pressure should include plaintext and authenticated bulk"
+        );
 
         let event = fallback_rx.bulk.try_recv().expect("pre-filled bulk event");
         assert!(
@@ -235,6 +128,11 @@
         );
         fallback_rx.release_dequeued_event(&event);
         assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+        assert_eq!(
+            fallback_rx.bulk_pressure_queued_packets(),
+            2,
+            "authenticated bulk should still contribute to pressure after plaintext drains"
+        );
 
         let event = fallback_rx
             .authenticated_bulk
@@ -243,6 +141,7 @@
         assert_eq!(event.packet_count(), 2);
         fallback_rx.release_dequeued_event(&event);
         assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+        assert_eq!(fallback_rx.bulk_pressure_queued_packets(), 0);
 
         match endpoint_rx.try_recv().expect("endpoint data batch") {
             NodeEndpointEvent::DataBatch { messages, .. } => {
@@ -402,7 +301,7 @@
 
     #[test]
     fn decrypt_job_batcher_flushes_bulk_before_priority_job() {
-        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+        let (pool, _control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 102);
         let mut batcher = DecryptJobBatcher::new();
 
@@ -431,7 +330,7 @@
 
     #[test]
     fn decrypt_job_batcher_keeps_bulk_capacity_in_packet_units() {
-        let (pool, _priority_rx, bulk_rx) = one_slot_worker_pool();
+        let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 103);
         let mut batcher = DecryptJobBatcher::new();
 
@@ -455,7 +354,8 @@
 
     #[test]
     fn decrypt_job_batcher_reuses_pending_buffer_for_single_bulk_flush() {
-        let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let (pool, _control_rx, _priority_rx, bulk_rx) =
+            test_worker_pool(1, DECRYPT_WORKER_BULK_BATCH_MAX);
         let session_key = test_session_key(1, 104);
         let mut batcher = DecryptJobBatcher::new();
         let pending_buffer = batcher.pending_buffer_ptr();
@@ -481,7 +381,8 @@
     fn decrypt_job_batcher_limits_batch_width_to_worker_packet_capacity() {
         const WORKER_PACKET_CAP: usize = 8;
 
-        let (pool, _priority_rx, bulk_rx) = test_worker_pool(1, WORKER_PACKET_CAP);
+        let (pool, _control_rx, _priority_rx, bulk_rx) =
+            test_worker_pool(1, WORKER_PACKET_CAP);
         let session_key = test_session_key(1, 105);
         let mut batcher = DecryptJobBatcher::new();
 
@@ -503,6 +404,10 @@
             ),
             DecryptWorkerBulkItem::Job(_) => panic!("expected an eight-packet bulk batch"),
             DecryptWorkerBulkItem::FspJob(_) => panic!("expected an eight-packet bulk batch"),
+            DecryptWorkerBulkItem::FspAeadOpen(_) => panic!("expected an eight-packet bulk batch"),
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => {
+                panic!("expected an eight-packet bulk batch")
+            }
             DecryptWorkerBulkItem::FspBatch(_) => panic!("expected an eight-packet bulk batch"),
         }
         assert!(
@@ -530,14 +435,36 @@
     }
 
     #[test]
-    fn decrypt_worker_register_uses_priority_lane_when_bulk_queue_is_full() {
-        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+    fn decrypt_worker_bulk_accounting_can_reserve_partial_capacity() {
+        let counter = AtomicUsize::new(2);
+
+        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 4), 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 4);
+        assert_eq!(
+            try_reserve_bulk_packets_partial(&counter, 4, 1),
+            0,
+            "full packet capacity should not over-reserve"
+        );
+        release_bulk_packets(&counter, 3);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(try_reserve_bulk_packets_partial(&counter, 4, 2), 2);
+        assert_eq!(counter.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn decrypt_worker_register_uses_control_lane_when_bulk_queue_is_full() {
+        let (pool, control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
         pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
         assert!(pool.register_session(session_key, test_owned_session_state()));
-        assert_eq!(priority_rx.len(), 1, "registration should enqueue");
+        assert_eq!(control_rx.len(), 1, "registration should enqueue");
+        assert_eq!(
+            priority_rx.len(),
+            0,
+            "registration should not consume the small-packet priority lane"
+        );
         assert_eq!(
             bulk_rx.len(),
             1,
@@ -546,14 +473,19 @@
     }
 
     #[test]
-    fn decrypt_worker_unregister_uses_priority_lane_when_bulk_queue_is_full() {
-        let (pool, priority_rx, bulk_rx) = one_slot_worker_pool();
+    fn decrypt_worker_unregister_uses_control_lane_when_bulk_queue_is_full() {
+        let (pool, control_rx, priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 78);
         pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
         assert!(pool.unregister_session(session_key));
-        assert_eq!(priority_rx.len(), 1, "unregister should enqueue");
+        assert_eq!(control_rx.len(), 1, "unregister should enqueue");
+        assert_eq!(
+            priority_rx.len(),
+            0,
+            "unregister should not consume the small-packet priority lane"
+        );
         assert_eq!(
             bulk_rx.len(),
             1,
@@ -563,13 +495,13 @@
 
     #[test]
     fn decrypt_worker_register_full_returns_false_without_waiting() {
-        let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
+        let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
         assert!(pool.register_session(session_key, test_owned_session_state()));
         assert_eq!(
-            priority_rx.len(),
+            control_rx.len(),
             1,
-            "test priority queue should start full"
+            "test control queue should start full"
         );
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -588,21 +520,22 @@
             "registration should report pressure so caller retries later"
         );
         assert_eq!(
-            priority_rx.len(),
+            control_rx.len(),
             1,
-            "registration should not overflow the bounded priority queue"
+            "registration should not overflow the bounded control queue"
         );
+        assert!(priority_rx.is_empty(), "priority lane should remain available");
     }
 
     #[test]
     fn decrypt_worker_unregister_full_returns_false_without_waiting() {
-        let (pool, priority_rx, _bulk_rx) = one_slot_worker_pool();
+        let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 78);
         assert!(pool.register_session(session_key, test_owned_session_state()));
         assert_eq!(
-            priority_rx.len(),
+            control_rx.len(),
             1,
-            "test priority queue should start full"
+            "test control queue should start full"
         );
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -617,26 +550,28 @@
             .expect("full decrypt-worker control queue must not park unregister");
         assert!(
             !unregistered,
-            "unregister should report pressure when the priority lane is full"
+            "unregister should report pressure when the control lane is full"
         );
         assert_eq!(
-            priority_rx.len(),
+            control_rx.len(),
             1,
-            "unregister should not overflow the bounded priority queue"
+            "unregister should not overflow the bounded control queue"
         );
+        assert!(priority_rx.is_empty(), "priority lane should remain available");
     }
 
     #[test]
-    fn decrypt_worker_drain_registers_priority_before_bulk_jobs() {
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+    fn decrypt_worker_drain_registers_control_before_bulk_jobs() {
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 77);
-        priority_tx
+        control_tx
             .try_send(WorkerMsg::RegisterSession {
                 session_key,
                 state: test_owned_session_state(),
             })
-            .expect("priority registration should enqueue");
+            .expect("control registration should enqueue");
 
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut bulk_job = dummy_bulk_decrypt_job(session_key);
@@ -649,18 +584,23 @@
 
         let mut shard = test_shard();
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
+            &control_rx,
             &priority_rx,
             &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert!(
             shard.contains_session(session_key),
-            "priority registration must be applied before queued bulk work"
+            "control registration must be applied before queued bulk work"
         );
         match fallback_rx
             .priority
@@ -675,13 +615,10 @@
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
-            DecryptWorkerEvent::DirectFmpEndpointData(_) => {
-                panic!("invalid bulk job should fail AEAD")
-            }
-            DecryptWorkerEvent::DirectFmpEndpointDataBatch(_) => {
-                panic!("invalid bulk job should fail AEAD")
-            }
             DecryptWorkerEvent::AuthenticatedSession(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::AuthenticatedSessionBatch(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::DirectSessionCommit(_) => {
@@ -693,26 +630,31 @@
             DecryptWorkerEvent::DirectSessionData(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
+            DecryptWorkerEvent::DirectSessionDataBatch(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
             DecryptWorkerEvent::FspDecryptFailure(_) => {
                 panic!("invalid bulk job should fail FMP AEAD")
             }
         }
         assert!(
-            priority_rx.is_empty(),
-            "priority queue should be fully drained before bulk"
+            control_rx.is_empty(),
+            "control queue should be fully drained before bulk"
         );
+        assert!(priority_rx.is_empty(), "priority queue should remain empty");
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
     }
 
     #[test]
-    fn decrypt_worker_drain_unregisters_priority_before_bulk_jobs() {
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+    fn decrypt_worker_drain_unregisters_control_before_bulk_jobs() {
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 78);
 
-        priority_tx
+        control_tx
             .try_send(WorkerMsg::UnregisterSession { session_key })
-            .expect("priority unregister should enqueue");
+            .expect("control unregister should enqueue");
 
         let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         let mut bulk_job = dummy_bulk_decrypt_job(session_key);
@@ -726,18 +668,23 @@
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
+            &control_rx,
             &priority_rx,
             &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert!(
             !shard.contains_session(session_key),
-            "priority unregister must remove stale session state before queued bulk work"
+            "control unregister must remove stale session state before queued bulk work"
         );
         assert!(
             fallback_rx.priority.is_empty(),
@@ -748,46 +695,65 @@
             "bulk job for unregistered session must not produce plaintext"
         );
         assert!(
-            priority_rx.is_empty(),
-            "priority queue should be fully drained before bulk"
+            control_rx.is_empty(),
+            "control queue should be fully drained before bulk"
         );
+        assert!(priority_rx.is_empty(), "priority queue should remain empty");
         assert!(bulk_rx.is_empty(), "bulk queue should be drained");
     }
 
     #[test]
-    fn decrypt_worker_blocking_receive_prefers_ready_priority_over_bulk() {
+    fn decrypt_worker_blocking_receive_prefers_ready_control_over_bulk() {
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 79);
-        priority_tx
+        control_tx
             .try_send(WorkerMsg::RegisterSession {
                 session_key,
                 state: test_owned_session_state(),
             })
-            .expect("priority registration should enqueue");
+            .expect("control registration should enqueue");
         queue_bulk_item_for_test(
             &bulk_tx,
             &bulk_queued_packets,
             DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
         );
+        priority_tx
+            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
+            .expect("priority packet should enqueue");
 
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
-        match recv_worker_item_biased(&priority_rx, &fmp_aead_completion_rx, &bulk_rx) {
-            DecryptWorkerQueueItem::Priority(WorkerMsg::RegisterSession {
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        match recv_worker_item_biased(
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+        ) {
+            DecryptWorkerQueueItem::Control(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
             }) => assert_eq!(got, session_key),
+            DecryptWorkerQueueItem::Control(_) => {
+                panic!("expected control registration item")
+            }
             DecryptWorkerQueueItem::Priority(_) => {
-                panic!("expected priority registration item")
+                panic!("blocking receive must not select priority while control is ready")
             }
             DecryptWorkerQueueItem::Bulk(_) => {
-                panic!("blocking receive must not select bulk while priority is ready")
+                panic!("blocking receive must not select bulk while control is ready")
+            }
+            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
+                panic!("blocking receive must not select FSP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::FmpAeadCompletion(_) => {
-                panic!("blocking receive must not select completion while priority is ready")
+                panic!("blocking receive must not select FMP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
+        assert_eq!(priority_rx.len(), 1, "priority work should remain queued");
         assert_eq!(
             bulk_rx.len(),
             1,
@@ -800,14 +766,6 @@
         assert_eq!(
             DECRYPT_WORKER_BULK_BURST_BUDGET, 128,
             "worker burst should track the reference packet-mover receive batch width"
-        );
-        assert_eq!(
-            DECRYPT_WORKER_FMP_RECEIVE_WINDOW, 1024,
-            "FMP helper in-flight order window should absorb several GSO/helper turns"
-        );
-        assert!(
-            DECRYPT_WORKER_FMP_RECEIVE_WINDOW >= DECRYPT_WORKER_BULK_BURST_BUDGET * 8,
-            "FMP receive ordering must not force bulk traffic to wait behind a single worker turn"
         );
         assert_eq!(
             DECRYPT_WORKER_BULK_BATCH_MAX, 32,
@@ -823,14 +781,25 @@
             "one worker burst should still contain several bounded bulk batches"
         );
         assert_eq!(
-            DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BURST_BUDGET,
-            "direct delivery may coalesce one bounded worker turn after payload bytes leave the rx-loop bounce"
+            DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BATCH_MAX,
+            "direct delivery should flush in one bulk-batch slice so decrypted bursts do not reach the TUN/app receiver as a whole worker turn"
         );
         assert_eq!(
-            DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_BULK_BURST_BUDGET,
-            "direct endpoint delivery may coalesce one bounded worker turn after payload bytes leave the rx-loop bounce"
+            DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX,
+            "direct endpoint delivery should use the same bounded delivery slice as direct TUN delivery"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
+            DECRYPT_WORKER_BULK_BATCH_MAX,
+            "completion backlog should get one reserved owner slice before bulk, not consume the whole bulk turn"
+        );
+        assert_eq!(
+            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
+            DECRYPT_WORKER_BULK_BATCH_MAX,
+            "completion interleave should be bounded to one bulk item width"
         );
 
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) =
             test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
@@ -845,18 +814,171 @@
 
         let mut shard = test_shard();
         let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
             0,
             &mut shard,
+            &control_rx,
             &priority_rx,
             &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
+            &mut plaintext_batch,
         );
 
         assert_eq!(
             bulk_rx.len(),
             1,
             "one worker drain call must respect the bounded bulk burst budget"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_completion_drain_budget_does_not_spend_bulk_turn() {
+        let session_key = test_session_key(1, 80);
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) =
+            test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
+        for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
+            queue_bulk_item_for_test(
+                &bulk_tx,
+                &bulk_queued_packets,
+                DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
+            );
+        }
+
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET + 3;
+        let (fsp_completion_tx, fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletionBatch>(completion_count);
+        let source_addr = *test_source_peer().node_addr();
+        for sequence in 0..completion_count {
+            fsp_completion_tx
+                .try_send(dummy_fsp_aead_completion_batch(
+                    source_addr,
+                    sequence as u64,
+                ))
+                .expect("completion lane should have room");
+        }
+
+        let mut shard = test_shard();
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+            &mut plaintext_batch,
+        );
+
+        assert_eq!(
+            fsp_aead_completion_rx.len(),
+            completion_count - DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
+            "one drain turn should reserve only one bounded completion slice before bulk"
+        );
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "completion backlog must not spend the bounded bulk drain turn"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
+        let session_key = test_session_key(1, 81);
+        let mut shard = test_shard();
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let bulk_packets = 2;
+        let completion_count =
+            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 3;
+        let (fsp_completion_tx, fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletionBatch>(completion_count);
+        let source_addr = *test_source_peer().node_addr();
+        for sequence in 0..completion_count {
+            fsp_completion_tx
+                .try_send(dummy_fsp_aead_completion_batch(
+                    source_addr,
+                    sequence as u64,
+                ))
+                .expect("completion lane should have room");
+        }
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            DecryptWorkerBulkItem::Batch(vec![
+                dummy_bulk_decrypt_job(session_key),
+                dummy_bulk_decrypt_job(session_key),
+            ]),
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 2);
+        assert_eq!(
+            fsp_aead_completion_rx.len(),
+            3,
+            "a saturated completion lane should drain one bounded slice per bulk packet"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_fsp_bulk_packet_steps_bound_aead_completion_interleave() {
+        let mut shard = test_shard();
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let bulk_packets = 2;
+        let completion_count =
+            (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 5;
+        let (fsp_completion_tx, fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletionBatch>(completion_count);
+        let source_addr = *test_source_peer().node_addr();
+        for sequence in 0..completion_count {
+            fsp_completion_tx
+                .try_send(dummy_fsp_aead_completion_batch(
+                    source_addr,
+                    sequence as u64,
+                ))
+                .expect("completion lane should have room");
+        }
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            DecryptWorkerBulkItem::FspBatch(vec![
+                dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
+                dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
+            ]),
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 2);
+        assert_eq!(
+            fsp_aead_completion_rx.len(),
+            5,
+            "FSP owner bulk service should drain one bounded completion slice per bulk packet"
         );
     }

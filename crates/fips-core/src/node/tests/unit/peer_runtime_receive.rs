@@ -220,19 +220,6 @@ fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
     assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
     assert_eq!(mmp.sender.cumulative_bytes_sent(), 384);
 
-    let batch_recorded = registry
-        .record_fmp_send_bookkeeping_batch(&peer_addr, [(10, 1_400, 64), (11, 1_500, 96)])
-        .expect("FMP send batch bookkeeping should find active peer");
-    assert_eq!(batch_recorded, 2);
-    let peer = registry
-        .get(&peer_addr)
-        .expect("batch send bookkeeping must keep active peer storage");
-    assert_eq!(peer.link_stats().packets_sent, 4);
-    assert_eq!(peer.link_stats().bytes_sent, 544);
-    let mmp = peer.mmp().expect("active FMP peer should have MMP state");
-    assert_eq!(mmp.sender.cumulative_packets_sent(), 4);
-    assert_eq!(mmp.sender.cumulative_bytes_sent(), 544);
-
     let no_mmp_full = Identity::generate();
     let no_mmp_identity = PeerIdentity::from_pubkey_full(no_mmp_full.pubkey_full());
     let no_mmp_addr = *no_mmp_identity.node_addr();
@@ -262,12 +249,6 @@ fn peer_lifecycle_registry_owns_fmp_send_bookkeeping() {
             .record_fmp_send_bookkeeping(&make_node_addr(99), 10, 1_500, 32)
             .is_none(),
         "missing active peers should not record send bookkeeping"
-    );
-    assert!(
-        registry
-            .record_fmp_send_bookkeeping_batch(&make_node_addr(99), [(10, 1_500, 32)])
-            .is_none(),
-        "missing active peers should not record send batch bookkeeping"
     );
 }
 

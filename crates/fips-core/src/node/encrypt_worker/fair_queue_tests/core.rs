@@ -73,7 +73,7 @@
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + payload_len, 0);
         QueuedFmpSendJob::direct(FmpSendJob {
-            cipher: cipher.clone().into(),
+            cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
@@ -148,15 +148,15 @@
     }
 
     #[test]
-    fn fast_lane_cap_stays_bounded_when_worker_batch_grows() {
+    fn fast_lane_cap_is_one_worker_batch_not_a_second_queue_window() {
         assert_eq!(
             worker_fast_lane_cap(2048, 512),
-            WORKER_FAST_LANE_BATCH_CAP,
-            "bulk workers may bypass fair admission for one bounded turn, not one full per-flow queue"
+            DEFAULT_WORKER_BATCH_SIZE,
+            "default bulk workers may bypass fair admission for one local batch, not one full per-flow queue"
         );
         assert_eq!(
             worker_fast_lane_cap_for_batch(2048, 512, DEFAULT_WORKER_BATCH_SIZE + 16),
-            WORKER_FAST_LANE_BATCH_CAP,
+            DEFAULT_WORKER_BATCH_SIZE,
             "larger experimental drain batches must not widen the fair-admission fast lane"
         );
         assert_eq!(
@@ -496,13 +496,7 @@
             let senders: Vec<_> = (0..4)
                 .map(|_| fair_worker_channel(16, 16, WORKER_FAIR_QUANTUM_BYTES).0)
                 .collect();
-            let pool = EncryptWorkerPool {
-                senders: Arc::from(senders.into_boxed_slice()),
-                #[cfg(target_os = "linux")]
-                linux_containers: Arc::new(LinuxBulkSendFlows::default()),
-                #[cfg(target_os = "linux")]
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            };
+            let pool = encrypt_worker_pool_for_test(senders);
             let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 10009));
 
             let mut owner = None;

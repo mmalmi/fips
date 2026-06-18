@@ -1,12 +1,13 @@
 //! Priority-aware packet channel for transport receive paths.
 
 use super::{TransportAddr, TransportId};
+use std::mem;
+use std::ops::{Deref, DerefMut, Index};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering::Relaxed},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::vec::IntoIter;
 use tokio::sync::mpsc::{
     Sender, UnboundedReceiver, UnboundedSender,
     error::{TryRecvError, TrySendError},
@@ -20,7 +21,7 @@ pub struct ReceivedPacket {
     /// Remote peer address.
     pub remote_addr: TransportAddr,
     /// Packet data.
-    pub data: Vec<u8>,
+    pub data: PacketBuffer,
     /// Receipt timestamp (Unix milliseconds).
     pub timestamp_ms: u64,
     /// Monotonic timestamp for optional pipeline queue-wait profiling.
@@ -35,7 +36,11 @@ pub struct ReceivedPacket {
 
 impl ReceivedPacket {
     /// Create a new received packet with current timestamp.
-    pub fn new(transport_id: TransportId, remote_addr: TransportAddr, data: Vec<u8>) -> Self {
+    pub fn new(
+        transport_id: TransportId,
+        remote_addr: TransportAddr,
+        data: impl Into<PacketBuffer>,
+    ) -> Self {
         Self::with_trace_timestamp(
             transport_id,
             remote_addr,
@@ -49,7 +54,7 @@ impl ReceivedPacket {
     pub fn with_timestamp(
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        data: Vec<u8>,
+        data: impl Into<PacketBuffer>,
         timestamp_ms: u64,
     ) -> Self {
         Self::with_trace_timestamp(
@@ -70,14 +75,14 @@ impl ReceivedPacket {
     pub(crate) fn with_trace_timestamp(
         transport_id: TransportId,
         remote_addr: TransportAddr,
-        data: Vec<u8>,
+        data: impl Into<PacketBuffer>,
         timestamp_ms: u64,
         trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
     ) -> Self {
         Self {
             transport_id,
             remote_addr,
-            data,
+            data: data.into(),
             timestamp_ms,
             trace_enqueued_at,
             trace_rx_loop_owned_at: None,
@@ -86,6 +91,118 @@ impl ReceivedPacket {
 
     pub(crate) fn is_priority_sized(&self) -> bool {
         self.data.len() <= PRIORITY_PACKET_MAX_LEN
+    }
+}
+
+/// Byte storage for a received transport packet.
+///
+/// The public endpoint API still receives a plain `Vec<u8>`, but internal
+/// receive/decrypt/drop paths carry this owner so pressure drops can recycle
+/// kernel receive buffers without adding protocol surface area.
+#[derive(Debug, Default)]
+pub struct PacketBuffer {
+    data: Vec<u8>,
+    pool: Option<PacketBufferPool>,
+}
+
+impl PacketBuffer {
+    fn pooled(data: Vec<u8>, pool: PacketBufferPool) -> Self {
+        Self {
+            data,
+            pool: Some(pool),
+        }
+    }
+
+    pub(crate) fn into_vec(mut self) -> Vec<u8> {
+        self.pool = None;
+        mem::take(&mut self.data)
+    }
+}
+
+impl Clone for PacketBuffer {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            pool: None,
+        }
+    }
+}
+
+impl Drop for PacketBuffer {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.take() {
+            pool.put(mem::take(&mut self.data));
+        }
+    }
+}
+
+impl From<Vec<u8>> for PacketBuffer {
+    fn from(data: Vec<u8>) -> Self {
+        Self { data, pool: None }
+    }
+}
+
+impl Deref for PacketBuffer {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl DerefMut for PacketBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl AsRef<[u8]> for PacketBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl AsMut<[u8]> for PacketBuffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+impl PartialEq for PacketBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
+impl Eq for PacketBuffer {}
+
+impl PartialEq<Vec<u8>> for PacketBuffer {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.data == *other
+    }
+}
+
+impl PartialEq<PacketBuffer> for Vec<u8> {
+    fn eq(&self, other: &PacketBuffer) -> bool {
+        *self == other.data
+    }
+}
+
+impl PartialEq<&[u8]> for PacketBuffer {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.data.as_slice() == *other
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for PacketBuffer {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.data.as_slice() == other
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for PacketBuffer {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.data.as_slice() == *other
     }
 }
 
@@ -100,6 +217,14 @@ pub(crate) fn received_timestamp_ms() -> u64 {
 /// FIFO. Most heartbeat, MMP, rekey, ping, and handshake-shaped datagrams are
 /// comfortably below this; full-size endpoint payloads are not.
 const PRIORITY_PACKET_MAX_LEN: usize = 512;
+/// Number of receive-batch Vec containers retained for reuse.
+const PACKET_BATCH_POOL_LIMIT: usize = 256;
+/// Avoid pinning unusually large test/control batches in the hot-path pool.
+const PACKET_BATCH_MAX_RETAINED_CAPACITY: usize = 256;
+/// Number of packet byte buffers retained after pressure drops.
+const PACKET_BUFFER_POOL_LIMIT: usize = 4096;
+/// Avoid pinning oversized receive buffers in the hot-path pool.
+const PACKET_BUFFER_MAX_RETAINED_CAPACITY: usize = 16 * 1024;
 
 /// Packet count at which the transport receive channel is visibly backlogged.
 ///
@@ -120,6 +245,8 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 pub struct PacketTx {
     priority: UnboundedSender<PacketQueueItem>,
     bulk: Sender<PacketQueueItem>,
+    batch_pool: PacketBatchPool,
+    buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
     /// this instead of touching an empty priority mpsc once per data packet.
     priority_queued_packets: Arc<AtomicUsize>,
@@ -143,11 +270,28 @@ pub struct PacketRx {
     bulk_closed: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PacketBatchPool {
+    inner: Arc<Mutex<Vec<Vec<ReceivedPacket>>>>,
+}
+
+#[derive(Clone, Debug)]
+struct PacketBufferPool {
+    inner: Arc<Mutex<Vec<Vec<u8>>>>,
+    available: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PacketBatch {
+    packets: Vec<ReceivedPacket>,
+    pool: Option<PacketBatchPool>,
+}
+
 #[derive(Debug)]
 enum PacketQueueItem {
     One(ReceivedPacket),
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    Batch(Vec<ReceivedPacket>),
+    Batch(PacketBatch),
 }
 
 #[derive(Clone, Copy)]
@@ -168,7 +312,7 @@ enum PacketSendFailure {
 }
 
 struct PendingPackets {
-    packets: IntoIter<ReceivedPacket>,
+    batch: PacketBatch,
     rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
 }
 
@@ -251,19 +395,218 @@ impl PacketQueueItem {
     }
 }
 
-impl PendingPackets {
-    fn new(
-        packets: IntoIter<ReceivedPacket>,
-        rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
-    ) -> Self {
+impl PacketBatchPool {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn take(&self, capacity: usize) -> PacketBatch {
+        let packets = {
+            let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            guard.pop()
+        };
+        if let Some(mut packets) = packets {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolReuse);
+            packets.clear();
+            if packets.capacity() >= capacity {
+                return PacketBatch::pooled(packets, self.clone());
+            }
+            packets.reserve(capacity.saturating_sub(packets.capacity()));
+            return PacketBatch::pooled(packets, self.clone());
+        }
+        crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolFresh);
+        PacketBatch::pooled(Vec::with_capacity(capacity), self.clone())
+    }
+
+    fn put(&self, mut packets: Vec<ReceivedPacket>) {
+        packets.clear();
+        if packets.capacity() > PACKET_BATCH_MAX_RETAINED_CAPACITY {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolDiscard);
+            return;
+        }
+        let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if guard.len() < PACKET_BATCH_POOL_LIMIT {
+            guard.push(packets);
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolReturn);
+        } else {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBatchPoolDiscard);
+        }
+    }
+
+    #[cfg(test)]
+    fn cached_len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+}
+
+impl PacketBufferPool {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Vec::new())),
+            available: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn take(&self, capacity: usize) -> Vec<u8> {
+        if self.available.load(Relaxed) > 0 {
+            let buffer = {
+                let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+                guard.pop()
+            };
+            if let Some(mut buffer) = buffer {
+                self.available.fetch_sub(1, Relaxed);
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketBufferPoolReuse,
+                );
+                prepare_recv_buffer(&mut buffer, capacity);
+                return buffer;
+            }
+        }
+
+        crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolFresh);
+        fresh_recv_buffer(capacity)
+    }
+
+    fn put(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        if buffer.capacity() > PACKET_BUFFER_MAX_RETAINED_CAPACITY {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolDiscard);
+            return;
+        }
+
+        let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if guard.len() < PACKET_BUFFER_POOL_LIMIT {
+            guard.push(buffer);
+            self.available.fetch_add(1, Relaxed);
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolReturn);
+        } else {
+            crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolDiscard);
+        }
+    }
+
+    #[cfg(test)]
+    fn cached_len(&self) -> usize {
+        self.available.load(Relaxed)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fresh_recv_buffer(size: usize) -> Vec<u8> {
+    vec![0u8; size]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fresh_recv_buffer(size: usize) -> Vec<u8> {
+    Vec::with_capacity(size)
+}
+
+#[cfg(target_os = "macos")]
+fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
+    buffer.resize(size, 0);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prepare_recv_buffer(buffer: &mut Vec<u8>, size: usize) {
+    buffer.clear();
+    if buffer.capacity() < size {
+        buffer.reserve(size.saturating_sub(buffer.capacity()));
+    }
+}
+
+impl PacketBatch {
+    fn from_vec(packets: Vec<ReceivedPacket>) -> Self {
         Self {
             packets,
+            pool: None,
+        }
+    }
+
+    fn pooled(packets: Vec<ReceivedPacket>, pool: PacketBatchPool) -> Self {
+        Self {
+            packets,
+            pool: Some(pool),
+        }
+    }
+
+    pub(crate) fn push(&mut self, packet: ReceivedPacket) {
+        self.packets.push(packet);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.packets.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.packets.len()
+    }
+
+    fn first(&self) -> Option<&ReceivedPacket> {
+        self.packets.first()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &ReceivedPacket> {
+        self.packets.iter()
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = ReceivedPacket> + '_ {
+        self.packets.drain(..)
+    }
+
+    fn pop(&mut self) -> Option<ReceivedPacket> {
+        self.packets.pop()
+    }
+
+    fn reverse(&mut self) {
+        self.packets.reverse();
+    }
+
+    fn is_pooled(&self) -> bool {
+        self.pool.is_some()
+    }
+}
+
+impl From<Vec<ReceivedPacket>> for PacketBatch {
+    fn from(packets: Vec<ReceivedPacket>) -> Self {
+        Self::from_vec(packets)
+    }
+}
+
+impl Index<usize> for PacketBatch {
+    type Output = ReceivedPacket;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.packets[index]
+    }
+}
+
+impl Drop for PacketBatch {
+    fn drop(&mut self) {
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        pool.put(mem::take(&mut self.packets));
+    }
+}
+
+impl PendingPackets {
+    fn new(
+        mut batch: PacketBatch,
+        rx_loop_owned_at: Option<crate::perf_profile::TraceStamp>,
+    ) -> Self {
+        batch.reverse();
+        Self {
+            batch,
             rx_loop_owned_at,
         }
     }
 
     fn next(&mut self) -> Option<ReceivedPacket> {
-        let mut packet = self.packets.next()?;
+        let mut packet = self.batch.pop()?;
         if let Some(rx_loop_owned_at) = self.rx_loop_owned_at {
             packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
         }
@@ -271,11 +614,26 @@ impl PendingPackets {
     }
 
     fn len(&self) -> usize {
-        self.packets.len()
+        self.batch.len()
     }
 }
 
 impl PacketTx {
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn packet_batch(&self, capacity: usize) -> PacketBatch {
+        self.batch_pool.take(capacity)
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn recv_buffer(&self, capacity: usize) -> Vec<u8> {
+        self.buffer_pool.take(capacity)
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn packet_buffer(&self, data: Vec<u8>) -> PacketBuffer {
+        PacketBuffer::pooled(data, self.buffer_pool.clone())
+    }
+
     pub fn send(
         &self,
         packet: ReceivedPacket,
@@ -294,14 +652,19 @@ impl PacketTx {
             })
     }
 
-    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn send_batch(&self, packets: Vec<ReceivedPacket>) -> Result<(), ()> {
-        if packets.is_empty() {
+        self.send_packet_batch(PacketBatch::from_vec(packets))
+    }
+
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    pub(crate) fn send_packet_batch(&self, mut batch: PacketBatch) -> Result<(), ()> {
+        if batch.is_empty() {
             return Ok(());
         }
 
-        let packet_count = packets.len();
-        let priority_count = packets
+        let packet_count = batch.len();
+        let priority_count = batch
             .iter()
             .filter(|packet| packet.is_priority_sized())
             .count();
@@ -311,12 +674,12 @@ impl PacketTx {
             } else {
                 PacketQueueTx::Priority
             };
-            return self.send_packet_items(tx, packets);
+            return self.send_packet_items(tx, batch);
         }
 
-        let mut priority_packets = Vec::with_capacity(priority_count);
-        let mut bulk_packets = Vec::with_capacity(packet_count - priority_count);
-        for packet in packets {
+        let mut priority_packets = self.packet_batch(priority_count);
+        let mut bulk_packets = self.packet_batch(packet_count - priority_count);
+        for packet in batch.drain() {
             if packet.is_priority_sized() {
                 priority_packets.push(packet);
             } else {
@@ -330,38 +693,92 @@ impl PacketTx {
     }
 
     #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
-    fn send_packet_items(
-        &self,
-        tx: PacketQueueTx,
-        mut packets: Vec<ReceivedPacket>,
-    ) -> Result<(), ()> {
+    fn send_packet_items(&self, tx: PacketQueueTx, mut packets: PacketBatch) -> Result<(), ()> {
+        if matches!(tx, PacketQueueTx::Bulk) {
+            return self.send_bulk_packet_items(packets);
+        }
+
         let item = match packets.len() {
             0 => return Ok(()),
-            1 => PacketQueueItem::One(packets.pop().expect("one packet should be present")),
+            1 if !packets.is_pooled() => {
+                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
+            }
             _ => PacketQueueItem::Batch(packets),
         };
         self.send_item(tx, item).map_err(|_| ())
     }
 
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+    fn send_bulk_packet_items(&self, mut packets: PacketBatch) -> Result<(), ()> {
+        let packet_count = packets.len();
+        if packet_count == 0 {
+            return Ok(());
+        }
+
+        let granted = self.try_reserve_bulk_packet_prefix(packet_count);
+        if granted == 0 {
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::TransportBulkDropped,
+                packet_count as u64,
+            );
+            return Ok(());
+        }
+
+        if granted < packet_count {
+            let dropped = packet_count - granted;
+            let _dropped_tail = packets.packets.split_off(granted);
+            crate::perf_profile::record_event_count(
+                crate::perf_profile::Event::TransportBulkDropped,
+                dropped as u64,
+            );
+        }
+
+        let item = match packets.len() {
+            0 => return Ok(()),
+            1 if !packets.is_pooled() => {
+                PacketQueueItem::One(packets.pop().expect("one packet should be present"))
+            }
+            _ => PacketQueueItem::Batch(packets),
+        };
+        self.send_reserved_item(PacketQueueTx::Bulk, item, Some(granted))
+            .map_err(|_| ())
+    }
+
     fn send_item(&self, tx: PacketQueueTx, item: PacketQueueItem) -> Result<(), PacketQueueItem> {
         let packet_count = item.packet_count();
-        let bulk_reserved = matches!(tx, PacketQueueTx::Bulk)
-            .then_some(packet_count)
-            .filter(|count| *count > 0);
+        let bulk_reserved = if matches!(tx, PacketQueueTx::Bulk) && packet_count > 0 {
+            if !self.try_reserve_bulk_packets(packet_count) {
+                crate::perf_profile::record_event_count(
+                    crate::perf_profile::Event::TransportBulkDropped,
+                    packet_count as u64,
+                );
+                return Ok(());
+            }
+            Some(packet_count)
+        } else {
+            None
+        };
+        self.send_reserved_item(tx, item, bulk_reserved)
+    }
+
+    fn send_reserved_item(
+        &self,
+        tx: PacketQueueTx,
+        item: PacketQueueItem,
+        bulk_reserved: Option<usize>,
+    ) -> Result<(), PacketQueueItem> {
+        let packet_count = item.packet_count();
+        debug_assert_eq!(
+            bulk_reserved,
+            matches!(tx, PacketQueueTx::Bulk)
+                .then_some(packet_count)
+                .filter(|count| *count > 0)
+        );
         let priority_reserved = matches!(tx, PacketQueueTx::Priority)
             .then_some(packet_count)
             .filter(|count| *count > 0);
         if let Some(count) = priority_reserved {
             self.priority_queued_packets.fetch_add(count, Relaxed);
-        }
-        if let Some(count) = bulk_reserved
-            && !self.try_reserve_bulk_packets(count)
-        {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::TransportBulkDropped,
-                count as u64,
-            );
-            return Ok(());
         }
 
         let tracked_count = if self.track_backlog {
@@ -425,6 +842,30 @@ impl PacketTx {
             .is_ok()
     }
 
+    fn try_reserve_bulk_packet_prefix(&self, requested: usize) -> usize {
+        if requested == 0 {
+            return 0;
+        }
+
+        let mut current = self.bulk_queued_packets.load(Relaxed);
+        loop {
+            let available = self.bulk_packet_capacity.saturating_sub(current);
+            let granted = requested.min(available);
+            if granted == 0 {
+                return 0;
+            }
+            match self.bulk_queued_packets.compare_exchange_weak(
+                current,
+                current + granted,
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => return granted,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     fn release_bulk_packets(&self, count: usize) {
         release_reserved_bulk_packets(&self.bulk_queued_packets, count);
     }
@@ -448,15 +889,6 @@ impl PacketTx {
 impl PacketRx {
     pub(crate) fn priority_queued_packets(&self) -> usize {
         self.priority_queued_packets.load(Relaxed)
-    }
-
-    pub(crate) fn ready_packets(&self) -> usize {
-        self.pending_priority
-            .as_ref()
-            .map_or(0, PendingPackets::len)
-            .saturating_add(self.pending_bulk.as_ref().map_or(0, PendingPackets::len))
-            .saturating_add(self.priority_queued_packets())
-            .saturating_add(self.bulk_queued_packets.load(Relaxed))
     }
 
     pub(crate) fn priority_ready_packets(&self) -> usize {
@@ -568,13 +1000,9 @@ impl PacketRx {
                 Some(packet)
             }
             PacketQueueItem::Batch(packets) => {
-                let mut packets = packets.into_iter();
-                let mut packet = packets.next()?;
-                if let Some(rx_loop_owned_at) = rx_loop_owned_at {
-                    packet.trace_rx_loop_owned_at = Some(rx_loop_owned_at);
-                }
-                if packets.len() > 0 {
-                    let pending = PendingPackets::new(packets, rx_loop_owned_at);
+                let mut pending = PendingPackets::new(packets, rx_loop_owned_at);
+                let packet = pending.next()?;
+                if pending.len() > 0 {
                     match lane {
                         PacketLane::Priority => self.pending_priority = Some(pending),
                         PacketLane::Bulk => self.pending_bulk = Some(pending),
@@ -645,6 +1073,8 @@ pub fn packet_channel(buffer: usize) -> (PacketTx, PacketRx) {
         PacketTx {
             priority: priority_tx,
             bulk: bulk_tx,
+            batch_pool: PacketBatchPool::new(),
+            buffer_pool: PacketBufferPool::new(),
             priority_queued_packets: Arc::clone(&priority_queued_packets),
             queued_packets: Arc::clone(&queued_packets),
             bulk_queued_packets: Arc::clone(&bulk_queued_packets),
