@@ -274,23 +274,27 @@ impl DecryptSessionRegistrations {
 pub(in crate::node) struct ConfiguredPeerSendWeights {
     entries: HashMap<NodeAddr, u8>,
     peer_configs: HashMap<NodeAddr, PeerConfig>,
+    peer_addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
 impl ConfiguredPeerSendWeights {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
         let mut entries = HashMap::with_capacity(config.peers().len());
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
+        let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());
         for peer in config.peers() {
             let Ok(identity) = PeerIdentity::from_npub(&peer.npub) else {
                 continue;
             };
             let node_addr = *identity.node_addr();
             entries.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
+            peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
         Self {
             entries,
             peer_configs,
+            peer_addrs_by_npub,
         }
     }
 
@@ -303,6 +307,18 @@ impl ConfiguredPeerSendWeights {
 
     pub(in crate::node) fn peer_config(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
         self.peer_configs.get(peer_addr)
+    }
+
+    pub(in crate::node) fn peer_addr_for_npub(&self, npub: &str) -> Option<NodeAddr> {
+        self.peer_addrs_by_npub.get(npub).copied()
+    }
+
+    pub(in crate::node) fn auto_connect_peer_configs(
+        &self,
+    ) -> impl Iterator<Item = (&NodeAddr, &PeerConfig)> {
+        self.peer_configs
+            .iter()
+            .filter(|(_, peer)| peer.is_auto_connect())
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

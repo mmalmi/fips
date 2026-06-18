@@ -283,15 +283,13 @@ impl Node {
         let direct_fallbacks: Vec<_> = timed_out
             .iter()
             .filter_map(|addr| {
-                self.config.auto_connect_peers().find_map(|peer| {
-                    crate::PeerIdentity::from_npub(&peer.npub)
-                        .ok()
-                        .filter(|identity| identity.node_addr() == addr)
-                        .and_then(|_| {
-                            (!peer.addresses.is_empty() || self.config.node.discovery.nostr.enabled)
-                                .then(|| peer.clone())
-                        })
-                })
+                let peer = self.configured_peer(addr)?;
+                if !peer.is_auto_connect()
+                    || (peer.addresses.is_empty() && !self.config.node.discovery.nostr.enabled)
+                {
+                    return None;
+                }
+                Some((*addr, peer.clone()))
             })
             .collect();
 
@@ -303,9 +301,7 @@ impl Node {
             self.pending_session_traffic.remove_destination(addr);
         }
 
-        for peer_config in direct_fallbacks {
-            let peer_identity = crate::PeerIdentity::from_npub(&peer_config.npub).ok();
-            let peer_node_addr = peer_identity.as_ref().map(|identity| *identity.node_addr());
+        for (peer_node_addr, peer_config) in direct_fallbacks {
             info!(
                 npub = %peer_config.npub,
                 "FIPS graph session timed out; trying direct auto-connect path"
@@ -316,9 +312,7 @@ impl Node {
                     error = %err,
                     "Direct auto-connect fallback after graph timeout did not start"
                 );
-                if let Some(peer_node_addr) = peer_node_addr {
-                    self.schedule_retry(peer_node_addr, now_ms);
-                }
+                self.schedule_retry(peer_node_addr, now_ms);
             }
         }
 

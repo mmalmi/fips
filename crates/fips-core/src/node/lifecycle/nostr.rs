@@ -137,11 +137,9 @@ impl Node {
         &self,
         peer_config: &PeerConfig,
     ) -> bool {
-        let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
-            return false;
-        };
-        let peer_addr = identity.node_addr();
-        self.configured_peer(peer_addr).is_some()
+        self.configured_peer_send_weights
+            .peer_addr_for_npub(&peer_config.npub)
+            .is_some()
     }
 
     pub(super) fn overlay_endpoint_to_peer_address(
@@ -328,17 +326,12 @@ impl Node {
     ) {
         let now_ms = Self::now_ms();
         let peer_configs = self
-            .config
-            .auto_connect_peers()
-            .cloned()
+            .configured_peer_send_weights
+            .auto_connect_peer_configs()
+            .map(|(node_addr, peer_config)| (*node_addr, peer_config.clone()))
             .collect::<Vec<_>>();
 
-        for peer_config in peer_configs {
-            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
-                continue;
-            };
-            let node_addr = *peer_identity.node_addr();
-
+        for (node_addr, peer_config) in peer_configs {
             if self.retry_pending.contains_key(&node_addr)
                 || !self.peers.contains_key(&node_addr)
                 || self.is_connecting_to_peer(&node_addr)

@@ -747,11 +747,10 @@ impl Node {
         dead_timeout: Duration,
         fast_dead_timeout: Duration,
     ) -> Option<Duration> {
-        let peer_config = self.config.auto_connect_peers().find(|pc| {
-            PeerIdentity::from_npub(&pc.npub)
-                .map(|id| id.node_addr() == node_addr)
-                .unwrap_or(false)
-        })?;
+        let peer_config = self.configured_peer(node_addr)?;
+        if !peer_config.is_auto_connect() {
+            return None;
+        }
         if !self.active_peer_uses_traversal_path(node_addr, peer_config) {
             return None;
         }

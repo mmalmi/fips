@@ -399,15 +399,24 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     let configured_addr = *PeerIdentity::from_npub(&configured_npub)
         .expect("configured peer identity")
         .node_addr();
+    let on_demand = Identity::generate();
+    let on_demand_npub = on_demand.npub();
+    let on_demand_addr = *PeerIdentity::from_npub(&on_demand_npub)
+        .expect("on-demand peer identity")
+        .node_addr();
     let unknown_addr =
         *PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full()).node_addr();
 
     let mut config = Config::new();
     config.peers.push(crate::config::PeerConfig::new(
-        configured_npub,
+        configured_npub.clone(),
         "udp",
         "127.0.0.1:1",
     ));
+    let mut on_demand_peer =
+        crate::config::PeerConfig::new(on_demand_npub.clone(), "udp", "127.0.0.1:3");
+    on_demand_peer.connect_policy = crate::config::ConnectPolicy::OnDemand;
+    config.peers.push(on_demand_peer);
     config.peers.push(crate::config::PeerConfig::new(
         "not-a-valid-peer-id",
         "udp",
@@ -428,8 +437,18 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
     );
     assert_eq!(
         weights.len(),
-        1,
+        2,
         "invalid peer identities must not create phantom scheduling policy"
+    );
+    assert_eq!(
+        weights.peer_addr_for_npub(&configured_npub),
+        Some(configured_addr),
+        "configured peer npubs are parsed once into a reverse address lookup"
+    );
+    assert_eq!(
+        weights.peer_addr_for_npub(&on_demand_npub),
+        Some(on_demand_addr),
+        "non-auto configured peers should still be addressable by npub"
     );
     assert_eq!(
         weights
@@ -439,6 +458,15 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
             .addr,
         "127.0.0.1:1",
         "configured peer metadata is parsed once into the runtime lookup cache"
+    );
+    let auto_connect_addrs = weights
+        .auto_connect_peer_configs()
+        .map(|(addr, _)| *addr)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        auto_connect_addrs,
+        vec![configured_addr],
+        "runtime auto-connect iteration must preserve Config::auto_connect_peers semantics"
     );
     assert!(
         weights.peer_config(&unknown_addr).is_none(),
