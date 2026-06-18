@@ -17,14 +17,14 @@
 //! Once the peer's session is established, Linux/macOS install the connected
 //! socket; from that moment on the kernel routes that peer's traffic
 //! to it (most-specific 5-tuple match wins under `SO_REUSEPORT`).
-//! Matching packets for the activated current epoch normally go straight to
-//! the decrypt-worker batcher. Handshake, stale-index, wrong-transport,
-//! and rekey-epoch packets return untouched to `packet_tx`, so rx_loop
-//! remains the canonical owner for session lookup and pending-session
-//! promotion. `FIPS_CONNECTED_UDP_DECRYPT_FAST_PATH=0` keeps the connected
-//! socket and drain thread but sends every packet through the ordinary packet
-//! channel, which is useful for receive-owner A/B tests without changing the
-//! kernel demux/recv-buffer shape.
+//! Matching packets for the activated current epoch go straight to the
+//! decrypt-worker batcher. Handshake, stale-index, wrong-transport, and
+//! rekey-epoch packets return untouched to `packet_tx`, so rx_loop remains
+//! the canonical owner for session lookup and pending-session promotion. The
+//! strict normal-receive A/B kept UDP loss at zero but repeatedly showed
+//! packet-channel pressure; keeping established connected packets on the
+//! worker-owned path avoids a second bulk pressure route for the same FSP
+//! state while preserving the FIPS wire protocol.
 //!
 //! macOS originally defaulted to the wildcard UDP socket because early
 //! Darwin tests found liveness regressions under load. Later testing
@@ -191,11 +191,7 @@ impl Node {
             let Some(addr) = peer.current_addr().cloned() else {
                 return Ok(false);
             };
-            let fast_path = if connected_udp_decrypt_fast_path_enabled() {
-                self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid)
-            } else {
-                None
-            };
+            let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
             (tid, addr, fast_path)
         };
 
@@ -365,15 +361,6 @@ fn parse_env_flag(value: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn connected_udp_decrypt_fast_path_enabled() -> bool {
-    std::env::var("FIPS_CONNECTED_UDP_DECRYPT_FAST_PATH")
-        .ok()
-        .as_deref()
-        .and_then(parse_env_flag)
-        .unwrap_or(true)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
