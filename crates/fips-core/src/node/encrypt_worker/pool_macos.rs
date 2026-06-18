@@ -1056,7 +1056,21 @@ fn linux_wg_batch_now_ms() -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-type MacSendFlowKey = SendTargetKey;
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct MacSendFlowKey {
+    target: SendTargetKey,
+    endpoint_flow: Option<u64>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacSendFlowKey {
+    fn from_job(job: &FmpSendJob) -> Self {
+        Self {
+            target: job.send_target_key(),
+            endpoint_flow: job.endpoint_flow_dispatch_key,
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -1069,7 +1083,7 @@ struct MacSequencedSendFlows {
 impl MacSequencedSendFlows {
     fn flow_for(&self, job: &FmpSendJob) -> Arc<MacSequencedSendFlow> {
         let now_ms = mac_now_ms();
-        let key = job.send_target_key();
+        let key = MacSendFlowKey::from_job(job);
 
         let mut flows = self.flows.lock().expect("mac send flow map poisoned");
         self.prune_idle_locked(&mut flows, now_ms);
@@ -1285,7 +1299,7 @@ impl MacSequencedSendFlow {
         });
         let thread_flow = Arc::clone(&flow);
         std::thread::Builder::new()
-            .name(format!("fips-mac-send-{}", key.socket_fd))
+            .name(format!("fips-mac-send-{}", key.target.socket_fd))
             .spawn(move || thread_flow.run())
             .expect("failed to spawn fips macOS send thread");
         flow
@@ -1375,9 +1389,10 @@ impl MacSequencedSendFlow {
 
     fn run(self: Arc<Self>) {
         trace!(
-            socket_fd = self.key.socket_fd,
-            connected_fd = ?self.key.connected_fd,
+            socket_fd = self.key.target.socket_fd,
+            connected_fd = ?self.key.target.connected_fd,
             dest = %self.send_target.dest_addr(),
+            endpoint_flow = ?self.key.endpoint_flow,
             "macOS ordered UDP sender starting"
         );
         let (fd, connected) = self.send_target.fd_and_connected();
@@ -1424,9 +1439,10 @@ impl MacSequencedSendFlow {
                         drop_on_backpressure,
                     ) {
                         debug!(
-                            socket_fd = self.key.socket_fd,
-                            connected_fd = ?self.key.connected_fd,
+                            socket_fd = self.key.target.socket_fd,
+                            connected_fd = ?self.key.target.connected_fd,
                             dest = %self.send_target.dest_addr(),
+                            endpoint_flow = ?self.key.endpoint_flow,
                             error = %err,
                             "macOS ordered UDP send failed"
                         );

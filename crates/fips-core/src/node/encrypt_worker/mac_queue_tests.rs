@@ -44,21 +44,39 @@ mod mac_queue_tests {
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     ) -> QueuedFmpSendJob {
+        QueuedFmpSendJob::direct(fmp_send_job_classified(
+            socket,
+            cipher,
+            dest_addr,
+            bulk_endpoint_data,
+            drop_on_backpressure,
+            None,
+        ))
+    }
+
+    fn fmp_send_job_classified(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+        endpoint_flow_dispatch_key: Option<u64>,
+    ) -> FmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
-        QueuedFmpSendJob::direct(FmpSendJob {
+        FmpSendJob {
             cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
             send_target: SelectedSendTarget::new(socket, None, dest_addr),
-            endpoint_flow_dispatch_key: None,
+            endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
-        })
+        }
     }
 
     fn test_mac_send_flow(
@@ -66,7 +84,10 @@ mod mac_queue_tests {
         dest_addr: SocketAddr,
     ) -> Arc<MacSequencedSendFlow> {
         let send_target = SelectedSendTarget::new(socket, None, dest_addr);
-        let key = send_target.key();
+        let key = MacSendFlowKey {
+            target: send_target.key(),
+            endpoint_flow: None,
+        };
         Arc::new(MacSequencedSendFlow {
             key,
             send_target,
@@ -222,6 +243,57 @@ mod mac_queue_tests {
                 Some(MacSendItem::Skip)
             ));
             assert!(flow.take_next_ready_for_test().is_none());
+        });
+    }
+
+    #[test]
+    fn mac_ordered_sender_keys_sequences_by_endpoint_flow() {
+        with_test_socket(|socket, cipher| {
+            let flows = MacSequencedSendFlows::default();
+            let addr: SocketAddr = "127.0.0.1:10036".parse().unwrap();
+            let flow_a_first = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xabc),
+            );
+            let flow_a_next = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xabc),
+            );
+            let flow_b = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xdef),
+            );
+            let unkeyed = fmp_send_job_classified(socket, &cipher, addr, false, false, None);
+
+            let flow_a_first = flows.flow_for(&flow_a_first);
+            let flow_a_next = flows.flow_for(&flow_a_next);
+            let flow_b = flows.flow_for(&flow_b);
+            let unkeyed = flows.flow_for(&unkeyed);
+
+            assert!(
+                Arc::ptr_eq(&flow_a_first, &flow_a_next),
+                "one endpoint flow must keep one sequence"
+            );
+            assert!(
+                !Arc::ptr_eq(&flow_a_first, &flow_b),
+                "independent endpoint flows should not share a bulk sequence"
+            );
+            assert!(
+                !Arc::ptr_eq(&flow_a_first, &unkeyed),
+                "control/unkeyed traffic should not share a bulk endpoint sequence"
+            );
         });
     }
 
