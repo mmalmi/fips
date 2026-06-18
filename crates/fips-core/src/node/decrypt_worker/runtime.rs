@@ -281,7 +281,8 @@ fn drain_aead_completions_for_bulk_item(
     remaining_budget: &mut usize,
 ) {
     let started_with_budget = *remaining_budget;
-    let mut drained = 0usize;
+    let mut drained_packets = 0usize;
+    let mut drained_messages = 0usize;
     while *remaining_budget > 0 {
         let Some(completion) =
             try_recv_aead_completion_fair(fmp_aead_completion_rx, fsp_aead_completion_rx)
@@ -289,10 +290,14 @@ fn drain_aead_completions_for_bulk_item(
             break;
         };
         let handled = handle_aead_completion(idx, shard, completion, plaintext_batch);
-        drained = drained.saturating_add(handled.max(1));
+        drained_packets = drained_packets.saturating_add(handled.max(1));
+        drained_messages = drained_messages.saturating_add(1);
         *remaining_budget = remaining_budget.saturating_sub(handled.max(1));
     }
-    crate::perf_profile::record_decrypt_worker_bulk_interleave_aead_completion(drained);
+    crate::perf_profile::record_decrypt_worker_bulk_interleave_aead_completion(
+        drained_messages,
+        drained_packets,
+    );
     if started_with_budget > 0
         && *remaining_budget == 0
         && (!fmp_aead_completion_rx.is_empty() || !fsp_aead_completion_rx.is_empty())
@@ -393,7 +398,7 @@ fn drain_worker_queues(
         {
             let handled = handle_aead_completion(idx, shard, completion, plaintext_batch);
             drained_bulk_jobs += handled;
-            crate::perf_profile::record_decrypt_worker_drain_aead_completion(handled);
+            crate::perf_profile::record_decrypt_worker_drain_aead_completion(1, handled);
             continue;
         }
         match bulk_rx.try_recv() {

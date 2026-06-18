@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 208;
+const N_EVENTS: usize = 211;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -690,6 +690,9 @@ pub enum Event {
     FspAeadCompletionEpochMismatch = 205,
     FspAeadCompletionAeadFailedLocalOpen = 206,
     FspAeadCompletionAeadFailedAcceptKbitMismatch = 207,
+    DecryptWorkerSelectFspCompletionBatch = 208,
+    DecryptWorkerDrainAeadCompletionBatch = 209,
+    DecryptWorkerBulkInterleaveAeadCompletionBatch = 210,
 }
 
 impl Event {
@@ -993,6 +996,15 @@ impl Event {
             Event::FspAeadCompletionAeadFailedAcceptKbitMismatch => {
                 "fsp_aead_completion_aead_failed_accept_kbit_mismatch"
             }
+            Event::DecryptWorkerSelectFspCompletionBatch => {
+                "decrypt_worker_select_fsp_completion_batch"
+            }
+            Event::DecryptWorkerDrainAeadCompletionBatch => {
+                "decrypt_worker_drain_aead_completion_batch"
+            }
+            Event::DecryptWorkerBulkInterleaveAeadCompletionBatch => {
+                "decrypt_worker_bulk_interleave_aead_completion_batch"
+            }
         }
     }
 }
@@ -1207,6 +1219,9 @@ fn event_from_index(idx: usize) -> Event {
         205 => Event::FspAeadCompletionEpochMismatch,
         206 => Event::FspAeadCompletionAeadFailedLocalOpen,
         207 => Event::FspAeadCompletionAeadFailedAcceptKbitMismatch,
+        208 => Event::DecryptWorkerSelectFspCompletionBatch,
+        209 => Event::DecryptWorkerDrainAeadCompletionBatch,
+        210 => Event::DecryptWorkerBulkInterleaveAeadCompletionBatch,
         _ => unreachable!(),
     }
 }
@@ -1705,6 +1720,7 @@ pub(crate) fn record_decrypt_worker_select_fmp_completion() {
 
 #[inline]
 pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
+    record_event(Event::DecryptWorkerSelectFspCompletionBatch);
     record_event_count(
         Event::DecryptWorkerSelectFspCompletionPackets,
         packets as u64,
@@ -1727,7 +1743,11 @@ pub(crate) fn record_decrypt_worker_drain_control() {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_drain_aead_completion(packets: usize) {
+pub(crate) fn record_decrypt_worker_drain_aead_completion(messages: usize, packets: usize) {
+    record_event_count(
+        Event::DecryptWorkerDrainAeadCompletionBatch,
+        messages as u64,
+    );
     record_event_count(
         Event::DecryptWorkerDrainAeadCompletionPackets,
         packets as u64,
@@ -1740,7 +1760,14 @@ pub(crate) fn record_decrypt_worker_drain_bulk(packets: usize) {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(packets: usize) {
+pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(
+    messages: usize,
+    packets: usize,
+) {
+    record_event_count(
+        Event::DecryptWorkerBulkInterleaveAeadCompletionBatch,
+        messages as u64,
+    );
     record_event_count(
         Event::DecryptWorkerBulkInterleaveAeadCompletionPackets,
         packets as u64,

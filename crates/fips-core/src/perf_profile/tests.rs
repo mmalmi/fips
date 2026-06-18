@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 208);
+    assert_eq!(N_EVENTS, 211);
     assert!(
-        (Event::FspAeadCompletionAeadFailedAcceptKbitMismatch as usize) < N_EVENTS,
+        (Event::DecryptWorkerBulkInterleaveAeadCompletionBatch as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -647,6 +647,10 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_worker_select_fsp_completion_packets"
     );
     assert_eq!(
+        event_from_index(Event::DecryptWorkerSelectFspCompletionBatch as usize).name(),
+        "decrypt_worker_select_fsp_completion_batch"
+    );
+    assert_eq!(
         event_from_index(Event::DecryptWorkerSelectBulkPackets as usize).name(),
         "decrypt_worker_select_bulk_packets"
     );
@@ -663,12 +667,20 @@ fn event_table_exposes_liveness_and_send_path_events() {
         "decrypt_worker_drain_aead_completion_packets"
     );
     assert_eq!(
+        event_from_index(Event::DecryptWorkerDrainAeadCompletionBatch as usize).name(),
+        "decrypt_worker_drain_aead_completion_batch"
+    );
+    assert_eq!(
         event_from_index(Event::DecryptWorkerDrainBulkPackets as usize).name(),
         "decrypt_worker_drain_bulk_packets"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerBulkInterleaveAeadCompletionPackets as usize).name(),
         "decrypt_worker_bulk_interleave_aead_completion_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBulkInterleaveAeadCompletionBatch as usize).name(),
+        "decrypt_worker_bulk_interleave_aead_completion_batch"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerBulkInterleaveBudgetExhausted as usize).name(),
