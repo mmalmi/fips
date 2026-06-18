@@ -1066,10 +1066,69 @@ impl FspReceiveOrder {
     }
 }
 
+struct PreparedFspDirectIpv6 {
+    packet: Vec<u8>,
+    timestamp: u32,
+    inner_flags_byte: u8,
+    body_len: usize,
+}
+
+impl PreparedFspDirectIpv6 {
+    fn from_opened_job(job: &FspDecryptJob, plaintext_len: usize) -> Option<Self> {
+        let ciphertext_offset = job.fsp_payload_offset.checked_add(FSP_HEADER_SIZE)?;
+        let plaintext_end = ciphertext_offset.checked_add(plaintext_len)?;
+        let plaintext = job
+            .fallback
+            .packet_data
+            .get(ciphertext_offset..plaintext_end)?;
+        let (timestamp, msg_type, inner_flags_byte, body) = fsp_strip_inner_header(plaintext)?;
+        if SessionMessageType::from_byte(msg_type) != Some(SessionMessageType::DataPacket) {
+            return None;
+        }
+        if body.len() < FSP_PORT_HEADER_SIZE {
+            return None;
+        }
+        let dst_port = u16::from_le_bytes([body[2], body[3]]);
+        if dst_port != FSP_PORT_IPV6_SHIM {
+            return None;
+        }
+
+        let src_ipv6 = FipsAddress::from_node_addr(&job.source_addr).to_ipv6().octets();
+        let dst_ipv6 = FipsAddress::from_node_addr(&job.local_node_addr)
+            .to_ipv6()
+            .octets();
+        let packet = crate::upper::ipv6_shim::decompress_ipv6(
+            &body[FSP_PORT_HEADER_SIZE..],
+            src_ipv6,
+            dst_ipv6,
+        )?;
+
+        Some(Self {
+            packet,
+            timestamp,
+            inner_flags_byte,
+            body_len: body.len(),
+        })
+    }
+}
+
 struct FspOpenedJob {
     job: FspDecryptJob,
     header: FspEncryptedHeader,
     plaintext_len: usize,
+    prepared_direct_ipv6: Option<PreparedFspDirectIpv6>,
+}
+
+impl FspOpenedJob {
+    fn new(job: FspDecryptJob, header: FspEncryptedHeader, plaintext_len: usize) -> Self {
+        let prepared_direct_ipv6 = PreparedFspDirectIpv6::from_opened_job(&job, plaintext_len);
+        Self {
+            job,
+            header,
+            plaintext_len,
+            prepared_direct_ipv6,
+        }
+    }
 }
 
 enum FspOrderedCompletion {
@@ -1592,11 +1651,7 @@ impl FspAeadHelperJob {
                     Ok(plaintext) => {
                         let plaintext_len = plaintext.len();
                         FspOrderedCompletion::Opened {
-                            opened: FspOpenedJob {
-                                job: self.job,
-                                header: self.header,
-                                plaintext_len,
-                            },
+                            opened: FspOpenedJob::new(self.job, self.header, plaintext_len),
                             source,
                         }
                     }

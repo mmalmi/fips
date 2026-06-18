@@ -53,6 +53,82 @@
     }
 
     #[test]
+    fn opened_fsp_job_prepares_ipv6_shim_payload() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let src_ipv6 = FipsAddress::from_node_addr(&source_addr).to_ipv6().octets();
+        let dst_ipv6 = FipsAddress::from_node_addr(&local_addr).to_ipv6().octets();
+        let payload = b"prepared-ipv6";
+
+        let mut ipv6 = Vec::with_capacity(40 + payload.len());
+        ipv6.extend_from_slice(&[0x60, 0, 0, 0]);
+        ipv6.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        ipv6.push(59);
+        ipv6.push(64);
+        ipv6.extend_from_slice(&src_ipv6);
+        ipv6.extend_from_slice(&dst_ipv6);
+        ipv6.extend_from_slice(payload);
+
+        let compressed = crate::upper::ipv6_shim::compress_ipv6(&ipv6)
+            .expect("test IPv6 packet should compress");
+        let mut data_packet_body = Vec::with_capacity(FSP_PORT_HEADER_SIZE + compressed.len());
+        data_packet_body.extend_from_slice(&0u16.to_le_bytes());
+        data_packet_body.extend_from_slice(&FSP_PORT_IPV6_SHIM.to_le_bytes());
+        data_packet_body.extend_from_slice(&compressed);
+        let plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            SessionMessageType::DataPacket.to_byte(),
+            0x01,
+            &data_packet_body,
+        );
+
+        let fsp_header =
+            crate::node::session_wire::build_fsp_header(7, 0, plaintext.len() as u16);
+        let mut packet_data = Vec::with_capacity(fsp_header.len() + plaintext.len());
+        packet_data.extend_from_slice(&fsp_header);
+        packet_data.extend_from_slice(&plaintext);
+        let fsp_payload_len = packet_data.len();
+        let header = FspEncryptedHeader::parse(&packet_data).expect("test FSP header");
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let job = FspDecryptJob {
+            fallback_tx,
+            fallback: DecryptFallback::new(
+                source_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                packet_data.len(),
+                10,
+                0,
+                packet_data,
+                0,
+                fsp_payload_len,
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer: source_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len,
+            trace_enqueued_at: None,
+        };
+
+        let opened = FspOpenedJob::new(job, header, plaintext.len());
+        let prepared = opened
+            .prepared_direct_ipv6
+            .expect("IPv6 shim plaintext should be prepared");
+        assert_eq!(prepared.packet, ipv6);
+        assert_eq!(prepared.timestamp, 0x0102_0304);
+        assert_eq!(prepared.inner_flags_byte, 0x01);
+        assert_eq!(prepared.body_len, data_packet_body.len());
+    }
+
+    #[test]
     fn worker_directs_local_established_session_datagram_to_fsp_owner() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
