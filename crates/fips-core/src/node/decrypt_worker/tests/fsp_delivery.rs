@@ -362,6 +362,55 @@
     }
 
     #[test]
+    fn fsp_session_refresh_preserves_inflight_worker_open_order() {
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let snapshot = || crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x51; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        };
+
+        let mut state = OwnedFspSessionState::from(snapshot());
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let ticket = shared.issue_ticket();
+
+        let mut refreshed = OwnedFspSessionState::from(snapshot());
+        refreshed.preserve_receive_order_from(state);
+        assert_eq!(refreshed.fsp_receive_order_id(), receive_order_id);
+        assert_eq!(refreshed.fsp_receive_order.next_ticket(), ticket.sequence + 1);
+
+        let drain = refreshed
+            .complete_ordered_fsp_open(
+                ticket,
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+            )
+            .expect("pre-refresh worker-open completion should remain in order");
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.dropped, 1);
+        assert_eq!(refreshed.fsp_receive_order_next_ready(), ticket.sequence + 1);
+
+        let next_shared = refreshed
+            .shared_crypto_session(0)
+            .expect("refreshed single-current FSP session should expose shared crypto");
+        assert_eq!(next_shared.receive_order_id, receive_order_id);
+        assert_eq!(next_shared.issue_ticket().sequence, ticket.sequence + 1);
+    }
+
+    #[test]
     fn fsp_ordered_completion_buffers_out_of_order_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
@@ -1220,7 +1269,7 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let first = DecryptJob::new(
+        let mut first = DecryptJob::new(
             wire_a,
             session_key,
             TransportId::new(1),
@@ -1233,7 +1282,8 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx.clone(),
         );
-        let second = DecryptJob::new(
+        first.lane = DecryptWorkerLane::Bulk;
+        let mut second = DecryptJob::new(
             wire_b,
             session_key,
             TransportId::new(1),
@@ -1246,6 +1296,7 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        second.lane = DecryptWorkerLane::Bulk;
 
         assert!(matches!(
             shard
@@ -1317,7 +1368,7 @@
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let job = DecryptJob::new(
+        let mut job = DecryptJob::new(
             wire,
             session_key,
             TransportId::new(1),
@@ -1330,6 +1381,7 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1431,7 +1483,7 @@
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 10);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let job = DecryptJob::new(
+        let mut job = DecryptJob::new(
             wire,
             session_key,
             TransportId::new(1),
@@ -1444,6 +1496,7 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1528,7 +1581,7 @@
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 11);
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let job = DecryptJob::new(
+        let mut job = DecryptJob::new(
             wire,
             session_key,
             TransportId::new(1),
@@ -1541,6 +1594,7 @@
             crate::node::wire::ESTABLISHED_HEADER_SIZE,
             fallback_tx,
         );
+        job.lane = DecryptWorkerLane::Bulk;
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);

@@ -575,6 +575,20 @@ impl DecryptWorkerPool {
             .and_then(|sessions| sessions.get(source_addr).cloned())
     }
 
+    fn publish_fsp_aead_session(
+        &self,
+        source_addr: NodeAddr,
+        shared: Option<Arc<FspSharedCryptoSession>>,
+    ) {
+        if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
+            if let Some(shared) = shared {
+                sessions.insert(source_addr, shared);
+            } else {
+                sessions.remove(&source_addr);
+            }
+        }
+    }
+
     #[allow(clippy::result_large_err)]
     fn dispatch_fsp_aead_helper_job(
         &self,
@@ -1058,28 +1072,12 @@ impl DecryptWorkerPool {
             return false;
         }
         let idx = self.worker_idx_for_fsp(&source_addr);
-        let mut state = OwnedFspSessionState::from(state);
-        let shared = (self.fsp_aead_helpers_enabled() || self.fsp_bulk_open_worker_enabled())
-            .then(|| state.shared_crypto_session(idx))
-            .flatten()
-            .map(Arc::new);
-        if let Some(shared) = &shared {
-            state.attach_shared_crypto_session(Arc::clone(shared));
-        }
+        let state = OwnedFspSessionState::from(state);
         match self.senders[idx]
             .control
             .try_send(WorkerMsg::RegisterFspSession { source_addr, state })
         {
-            Ok(()) => {
-                if let Ok(mut sessions) = self.fsp_aead_sessions.write() {
-                    if let Some(shared) = shared {
-                        sessions.insert(source_addr, shared);
-                    } else {
-                        sessions.remove(&source_addr);
-                    }
-                }
-                true
-            }
+            Ok(()) => true,
             Err(TrySendError::Full(_)) => {
                 record_decrypt_worker_control_drop(idx, "register-fsp");
                 crate::perf_profile::record_event(

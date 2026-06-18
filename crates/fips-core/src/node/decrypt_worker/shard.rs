@@ -251,13 +251,25 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         source_addr: NodeAddr,
-        state: OwnedFspSessionState,
+        mut state: OwnedFspSessionState,
     ) {
         trace!(
             worker = idx,
             %source_addr,
             "DecryptWorker: register FSP session"
         );
+        if let Some(previous) = self.fsp_sessions.remove(&source_addr) {
+            state.preserve_receive_order_from(previous);
+        }
+        let shared = (self.pool.fsp_aead_helpers_enabled()
+            || self.pool.fsp_bulk_open_worker_enabled())
+        .then(|| state.shared_crypto_session(idx))
+        .flatten()
+        .map(Arc::new);
+        if let Some(shared) = &shared {
+            state.attach_shared_crypto_session(Arc::clone(shared));
+        }
+        self.pool.publish_fsp_aead_session(source_addr, shared);
         self.fsp_sessions.insert(source_addr, state);
     }
 
@@ -268,6 +280,7 @@ impl DecryptWorkerShard {
             "DecryptWorker: unregister FSP session"
         );
         self.fsp_sessions.remove(&source_addr);
+        self.pool.publish_fsp_aead_session(source_addr, None);
     }
 
     #[cfg(test)]

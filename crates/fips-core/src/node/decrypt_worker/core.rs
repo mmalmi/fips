@@ -479,6 +479,12 @@ pub(crate) struct OwnedFspSessionState {
     fsp_shared_crypto: Option<Arc<FspSharedCryptoSession>>,
 }
 
+#[derive(Clone, Copy)]
+struct FspReceiveProgress {
+    next_ticket: u64,
+    next_ready: u64,
+}
+
 struct FspOpenSuccess {
     plaintext: Vec<u8>,
     slot: EpochSlot,
@@ -523,19 +529,39 @@ struct FspSharedCryptoSession {
 }
 
 impl FspSharedCryptoSession {
+    #[cfg(test)]
     fn new(
         owner_idx: usize,
         receive_order_id: u64,
         current_k_bit: bool,
         cipher: Arc<LessSafeKey>,
     ) -> Self {
+        Self::new_with_progress(
+            owner_idx,
+            receive_order_id,
+            current_k_bit,
+            cipher,
+            FspReceiveProgress {
+                next_ticket: 0,
+                next_ready: 0,
+            },
+        )
+    }
+
+    fn new_with_progress(
+        owner_idx: usize,
+        receive_order_id: u64,
+        current_k_bit: bool,
+        cipher: Arc<LessSafeKey>,
+        progress: FspReceiveProgress,
+    ) -> Self {
         Self {
             owner_idx,
             receive_order_id,
             current_k_bit,
             cipher,
-            next_ticket: AtomicU64::new(0),
-            next_ready: AtomicU64::new(0),
+            next_ticket: AtomicU64::new(progress.next_ticket),
+            next_ready: AtomicU64::new(progress.next_ready),
         }
     }
 
@@ -566,6 +592,13 @@ impl FspSharedCryptoSession {
 
     fn mark_next_ready(&self, next_ready: u64) {
         self.next_ready.store(next_ready, Ordering::Relaxed);
+    }
+
+    fn progress(&self) -> FspReceiveProgress {
+        FspReceiveProgress {
+            next_ticket: self.next_ticket.load(Ordering::Relaxed),
+            next_ready: self.next_ready.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -614,19 +647,39 @@ impl OwnedFspSessionState {
         self.pending.is_none() && self.previous.is_none()
     }
 
+    fn receive_progress(&self) -> FspReceiveProgress {
+        self.fsp_shared_crypto
+            .as_ref()
+            .map(|shared| shared.progress())
+            .unwrap_or_else(|| FspReceiveProgress {
+                next_ticket: self.fsp_receive_order.next_ticket(),
+                next_ready: self.fsp_receive_order_next_ready(),
+            })
+    }
+
     fn shared_crypto_session(&self, owner_idx: usize) -> Option<FspSharedCryptoSession> {
         self.has_single_current_epoch().then(|| {
-            FspSharedCryptoSession::new(
+            FspSharedCryptoSession::new_with_progress(
                 owner_idx,
                 self.fsp_receive_order_id,
                 self.current_k_bit,
                 Arc::clone(&self.current.cipher),
+                self.receive_progress(),
             )
         })
     }
 
     fn attach_shared_crypto_session(&mut self, shared: Arc<FspSharedCryptoSession>) {
         self.fsp_shared_crypto = Some(shared);
+    }
+
+    fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
+        let progress = previous.receive_progress();
+        self.fsp_receive_order_id = previous.fsp_receive_order_id;
+        self.fsp_receive_order = previous.fsp_receive_order;
+        self.fsp_receive_order
+            .advance_next_ticket_to(progress.next_ticket);
+        self.fsp_shared_crypto = None;
     }
 
     fn fsp_receive_order_id(&self) -> u64 {
@@ -993,6 +1046,14 @@ impl FspReceiveOrder {
         };
         self.next_ticket = self.next_ticket.saturating_add(1);
         Some(ticket)
+    }
+
+    fn next_ticket(&self) -> u64 {
+        self.next_ticket
+    }
+
+    fn advance_next_ticket_to(&mut self, next_ticket: u64) {
+        self.next_ticket = self.next_ticket.max(next_ticket);
     }
 
     fn complete(

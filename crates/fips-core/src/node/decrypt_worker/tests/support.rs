@@ -1187,6 +1187,7 @@
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let shard_pool = pool.clone();
         let snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
@@ -1199,14 +1200,22 @@
         };
 
         assert!(pool.register_fsp_session(source_addr, snapshot));
+        assert!(
+            pool.fsp_aead_session(&source_addr).is_none(),
+            "shared crypto is published by the owner after it installs state"
+        );
+        let mut shard = DecryptWorkerShard::new(shard_pool);
         match control_receivers[owner_idx]
             .recv_timeout(Duration::from_millis(100))
             .expect("FSP registration should reach owner worker")
         {
             WorkerMsg::RegisterFspSession {
                 source_addr: got_source_addr,
-                ..
-            } => assert_eq!(got_source_addr, source_addr),
+                state,
+            } => {
+                assert_eq!(got_source_addr, source_addr);
+                shard.register_fsp_session(owner_idx, got_source_addr, state);
+            }
             _ => panic!("expected FSP registration"),
         }
         assert!(
@@ -1231,6 +1240,7 @@
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
+        let shard_pool = pool.clone();
         let snapshot = crate::node::session::FspRecvSessionSnapshot {
             source_peer,
             current_k_bit: false,
@@ -1243,14 +1253,22 @@
         };
 
         assert!(pool.register_fsp_session(source_addr, snapshot));
+        assert!(
+            pool.fsp_aead_session(&source_addr).is_none(),
+            "shared crypto is published by the owner after it installs state"
+        );
+        let mut shard = DecryptWorkerShard::new(shard_pool);
         match control_receivers[owner_idx]
             .recv_timeout(Duration::from_millis(100))
             .expect("FSP registration should reach owner worker")
         {
             WorkerMsg::RegisterFspSession {
                 source_addr: got_source_addr,
-                ..
-            } => assert_eq!(got_source_addr, source_addr),
+                state,
+            } => {
+                assert_eq!(got_source_addr, source_addr);
+                shard.register_fsp_session(owner_idx, got_source_addr, state);
+            }
             _ => panic!("expected FSP registration"),
         }
 
