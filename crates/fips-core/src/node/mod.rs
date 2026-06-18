@@ -155,7 +155,9 @@ const SESSION_DIRECT_DEGRADED_MIN_SAMPLE: u64 = 16;
 const SESSION_DIRECT_DEGRADED_LOSS_THRESHOLD: f64 = 0.08;
 const SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD: f64 = 0.02;
 const ROUTING_FALLBACK_MIN_COST_ADVANTAGE: f64 = 0.25;
-const ENDPOINT_EVENT_BACKLOG_HIGH_WATER: usize = 4096;
+// Half of the default resolved endpoint-event bulk capacity: high enough to
+// ignore normal CPU-stall catch-up, low enough to warn before drops.
+const ENDPOINT_EVENT_BACKLOG_HIGH_WATER: usize = 16_384;
 
 /// Half-range of the symmetric jitter applied to per-session rekey timers.
 ///
