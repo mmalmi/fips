@@ -1,4 +1,4 @@
-use super::FipsEndpointMessage;
+use super::{FipsEndpointMessage, FipsEndpointPayloadMessage};
 use crate::PeerIdentity;
 use crate::node::{ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointEventReceiver, NodeEndpointEvent};
 use crate::transport::PacketBuffer;
@@ -23,6 +23,29 @@ impl EndpointQueuedMessage {
             data: self.payload.into_vec(),
         }
     }
+
+    fn into_payload_public(self) -> FipsEndpointPayloadMessage {
+        FipsEndpointPayloadMessage {
+            source_peer: self.source_peer,
+            data: self.payload,
+        }
+    }
+}
+
+trait EndpointPublicMessage: Sized {
+    fn from_queued(message: EndpointQueuedMessage) -> Self;
+}
+
+impl EndpointPublicMessage for FipsEndpointMessage {
+    fn from_queued(message: EndpointQueuedMessage) -> Self {
+        message.into_public()
+    }
+}
+
+impl EndpointPublicMessage for FipsEndpointPayloadMessage {
+    fn from_queued(message: EndpointQueuedMessage) -> Self {
+        message.into_payload_public()
+    }
 }
 
 pub(super) struct EndpointReceiveState {
@@ -41,15 +64,19 @@ impl EndpointReceiveState {
     }
 
     pub(super) fn pop_pending_priority(&mut self) -> Option<FipsEndpointMessage> {
-        self.pending_priority
-            .pop_front()
-            .map(EndpointQueuedMessage::into_public)
+        self.pop_pending_priority_as()
     }
 
     pub(super) fn pop_pending_bulk(&mut self) -> Option<FipsEndpointMessage> {
-        self.pending_bulk
-            .pop_front()
-            .map(EndpointQueuedMessage::into_public)
+        self.pop_pending_bulk_as()
+    }
+
+    fn pop_pending_priority_as<M: EndpointPublicMessage>(&mut self) -> Option<M> {
+        self.pending_priority.pop_front().map(M::from_queued)
+    }
+
+    fn pop_pending_bulk_as<M: EndpointPublicMessage>(&mut self) -> Option<M> {
+        self.pending_bulk.pop_front().map(M::from_queued)
     }
 
     pub(super) fn drain_priority_pending_into(
@@ -84,8 +111,26 @@ impl EndpointReceiveState {
         limit: usize,
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
+        self.drain_priority_pending_for_each_as(drained, limit, handle_message)
+    }
+
+    pub(super) fn drain_priority_pending_payload_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointPayloadMessage) -> bool,
+    ) -> bool {
+        self.drain_priority_pending_for_each_as(drained, limit, handle_message)
+    }
+
+    fn drain_priority_pending_for_each_as<M: EndpointPublicMessage>(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(M) -> bool,
+    ) -> bool {
         while *drained < limit {
-            let Some(message) = self.pop_pending_priority() else {
+            let Some(message) = self.pop_pending_priority_as() else {
                 break;
             };
             *drained += 1;
@@ -102,8 +147,26 @@ impl EndpointReceiveState {
         limit: usize,
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
+        self.drain_bulk_pending_for_each_as(drained, limit, handle_message)
+    }
+
+    pub(super) fn drain_bulk_pending_payload_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointPayloadMessage) -> bool,
+    ) -> bool {
+        self.drain_bulk_pending_for_each_as(drained, limit, handle_message)
+    }
+
+    fn drain_bulk_pending_for_each_as<M: EndpointPublicMessage>(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(M) -> bool,
+    ) -> bool {
         while *drained < limit {
-            let Some(message) = self.pop_pending_bulk() else {
+            let Some(message) = self.pop_pending_bulk_as() else {
                 break;
             };
             *drained += 1;
@@ -170,12 +233,32 @@ impl EndpointReceiveState {
         limit: usize,
         handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
     ) -> bool {
+        self.push_event_for_each_as(event, drained, limit, handle_message)
+    }
+
+    pub(super) fn push_event_payload_for_each(
+        &mut self,
+        event: NodeEndpointEvent,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointPayloadMessage) -> bool,
+    ) -> bool {
+        self.push_event_for_each_as(event, drained, limit, handle_message)
+    }
+
+    fn push_event_for_each_as<M: EndpointPublicMessage>(
+        &mut self,
+        event: NodeEndpointEvent,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(M) -> bool,
+    ) -> bool {
         match event {
             NodeEndpointEvent::Data {
                 source_peer,
                 payload,
                 ..
-            } => self.push_queued_for_each(
+            } => self.push_queued_for_each_as(
                 EndpointQueuedMessage::new(source_peer, payload),
                 drained,
                 limit,
@@ -185,7 +268,7 @@ impl EndpointReceiveState {
                 let mut iter = messages.into_iter();
                 while let Some(message) = iter.next() {
                     let queued = EndpointQueuedMessage::new(message.source_peer, message.payload);
-                    if !self.push_queued_for_each(queued, drained, limit, handle_message) {
+                    if !self.push_queued_for_each_as(queued, drained, limit, handle_message) {
                         for message in iter {
                             self.push_pending(EndpointQueuedMessage::new(
                                 message.source_peer,
@@ -200,16 +283,16 @@ impl EndpointReceiveState {
         }
     }
 
-    fn push_queued_for_each(
+    fn push_queued_for_each_as<M: EndpointPublicMessage>(
         &mut self,
         message: EndpointQueuedMessage,
         drained: &mut usize,
         limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointMessage) -> bool,
+        handle_message: &mut impl FnMut(M) -> bool,
     ) -> bool {
         if *drained < limit {
             *drained += 1;
-            handle_message(message.into_public())
+            handle_message(M::from_queued(message))
         } else {
             self.push_pending(message);
             false

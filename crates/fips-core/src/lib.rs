@@ -81,6 +81,7 @@ pub use peer::{
 // Re-export node types
 pub use endpoint::{
     FipsEndpoint, FipsEndpointBuilder, FipsEndpointError, FipsEndpointMessage, FipsEndpointPayload,
+    FipsEndpointPayloadMessage,
 };
 pub use node::{
     EndpointPayloadClass, EndpointPayloadLane, ExternalPacketIo, Node, NodeDeliveredPacket,

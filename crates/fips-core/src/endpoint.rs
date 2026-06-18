@@ -12,6 +12,7 @@ use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
     NodeEndpointCommand, NodeEndpointEvent,
 };
+use crate::transport::PacketBuffer;
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -152,6 +153,51 @@ impl FipsEndpointMessage {
     /// Source Nostr public key as human-facing bech32 text.
     pub fn source_npub(&self) -> String {
         self.source_peer.npub()
+    }
+}
+
+/// Source-attributed endpoint data that preserves the receive buffer owner.
+///
+/// Packet-mover embedders can use this on a blocking receive thread to borrow
+/// the payload through their local write path and then let the buffer recycle
+/// back into FIPS. General app code should keep using [`FipsEndpointMessage`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsEndpointPayloadMessage {
+    /// Authenticated FIPS peer that originated the endpoint data.
+    pub source_peer: PeerIdentity,
+    /// Payload bytes owned by FIPS' receive-buffer pool.
+    pub data: PacketBuffer,
+}
+
+impl FipsEndpointPayloadMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
+
+    /// Payload bytes as a borrowed slice.
+    pub fn as_slice(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+
+    /// Payload byte length.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Whether the payload is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Convert to app-owned bytes, detaching the payload from the buffer pool.
+    pub fn into_vec(self) -> Vec<u8> {
+        self.data.into_vec()
     }
 }
 
@@ -741,6 +787,61 @@ impl FipsEndpoint {
                 }
             };
             if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                return Some(drained);
+            }
+        }
+
+        Some(drained)
+    }
+
+    /// Synchronous blocking batch receive for packet-mover threads that need to
+    /// preserve FIPS' receive-buffer owner until their local write completes.
+    ///
+    /// Ordering, priority-before-bulk draining, callback-stop behavior, and
+    /// batch limits match [`Self::blocking_recv_batch_for_each`]. The callback
+    /// receives [`FipsEndpointPayloadMessage`] so callers can borrow the
+    /// payload instead of forcing an owned-`Vec` handoff.
+    pub fn blocking_recv_payload_batch_for_each(
+        &self,
+        max: usize,
+        mut handle_message: impl FnMut(FipsEndpointPayloadMessage) -> bool,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut drained = 0usize;
+
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        if !state.drain_priority_pending_payload_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+        while drained < max {
+            match state.rx.try_recv_priority() {
+                Ok(event) => {
+                    if !state.push_event_payload_for_each(
+                        event,
+                        &mut drained,
+                        max,
+                        &mut handle_message,
+                    ) {
+                        return Some(drained);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if !state.drain_bulk_pending_payload_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+
+        while drained < max {
+            let event = if drained == 0 {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            if !state.push_event_payload_for_each(event, &mut drained, max, &mut handle_message) {
                 return Some(drained);
             }
         }

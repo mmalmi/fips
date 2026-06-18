@@ -492,6 +492,56 @@ async fn blocking_recv_batch_for_each_respects_limit_without_message_vec_staging
 }
 
 #[tokio::test]
+async fn blocking_recv_payload_batch_for_each_respects_limit_without_detaching_payloads() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    endpoint
+        .send_batch_to_peer(
+            local,
+            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        )
+        .await
+        .expect("loopback batch send should succeed");
+
+    let endpoint = tokio::task::spawn_blocking(move || {
+        let local_node_addr = *endpoint.node_addr();
+        let mut messages = Vec::with_capacity(3);
+        let received = endpoint
+            .blocking_recv_payload_batch_for_each(2, |message| {
+                assert_eq!(*message.source_node_addr(), local_node_addr);
+                assert_eq!(message.len(), message.as_slice().len());
+                messages.push(message.as_slice().to_vec());
+                true
+            })
+            .expect("messages should arrive");
+        assert_eq!(received, 2);
+        assert_eq!(messages, vec![b"first".to_vec(), b"second".to_vec()]);
+
+        let received = endpoint
+            .blocking_recv_payload_batch_for_each(8, |message| {
+                messages.push(message.as_slice().to_vec());
+                true
+            })
+            .expect("message should arrive");
+        assert_eq!(received, 1);
+        assert_eq!(
+            messages,
+            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+        );
+        endpoint
+    })
+    .await
+    .expect("blocking receiver should join");
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()
