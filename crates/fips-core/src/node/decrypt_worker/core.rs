@@ -49,6 +49,8 @@ const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
+/// The old FSP helper pool is retired: FSP bulk parallelism uses the
+/// worker-open path so completions still return through one owner/sequencer.
 const DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS: usize = 0;
 const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MIN_OWNER_BACKLOG: usize = 0;
 const DEFAULT_DECRYPT_FSP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
@@ -276,10 +278,8 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
-fn fsp_ordered_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS)
-        .min(64)
+fn fsp_ordered_aead_helper_count_from_raw(_raw: Option<&str>) -> usize {
+    DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS
 }
 
 fn fsp_ordered_aead_helper_count() -> usize {

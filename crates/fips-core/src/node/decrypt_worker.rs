@@ -36,11 +36,11 @@
 //! delivery.
 //!
 //! This is the FIPS equivalent of WireGuard-go's packet mover shape: packets
-//! are grouped by the peer/session owner, AEAD opening may happen on helper or
+//! are grouped by the peer/session owner, FSP bulk AEAD opening may happen on
 //! opener workers, and every FSP completion returns through the source-peer
 //! ordered owner before replay acceptance or TUN/endpoint delivery. Returned
-//! helper/open-worker completions are observable pressure events, not alternate
-//! replay owners.
+//! open-worker completions are observable pressure events, not alternate replay
+//! owners.
 
 // **Unix only at the call sites.** On Windows nothing constructs an
 // `OwnedSessionState` or spawns the pool (see `lifecycle.rs`), so

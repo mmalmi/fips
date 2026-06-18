@@ -93,18 +93,15 @@
     }
 
     #[test]
-    fn fsp_ordered_aead_helper_env_defaults_off_but_can_opt_in() {
+    fn fsp_ordered_aead_helper_env_is_retired() {
         assert_eq!(
             fsp_ordered_aead_helper_count_from_raw(None),
             DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS
         );
         assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("0")), 0);
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("2")), 2);
-        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("99")), 64);
-        assert_eq!(
-            fsp_ordered_aead_helper_count_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_FSP_ORDERED_AEAD_HELPERS
-        );
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("2")), 0);
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("99")), 0);
+        assert_eq!(fsp_ordered_aead_helper_count_from_raw(Some("bad")), 0);
     }
 
     #[test]
