@@ -550,6 +550,7 @@ impl Node {
             "direct endpoint commit and delivery batches must stay aligned"
         );
         let mut committed_sources = Vec::new();
+        let mut committed_deliveries = Vec::with_capacity(deliveries.len());
         let clock = WorkerReceiveClock::now();
         for (commit, delivery) in commits.into_iter().zip(deliveries) {
             let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
@@ -564,14 +565,17 @@ impl Node {
                 continue;
             };
 
-            if let Err(error) = self.deliver_endpoint_event_message(delivery) {
-                debug!(
-                    error = %error,
-                    src = %self.peer_display_name(&source_addr),
-                    "Failed to queue worker-decoded endpoint data after direct commit"
-                );
-            }
+            committed_deliveries.push(delivery);
             Self::note_unique_flush_dest(&mut committed_sources, source_addr);
+        }
+        let delivered_count = committed_deliveries.len();
+        if let Err(error) = self.deliver_endpoint_event_messages(committed_deliveries) {
+            debug!(
+                error = %error,
+                messages = delivered_count,
+                sources = committed_sources.len(),
+                "Failed to queue worker-decoded endpoint data after direct commits"
+            );
         }
         self.flush_pending_committed_sources(&mut committed_sources)
             .await;

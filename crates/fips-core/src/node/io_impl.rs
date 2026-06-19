@@ -102,6 +102,14 @@ impl Node {
         self.endpoint_events.deliver_endpoint_data(message)
     }
 
+    #[allow(clippy::result_large_err)]
+    pub(in crate::node) fn deliver_endpoint_event_messages(
+        &mut self,
+        messages: Vec<EndpointDataDelivery>,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        self.endpoint_events.deliver_endpoint_data_batch(messages)
+    }
+
     pub(in crate::node) fn decrypt_direct_session_delivery_sink(
         &self,
     ) -> decrypt_worker::DecryptDirectSessionDeliverySink {

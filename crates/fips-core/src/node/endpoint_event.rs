@@ -896,6 +896,25 @@ impl EndpointEventRuntime {
         })
     }
 
+    #[allow(clippy::result_large_err)]
+    pub(in crate::node) fn deliver_endpoint_data_batch(
+        &mut self,
+        mut messages: Vec<EndpointDataDelivery>,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if self.batch_depth > 0 {
+            self.batch.append(&mut messages);
+            return Ok(());
+        }
+
+        let queued_at = crate::perf_profile::stamp();
+        let event = NodeEndpointEvent::from_delivery_messages(messages, queued_at)
+            .expect("non-empty endpoint event batch should produce event");
+        self.send(event)
+    }
+
     fn flush_batch(&mut self) {
         let count = self.batch.len();
         if count == 0 {

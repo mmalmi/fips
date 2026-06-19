@@ -88,6 +88,61 @@ fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
 }
 
 #[test]
+fn endpoint_event_runtime_accepts_owned_delivery_batches() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let mut runtime = EndpointEventRuntime::default();
+    runtime.attach(event_tx.clone());
+
+    runtime
+        .deliver_endpoint_data_batch(vec![
+            EndpointDataDelivery::new(source, b"first".to_vec()),
+            EndpointDataDelivery::new(source, b"second".to_vec()),
+        ])
+        .expect("owned endpoint batch should enqueue");
+    assert_eq!(event_tx.queued_messages(), 2);
+    match event_rx.try_recv().expect("owned batch event") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[0].source_peer, source);
+            assert_eq!(messages[0].payload, b"first");
+            assert_eq!(messages[1].source_peer, source);
+            assert_eq!(messages[1].payload, b"second");
+        }
+        event => panic!("expected endpoint event batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+
+    runtime.begin_batch();
+    runtime
+        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"third".to_vec()))
+        .expect("single endpoint event in scope");
+    runtime
+        .deliver_endpoint_data_batch(vec![
+            EndpointDataDelivery::new(source, b"fourth".to_vec()),
+            EndpointDataDelivery::new(source, b"fifth".to_vec()),
+        ])
+        .expect("owned endpoint batch in scope");
+    assert!(
+        event_rx.try_recv().is_err(),
+        "batch scope should not flush before finish"
+    );
+
+    runtime.finish_batch();
+    assert_eq!(event_tx.queued_messages(), 3);
+    match event_rx.try_recv().expect("scoped owned batch event") {
+        NodeEndpointEvent::DataBatch { messages, .. } => {
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages[0].payload, b"third");
+            assert_eq!(messages[1].payload, b"fourth");
+            assert_eq!(messages[2].payload, b"fifth");
+        }
+        event => panic!("expected endpoint event batch, got {event:?}"),
+    }
+    assert_eq!(event_tx.queued_messages(), 0);
+}
+
+#[test]
 fn endpoint_event_sender_clone_drop_only_notifies_for_last_sender() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let observed = event_tx.ready_sequence_for_test();
