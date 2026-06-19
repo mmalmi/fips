@@ -1634,7 +1634,7 @@
             ),
             local_node_addr: *test_source_peer().node_addr(),
             source_addr: *source_peer.node_addr(),
-            previous_hop_peer: test_source_peer(),
+            previous_hop_addr: *test_source_peer().node_addr(),
             path_mtu: 1_280,
             ce_flag: false,
             inner_timestamp_ms: 2,
@@ -1697,7 +1697,7 @@
                 fmp_flags: 0,
             },
             source_addr: *source_peer.node_addr(),
-            previous_hop_peer,
+            previous_hop_addr: *previous_hop_peer.node_addr(),
             ce_flag: false,
             message: AuthenticatedSessionMessage::new(source_peer, vec![0; 8], 0x01, 0, 4),
             receive_sync: FspReceiveSync {

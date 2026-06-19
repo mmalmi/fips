@@ -1961,7 +1961,7 @@ pub(crate) struct DecryptAuthenticatedFmpReceive {
 pub(crate) struct DecryptAuthenticatedSession {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
-    pub previous_hop_peer: PeerIdentity,
+    pub previous_hop_addr: NodeAddr,
     pub ce_flag: bool,
     pub message: AuthenticatedSessionMessage,
     pub receive_sync: FspReceiveSync,

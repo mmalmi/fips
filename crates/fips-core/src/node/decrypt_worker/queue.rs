@@ -245,7 +245,7 @@ struct FspDecryptJob {
     fallback: DecryptFallback,
     local_node_addr: NodeAddr,
     source_addr: NodeAddr,
-    previous_hop_peer: PeerIdentity,
+    previous_hop_addr: NodeAddr,
     path_mtu: u16,
     ce_flag: bool,
     inner_timestamp_ms: u32,

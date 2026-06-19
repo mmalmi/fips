@@ -367,7 +367,7 @@
                 ),
                 local_node_addr: *source_peer.node_addr(),
                 source_addr: *source_peer.node_addr(),
-                previous_hop_peer: source_peer,
+                previous_hop_addr: *source_peer.node_addr(),
                 path_mtu: 1_280,
                 ce_flag: false,
                 inner_timestamp_ms: 2,

@@ -337,7 +337,7 @@ impl Node {
 
         let dispatch = AuthenticatedSessionDispatch::new(
             source_addr,
-            *authenticated.previous_hop_peer.node_addr(),
+            authenticated.previous_hop_addr,
             authenticated.ce_flag,
             authenticated.message,
         );
@@ -377,7 +377,7 @@ impl Node {
 
             let dispatch = AuthenticatedSessionDispatch::new(
                 source_addr,
-                *authenticated.previous_hop_peer.node_addr(),
+                authenticated.previous_hop_addr,
                 authenticated.ce_flag,
                 authenticated.message,
             );
