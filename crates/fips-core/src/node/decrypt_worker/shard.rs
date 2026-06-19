@@ -131,6 +131,7 @@ struct DecryptWorkerShard {
     // Lives entirely on this OS thread — never observed by any other thread.
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
+    fsp_ready_outputs: Vec<FspReadyCompletion>,
 }
 
 impl DecryptWorkerShard {
@@ -139,6 +140,7 @@ impl DecryptWorkerShard {
             pool,
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
+            fsp_ready_outputs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -750,7 +752,7 @@ impl DecryptWorkerShard {
             result,
             completed_at: _,
         } = completion;
-        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+        let Some(state) = self.fsp_sessions.get(&source_addr) else {
             record_fsp_aead_completion_drop(
                 crate::perf_profile::Event::FspAeadCompletionStaleSession,
                 1,
@@ -764,19 +766,22 @@ impl DecryptWorkerShard {
             );
             return;
         }
-        let drain = match state.complete_ordered_fsp_open(ticket, result) {
-            Ok(drain) => drain,
-            Err(error) => {
-                record_fsp_aead_completion_order_error(&error);
-                debug!(
-                    worker = idx,
-                    ?error,
-                    %source_addr,
-                    "dropping invalid ordered FSP AEAD completion"
-                );
-                return;
-            }
-        };
+        let mut drain = self.fsp_ordered_drain_with_reused_outputs(1);
+        let state = self
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("FSP session was checked before taking reusable drain");
+        if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain) {
+            self.recycle_fsp_ordered_drain_outputs(drain);
+            record_fsp_aead_completion_order_error(&error);
+            debug!(
+                worker = idx,
+                ?error,
+                %source_addr,
+                "dropping invalid ordered FSP AEAD completion"
+            );
+            return;
+        }
         let next_ready = state.fsp_receive_order_next_ready();
         debug_assert_eq!(
             drain.ready,
@@ -800,7 +805,7 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
+        self.push_reused_fsp_ready_completion_outputs(drain, plaintext_batch);
     }
 
     fn handle_fsp_aead_completion_batch_msg(
@@ -854,55 +859,55 @@ impl DecryptWorkerShard {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         }
 
-        let mut drain = FspOrderedDrain::default();
-        drain.outputs.reserve(completions.len().min(DECRYPT_WORKER_BULK_BATCH_MAX));
-        let next_ready;
-        {
-            let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
-                record_fsp_aead_completion_drop(
-                    crate::perf_profile::Event::FspAeadCompletionStaleSession,
-                    completions.len(),
-                );
-                return;
-            };
-            if state.fsp_receive_order_id() != receive_order_id {
-                record_fsp_aead_completion_drop(
-                    crate::perf_profile::Event::FspAeadCompletionStaleOrder,
-                    completions.len(),
-                );
-                return;
-            }
-            for completion in completions {
-                let FspAeadCompletion {
-                    source_addr: _,
-                    receive_order_id: _,
-                    ticket,
-                    source: _,
-                    result,
-                    completed_at: _,
-                } = completion;
-                if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain)
-                {
-                    record_fsp_aead_completion_order_error(&error);
-                    debug!(
-                        worker = idx,
-                        ?error,
-                        %source_addr,
-                        "dropping invalid ordered FSP AEAD completion"
-                    );
-                    continue;
-                }
-                debug_assert_eq!(
-                    drain.ready,
-                    drain.accepted
-                        + drain.aead_failures
-                        + drain.epoch_mismatches
-                        + drain.replay_drops
-                        + drain.dropped
-                );
-            }
-            next_ready = state.fsp_receive_order_next_ready();
+        let Some(state) = self.fsp_sessions.get(&source_addr) else {
+            record_fsp_aead_completion_drop(
+                crate::perf_profile::Event::FspAeadCompletionStaleSession,
+                completions.len(),
+            );
+            return;
+        };
+        if state.fsp_receive_order_id() != receive_order_id {
+            record_fsp_aead_completion_drop(
+                crate::perf_profile::Event::FspAeadCompletionStaleOrder,
+                completions.len(),
+            );
+            return;
         }
+
+        let mut drain = self.fsp_ordered_drain_with_reused_outputs(completions.len());
+        let state = self
+            .fsp_sessions
+            .get_mut(&source_addr)
+            .expect("FSP session was checked before taking reusable drain");
+        for completion in completions {
+            let FspAeadCompletion {
+                source_addr: _,
+                receive_order_id: _,
+                ticket,
+                source: _,
+                result,
+                completed_at: _,
+            } = completion;
+            if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain) {
+                record_fsp_aead_completion_order_error(&error);
+                debug!(
+                    worker = idx,
+                    ?error,
+                    %source_addr,
+                    "dropping invalid ordered FSP AEAD completion"
+                );
+                continue;
+            }
+            debug_assert_eq!(
+                drain.ready,
+                drain.accepted
+                    + drain.aead_failures
+                    + drain.epoch_mismatches
+                    + drain.replay_drops
+                    + drain.dropped
+            );
+        }
+        let next_ready = state.fsp_receive_order_next_ready();
 
         debug_assert_eq!(
             drain.ready,
@@ -926,19 +931,35 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
+        self.push_reused_fsp_ready_completion_outputs(drain, plaintext_batch);
     }
 
-    fn push_fsp_ready_completion_outputs(
-        &self,
-        outputs: Vec<FspReadyCompletion>,
+    fn fsp_ordered_drain_with_reused_outputs(&mut self, reserve: usize) -> FspOrderedDrain {
+        let mut outputs = std::mem::take(&mut self.fsp_ready_outputs);
+        outputs.clear();
+        outputs.reserve(reserve.min(DECRYPT_WORKER_BULK_BATCH_MAX));
+        FspOrderedDrain {
+            outputs,
+            ..FspOrderedDrain::default()
+        }
+    }
+
+    fn recycle_fsp_ordered_drain_outputs(&mut self, mut drain: FspOrderedDrain) {
+        drain.outputs.clear();
+        self.fsp_ready_outputs = drain.outputs;
+    }
+
+    fn push_reused_fsp_ready_completion_outputs(
+        &mut self,
+        mut drain: FspOrderedDrain,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        for completion in outputs {
+        for completion in drain.outputs.drain(..) {
             if let Some(output) = self.output_for_fsp_ready_completion(completion) {
                 plaintext_batch.push_output(output);
             }
         }
+        self.fsp_ready_outputs = drain.outputs;
     }
 
     fn outputs_for_fsp_ready_completions(
