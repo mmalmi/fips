@@ -829,6 +829,16 @@ impl Node {
         self.configured_peers.identity(peer_addr)
     }
 
+    pub(in crate::node) fn configured_or_parsed_peer_identity(
+        &self,
+        npub: &str,
+    ) -> Result<PeerIdentity, String> {
+        if let Some(identity) = self.configured_peers.identity_for_npub(npub) {
+            return Ok(*identity);
+        }
+        PeerIdentity::from_npub(npub).map_err(|error| error.to_string())
+    }
+
     pub(in crate::node) fn configured_auto_connect_peer(
         &self,
         peer_addr: &NodeAddr,
