@@ -115,6 +115,18 @@ fn active_fmp_peer(local: &Identity, peer: &Identity, tag: u32) -> ActivePeer {
     )
 }
 
+#[test]
+fn fsp_cutover_delay_covers_msg3_retransmit_burst() {
+    let default_resend_interval_ms =
+        crate::config::RateLimitConfig::default().handshake_resend_interval_ms;
+    let resend_budget = default_resend_interval_ms * 7;
+
+    assert!(
+        FSP_CUTOVER_DELAY_MS >= resend_budget,
+        "FSP initiator cutover must allow msg3 retransmits before K-bit flip"
+    );
+}
+
 fn no_session_fmp_peer(peer: &Identity, tag: u32) -> ActivePeer {
     let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
     ActivePeer::new(peer_identity, LinkId::new(tag.into()), 1_000)
@@ -626,14 +638,19 @@ fn session_registry_owns_rekey_tick_selection() {
     let dampening_ms = REKEY_DAMPENING_SECS * 1000;
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
-    arm_completed_initiator_rekey(&mut cutover, &local, &cutover_peer, now_ms - 2_500);
+    arm_completed_initiator_rekey(
+        &mut cutover,
+        &local,
+        &cutover_peer,
+        now_ms - FSP_CUTOVER_DELAY_MS - 500,
+    );
 
     let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
     arm_completed_initiator_rekey(
         &mut early_cutover,
         &local,
         &early_cutover_peer,
-        now_ms - 1_000,
+        now_ms - FSP_CUTOVER_DELAY_MS + 500,
     );
 
     let mut drain = established_entry(&local, &drain_peer, now_ms - 11_000);
@@ -700,14 +717,19 @@ fn session_registry_owns_rekey_tick_cutover_and_drain_mutation() {
     let drain_ms = DRAIN_WINDOW_SECS * 1000;
 
     let mut cutover = established_entry(&local, &cutover_peer, 1_000);
-    arm_completed_initiator_rekey(&mut cutover, &local, &cutover_peer, now_ms - 2_500);
+    arm_completed_initiator_rekey(
+        &mut cutover,
+        &local,
+        &cutover_peer,
+        now_ms - FSP_CUTOVER_DELAY_MS - 500,
+    );
 
     let mut early_cutover = established_entry(&local, &early_cutover_peer, 1_000);
     arm_completed_initiator_rekey(
         &mut early_cutover,
         &local,
         &early_cutover_peer,
-        now_ms - 1_000,
+        now_ms - FSP_CUTOVER_DELAY_MS + 500,
     );
 
     let mut drain = established_entry(&local, &drain_peer, 1_000);

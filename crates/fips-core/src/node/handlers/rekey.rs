@@ -25,9 +25,10 @@ const REKEY_DAMPENING_SECS: u64 = 30;
 /// pending session until it authenticates the peer's K-bit flip.
 const FMP_CUTOVER_DELAY_MS: u64 = 250;
 
-/// Delay FSP initiator cutover after handshake completion to allow
-/// XK msg3 to reach the responder before K-bit-flipped data arrives.
-const FSP_CUTOVER_DELAY_MS: u64 = 2000;
+/// Delay FSP initiator cutover after handshake completion to allow the initial
+/// XK msg3 plus several retransmits to reach the responder before
+/// K-bit-flipped data arrives.
+const FSP_CUTOVER_DELAY_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionRekeyMsg3Resend {
