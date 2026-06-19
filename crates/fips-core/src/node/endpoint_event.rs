@@ -842,11 +842,18 @@ impl EndpointEventSender {
     pub(crate) fn bulk_queued_messages(&self) -> usize {
         self.bulk_queued_messages.load(Relaxed)
     }
+
+    #[cfg(test)]
+    pub(crate) fn ready_sequence_for_test(&self) -> u64 {
+        self.ready.snapshot()
+    }
 }
 
 impl Drop for EndpointEventSender {
     fn drop(&mut self) {
-        self.ready.notify();
+        if Arc::strong_count(&self.ready) <= 2 {
+            self.ready.notify();
+        }
     }
 }
 

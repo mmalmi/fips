@@ -88,6 +88,36 @@ fn endpoint_event_runtime_owns_attach_batch_and_backlog() {
 }
 
 #[test]
+fn endpoint_event_sender_clone_drop_only_notifies_for_last_sender() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
+    let observed = event_tx.ready_sequence_for_test();
+
+    let clone = event_tx.clone();
+    drop(clone);
+    assert_eq!(
+        event_tx.ready_sequence_for_test(),
+        observed,
+        "dropping a temporary sender clone should not wake endpoint receivers"
+    );
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let _ = done_tx.send(event_rx.blocking_recv());
+    });
+    drop(event_tx);
+    assert!(
+        matches!(
+            done_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(None)
+        ),
+        "dropping the final sender should still wake blocking receivers"
+    );
+    waiter
+        .join()
+        .expect("blocking receiver thread should finish");
+}
+
+#[test]
 fn endpoint_event_queue_owns_backlog_message_count() {
     let mut node = Node::new(Config::new()).expect("node");
     let mut endpoint_io = node.attach_endpoint_data_io(8).expect("endpoint io");
