@@ -367,6 +367,7 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
         auto_reconnect: true,
         discovery_fallback_transit: true,
     }];
+    refresh_configured_peer_cache_for_test(&mut node);
 
     let old_link_id = LinkId::new(10);
     let old_our_index = SessionIndex::new(11);
@@ -467,6 +468,168 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
     assert_eq!(active.current_addr(), Some(&static_addr));
     assert_eq!(active.our_index(), Some(old_our_index));
     assert_eq!(active.their_index(), Some(old_their_index));
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn handle_msg2_replaces_quiet_static_path_with_authenticated_alternate() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let peer_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let peer_node_addr = *peer_identity.node_addr();
+
+    let static_addr = TransportAddr::from_string("127.0.0.1:8000");
+    let lower_priority_addr = TransportAddr::from_string("127.0.0.1:9000");
+    node.config.peers = vec![crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
+            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    }];
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+
+    let old_link_id = LinkId::new(10);
+    let old_our_index = SessionIndex::new(11);
+    let old_their_index = SessionIndex::new(12);
+    let old_session =
+        make_test_fmp_session(&node.identity, &peer_full, node.startup_epoch, [0x11; 8]);
+    let old_peer = ActivePeer::with_session(
+        peer_identity,
+        old_link_id,
+        1_000,
+        old_session,
+        old_our_index,
+        old_their_index,
+        transport_id,
+        static_addr.clone(),
+        crate::transport::LinkStats::new(),
+        true,
+        &node.config.node.mmp,
+        Some([0x11; 8]),
+    );
+    assert!(old_peer.can_send());
+    node.peers.insert(peer_node_addr, old_peer);
+    node.peers
+        .insert_session_index((transport_id, old_our_index.as_u32()), peer_node_addr);
+    node.links.insert(
+        old_link_id,
+        Link::connectionless(
+            old_link_id,
+            transport_id,
+            static_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, static_addr.clone()), old_link_id);
+
+    let trust_timeout_ms = node.session_direct_path_exclusive_trust_timeout_ms();
+    let now_ms = trust_timeout_ms + 10_000;
+    let mut endpoint_entry = crate::node::session::SessionEntry::new(
+        peer_node_addr,
+        peer_identity.pubkey_full(),
+        crate::node::session::EndToEndState::Established(make_test_fmp_session(
+            &node.identity,
+            &peer_full,
+            [0x21; 8],
+            [0x22; 8],
+        )),
+        now_ms - trust_timeout_ms - 1,
+        true,
+    );
+    endpoint_entry.record_sent(128);
+    endpoint_entry.touch_outbound_frame(now_ms);
+    endpoint_entry.record_outbound_next_hop(peer_node_addr);
+    node.sessions.insert(peer_node_addr, endpoint_entry);
+    assert!(
+        node.session_direct_path_exclusive_trust_expired(&peer_node_addr, now_ms),
+        "active endpoint traffic without authenticated return should expire exclusive direct trust"
+    );
+
+    let new_link_id = LinkId::new(11);
+    let mut new_conn = PeerConnection::outbound(new_link_id, peer_identity, now_ms - 100);
+    let msg1 = new_conn
+        .start_handshake(node.identity.keypair(), node.startup_epoch, now_ms - 100)
+        .unwrap();
+    let our_index = node.index_allocator.allocate().unwrap();
+    new_conn.set_our_index(our_index);
+    new_conn.set_transport_id(transport_id);
+    new_conn.set_source_addr(lower_priority_addr.clone());
+    node.links.insert(
+        new_link_id,
+        Link::connectionless(
+            new_link_id,
+            transport_id,
+            lower_priority_addr.clone(),
+            LinkDirection::Outbound,
+            Duration::from_millis(100),
+        ),
+    );
+    node.links
+        .insert_addr((transport_id, lower_priority_addr.clone()), new_link_id);
+    node.peers.insert_connection(new_link_id, new_conn);
+    node.pending_outbound
+        .insert((transport_id, our_index.as_u32()), new_link_id);
+
+    let mut responder = PeerConnection::inbound(LinkId::new(99), now_ms - 100);
+    let noise_msg2 = responder
+        .receive_handshake_init(peer_full.keypair(), [0x11; 8], &msg1, now_ms - 100)
+        .unwrap();
+    let their_index = SessionIndex::new(77);
+    let wire_msg2 = build_msg2(their_index, our_index, &noise_msg2);
+    let packet = ReceivedPacket::with_timestamp(
+        transport_id,
+        lower_priority_addr.clone(),
+        wire_msg2,
+        now_ms,
+    );
+
+    node.handle_msg2(packet).await;
+
+    assert_eq!(node.connection_count(), 0);
+    assert!(node.pending_outbound.is_empty());
+    assert!(
+        !node.links.contains_key(&old_link_id),
+        "quiet static path should be retired after an authenticated alternate succeeds"
+    );
+    assert!(
+        node.links.contains_key(&new_link_id),
+        "authenticated alternate should remain active"
+    );
+
+    let active = node.get_peer(&peer_node_addr).unwrap();
+    assert_eq!(active.link_id(), new_link_id);
+    assert_eq!(active.current_addr(), Some(&lower_priority_addr));
+    assert_eq!(active.our_index(), Some(our_index));
+    assert_eq!(active.their_index(), Some(their_index));
 
     for transport in node.transports.values_mut() {
         transport.stop().await.ok();

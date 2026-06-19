@@ -69,7 +69,9 @@ impl Node {
 
             let remote_epoch_changed = matches!((existing_peer.remote_epoch(), remote_epoch), (Some(old), Some(new)) if old != new);
             let existing_path_unusable = existing_path_unusable
-                || self.session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms);
+                || self.session_direct_path_blocks_direct_payload(&peer_node_addr, current_time_ms)
+                || self
+                    .session_direct_path_exclusive_trust_expired(&peer_node_addr, current_time_ms);
             let outbound_alternate_path_wins = outbound_alternate_path
                 && self.alternate_path_priority_allows_replace(
                     &peer_node_addr,
@@ -92,8 +94,9 @@ impl Node {
             // A completed outbound handshake on a different transport tuple is
             // also not a symmetric cross-connection. It is an explicit
             // alternate-path refresh we initiated after learning a candidate;
-            // successful authentication is enough proof only when the
-            // candidate is at least as preferred as the current healthy path.
+            // successful authentication is enough proof when the current path
+            // has stopped returning endpoint traffic, or when the candidate is
+            // at least as preferred as the current healthy path.
             let this_wins = remote_epoch_changed
                 || existing_path_unusable
                 || if outbound_alternate_path {

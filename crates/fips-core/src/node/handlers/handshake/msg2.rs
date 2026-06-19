@@ -279,6 +279,10 @@ impl Node {
                     || self.session_direct_path_blocks_direct_payload(
                         &peer_node_addr,
                         packet.timestamp_ms,
+                    )
+                    || self.session_direct_path_exclusive_trust_expired(
+                        &peer_node_addr,
+                        packet.timestamp_ms,
                     );
                 if !remote_epoch_changed
                     && !existing_path_unusable
