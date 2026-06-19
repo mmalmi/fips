@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.67] - 2026-06-19
+
+### Fixed
+
+- Shortened receive-loop non-packet, fallback, and side-turn budgets so queued
+  dataplane packets cannot sit behind long maintenance bursts under load.
+- Bumped `fips-endpoint` to 0.3.42 so app-facing consumers pick up the
+  `fips-core` 0.3.67 receive-loop scheduling fix.
+
 ## [0.3.66] - 2026-06-19
 
 ### Fixed
