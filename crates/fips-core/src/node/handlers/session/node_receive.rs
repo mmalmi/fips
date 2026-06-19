@@ -12,6 +12,12 @@ impl WorkerReceiveClock {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DirectSessionWorkerPath {
+    Data,
+    Commit,
+}
+
 impl Node {
     async fn flush_pending_destinations(&mut self, dests: &mut Vec<NodeAddr>) {
         for dest_addr in std::mem::take(dests) {
@@ -321,6 +327,7 @@ impl Node {
             clock,
         );
         if !receive_applied {
+            crate::perf_profile::record_decrypt_authenticated_session_stale();
             debug!(
                 src = %self.peer_display_name(&source_addr),
                 "Dropping worker-authenticated session message for missing or stale session"
@@ -360,6 +367,7 @@ impl Node {
                 clock,
             );
             if !receive_applied {
+                crate::perf_profile::record_decrypt_authenticated_session_stale();
                 debug!(
                     src = %self.peer_display_name(&source_addr),
                     "Dropping worker-authenticated session message for missing or stale session"
@@ -399,6 +407,7 @@ impl Node {
             direct.previous_hop_peer,
             direct.receive_sync,
             direct.body_len,
+            DirectSessionWorkerPath::Data,
         ) else {
             return;
         };
@@ -460,6 +469,7 @@ impl Node {
                 direct.previous_hop_peer,
                 direct.receive_sync,
                 direct.body_len,
+                DirectSessionWorkerPath::Data,
                 clock,
             ) else {
                 continue;
@@ -486,6 +496,7 @@ impl Node {
             commit.previous_hop_peer,
             commit.receive_sync,
             commit.body_len,
+            DirectSessionWorkerPath::Commit,
         ) else {
             return;
         };
@@ -512,6 +523,7 @@ impl Node {
                 commit.previous_hop_peer,
                 commit.receive_sync,
                 commit.body_len,
+                DirectSessionWorkerPath::Commit,
                 clock,
             ) else {
                 continue;
@@ -534,6 +546,7 @@ impl Node {
         previous_hop_peer: PeerIdentity,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
+        path: DirectSessionWorkerPath,
     ) -> Option<SessionDispatchFinish> {
         self.commit_direct_session_data_from_worker_at(
             fmp,
@@ -541,6 +554,7 @@ impl Node {
             previous_hop_peer,
             receive_sync,
             body_len,
+            path,
             WorkerReceiveClock::now(),
         )
     }
@@ -552,6 +566,7 @@ impl Node {
         previous_hop_peer: PeerIdentity,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
+        path: DirectSessionWorkerPath,
         clock: WorkerReceiveClock,
     ) -> Option<SessionDispatchFinish> {
         let source_addr = self.record_direct_session_commit_from_worker_at(
@@ -560,6 +575,7 @@ impl Node {
             previous_hop_peer,
             receive_sync,
             body_len,
+            path,
             clock,
         )?;
         Some(self.pending_direct_commit_finish(source_addr))
@@ -572,6 +588,7 @@ impl Node {
         previous_hop_peer: PeerIdentity,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
+        path: DirectSessionWorkerPath,
         clock: WorkerReceiveClock,
     ) -> Option<NodeAddr> {
         self.record_worker_authenticated_fmp_receive_at(fmp, clock);
@@ -579,9 +596,22 @@ impl Node {
         let receive_applied =
             self.apply_worker_fsp_receive_sync_at(source_addr, receive_sync, clock);
         if !receive_applied {
+            let path_label = match path {
+                DirectSessionWorkerPath::Data => "data",
+                DirectSessionWorkerPath::Commit => "commit",
+            };
+            match path {
+                DirectSessionWorkerPath::Data => {
+                    crate::perf_profile::record_decrypt_direct_session_data_stale();
+                }
+                DirectSessionWorkerPath::Commit => {
+                    crate::perf_profile::record_decrypt_direct_session_commit_stale();
+                }
+            }
             debug!(
                 src = %self.peer_display_name(&source_addr),
-                "Dropping worker-decoded direct session data for missing or stale session"
+                path = path_label,
+                "Dropping worker-decoded direct session receive for missing or stale session"
             );
             return None;
         }

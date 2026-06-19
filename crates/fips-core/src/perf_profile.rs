@@ -101,7 +101,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 86;
-const N_EVENTS: usize = 220;
+const N_EVENTS: usize = 223;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -758,6 +758,9 @@ pub enum Event {
     DecryptWorkerBatchWorker6 = 217,
     DecryptWorkerBatchWorker7 = 218,
     DecryptWorkerBatchWorkerOther = 219,
+    DecryptAuthenticatedSessionStale = 220,
+    DecryptDirectSessionDataStale = 221,
+    DecryptDirectSessionCommitStale = 222,
 }
 
 impl Event {
@@ -1079,6 +1082,9 @@ impl Event {
             Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
             Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
             Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
+            Event::DecryptAuthenticatedSessionStale => "decrypt_authenticated_session_stale",
+            Event::DecryptDirectSessionDataStale => "decrypt_direct_session_data_stale",
+            Event::DecryptDirectSessionCommitStale => "decrypt_direct_session_commit_stale",
         }
     }
 }
@@ -1305,6 +1311,9 @@ fn event_from_index(idx: usize) -> Event {
         217 => Event::DecryptWorkerBatchWorker6,
         218 => Event::DecryptWorkerBatchWorker7,
         219 => Event::DecryptWorkerBatchWorkerOther,
+        220 => Event::DecryptAuthenticatedSessionStale,
+        221 => Event::DecryptDirectSessionDataStale,
+        222 => Event::DecryptDirectSessionCommitStale,
         _ => unreachable!(),
     }
 }
@@ -1879,6 +1888,21 @@ pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(
 #[inline]
 pub(crate) fn record_decrypt_worker_bulk_interleave_budget_exhausted() {
     record_event(Event::DecryptWorkerBulkInterleaveBudgetExhausted);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_authenticated_session_stale() {
+    record_event(Event::DecryptAuthenticatedSessionStale);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_direct_session_data_stale() {
+    record_event(Event::DecryptDirectSessionDataStale);
+}
+
+#[inline]
+pub(crate) fn record_decrypt_direct_session_commit_stale() {
+    record_event(Event::DecryptDirectSessionCommitStale);
 }
 
 #[inline]
