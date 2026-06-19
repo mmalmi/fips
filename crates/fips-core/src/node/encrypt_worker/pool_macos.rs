@@ -252,8 +252,8 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
-                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
+                    record_encrypt_worker_queue_full(job.queue_lane());
                     record_encrypt_worker_backpressure_drop(idx);
                     (*job).complete_sequenced_skip();
                     return;
@@ -269,6 +269,7 @@ impl EncryptWorkerPool {
                     );
                 }
                 if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(*job) {
+                    record_encrypt_worker_queue_full(EncryptWorkerLane::Priority);
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
@@ -299,8 +300,8 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
-                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
+                    record_encrypt_worker_queue_full(job.queue_lane());
                     record_encrypt_worker_backpressure_drop(idx);
                     (*job).complete_sequenced_skip();
                     return;
@@ -316,6 +317,7 @@ impl EncryptWorkerPool {
                     );
                 }
                 if let Err(FairWorkerPushError) = sender.push_blocking(*job) {
+                    record_encrypt_worker_queue_full(EncryptWorkerLane::Priority);
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
