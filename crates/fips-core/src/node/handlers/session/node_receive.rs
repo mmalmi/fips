@@ -21,9 +21,30 @@ impl Node {
 
     fn note_pending_flush_dest(dests: &mut Vec<NodeAddr>, finish: SessionDispatchFinish) {
         if let Some(dest_addr) = finish.pending_flush_dest() {
-            if !dests.contains(&dest_addr) {
-                dests.push(dest_addr);
+            Self::note_unique_flush_dest(dests, dest_addr);
+        }
+    }
+
+    fn note_unique_flush_dest(dests: &mut Vec<NodeAddr>, dest_addr: NodeAddr) {
+        if !dests.contains(&dest_addr) {
+            dests.push(dest_addr);
+        }
+    }
+
+    async fn flush_pending_committed_sources(&mut self, sources: &mut Vec<NodeAddr>) {
+        for source_addr in std::mem::take(sources) {
+            if self.pending_session_traffic.has_traffic_for(&source_addr) {
+                self.flush_pending_packets(&source_addr).await;
             }
+        }
+    }
+
+    fn pending_direct_commit_finish(&self, source_addr: NodeAddr) -> SessionDispatchFinish {
+        SessionDispatchFinish {
+            pending_flush_dest: self
+                .pending_session_traffic
+                .has_traffic_for(&source_addr)
+                .then_some(source_addr),
         }
     }
 
@@ -430,10 +451,10 @@ impl Node {
         &mut self,
         directs: Vec<DecryptDirectSessionData>,
     ) {
-        let mut pending_flush_dests = Vec::new();
+        let mut committed_sources = Vec::new();
         let clock = WorkerReceiveClock::now();
         for direct in directs {
-            let Some(finish) = self.commit_direct_session_data_from_worker_at(
+            let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
                 &direct.fmp,
                 direct.source_addr,
                 direct.previous_hop_peer,
@@ -449,9 +470,9 @@ impl Node {
                 direct.ce_flag,
                 direct.delivery,
             );
-            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
+            Self::note_unique_flush_dest(&mut committed_sources, source_addr);
         }
-        self.flush_pending_destinations(&mut pending_flush_dests)
+        self.flush_pending_committed_sources(&mut committed_sources)
             .await;
     }
 
@@ -482,10 +503,10 @@ impl Node {
         &mut self,
         commits: Vec<DecryptDirectSessionCommit>,
     ) {
-        let mut pending_flush_dests = Vec::new();
+        let mut committed_sources = Vec::new();
         let clock = WorkerReceiveClock::now();
         for commit in commits {
-            let Some(finish) = self.commit_direct_session_data_from_worker_at(
+            let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
                 &commit.fmp,
                 commit.source_addr,
                 commit.previous_hop_peer,
@@ -500,9 +521,9 @@ impl Node {
                 self.stats_mut().congestion.record_ce_received();
             }
 
-            Self::note_pending_flush_dest(&mut pending_flush_dests, finish);
+            Self::note_unique_flush_dest(&mut committed_sources, source_addr);
         }
-        self.flush_pending_destinations(&mut pending_flush_dests)
+        self.flush_pending_committed_sources(&mut committed_sources)
             .await;
     }
 
@@ -533,6 +554,26 @@ impl Node {
         body_len: usize,
         clock: WorkerReceiveClock,
     ) -> Option<SessionDispatchFinish> {
+        let source_addr = self.record_direct_session_commit_from_worker_at(
+            fmp,
+            source_addr,
+            previous_hop_peer,
+            receive_sync,
+            body_len,
+            clock,
+        )?;
+        Some(self.pending_direct_commit_finish(source_addr))
+    }
+
+    fn record_direct_session_commit_from_worker_at(
+        &mut self,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        source_addr: NodeAddr,
+        previous_hop_peer: PeerIdentity,
+        receive_sync: crate::node::session::FspReceiveSync,
+        body_len: usize,
+        clock: WorkerReceiveClock,
+    ) -> Option<NodeAddr> {
         self.record_worker_authenticated_fmp_receive_at(fmp, clock);
 
         let receive_applied =
@@ -546,16 +587,16 @@ impl Node {
         }
 
         self.learn_reverse_route(source_addr, *previous_hop_peer.node_addr());
-        let finish = SessionDispatchCommit {
+        SessionDispatchCommit {
             source_addr,
             receive_completion: Some(SessionReceiveCompletion {
                 source_addr,
                 body_len,
             }),
         }
-        .finish_receive_at(self, clock.now_ms);
+        .record_receive(&mut self.sessions, clock.now_ms);
 
-        Some(finish)
+        Some(source_addr)
     }
 
     pub(in crate::node) async fn process_fsp_decrypt_failure_from_worker(
