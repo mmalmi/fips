@@ -528,7 +528,12 @@ impl DecryptWorkerShard {
         }
 
         let source_addr = job.source_addr;
-        let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
+        let shared = self
+            .fsp_sessions
+            .get(&source_addr)
+            .and_then(OwnedFspSessionState::shared_crypto_session_handle)
+            .or_else(|| self.pool.fsp_aead_session(&source_addr));
+        let Some(shared) = shared else {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
         let owner_idx = shared.owner_idx;
