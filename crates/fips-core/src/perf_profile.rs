@@ -79,6 +79,7 @@
 //!   * `FMP_AEAD_HELPER_BULK_COMPLETION_WAIT` — bulk helper completion → owner-worker
 //!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP helper completions
 //!   * `FMP_AEAD_HELPER_COMPLETION_SERVICE` — owner-worker completion handling + output prep
+//!   * `FMP_OPENED_DISPATCH` — owner-worker dispatch after FMP AEAD opens a packet
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
 //!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
 //!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
@@ -100,7 +101,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 87;
+const N_STAGES: usize = 88;
 const N_EVENTS: usize = 225;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
@@ -338,6 +339,10 @@ pub enum Stage {
     /// Time a worker-open FSP AEAD job waits inside the owner worker's local
     /// opener batcher before the opener worker is dispatched.
     FspAeadWorkerOpenBatcherWait = 86,
+    /// Owner-worker service after FMP AEAD has opened a packet: parse the
+    /// authenticated plaintext and classify it into FSP owner work, endpoint
+    /// output, or authenticated-FMP bookkeeping.
+    FmpOpenedDispatch = 87,
 }
 
 impl Stage {
@@ -434,6 +439,7 @@ impl Stage {
             Stage::TransportPriorityChannelResidence => "transport_priority_channel_residence",
             Stage::TransportBulkChannelResidence => "transport_bulk_channel_residence",
             Stage::FspAeadWorkerOpenBatcherWait => "fsp_aead_worker_open_batcher_wait",
+            Stage::FmpOpenedDispatch => "fmp_opened_dispatch",
         }
     }
 }
@@ -527,6 +533,7 @@ fn stage_from_index(idx: usize) -> Stage {
         84 => Stage::TransportPriorityChannelResidence,
         85 => Stage::TransportBulkChannelResidence,
         86 => Stage::FspAeadWorkerOpenBatcherWait,
+        87 => Stage::FmpOpenedDispatch,
         _ => unreachable!(),
     }
 }

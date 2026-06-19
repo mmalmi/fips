@@ -1951,6 +1951,8 @@ impl DecryptWorkerShard {
     }
 
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
+        let _t_dispatch =
+            crate::perf_profile::Timer::start(crate::perf_profile::Stage::FmpOpenedDispatch);
         let OpenedFmpJob {
             packet_data,
             lane,
