@@ -1437,6 +1437,7 @@
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
             }
@@ -1556,6 +1557,7 @@
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected FSP decrypt failure report")
             }
@@ -1650,6 +1652,7 @@
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected authenticated FMP bookkeeping event")
             }

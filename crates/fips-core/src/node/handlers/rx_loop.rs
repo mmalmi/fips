@@ -871,6 +871,9 @@ impl Node {
                 self.process_direct_session_commit_batch_from_worker(commits)
                     .await;
             }
+            DecryptWorkerEvent::DirectEndpointBatch(batch) => {
+                self.process_direct_endpoint_batch_from_worker(batch).await;
+            }
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 self.process_direct_session_data_from_worker(direct).await;
             }

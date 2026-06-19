@@ -185,6 +185,7 @@ fn decrypt_worker_event_lane(event: &DecryptWorkerEvent) -> DecryptWorkerLane {
         DecryptWorkerEvent::AuthenticatedSessionBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionCommit(commit) => commit.lane,
         DecryptWorkerEvent::DirectSessionCommitBatch(_) => DecryptWorkerLane::Bulk,
+        DecryptWorkerEvent::DirectEndpointBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::DirectSessionData(direct) => direct.lane,
         DecryptWorkerEvent::DirectSessionDataBatch(_) => DecryptWorkerLane::Bulk,
         DecryptWorkerEvent::FspDecryptFailure(report) => report.lane,
@@ -207,6 +208,7 @@ fn decrypt_worker_event_return_bulk_lane(
         | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+        | DecryptWorkerEvent::DirectEndpointBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_)
         | DecryptWorkerEvent::DirectSessionDataBatch(_) => {
             DecryptWorkerReturnBulkLane::Authenticated
@@ -228,6 +230,7 @@ fn decrypt_worker_event_drop_event(
         | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
         | DecryptWorkerEvent::DirectSessionCommit(_)
         | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+        | DecryptWorkerEvent::DirectEndpointBatch(_)
         | DecryptWorkerEvent::DirectSessionData(_)
         | DecryptWorkerEvent::DirectSessionDataBatch(_) => match lane {
             DecryptWorkerLane::Priority => {

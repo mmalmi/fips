@@ -1999,14 +1999,6 @@ impl DecryptDirectSessionDeliverySink {
         }
     }
 
-    fn same_endpoint_event_channel(&self, other: &Self) -> bool {
-        match (&self.endpoint_event_tx, &other.endpoint_event_tx) {
-            (Some(lhs), Some(rhs)) => lhs.same_channels(rhs),
-            (None, None) => true,
-            _ => false,
-        }
-    }
-
     fn endpoint_event_sender(&self) -> Option<&EndpointEventSender> {
         self.endpoint_event_tx.as_ref()
     }
@@ -2190,6 +2182,50 @@ impl DecryptDirectSessionCommit {
     }
 }
 
+pub(crate) struct DecryptDirectEndpointBatch {
+    commits: Vec<DecryptDirectSessionCommit>,
+    deliveries: Vec<EndpointDataDelivery>,
+}
+
+impl DecryptDirectEndpointBatch {
+    pub(crate) fn new(
+        commits: Vec<DecryptDirectSessionCommit>,
+        deliveries: Vec<EndpointDataDelivery>,
+    ) -> Self {
+        debug_assert_eq!(
+            commits.len(),
+            deliveries.len(),
+            "direct endpoint commit and delivery batches must stay aligned"
+        );
+        Self {
+            commits,
+            deliveries,
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (Vec<DecryptDirectSessionCommit>, Vec<EndpointDataDelivery>) {
+        (self.commits, self.deliveries)
+    }
+
+    fn packet_count(&self) -> usize {
+        self.commits.len().min(self.deliveries.len())
+    }
+
+    fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {
+        for commit in &mut self.commits {
+            commit.trace_enqueued_at = queued_at;
+        }
+    }
+
+    fn trace_enqueued_at(&self) -> Option<crate::perf_profile::TraceStamp> {
+        self.commits
+            .first()
+            .and_then(|commit| commit.trace_enqueued_at)
+    }
+}
+
 pub(crate) struct DecryptFspFailureReport {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
@@ -2208,6 +2244,7 @@ pub(crate) enum DecryptWorkerEvent {
     AuthenticatedSessionBatch(Vec<DecryptAuthenticatedSession>),
     DirectSessionCommit(DecryptDirectSessionCommit),
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
+    DirectEndpointBatch(DecryptDirectEndpointBatch),
     DirectSessionData(DecryptDirectSessionData),
     DirectSessionDataBatch(Vec<DecryptDirectSessionData>),
     FspDecryptFailure(DecryptFspFailureReport),
@@ -2227,6 +2264,7 @@ impl DecryptWorkerEvent {
             Self::AuthenticatedSessionBatch(sessions) => sessions.len(),
             Self::DirectSessionCommit(_) => 1,
             Self::DirectSessionCommitBatch(commits) => commits.len(),
+            Self::DirectEndpointBatch(batch) => batch.packet_count(),
             Self::DirectSessionData(_) => 1,
             Self::DirectSessionDataBatch(directs) => directs.len(),
             Self::FspDecryptFailure(_) => 1,
@@ -2255,6 +2293,7 @@ impl DecryptWorkerEvent {
                     commit.trace_enqueued_at = queued_at;
                 }
             }
+            Self::DirectEndpointBatch(batch) => batch.set_trace_enqueued_at(queued_at),
             Self::DirectSessionData(direct) => direct.trace_enqueued_at = queued_at,
             Self::DirectSessionDataBatch(directs) => {
                 for direct in directs {
@@ -2281,6 +2320,7 @@ impl DecryptWorkerEvent {
             Self::DirectSessionCommitBatch(commits) => {
                 commits.first().and_then(|commit| commit.trace_enqueued_at)
             }
+            Self::DirectEndpointBatch(batch) => batch.trace_enqueued_at(),
             Self::DirectSessionData(direct) => direct.trace_enqueued_at,
             Self::DirectSessionDataBatch(directs) => {
                 directs.first().and_then(|direct| direct.trace_enqueued_at)
@@ -2307,6 +2347,7 @@ impl DecryptWorkerEvent {
             | Self::AuthenticatedSessionBatch(_)
             | Self::DirectSessionCommit(_)
             | Self::DirectSessionCommitBatch(_)
+            | Self::DirectEndpointBatch(_)
             | Self::DirectSessionData(_)
             | Self::DirectSessionDataBatch(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionWait,
@@ -2326,7 +2367,9 @@ impl DecryptWorkerEvent {
 
     fn direct_queue_wait_stage(&self) -> Option<crate::perf_profile::Stage> {
         match self {
-            Self::DirectSessionCommit(_) | Self::DirectSessionCommitBatch(_) => {
+            Self::DirectSessionCommit(_)
+            | Self::DirectSessionCommitBatch(_)
+            | Self::DirectEndpointBatch(_) => {
                 Some(crate::perf_profile::Stage::DecryptDirectSessionCommitWait)
             }
             Self::DirectSessionData(_) | Self::DirectSessionDataBatch(_) => {

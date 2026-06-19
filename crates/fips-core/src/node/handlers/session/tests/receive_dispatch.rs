@@ -858,6 +858,96 @@
     }
 
     #[tokio::test]
+    async fn worker_direct_endpoint_batch_delivers_only_accepted_commits() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let body_len = b"endpoint payload".len();
+        let plaintext_len = FSP_INNER_HEADER_SIZE + body_len;
+
+        let mut node = Node::new(crate::config::Config::new()).expect("node");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        let mut entry = established_entry(&local, &peer);
+        assert!(
+            entry
+                .apply_fsp_receive_sync_result(
+                    crate::node::session::FspReceiveSync {
+                        counter: 10,
+                        slot: EpochSlot::Current,
+                        received_k_bit: false,
+                        timestamp: 0x0102_0304,
+                        plaintext_len,
+                        ce_flag: false,
+                        path_mtu: 1_280,
+                        spin_bit: false,
+                    },
+                    2_000,
+                    Instant::now(),
+                )
+                .is_applied(),
+            "test setup should advance the rx-loop replay mirror"
+        );
+        node.sessions.insert(source_addr, entry);
+
+        let commit = |counter| {
+            DecryptDirectSessionCommit::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                source_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len,
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                body_len,
+                false,
+            )
+        };
+        let stale = EndpointDataDelivery::new(source_peer, b"stale".to_vec());
+        let fresh = EndpointDataDelivery::new(source_peer, b"fresh".to_vec());
+
+        node.process_direct_endpoint_batch_from_worker(DecryptDirectEndpointBatch::new(
+            vec![commit(10), commit(11)],
+            vec![stale, fresh],
+        ))
+        .await;
+
+        match endpoint_io.event_rx.try_recv().expect("fresh endpoint data") {
+            crate::node::NodeEndpointEvent::Data { payload, .. } => {
+                assert_eq!(payload, b"fresh");
+            }
+            event => panic!("expected one fresh endpoint event, got {event:?}"),
+        }
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "stale fused endpoint commit must not release payload bytes"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("session should remain");
+        assert_eq!(entry.current_highest_counter(), Some(11));
+    }
+
+    #[tokio::test]
     async fn worker_direct_session_data_batch_delivers_endpoint_data_then_flushes_pending() {
         let local = Identity::generate();
         let peer = Identity::generate();

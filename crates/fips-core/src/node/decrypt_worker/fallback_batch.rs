@@ -4,7 +4,6 @@ struct DecryptPlaintextFallbackBatch {
     authenticated_session_fallback_tx: Option<DecryptWorkerFallbackSender>,
     authenticated_sessions: Vec<DecryptAuthenticatedSession>,
     endpoint_fallback_tx: Option<DecryptWorkerFallbackSender>,
-    endpoint_sink: Option<DecryptDirectSessionDeliverySink>,
     endpoint_commits: Vec<DecryptDirectSessionCommit>,
     endpoint_deliveries: Vec<EndpointDataDelivery>,
     direct_fallback_tx: Option<DecryptWorkerFallbackSender>,
@@ -22,7 +21,6 @@ impl DecryptPlaintextFallbackBatch {
             authenticated_session_fallback_tx: None,
             authenticated_sessions: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
             endpoint_fallback_tx: None,
-            endpoint_sink: None,
             endpoint_commits: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             endpoint_deliveries: Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
             direct_fallback_tx: None,
@@ -138,7 +136,7 @@ impl DecryptPlaintextFallbackBatch {
             let Some(direct_delivery) = direct_delivery else {
                 unreachable!("checked batchable direct endpoint delivery")
             };
-            let Ok((sink, delivery)) = direct_delivery.into_endpoint_data() else {
+            let Ok((_sink, delivery)) = direct_delivery.into_endpoint_data() else {
                 unreachable!("checked batchable endpoint delivery")
             };
 
@@ -146,18 +144,11 @@ impl DecryptPlaintextFallbackBatch {
                 .endpoint_fallback_tx
                 .as_ref()
                 .is_none_or(|current| current.same_channels(&fallback_tx));
-            let same_endpoint = self
-                .endpoint_sink
-                .as_ref()
-                .is_none_or(|current| current.same_endpoint_event_channel(&sink));
-            if !same_fallback || !same_endpoint {
+            if !same_fallback {
                 self.flush_endpoint();
             }
             if self.endpoint_fallback_tx.is_none() {
                 self.endpoint_fallback_tx = Some(fallback_tx);
-            }
-            if self.endpoint_sink.is_none() {
-                self.endpoint_sink = Some(sink);
             }
             let batch_max = Self::endpoint_batch_max_for(
                 self.endpoint_fallback_tx
@@ -313,69 +304,21 @@ impl DecryptPlaintextFallbackBatch {
         let Some(fallback_tx) = self.endpoint_fallback_tx.take() else {
             return;
         };
-        let Some(sink) = self.endpoint_sink.take() else {
-            self.endpoint_commits.clear();
-            self.endpoint_deliveries.clear();
-            return;
-        };
-        let Some(endpoint_event_tx) = sink.endpoint_event_sender().cloned() else {
-            self.endpoint_commits.clear();
-            self.endpoint_deliveries.clear();
-            return;
-        };
-
-        let event = if self.endpoint_commits.len() == 1 {
-            DecryptWorkerEvent::DirectSessionCommit(
-                self.endpoint_commits
-                    .pop()
-                    .expect("checked single direct endpoint commit"),
-            )
-        } else {
-            let commits = std::mem::replace(
-                &mut self.endpoint_commits,
-                Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
-            );
-            DecryptWorkerEvent::DirectSessionCommitBatch(commits)
-        };
+        let commits = std::mem::replace(
+            &mut self.endpoint_commits,
+            Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
+        );
+        let deliveries = std::mem::replace(
+            &mut self.endpoint_deliveries,
+            Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
+        );
+        let event =
+            DecryptWorkerEvent::DirectEndpointBatch(DecryptDirectEndpointBatch::new(
+                commits, deliveries,
+            ));
 
         if !fallback_tx.send(event) {
             self.endpoint_deliveries.clear();
-            return;
-        }
-
-        let count = self.endpoint_deliveries.len();
-        if count == 0 {
-            return;
-        }
-        let queued_at = crate::perf_profile::stamp();
-        let endpoint_event = if count == 1 {
-            let delivery = self
-                .endpoint_deliveries
-                .pop()
-                .expect("checked single endpoint delivery");
-            NodeEndpointEvent::Data {
-                source_peer: delivery.source_peer,
-                payload: delivery.payload,
-                queued_at,
-            }
-        } else {
-            let messages = std::mem::replace(
-                &mut self.endpoint_deliveries,
-                Vec::with_capacity(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX),
-            );
-            NodeEndpointEvent::DataBatch {
-                messages,
-                queued_at,
-            }
-        };
-        let _t_deliver =
-            crate::perf_profile::Timer::start(crate::perf_profile::Stage::EndpointDeliver);
-        if let Err(error) = endpoint_event_tx.send(endpoint_event) {
-            debug!(
-                error = %error,
-                messages = count,
-                "Failed to deliver worker-decoded endpoint data batch"
-            );
         }
     }
 

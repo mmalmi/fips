@@ -44,15 +44,22 @@
             .try_recv()
             .expect("direct commit batch");
         assert_eq!(event.packet_count(), 2);
-        match &event {
-            DecryptWorkerEvent::DirectSessionCommitBatch(commits) => {
+        match event {
+            DecryptWorkerEvent::DirectEndpointBatch(batch) => {
+                let (commits, deliveries) = batch.into_parts();
                 assert_eq!(commits.len(), 2);
                 assert_eq!(commits[0].source_addr, *source_peer.node_addr());
                 assert_eq!(commits[1].source_addr, *source_peer.node_addr());
                 assert_eq!(commits[0].fmp.fmp_counter, 1);
                 assert_eq!(commits[1].fmp.fmp_counter, 2);
                 assert!(commits.iter().all(|commit| !commit.delivered_ipv6));
+                assert_eq!(deliveries.len(), 2);
+                assert_eq!(deliveries[0].source_peer, source_peer);
+                assert_eq!(deliveries[1].source_peer, source_peer);
+                assert_eq!(deliveries[0].payload, b"direct-one");
+                assert_eq!(deliveries[1].payload, b"direct-two");
             }
+            DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected fused endpoint batch"),
             DecryptWorkerEvent::DirectSessionCommit(_) => panic!("expected a commit batch"),
             DecryptWorkerEvent::AuthenticatedFmpReceive(_) => {
                 panic!("expected a direct commit batch")
@@ -66,18 +73,10 @@
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected a direct commit batch"),
         }
-        fallback_rx.release_dequeued_event(&event);
-
-        match endpoint_rx.try_recv().expect("endpoint batch") {
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                assert_eq!(messages.len(), 2);
-                assert_eq!(messages[0].source_peer, source_peer);
-                assert_eq!(messages[1].source_peer, source_peer);
-                assert_eq!(messages[0].payload, b"direct-one");
-                assert_eq!(messages[1].payload, b"direct-two");
-            }
-            NodeEndpointEvent::Data { .. } => panic!("expected endpoint data batch"),
-        }
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "endpoint bytes must wait for rx-loop commit processing"
+        );
     }
 
     #[test]
@@ -143,14 +142,19 @@
         assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
         assert_eq!(fallback_rx.bulk_pressure_queued_packets(), 0);
 
-        match endpoint_rx.try_recv().expect("endpoint data batch") {
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                assert_eq!(messages.len(), 2);
-                assert_eq!(messages[0].payload, b"drop-one");
-                assert_eq!(messages[1].payload, b"drop-two");
+        match event {
+            DecryptWorkerEvent::DirectEndpointBatch(batch) => {
+                let (_commits, deliveries) = batch.into_parts();
+                assert_eq!(deliveries.len(), 2);
+                assert_eq!(deliveries[0].payload, b"drop-one");
+                assert_eq!(deliveries[1].payload, b"drop-two");
             }
-            event => panic!("expected endpoint data batch, got {event:?}"),
+            _ => panic!("expected fused endpoint batch"),
         }
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "worker should not release endpoint bytes before rx-loop commit processing"
+        );
         assert!(
             fallback_rx.bulk.try_recv().is_err(),
             "only the pre-filled plaintext event should have reached the fallback bulk lane"
@@ -181,9 +185,10 @@
         ));
         first_batch.flush();
         assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 2);
-        endpoint_rx
-            .try_recv()
-            .expect("first accepted endpoint batch");
+        assert!(
+            endpoint_rx.try_recv().is_err(),
+            "accepted endpoint bytes should ride the authenticated commit event"
+        );
 
         let mut second_batch = DecryptPlaintextFallbackBatch::new();
         second_batch.push_output(dummy_direct_endpoint_output(
@@ -216,7 +221,7 @@
     #[test]
     fn decrypt_worker_direct_endpoint_delivery_accepts_bulk_payloads() {
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
-        let (endpoint_tx, mut endpoint_rx) = EndpointEventSender::channel(8);
+        let (endpoint_tx, _endpoint_rx) = EndpointEventSender::channel(8);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
         let bulk_payload = vec![0xAB; crate::node::ENDPOINT_EVENT_PRIORITY_MAX_LEN + 1];
@@ -227,7 +232,7 @@
 
         assert!(
             sink.can_deliver(&delivery),
-            "direct-hop bulk endpoint payloads should not bounce through rx_loop after worker decrypt"
+            "direct-hop bulk endpoint payloads should be eligible for fused worker delivery"
         );
 
         let mut batch = DecryptPlaintextFallbackBatch::new();
@@ -247,9 +252,13 @@
         assert_eq!(event.packet_count(), 1);
         fallback_rx.release_dequeued_event(&event);
 
-        match endpoint_rx.try_recv().expect("bulk endpoint event") {
-            NodeEndpointEvent::Data { payload, .. } => assert_eq!(payload, bulk_payload),
-            event => panic!("expected direct bulk endpoint data event, got {event:?}"),
+        match event {
+            DecryptWorkerEvent::DirectEndpointBatch(batch) => {
+                let (_commits, deliveries) = batch.into_parts();
+                assert_eq!(deliveries.len(), 1);
+                assert_eq!(deliveries.into_iter().next().unwrap().payload, bulk_payload);
+            }
+            _ => panic!("expected fused direct endpoint event"),
         }
     }
 
@@ -259,7 +268,7 @@
             8,
             DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX + 1,
         );
-        let (endpoint_tx, mut endpoint_rx) =
+        let (endpoint_tx, _endpoint_rx) =
             EndpointEventSender::channel(DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX + 1);
         let sink = DecryptDirectSessionDeliverySink::new(None, None, Some(endpoint_tx));
         let source_peer = test_source_peer();
@@ -286,16 +295,17 @@
         );
         fallback_rx.release_dequeued_event(&event);
 
-        match endpoint_rx.try_recv().expect("burst-sized endpoint batch") {
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                assert_eq!(messages.len(), DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX);
+        match event {
+            DecryptWorkerEvent::DirectEndpointBatch(batch) => {
+                let (_commits, deliveries) = batch.into_parts();
+                assert_eq!(deliveries.len(), DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX);
                 assert!(
-                    messages
+                    deliveries
                         .iter()
                         .all(|message| message.payload == bulk_payload)
                 );
             }
-            event => panic!("expected burst-sized endpoint data batch, got {event:?}"),
+            _ => panic!("expected burst-sized fused endpoint batch"),
         }
     }
 
@@ -631,6 +641,9 @@
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::DirectSessionDataBatch(_) => {
+                panic!("invalid bulk job should fail AEAD")
+            }
+            DecryptWorkerEvent::DirectEndpointBatch(_) => {
                 panic!("invalid bulk job should fail AEAD")
             }
             DecryptWorkerEvent::FspDecryptFailure(_) => {

@@ -434,6 +434,7 @@
             DecryptWorkerEvent::DirectSessionCommitBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionData(_) => panic!("expected failure report"),
             DecryptWorkerEvent::DirectSessionDataBatch(_) => panic!("expected failure report"),
+            DecryptWorkerEvent::DirectEndpointBatch(_) => panic!("expected failure report"),
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected failure report"),
         }
     }
@@ -845,6 +846,7 @@
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected plaintext fallback batch")
@@ -1070,6 +1072,7 @@
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
                 panic!("expected authenticated session batch")
@@ -1181,6 +1184,7 @@
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
             | DecryptWorkerEvent::DirectSessionCommitBatch(_)
+            | DecryptWorkerEvent::DirectEndpointBatch(_)
             | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::DecryptFailure(_) => panic!("expected routed direct data batch"),
         }

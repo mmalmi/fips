@@ -539,6 +539,44 @@ impl Node {
             .await;
     }
 
+    pub(in crate::node) async fn process_direct_endpoint_batch_from_worker(
+        &mut self,
+        batch: DecryptDirectEndpointBatch,
+    ) {
+        let (commits, deliveries) = batch.into_parts();
+        debug_assert_eq!(
+            commits.len(),
+            deliveries.len(),
+            "direct endpoint commit and delivery batches must stay aligned"
+        );
+        let mut committed_sources = Vec::new();
+        let clock = WorkerReceiveClock::now();
+        for (commit, delivery) in commits.into_iter().zip(deliveries) {
+            let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
+                &commit.fmp,
+                commit.source_addr,
+                commit.previous_hop_peer,
+                commit.receive_sync,
+                commit.body_len,
+                DirectSessionWorkerPath::Commit,
+                clock,
+            ) else {
+                continue;
+            };
+
+            if let Err(error) = self.deliver_endpoint_event_message(delivery) {
+                debug!(
+                    error = %error,
+                    src = %self.peer_display_name(&source_addr),
+                    "Failed to queue worker-decoded endpoint data after direct commit"
+                );
+            }
+            Self::note_unique_flush_dest(&mut committed_sources, source_addr);
+        }
+        self.flush_pending_committed_sources(&mut committed_sources)
+            .await;
+    }
+
     fn commit_direct_session_data_from_worker(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,

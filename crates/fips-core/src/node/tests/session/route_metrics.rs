@@ -16,6 +16,7 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    node.refresh_configured_peer_index_for_test();
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
@@ -122,6 +123,7 @@ async fn test_fresh_bogus_session_metrics_without_valid_rtt_do_not_change_route_
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    node.refresh_configured_peer_index_for_test();
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);
@@ -231,6 +233,7 @@ async fn test_stale_session_receiver_reports_do_not_change_route_choice() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     });
+    node.refresh_configured_peer_index_for_test();
     add_direct_peer_for_identity(&mut node, &remote);
     install_established_session_with_mmp(&mut node, &remote);
     node.learn_reverse_route(remote_addr, fallback_next_hop);

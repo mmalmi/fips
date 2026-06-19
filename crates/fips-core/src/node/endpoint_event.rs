@@ -617,15 +617,6 @@ impl EndpointEventSender {
         )
     }
 
-    pub(in crate::node) fn same_channels(&self, other: &Self) -> bool {
-        self.priority.same_channel(&other.priority)
-            && self.bulk.same_channel(&other.bulk)
-            && Arc::ptr_eq(&self.queued_messages, &other.queued_messages)
-            && Arc::ptr_eq(&self.bulk_queued_messages, &other.bulk_queued_messages)
-            && Arc::ptr_eq(&self.ready, &other.ready)
-            && self.bulk_message_cap == other.bulk_message_cap
-    }
-
     #[allow(clippy::result_large_err)]
     pub(crate) fn send(
         &self,
