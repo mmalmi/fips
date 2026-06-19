@@ -878,23 +878,18 @@ impl Node {
             );
         }
 
-        // Demote dead direct paths and schedule direct re-probe.
+        // Quiet traversal paths should refresh in the background, but they are
+        // not proven bad until link-dead or session loss evidence arrives.
         for (node_addr, quiet_for, refresh_timeout) in quiet_traversal_peers {
             let scheduled = self.schedule_quiet_traversal_reprobe(node_addr, now_ms);
-            let newly_degraded = self.mark_session_direct_path_degraded(node_addr, now_ms);
-            if scheduled || newly_degraded {
+            if scheduled {
                 info!(
                     peer = %self.peer_display_name(&node_addr),
                     quiet_secs = quiet_for.as_secs(),
                     refresh_after_secs = refresh_timeout.as_secs(),
                     retry_scheduled = scheduled,
-                    payload_degraded = newly_degraded,
-                    "Refreshing quiet traversal path before full link-dead timeout"
+                    "Refreshing quiet traversal path in background before full link-dead timeout"
                 );
-            }
-            if newly_degraded {
-                self.maybe_initiate_link_dead_fallback_lookup(&node_addr)
-                    .await;
             }
         }
 
