@@ -175,6 +175,60 @@ async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_pe
 }
 
 #[test]
+fn stale_candidate_failure_does_not_fast_dead_active_current_path() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer = PeerIdentity::from_pubkey(peer_identity.pubkey_full().x_only_public_key().0);
+    let peer_addr = *peer.node_addr();
+    let mut node = Node::with_identity(local_identity, Config::new()).expect("node");
+    let transport_id = TransportId::new(1);
+    let current_addr = crate::transport::TransportAddr::from_string("198.51.100.57:51820");
+    let stale_candidate = crate::transport::TransportAddr::from_string("192.168.178.55:51821");
+    let route_error = Err(crate::transport::TransportError::SendFailed(
+        "No route to host (os error 65)".to_string(),
+    ));
+    let now = std::time::Instant::now();
+    let dead_timeout = std::time::Duration::from_secs(30);
+    let fast_dead_timeout = std::time::Duration::from_secs(5);
+
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.set_current_addr(transport_id, &current_addr);
+    node.peers.insert(peer_addr, active);
+
+    node.note_candidate_send_outcome(&peer_addr, &stale_candidate, &route_error);
+
+    assert!(
+        !node.local_send_failures.contains_key(&peer_addr),
+        "a failed stale candidate probe must not poison liveness for the active current path"
+    );
+    assert_eq!(
+        node.local_send_failure_dead_timeout_for_peer(
+            &peer_addr,
+            now,
+            dead_timeout,
+            fast_dead_timeout,
+        ),
+        dead_timeout
+    );
+
+    node.note_candidate_send_outcome(&peer_addr, &current_addr, &route_error);
+
+    assert!(
+        node.local_send_failures.contains_key(&peer_addr),
+        "a failed send to the active current path should still enable fast-dead recovery"
+    );
+    assert_eq!(
+        node.local_send_failure_dead_timeout_for_peer(
+            &peer_addr,
+            now,
+            dead_timeout,
+            fast_dead_timeout,
+        ),
+        fast_dead_timeout
+    );
+}
+
+#[test]
 fn fmp_bulk_classifier_detects_established_session_datagrams() {
     let src = make_node_addr(1);
     let dst = make_node_addr(2);

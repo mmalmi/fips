@@ -159,6 +159,30 @@ impl Node {
             .note_send_outcome(node_addr, result, std::time::Instant::now());
     }
 
+    /// Update local-outbound liveness from a candidate/probe send.
+    ///
+    /// A failed probe to an alternate stale address must not compress the
+    /// live path's dead timeout. Only the active current path, or a peer with
+    /// no usable current path, gets the fast-dead signal.
+    pub(in crate::node) fn note_candidate_send_outcome(
+        &mut self,
+        node_addr: &NodeAddr,
+        candidate_addr: &TransportAddr,
+        result: &Result<usize, TransportError>,
+    ) {
+        if result.is_ok() {
+            self.note_local_send_outcome(node_addr, result);
+            return;
+        }
+
+        let candidate_is_active_path = self.peers.get(node_addr).map_or(true, |peer| {
+            !peer.can_send() || peer.current_addr() == Some(candidate_addr)
+        });
+        if candidate_is_active_path {
+            self.note_local_send_outcome(node_addr, result);
+        }
+    }
+
     /// Return the active dead-timeout for one peer after considering recent
     /// local route failures. The fast-dead signal is intentionally short-lived:
     /// on the UDP worker path a send call can return before the kernel result

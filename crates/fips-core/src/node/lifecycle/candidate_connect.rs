@@ -610,7 +610,7 @@ impl Node {
         };
         match send_result {
             Some(send_result) => {
-                self.note_local_send_outcome(&peer_node_addr, &send_result);
+                self.note_candidate_send_outcome(&peer_node_addr, &remote_addr, &send_result);
                 match send_result {
                     Ok(bytes) => {
                         debug!(
