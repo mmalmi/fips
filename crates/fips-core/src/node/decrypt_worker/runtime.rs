@@ -652,8 +652,11 @@ fn flush_fmp_aead_helper_batcher(
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     fsp_batcher: &mut FspDecryptJobBatcher,
     fsp_open_batcher: &mut FspAeadOpenJobBatcher,
-    fmp_helper_batcher: &mut Vec<FmpAeadHelperJob>,
+    fmp_helper_batcher: &mut Option<Vec<FmpAeadHelperJob>>,
 ) {
+    let Some(fmp_helper_batcher) = fmp_helper_batcher.as_mut() else {
+        return;
+    };
     if fmp_helper_batcher.is_empty() {
         return;
     }
@@ -721,8 +724,14 @@ fn handle_bulk_item(
             }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-            let mut fmp_helper_batcher = Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX);
-            let fmp_helper_batch_max = fmp_aead_completion_batch_max();
+            let fmp_helpers_enabled = shard.pool.fmp_aead_helpers_enabled();
+            let mut fmp_helper_batcher = fmp_helpers_enabled
+                .then(|| Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX));
+            let fmp_helper_batch_max = if fmp_helpers_enabled {
+                fmp_aead_completion_batch_max()
+            } else {
+                0
+            };
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
                     flush_fmp_aead_helper_batcher(
@@ -776,25 +785,33 @@ fn handle_bulk_item(
                     plaintext_batch,
                     &mut completion_interleave_budget,
                 );
-                if !wait_for_fmp_receive_order_window(
-                    idx,
-                    shard,
-                    control_rx,
-                    priority_rx,
-                    fmp_aead_completion_rx,
-                    fsp_aead_completion_rx,
-                    job.session_key,
-                    plaintext_batch,
-                    batch_stats,
-                ) {
+                if fmp_helpers_enabled
+                    && !wait_for_fmp_receive_order_window(
+                        idx,
+                        shard,
+                        control_rx,
+                        priority_rx,
+                        fmp_aead_completion_rx,
+                        fsp_aead_completion_rx,
+                        job.session_key,
+                        plaintext_batch,
+                        batch_stats,
+                    )
+                {
                     break;
                 }
                 record_decrypt_worker_bulk_input_tail_wait(item_started_at);
-                if shard.pool.fmp_aead_helpers_enabled() {
+                if fmp_helpers_enabled {
                     match shard.prepare_fmp_aead_helper_job(job) {
                         Ok(Some(helper_job)) => {
-                            fmp_helper_batcher.push(helper_job);
-                            if fmp_helper_batcher.len() >= fmp_helper_batch_max {
+                            let should_flush = {
+                                let batcher = fmp_helper_batcher
+                                    .as_mut()
+                                    .expect("FMP helper batcher exists when helpers are enabled");
+                                batcher.push(helper_job);
+                                batcher.len() >= fmp_helper_batch_max
+                            };
+                            if should_flush {
                                 flush_fmp_aead_helper_batcher(
                                     idx,
                                     shard,
