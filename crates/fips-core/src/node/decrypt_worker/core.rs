@@ -730,22 +730,22 @@ impl OwnedFspSessionState {
     }
 
     fn accept_opened_current_established_frame(
-        &mut self,
+        current_k_bit: bool,
+        current: &mut OwnedFspEpochState,
         header: &FspEncryptedHeader,
     ) -> Result<EpochSlot, FspOpenError> {
-        debug_assert!(self.has_single_current_epoch());
-        if header.flags & FSP_FLAG_K != u8::from(self.current_k_bit) * FSP_FLAG_K {
+        if header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K {
             return Err(FspOpenError::Aead);
         }
-        if let Some(rejection) = self.current.replay.rejection_reason(header.counter) {
-            let counter_lag = self.current.replay.highest().saturating_sub(header.counter);
+        if let Some(rejection) = current.replay.rejection_reason(header.counter) {
+            let counter_lag = current.replay.highest().saturating_sub(header.counter);
             crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
                 rejection,
                 counter_lag,
             );
             return Err(FspOpenError::Replay);
         }
-        self.current.replay.accept(header.counter);
+        current.replay.accept(header.counter);
         Ok(EpochSlot::Current)
     }
 
@@ -765,33 +765,46 @@ impl OwnedFspSessionState {
         completion: FspOrderedCompletion,
         drain: &mut FspOrderedDrain,
     ) -> Result<(), OrderedCompletionError> {
-        let pending_limit = self.fsp_receive_order.completions.pending_limit();
-        let mut completions = std::mem::replace(
-            &mut self.fsp_receive_order.completions,
-            OrderedCompletionBuffer::new(pending_limit),
-        );
-        let result = completions.complete(ticket, completion, |completion| {
-            self.apply_ready_fsp_ordered_completion(completion, drain);
-        });
-        self.fsp_receive_order.completions = completions;
+        debug_assert!(self.has_single_current_epoch());
+        let source_peer = self.source_peer;
+        let current_k_bit = self.current_k_bit;
+        let current = &mut self.current;
+        let result = self
+            .fsp_receive_order
+            .completions
+            .complete(ticket, completion, |completion| {
+                Self::apply_ready_fsp_ordered_completion(
+                    current_k_bit,
+                    current,
+                    source_peer,
+                    completion,
+                    drain,
+                );
+            });
         drain.ready = drain.ready.saturating_add(result?);
         Ok(())
     }
 
     fn apply_ready_fsp_ordered_completion(
-        &mut self,
+        current_k_bit: bool,
+        current: &mut OwnedFspEpochState,
+        source_peer: PeerIdentity,
         completion: FspOrderedCompletion,
         drain: &mut FspOrderedDrain,
     ) {
         match completion {
             FspOrderedCompletion::Opened { opened, source } => {
-                match self.accept_opened_current_established_frame(&opened.header) {
+                match Self::accept_opened_current_established_frame(
+                    current_k_bit,
+                    current,
+                    &opened.header,
+                ) {
                     Ok(slot) => {
                         drain.accepted += 1;
                         drain.outputs.push(FspReadyCompletion::Opened {
                             opened,
                             slot,
-                            source_peer: self.source_peer,
+                            source_peer,
                         });
                     }
                     Err(FspOpenError::Replay) => {
