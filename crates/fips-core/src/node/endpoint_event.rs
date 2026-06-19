@@ -586,6 +586,8 @@ pub(in crate::node) struct EndpointEventRuntime {
     sender: Option<EndpointEventSender>,
     batch_depth: usize,
     batch: Vec<EndpointDataDelivery>,
+    batch_queued_at: Option<crate::perf_profile::TraceStamp>,
+    batch_queued_at_recorded: bool,
 }
 
 impl EndpointEventSender {
@@ -853,6 +855,8 @@ impl EndpointEventRuntime {
         self.sender = Some(sender);
         self.batch_depth = 0;
         self.batch.clear();
+        self.batch_queued_at = None;
+        self.batch_queued_at_recorded = false;
     }
 
     pub(in crate::node) fn is_attached(&self) -> bool {
@@ -885,6 +889,7 @@ impl EndpointEventRuntime {
         message: EndpointDataDelivery,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<NodeEndpointEvent>> {
         if self.batch_depth > 0 {
+            self.note_batch_queued_at();
             self.batch.push(message);
             return Ok(());
         }
@@ -905,6 +910,7 @@ impl EndpointEventRuntime {
             return Ok(());
         }
         if self.batch_depth > 0 {
+            self.note_batch_queued_at();
             self.batch.append(&mut messages);
             return Ok(());
         }
@@ -918,10 +924,12 @@ impl EndpointEventRuntime {
     fn flush_batch(&mut self) {
         let count = self.batch.len();
         if count == 0 {
+            self.batch_queued_at = None;
+            self.batch_queued_at_recorded = false;
             return;
         }
 
-        let queued_at = crate::perf_profile::stamp();
+        let queued_at = self.take_batch_queued_at();
         let event = if count == 1 {
             let message = self.batch.pop().expect("batch should contain message");
             NodeEndpointEvent::Data {
@@ -943,6 +951,35 @@ impl EndpointEventRuntime {
                 "Failed to deliver endpoint data event batch"
             );
         }
+    }
+
+    fn note_batch_queued_at(&mut self) {
+        if self.batch_queued_at_recorded {
+            return;
+        }
+        self.batch_queued_at_recorded = true;
+        self.batch_queued_at = crate::perf_profile::stamp();
+    }
+
+    fn take_batch_queued_at(&mut self) -> Option<crate::perf_profile::TraceStamp> {
+        debug_assert!(
+            self.batch_queued_at_recorded,
+            "non-empty endpoint event batch should have a queue timestamp decision"
+        );
+        self.batch_queued_at_recorded = false;
+        self.batch_queued_at.take()
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn note_batch_queued_at_for_test(
+        &mut self,
+        queued_at: crate::perf_profile::TraceStamp,
+    ) {
+        if self.batch_queued_at_recorded {
+            return;
+        }
+        self.batch_queued_at_recorded = true;
+        self.batch_queued_at = Some(queued_at);
     }
 
     #[allow(clippy::result_large_err)]

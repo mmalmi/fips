@@ -143,6 +143,42 @@ fn endpoint_event_runtime_accepts_owned_delivery_batches() {
 }
 
 #[test]
+fn endpoint_event_runtime_preserves_first_batch_queue_stamp() {
+    let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
+    let source = PeerIdentity::from_pubkey_full(Identity::generate().pubkey_full());
+    let first_queued_at = crate::perf_profile::test_stamp();
+    let mut runtime = EndpointEventRuntime::default();
+    runtime.attach(event_tx);
+
+    runtime.begin_batch();
+    runtime.note_batch_queued_at_for_test(first_queued_at);
+    runtime
+        .deliver_endpoint_data(EndpointDataDelivery::new(source, b"first".to_vec()))
+        .expect("first endpoint event in scope");
+    runtime
+        .deliver_endpoint_data_batch(vec![
+            EndpointDataDelivery::new(source, b"second".to_vec()),
+            EndpointDataDelivery::new(source, b"third".to_vec()),
+        ])
+        .expect("endpoint event batch in scope");
+    runtime.finish_batch();
+
+    match event_rx.try_recv().expect("batched event") {
+        NodeEndpointEvent::DataBatch {
+            messages,
+            queued_at,
+        } => {
+            assert_eq!(queued_at, Some(first_queued_at));
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages[0].payload, b"first");
+            assert_eq!(messages[1].payload, b"second");
+            assert_eq!(messages[2].payload, b"third");
+        }
+        event => panic!("expected endpoint event batch, got {event:?}"),
+    }
+}
+
+#[test]
 fn endpoint_event_sender_clone_drop_only_notifies_for_last_sender() {
     let (event_tx, mut event_rx) = EndpointEventSender::channel(8);
     let observed = event_tx.ready_sequence_for_test();
