@@ -411,59 +411,6 @@
     }
 
     #[test]
-    fn fsp_ordered_completion_batch_drains_out_of_order_results() {
-        let source = crate::Identity::generate();
-        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let snapshot = crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: test_chacha_key([0x59; 32]),
-                replay: ReplayWindow::new(),
-            },
-            pending: None,
-            previous: None,
-        };
-        let mut state = OwnedFspSessionState::from(snapshot);
-        let first_ticket = state
-            .issue_fsp_receive_ticket()
-            .expect("first ordered ticket should fit");
-        let second_ticket = state
-            .issue_fsp_receive_ticket()
-            .expect("second ordered ticket should fit");
-        let mut drain = FspOrderedDrain::default();
-        let mut order_errors = 0usize;
-
-        state.complete_ordered_fsp_open_batch_into(
-            [
-                (
-                    second_ticket,
-                    FspOrderedCompletion::Dropped {
-                        source: FspAeadCompletionSource::WorkerOpen,
-                    },
-                ),
-                (
-                    first_ticket,
-                    FspOrderedCompletion::Dropped {
-                        source: FspAeadCompletionSource::WorkerOpen,
-                    },
-                ),
-            ],
-            &mut drain,
-            |_| order_errors += 1,
-        );
-
-        assert_eq!(order_errors, 0);
-        assert_eq!(drain.ready, 2);
-        assert_eq!(drain.dropped, 2);
-        assert_eq!(drain.accepted, 0);
-        assert_eq!(drain.aead_failures, 0);
-        assert_eq!(drain.replay_drops, 0);
-        assert!(drain.outputs.is_empty());
-        assert_eq!(state.fsp_receive_order_next_ready(), 2);
-    }
-
-    #[test]
     fn fsp_ordered_completion_buffers_out_of_order_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

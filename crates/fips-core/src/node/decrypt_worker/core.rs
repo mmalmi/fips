@@ -774,32 +774,6 @@ impl OwnedFspSessionState {
         Ok(())
     }
 
-    fn complete_ordered_fsp_open_batch_into(
-        &mut self,
-        completions: impl IntoIterator<Item = (FspReceiveTicket, FspOrderedCompletion)>,
-        drain: &mut FspOrderedDrain,
-        mut on_error: impl FnMut(OrderedCompletionError),
-    ) {
-        let pending_limit = self.fsp_receive_order.completions.pending_limit();
-        let mut completion_buffer = std::mem::replace(
-            &mut self.fsp_receive_order.completions,
-            OrderedCompletionBuffer::new(pending_limit),
-        );
-        for (ticket, completion) in completions {
-            match completion_buffer.complete(ticket, completion, |completion| {
-                self.apply_ready_fsp_ordered_completion(completion, drain);
-            }) {
-                Ok(ready) => {
-                    drain.ready = drain.ready.saturating_add(ready);
-                }
-                Err(error) => {
-                    on_error(error);
-                }
-            }
-        }
-        self.fsp_receive_order.completions = completion_buffer;
-    }
-
     fn apply_ready_fsp_ordered_completion(
         &mut self,
         completion: FspOrderedCompletion,

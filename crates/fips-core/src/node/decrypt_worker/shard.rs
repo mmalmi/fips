@@ -867,20 +867,17 @@ impl DecryptWorkerShard {
                 );
                 return;
             }
-            state.complete_ordered_fsp_open_batch_into(
-                completions.into_iter().map(|completion| {
-                    let FspAeadCompletion {
-                        source_addr: _,
-                        receive_order_id: _,
-                        ticket,
-                        source: _,
-                        result,
-                        completed_at: _,
-                    } = completion;
-                    (ticket, result)
-                }),
-                &mut drain,
-                |error| {
+            for completion in completions {
+                let FspAeadCompletion {
+                    source_addr: _,
+                    receive_order_id: _,
+                    ticket,
+                    source: _,
+                    result,
+                    completed_at: _,
+                } = completion;
+                if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain)
+                {
                     record_fsp_aead_completion_order_error(&error);
                     debug!(
                         worker = idx,
@@ -888,8 +885,17 @@ impl DecryptWorkerShard {
                         %source_addr,
                         "dropping invalid ordered FSP AEAD completion"
                     );
-                },
-            );
+                    continue;
+                }
+                debug_assert_eq!(
+                    drain.ready,
+                    drain.accepted
+                        + drain.aead_failures
+                        + drain.epoch_mismatches
+                        + drain.replay_drops
+                        + drain.dropped
+                );
+            }
             next_ready = state.fsp_receive_order_next_ready();
         }
 
