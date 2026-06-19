@@ -535,7 +535,15 @@
         let completion = fsp_completion_receivers[owner_idx]
             .try_recv()
             .expect("owner should receive ordered FSP completion");
-        assert_eq!(completion.len(), 1);
+        match completion {
+            FspAeadCompletionBatch::One(_) => {}
+            FspAeadCompletionBatch::Many(completions) => {
+                panic!(
+                    "single opener work item should return one completion, got {}",
+                    completions.len()
+                )
+            }
+        }
         assert!(fsp_completion_receivers[open_idx].try_recv().is_err());
     }
 
