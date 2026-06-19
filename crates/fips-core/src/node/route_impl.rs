@@ -338,9 +338,8 @@ impl Node {
         self.config
             .node
             .heartbeat_interval_secs
-            .saturating_mul(2)
             .saturating_mul(1000)
-            .saturating_add(500)
+            .saturating_add(1_500)
             .max(SESSION_DIRECT_MIN_EXCLUSIVE_TRUST_MS)
     }
 
@@ -365,7 +364,7 @@ impl Node {
         if !session.is_established() {
             return false;
         }
-        session.has_stale_outbound_only_activity(
+        session.has_recent_outbound_without_inbound(
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )

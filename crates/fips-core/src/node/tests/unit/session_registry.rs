@@ -111,6 +111,7 @@ fn session_registry_owns_fsp_send_bookkeeping() {
         .expect("send bookkeeping must keep session storage");
     assert_eq!(entry.traffic_counters(), (1, 0, 123, 0));
     assert_eq!(entry.last_activity(), 2_000);
+    assert_eq!(entry.last_outbound_frame_ms(), 2_000);
     assert_eq!(entry.last_outbound_next_hop(), Some(next_hop));
     let mmp = entry.mmp().expect("session should have MMP state");
     assert_eq!(mmp.sender.cumulative_packets_sent(), 1);
@@ -135,6 +136,11 @@ fn session_registry_owns_fsp_send_bookkeeping() {
         entry.last_activity(),
         2_000,
         "control/MMP bookkeeping must not reset idle activity"
+    );
+    assert_eq!(
+        entry.last_outbound_frame_ms(),
+        2_000,
+        "control/MMP bookkeeping must not refresh outbound data activity"
     );
     let mmp = entry.mmp().expect("session should have MMP state");
     assert_eq!(mmp.sender.cumulative_packets_sent(), 2);
@@ -170,6 +176,7 @@ fn session_registry_owns_fsp_send_bookkeeping() {
         .expect("legacy bookkeeping must keep session storage");
     assert_eq!(entry.traffic_counters(), (1, 0, 10, 0));
     assert_eq!(entry.last_activity(), 4_000);
+    assert_eq!(entry.last_outbound_frame_ms(), 4_000);
 
     assert!(
         registry
@@ -226,6 +233,7 @@ fn session_registry_owns_batched_fsp_send_bookkeeping() {
         .expect("batched bookkeeping must keep session storage");
     assert_eq!(entry.traffic_counters(), (2, 0, 30, 0));
     assert_eq!(entry.last_activity(), 5_000);
+    assert_eq!(entry.last_outbound_frame_ms(), 5_000);
     assert_eq!(entry.last_outbound_next_hop(), Some(second_next_hop));
     let mmp = entry.mmp().expect("session should have MMP state");
     assert_eq!(mmp.sender.cumulative_packets_sent(), 3);

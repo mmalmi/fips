@@ -31,7 +31,7 @@ async fn test_link_dead_fallback_warms_session_over_existing_graph() {
         .schedule_link_dead_reprobe(dest_addr, crate::time::now_ms());
     nodes[0]
         .node
-        .maybe_initiate_link_dead_fallback_lookup(&dest_addr)
+        .maybe_initiate_direct_path_fallback_lookup(&dest_addr)
         .await;
 
     assert!(

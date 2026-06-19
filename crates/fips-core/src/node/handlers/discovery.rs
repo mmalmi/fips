@@ -744,13 +744,13 @@ impl Node {
         }
     }
 
-    /// Ask existing mesh neighbors for a route after a direct link goes dead.
+    /// Ask existing mesh neighbors for a route after a direct path becomes suspect.
     ///
     /// MMP link-dead is evidence about the selected path, not proof that the
     /// peer is unreachable. Direct retry state is scheduled separately; this
     /// lookup keeps fallback routing warm so traffic can move through a live
     /// transit peer while UDP candidates keep being re-probed.
-    pub(in crate::node) async fn maybe_initiate_link_dead_fallback_lookup(
+    pub(in crate::node) async fn maybe_initiate_direct_path_fallback_lookup(
         &mut self,
         dest: &NodeAddr,
     ) {
@@ -767,7 +767,7 @@ impl Node {
         if !has_fallback_peer {
             debug!(
                 target_node = %self.peer_display_name(dest),
-                "Skipping link-dead fallback lookup, no sendable fallback peer"
+                "Skipping direct-path fallback lookup, no sendable fallback peer"
             );
             return;
         }
@@ -785,7 +785,7 @@ impl Node {
                     Ok(()) => {
                         debug!(
                             target_node = %self.peer_display_name(dest),
-                            "Warmed fallback session after link-dead direct path"
+                            "Warmed fallback session after suspect direct path"
                         );
                         return;
                     }
@@ -794,21 +794,21 @@ impl Node {
                     {
                         debug!(
                             target_node = %self.peer_display_name(dest),
-                            "Fallback route disappeared while warming link-dead session"
+                            "Fallback route disappeared while warming direct-path fallback session"
                         );
                     }
                     Err(error) => {
                         debug!(
                             target_node = %self.peer_display_name(dest),
                             error = %error,
-                            "Failed to warm fallback session after link-dead direct path"
+                            "Failed to warm fallback session after suspect direct path"
                         );
                     }
                 }
             } else {
                 debug!(
                     target_node = %self.peer_display_name(dest),
-                    "Cannot warm fallback session after link-dead without cached identity"
+                    "Cannot warm fallback session after suspect direct path without cached identity"
                 );
             }
         }

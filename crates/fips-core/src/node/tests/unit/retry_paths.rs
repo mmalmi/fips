@@ -140,7 +140,7 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
     );
 
     node.schedule_link_dead_reprobe(peer_addr, 10_000);
-    node.maybe_initiate_link_dead_fallback_lookup(&peer_addr)
+    node.maybe_initiate_direct_path_fallback_lookup(&peer_addr)
         .await;
 
     let retry = node

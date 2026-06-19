@@ -128,6 +128,7 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
     session.record_sent(128);
+    session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
     assert!(
         session
@@ -141,6 +142,38 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
             .map(|peer| *peer.node_addr()),
         Some(fallback_next_hop),
         "stale direct session trust should let known fallback carry the next burst before loss reports arrive"
+    );
+}
+
+#[test]
+fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("historical-direct-session".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+
+    let session = node.sessions.get_mut(&remote_addr).expect("session");
+    session.record_sent(128);
+    session.record_outbound_next_hop(remote_addr);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "old send counters alone should not make a healthy quiet direct path lose payload routing"
     );
 }
 
@@ -168,6 +201,7 @@ async fn test_stale_direct_session_trust_does_not_reprobe_healthy_link() {
 
     let session = node.sessions.get_mut(&remote_addr).expect("session");
     session.record_sent(128);
+    session.touch_outbound_frame(Node::now_ms());
     session.record_outbound_next_hop(remote_addr);
 
     node.check_link_heartbeats().await;

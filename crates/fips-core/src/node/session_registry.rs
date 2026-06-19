@@ -83,6 +83,9 @@ impl SessionRegistry {
         }
         if let Some(touch_ms) = input.touch_ms {
             entry.touch(touch_ms);
+            if result.data_recorded {
+                entry.touch_outbound_frame(touch_ms);
+            }
             result.touched = true;
         }
 
@@ -128,6 +131,9 @@ impl SessionRegistry {
         }
         if let Some(touch_ms) = last_touch_ms {
             entry.touch(touch_ms);
+            if data_packets > 0 {
+                entry.touch_outbound_frame(touch_ms);
+            }
         }
 
         Some(data_packets)

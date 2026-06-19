@@ -77,7 +77,7 @@ impl Node {
                     newly_degraded,
                     "Session loss marked direct path degraded; fallback routing may carry traffic while direct probes continue"
                 );
-                self.maybe_initiate_link_dead_fallback_lookup(src_addr)
+                self.maybe_initiate_direct_path_fallback_lookup(src_addr)
                     .await;
             } else if loss <= SESSION_DIRECT_RECOVERY_LOSS_THRESHOLD
                 && self.clear_session_direct_path_degraded(src_addr)

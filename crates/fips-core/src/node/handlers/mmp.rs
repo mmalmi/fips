@@ -919,7 +919,8 @@ impl Node {
         }
 
         // Quiet traversal paths should refresh in the background, but they are
-        // not proven bad until link-dead or session loss evidence arrives.
+        // only de-prioritized for payload when recent session sends are not
+        // getting authenticated return traffic.
         for (node_addr, quiet_for, refresh_timeout) in quiet_traversal_peers {
             let scheduled = self.schedule_quiet_traversal_reprobe(node_addr, now_ms);
             if scheduled {
@@ -930,6 +931,16 @@ impl Node {
                     retry_scheduled = scheduled,
                     "Refreshing quiet traversal path in background before full link-dead timeout"
                 );
+            }
+            if self.session_direct_path_exclusive_trust_expired(&node_addr, now_ms) {
+                debug!(
+                    peer = %self.peer_display_name(&node_addr),
+                    quiet_secs = quiet_for.as_secs(),
+                    refresh_after_secs = refresh_timeout.as_secs(),
+                    "Warming fallback route for quiet traversal path with active unreturned session traffic"
+                );
+                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
+                    .await;
             }
         }
 
@@ -975,7 +986,7 @@ impl Node {
                     }
                 }
             }
-            self.maybe_initiate_link_dead_fallback_lookup(&dead_peer.node_addr)
+            self.maybe_initiate_direct_path_fallback_lookup(&dead_peer.node_addr)
                 .await;
         }
 

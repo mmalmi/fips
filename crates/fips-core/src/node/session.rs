@@ -176,6 +176,12 @@ pub(crate) struct SessionEntry {
     /// when the peer stopped returning valid FSP frames. This timestamp is
     /// used to retire such stale sessions so the next send re-handshakes.
     last_inbound_frame_ms: u64,
+    /// Last application data frame sent on this session (Unix milliseconds).
+    ///
+    /// This keeps route trust decisions tied to currently active traffic. A
+    /// months-old send counter must not make an otherwise healthy quiet direct
+    /// link look blackholed.
+    last_outbound_frame_ms: u64,
     /// When the session transitioned to Established (Unix milliseconds).
     /// Used to compute session-relative timestamps for the FSP inner header.
     /// Set to 0 until the session is established.
@@ -269,6 +275,7 @@ impl SessionEntry {
             created_at: now_ms,
             last_activity: now_ms,
             last_inbound_frame_ms: now_ms,
+            last_outbound_frame_ms: 0,
             session_start_ms: 0,
             coords_warmup_remaining: 0,
             is_initiator,
@@ -352,6 +359,11 @@ impl SessionEntry {
         self.last_inbound_frame_ms = now_ms;
     }
 
+    /// Mark transmission of application data on this session.
+    pub(crate) fn touch_outbound_frame(&mut self, now_ms: u64) {
+        self.last_outbound_frame_ms = now_ms;
+    }
+
     pub(crate) fn last_authenticated_inbound_age_ms(&self, now_ms: u64) -> Option<u64> {
         (now_ms >= self.last_inbound_frame_ms).then(|| now_ms - self.last_inbound_frame_ms)
     }
@@ -388,10 +400,25 @@ impl SessionEntry {
         self.last_inbound_frame_ms
     }
 
-    /// True when app sends are active but the peer has stopped proving
+    /// Get last outbound application data frame time.
+    #[cfg(test)]
+    pub(crate) fn last_outbound_frame_ms(&self) -> u64 {
+        self.last_outbound_frame_ms
+    }
+
+    /// True when the session has sent data and the peer has stopped proving
     /// session-layer liveness by returning authenticated FSP frames.
     pub(crate) fn has_stale_outbound_only_activity(&self, now_ms: u64, timeout_ms: u64) -> bool {
         self.packets_sent > 0 && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
+    }
+
+    /// True when current outbound traffic is not getting authenticated return
+    /// traffic within the route trust window.
+    pub(crate) fn has_recent_outbound_without_inbound(&self, now_ms: u64, timeout_ms: u64) -> bool {
+        self.packets_sent > 0
+            && self.last_outbound_frame_ms != 0
+            && now_ms.saturating_sub(self.last_outbound_frame_ms) <= timeout_ms
+            && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
     }
 
     /// Remaining DataPackets that should include COORDS_PRESENT.
