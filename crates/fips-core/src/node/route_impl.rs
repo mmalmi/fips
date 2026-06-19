@@ -153,7 +153,9 @@ impl Node {
             {
                 return self.peers.get(&next_hop_addr);
             }
-            if let Some(direct_addr) = healthy_direct_route {
+            if let Some(direct_addr) = healthy_direct_route
+                && !direct_session_untrusted
+            {
                 return self.peers.get(&direct_addr);
             }
             return None;
@@ -203,7 +205,9 @@ impl Node {
             });
         }
 
-        if let Some(direct_addr) = healthy_direct_route {
+        if let Some(direct_addr) = healthy_direct_route
+            && !direct_session_untrusted
+        {
             return self.peers.get(&direct_addr);
         }
 
