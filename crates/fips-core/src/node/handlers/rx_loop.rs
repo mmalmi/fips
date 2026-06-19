@@ -201,6 +201,7 @@ impl Node {
                         debug!(
                             drained = drained.total(),
                             drained_packets = drained.packets,
+                            drained_decrypt = drained.decrypt,
                             drained_tun = drained.tun,
                             drained_endpoint = drained.endpoint,
                             "Drained queued packets before rx-loop maintenance"
@@ -235,6 +236,7 @@ impl Node {
                         debug!(
                             drained = post_drained.total(),
                             drained_packets = post_drained.packets,
+                            drained_decrypt = post_drained.decrypt,
                             drained_tun = post_drained.tun,
                             drained_endpoint = post_drained.endpoint,
                             "Drained queued packets after rx-loop maintenance"
@@ -390,6 +392,12 @@ impl Node {
             .drain_packet_rx(packet_rx, decrypt_fallback_rx, None, None, budget)
             .await;
         let non_packet_budget = non_packet_drain_budget(budget);
+        let drained_decrypt = if decrypt_fallback_has_ready(decrypt_fallback_rx) {
+            self.drain_decrypt_fallback(decrypt_fallback_rx, None, None, None, non_packet_budget)
+                .await
+        } else {
+            0
+        };
         let drained_tun = self
             .drain_tun_outbound(tun_outbound_rx, None, non_packet_budget)
             .await;
@@ -402,7 +410,12 @@ impl Node {
                 non_packet_budget,
             )
             .await;
-        RxLoopDataDrainStats::new(drained_packets, drained_tun, drained_endpoint)
+        RxLoopDataDrainStats::with_decrypt(
+            drained_packets,
+            drained_decrypt,
+            drained_tun,
+            drained_endpoint,
+        )
     }
 
     async fn drain_packet_rx(

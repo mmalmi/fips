@@ -10,6 +10,7 @@ use super::drain::{
     SingleLaneDrainCursor, rx_loop_side_queues_have_ready,
 };
 use crate::control::protocol::Request;
+use crate::node::decrypt_worker::DecryptWorkerEvent;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -85,6 +86,14 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
         !control_only.data_pressure(false),
         "read-only control progress must not look like dataplane pressure"
     );
+
+    let decrypt_only = RxLoopDataDrainStats::with_decrypt(0, 1, 0, 0);
+    assert_eq!(decrypt_only.data_total(), 1);
+    assert!(decrypt_only.has_data_drained());
+    assert!(
+        decrypt_only.data_pressure(false),
+        "decrypt-worker receive bookkeeping must count as dataplane progress"
+    );
 }
 
 #[tokio::test]
@@ -149,6 +158,41 @@ async fn drain_control_queries_answers_show_requests() {
     assert_eq!(response.status, "ok");
     assert!(response.data.is_some());
     assert!(control_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
+    let mut node =
+        crate::node::Node::new(crate::config::Config::new()).expect("node should construct");
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (fallback_tx, mut fallback_rx) =
+        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+
+    assert!(fallback_tx.send_for_test(DecryptWorkerEvent::AuthenticatedSessionBatch(Vec::new())));
+    assert_eq!(fallback_rx.authenticated_bulk_queued_packets(), 0);
+    assert!(!fallback_rx.authenticated_bulk.is_empty());
+
+    let drained = node
+        .drain_rx_loop_data_queues(
+            &mut packet_rx,
+            &mut fallback_rx,
+            &mut tun_rx,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            NON_PACKET_DRAIN_BUDGET,
+        )
+        .await;
+
+    assert_eq!(drained.packets, 0);
+    assert_eq!(drained.decrypt, 1);
+    assert!(fallback_rx.authenticated_bulk.is_empty());
+    assert!(
+        drained.has_data_drained(),
+        "queued authenticated receive bookkeeping must be applied before link-dead maintenance"
+    );
 }
 
 #[test]

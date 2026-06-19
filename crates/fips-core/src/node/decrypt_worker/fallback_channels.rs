@@ -54,6 +54,11 @@ fn decrypt_worker_fallback_channels_with_caps(
 }
 
 impl DecryptWorkerFallbackSender {
+    #[cfg(test)]
+    pub(crate) fn send_for_test(&self, event: DecryptWorkerEvent) -> bool {
+        self.send(event)
+    }
+
     fn same_channels(&self, other: &Self) -> bool {
         self.priority.same_channel(&other.priority)
             && self.bulk.same_channel(&other.bulk)
