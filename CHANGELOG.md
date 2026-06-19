@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.66] - 2026-06-19
+
+### Fixed
+
+- Enabled the macOS raw UDP send pacer by default at 350 Mbps with a 64 KiB
+  burst budget, preventing bulk tunnel traffic from creating multi-second LAN
+  latency stalls under load. Set `FIPS_MACOS_SEND_PACE_MBPS=0` to opt out for
+  controlled benchmarks.
+- Bumped `fips-endpoint` to 0.3.41 so app-facing consumers pick up the
+  `fips-core` 0.3.66 macOS pacing fix.
+
 ## [0.3.65] - 2026-06-19
 
 ### Fixed

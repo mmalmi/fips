@@ -306,13 +306,42 @@ mod send_backpressure_tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn macos_send_pace_defaults_off_but_can_opt_in() {
-        assert_eq!(macos_send_pace_mbps_from_raw(None), 0.0);
-        assert_eq!(macos_send_pace_mbps_from_raw(Some("")), 0.0);
+    fn macos_send_pace_defaults_on_but_can_opt_out() {
+        assert_eq!(
+            macos_send_pace_mbps_from_raw(None),
+            DEFAULT_MACOS_SEND_PACE_MBPS
+        );
+        assert_eq!(
+            macos_send_pace_mbps_from_raw(Some("")),
+            DEFAULT_MACOS_SEND_PACE_MBPS
+        );
         assert_eq!(macos_send_pace_mbps_from_raw(Some("0")), 0.0);
-        assert_eq!(macos_send_pace_mbps_from_raw(Some("-1")), 0.0);
-        assert_eq!(macos_send_pace_mbps_from_raw(Some("wat")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("off")), 0.0);
+        assert_eq!(
+            macos_send_pace_mbps_from_raw(Some("-1")),
+            DEFAULT_MACOS_SEND_PACE_MBPS
+        );
+        assert_eq!(
+            macos_send_pace_mbps_from_raw(Some("wat")),
+            DEFAULT_MACOS_SEND_PACE_MBPS
+        );
         assert_eq!(macos_send_pace_mbps_from_raw(Some("750")), 750.0);
+        assert_eq!(
+            macos_send_pace_burst_bytes_from_raw(None),
+            DEFAULT_MACOS_SEND_PACE_BURST_BYTES
+        );
+        assert_eq!(
+            macos_send_pace_burst_bytes_from_raw(Some("")),
+            DEFAULT_MACOS_SEND_PACE_BURST_BYTES
+        );
+        assert_eq!(
+            macos_send_pace_burst_bytes_from_raw(Some("0")),
+            DEFAULT_MACOS_SEND_PACE_BURST_BYTES
+        );
+        assert_eq!(
+            macos_send_pace_burst_bytes_from_raw(Some("65536")),
+            65_536.0
+        );
     }
 }
 
@@ -332,6 +361,12 @@ fn record_udp_send_backpressure_drop(err: &std::io::Error) {
 }
 
 #[cfg(target_os = "macos")]
+const DEFAULT_MACOS_SEND_PACE_MBPS: f64 = 350.0;
+
+#[cfg(target_os = "macos")]
+const DEFAULT_MACOS_SEND_PACE_BURST_BYTES: f64 = 64.0 * 1024.0;
+
+#[cfg(target_os = "macos")]
 struct MacSendRatePacer {
     bytes_per_sec: f64,
     burst_bytes: f64,
@@ -342,9 +377,10 @@ struct MacSendRatePacer {
 #[cfg(target_os = "macos")]
 impl Default for MacSendRatePacer {
     fn default() -> Self {
-        // Darwin has no sendmmsg/GSO path, but a per-packet sleep in the hot
-        // sender loop costs more than it saves on clean LAN/Wi-Fi links. Keep
-        // pacing as an operational escape hatch instead of the default.
+        // Darwin has no sendmmsg/GSO path. Unpaced per-datagram UDP bursts can
+        // fill Wi-Fi/LAN egress queues for seconds under tunnel bulk load, so
+        // smooth only the macOS raw-send path by default. Set
+        // FIPS_MACOS_SEND_PACE_MBPS=0 to opt out for controlled benchmarks.
         let mbps = macos_send_pace_mbps_from_raw(
             std::env::var("FIPS_MACOS_SEND_PACE_MBPS")
                 .ok()
@@ -355,11 +391,11 @@ impl Default for MacSendRatePacer {
         } else {
             0.0
         };
-        let burst_bytes = std::env::var("FIPS_MACOS_SEND_PACE_BURST_BYTES")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(256.0 * 1024.0);
+        let burst_bytes = macos_send_pace_burst_bytes_from_raw(
+            std::env::var("FIPS_MACOS_SEND_PACE_BURST_BYTES")
+                .ok()
+                .as_deref(),
+        );
         Self {
             bytes_per_sec,
             burst_bytes,
@@ -371,9 +407,29 @@ impl Default for MacSendRatePacer {
 
 #[cfg(target_os = "macos")]
 fn macos_send_pace_mbps_from_raw(raw: Option<&str>) -> f64 {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return DEFAULT_MACOS_SEND_PACE_MBPS;
+    };
+    if raw.eq_ignore_ascii_case("off")
+        || raw.eq_ignore_ascii_case("false")
+        || raw.eq_ignore_ascii_case("disable")
+        || raw.eq_ignore_ascii_case("disabled")
+    {
+        return 0.0;
+    }
+
+    match raw.parse::<f64>() {
+        Ok(value) if value.is_finite() && value > 0.0 => value,
+        Ok(0.0) => 0.0,
+        _ => DEFAULT_MACOS_SEND_PACE_MBPS,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_send_pace_burst_bytes_from_raw(raw: Option<&str>) -> f64 {
     raw.and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(0.0)
+        .unwrap_or(DEFAULT_MACOS_SEND_PACE_BURST_BYTES)
 }
 
 #[cfg(target_os = "macos")]
