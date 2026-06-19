@@ -30,6 +30,10 @@ mod session_registry;
 mod update_peers_core;
 mod update_peers_paths;
 
+fn refresh_configured_peer_cache_for_test(node: &mut Node) {
+    node.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&node.config);
+}
+
 fn make_test_fmp_session(
     local: &Identity,
     peer: &Identity,

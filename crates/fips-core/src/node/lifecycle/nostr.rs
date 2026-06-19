@@ -53,12 +53,7 @@ impl Node {
         };
 
         let mut fallback = Vec::new();
-        let mut next_priority = existing
-            .iter()
-            .map(|addr| addr.priority)
-            .max()
-            .unwrap_or(100)
-            .saturating_add(1);
+        let fallback_priority = Self::overlay_fallback_priority(existing);
         // Stamp every overlay-derived candidate with the current wall clock.
         // The dialer still honors explicit priority first; this timestamp is
         // only a recency tiebreaker within the same priority tier. We use a
@@ -67,7 +62,7 @@ impl Node {
         let seen_at_ms = Self::now_ms();
         for endpoint in endpoints {
             let Some(candidate) =
-                Self::overlay_endpoint_to_peer_address(&endpoint, next_priority, seen_at_ms)
+                Self::overlay_endpoint_to_peer_address(&endpoint, fallback_priority, seen_at_ms)
             else {
                 continue;
             };
@@ -81,9 +76,26 @@ impl Node {
                 continue;
             }
             fallback.push(candidate);
-            next_priority = next_priority.saturating_add(1);
         }
         fallback
+    }
+
+    pub(in crate::node) fn overlay_fallback_priority(existing: &[PeerAddress]) -> u8 {
+        let has_operator_static = existing.iter().any(|addr| addr.seen_at_ms.is_none());
+        if has_operator_static {
+            return existing
+                .iter()
+                .map(|addr| addr.priority)
+                .max()
+                .unwrap_or(100)
+                .saturating_add(1);
+        }
+
+        existing
+            .iter()
+            .map(|addr| addr.priority)
+            .min()
+            .unwrap_or(100)
     }
 
     pub(in crate::node) async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {

@@ -178,6 +178,7 @@ async fn active_direct_refresh_reclaims_inflight_slot_for_configured_static_path
         discovery_fallback_transit: true,
     };
     node.config.peers = vec![peer_config.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
 
     for port in [10, 11, 12, 13] {
         node.initiate_connection(
@@ -355,6 +356,9 @@ async fn active_nostr_peer_without_static_addresses_retests_observed_udp_path() 
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     node.nostr_discovery = Some(bootstrap.clone());
+    node.config.node.discovery.nostr.enabled = true;
+    node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    refresh_configured_peer_cache_for_test(&mut node);
     let mut state = super::super::retry::RetryState::new(peer_config);
     state.retry_after_ms = 0;
     state.reconnect = true;

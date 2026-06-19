@@ -677,15 +677,6 @@ impl Node {
 
         for node_addr in due {
             if self.peers.contains_key(&node_addr) {
-                if !self.outbound_direct_refresh_admission_check() {
-                    debug!(
-                        peer = %self.peer_display_name(&node_addr),
-                        retry_pending = self.retry_pending.len(),
-                        "Suppressing active-peer direct refresh retry: at connection/link capacity"
-                    );
-                    continue;
-                }
-
                 let Some(peer_config) = self
                     .retry_pending
                     .get(&node_addr)

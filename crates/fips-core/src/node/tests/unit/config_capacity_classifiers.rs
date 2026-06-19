@@ -138,6 +138,31 @@ async fn update_peers_treats_seen_at_ms_as_metadata_not_a_change() {
     assert_eq!(outcome.unchanged, 1);
 }
 
+#[test]
+fn overlay_adverts_share_priority_with_stamped_restart_hints() {
+    let restart_hint = crate::config::PeerAddress::with_priority("udp", "203.0.113.10:51820", 100)
+        .with_seen_at_ms(1_700_000_000_000);
+
+    assert_eq!(
+        Node::overlay_fallback_priority(&[restart_hint]),
+        100,
+        "fresh relay adverts must be able to replace restart-cache endpoints by freshness"
+    );
+}
+
+#[test]
+fn overlay_adverts_stay_below_operator_static_hints() {
+    let operator_static = crate::config::PeerAddress::with_priority("udp", "192.0.2.10:51820", 10);
+    let restart_hint = crate::config::PeerAddress::with_priority("udp", "203.0.113.10:51820", 100)
+        .with_seen_at_ms(1_700_000_000_000);
+
+    assert_eq!(
+        Node::overlay_fallback_priority(&[operator_static, restart_hint]),
+        101,
+        "operator-provided static paths should remain preferred over overlay adverts"
+    );
+}
+
 #[tokio::test]
 async fn update_peers_rejects_invalid_npub_atomically() {
     let mut node = make_node();
