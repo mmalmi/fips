@@ -306,25 +306,13 @@ mod send_backpressure_tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn macos_send_pace_defaults_on_but_can_opt_out() {
-        assert_eq!(
-            macos_send_pace_mbps_from_raw(None),
-            DEFAULT_MACOS_SEND_PACE_MBPS
-        );
-        assert_eq!(
-            macos_send_pace_mbps_from_raw(Some("")),
-            DEFAULT_MACOS_SEND_PACE_MBPS
-        );
+    fn macos_send_pace_defaults_off_but_can_opt_in() {
+        assert_eq!(macos_send_pace_mbps_from_raw(None), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("")), 0.0);
         assert_eq!(macos_send_pace_mbps_from_raw(Some("0")), 0.0);
         assert_eq!(macos_send_pace_mbps_from_raw(Some("off")), 0.0);
-        assert_eq!(
-            macos_send_pace_mbps_from_raw(Some("-1")),
-            DEFAULT_MACOS_SEND_PACE_MBPS
-        );
-        assert_eq!(
-            macos_send_pace_mbps_from_raw(Some("wat")),
-            DEFAULT_MACOS_SEND_PACE_MBPS
-        );
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("-1")), 0.0);
+        assert_eq!(macos_send_pace_mbps_from_raw(Some("wat")), 0.0);
         assert_eq!(macos_send_pace_mbps_from_raw(Some("750")), 750.0);
         assert_eq!(
             macos_send_pace_burst_bytes_from_raw(None),
@@ -361,9 +349,6 @@ fn record_udp_send_backpressure_drop(err: &std::io::Error) {
 }
 
 #[cfg(target_os = "macos")]
-const DEFAULT_MACOS_SEND_PACE_MBPS: f64 = 350.0;
-
-#[cfg(target_os = "macos")]
 const DEFAULT_MACOS_SEND_PACE_BURST_BYTES: f64 = 64.0 * 1024.0;
 
 #[cfg(target_os = "macos")]
@@ -377,10 +362,8 @@ struct MacSendRatePacer {
 #[cfg(target_os = "macos")]
 impl Default for MacSendRatePacer {
     fn default() -> Self {
-        // Darwin has no sendmmsg/GSO path. Unpaced per-datagram UDP bursts can
-        // fill Wi-Fi/LAN egress queues for seconds under tunnel bulk load, so
-        // smooth only the macOS raw-send path by default. Set
-        // FIPS_MACOS_SEND_PACE_MBPS=0 to opt out for controlled benchmarks.
+        // Keep the Darwin raw-send pacer as an explicit lab/operator knob.
+        // Default runtime behavior should not carry a hardware-specific cap.
         let mbps = macos_send_pace_mbps_from_raw(
             std::env::var("FIPS_MACOS_SEND_PACE_MBPS")
                 .ok()
@@ -408,7 +391,7 @@ impl Default for MacSendRatePacer {
 #[cfg(target_os = "macos")]
 fn macos_send_pace_mbps_from_raw(raw: Option<&str>) -> f64 {
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
-        return DEFAULT_MACOS_SEND_PACE_MBPS;
+        return 0.0;
     };
     if raw.eq_ignore_ascii_case("off")
         || raw.eq_ignore_ascii_case("false")
@@ -421,7 +404,7 @@ fn macos_send_pace_mbps_from_raw(raw: Option<&str>) -> f64 {
     match raw.parse::<f64>() {
         Ok(value) if value.is_finite() && value > 0.0 => value,
         Ok(0.0) => 0.0,
-        _ => DEFAULT_MACOS_SEND_PACE_MBPS,
+        _ => 0.0,
     }
 }
 

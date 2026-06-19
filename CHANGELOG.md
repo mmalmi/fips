@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Made macOS raw UDP send pacing opt-in again: the default no longer applies a
+  hardware-specific throughput cap, while `FIPS_MACOS_SEND_PACE_MBPS=<rate>`
+  remains available for controlled pacing trials.
+
 ## [0.3.67] - 2026-06-19
 
 ### Fixed
