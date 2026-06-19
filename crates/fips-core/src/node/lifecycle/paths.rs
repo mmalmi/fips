@@ -16,10 +16,16 @@ impl Node {
             return Ok(());
         }
 
-        let candidates = self.peer_address_candidates(peer_config).await;
+        let candidates = self
+            .peer_address_candidates(peer_config, peer_identity)
+            .await;
 
         if candidates.is_empty() {
-            if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
+            if allow_bootstrap_nat
+                && self
+                    .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                    .await
+            {
                 return Ok(());
             }
             return Err(NodeError::NoTransportForType(format!(
@@ -34,12 +40,17 @@ impl Node {
             .is_ok()
         {
             if allow_bootstrap_nat {
-                self.request_nostr_bootstrap(peer_config).await;
+                self.request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                    .await;
             }
             return Ok(());
         }
 
-        if allow_bootstrap_nat && self.request_nostr_bootstrap(peer_config).await {
+        if allow_bootstrap_nat
+            && self
+                .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                .await
+        {
             return Ok(());
         }
 
@@ -56,7 +67,9 @@ impl Node {
         allow_same_path_refresh: bool,
     ) -> Result<bool, NodeError> {
         let peer_node_addr = *peer_identity.node_addr();
-        let mut candidates = self.peer_address_candidates(peer_config).await;
+        let mut candidates = self
+            .peer_address_candidates(peer_config, peer_identity)
+            .await;
         let same_path_refresh_needed = allow_same_path_refresh
             && (self.active_peer_needs_same_path_refresh(&peer_node_addr)
                 || self
@@ -76,7 +89,11 @@ impl Node {
             self.active_peer_should_keep_direct_retry(&peer_node_addr, peer_config);
 
         if candidates.is_empty() {
-            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
+            if should_try_nostr
+                && self
+                    .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                    .await
+            {
                 return Ok(true);
             }
             return Err(NodeError::NoTransportForType(format!(
@@ -94,7 +111,11 @@ impl Node {
             .collect();
 
         if alternatives.is_empty() {
-            if should_try_nostr && self.request_nostr_bootstrap(peer_config).await {
+            if should_try_nostr
+                && self
+                    .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                    .await
+            {
                 return Ok(true);
             }
             return Ok(false);
@@ -107,8 +128,10 @@ impl Node {
         let address_result = self
             .attempt_peer_address_list(peer_config, peer_identity, true, &alternatives)
             .await;
-        let nostr_attempted =
-            needs_separate_nostr_attempt && self.request_nostr_bootstrap(peer_config).await;
+        let nostr_attempted = needs_separate_nostr_attempt
+            && self
+                .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                .await;
 
         match address_result {
             Ok(()) => Ok(true),
@@ -127,6 +150,7 @@ impl Node {
     pub(super) async fn peer_address_candidates(
         &self,
         peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
     ) -> Vec<PeerAddress> {
         // Merge every candidate from every source we have for this peer.
         // Explicitly configured addresses keep first shot, then freshly
@@ -136,7 +160,7 @@ impl Node {
         // concrete candidate that fits in the per-peer budget.
         let static_addresses = self.static_peer_addresses(peer_config);
         let overlay_addresses = self
-            .nostr_peer_fallback_addresses(peer_config, &static_addresses)
+            .nostr_peer_fallback_addresses(peer_config, peer_identity, &static_addresses)
             .await;
 
         let mut candidates = Vec::with_capacity(overlay_addresses.len() + static_addresses.len());

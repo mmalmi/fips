@@ -60,7 +60,7 @@ impl Node {
         let forward_min_interval_secs = config.node.discovery.forward_min_interval_secs;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
-        let configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&config);
+        let configured_peers = ConfiguredPeerIndex::from_config(&config);
 
         Ok(Self {
             identity,
@@ -147,7 +147,7 @@ impl Node {
             local_send_failures: LocalSendFailures::default(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
-            configured_peer_send_weights,
+            configured_peers,
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -207,7 +207,7 @@ impl Node {
         let coords_response_interval_ms = config.node.session.coords_response_interval_ms;
 
         let (host_map, peer_acl) = Self::host_map_and_peer_acl(&config);
-        let configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&config);
+        let configured_peers = ConfiguredPeerIndex::from_config(&config);
 
         Ok(Self {
             identity,
@@ -292,7 +292,7 @@ impl Node {
             local_send_failures: LocalSendFailures::default(),
             last_rx_loop_maintenance_timeout_at: None,
             peer_aliases: HashMap::new(),
-            configured_peer_send_weights,
+            configured_peers,
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -333,7 +333,7 @@ impl Node {
 
     #[cfg(unix)]
     pub(super) fn send_weight_for_peer(&self, peer_addr: &NodeAddr) -> u8 {
-        self.configured_peer_send_weights.weight_for(peer_addr)
+        self.configured_peers.weight_for(peer_addr)
     }
 
     #[cfg(unix)]

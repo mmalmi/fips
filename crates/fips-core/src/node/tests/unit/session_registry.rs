@@ -393,7 +393,7 @@ fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
 }
 
 #[test]
-fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
+fn configured_peer_index_owns_identity_parse_and_default_policy() {
     let configured = Identity::generate();
     let configured_npub = configured.npub();
     let configured_addr = *PeerIdentity::from_npub(&configured_npub)
@@ -414,21 +414,25 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "127.0.0.1:2",
     ));
 
-    let weights = ConfiguredPeerSendWeights::from_config(&config);
+    let configured_peers = ConfiguredPeerIndex::from_config(&config);
 
     assert_eq!(
-        weights.weight_for(&configured_addr),
+        configured_peers.weight_for(&configured_addr),
         encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
         "configured peers reserve the explicit send-scheduling lane"
     );
     assert_eq!(
-        weights.weight_for(&unknown_addr),
+        configured_peers.weight_for(&unknown_addr),
         encrypt_worker::DEFAULT_SEND_WEIGHT,
         "unconfigured peers must stay on the default send-scheduling lane"
     );
     assert_eq!(
-        weights.len(),
+        configured_peers.len(),
         1,
         "invalid peer identities must not create phantom scheduling policy"
+    );
+    assert!(
+        configured_peers.get(&configured_addr).is_some(),
+        "configured peer lookup should be binary-keyed after construction"
     );
 }

@@ -466,6 +466,48 @@
     }
 
     #[test]
+    fn priority_reserve_absorbs_clean_line_rate_burst() {
+        with_test_socket(|socket, cipher| {
+            const CLEAN_BURST: usize = 2048;
+            assert!(
+                DEFAULT_WORKER_PRIORITY_CHANNEL_CAP >= CLEAN_BURST,
+                "priority reserve should absorb clean ACK/control bursts without backpressure"
+            );
+            let (tx, _rx) = fair_worker_channel_with_priority_cap(
+                1,
+                1,
+                DEFAULT_WORKER_PRIORITY_CHANNEL_CAP,
+                WORKER_FAIR_QUANTUM_BYTES,
+            );
+            let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+
+            tx.try_push(queued_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                128,
+                true,
+                true,
+                DEFAULT_SEND_WEIGHT,
+            ))
+            .expect("bulk job should fill the tiny bulk lane");
+
+            for _ in 0..CLEAN_BURST {
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    64,
+                    false,
+                    false,
+                    DEFAULT_SEND_WEIGHT,
+                ))
+                .expect("priority reserve should absorb the clean burst");
+            }
+        });
+    }
+
+    #[test]
     fn single_flow_drains_full_batch() {
         with_test_socket(|socket, cipher| {
             let (tx, mut rx) = fair_worker_channel(16, 16, 2048);

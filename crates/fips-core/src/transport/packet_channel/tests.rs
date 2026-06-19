@@ -273,7 +273,8 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
         1,
         "bulk-only receive batch should occupy one channel item"
     );
-    match rx.priority.try_recv().expect("priority channel item") {
+    let priority_item = rx.priority.try_recv().expect("priority channel item");
+    match priority_item.item {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.len(), 2);
             assert_eq!(packets[0].data[0], 0x11);
@@ -281,7 +282,8 @@ fn packet_channel_keeps_single_lane_batches_grouped() {
         }
         item => panic!("expected grouped priority batch, got {item:?}"),
     }
-    match rx.bulk.try_recv().expect("bulk channel item") {
+    let bulk_item = rx.bulk.try_recv().expect("bulk channel item");
+    match bulk_item.item {
         PacketQueueItem::Batch(packets) => {
             assert_eq!(packets.len(), 2);
             assert_eq!(packets[0].data[0], 0xaa);

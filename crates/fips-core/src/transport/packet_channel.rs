@@ -243,8 +243,8 @@ const TRANSPORT_CHANNEL_BACKLOG_HIGH_WATER: usize = 4096;
 /// hiding unbounded latency behind the rx loop.
 #[derive(Clone, Debug)]
 pub struct PacketTx {
-    priority: UnboundedSender<PacketQueueItem>,
-    bulk: Sender<PacketQueueItem>,
+    priority: UnboundedSender<QueuedPacketItem>,
+    bulk: Sender<QueuedPacketItem>,
     batch_pool: PacketBatchPool,
     buffer_pool: PacketBufferPool,
     /// Packet-count ready hint for priority lane probes. Bulk batch tails check
@@ -258,8 +258,8 @@ pub struct PacketTx {
 
 /// Channel receiver for received packets.
 pub struct PacketRx {
-    priority: UnboundedReceiver<PacketQueueItem>,
-    bulk: tokio::sync::mpsc::Receiver<PacketQueueItem>,
+    priority: UnboundedReceiver<QueuedPacketItem>,
+    bulk: tokio::sync::mpsc::Receiver<QueuedPacketItem>,
     priority_queued_packets: Arc<AtomicUsize>,
     queued_packets: Arc<AtomicUsize>,
     bulk_queued_packets: Arc<AtomicUsize>,
@@ -294,6 +294,12 @@ enum PacketQueueItem {
     Batch(PacketBatch),
 }
 
+#[derive(Debug)]
+struct QueuedPacketItem {
+    item: PacketQueueItem,
+    channel_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+}
+
 #[derive(Clone, Copy)]
 enum PacketLane {
     Priority,
@@ -324,20 +330,20 @@ struct PacketQueueDequeueCounts {
 }
 
 impl PacketQueueTx {
-    fn try_send(self, owner: &PacketTx, item: PacketQueueItem) -> Result<(), PacketSendFailure> {
+    fn try_send(self, owner: &PacketTx, item: QueuedPacketItem) -> Result<(), PacketSendFailure> {
         match self {
             PacketQueueTx::Priority => owner
                 .priority
                 .send(item)
-                .map_err(|error| PacketSendFailure::Closed(error.0)),
+                .map_err(|error| PacketSendFailure::Closed(error.0.item)),
             PacketQueueTx::Bulk => {
-                let packet_count = item.packet_count();
+                let packet_count = item.item.packet_count();
                 match owner.bulk.try_send(item) {
                     Ok(()) => Ok(()),
                     Err(TrySendError::Full(_item)) => {
                         Err(PacketSendFailure::DroppedBulk(packet_count))
                     }
-                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item)),
+                    Err(TrySendError::Closed(item)) => Err(PacketSendFailure::Closed(item.item)),
                 }
             }
         }
@@ -377,21 +383,35 @@ impl PacketQueueItem {
         }
     }
 
-    fn record_dequeue_wait(&self, lane: PacketLane) {
+    fn record_dequeue_wait(
+        &self,
+        lane: PacketLane,
+        channel_enqueued_at: Option<crate::perf_profile::TraceStamp>,
+    ) {
         let queued_at = self.queued_at();
-        if queued_at.is_none() {
-            return;
-        }
         let counts = self.dequeue_counts(lane);
-        crate::perf_profile::record_since_split_count(
-            crate::perf_profile::Stage::TransportChannelWait,
-            crate::perf_profile::Stage::TransportPriorityChannelWait,
-            crate::perf_profile::Stage::TransportBulkChannelWait,
-            queued_at,
-            counts.total as u64,
-            counts.priority as u64,
-            counts.bulk as u64,
-        );
+        if queued_at.is_some() {
+            crate::perf_profile::record_since_split_count(
+                crate::perf_profile::Stage::TransportChannelWait,
+                crate::perf_profile::Stage::TransportPriorityChannelWait,
+                crate::perf_profile::Stage::TransportBulkChannelWait,
+                queued_at,
+                counts.total as u64,
+                counts.priority as u64,
+                counts.bulk as u64,
+            );
+        }
+        if channel_enqueued_at.is_some() {
+            crate::perf_profile::record_since_split_count(
+                crate::perf_profile::Stage::TransportChannelResidence,
+                crate::perf_profile::Stage::TransportPriorityChannelResidence,
+                crate::perf_profile::Stage::TransportBulkChannelResidence,
+                channel_enqueued_at,
+                counts.total as u64,
+                counts.priority as u64,
+                counts.bulk as u64,
+            );
+        }
     }
 }
 
@@ -787,7 +807,11 @@ impl PacketTx {
             None
         };
         let previous = tracked_count.map(|count| self.queued_packets.fetch_add(count, Relaxed));
-        match tx.try_send(self, item) {
+        let queued_item = QueuedPacketItem {
+            item,
+            channel_enqueued_at: crate::perf_profile::stamp(),
+        };
+        match tx.try_send(self, queued_item) {
             Ok(()) => {
                 if let (Some(count), Some(previous)) = (tracked_count, previous) {
                     let queued = previous.saturating_add(count);
@@ -979,10 +1003,14 @@ impl PacketRx {
 
     fn packet_from_item(
         &mut self,
-        item: PacketQueueItem,
+        item: QueuedPacketItem,
         lane: PacketLane,
     ) -> Option<ReceivedPacket> {
-        item.record_dequeue_wait(lane);
+        let QueuedPacketItem {
+            item,
+            channel_enqueued_at,
+        } = item;
+        item.record_dequeue_wait(lane, channel_enqueued_at);
         let packet_count = item.packet_count();
         if self.track_backlog {
             self.queued_packets.fetch_sub(packet_count, Relaxed);

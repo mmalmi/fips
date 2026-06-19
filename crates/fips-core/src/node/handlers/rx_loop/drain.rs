@@ -106,7 +106,6 @@ impl RxLoopDataDrainStats {
 #[derive(Debug, Default)]
 pub(super) struct RxLoopMaintenanceState {
     last_data_activity: Option<Instant>,
-    slow_maintenance_timed_out_under_data: bool,
 }
 
 impl RxLoopMaintenanceState {
@@ -123,33 +122,15 @@ impl RxLoopMaintenanceState {
         drained.data_pressure(self.recent_data_activity(now, activity_window))
     }
 
-    pub(super) fn skip_slow_maintenance(&self, data_pressure: bool) -> bool {
-        data_pressure && self.slow_maintenance_timed_out_under_data
-    }
-
     pub(super) fn plan_maintenance(
         &self,
         drained: RxLoopDataDrainStats,
         now: Instant,
         activity_window: Duration,
         idle_timeout: Duration,
-        busy_timeout: Duration,
     ) -> RxLoopMaintenancePlan {
         let data_pressure = self.data_pressure(drained, now, activity_window);
-        RxLoopMaintenancePlan::new(
-            data_pressure,
-            self.skip_slow_maintenance(data_pressure),
-            idle_timeout,
-            busy_timeout,
-        )
-    }
-
-    pub(super) fn record_maintenance_result(&mut self, data_pressure: bool, slow_timed_out: bool) {
-        if !data_pressure {
-            self.slow_maintenance_timed_out_under_data = false;
-        } else if slow_timed_out {
-            self.slow_maintenance_timed_out_under_data = true;
-        }
+        RxLoopMaintenancePlan::new(data_pressure, idle_timeout)
     }
 
     pub(super) fn recent_data_activity(&self, now: Instant, activity_window: Duration) -> bool {
@@ -165,16 +146,9 @@ pub(super) struct RxLoopMaintenancePlan {
 }
 
 impl RxLoopMaintenancePlan {
-    pub(super) fn new(
-        data_pressure: bool,
-        skip_slow_maintenance: bool,
-        idle_timeout: Duration,
-        busy_timeout: Duration,
-    ) -> Self {
-        let slow_timeout = if data_pressure && skip_slow_maintenance {
+    pub(super) fn new(data_pressure: bool, idle_timeout: Duration) -> Self {
+        let slow_timeout = if data_pressure {
             None
-        } else if data_pressure {
-            Some(busy_timeout)
         } else {
             Some(idle_timeout)
         };
@@ -185,6 +159,7 @@ impl RxLoopMaintenancePlan {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn data_pressure(&self) -> bool {
         self.data_pressure
     }

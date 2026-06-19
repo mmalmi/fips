@@ -238,13 +238,26 @@
         Receiver<WorkerMsg>,
         Receiver<DecryptWorkerBulkItem>,
     ) {
-        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
-        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        one_worker_pool_with_channel_caps(1, 1, 1)
+    }
+
+    fn one_worker_pool_with_channel_caps(
+        control_cap: usize,
+        priority_cap: usize,
+        bulk_cap: usize,
+    ) -> (
+        DecryptWorkerPool,
+        Receiver<WorkerMsg>,
+        Receiver<WorkerMsg>,
+        Receiver<DecryptWorkerBulkItem>,
+    ) {
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(control_cap.max(1));
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_cap.max(1));
+        let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_cap.max(1));
         let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-            bounded::<FmpAeadCompletionBatch>(1);
+            bounded::<FmpAeadCompletionBatch>(bulk_cap.max(1));
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
-            bounded::<FspAeadCompletionBatch>(1);
+            bounded::<FspAeadCompletionBatch>(bulk_cap.max(1));
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
@@ -256,7 +269,7 @@
                         fmp_aead_completion: fmp_aead_completion_tx,
                         fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
-                        bulk_packet_cap: 1,
+                        bulk_packet_cap: bulk_cap.max(1),
                     }]
                     .into_boxed_slice(),
                 ),

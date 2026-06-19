@@ -207,9 +207,9 @@ const DEFAULT_WORKER_CHANNEL_CAP: usize = 256;
 // Keep the control/ACK-shaped reserve independent from synthetic bulk-pressure
 // tests that deliberately shrink `FIPS_WORKER_CHANNEL_CAP`.
 #[cfg(not(target_os = "macos"))]
-const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 4096;
 #[cfg(target_os = "macos")]
-const MAC_WORKER_CONTROL_RESERVE_CAP: usize = 128;
+const DEFAULT_WORKER_PRIORITY_CHANNEL_CAP: usize = 4096;
 #[cfg(not(target_os = "macos"))]
 const WORKER_FAIR_QUANTUM_BYTES: usize = 64 * 1024;
 // Keep the Linux worker turn close to the packet-mover receive width; larger
@@ -244,7 +244,6 @@ fn worker_channel_cap() -> usize {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
 fn worker_priority_channel_cap() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
@@ -424,6 +423,7 @@ struct MacWorkerQueueInner {
     not_empty: Condvar,
     not_full: Condvar,
     cap: usize,
+    control_reserve_cap: usize,
 }
 
 #[cfg(target_os = "macos")]
@@ -473,7 +473,7 @@ struct MacWorkerPushError;
 fn mac_worker_channel(cap: usize) -> (MacWorkerSender, MacWorkerReceiver) {
     let inner = Arc::new(MacWorkerQueueInner {
         state: Mutex::new(MacWorkerQueueState {
-            control_queue: VecDeque::with_capacity(MAC_WORKER_CONTROL_RESERVE_CAP),
+            control_queue: VecDeque::with_capacity(worker_priority_channel_cap()),
             bulk_queue: VecDeque::with_capacity(cap),
             waiting: false,
             closed: false,
@@ -481,6 +481,7 @@ fn mac_worker_channel(cap: usize) -> (MacWorkerSender, MacWorkerReceiver) {
         not_empty: Condvar::new(),
         not_full: Condvar::new(),
         cap,
+        control_reserve_cap: worker_priority_channel_cap(),
     });
     (
         MacWorkerSender {
@@ -503,7 +504,7 @@ impl MacWorkerSender {
             return Err(MacWorkerTryPushError::Closed);
         }
         let cap = match job.queue_lane() {
-            EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
+            EncryptWorkerLane::Priority => self.inner.cap + self.inner.control_reserve_cap,
             EncryptWorkerLane::Bulk => self.inner.cap,
         };
         if state.len() >= cap {
@@ -531,7 +532,7 @@ impl MacWorkerSender {
                 return Err(MacWorkerPushError);
             }
             let cap = match job.queue_lane() {
-                EncryptWorkerLane::Priority => self.inner.cap + MAC_WORKER_CONTROL_RESERVE_CAP,
+                EncryptWorkerLane::Priority => self.inner.cap + self.inner.control_reserve_cap,
                 EncryptWorkerLane::Bulk => self.inner.cap,
             };
             if state.len() < cap {

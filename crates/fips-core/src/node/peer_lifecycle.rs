@@ -786,7 +786,7 @@ impl PeerLifecycleRegistry {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(in crate::node) fn connected_udp_activation_plan(
         &self,
-        configured_peers: &ConfiguredPeerSendWeights,
+        configured_peers: &ConfiguredPeerIndex,
     ) -> ConnectedUdpActivationPlan {
         let candidates = self
             .active

@@ -595,6 +595,35 @@
     }
 
     #[test]
+    fn decrypt_worker_fallback_priority_reserve_absorbs_clean_line_rate_burst() {
+        const CLEAN_BURST: usize = 2048;
+
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(
+            DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP,
+            1,
+        );
+        assert!(fallback_tx.send(dummy_plaintext_event(
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1
+        )));
+        assert_eq!(fallback_rx.bulk.len(), 1, "test bulk lane should start full");
+
+        for _ in 0..CLEAN_BURST {
+            assert!(fallback_tx.send(dummy_failure_event()));
+        }
+
+        assert_eq!(
+            fallback_rx.priority.len(),
+            CLEAN_BURST,
+            "fallback priority reserve should absorb a clean throughput burst"
+        );
+        assert_eq!(
+            fallback_rx.bulk.len(),
+            1,
+            "priority returns should not consume the full bulk lane"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_full_queue_drops_bulk_without_waiting() {
         let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 99);
@@ -631,6 +660,35 @@
             bulk_rx.len(),
             1,
             "priority packet should not overflow or consume the bulk lane"
+        );
+    }
+
+    #[test]
+    fn decrypt_worker_priority_reserve_absorbs_clean_line_rate_burst() {
+        const CLEAN_BURST: usize = 2048;
+
+        let (pool, _control_rx, priority_rx, bulk_rx) = one_worker_pool_with_channel_caps(
+            1,
+            DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP,
+            1,
+        );
+        let session_key = test_session_key(1, 99);
+        pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
+        assert_eq!(bulk_rx.len(), 1, "test bulk lane should start full");
+
+        for _ in 0..CLEAN_BURST {
+            pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        }
+
+        assert_eq!(
+            priority_rx.len(),
+            CLEAN_BURST,
+            "worker priority reserve should absorb a clean throughput burst"
+        );
+        assert_eq!(
+            bulk_rx.len(),
+            1,
+            "priority packets should not consume the full bulk lane"
         );
     }
 

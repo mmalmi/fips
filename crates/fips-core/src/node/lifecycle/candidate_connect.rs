@@ -44,12 +44,7 @@ impl Node {
             return false;
         }
 
-        self.config.peers().iter().any(|peer| {
-            peer.is_auto_connect()
-                && PeerIdentity::from_npub(&peer.npub)
-                    .map(|identity| identity.node_addr() == peer_node_addr)
-                    .unwrap_or(false)
-        })
+        self.configured_auto_connect_peer(peer_node_addr).is_some()
     }
 
     pub(in crate::node) async fn warm_auto_connect_graph_sessions(&mut self) -> usize {
@@ -63,9 +58,9 @@ impl Node {
         }
 
         let peer_identities: Vec<_> = self
-            .config
-            .auto_connect_peers()
-            .filter_map(|peer| PeerIdentity::from_npub(&peer.npub).ok())
+            .configured_peers
+            .entries()
+            .filter_map(|(_addr, identity, peer)| peer.is_auto_connect().then_some(*identity))
             .collect();
 
         let mut warmed = 0;

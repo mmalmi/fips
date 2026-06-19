@@ -786,7 +786,7 @@ fn udp_send_batch_buckets_classify_large_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 74);
+    assert_eq!(N_STAGES, 86);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -962,6 +962,54 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::ConnectedUdpDrainBulkRingWait as usize).name(),
         "connected_udp_drain_bulk_ring_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopTickPredrain as usize).name(),
+        "rx_loop_tick_predrain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopFastMaintenance as usize).name(),
+        "rx_loop_fast_maintenance"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopTickPostdrain as usize).name(),
+        "rx_loop_tick_postdrain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopPacketDrain as usize).name(),
+        "rx_loop_packet_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopDecryptPriorityFallbackDrain as usize).name(),
+        "rx_loop_decrypt_priority_fallback_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopDecryptFallbackDrain as usize).name(),
+        "rx_loop_decrypt_fallback_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopSideQueueDrain as usize).name(),
+        "rx_loop_side_queue_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopEndpointCommandDrain as usize).name(),
+        "rx_loop_endpoint_command_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::RxLoopTunOutboundDrain as usize).name(),
+        "rx_loop_tun_outbound_drain"
+    );
+    assert_eq!(
+        stage_from_index(Stage::TransportChannelResidence as usize).name(),
+        "transport_channel_residence"
+    );
+    assert_eq!(
+        stage_from_index(Stage::TransportPriorityChannelResidence as usize).name(),
+        "transport_priority_channel_residence"
+    );
+    assert_eq!(
+        stage_from_index(Stage::TransportBulkChannelResidence as usize).name(),
+        "transport_bulk_channel_residence"
     );
 }
 

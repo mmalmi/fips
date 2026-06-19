@@ -306,17 +306,20 @@ async fn handle_msg2_does_not_demote_healthy_static_path_to_lower_priority_alter
 
     let static_addr = TransportAddr::from_string("127.0.0.1:8000");
     let lower_priority_addr = TransportAddr::from_string("127.0.0.1:9000");
-    node.config.peers = vec![crate::config::PeerConfig {
-        npub: peer_full.npub(),
-        alias: None,
-        addresses: vec![
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
-            crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100),
-        ],
-        connect_policy: crate::config::ConnectPolicy::AutoConnect,
-        auto_reconnect: true,
-        discovery_fallback_transit: true,
-    }];
+    set_config_peers_for_test(
+        &mut node,
+        vec![crate::config::PeerConfig {
+            npub: peer_full.npub(),
+            alias: None,
+            addresses: vec![
+                crate::config::PeerAddress::with_priority("udp", "127.0.0.1:8000", 10),
+                crate::config::PeerAddress::with_priority("udp", "127.0.0.1:9000", 100),
+            ],
+            connect_policy: crate::config::ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        }],
+    );
 
     let old_link_id = LinkId::new(10);
     let old_our_index = SessionIndex::new(11);
@@ -529,6 +532,7 @@ async fn authenticated_lower_priority_packet_does_not_rotate_configured_static_p
     );
 
     node.config.peers[0].addresses[0].seen_at_ms = Some(2_000);
+    node.refresh_configured_peer_index_for_test();
     node.process_authentic_fmp_plaintext(AuthenticatedFmpPlaintext::new(
         peer_identity,
         transport_id,

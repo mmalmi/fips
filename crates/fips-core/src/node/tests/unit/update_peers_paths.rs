@@ -34,7 +34,7 @@ async fn update_peers_races_primary_path_when_active_peer_uses_bootstrap_transpo
     node.peers.insert(peer_node_addr, active_peer);
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -85,7 +85,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
     node.peers.insert(peer_node_addr, active_peer);
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
     let mut state = super::super::retry::RetryState::new(peer);
     state.retry_after_ms = 0;
     state.reconnect = true;
@@ -177,7 +177,7 @@ async fn active_direct_refresh_reclaims_inflight_slot_for_configured_static_path
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers = vec![peer_config.clone()];
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     for port in [10, 11, 12, 13] {
         node.initiate_connection(
@@ -345,7 +345,7 @@ async fn active_nostr_peer_without_static_addresses_retests_observed_udp_path() 
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers = vec![peer_config.clone()];
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     let current_addr = TransportAddr::from_string("127.0.0.1:9");
     let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
@@ -458,7 +458,7 @@ async fn mesh_signal_warms_session_instead_of_dropping_without_established_sessi
         },
     });
     nodes[0].node.config.node.discovery.nostr.enabled = true;
-    nodes[0].node.config.peers = vec![peer_config];
+    set_config_peers_for_test(&mut nodes[0].node, vec![peer_config]);
     nodes[0].node.nostr_discovery = Some(bootstrap.clone());
 
     nodes[0].node.poll_nostr_discovery().await;

@@ -15,6 +15,7 @@ impl Node {
     pub(super) async fn nostr_peer_fallback_addresses(
         &self,
         peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
         existing: &[PeerAddress],
     ) -> Vec<PeerAddress> {
         if !self.config.node.discovery.nostr.enabled
@@ -27,7 +28,7 @@ impl Node {
         let Some(bootstrap) = self.nostr_discovery.clone() else {
             return Vec::new();
         };
-        if self.nostr_cooldown_applies_to_peer_config(peer_config)
+        if self.nostr_cooldown_applies_to_peer_identity(peer_identity)
             && bootstrap
                 .cooldown_until(&peer_config.npub, Self::now_ms())
                 .is_some()
@@ -86,7 +87,20 @@ impl Node {
         fallback
     }
 
+    #[cfg(test)]
     pub(in crate::node) async fn request_nostr_bootstrap(&self, peer_config: &PeerConfig) -> bool {
+        let Ok(peer_identity) = Self::parse_peer_config_identity(peer_config) else {
+            return false;
+        };
+        self.request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+            .await
+    }
+
+    pub(in crate::node) async fn request_nostr_bootstrap_with_identity(
+        &self,
+        peer_config: &PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> bool {
         if !self.config.node.discovery.nostr.enabled
             || self.config.node.discovery.nostr.policy
                 == crate::config::NostrDiscoveryPolicy::Disabled
@@ -97,7 +111,7 @@ impl Node {
             return false;
         };
         let now_ms = Self::now_ms();
-        if self.nostr_cooldown_applies_to_peer_config(peer_config)
+        if self.nostr_cooldown_applies_to_peer_identity(peer_identity)
             && let Some(cooldown_until_ms) = bootstrap.cooldown_until(&peer_config.npub, now_ms)
         {
             debug!(
@@ -109,7 +123,7 @@ impl Node {
         }
         bootstrap.set_outbound_admission(self.open_discovery_outbound_admission_check());
         bootstrap.set_direct_refresh_admission(self.outbound_direct_refresh_admission_check());
-        let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer(peer_config);
+        let mesh_signaling_allowed = self.mesh_signaling_allowed_for_peer_identity(peer_identity);
         let started = bootstrap
             .request_connect_with_mesh_signaling(peer_config.clone(), mesh_signaling_allowed)
             .await;
@@ -130,18 +144,35 @@ impl Node {
     }
 
     pub(super) fn nostr_cooldown_applies_to_peer_config(&self, peer_config: &PeerConfig) -> bool {
-        !self.mesh_signaling_allowed_for_peer(peer_config)
+        let Ok(peer_identity) = Self::parse_peer_config_identity(peer_config) else {
+            return true;
+        };
+        self.nostr_cooldown_applies_to_peer_identity(peer_identity)
     }
 
+    pub(super) fn nostr_cooldown_applies_to_peer_identity(
+        &self,
+        peer_identity: PeerIdentity,
+    ) -> bool {
+        !self.mesh_signaling_allowed_for_peer_identity(peer_identity)
+    }
+
+    #[cfg(test)]
     pub(in crate::node) fn mesh_signaling_allowed_for_peer(
         &self,
         peer_config: &PeerConfig,
     ) -> bool {
-        let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
+        let Ok(peer_identity) = Self::parse_peer_config_identity(peer_config) else {
             return false;
         };
-        let peer_addr = identity.node_addr();
-        self.configured_peer(peer_addr).is_some()
+        self.mesh_signaling_allowed_for_peer_identity(peer_identity)
+    }
+
+    pub(in crate::node) fn mesh_signaling_allowed_for_peer_identity(
+        &self,
+        peer_identity: PeerIdentity,
+    ) -> bool {
+        self.configured_peer(peer_identity.node_addr()).is_some()
     }
 
     pub(super) fn overlay_endpoint_to_peer_address(
@@ -178,7 +209,10 @@ impl Node {
                 if !allow_bootstrap_nat {
                     continue;
                 }
-                if self.request_nostr_bootstrap(peer_config).await {
+                if self
+                    .request_nostr_bootstrap_with_identity(peer_config, peer_identity)
+                    .await
+                {
                     attempted = true;
                     continue;
                 }
@@ -328,15 +362,16 @@ impl Node {
     ) {
         let now_ms = Self::now_ms();
         let peer_configs = self
-            .config
-            .auto_connect_peers()
-            .cloned()
+            .configured_peers
+            .entries()
+            .filter_map(|(_addr, identity, peer_config)| {
+                peer_config
+                    .is_auto_connect()
+                    .then_some((*identity, peer_config.clone()))
+            })
             .collect::<Vec<_>>();
 
-        for peer_config in peer_configs {
-            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
-                continue;
-            };
+        for (peer_identity, peer_config) in peer_configs {
             let node_addr = *peer_identity.node_addr();
 
             if self.retry_pending.contains_key(&node_addr)
@@ -381,11 +416,14 @@ impl Node {
             return;
         }
 
-        let configured_npubs = self
-            .config
-            .peers()
-            .iter()
-            .map(|peer| peer.npub.clone())
+        let configured_peers_by_npub = self
+            .configured_peers
+            .entries()
+            .map(|(_addr, identity, peer)| (peer.npub.clone(), *identity))
+            .collect::<HashMap<_, _>>();
+        let configured_npubs = configured_peers_by_npub
+            .keys()
+            .cloned()
             .collect::<HashSet<_>>();
         let now_ms = Self::now_ms();
         let now_secs = now_ms / 1000;
@@ -423,7 +461,7 @@ impl Node {
                 continue;
             }
 
-            if configured_npubs.contains(&npub) {
+            if let Some(identity) = configured_peers_by_npub.get(&npub).copied() {
                 // Configured peers don't go through the open-discovery
                 // enqueue path — their `PeerConfig` is already in
                 // `self.config.peers()`, so the regular retry queue is
@@ -443,24 +481,22 @@ impl Node {
                 // connection` → `try_peer_addresses`) then refetches
                 // the advert and dials it — no behavioral change
                 // beyond schedule timing.
-                if let Ok(identity) = PeerIdentity::from_npub(&npub) {
-                    let configured_addr = *identity.node_addr();
-                    if bootstrap.cooldown_until_peer(identity, now_ms).is_some() {
-                        skipped_cooldown = skipped_cooldown.saturating_add(1);
-                        skipped_configured = skipped_configured.saturating_add(1);
-                        continue;
-                    }
-                    if let Some(state) = self.retry_pending.get_mut(&configured_addr)
-                        && state.retry_after_ms > now_ms
-                    {
-                        state.retry_after_ms = now_ms;
-                        debug!(
-                            caller = %caller,
-                            peer = %self.peer_display_name(&configured_addr),
-                            advert_age_secs = now_secs.saturating_sub(created_at_secs),
-                            "Expediting configured-peer retry after fresh overlay advert"
-                        );
-                    }
+                let configured_addr = *identity.node_addr();
+                if bootstrap.cooldown_until_peer(identity, now_ms).is_some() {
+                    skipped_cooldown = skipped_cooldown.saturating_add(1);
+                    skipped_configured = skipped_configured.saturating_add(1);
+                    continue;
+                }
+                if let Some(state) = self.retry_pending.get_mut(&configured_addr)
+                    && state.retry_after_ms > now_ms
+                {
+                    state.retry_after_ms = now_ms;
+                    debug!(
+                        caller = %caller,
+                        peer = %self.peer_display_name(&configured_addr),
+                        advert_age_secs = now_secs.saturating_sub(created_at_secs),
+                        "Expediting configured-peer retry after fresh overlay advert"
+                    );
                 }
                 skipped_configured = skipped_configured.saturating_add(1);
                 continue;

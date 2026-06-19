@@ -172,6 +172,7 @@ async fn active_direct_refresh_retries_are_background_budgeted() {
             discovery_fallback_transit: true,
         };
         node.config.peers.push(peer_config.clone());
+        node.refresh_configured_peer_index_for_test();
         node.peers
             .insert(node_addr, ActivePeer::new(peer_identity, LinkId::new(7), 0));
         node.retry_pending.insert(

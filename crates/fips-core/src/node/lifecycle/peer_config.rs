@@ -18,8 +18,10 @@ impl Node {
     ) -> Result<crate::node::UpdatePeersOutcome, crate::node::NodeError> {
         use std::collections::{HashMap, HashSet};
 
-        let mut new_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> =
-            HashMap::with_capacity(new_peers.len());
+        let mut new_by_addr: HashMap<
+            crate::identity::NodeAddr,
+            (PeerIdentity, crate::config::PeerConfig),
+        > = HashMap::with_capacity(new_peers.len());
         let mut new_order = Vec::with_capacity(new_peers.len());
         for peer in new_peers {
             let identity = match PeerIdentity::from_npub(&peer.npub) {
@@ -38,18 +40,13 @@ impl Node {
             if !new_by_addr.contains_key(&node_addr) {
                 new_order.push(node_addr);
             }
-            new_by_addr.insert(node_addr, peer);
+            new_by_addr.insert(node_addr, (identity, peer));
         }
 
         let current_by_addr: HashMap<crate::identity::NodeAddr, crate::config::PeerConfig> = self
-            .config
-            .peers()
-            .iter()
-            .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .ok()
-                    .map(|id| (*id.node_addr(), pc.clone()))
-            })
+            .configured_peers
+            .entries()
+            .map(|(addr, _identity, pc)| (*addr, pc.clone()))
             .collect();
 
         let new_addrs: HashSet<_> = new_by_addr.keys().copied().collect();
@@ -75,7 +72,7 @@ impl Node {
 
         let mut auto_connect_refresh_configs = Vec::new();
         for node_addr in &kept {
-            let new_pc = &new_by_addr[node_addr];
+            let (new_identity, new_pc) = &new_by_addr[node_addr];
             let current_pc = &current_by_addr[node_addr];
             if new_pc.addresses != current_pc.addresses
                 || new_pc.alias != current_pc.alias
@@ -97,7 +94,7 @@ impl Node {
                     self.peer_aliases.insert(*node_addr, alias);
                 }
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
-                    auto_connect_refresh_configs.push(new_pc.clone());
+                    auto_connect_refresh_configs.push((*new_identity, new_pc.clone()));
                 }
             } else {
                 outcome.unchanged += 1;
@@ -110,15 +107,18 @@ impl Node {
                     state.reconnect = new_pc.auto_reconnect;
                 }
                 if new_pc.is_auto_connect() && !new_pc.addresses.is_empty() {
-                    auto_connect_refresh_configs.push(new_pc.clone());
+                    auto_connect_refresh_configs.push((*new_identity, new_pc.clone()));
                 }
             }
         }
 
-        let added_configs: Vec<crate::config::PeerConfig> = new_order
+        let added_peers: Vec<(PeerIdentity, crate::config::PeerConfig)> = new_order
             .iter()
             .filter(|addr| added.contains(addr))
-            .map(|addr| new_by_addr[addr].clone())
+            .map(|addr| {
+                let (identity, peer_config) = &new_by_addr[addr];
+                (*identity, peer_config.clone())
+            })
             .collect();
 
         // Replace the live config peer list before initiating connections so
@@ -126,15 +126,21 @@ impl Node {
         // (alias lookup, retry-state seeding) sees the new entries.
         self.config.peers = new_order
             .iter()
-            .filter_map(|addr| new_by_addr.get(addr).cloned())
+            .filter_map(|addr| {
+                new_by_addr
+                    .get(addr)
+                    .map(|(_identity, peer_config)| peer_config.clone())
+            })
             .collect();
-        self.configured_peer_send_weights = ConfiguredPeerSendWeights::from_config(&self.config);
+        self.configured_peers =
+            ConfiguredPeerIndex::from_parsed_peers(new_order.iter().filter_map(|addr| {
+                new_by_addr
+                    .get(addr)
+                    .map(|(identity, peer_config)| (*identity, peer_config.clone()))
+            }));
 
-        for peer_config in added_configs {
+        for (identity, peer_config) in added_peers {
             outcome.added += 1;
-            let Ok(identity) = PeerIdentity::from_npub(&peer_config.npub) else {
-                continue;
-            };
             let name = peer_config
                 .alias
                 .clone()
@@ -165,15 +171,16 @@ impl Node {
                 }
             }
 
-            if let Err(e) = self.initiate_peer_connection(&peer_config).await {
+            if let Err(e) = self
+                .initiate_peer_connection_with_identity(&peer_config, identity)
+                .await
+            {
                 warn!(
                     npub = %peer_config.npub,
                     error = %e,
                     "Failed to initiate connection for newly added peer"
                 );
-                if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
-                }
+                self.schedule_retry_after_error(*identity.node_addr(), Self::now_ms(), &e);
                 if matches!(e, crate::node::NodeError::NoTransportForType(_))
                     && let Some(bootstrap) = self.nostr_discovery.clone()
                 {
@@ -184,15 +191,15 @@ impl Node {
             }
         }
 
-        for peer_config in auto_connect_refresh_configs {
-            let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) else {
-                continue;
-            };
+        for (peer_identity, peer_config) in auto_connect_refresh_configs {
             let node_addr = *peer_identity.node_addr();
 
             if self.peers.contains_key(&node_addr) {
                 match self
-                    .initiate_active_peer_alternative_connection(&peer_config)
+                    .initiate_active_peer_alternative_connection_with_identity(
+                        &peer_config,
+                        peer_identity,
+                    )
                     .await
                 {
                     Ok(attempted) => {
@@ -229,7 +236,10 @@ impl Node {
                 }
             }
 
-            match self.initiate_peer_connection(&peer_config).await {
+            match self
+                .initiate_peer_connection_with_identity(&peer_config, peer_identity)
+                .await
+            {
                 Ok(()) => {
                     let hs_timeout_ms = self.config.node.rate_limit.handshake_timeout_secs * 1000;
                     if let Some(state) = self.retry_pending.get_mut(&node_addr) {
@@ -260,14 +270,9 @@ impl Node {
         // initiation) immediately on startup — without waiting for the link-layer
         // handshake to complete first.
         let peer_identities: Vec<(PeerIdentity, Option<String>)> = self
-            .config
-            .peers()
-            .iter()
-            .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .ok()
-                    .map(|id| (id, pc.alias.clone()))
-            })
+            .configured_peers
+            .entries()
+            .map(|(_addr, identity, pc)| (*identity, pc.alias.clone()))
             .collect();
 
         for (identity, alias) in peer_identities {
@@ -280,7 +285,13 @@ impl Node {
         }
 
         // Collect peer configs to avoid borrow conflicts
-        let peer_configs: Vec<_> = self.config.auto_connect_peers().cloned().collect();
+        let peer_configs: Vec<_> = self
+            .configured_peers
+            .entries()
+            .filter_map(|(_addr, identity, pc)| {
+                pc.is_auto_connect().then_some((*identity, pc.clone()))
+            })
+            .collect();
 
         if peer_configs.is_empty() {
             debug!("No static peers configured");
@@ -292,11 +303,7 @@ impl Node {
             "Initiating static peer connections"
         );
 
-        for peer_config in peer_configs {
-            let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
-                Ok(identity) => identity,
-                Err(_) => continue,
-            };
+        for (peer_identity, peer_config) in peer_configs {
             match self
                 .try_auto_connect_graph_session(&peer_config, peer_identity)
                 .await
@@ -311,7 +318,10 @@ impl Node {
                     );
                 }
             }
-            if let Err(e) = self.initiate_peer_connection(&peer_config).await {
+            if let Err(e) = self
+                .initiate_peer_connection_with_identity(&peer_config, peer_identity)
+                .await
+            {
                 warn!(
                     npub = %peer_config.npub,
                     alias = ?peer_config.alias,
@@ -321,9 +331,7 @@ impl Node {
                 // Schedule a retry so transient address-resolution failures
                 // (e.g. cached endpoints stale, NAT rebinds, all addresses
                 // currently unreachable) recover without a daemon restart.
-                if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_config.npub) {
-                    self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
-                }
+                self.schedule_retry_after_error(*peer_identity.node_addr(), Self::now_ms(), &e);
                 // No-transport failures most often mean the cached overlay
                 // advert is pointing at a dead post-NAT-rebind address. The
                 // advert cache is read-only inside fetch_advert, so retries
@@ -402,11 +410,23 @@ impl Node {
     /// Initiate a connection to a single peer.
     ///
     /// Creates a link, starts the Noise handshake, and sends the first message.
+    #[cfg(test)]
     pub(in crate::node) async fn initiate_peer_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
-        self.initiate_peer_connection_inner(peer_config).await
+        let peer_identity = Self::parse_peer_config_identity(peer_config)?;
+        self.initiate_peer_connection_with_identity(peer_config, peer_identity)
+            .await
+    }
+
+    pub(in crate::node) async fn initiate_peer_connection_with_identity(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> Result<(), NodeError> {
+        self.initiate_peer_connection_inner(peer_config, peer_identity)
+            .await
     }
 
     /// Initiate a connection from the retry path. Identical to
@@ -414,43 +434,54 @@ impl Node {
     /// known address (explicit priority first, then freshness) in a single
     /// pass. The two entry points stay separate so callers can be distinguished
     /// in tracing.
+    #[cfg(test)]
     pub(in crate::node) async fn initiate_peer_retry_connection(
         &mut self,
         peer_config: &crate::config::PeerConfig,
     ) -> Result<(), NodeError> {
-        self.initiate_peer_connection_inner(peer_config).await
-    }
-
-    pub(in crate::node) async fn initiate_active_peer_alternative_connection(
-        &mut self,
-        peer_config: &crate::config::PeerConfig,
-    ) -> Result<bool, NodeError> {
-        self.initiate_active_peer_alternative_connection_inner(peer_config, false)
+        let peer_identity = Self::parse_peer_config_identity(peer_config)?;
+        self.initiate_peer_retry_connection_with_identity(peer_config, peer_identity)
             .await
     }
 
-    pub(in crate::node) async fn initiate_active_peer_direct_refresh_connection(
+    pub(in crate::node) async fn initiate_peer_retry_connection_with_identity(
         &mut self,
         peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> Result<(), NodeError> {
+        self.initiate_peer_connection_inner(peer_config, peer_identity)
+            .await
+    }
+
+    pub(in crate::node) async fn initiate_active_peer_alternative_connection_with_identity(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
     ) -> Result<bool, NodeError> {
-        self.initiate_active_peer_alternative_connection_inner(peer_config, true)
+        self.initiate_active_peer_alternative_connection_inner(peer_config, peer_identity, false)
+            .await
+    }
+
+    pub(in crate::node) async fn initiate_active_peer_direct_refresh_connection_with_identity(
+        &mut self,
+        peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
+    ) -> Result<bool, NodeError> {
+        self.initiate_active_peer_alternative_connection_inner(peer_config, peer_identity, true)
             .await
     }
 
     pub(super) async fn initiate_active_peer_alternative_connection_inner(
         &mut self,
         peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
         allow_same_path_refresh: bool,
     ) -> Result<bool, NodeError> {
-        let peer_identity =
-            PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
-                npub: peer_config.npub.clone(),
-                reason: e.to_string(),
-            })?;
         let peer_node_addr = *peer_identity.node_addr();
 
         if !self.peers.contains_key(&peer_node_addr) {
-            self.initiate_peer_connection(peer_config).await?;
+            self.initiate_peer_connection_with_identity(peer_config, peer_identity)
+                .await?;
             return Ok(true);
         }
 
@@ -470,14 +501,8 @@ impl Node {
     pub(super) async fn initiate_peer_connection_inner(
         &mut self,
         peer_config: &crate::config::PeerConfig,
+        peer_identity: PeerIdentity,
     ) -> Result<(), NodeError> {
-        // Parse the peer's npub to get their identity
-        let peer_identity =
-            PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
-                npub: peer_config.npub.clone(),
-                reason: e.to_string(),
-            })?;
-
         let peer_node_addr = *peer_identity.node_addr();
 
         // Check if peer already exists (fully authenticated)
@@ -491,5 +516,14 @@ impl Node {
 
         self.try_peer_addresses(peer_config, peer_identity, true)
             .await
+    }
+
+    pub(in crate::node) fn parse_peer_config_identity(
+        peer_config: &crate::config::PeerConfig,
+    ) -> Result<PeerIdentity, NodeError> {
+        PeerIdentity::from_npub(&peer_config.npub).map_err(|e| NodeError::InvalidPeerNpub {
+            npub: peer_config.npub.clone(),
+            reason: e.to_string(),
+        })
     }
 }

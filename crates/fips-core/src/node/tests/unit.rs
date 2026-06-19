@@ -30,6 +30,11 @@ mod session_registry;
 mod update_peers_core;
 mod update_peers_paths;
 
+fn set_config_peers_for_test(node: &mut Node, peers: Vec<crate::config::PeerConfig>) {
+    node.config.peers = peers;
+    node.refresh_configured_peer_index_for_test();
+}
+
 fn make_test_fmp_session(
     local: &Identity,
     peer: &Identity,

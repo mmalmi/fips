@@ -33,9 +33,9 @@ use crate::noise::{ReplayRejection, ReplayWindow};
 
 const DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP: usize = 32768;
 const DEFAULT_DECRYPT_WORKER_CONTROL_CHANNEL_CAP: usize = 1024;
-const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DEFAULT_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP: usize = 4096;
 const DEFAULT_DECRYPT_FALLBACK_BULK_CHANNEL_CAP: usize = 32768;
-const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 1024;
+const DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP: usize = 4096;
 /// Emit the backlog-high event before already-decrypted bulk completions can
 /// crowd out priority/control work. The receive loop no longer expands its
 /// drain budget under pressure, so this is an observability threshold, not a
@@ -107,6 +107,7 @@ impl DecryptSessionKey {
             receiver_idx,
         }
     }
+
 }
 
 impl From<(TransportId, u32)> for DecryptSessionKey {
@@ -1352,7 +1353,6 @@ impl FmpAeadHelperJob {
             },
         }
     }
-
 }
 
 struct FspAeadOpenJob {

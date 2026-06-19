@@ -23,14 +23,13 @@ impl Node {
             discovery_fallback_transit: true,
         };
 
-        // Pre-seed identity cache (same as initiate_peer_connections does)
-        if let Ok(identity) = PeerIdentity::from_npub(npub) {
-            self.peer_aliases
-                .insert(*identity.node_addr(), identity.short_npub());
-            self.register_identity(*identity.node_addr(), identity.pubkey_full());
-        }
+        let identity =
+            PeerIdentity::from_npub(npub).map_err(|e| format!("invalid npub '{npub}': {e}"))?;
+        self.peer_aliases
+            .insert(*identity.node_addr(), identity.short_npub());
+        self.register_identity(*identity.node_addr(), identity.pubkey_full());
 
-        self.initiate_peer_connection(&peer_config)
+        self.initiate_peer_connection_with_identity(&peer_config, identity)
             .await
             .map(|()| {
                 info!(

@@ -111,6 +111,45 @@ mod mac_queue_tests {
     }
 
     #[test]
+    fn mac_worker_priority_reserve_absorbs_clean_line_rate_burst() {
+        with_test_socket(|socket, cipher| {
+            const CLEAN_BURST: usize = 2048;
+            assert!(
+                DEFAULT_WORKER_PRIORITY_CHANNEL_CAP >= CLEAN_BURST,
+                "priority reserve should absorb clean ACK/control bursts without backpressure"
+            );
+            let (tx, _rx) = mac_worker_channel(1);
+            let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
+
+            assert!(
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    true,
+                ))
+                .is_ok(),
+                "bulk job should fill the tiny bulk lane"
+            );
+
+            for _ in 0..CLEAN_BURST {
+                assert!(
+                    tx.try_push(queued_job_classified(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        false,
+                        false,
+                    ))
+                    .is_ok(),
+                    "priority reserve should absorb the clean burst"
+                );
+            }
+        });
+    }
+
+    #[test]
     fn mac_completion_group_owns_flow_key_and_fifo_items() {
         with_test_socket(|socket, _cipher| {
             let flow_a = test_mac_send_flow(socket.clone(), "127.0.0.1:10033".parse().unwrap());

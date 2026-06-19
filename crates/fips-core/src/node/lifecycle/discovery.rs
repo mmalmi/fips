@@ -582,11 +582,7 @@ impl Node {
     }
 
     pub(super) fn local_instance_peer_allowed(&self, identity: &PeerIdentity) -> bool {
-        if self.config.peers().iter().any(|peer| {
-            PeerIdentity::from_npub(&peer.npub)
-                .map(|configured| configured.node_addr() == identity.node_addr())
-                .unwrap_or(false)
-        }) {
+        if self.configured_peers.contains(identity.node_addr()) {
             return true;
         }
         self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::Open

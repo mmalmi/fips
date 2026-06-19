@@ -270,15 +270,11 @@ impl Node {
         let direct_fallbacks: Vec<_> = timed_out
             .iter()
             .filter_map(|addr| {
-                self.config.auto_connect_peers().find_map(|peer| {
-                    crate::PeerIdentity::from_npub(&peer.npub)
-                        .ok()
-                        .filter(|identity| identity.node_addr() == addr)
-                        .and_then(|_| {
-                            (!peer.addresses.is_empty() || self.config.node.discovery.nostr.enabled)
-                                .then(|| peer.clone())
-                        })
-                })
+                self.configured_auto_connect_peer_with_identity(addr)
+                    .and_then(|(peer, identity)| {
+                        (!peer.addresses.is_empty() || self.config.node.discovery.nostr.enabled)
+                            .then_some((*identity, peer.clone()))
+                    })
             })
             .collect();
 
@@ -290,22 +286,22 @@ impl Node {
             self.pending_session_traffic.remove_destination(addr);
         }
 
-        for peer_config in direct_fallbacks {
-            let peer_identity = crate::PeerIdentity::from_npub(&peer_config.npub).ok();
-            let peer_node_addr = peer_identity.as_ref().map(|identity| *identity.node_addr());
+        for (peer_identity, peer_config) in direct_fallbacks {
+            let peer_node_addr = *peer_identity.node_addr();
             info!(
                 npub = %peer_config.npub,
                 "FIPS graph session timed out; trying direct auto-connect path"
             );
-            if let Err(err) = self.initiate_peer_connection(&peer_config).await {
+            if let Err(err) = self
+                .initiate_peer_connection_with_identity(&peer_config, peer_identity)
+                .await
+            {
                 debug!(
                     npub = %peer_config.npub,
                     error = %err,
                     "Direct auto-connect fallback after graph timeout did not start"
                 );
-                if let Some(peer_node_addr) = peer_node_addr {
-                    self.schedule_retry(peer_node_addr, now_ms);
-                }
+                self.schedule_retry(peer_node_addr, now_ms);
             }
         }
 

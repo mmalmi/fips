@@ -825,11 +825,33 @@ impl Node {
     }
 
     pub(crate) fn configured_peer(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
-        self.config.peers().iter().find(|peer| {
-            PeerIdentity::from_npub(&peer.npub)
-                .ok()
-                .is_some_and(|identity| identity.node_addr() == peer_addr)
-        })
+        self.configured_peers.get(peer_addr)
+    }
+
+    pub(in crate::node) fn configured_peer_identity(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<&PeerIdentity> {
+        self.configured_peers.identity(peer_addr)
+    }
+
+    pub(in crate::node) fn configured_auto_connect_peer(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<&PeerConfig> {
+        self.configured_peers.auto_connect(peer_addr)
+    }
+
+    pub(in crate::node) fn configured_auto_connect_peer_with_identity(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<(&PeerConfig, &PeerIdentity)> {
+        self.configured_peers.auto_connect_with_identity(peer_addr)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn refresh_configured_peer_index_for_test(&mut self) {
+        self.configured_peers = ConfiguredPeerIndex::from_config(&self.config);
     }
 
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(

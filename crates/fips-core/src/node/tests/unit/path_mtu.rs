@@ -244,7 +244,7 @@ async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers.push(peer_config.clone());
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
@@ -335,7 +335,7 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers.push(peer_config.clone());
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     node.initiate_peer_connection(&peer_config).await.unwrap();
 
@@ -434,7 +434,7 @@ async fn test_static_priority_preempts_fresh_overlay_when_budget_tight() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers.push(peer_config.clone());
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
@@ -537,7 +537,7 @@ async fn test_retry_races_fresh_overlay_udp_candidates_without_static_direct() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers.push(peer_config.clone());
+    set_config_peers_for_test(&mut node, vec![peer_config.clone()]);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await

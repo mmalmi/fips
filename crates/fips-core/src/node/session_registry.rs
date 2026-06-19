@@ -269,44 +269,90 @@ impl DecryptSessionRegistrations {
     }
 }
 
-/// Send-scheduling policy derived from the configured peer roster.
+/// Binary-indexed runtime view of the configured peer roster.
 #[derive(Debug, Default)]
-pub(in crate::node) struct ConfiguredPeerSendWeights {
-    entries: HashMap<NodeAddr, u8>,
+pub(in crate::node) struct ConfiguredPeerIndex {
+    peers_by_addr: HashMap<NodeAddr, ConfiguredPeerEntry>,
 }
 
-impl ConfiguredPeerSendWeights {
+#[derive(Debug)]
+struct ConfiguredPeerEntry {
+    identity: PeerIdentity,
+    config: PeerConfig,
+}
+
+impl ConfiguredPeerIndex {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
-        let entries = config
-            .peers()
-            .iter()
-            .filter_map(|peer| {
-                PeerIdentity::from_npub(&peer.npub).ok().map(|identity| {
-                    (
-                        *identity.node_addr(),
-                        encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT,
-                    )
-                })
-            })
-            .collect();
-        Self { entries }
+        Self::from_parsed_peers(config.peers().iter().filter_map(|peer| {
+            PeerIdentity::from_npub(&peer.npub)
+                .ok()
+                .map(|identity| (identity, peer.clone()))
+        }))
+    }
+
+    pub(in crate::node) fn from_parsed_peers(
+        peers: impl IntoIterator<Item = (PeerIdentity, PeerConfig)>,
+    ) -> Self {
+        let peers = peers.into_iter();
+        let mut peers_by_addr = HashMap::with_capacity(peers.size_hint().0);
+        for (identity, config) in peers {
+            peers_by_addr.insert(
+                *identity.node_addr(),
+                ConfiguredPeerEntry { identity, config },
+            );
+        }
+        Self { peers_by_addr }
+    }
+
+    pub(in crate::node) fn get(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
+        self.peers_by_addr.get(peer_addr).map(|entry| &entry.config)
+    }
+
+    pub(in crate::node) fn identity(&self, peer_addr: &NodeAddr) -> Option<&PeerIdentity> {
+        self.peers_by_addr
+            .get(peer_addr)
+            .map(|entry| &entry.identity)
+    }
+
+    pub(in crate::node) fn auto_connect(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
+        self.get(peer_addr)
+            .filter(|peer_config| peer_config.is_auto_connect())
+    }
+
+    pub(in crate::node) fn auto_connect_with_identity(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<(&PeerConfig, &PeerIdentity)> {
+        let entry = self.peers_by_addr.get(peer_addr)?;
+        entry
+            .config
+            .is_auto_connect()
+            .then_some((&entry.config, &entry.identity))
+    }
+
+    pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
+        self.peers_by_addr.contains_key(peer_addr)
     }
 
     pub(in crate::node) fn weight_for(&self, peer_addr: &NodeAddr) -> u8 {
-        self.entries
-            .get(peer_addr)
-            .copied()
-            .unwrap_or(encrypt_worker::DEFAULT_SEND_WEIGHT)
+        if self.contains(peer_addr) {
+            encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT
+        } else {
+            encrypt_worker::DEFAULT_SEND_WEIGHT
+        }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    pub(in crate::node) fn contains(&self, peer_addr: &NodeAddr) -> bool {
-        self.entries.contains_key(peer_addr)
+    pub(in crate::node) fn entries(
+        &self,
+    ) -> impl Iterator<Item = (&NodeAddr, &PeerIdentity, &PeerConfig)> {
+        self.peers_by_addr
+            .iter()
+            .map(|(addr, entry)| (addr, &entry.identity, &entry.config))
     }
 
     #[cfg(test)]
     pub(in crate::node) fn len(&self) -> usize {
-        self.entries.len()
+        self.peers_by_addr.len()
     }
 }
 

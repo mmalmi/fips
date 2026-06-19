@@ -79,7 +79,7 @@ async fn update_peers_races_alternate_path_even_when_outbound_would_lose() {
     );
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -193,7 +193,7 @@ async fn update_peers_refreshes_stale_retry_config_even_when_peer_is_unchanged()
     let peer = auto_connect_peer(npub, "127.0.0.1:9");
     let identity = PeerIdentity::from_npub(&peer.npub).unwrap();
     let node_addr = *identity.node_addr();
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let mut stale_retry = super::super::retry::RetryState::new(auto_connect_peer(
         peer.npub.clone(),
@@ -242,7 +242,7 @@ async fn update_peers_redials_existing_auto_peer_with_direct_hint() {
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers = vec![original];
+    set_config_peers_for_test(&mut node, vec![original]);
 
     let refreshed = auto_connect_peer(npub, "127.0.0.1:9");
     let outcome = node.update_peers(vec![refreshed]).await.unwrap();
@@ -279,7 +279,7 @@ async fn update_peers_redials_unchanged_auto_peer_without_link() {
         .insert(transport_id, TransportHandle::Udp(udp));
 
     let peer = auto_connect_peer(npub_for_test(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -334,7 +334,7 @@ async fn update_peers_races_alternate_path_for_active_peer_without_dropping_curr
     );
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -384,7 +384,7 @@ async fn update_peers_does_not_churn_active_peer_already_on_known_candidate() {
     node.peers.insert(peer_node_addr, active_peer);
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -495,7 +495,7 @@ async fn update_peers_races_new_alternative_even_when_current_path_is_still_know
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers = vec![peer.clone()];
+    set_config_peers_for_test(&mut node, vec![peer.clone()]);
 
     let outcome = node.update_peers(vec![peer]).await.unwrap();
 
@@ -568,7 +568,7 @@ async fn update_peers_races_more_alternatives_while_peer_is_connecting_with_budg
         auto_reconnect: true,
         discovery_fallback_transit: true,
     };
-    node.config.peers = vec![first.clone()];
+    set_config_peers_for_test(&mut node, vec![first.clone()]);
     let _ = node.update_peers(vec![first]).await.unwrap();
     assert_eq!(node.connection_count(), 1);
 

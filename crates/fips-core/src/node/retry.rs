@@ -5,9 +5,8 @@
 //! (not PeerConnection) because each retry creates a fresh connection.
 
 use super::{Node, NodeError};
-use crate::PeerIdentity;
 use crate::config::PeerConfig;
-use crate::identity::NodeAddr;
+use crate::identity::{NodeAddr, PeerIdentity};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -249,16 +248,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_auto_connect_peer(&node_addr).cloned());
 
         if self.peers.contains_key(&node_addr) {
             let Some(pc) = peer_config.as_ref() else {
@@ -331,16 +321,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_auto_connect_peer(&node_addr).cloned());
 
         if self.peers.contains_key(&node_addr) {
             let Some(pc) = peer_config.as_ref() else {
@@ -389,6 +370,17 @@ impl Node {
         }
     }
 
+    pub(super) fn retry_peer_identity(
+        &self,
+        node_addr: &NodeAddr,
+        peer_config: &PeerConfig,
+    ) -> Result<PeerIdentity, NodeError> {
+        if let Some(identity) = self.configured_peer_identity(node_addr) {
+            return Ok(*identity);
+        }
+        Self::parse_peer_config_identity(peer_config)
+    }
+
     /// Schedule auto-reconnect for a peer removed by MMP dead timeout.
     ///
     /// Looks up the peer in auto-connect config and checks `auto_reconnect`.
@@ -400,16 +392,7 @@ impl Node {
     /// exponential backoff accumulates across repeated link-dead events instead
     /// of resetting to the base interval on every peer removal.
     pub(super) fn schedule_reconnect(&mut self, node_addr: NodeAddr, now_ms: u64) {
-        // Find peer in auto-connect config
-        let peer_config = self
-            .config
-            .auto_connect_peers()
-            .find(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .map(|id| *id.node_addr() == node_addr)
-                    .unwrap_or(false)
-            })
-            .cloned();
+        let peer_config = self.configured_auto_connect_peer(&node_addr).cloned();
 
         let Some(pc) = peer_config else {
             return; // Not an auto-connect peer, no reconnect
@@ -475,16 +458,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_auto_connect_peer(&node_addr).cloned());
 
         let Some(peer_config) = peer_config else {
             return;
@@ -531,15 +505,8 @@ impl Node {
         now_ms: u64,
     ) {
         let peer = self
-            .config
-            .auto_connect_peers()
-            .filter_map(|pc| {
-                PeerIdentity::from_npub(&pc.npub)
-                    .ok()
-                    .map(|identity| (pc, identity))
-            })
-            .find(|(_, identity)| identity.node_addr() == node_addr)
-            .map(|(pc, identity)| (pc.clone(), identity));
+            .configured_auto_connect_peer_with_identity(node_addr)
+            .map(|(pc, identity)| (pc.clone(), identity.clone()));
         let Some((peer_config, peer_identity)) = peer else {
             return;
         };
@@ -679,8 +646,24 @@ impl Node {
                         .await;
                 }
 
+                let peer_identity = match self.retry_peer_identity(&node_addr, &peer_config) {
+                    Ok(identity) => identity,
+                    Err(e) => {
+                        warn!(
+                            peer = %self.peer_display_name(&node_addr),
+                            error = %e,
+                            "Direct-path retry has invalid peer identity"
+                        );
+                        self.retry_pending.remove(&node_addr);
+                        continue;
+                    }
+                };
+
                 match self
-                    .initiate_active_peer_direct_refresh_connection(&peer_config)
+                    .initiate_active_peer_direct_refresh_connection_with_identity(
+                        &peer_config,
+                        peer_identity,
+                    )
                     .await
                 {
                     Ok(true) => {
@@ -752,7 +735,23 @@ impl Node {
                     .await;
             }
 
-            match self.initiate_peer_retry_connection(&peer_config).await {
+            let peer_identity = match self.retry_peer_identity(&node_addr, &peer_config) {
+                Ok(identity) => identity,
+                Err(e) => {
+                    warn!(
+                        peer = %self.peer_display_name(&node_addr),
+                        error = %e,
+                        "Retry has invalid peer identity"
+                    );
+                    self.retry_pending.remove(&node_addr);
+                    continue;
+                }
+            };
+
+            match self
+                .initiate_peer_retry_connection_with_identity(&peer_config, peer_identity)
+                .await
+            {
                 Ok(()) => {
                     // Push retry_after_ms past the handshake timeout window so
                     // we don't re-fire on the next tick. If the handshake

@@ -38,6 +38,9 @@
 //!   * `TRANSPORT_CHANNEL_WAIT` — UDP/transport receive loop → packet channel dequeue
 //!   * `TRANSPORT_PRIORITY_CHANNEL_WAIT` — priority-sized transport packets → packet channel dequeue
 //!   * `TRANSPORT_BULK_CHANNEL_WAIT` — bulk-sized transport packets → packet channel dequeue
+//!   * `TRANSPORT_CHANNEL_RESIDENCE` — PacketTx enqueue → packet channel dequeue
+//!   * `TRANSPORT_PRIORITY_CHANNEL_RESIDENCE` — priority PacketTx enqueue → packet channel dequeue
+//!   * `TRANSPORT_BULK_CHANNEL_RESIDENCE` — bulk PacketTx enqueue → packet channel dequeue
 //!   * `TRANSPORT_RX_LOOP_WAIT` — packet channel dequeue → rx_loop packet processing
 //!   * `TRANSPORT_PRIORITY_RX_LOOP_WAIT` — priority-sized packet channel dequeue → rx_loop packet processing
 //!   * `TRANSPORT_BULK_RX_LOOP_WAIT` — bulk-sized packet channel dequeue → rx_loop packet processing
@@ -82,6 +85,7 @@
 //!   * `CONNECTED_UDP_DRAIN_RECV` — connected peer socket `recvmmsg` drain batch
 //!   * `CONNECTED_UDP_DRAIN_RING_WAIT` — connected peer socket drain → userspace dispatch
 //!   * `CONNECTED_UDP_FAST_PATH_DISPATCH` — drained connected peer packet dispatch + flush
+//!   * `RX_LOOP_*` — selected receive-loop branch/drain service times
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -96,7 +100,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 74;
+const N_STAGES: usize = 86;
 const N_EVENTS: usize = 220;
 const HIST_BUCKETS: usize = 48;
 
@@ -303,6 +307,32 @@ pub enum Stage {
     /// Bulk-sized connected UDP ring residence, split from the aggregate ring
     /// wait so bulk burst absorption cannot hide priority behavior.
     ConnectedUdpDrainBulkRingWait = 73,
+    /// Time spent in the tick branch draining data queues before fast maintenance.
+    RxLoopTickPredrain = 74,
+    /// Time spent running fast periodic receive-loop maintenance.
+    RxLoopFastMaintenance = 75,
+    /// Time spent in the tick branch draining data queues after fast maintenance.
+    RxLoopTickPostdrain = 76,
+    /// Time spent in one bounded raw transport packet drain turn.
+    RxLoopPacketDrain = 77,
+    /// Time spent in the top-level priority decrypt-fallback drain.
+    RxLoopDecryptPriorityFallbackDrain = 78,
+    /// Time spent in a bounded decrypt-fallback drain turn.
+    RxLoopDecryptFallbackDrain = 79,
+    /// Time spent in a bounded receive-loop side-queue drain turn.
+    RxLoopSideQueueDrain = 80,
+    /// Time spent draining endpoint send commands on the receive-loop task.
+    RxLoopEndpointCommandDrain = 81,
+    /// Time spent draining TUN outbound packets on the receive-loop task.
+    RxLoopTunOutboundDrain = 82,
+    /// Time spent by a packet item after `PacketTx` enqueues it until
+    /// `PacketRx` dequeues it. This is narrower than `TransportChannelWait`,
+    /// which intentionally starts at transport receive/drain time.
+    TransportChannelResidence = 83,
+    /// Priority packet-channel residence after actual `PacketTx` enqueue.
+    TransportPriorityChannelResidence = 84,
+    /// Bulk packet-channel residence after actual `PacketTx` enqueue.
+    TransportBulkChannelResidence = 85,
 }
 
 impl Stage {
@@ -386,6 +416,18 @@ impl Stage {
             Stage::ConnectedUdpDrainRingWait => "connected_udp_drain_ring_wait",
             Stage::ConnectedUdpDrainPriorityRingWait => "connected_udp_drain_priority_ring_wait",
             Stage::ConnectedUdpDrainBulkRingWait => "connected_udp_drain_bulk_ring_wait",
+            Stage::RxLoopTickPredrain => "rx_loop_tick_predrain",
+            Stage::RxLoopFastMaintenance => "rx_loop_fast_maintenance",
+            Stage::RxLoopTickPostdrain => "rx_loop_tick_postdrain",
+            Stage::RxLoopPacketDrain => "rx_loop_packet_drain",
+            Stage::RxLoopDecryptPriorityFallbackDrain => "rx_loop_decrypt_priority_fallback_drain",
+            Stage::RxLoopDecryptFallbackDrain => "rx_loop_decrypt_fallback_drain",
+            Stage::RxLoopSideQueueDrain => "rx_loop_side_queue_drain",
+            Stage::RxLoopEndpointCommandDrain => "rx_loop_endpoint_command_drain",
+            Stage::RxLoopTunOutboundDrain => "rx_loop_tun_outbound_drain",
+            Stage::TransportChannelResidence => "transport_channel_residence",
+            Stage::TransportPriorityChannelResidence => "transport_priority_channel_residence",
+            Stage::TransportBulkChannelResidence => "transport_bulk_channel_residence",
         }
     }
 }
@@ -466,6 +508,18 @@ fn stage_from_index(idx: usize) -> Stage {
         71 => Stage::ConnectedUdpDrainRingWait,
         72 => Stage::ConnectedUdpDrainPriorityRingWait,
         73 => Stage::ConnectedUdpDrainBulkRingWait,
+        74 => Stage::RxLoopTickPredrain,
+        75 => Stage::RxLoopFastMaintenance,
+        76 => Stage::RxLoopTickPostdrain,
+        77 => Stage::RxLoopPacketDrain,
+        78 => Stage::RxLoopDecryptPriorityFallbackDrain,
+        79 => Stage::RxLoopDecryptFallbackDrain,
+        80 => Stage::RxLoopSideQueueDrain,
+        81 => Stage::RxLoopEndpointCommandDrain,
+        82 => Stage::RxLoopTunOutboundDrain,
+        83 => Stage::TransportChannelResidence,
+        84 => Stage::TransportPriorityChannelResidence,
+        85 => Stage::TransportBulkChannelResidence,
         _ => unreachable!(),
     }
 }
