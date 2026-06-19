@@ -882,7 +882,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_stays_on_opener_path_when_owner_completion_backlogged() {
+    fn fsp_local_open_worker_uses_owner_path_when_owner_completion_backlogged() {
         let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(
                 3,
@@ -939,19 +939,16 @@
         );
         assert!(
             fsp_open_batcher.flush(&shard.pool).is_empty(),
-            "same-owner backlog should not return opener work"
+            "same-owner backlog should refuse opener tickets before dispatch"
         );
         assert_eq!(
             bulk_receivers[open_idx].len(),
-            1,
-            "same-owner bulk should stay on the opener path"
+            0,
+            "same-owner backlog should not add opener completion pressure"
         );
         assert!(
-            bulk_receivers
-                .iter()
-                .enumerate()
-                .all(|(idx, rx)| idx == open_idx || rx.is_empty()),
-            "same-owner backlog should not create owner-side fallback work"
+            bulk_receivers.iter().all(Receiver::is_empty),
+            "same-owner backlog should stay local instead of enqueueing more bulk work"
         );
     }
 

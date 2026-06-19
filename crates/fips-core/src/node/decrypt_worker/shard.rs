@@ -353,7 +353,6 @@ impl DecryptWorkerShard {
                         Err(FspOpenWorkerPrepareError::Ineligible(job)) => job,
                         Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
                             debug_assert_ne!(owner_idx, idx);
-                            record_fsp_open_worker_completion_backlog_fallback();
                             drop_fsp_owner_handoff_job(job);
                             return;
                         }
@@ -546,11 +545,14 @@ impl DecryptWorkerShard {
         }) else {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
-        if owner_idx != idx
-            && !self
-                .pool
-                .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
+        if !self
+            .pool
+            .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
         {
+            record_fsp_open_worker_completion_backlog_fallback();
+            if owner_idx == idx {
+                return Err(FspOpenWorkerPrepareError::Ineligible(job));
+            }
             return Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job));
         }
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
@@ -602,7 +604,6 @@ impl DecryptWorkerShard {
             Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
                 debug_assert_ne!(owner_idx, idx);
-                record_fsp_open_worker_completion_backlog_fallback();
                 drop_fsp_owner_handoff_job(job);
                 return Ok(());
             }
