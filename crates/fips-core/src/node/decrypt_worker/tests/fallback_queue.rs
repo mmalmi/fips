@@ -930,6 +930,58 @@
     }
 
     #[test]
+    fn decrypt_worker_bulk_batch_dispatches_one_fmp_helper_work_batch() {
+        let session_key = test_session_key(1, 109);
+        let mut shard = test_shard();
+        shard.register_session(0, session_key, test_owned_session_state());
+        let (helper_tx, helper_rx) = bounded::<FmpAeadHelperWork>(1);
+        shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        drop(control_tx);
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        drop(priority_tx);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let mut first = dummy_bulk_decrypt_job(session_key);
+        first.fmp_counter = 1;
+        let mut second = dummy_bulk_decrypt_job(session_key);
+        second.fmp_counter = 2;
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            DecryptWorkerBulkItem::Batch(vec![first, second]),
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 2);
+        let helper_work = helper_rx
+            .try_recv()
+            .expect("bulk receive batch should queue one helper work item");
+        match helper_work {
+            FmpAeadHelperWork::Batch(jobs) => {
+                assert_eq!(jobs.len(), 2);
+                assert_eq!(jobs[0].ticket.sequence, 0);
+                assert_eq!(jobs[1].ticket.sequence, 1);
+                assert_eq!(jobs[0].opened.fmp_counter, 1);
+                assert_eq!(jobs[1].opened.fmp_counter, 2);
+            }
+            FmpAeadHelperWork::One(_) => panic!("expected one batched FMP helper work item"),
+        }
+        assert!(
+            fmp_aead_completion_rx.is_empty(),
+            "owner should not receive completions until the helper processes the batch"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_fsp_bulk_batch_interleaves_priority_work() {
         let mut shard = test_shard();
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);

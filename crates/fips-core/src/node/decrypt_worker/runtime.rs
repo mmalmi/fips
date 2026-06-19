@@ -646,6 +646,31 @@ fn flush_fsp_open_batcher(
     }
 }
 
+fn flush_fmp_aead_helper_batcher(
+    idx: usize,
+    shard: &mut DecryptWorkerShard,
+    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    fsp_batcher: &mut FspDecryptJobBatcher,
+    fsp_open_batcher: &mut FspAeadOpenJobBatcher,
+    fmp_helper_batcher: &mut Vec<FmpAeadHelperJob>,
+) {
+    if fmp_helper_batcher.is_empty() {
+        return;
+    }
+    let helper_jobs = std::mem::replace(
+        fmp_helper_batcher,
+        Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+    );
+    let actions = shard.dispatch_fmp_aead_helper_jobs_action(idx, helper_jobs);
+    shard.push_job_actions_output(
+        idx,
+        actions,
+        plaintext_batch,
+        Some(fsp_batcher),
+        Some(fsp_open_batcher),
+    );
+}
+
 fn handle_bulk_item(
     idx: usize,
     shard: &mut DecryptWorkerShard,
@@ -696,8 +721,18 @@ fn handle_bulk_item(
             }
             let mut fsp_batcher = FspDecryptJobBatcher::new();
             let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
+            let mut fmp_helper_batcher = Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX);
+            let fmp_helper_batch_max = fmp_aead_completion_batch_max();
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
+                    flush_fmp_aead_helper_batcher(
+                        idx,
+                        shard,
+                        plaintext_batch,
+                        &mut fsp_batcher,
+                        &mut fsp_open_batcher,
+                        &mut fmp_helper_batcher,
+                    );
                     fsp_batcher.flush(&shard.pool);
                     flush_fsp_open_batcher(
                         idx,
@@ -711,6 +746,14 @@ fn handle_bulk_item(
                     shard.handle_msg(idx, msg);
                 }
                 while let Ok(msg) = priority_rx.try_recv() {
+                    flush_fmp_aead_helper_batcher(
+                        idx,
+                        shard,
+                        plaintext_batch,
+                        &mut fsp_batcher,
+                        &mut fsp_open_batcher,
+                        &mut fmp_helper_batcher,
+                    );
                     fsp_batcher.flush(&shard.pool);
                     flush_fsp_open_batcher(
                         idx,
@@ -747,21 +790,51 @@ fn handle_bulk_item(
                     break;
                 }
                 record_decrypt_worker_bulk_input_tail_wait(item_started_at);
-                match shard.handle_job_action(idx, job) {
-                    Ok(actions) => {
-                        shard.push_job_actions_output(
-                            idx,
-                            actions,
-                            plaintext_batch,
-                            Some(&mut fsp_batcher),
-                            Some(&mut fsp_open_batcher),
-                        );
+                if shard.pool.fmp_aead_helpers_enabled() {
+                    match shard.prepare_fmp_aead_helper_job(job) {
+                        Ok(Some(helper_job)) => {
+                            fmp_helper_batcher.push(helper_job);
+                            if fmp_helper_batcher.len() >= fmp_helper_batch_max {
+                                flush_fmp_aead_helper_batcher(
+                                    idx,
+                                    shard,
+                                    plaintext_batch,
+                                    &mut fsp_batcher,
+                                    &mut fsp_open_batcher,
+                                    &mut fmp_helper_batcher,
+                                );
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            debug!(worker = idx, error = %err, "decrypt worker job failed");
+                        }
                     }
-                    Err(err) => {
-                        debug!(worker = idx, error = %err, "decrypt worker job failed");
+                } else {
+                    match shard.handle_job_action(idx, job) {
+                        Ok(actions) => {
+                            shard.push_job_actions_output(
+                                idx,
+                                actions,
+                                plaintext_batch,
+                                Some(&mut fsp_batcher),
+                                Some(&mut fsp_open_batcher),
+                            );
+                        }
+                        Err(err) => {
+                            debug!(worker = idx, error = %err, "decrypt worker job failed");
+                        }
                     }
                 }
             }
+            flush_fmp_aead_helper_batcher(
+                idx,
+                shard,
+                plaintext_batch,
+                &mut fsp_batcher,
+                &mut fsp_open_batcher,
+                &mut fmp_helper_batcher,
+            );
             fsp_batcher.flush(&shard.pool);
             flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
@@ -841,6 +914,10 @@ impl DecryptWorkerJobActions {
                 *self = Self::Many(actions);
             }
         }
+    }
+
+    fn push_all(&mut self, actions: DecryptWorkerJobActions) {
+        actions.for_each(|action| self.push(action));
     }
 
     fn for_each(self, mut on_action: impl FnMut(DecryptWorkerJobAction)) {

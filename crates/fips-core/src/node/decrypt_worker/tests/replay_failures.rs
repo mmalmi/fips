@@ -402,6 +402,74 @@
     }
 
     #[test]
+    fn fmp_aead_helper_work_batches_same_session_completions() {
+        let key_bytes = [0x4b; 32];
+        let seal_cipher = test_chacha_key(key_bytes);
+        let open_cipher = Arc::new(test_chacha_key(key_bytes));
+        let session_key = test_session_key(1, 443);
+        let flags = crate::node::wire::FLAG_SP;
+        let (completion_tx, _completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
+        let helper_job = |counter: u64, sequence: u64| {
+            let (packet_data, fmp_header) = sealed_fmp_test_packet(&seal_cipher, counter, flags);
+            let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+            FmpAeadHelperJob {
+                session_key,
+                receive_order_id: 42,
+                ticket: FmpReceiveTicket { sequence },
+                replay: FmpReplayDecision::Prechecked(FmpReplayPrecheck {
+                    counter,
+                    replay_highest: counter.saturating_sub(1),
+                }),
+                cipher: Arc::clone(&open_cipher),
+                fmp_header,
+                opened: OpenedFmpJob {
+                    packet_data: packet_data.into(),
+                    lane: DecryptWorkerLane::Bulk,
+                    source_peer: test_source_peer(),
+                    transport_id: TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    local_node_addr: *test_source_peer().node_addr(),
+                    timestamp_ms: 1_000,
+                    packet_len: crate::node::wire::ESTABLISHED_HEADER_SIZE + 5 + 16,
+                    fmp_counter: counter,
+                    fmp_flags: flags,
+                    fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                    fmp_plaintext_len: 0,
+                    fallback_tx,
+                },
+                completion_tx: Some(completion_tx.clone()),
+                helper_queued_at: None,
+            }
+        };
+        let mut current_tx = None;
+        let mut current_session_key = None;
+        let mut current_receive_order_id = None;
+        let mut current_batch = None;
+
+        push_fmp_aead_helper_work(
+            0,
+            fmp_aead_completion_batch_max(),
+            &mut current_tx,
+            &mut current_session_key,
+            &mut current_receive_order_id,
+            &mut current_batch,
+            FmpAeadHelperWork::Batch(vec![helper_job(44, 0), helper_job(45, 1)]),
+        );
+
+        assert!(current_tx.is_some());
+        assert_eq!(current_session_key, Some(session_key));
+        assert_eq!(current_receive_order_id, Some(42));
+        match current_batch.expect("helper work should produce a completion batch") {
+            FmpAeadCompletionBatch::Many(completions) => {
+                assert_eq!(completions.len(), 2);
+                assert_eq!(completions[0].ticket.sequence, 0);
+                assert_eq!(completions[1].ticket.sequence, 1);
+            }
+            FmpAeadCompletionBatch::One(_) => panic!("expected coalesced completion batch"),
+        }
+    }
+
+    #[test]
     fn fmp_aead_completion_ignores_stale_receive_order() {
         let session_key = test_session_key(1, 442);
         let mut shard = test_shard();
@@ -506,7 +574,7 @@
             .collect::<Vec<_>>();
 
         let mut shard = test_shard();
-        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperJob>(1);
+        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperWork>(1);
         shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
         shard.register_session(0, session_key, state);
         assert!(
@@ -568,7 +636,7 @@
             .collect::<Vec<_>>();
 
         let mut shard = test_shard();
-        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperJob>(1);
+        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperWork>(1);
         shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
         shard.register_session(0, session_key, state);
 
