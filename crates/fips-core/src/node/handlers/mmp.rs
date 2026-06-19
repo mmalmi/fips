@@ -12,7 +12,7 @@ use crate::protocol::{
     LinkMessageType, PathMtuNotification, SessionMessageType, SessionReceiverReport,
     SessionSenderReport,
 };
-use crate::{NodeAddr, PeerIdentity};
+use crate::{ActivePeer, NodeAddr, PeerIdentity};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
@@ -222,16 +222,18 @@ impl crate::node::PeerLifecycleRegistry {
         batch
     }
 
-    fn plan_link_heartbeat_tick<F>(
+    fn plan_link_heartbeat_tick<F, G>(
         &self,
         now: Instant,
         heartbeat_interval: Duration,
         max_rekey_resends: u32,
         defer_dead_peer_removal: bool,
         mut effective_dead_timeout_for: F,
+        mut quiet_for: G,
     ) -> LinkHeartbeatPlan
     where
         F: FnMut(&NodeAddr) -> Duration,
+        G: FnMut(&NodeAddr, &ActivePeer) -> Duration,
     {
         let mut plan = LinkHeartbeatPlan::default();
 
@@ -241,12 +243,8 @@ impl crate::node::PeerLifecycleRegistry {
             }
 
             let effective_dead_timeout = effective_dead_timeout_for(node_addr);
-            let time_dead = if let Some(mmp) = peer.mmp() {
-                let reference_time = mmp
-                    .receiver
-                    .last_recv_time()
-                    .unwrap_or(peer.session_start());
-                now.duration_since(reference_time) >= effective_dead_timeout
+            let time_dead = if peer.mmp().is_some() {
+                quiet_for(node_addr, peer) >= effective_dead_timeout
             } else {
                 false
             };
@@ -783,6 +781,33 @@ impl Node {
         ))
     }
 
+    fn direct_path_liveness_quiet_for(
+        &self,
+        node_addr: &NodeAddr,
+        peer: &ActivePeer,
+        now: Instant,
+        now_ms: u64,
+    ) -> Duration {
+        let reference_time = peer
+            .mmp()
+            .and_then(|mmp| mmp.receiver.last_recv_time())
+            .unwrap_or(peer.session_start());
+        let mut quiet_for = now.duration_since(reference_time);
+
+        if let Some(session_age_ms) = self
+            .sessions
+            .get(node_addr)
+            .filter(|entry| {
+                entry.is_established() && entry.last_outbound_next_hop() == Some(*node_addr)
+            })
+            .and_then(|entry| entry.last_authenticated_inbound_age_ms(now_ms))
+        {
+            quiet_for = quiet_for.min(Duration::from_millis(session_age_ms));
+        }
+
+        quiet_for
+    }
+
     /// Send heartbeats and remove dead peers.
     ///
     /// Called from the tick handler. Sends a 1-byte heartbeat to each peer
@@ -825,6 +850,16 @@ impl Node {
                 (*node_addr, effective_dead_timeout)
             })
             .collect();
+        let direct_path_quiet_for: std::collections::HashMap<NodeAddr, Duration> = self
+            .peers
+            .iter()
+            .map(|(node_addr, peer)| {
+                (
+                    *node_addr,
+                    self.direct_path_liveness_quiet_for(node_addr, peer, now, now_ms),
+                )
+            })
+            .collect();
         let heartbeat_plan = self.peers.plan_link_heartbeat_tick(
             now,
             heartbeat_interval,
@@ -835,6 +870,12 @@ impl Node {
                     .get(node_addr)
                     .copied()
                     .unwrap_or(dead_timeout)
+            },
+            |node_addr, peer| {
+                direct_path_quiet_for
+                    .get(node_addr)
+                    .copied()
+                    .unwrap_or_else(|| now.duration_since(peer.session_start()))
             },
         );
 
@@ -861,11 +902,10 @@ impl Node {
                         .unwrap_or(dead_timeout),
                     fast_dead_timeout,
                 )?;
-                let reference_time = peer
-                    .mmp()
-                    .and_then(|mmp| mmp.receiver.last_recv_time())
-                    .unwrap_or(peer.session_start());
-                let quiet_for = now.duration_since(reference_time);
+                let quiet_for = direct_path_quiet_for
+                    .get(node_addr)
+                    .copied()
+                    .unwrap_or_else(|| now.duration_since(peer.session_start()));
                 (quiet_for >= refresh_timeout).then_some((*node_addr, quiet_for, refresh_timeout))
             })
             .collect();

@@ -15,6 +15,14 @@ fn node_addr(byte: u8) -> NodeAddr {
     NodeAddr::from_bytes(bytes)
 }
 
+fn link_mmp_quiet_for(now: Instant, peer: &ActivePeer) -> Duration {
+    now.duration_since(
+        peer.mmp()
+            .and_then(|mmp| mmp.receiver.last_recv_time())
+            .unwrap_or(peer.session_start()),
+    )
+}
+
 fn make_fmp_session_pair(
     initiator: &Identity,
     responder: &Identity,
@@ -490,9 +498,14 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
     let mut peers = PeerLifecycleRegistry::default();
     peers.insert(peer_addr, active_fmp_peer(&local, &peer_id, 6));
 
-    let initial = peers.plan_link_heartbeat_tick(now, Duration::from_secs(10), 3, false, |_| {
-        Duration::from_secs(30)
-    });
+    let initial = peers.plan_link_heartbeat_tick(
+        now,
+        Duration::from_secs(10),
+        3,
+        false,
+        |_| Duration::from_secs(30),
+        |_, peer| link_mmp_quiet_for(now, peer),
+    );
     assert_eq!(initial.heartbeats, vec![peer_addr]);
     assert!(initial.dead_peers.is_empty());
     assert!(initial.deferred_dead_peers.is_empty());
@@ -504,6 +517,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
         3,
         false,
         |_| Duration::from_secs(30),
+        |_, peer| link_mmp_quiet_for(now + Duration::from_secs(5), peer),
     );
     assert!(quiet.heartbeats.is_empty());
     assert!(quiet.dead_peers.is_empty());
@@ -514,6 +528,7 @@ fn peer_lifecycle_registry_owns_link_heartbeat_planning_and_sent_bookkeeping() {
         3,
         false,
         |_| Duration::from_secs(30),
+        |_, peer| link_mmp_quiet_for(now + Duration::from_secs(10), peer),
     );
     assert_eq!(due.heartbeats, vec![peer_addr]);
 }
@@ -536,9 +551,14 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
     let mut peers = PeerLifecycleRegistry::default();
     peers.insert(peer_addr, peer);
 
-    let dead = peers.plan_link_heartbeat_tick(now, Duration::from_secs(10), 3, false, |_| {
-        Duration::from_secs(30)
-    });
+    let dead = peers.plan_link_heartbeat_tick(
+        now,
+        Duration::from_secs(10),
+        3,
+        false,
+        |_| Duration::from_secs(30),
+        |_, peer| link_mmp_quiet_for(now, peer),
+    );
     assert!(dead.heartbeats.is_empty());
     assert_eq!(
         dead.dead_peers,
@@ -549,9 +569,14 @@ fn peer_lifecycle_registry_owns_link_dead_and_deferred_heartbeat_planning() {
     );
     assert!(dead.deferred_dead_peers.is_empty());
 
-    let deferred = peers.plan_link_heartbeat_tick(now, Duration::from_secs(10), 3, true, |_| {
-        Duration::from_secs(30)
-    });
+    let deferred = peers.plan_link_heartbeat_tick(
+        now,
+        Duration::from_secs(10),
+        3,
+        true,
+        |_| Duration::from_secs(30),
+        |_, peer| link_mmp_quiet_for(now, peer),
+    );
     assert_eq!(deferred.heartbeats, vec![peer_addr]);
     assert!(deferred.dead_peers.is_empty());
     assert_eq!(
