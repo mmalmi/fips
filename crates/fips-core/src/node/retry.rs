@@ -17,12 +17,21 @@ const MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK: usize = 2;
 const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_JITTER_MS: u64 = 5_000;
+const QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS: u64 = 1_000;
 const ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS: u64 = 30_000;
 
-fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
+fn node_addr_jitter_ms(node_addr: &NodeAddr, max_ms: u64) -> u64 {
     let bytes = node_addr.as_bytes();
     let seed = u16::from(bytes[0]) << 8 | u16::from(bytes[1]);
-    u64::from(seed) % (LINK_DEAD_DIRECT_REPROBE_JITTER_MS + 1)
+    u64::from(seed) % (max_ms + 1)
+}
+
+fn link_dead_reprobe_jitter_ms(node_addr: &NodeAddr) -> u64 {
+    node_addr_jitter_ms(node_addr, LINK_DEAD_DIRECT_REPROBE_JITTER_MS)
+}
+
+fn quiet_traversal_refresh_jitter_ms(node_addr: &NodeAddr) -> u64 {
+    node_addr_jitter_ms(node_addr, QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS)
 }
 
 /// Tracks retry state for a peer across connection attempts.
@@ -250,16 +259,7 @@ impl Node {
             .retry_pending
             .get(&node_addr)
             .map(|state| state.peer_config.clone())
-            .or_else(|| {
-                self.config
-                    .auto_connect_peers()
-                    .find(|pc| {
-                        PeerIdentity::from_npub(&pc.npub)
-                            .map(|id| *id.node_addr() == node_addr)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-            });
+            .or_else(|| self.configured_peer(&node_addr).cloned());
 
         if self.peers.contains_key(&node_addr) {
             let Some(pc) = peer_config.as_ref() else {
@@ -457,6 +457,43 @@ impl Node {
         );
 
         self.retry_pending.insert(node_addr, state);
+    }
+
+    /// Schedule a bounded direct refresh when a traversal path has missed one
+    /// heartbeat but has not reached full link-dead yet.
+    pub(super) fn schedule_quiet_traversal_reprobe(
+        &mut self,
+        node_addr: NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        if self.config.node.retry.max_retries == 0 || self.retry_pending.contains_key(&node_addr) {
+            return false;
+        }
+
+        let Some(peer_config) = self.configured_peer(&node_addr).cloned() else {
+            return false;
+        };
+        if !peer_config.is_auto_connect() || !peer_config.auto_reconnect {
+            return false;
+        }
+
+        let jitter_ms = quiet_traversal_refresh_jitter_ms(&node_addr);
+        let retry_after_ms = now_ms.saturating_add(jitter_ms);
+        let peer_name = self.peer_display_name(&node_addr);
+        let mut state = RetryState::new(peer_config);
+        state.reconnect = true;
+        state.retry_count = 0;
+        state.retry_after_ms = retry_after_ms;
+        state.expires_at_ms = None;
+
+        debug!(
+            peer = %peer_name,
+            jitter_ms,
+            "Scheduling proactive direct refresh for quiet traversal path"
+        );
+
+        self.retry_pending.insert(node_addr, state);
+        true
     }
 
     /// Schedule a quick direct re-probe after link liveness removes a path.

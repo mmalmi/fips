@@ -762,6 +762,27 @@ impl Node {
         ))
     }
 
+    pub(in crate::node) fn traversal_path_quiet_refresh_timeout(
+        &self,
+        node_addr: &NodeAddr,
+        dead_timeout: Duration,
+        fast_dead_timeout: Duration,
+    ) -> Option<Duration> {
+        let peer_config = self.configured_peer(node_addr)?;
+        if !peer_config.is_auto_connect() {
+            return None;
+        }
+        if !self.active_peer_uses_traversal_path(node_addr, peer_config) {
+            return None;
+        }
+
+        Some(traversal_path_quiet_refresh_timeout(
+            self.config.node.heartbeat_interval_secs,
+            fast_dead_timeout,
+            dead_timeout,
+        ))
+    }
+
     /// Send heartbeats and remove dead peers.
     ///
     /// Called from the tick handler. Sends a 1-byte heartbeat to each peer
@@ -816,6 +837,38 @@ impl Node {
             },
         );
 
+        let quiet_traversal_peers: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                if !peer.is_healthy() || !peer.can_send() {
+                    return None;
+                }
+                if heartbeat_plan
+                    .dead_peers
+                    .iter()
+                    .chain(heartbeat_plan.deferred_dead_peers.iter())
+                    .any(|dead_peer| dead_peer.node_addr == *node_addr)
+                {
+                    return None;
+                }
+                let refresh_timeout = self.traversal_path_quiet_refresh_timeout(
+                    node_addr,
+                    effective_dead_timeouts
+                        .get(node_addr)
+                        .copied()
+                        .unwrap_or(dead_timeout),
+                    fast_dead_timeout,
+                )?;
+                let reference_time = peer
+                    .mmp()
+                    .and_then(|mmp| mmp.receiver.last_recv_time())
+                    .unwrap_or(peer.session_start());
+                let quiet_for = now.duration_since(reference_time);
+                (quiet_for >= refresh_timeout).then_some((*node_addr, quiet_for, refresh_timeout))
+            })
+            .collect();
+
         for dead_peer in &heartbeat_plan.deferred_dead_peers {
             debug!(
                 peer = %self.peer_display_name(&dead_peer.node_addr),
@@ -826,6 +879,25 @@ impl Node {
 
         // Demote dead direct paths and schedule direct re-probe.
         let now_ms = Self::now_ms();
+
+        for (node_addr, quiet_for, refresh_timeout) in quiet_traversal_peers {
+            let scheduled = self.schedule_quiet_traversal_reprobe(node_addr, now_ms);
+            let newly_degraded = self.mark_session_direct_path_degraded(node_addr, now_ms);
+            if scheduled || newly_degraded {
+                info!(
+                    peer = %self.peer_display_name(&node_addr),
+                    quiet_secs = quiet_for.as_secs(),
+                    refresh_after_secs = refresh_timeout.as_secs(),
+                    retry_scheduled = scheduled,
+                    payload_degraded = newly_degraded,
+                    "Refreshing quiet traversal path before full link-dead timeout"
+                );
+            }
+            if newly_degraded {
+                self.maybe_initiate_link_dead_fallback_lookup(&node_addr)
+                    .await;
+            }
+        }
 
         for dead_peer in &heartbeat_plan.dead_peers {
             warn!(
@@ -906,6 +978,21 @@ pub(in crate::node) fn traversal_path_liveness_timeout(
     let recent_path_timeout = (heartbeat.saturating_mul(2) + Duration::from_secs(2))
         .max(Duration::from_secs(TRAVERSAL_PATH_MIN_DEAD_TIMEOUT_SECS));
     recent_path_timeout.max(fast_dead_timeout).min(dead_timeout)
+}
+
+pub(in crate::node) fn traversal_path_quiet_refresh_timeout(
+    heartbeat_interval_secs: u64,
+    fast_dead_timeout: Duration,
+    dead_timeout: Duration,
+) -> Duration {
+    let heartbeat = Duration::from_secs(heartbeat_interval_secs.max(1));
+    let refresh_timeout = heartbeat.max(fast_dead_timeout.max(Duration::from_secs(1)));
+    let dead_timeout =
+        traversal_path_liveness_timeout(heartbeat_interval_secs, dead_timeout, fast_dead_timeout);
+    let before_dead = dead_timeout
+        .saturating_sub(Duration::from_secs(1))
+        .max(Duration::from_secs(1));
+    refresh_timeout.min(before_dead)
 }
 
 #[cfg(test)]

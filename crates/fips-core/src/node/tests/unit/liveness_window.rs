@@ -101,6 +101,119 @@ fn traversal_path_liveness_has_floor_for_short_heartbeats() {
     );
 }
 
+#[test]
+fn traversal_path_quiet_refresh_uses_heartbeat_and_fast_dead_floor() {
+    assert_eq!(
+        crate::node::handlers::traversal_path_quiet_refresh_timeout(
+            2,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
+        ),
+        std::time::Duration::from_secs(5),
+        "short-heartbeat products should not refresh traversal paths every two seconds"
+    );
+    assert_eq!(
+        crate::node::handlers::traversal_path_quiet_refresh_timeout(
+            10,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(30),
+        ),
+        std::time::Duration::from_secs(10),
+        "default FIPS heartbeat should refresh after one missed heartbeat, before full link-dead"
+    );
+    assert_eq!(
+        crate::node::handlers::traversal_path_quiet_refresh_timeout(
+            10,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(8),
+        ),
+        std::time::Duration::from_secs(7),
+        "the proactive window must stay before the effective link-dead timeout"
+    );
+}
+
+#[tokio::test]
+async fn quiet_recent_endpoint_path_refreshes_before_full_link_dead() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let transit_identity = Identity::generate();
+    let transit_peer = PeerIdentity::from_pubkey(transit_identity.pubkey());
+    let transit_addr = *transit_peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config.clone());
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(11),
+    );
+    node.peers.insert(peer_addr, active);
+    node.peers.insert(
+        transit_addr,
+        ActivePeer::new(transit_peer, LinkId::new(9), 0),
+    );
+    node.learn_reverse_route(peer_addr, transit_addr);
+
+    node.check_link_heartbeats().await;
+
+    let direct = node.get_peer(&peer_addr).expect("direct peer retained");
+    assert!(
+        direct.is_healthy(),
+        "quiet pre-dead refresh should not mark the direct peer stale yet"
+    );
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "one missed traversal heartbeat should queue direct-path refresh before the full 22s link-dead window"
+    );
+    assert!(
+        node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
+        "quiet traversal paths should stop pinning payload traffic to suspicious direct routes"
+    );
+    let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
+    assert_eq!(
+        fallback.node_addr(),
+        &transit_addr,
+        "fallback route should carry payload traffic while direct refresh runs"
+    );
+}
+
 #[tokio::test]
 async fn local_route_failure_for_one_peer_does_not_fast_dead_unrelated_direct_peer() {
     let local_identity = Identity::generate();
