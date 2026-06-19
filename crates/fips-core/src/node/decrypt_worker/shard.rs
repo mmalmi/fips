@@ -790,11 +790,7 @@ impl DecryptWorkerShard {
         );
         drain.aead_failure_sources.record();
         drain.replay_drop_sources.record();
-        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-            && shared.receive_order_id == receive_order_id
-        {
-            shared.mark_next_ready(next_ready);
-        }
+        state.mark_shared_crypto_next_ready(receive_order_id, next_ready);
         self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
     }
 
@@ -897,6 +893,7 @@ impl DecryptWorkerShard {
                 );
             }
             next_ready = state.fsp_receive_order_next_ready();
+            state.mark_shared_crypto_next_ready(receive_order_id, next_ready);
         }
 
         debug_assert_eq!(
@@ -916,11 +913,6 @@ impl DecryptWorkerShard {
         );
         drain.aead_failure_sources.record();
         drain.replay_drop_sources.record();
-        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-            && shared.receive_order_id == receive_order_id
-        {
-            shared.mark_next_ready(next_ready);
-        }
         self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
     }
 
@@ -1321,11 +1313,7 @@ impl DecryptWorkerShard {
             );
             drain.aead_failure_sources.record();
             drain.replay_drop_sources.record();
-            if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-                && shared.receive_order_id == state.fsp_receive_order_id()
-            {
-                shared.mark_next_ready(next_ready);
-            }
+            state.mark_shared_crypto_next_ready(state.fsp_receive_order_id(), next_ready);
             return self.outputs_for_fsp_ready_completions(drain.outputs);
         }
 

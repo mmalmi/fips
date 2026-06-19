@@ -638,6 +638,14 @@ impl OwnedFspSessionState {
         self.fsp_receive_order.completions.next_ready()
     }
 
+    fn mark_shared_crypto_next_ready(&self, receive_order_id: u64, next_ready: u64) {
+        if let Some(shared) = &self.fsp_shared_crypto
+            && shared.receive_order_id == receive_order_id
+        {
+            shared.mark_next_ready(next_ready);
+        }
+    }
+
     fn current_epoch_matches(&self, header: &FspEncryptedHeader) -> bool {
         (header.flags & FSP_FLAG_K != 0) == self.current_k_bit
     }
