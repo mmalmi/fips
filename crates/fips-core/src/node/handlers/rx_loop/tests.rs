@@ -41,6 +41,12 @@ fn fallback_drain_plan_stays_bounded_under_return_pressure() {
         plan.trailing_budget <= NON_PACKET_DRAIN_BUDGET,
         "trailing fallback returns should not grow into a pressure side path"
     );
+    assert!(
+        NON_PACKET_DRAIN_BUDGET <= 16
+            && plan.interleave_budget <= 16
+            && super::budget::SIDE_QUEUE_INTERLEAVE_BUDGET <= 16,
+        "non-packet turns must stay short so fresh transport priority is not held behind bulk work"
+    );
 }
 
 #[test]
