@@ -1001,43 +1001,26 @@ impl DecryptWorkerShard {
     fn output_for_fsp_aead_failure(
         &self,
         job: FspDecryptJob,
-        header: &FspEncryptedHeader,
+        _header: &FspEncryptedHeader,
     ) -> DecryptWorkerOutput {
         let FspDecryptJob {
             fallback_tx,
             fallback,
-            lane,
+            lane: _,
             local_node_addr: _,
-            source_addr,
+            source_addr: _,
             previous_hop_peer: _,
             path_mtu: _,
             ce_flag: _,
-            inner_timestamp_ms,
+            inner_timestamp_ms: _,
             fsp_payload_offset: _,
             fsp_payload_len: _,
             trace_enqueued_at: _,
         } = job;
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr,
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
-        };
+        crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspPathFallback);
         DecryptWorkerOutput {
             fallback_tx,
-            event: DecryptWorkerEvent::FspDecryptFailure(DecryptFspFailureReport {
-                fmp,
-                source_addr,
-                counter: header.counter,
-                received_k_bit,
-                lane,
-                trace_enqueued_at: None,
-            }),
+            event: DecryptWorkerEvent::Plaintext(fallback),
             direct_delivery: None,
         }
     }

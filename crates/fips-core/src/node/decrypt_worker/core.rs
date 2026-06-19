@@ -2256,6 +2256,7 @@ pub(crate) enum DecryptWorkerEvent {
     DirectSessionCommitBatch(Vec<DecryptDirectSessionCommit>),
     DirectSessionData(DecryptDirectSessionData),
     DirectSessionDataBatch(Vec<DecryptDirectSessionData>),
+    #[allow(dead_code)]
     FspDecryptFailure(DecryptFspFailureReport),
     DecryptFailure(DecryptFailureReport),
 }

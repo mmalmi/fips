@@ -1327,7 +1327,7 @@
     }
 
     #[test]
-    fn worker_reports_fsp_aead_failure_without_plaintext_fallback() {
+    fn worker_falls_back_to_rx_loop_on_fsp_aead_failure() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let previous_hop = crate::Identity::generate();
@@ -1415,19 +1415,18 @@
         let output = shard
             .handle_job_output(0, job)
             .expect("worker job should not fail")
-            .expect("FSP AEAD failure should report to rx_loop");
+            .expect("FSP AEAD failure should fall back to rx_loop");
         match output.event {
-            DecryptWorkerEvent::FspDecryptFailure(report) => {
-                assert_eq!(report.source_addr, *source.node_addr());
-                assert_eq!(report.counter, fsp_counter);
-                assert_eq!(report.fmp.source_peer, previous_hop_peer);
-                assert_eq!(report.fmp.fmp_counter, fmp_counter);
-                assert_eq!(report.fmp.inner_timestamp_ms, inner_timestamp_ms);
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                assert_eq!(fallback.source_peer, previous_hop_peer);
+                assert_eq!(fallback.fmp_counter, fmp_counter);
+                assert_eq!(fallback.fmp_flags, 0);
+                assert_eq!(fallback.timestamp_ms, 1_000);
+                assert_eq!(fallback.packet_len, fallback.packet_data.len());
             }
-            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
-                panic!("FSP AEAD failure must not bounce a possibly mutated packet")
-            }
-            DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
@@ -1435,13 +1434,13 @@
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected FSP decrypt failure report")
+                panic!("expected plaintext fallback")
             }
         }
     }
 
     #[test]
-    fn worker_reports_multi_epoch_fsp_aead_failure_without_plaintext_fallback() {
+    fn worker_falls_back_to_rx_loop_on_multi_epoch_fsp_aead_failure() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let previous_hop = crate::Identity::generate();
@@ -1533,20 +1532,18 @@
         let output = shard
             .handle_job_output(0, job)
             .expect("worker job should not fail")
-            .expect("multi-epoch FSP AEAD failure should report to rx_loop");
+            .expect("multi-epoch FSP AEAD failure should fall back to rx_loop");
         match output.event {
-            DecryptWorkerEvent::FspDecryptFailure(report) => {
-                assert_eq!(report.source_addr, *source.node_addr());
-                assert_eq!(report.counter, fsp_counter);
-                assert_eq!(report.fmp.source_peer, previous_hop_peer);
-                assert_eq!(report.fmp.fmp_counter, fmp_counter);
-                assert_eq!(report.fmp.inner_timestamp_ms, inner_timestamp_ms);
-                assert!(!report.received_k_bit);
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                assert_eq!(fallback.source_peer, previous_hop_peer);
+                assert_eq!(fallback.fmp_counter, fmp_counter);
+                assert_eq!(fallback.fmp_flags, 0);
+                assert_eq!(fallback.timestamp_ms, 1_000);
+                assert_eq!(fallback.packet_len, fallback.packet_data.len());
             }
-            DecryptWorkerEvent::Plaintext(_) | DecryptWorkerEvent::PlaintextBatch(_) => {
-                panic!("multi-epoch FSP AEAD failure must not bounce plaintext")
-            }
-            DecryptWorkerEvent::AuthenticatedFmpReceive(_)
+            DecryptWorkerEvent::PlaintextBatch(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
+            | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
             | DecryptWorkerEvent::DirectSessionCommit(_)
@@ -1554,7 +1551,7 @@
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected FSP decrypt failure report")
+                panic!("expected plaintext fallback")
             }
         }
     }
