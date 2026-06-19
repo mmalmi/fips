@@ -1212,20 +1212,13 @@ impl FmpAeadCompletionBatch {
         Self::One(completion)
     }
 
-    fn common_session_order(&self) -> Option<(DecryptSessionKey, u64)> {
-        let first = match self {
-            Self::One(completion) => completion,
-            Self::Many(completions) => completions.first()?,
-        };
+    fn common_session_order_for(completions: &[FmpAeadCompletion]) -> Option<(DecryptSessionKey, u64)> {
+        let first = completions.first()?;
         let session_key = first.session_key;
         let receive_order_id = first.receive_order_id;
-        let all_same = match self {
-            Self::One(_) => true,
-            Self::Many(completions) => completions.iter().all(|completion| {
-                completion.session_key == session_key
-                    && completion.receive_order_id == receive_order_id
-            }),
-        };
+        let all_same = completions.iter().all(|completion| {
+            completion.session_key == session_key && completion.receive_order_id == receive_order_id
+        });
         all_same.then_some((session_key, receive_order_id))
     }
 
@@ -1255,23 +1248,6 @@ impl FmpAeadCompletionBatch {
         }
     }
 
-    fn into_vec(self) -> Vec<FmpAeadCompletion> {
-        match self {
-            Self::One(completion) => vec![completion],
-            Self::Many(completions) => completions,
-        }
-    }
-
-    fn for_each(self, mut on_completion: impl FnMut(FmpAeadCompletion)) {
-        match self {
-            Self::One(completion) => on_completion(completion),
-            Self::Many(completions) => {
-                for completion in completions {
-                    on_completion(completion);
-                }
-            }
-        }
-    }
 }
 
 impl FmpAeadCompletionResult {
@@ -1405,20 +1381,14 @@ impl FspAeadCompletionBatch {
         Self::One(completion)
     }
 
-    fn common_source_order(&self) -> Option<(NodeAddr, u64)> {
-        let first = match self {
-            Self::One(completion) => completion,
-            Self::Many(completions) => completions.first()?,
-        };
+    fn common_source_order_for(completions: &[FspAeadCompletion]) -> Option<(NodeAddr, u64)> {
+        let first = completions.first()?;
         let source_addr = first.source_addr;
         let receive_order_id = first.receive_order_id;
-        let all_same = match self {
-            Self::One(_) => true,
-            Self::Many(completions) => completions.iter().all(|completion| {
-                completion.source_addr == source_addr
-                    && completion.receive_order_id == receive_order_id
-            }),
-        };
+        let all_same = completions.iter().all(|completion| {
+            completion.source_addr == source_addr
+                && completion.receive_order_id == receive_order_id
+        });
         all_same.then_some((source_addr, receive_order_id))
     }
 
@@ -1448,23 +1418,6 @@ impl FspAeadCompletionBatch {
         }
     }
 
-    fn into_vec(self) -> Vec<FspAeadCompletion> {
-        match self {
-            Self::One(completion) => vec![completion],
-            Self::Many(completions) => completions,
-        }
-    }
-
-    fn for_each(self, mut on_completion: impl FnMut(FspAeadCompletion)) {
-        match self {
-            Self::One(completion) => on_completion(completion),
-            Self::Many(completions) => {
-                for completion in completions {
-                    on_completion(completion);
-                }
-            }
-        }
-    }
 }
 
 impl FspAeadOpenJob {

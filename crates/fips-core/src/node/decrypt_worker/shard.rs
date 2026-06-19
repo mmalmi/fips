@@ -804,19 +804,27 @@ impl DecryptWorkerShard {
         completions: FspAeadCompletionBatch,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let Some((source_addr, receive_order_id)) = completions.common_source_order() else {
-            completions.for_each(|completion| {
+        let completions = match completions {
+            FspAeadCompletionBatch::One(completion) => {
                 self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
-            });
-            return;
+                return;
+            }
+            FspAeadCompletionBatch::Many(completions) => completions,
         };
-        let completions = completions.into_vec();
         if completions.len() <= 1 {
             for completion in completions {
                 self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
             }
             return;
         }
+        let Some((source_addr, receive_order_id)) =
+            FspAeadCompletionBatch::common_source_order_for(&completions)
+        else {
+            for completion in completions {
+                self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
+            }
+            return;
+        };
         self.handle_fsp_aead_completion_same_source_batch(
             idx,
             source_addr,
@@ -1622,19 +1630,27 @@ impl DecryptWorkerShard {
         completions: FmpAeadCompletionBatch,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let Some((session_key, receive_order_id)) = completions.common_session_order() else {
-            completions.for_each(|completion| {
+        let completions = match completions {
+            FmpAeadCompletionBatch::One(completion) => {
                 self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
-            });
-            return;
+                return;
+            }
+            FmpAeadCompletionBatch::Many(completions) => completions,
         };
-        let completions = completions.into_vec();
         if completions.len() <= 1 {
             for completion in completions {
                 self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
             }
             return;
         }
+        let Some((session_key, receive_order_id)) =
+            FmpAeadCompletionBatch::common_session_order_for(&completions)
+        else {
+            for completion in completions {
+                self.handle_fmp_aead_completion_msg(idx, completion, plaintext_batch);
+            }
+            return;
+        };
         self.handle_fmp_aead_completion_same_session_batch(
             idx,
             session_key,
