@@ -272,7 +272,7 @@ impl Node {
                     }
 
                     self.schedule_retry(node_addr, now_ms);
-                    if self.nostr_cooldown_applies_to_peer_config(&peer_config)
+                    if self.nostr_cooldown_applies_to_peer_identity(peer_identity)
                         && let Some(cooldown_until_ms) = decision.cooldown_until_ms
                         && let Some(state) = self.retry_pending.get_mut(&node_addr)
                     {

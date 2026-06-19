@@ -143,13 +143,6 @@ impl Node {
         true
     }
 
-    pub(super) fn nostr_cooldown_applies_to_peer_config(&self, peer_config: &PeerConfig) -> bool {
-        let Ok(peer_identity) = Self::parse_peer_config_identity(peer_config) else {
-            return true;
-        };
-        self.nostr_cooldown_applies_to_peer_identity(peer_identity)
-    }
-
     pub(super) fn nostr_cooldown_applies_to_peer_identity(
         &self,
         peer_identity: PeerIdentity,
