@@ -56,6 +56,18 @@ fn test_transport_type_constants() {
 }
 
 #[test]
+fn permission_denied_send_errors_are_local_route_unavailable() {
+    let io_error = TransportError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "operation not permitted",
+    ));
+    assert!(io_error.is_local_route_unavailable());
+
+    let text_error = TransportError::SendFailed("Operation not permitted (os error 1)".to_string());
+    assert!(text_error.is_local_route_unavailable());
+}
+
+#[test]
 fn test_transport_addr_string() {
     let addr = TransportAddr::from_string("192.168.1.1:2121");
     assert_eq!(format!("{}", addr), "192.168.1.1:2121");

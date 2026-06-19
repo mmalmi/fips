@@ -150,6 +150,7 @@ fn is_local_route_error_kind(kind: std::io::ErrorKind) -> bool {
         std::io::ErrorKind::NetworkUnreachable
             | std::io::ErrorKind::HostUnreachable
             | std::io::ErrorKind::AddrNotAvailable
+            | std::io::ErrorKind::PermissionDenied
     )
 }
 
@@ -160,9 +161,12 @@ fn is_local_route_error_text(message: &str) -> bool {
         || lower.contains("host is unreachable")
         || lower.contains("can't assign requested address")
         || lower.contains("cannot assign requested address")
+        || lower.contains("operation not permitted")
+        || lower.contains("permission denied")
         || lower.contains("os error 51")
         || lower.contains("os error 65")
         || lower.contains("os error 49")
+        || lower.contains("os error 1")
 }
 
 // ============================================================================

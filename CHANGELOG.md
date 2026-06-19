@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.62] - 2026-06-19
+
+### Fixed
+
+- Treated permission-denied UDP send failures as local route-unavailable
+  errors, so firewall or underlay blackholes use the fast direct-path stale
+  timer instead of waiting for the normal link-dead window.
+- Bumped `fips-endpoint` to 0.3.37 so app-facing consumers pick up the
+  `fips-core` 0.3.62 direct-path liveness fix.
+
 ## [0.3.61] - 2026-06-19
 
 ### Fixed
