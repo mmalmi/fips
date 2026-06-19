@@ -712,6 +712,22 @@ mod platform {
             }
         }
 
+        /// Try one nonblocking receive without registering a new readiness wait.
+        ///
+        /// Used on non-Linux Unix targets to drain the kernel queue after the
+        /// first readiness wake. Linux uses `recvmmsg` via `recv_batch`.
+        #[cfg(not(target_os = "linux"))]
+        pub fn try_recv_from(
+            &self,
+            buf: &mut [u8],
+        ) -> Result<Option<(usize, SocketAddr, u32)>, TransportError> {
+            match self.inner.get_ref().recv_from(buf) {
+                Ok(result) => Ok(Some(result)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(TransportError::RecvFailed(format!("{}", error))),
+            }
+        }
+
         /// Drain up to `BATCH_SIZE` datagrams from the kernel via
         /// `recvmmsg` (Linux). Returns `(count, kernel_drops)`; same
         /// buffer / addr contract as `UdpRawSocket::recv_batch`.
@@ -980,6 +996,18 @@ mod platform {
                 .await
                 .map_err(|e| TransportError::RecvFailed(format!("{}", e)))?;
             Ok((n, addr, 0))
+        }
+
+        /// Try one nonblocking receive without awaiting a new readiness turn.
+        pub fn try_recv_from(
+            &self,
+            buf: &mut [u8],
+        ) -> Result<Option<(usize, SocketAddr, u32)>, TransportError> {
+            match self.inner.try_recv_from(buf) {
+                Ok((n, addr)) => Ok(Some((n, addr, 0))),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+                Err(error) => Err(TransportError::RecvFailed(format!("{}", error))),
+            }
         }
     }
 }
