@@ -531,7 +531,7 @@ impl Node {
             return;
         }
         let consecutive = entry.record_decrypt_failure();
-        let recover_session = should_start_decrypt_failure_rekey(entry, consecutive);
+        let recover_session = should_start_decrypt_failure_rekey(entry, consecutive, Self::now_ms());
         debug!(
             src = %self.peer_display_name(&src_addr),
             counter = report.counter,

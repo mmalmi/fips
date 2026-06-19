@@ -11,6 +11,7 @@
             true,
         );
         entry.mark_established(1_000);
+        entry.touch_inbound_frame(1_000);
         entry.record_decrypt_failure();
 
         let endpoint_payload = b"endpoint runtime receive".to_vec();
@@ -915,7 +916,7 @@
                 &wire[FSP_HEADER_SIZE..],
                 1_280,
                 false,
-                2_000 + attempt as u64,
+                1_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS + attempt as u64,
             )
             .open_established();
 

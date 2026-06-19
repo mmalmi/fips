@@ -67,25 +67,53 @@
 
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
-            DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD - 1,
+            20_000
         ));
         assert!(should_start_decrypt_failure_rekey(
             &entry,
-            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            20_000
         ));
 
         let rekey = HandshakeState::new_xk_initiator(local.keypair(), peer.pubkey_full());
         entry.set_rekey_state(rekey, true);
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
-            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            20_000
         ));
         entry.abandon_rekey();
 
         entry.set_pending_session(make_xk_session(&local, &peer));
         assert!(!should_start_decrypt_failure_rekey(
             &entry,
-            DECRYPT_FAILURE_RECOVERY_THRESHOLD
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            20_000
+        ));
+    }
+
+    #[test]
+    fn decrypt_failure_recovery_rekey_waits_for_quiet_session() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let mut entry = established_entry(&local, &peer);
+        entry.touch_inbound_frame(10_000);
+
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS - 1,
+        ));
+        assert!(should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            10_000 + DECRYPT_FAILURE_RECOVERY_QUIET_MS,
+        ));
+        assert!(!should_start_decrypt_failure_rekey(
+            &entry,
+            DECRYPT_FAILURE_RECOVERY_THRESHOLD,
+            9_000,
         ));
     }
 

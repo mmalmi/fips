@@ -352,6 +352,10 @@ impl SessionEntry {
         self.last_inbound_frame_ms = now_ms;
     }
 
+    pub(crate) fn last_authenticated_inbound_age_ms(&self, now_ms: u64) -> Option<u64> {
+        (now_ms >= self.last_inbound_frame_ms).then(|| now_ms - self.last_inbound_frame_ms)
+    }
+
     /// Check if the session is established.
     pub(crate) fn is_established(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.is_established())

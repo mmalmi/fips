@@ -4,6 +4,7 @@
 /// the old keys, or vice versa) without dropping the old session while the
 /// new XK handshake completes.
 const DECRYPT_FAILURE_RECOVERY_THRESHOLD: u32 = 32;
+const DECRYPT_FAILURE_RECOVERY_QUIET_MS: u64 = 15_000;
 fn pending_rekey_wins_tiebreak(
     our_addr: &NodeAddr,
     peer_addr: &NodeAddr,
@@ -24,11 +25,18 @@ fn duplicate_rekey_responder_ack(existing: &SessionEntry) -> Option<Vec<u8>> {
     None
 }
 
-fn should_start_decrypt_failure_rekey(entry: &SessionEntry, consecutive: u32) -> bool {
+fn should_start_decrypt_failure_rekey(
+    entry: &SessionEntry,
+    consecutive: u32,
+    now_ms: u64,
+) -> bool {
     consecutive >= DECRYPT_FAILURE_RECOVERY_THRESHOLD
         && entry.is_established()
         && !entry.has_rekey_in_progress()
         && entry.pending_new_session().is_none()
+        && entry
+            .last_authenticated_inbound_age_ms(now_ms)
+            .is_some_and(|age_ms| age_ms >= DECRYPT_FAILURE_RECOVERY_QUIET_MS)
 }
 
 fn should_ignore_stale_epoch_drain_failure(entry: &SessionEntry, received_k_bit: bool) -> bool {
@@ -222,7 +230,7 @@ impl<'a> SessionRuntimeReceive<'a> {
                     }
                     let consecutive = self.entry.record_decrypt_failure();
                     let recover_session =
-                        should_start_decrypt_failure_rekey(self.entry, consecutive);
+                        should_start_decrypt_failure_rekey(self.entry, consecutive, self.now_ms);
                     return FspFrameOutcome::DecryptFailed {
                         error: crate::noise::NoiseError::DecryptionFailed,
                         counter: self.counter,
