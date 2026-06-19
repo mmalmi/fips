@@ -79,6 +79,32 @@ fn mesh_signaled_initiators_use_direct_refresh_admission() {
     );
 }
 
+#[tokio::test]
+async fn traversal_replay_cache_is_scoped_by_signal_path() {
+    let discovery = NostrDiscovery::new_for_test();
+
+    discovery
+        .mark_session_seen("session", TraversalSignalPath::Mesh)
+        .await
+        .expect("first mesh copy should be accepted");
+    discovery
+        .mark_session_seen("session", TraversalSignalPath::Nostr)
+        .await
+        .expect("Nostr fallback copy of the same offer should still be accepted");
+
+    let duplicate_mesh = discovery
+        .mark_session_seen("session", TraversalSignalPath::Mesh)
+        .await
+        .expect_err("duplicate mesh copy should still be rejected");
+    assert!(matches!(duplicate_mesh, BootstrapError::Replay(_)));
+
+    let duplicate_nostr = discovery
+        .mark_session_seen("session", TraversalSignalPath::Nostr)
+        .await
+        .expect_err("duplicate Nostr copy should still be rejected");
+    assert!(matches!(duplicate_nostr, BootstrapError::Replay(_)));
+}
+
 #[test]
 fn ambient_advert_subscription_is_open_policy_only() {
     let discovery = NostrDiscovery::new_for_test();

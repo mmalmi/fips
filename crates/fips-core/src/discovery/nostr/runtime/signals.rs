@@ -127,15 +127,20 @@ impl NostrDiscovery {
         Ok(usable)
     }
 
-    pub(super) async fn mark_session_seen(&self, session_id: &str) -> Result<(), BootstrapError> {
+    pub(super) async fn mark_session_seen(
+        &self,
+        session_id: &str,
+        signal_path: TraversalSignalPath,
+    ) -> Result<(), BootstrapError> {
         let now = now_ms();
         let expiry = now + self.config.replay_window_secs * 1000;
+        let cache_key = signal_path.cache_key(session_id);
         let mut seen = self.seen_sessions.lock().await;
         seen.retain(|_, expires_at| *expires_at > now);
-        if seen.contains_key(session_id) {
+        if seen.contains_key(&cache_key) {
             return Err(BootstrapError::Replay(session_id.to_string()));
         }
-        seen.insert(session_id.to_string(), expiry);
+        seen.insert(cache_key, expiry);
         if seen.len() > self.config.seen_sessions_max_entries {
             let mut oldest = seen
                 .iter()

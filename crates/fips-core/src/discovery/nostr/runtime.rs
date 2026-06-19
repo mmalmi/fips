@@ -88,6 +88,22 @@ fn short_id(id: &str) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum TraversalSignalPath {
+    Mesh,
+    Nostr,
+}
+
+impl TraversalSignalPath {
+    fn cache_key(self, session_id: &str) -> String {
+        let prefix = match self {
+            Self::Mesh => "mesh",
+            Self::Nostr => "nostr",
+        };
+        format!("{prefix}:{session_id}")
+    }
+}
+
 /// Decide whether an incoming-offer responder session should be suppressed
 /// in favor of our own already-running outbound initiator session.
 ///

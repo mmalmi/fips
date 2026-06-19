@@ -417,7 +417,8 @@ impl NostrDiscovery {
                 "traversal: mesh offer accepted within clock-skew tolerance"
             );
         }
-        self.mark_session_seen(&offer.session_id).await?;
+        self.mark_session_seen(&offer.session_id, TraversalSignalPath::Mesh)
+            .await?;
 
         let base_socket = bind_traversal_udp_socket()?;
         let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
@@ -469,6 +470,59 @@ impl NostrDiscovery {
             accepted = accepted,
             "traversal: answer queued for FIPS mesh signaling"
         );
+        if accepted {
+            let runtime = Arc::clone(&self);
+            let answer_for_nostr = answer.clone();
+            let sender_for_nostr = sender_npub.clone();
+            let peer_short_for_nostr = peer_short.clone();
+            tokio::spawn(async move {
+                let sender = match PublicKey::parse(&sender_for_nostr) {
+                    Ok(sender) => sender,
+                    Err(error) => {
+                        debug!(
+                            peer = %peer_short_for_nostr,
+                            error = %error,
+                            "traversal: cannot send Nostr safety answer for mesh offer"
+                        );
+                        return;
+                    }
+                };
+                let relays = match runtime.preferred_signal_relays(sender, None).await {
+                    Ok(relays) => relays,
+                    Err(error) => {
+                        debug!(
+                            peer = %peer_short_for_nostr,
+                            session = %short_id(&answer_for_nostr.session_id),
+                            error = %error,
+                            "traversal: Nostr safety answer relay lookup failed"
+                        );
+                        return;
+                    }
+                };
+                match runtime
+                    .send_signal(&relays, sender, &answer_for_nostr)
+                    .await
+                {
+                    Ok(event) => {
+                        debug!(
+                            peer = %peer_short_for_nostr,
+                            session = %short_id(&answer_for_nostr.session_id),
+                            relays = relays.len(),
+                            event = %short_id(&event.id.to_string()),
+                            "traversal: Nostr safety answer sent for mesh offer"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            peer = %peer_short_for_nostr,
+                            session = %short_id(&answer_for_nostr.session_id),
+                            error = %error,
+                            "traversal: Nostr safety answer send failed"
+                        );
+                    }
+                }
+            });
+        }
         if !accepted {
             return Ok(());
         }
@@ -588,7 +642,8 @@ impl NostrDiscovery {
             }
         }
 
-        self.mark_session_seen(&offer.session_id).await?;
+        self.mark_session_seen(&offer.session_id, TraversalSignalPath::Nostr)
+            .await?;
 
         let base_socket = bind_traversal_udp_socket()?;
         let (reflexive_address, local_addresses, stun_server) = observe_traversal_addresses(
