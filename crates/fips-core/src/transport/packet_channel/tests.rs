@@ -240,6 +240,40 @@ fn packet_channel_recycles_pooled_packet_buffer_when_bulk_batch_is_dropped() {
 }
 
 #[test]
+fn packet_channel_recycles_pooled_packet_buffers_as_batch() {
+    let (tx, _rx) = packet_channel(1);
+
+    let mut first = tx.recv_buffer(1600);
+    first.clear();
+    first.resize(PRIORITY_PACKET_MAX_LEN + 2, 0xaa);
+    let first_ptr = first.as_ptr();
+
+    let mut second = tx.recv_buffer(1600);
+    second.clear();
+    second.resize(PRIORITY_PACKET_MAX_LEN + 3, 0xbb);
+    let second_ptr = second.as_ptr();
+
+    let mut buffers = vec![tx.packet_buffer(first), tx.packet_buffer(second)];
+    PacketBuffer::recycle_batch(&mut buffers);
+
+    assert!(buffers.is_empty());
+    assert_eq!(tx.buffer_pool.cached_len(), 2);
+
+    let reused_a = tx.recv_buffer(1600);
+    let reused_b = tx.recv_buffer(1600);
+    let reused_a_ptr = reused_a.as_ptr();
+    let reused_b_ptr = reused_b.as_ptr();
+    assert!(
+        [reused_a_ptr, reused_b_ptr].contains(&first_ptr),
+        "first batch buffer should be reusable"
+    );
+    assert!(
+        [reused_a_ptr, reused_b_ptr].contains(&second_ptr),
+        "second batch buffer should be reusable"
+    );
+}
+
+#[test]
 fn packet_channel_keeps_single_lane_batches_grouped() {
     let (tx, mut rx) = packet_channel(10);
     let addr = TransportAddr::from_string("test");

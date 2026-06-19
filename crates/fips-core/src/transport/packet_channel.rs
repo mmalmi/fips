@@ -117,6 +117,38 @@ impl PacketBuffer {
         self.pool = None;
         mem::take(&mut self.data)
     }
+
+    /// Return a batch of packet buffers to their receive pool with one lock.
+    ///
+    /// This is for packet movers that hold a short batch until an immediate
+    /// kernel write completes. Plain `Drop` remains correct for general users;
+    /// batching only avoids one pool lock per packet in the hottest path.
+    pub fn recycle_batch(buffers: &mut Vec<Self>) {
+        let Some(pool) = buffers
+            .iter()
+            .find_map(|buffer| buffer.pool.as_ref().cloned())
+        else {
+            buffers.clear();
+            return;
+        };
+
+        let mut pooled = Vec::with_capacity(buffers.len());
+        let mut rest = Vec::new();
+        for mut buffer in buffers.drain(..) {
+            match buffer.pool.take() {
+                Some(buffer_pool) if buffer_pool.ptr_eq(&pool) => {
+                    pooled.push(mem::take(&mut buffer.data));
+                }
+                Some(buffer_pool) => {
+                    buffer.pool = Some(buffer_pool);
+                    rest.push(buffer);
+                }
+                None => {}
+            }
+        }
+        pool.put_batch(pooled);
+        drop(rest);
+    }
 }
 
 impl Clone for PacketBuffer {
@@ -507,6 +539,38 @@ impl PacketBufferPool {
         } else {
             crate::perf_profile::record_event(crate::perf_profile::Event::PacketBufferPoolDiscard);
         }
+    }
+
+    fn put_batch(&self, buffers: Vec<Vec<u8>>) {
+        let mut retained = 0usize;
+        let mut guard = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        for mut buffer in buffers {
+            buffer.clear();
+            if buffer.capacity() > PACKET_BUFFER_MAX_RETAINED_CAPACITY {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketBufferPoolDiscard,
+                );
+                continue;
+            }
+            if guard.len() < PACKET_BUFFER_POOL_LIMIT {
+                guard.push(buffer);
+                retained += 1;
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketBufferPoolReturn,
+                );
+            } else {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::PacketBufferPoolDiscard,
+                );
+            }
+        }
+        if retained > 0 {
+            self.available.fetch_add(retained, Relaxed);
+        }
+    }
+
+    fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     #[cfg(test)]
