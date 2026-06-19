@@ -112,10 +112,6 @@ impl PendingRouteRetries {
         self.entries.iter()
     }
 
-    pub(in crate::node) fn values(&self) -> impl Iterator<Item = &RetryState> {
-        self.entries.values()
-    }
-
     pub(in crate::node) fn get_or_insert_with(
         &mut self,
         node_addr: NodeAddr,

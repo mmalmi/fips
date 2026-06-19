@@ -273,6 +273,7 @@ impl DecryptSessionRegistrations {
 #[derive(Debug, Default)]
 pub(in crate::node) struct ConfiguredPeerIndex {
     peers_by_addr: HashMap<NodeAddr, ConfiguredPeerEntry>,
+    addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
 #[derive(Debug)]
@@ -301,7 +302,14 @@ impl ConfiguredPeerIndex {
                 ConfiguredPeerEntry { identity, config },
             );
         }
-        Self { peers_by_addr }
+        let mut addrs_by_npub = HashMap::with_capacity(peers_by_addr.len());
+        for (peer_addr, entry) in &peers_by_addr {
+            addrs_by_npub.insert(entry.config.npub.clone(), *peer_addr);
+        }
+        Self {
+            peers_by_addr,
+            addrs_by_npub,
+        }
     }
 
     pub(in crate::node) fn get(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
@@ -312,6 +320,11 @@ impl ConfiguredPeerIndex {
         self.peers_by_addr
             .get(peer_addr)
             .map(|entry| &entry.identity)
+    }
+
+    pub(in crate::node) fn identity_for_npub(&self, npub: &str) -> Option<&PeerIdentity> {
+        let peer_addr = self.addrs_by_npub.get(npub)?;
+        self.identity(peer_addr)
     }
 
     pub(in crate::node) fn auto_connect(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {

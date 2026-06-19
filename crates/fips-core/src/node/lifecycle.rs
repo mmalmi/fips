@@ -15,7 +15,7 @@ use crate::transport::{Link, LinkDirection, LinkId, TransportAddr, TransportId, 
 use crate::upper::tun::{TunDevice, TunState, run_tun_reader, shutdown_tun_interface};
 use crate::{NodeAddr, PeerIdentity};
 use secp256k1::PublicKey;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::thread;
 use std::time::Duration;

@@ -184,14 +184,13 @@ fn open_discovery_budget_counts_active_non_configured_peers() {
     let mut config = Config::new();
     config.node.discovery.nostr.open_discovery_max_pending = 2;
     let mut node = Node::new(config).unwrap();
-    let configured_npubs = std::collections::HashSet::new();
 
-    assert_eq!(node.open_discovery_enqueue_budget(&configured_npubs), 2);
+    assert_eq!(node.open_discovery_enqueue_budget(), 2);
     inject_dummy_peers(&mut node, 1);
-    assert_eq!(node.open_discovery_enqueue_budget(&configured_npubs), 1);
+    assert_eq!(node.open_discovery_enqueue_budget(), 1);
     inject_dummy_peers(&mut node, 1);
     assert_eq!(
-        node.open_discovery_enqueue_budget(&configured_npubs),
+        node.open_discovery_enqueue_budget(),
         0,
         "live open-discovery peers must consume the same cap as pending retries"
     );

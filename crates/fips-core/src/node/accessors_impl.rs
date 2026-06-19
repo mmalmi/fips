@@ -551,13 +551,7 @@ impl Node {
             return true;
         }
 
-        let configured_npubs = self
-            .config
-            .peers()
-            .iter()
-            .map(|peer| peer.npub.clone())
-            .collect::<HashSet<_>>();
-        self.open_discovery_enqueue_budget(&configured_npubs) > 0
+        self.open_discovery_enqueue_budget() > 0
     }
 
     /// Like `outbound_admission_check`, but for racing a better path to a

@@ -404,7 +404,7 @@ fn configured_peer_index_owns_identity_parse_and_default_policy() {
 
     let mut config = Config::new();
     config.peers.push(crate::config::PeerConfig::new(
-        configured_npub,
+        configured_npub.clone(),
         "udp",
         "127.0.0.1:1",
     ));
@@ -434,5 +434,12 @@ fn configured_peer_index_owns_identity_parse_and_default_policy() {
     assert!(
         configured_peers.get(&configured_addr).is_some(),
         "configured peer lookup should be binary-keyed after construction"
+    );
+    assert_eq!(
+        configured_peers
+            .identity_for_npub(&configured_npub)
+            .map(|identity| identity.node_addr()),
+        Some(&configured_addr),
+        "configured npub lookup should use the refreshed runtime index"
     );
 }

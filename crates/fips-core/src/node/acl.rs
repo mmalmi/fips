@@ -434,15 +434,15 @@ impl Node {
             })
     }
 
-    fn open_discovery_non_configured_occupancy(&self, configured_npubs: &HashSet<String>) -> usize {
+    fn open_discovery_non_configured_occupancy(&self) -> usize {
         let mut occupied = HashSet::new();
-        for (peer_addr, peer) in &self.peers {
-            if !configured_npubs.contains(&peer.npub()) {
+        for (peer_addr, _) in &self.peers {
+            if !self.configured_peers.contains(peer_addr) {
                 occupied.insert(*peer_addr);
             }
         }
-        for (peer_addr, state) in self.retry_pending.iter() {
-            if !configured_npubs.contains(&state.peer_config.npub) {
+        for (peer_addr, _) in self.retry_pending.iter() {
+            if !self.configured_peers.contains(peer_addr) {
                 occupied.insert(*peer_addr);
             }
         }
@@ -451,7 +451,7 @@ impl Node {
             .connection_values()
             .filter_map(|conn| conn.expected_identity())
         {
-            if !configured_npubs.contains(&identity.npub()) {
+            if !self.configured_peers.contains(identity.node_addr()) {
                 occupied.insert(*identity.node_addr());
             }
         }
@@ -470,14 +470,7 @@ impl Node {
             return true;
         }
 
-        let configured_npubs = self
-            .config
-            .peers()
-            .iter()
-            .map(|peer| peer.npub.clone())
-            .collect::<HashSet<_>>();
-        self.open_discovery_non_configured_occupancy(&configured_npubs)
-            < nostr.open_discovery_max_pending
+        self.open_discovery_non_configured_occupancy() < nostr.open_discovery_max_pending
     }
 
     /// Reload the peer ACL if the ACL or hosts files changed.

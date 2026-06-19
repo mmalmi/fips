@@ -409,18 +409,9 @@ impl Node {
             return;
         }
 
-        let configured_peers_by_npub = self
-            .configured_peers
-            .entries()
-            .map(|(_addr, identity, peer)| (peer.npub.clone(), *identity))
-            .collect::<HashMap<_, _>>();
-        let configured_npubs = configured_peers_by_npub
-            .keys()
-            .cloned()
-            .collect::<HashSet<_>>();
         let now_ms = Self::now_ms();
         let now_secs = now_ms / 1000;
-        let mut enqueue_budget = self.open_discovery_enqueue_budget(&configured_npubs);
+        let mut enqueue_budget = self.open_discovery_enqueue_budget();
         if enqueue_budget == 0 {
             debug!(
                 caller = %caller,
@@ -454,7 +445,7 @@ impl Node {
                 continue;
             }
 
-            if let Some(identity) = configured_peers_by_npub.get(&npub).copied() {
+            if let Some(identity) = self.configured_peers.identity_for_npub(&npub).copied() {
                 // Configured peers don't go through the open-discovery
                 // enqueue path — their `PeerConfig` is already in
                 // `self.config.peers()`, so the regular retry queue is
@@ -682,19 +673,17 @@ impl Node {
         connection_slots.min(peer_slots).min(link_slots)
     }
 
-    pub(in crate::node) fn open_discovery_enqueue_budget(
-        &self,
-        configured_npubs: &HashSet<String>,
-    ) -> usize {
+    pub(in crate::node) fn open_discovery_enqueue_budget(&self) -> usize {
         let current_open_discovery_active = self
             .peers
-            .values()
-            .filter(|peer| !configured_npubs.contains(&peer.npub()))
+            .keys()
+            .filter(|peer_addr| !self.configured_peers.contains(peer_addr))
             .count();
         let current_open_discovery_pending = self
             .retry_pending
-            .values()
-            .filter(|state| !configured_npubs.contains(&state.peer_config.npub))
+            .iter()
+            .map(|(peer_addr, _)| peer_addr)
+            .filter(|peer_addr| !self.configured_peers.contains(peer_addr))
             .count();
 
         let cap_remaining = self
