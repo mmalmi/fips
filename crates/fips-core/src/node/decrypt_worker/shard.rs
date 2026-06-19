@@ -532,7 +532,7 @@ impl DecryptWorkerShard {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
         let owner_idx = shared.owner_idx;
-        let eligible_open_idx = if owner_idx == idx {
+        let Some(open_idx) = (if owner_idx == idx {
             if !self.pool.fsp_local_bulk_open_worker_enabled() {
                 return Err(FspOpenWorkerPrepareError::Ineligible(job));
             }
@@ -543,10 +543,9 @@ impl DecryptWorkerShard {
             }
             self.pool
                 .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
-        };
-        if eligible_open_idx.is_none() {
+        }) else {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
-        }
+        };
         if owner_idx != idx
             && !self
                 .pool
@@ -573,13 +572,6 @@ impl DecryptWorkerShard {
             );
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
-        let open_idx = if owner_idx == idx {
-            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
-        } else {
-            self.pool
-                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
-        }
-        .unwrap_or_else(|| eligible_open_idx.expect("checked eligible FSP open worker"));
 
         let open_job = FspAeadOpenJob {
             source_addr,
