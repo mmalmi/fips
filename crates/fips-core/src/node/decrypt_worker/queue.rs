@@ -432,6 +432,7 @@ impl FspDecryptJobBatcher {
 struct FspAeadOpenJobBatcher {
     open_idx: Option<usize>,
     owner_idx: Option<usize>,
+    queued_at: Option<crate::perf_profile::TraceStamp>,
     jobs: Vec<FspAeadOpenJob>,
 }
 
@@ -440,6 +441,7 @@ impl FspAeadOpenJobBatcher {
         Self {
             open_idx: None,
             owner_idx: None,
+            queued_at: None,
             jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
@@ -466,6 +468,9 @@ impl FspAeadOpenJobBatcher {
         }
         self.open_idx = Some(open_idx);
         self.owner_idx = Some(owner_idx);
+        if self.jobs.is_empty() {
+            self.queued_at = crate::perf_profile::stamp();
+        }
         self.jobs.push(job);
 
         if self.jobs.len() >= batch_max {
@@ -476,14 +481,23 @@ impl FspAeadOpenJobBatcher {
 
     fn flush(&mut self, workers: &DecryptWorkerPool) -> Vec<FspAeadOpenJob> {
         let Some(open_idx) = self.open_idx.take() else {
+            self.queued_at = None;
             return Vec::new();
         };
         let Some(owner_idx) = self.owner_idx.take() else {
+            self.queued_at = None;
             return Vec::new();
         };
         if self.jobs.is_empty() {
+            self.queued_at = None;
             return Vec::new();
         }
+        let count = self.jobs.len();
+        crate::perf_profile::record_since_count(
+            crate::perf_profile::Stage::FspAeadWorkerOpenBatcherWait,
+            self.queued_at.take(),
+            count as u64,
+        );
 
         if self.jobs.len() == 1 {
             let job = self.jobs.pop().expect("checked single pending opener job");

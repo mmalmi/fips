@@ -100,7 +100,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 86;
+const N_STAGES: usize = 87;
 const N_EVENTS: usize = 223;
 const HIST_BUCKETS: usize = 48;
 
@@ -333,6 +333,9 @@ pub enum Stage {
     TransportPriorityChannelResidence = 84,
     /// Bulk packet-channel residence after actual `PacketTx` enqueue.
     TransportBulkChannelResidence = 85,
+    /// Time a worker-open FSP AEAD job waits inside the owner worker's local
+    /// opener batcher before the opener worker is dispatched.
+    FspAeadWorkerOpenBatcherWait = 86,
 }
 
 impl Stage {
@@ -428,6 +431,7 @@ impl Stage {
             Stage::TransportChannelResidence => "transport_channel_residence",
             Stage::TransportPriorityChannelResidence => "transport_priority_channel_residence",
             Stage::TransportBulkChannelResidence => "transport_bulk_channel_residence",
+            Stage::FspAeadWorkerOpenBatcherWait => "fsp_aead_worker_open_batcher_wait",
         }
     }
 }
@@ -520,6 +524,7 @@ fn stage_from_index(idx: usize) -> Stage {
         83 => Stage::TransportChannelResidence,
         84 => Stage::TransportPriorityChannelResidence,
         85 => Stage::TransportBulkChannelResidence,
+        86 => Stage::FspAeadWorkerOpenBatcherWait,
         _ => unreachable!(),
     }
 }
