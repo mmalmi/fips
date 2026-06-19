@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.63] - 2026-06-19
+
+### Fixed
+
+- Classified established no-coordinate FSP session datagrams as bulk after FMP
+  decrypt, so small TCP ACK-shaped session packets cannot flood the decrypt
+  worker priority lane during high-throughput LAN transfers.
+- Bumped `fips-endpoint` to 0.3.38 so app-facing consumers pick up the
+  `fips-core` 0.3.63 decrypt-worker reliability fix.
+
 ## [0.3.62] - 2026-06-19
 
 ### Fixed
