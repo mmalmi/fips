@@ -123,8 +123,12 @@ impl RxLoopMaintenanceState {
         drained.data_pressure(self.recent_data_activity(now, activity_window))
     }
 
-    pub(super) fn skip_slow_maintenance(&self, data_pressure: bool) -> bool {
-        data_pressure && self.slow_maintenance_timed_out_under_data
+    pub(super) fn skip_slow_maintenance(
+        &self,
+        drained: RxLoopDataDrainStats,
+        data_pressure: bool,
+    ) -> bool {
+        drained.has_data_drained() || (data_pressure && self.slow_maintenance_timed_out_under_data)
     }
 
     pub(super) fn plan_maintenance(
@@ -138,7 +142,7 @@ impl RxLoopMaintenanceState {
         let data_pressure = self.data_pressure(drained, now, activity_window);
         RxLoopMaintenancePlan::new(
             data_pressure,
-            self.skip_slow_maintenance(data_pressure),
+            self.skip_slow_maintenance(drained, data_pressure),
             idle_timeout,
             busy_timeout,
         )
