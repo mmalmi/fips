@@ -1006,6 +1006,7 @@ impl DecryptWorkerShard {
         let FspDecryptJob {
             fallback_tx,
             fallback,
+            lane,
             local_node_addr: _,
             source_addr,
             previous_hop_peer: _,
@@ -1016,7 +1017,6 @@ impl DecryptWorkerShard {
             fsp_payload_len: _,
             trace_enqueued_at: _,
         } = job;
-        let lane = fallback.lane();
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         let fmp = DecryptFmpBookkeeping {
             source_peer: fallback.source_peer,
@@ -1046,10 +1046,10 @@ impl DecryptWorkerShard {
         &self,
         fallback_tx: DecryptWorkerFallbackSender,
         fallback: DecryptFallback,
+        lane: DecryptWorkerLane,
         inner_timestamp_ms: u32,
     ) -> DecryptWorkerOutput {
         crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspMalformedDropped);
-        let lane = fallback.lane();
         DecryptWorkerOutput {
             fallback_tx,
             event: DecryptWorkerEvent::AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive {
@@ -1084,6 +1084,7 @@ impl DecryptWorkerShard {
         let FspDecryptJob {
             fallback_tx,
             fallback,
+            lane,
             local_node_addr,
             source_addr,
             previous_hop_peer,
@@ -1101,7 +1102,6 @@ impl DecryptWorkerShard {
         let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(plaintext)?;
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         let spin_bit = inner_flags_byte & 0x01 != 0;
-        let lane = fallback.lane();
         let fmp = DecryptFmpBookkeeping {
             source_peer: fallback.source_peer,
             transport_id: fallback.transport_id,
@@ -1188,6 +1188,7 @@ impl DecryptWorkerShard {
         let FspDecryptJob {
             fallback_tx,
             mut fallback,
+            lane,
             local_node_addr,
             source_addr,
             previous_hop_peer,
@@ -1209,18 +1210,23 @@ impl DecryptWorkerShard {
         let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
         let header = {
             let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-                return vec![
-                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
-                ];
+                return vec![self.output_for_malformed_fsp_drop(
+                    fallback_tx,
+                    fallback,
+                    lane,
+                    inner_timestamp_ms,
+                )];
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
-                return vec![
-                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
-                ];
+                return vec![self.output_for_malformed_fsp_drop(
+                    fallback_tx,
+                    fallback,
+                    lane,
+                    inner_timestamp_ms,
+                )];
             };
             header
         };
-        let lane = fallback.lane();
         let fmp = DecryptFmpBookkeeping {
             source_peer: fallback.source_peer,
             transport_id: fallback.transport_id,
@@ -1247,9 +1253,12 @@ impl DecryptWorkerShard {
             let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
             let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end)
             else {
-                return vec![
-                    self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
-                ];
+                return vec![self.output_for_malformed_fsp_drop(
+                    fallback_tx,
+                    fallback,
+                    lane,
+                    inner_timestamp_ms,
+                )];
             };
             let open_result = state.current_epoch_matches(&header).then(|| {
                 let _t_fsp =
@@ -1259,6 +1268,7 @@ impl DecryptWorkerShard {
             let job = FspDecryptJob {
                 fallback_tx,
                 fallback,
+                lane,
                 local_node_addr,
                 source_addr,
                 previous_hop_peer,
@@ -1339,9 +1349,12 @@ impl DecryptWorkerShard {
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
-            return vec![
-                self.output_for_malformed_fsp_drop(fallback_tx, fallback, inner_timestamp_ms)
-            ];
+            return vec![self.output_for_malformed_fsp_drop(
+                fallback_tx,
+                fallback,
+                lane,
+                inner_timestamp_ms,
+            )];
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
@@ -1362,6 +1375,7 @@ impl DecryptWorkerShard {
                 let job = FspDecryptJob {
                     fallback_tx,
                     fallback,
+                    lane,
                     local_node_addr,
                     source_addr,
                     previous_hop_peer,
@@ -1382,7 +1396,6 @@ impl DecryptWorkerShard {
         };
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
-        let lane = fallback.lane();
         let sync = FspReceiveSync {
             counter: header.counter,
             slot,
@@ -1872,7 +1885,7 @@ impl DecryptWorkerShard {
     fn handle_opened_fmp_job(job: OpenedFmpJob) -> Option<DecryptWorkerJobAction> {
         let OpenedFmpJob {
             packet_data,
-            lane,
+            lane: _,
             source_peer,
             transport_id,
             remote_addr,
@@ -1928,20 +1941,17 @@ impl DecryptWorkerShard {
 
         let link_msg_start = fmp_plaintext_start + INNER_TIMESTAMP_LEN;
         let link_msg_end = fmp_plaintext_end;
-        // Keep control-sized FSP on the rx-loop's canonical session owner.
-        // The worker snapshot is deliberately optimized for bulk data; rekey,
-        // MMP, and other small liveness/control packets should not depend on
-        // async worker registration freshness.
-        let fsp_meta = matches!(lane, DecryptWorkerLane::Bulk)
-            .then(|| {
-                Self::local_established_fsp_meta(
-                    &packet_data,
-                    local_node_addr,
-                    link_msg_start,
-                    link_msg_end,
-                )
-            })
-            .flatten();
+        // Established no-coordinate FSP datagrams may be tiny TCP ACK-shaped
+        // traffic, but they are still session data. Classify them as bulk after
+        // FMP decrypt so they cannot flood the priority lane during LAN TCP
+        // transfers. Handshakes, coordinate-carrying refreshes, heartbeats,
+        // and other link control messages continue through the fallback path.
+        let fsp_meta = Self::local_established_fsp_meta(
+            &packet_data,
+            local_node_addr,
+            link_msg_start,
+            link_msg_end,
+        );
 
         // Pass the buffer through by ownership + offset/length. No FMP-layer
         // allocation; rx_loop or the FSP worker slices into `packet_data`.
@@ -1962,6 +1972,7 @@ impl DecryptWorkerShard {
             let fsp_job = FspDecryptJob {
                 fallback_tx: fallback_tx.clone(),
                 fallback,
+                lane: DecryptWorkerLane::Bulk,
                 local_node_addr,
                 source_addr: meta.source_addr,
                 previous_hop_peer: source_peer,

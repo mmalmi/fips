@@ -273,6 +273,7 @@
             let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
                 fallback_tx,
+                lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
                     TransportId::new(1),
@@ -461,6 +462,7 @@
             let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
                 fallback_tx,
+                lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
                     TransportId::new(1),
@@ -608,6 +610,7 @@
             let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
                 fallback_tx,
+                lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
                     TransportId::new(1),
@@ -752,6 +755,7 @@
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let job = FspDecryptJob {
             fallback_tx,
+            lane: decrypt_worker_packet_lane(fsp_payload.len()),
             fallback: DecryptFallback::new(
                 previous_hop_peer,
                 TransportId::new(1),
@@ -862,6 +866,7 @@
             let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
             FspDecryptJob {
                 fallback_tx,
+                lane: decrypt_worker_packet_lane(packet_data.len()),
                 fallback: DecryptFallback::new(
                     previous_hop_peer,
                     TransportId::new(1),

@@ -836,6 +836,63 @@
     }
 
     #[test]
+    fn opened_fmp_established_fsp_datagram_is_bulk_even_when_outer_packet_is_small() {
+        let previous_hop = test_source_peer();
+        let local_addr = *previous_hop.node_addr();
+        let source_addr = NodeAddr::from_bytes([0x5a; 16]);
+        let fsp_payload = crate::node::session_wire::build_fsp_header(7, 0, 0).to_vec();
+        let link_msg = crate::protocol::SessionDatagram::new(source_addr, local_addr, fsp_payload)
+            .with_path_mtu(1_280)
+            .encode();
+        let inner_timestamp_ms = 0x0a0b_0c0du32;
+        let mut fmp_plaintext = Vec::with_capacity(4 + link_msg.len());
+        fmp_plaintext.extend_from_slice(&inner_timestamp_ms.to_le_bytes());
+        fmp_plaintext.extend_from_slice(&link_msg);
+
+        let fmp_plaintext_offset = crate::node::wire::ESTABLISHED_HEADER_SIZE;
+        let packet_len = fmp_plaintext_offset + fmp_plaintext.len();
+        assert!(
+            packet_len <= DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN,
+            "test packet should be priority-sized before FMP decrypt"
+        );
+        let mut packet_data = vec![0; packet_len];
+        packet_data[fmp_plaintext_offset..].copy_from_slice(&fmp_plaintext);
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
+            packet_data: packet_data.into(),
+            lane: decrypt_worker_packet_lane(packet_len),
+            source_peer: previous_hop,
+            transport_id: TransportId::new(1),
+            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            local_node_addr: local_addr,
+            timestamp_ms: 1_000,
+            packet_len,
+            fmp_counter: 1,
+            fmp_flags: 0,
+            fmp_plaintext_offset,
+            fmp_plaintext_len: fmp_plaintext.len(),
+            fallback_tx,
+        })
+        .expect("established FSP datagram should produce a worker action");
+
+        match action {
+            DecryptWorkerJobAction::FspJob(fsp_job) => {
+                assert_eq!(
+                    fsp_job.fallback.lane(),
+                    DecryptWorkerLane::Priority,
+                    "the outer FMP packet remains small enough to be priority-sized"
+                );
+                assert_eq!(
+                    fsp_job.lane(),
+                    DecryptWorkerLane::Bulk,
+                    "established FSP session traffic must not flood the priority lane"
+                );
+            }
+            DecryptWorkerJobAction::Output(_) => panic!("expected established FSP worker job"),
+        }
+    }
+
+    #[test]
     fn decrypt_worker_completion_drain_budget_does_not_spend_bulk_turn() {
         let session_key = test_session_key(1, 80);
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);

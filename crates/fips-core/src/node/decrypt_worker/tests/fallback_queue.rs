@@ -321,6 +321,7 @@
             &pool,
             FspDecryptJob {
                 fallback_tx,
+                lane: DecryptWorkerLane::Bulk,
                 fallback: DecryptFallback::new(
                     source_peer,
                     TransportId::new(1),

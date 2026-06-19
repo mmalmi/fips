@@ -243,6 +243,7 @@ impl DecryptWorkerBatchStats {
 struct FspDecryptJob {
     fallback_tx: DecryptWorkerFallbackSender,
     fallback: DecryptFallback,
+    lane: DecryptWorkerLane,
     local_node_addr: NodeAddr,
     source_addr: NodeAddr,
     previous_hop_peer: PeerIdentity,
@@ -256,7 +257,7 @@ struct FspDecryptJob {
 
 impl FspDecryptJob {
     fn lane(&self) -> DecryptWorkerLane {
-        self.fallback.lane()
+        self.lane
     }
 
     fn set_trace_enqueued_at(&mut self, queued_at: Option<crate::perf_profile::TraceStamp>) {

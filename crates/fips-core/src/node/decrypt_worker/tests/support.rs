@@ -1548,6 +1548,7 @@
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
         FspDecryptJob {
             fallback_tx,
+            lane: decrypt_worker_packet_lane(packet_len),
             fallback: DecryptFallback::new(
                 test_source_peer(),
                 TransportId::new(1),
