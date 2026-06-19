@@ -169,11 +169,12 @@
     }
 
     #[test]
-    fn worker_leaves_priority_fsp_plaintext_for_rx_loop_owner() {
+    fn worker_leaves_coordinate_fsp_plaintext_for_rx_loop_owner() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
-        let fsp_header = crate::node::session_wire::build_fsp_header(7, 0, 0);
+        let fsp_header =
+            crate::node::session_wire::build_fsp_header(7, crate::node::session_wire::FSP_FLAG_CP, 0);
         let mut fsp_payload = fsp_header.to_vec();
         fsp_payload.extend_from_slice(&[0u8; 16]);
         let datagram = crate::protocol::SessionDatagram::new(
@@ -206,7 +207,7 @@
             fmp_plaintext_len: packet_data.len(),
             fallback_tx,
         })
-        .expect("priority FSP plaintext should return to rx_loop");
+        .expect("coordinate FSP plaintext should return to rx_loop");
 
         match action {
             DecryptWorkerJobAction::Output(output) => match output.event {
@@ -214,12 +215,12 @@
                     assert_eq!(&fallback.packet_data[..], packet_data.as_slice());
                 }
                 other => panic!(
-                    "priority FSP should return as plaintext, got {:?}",
+                    "coordinate FSP should return as plaintext, got {:?}",
                     other.packet_count()
                 ),
             },
             DecryptWorkerJobAction::FspJob(_) => {
-                panic!("priority FSP must not use worker-owned FSP open")
+                panic!("coordinate FSP must not use worker-owned FSP open")
             }
         }
     }
