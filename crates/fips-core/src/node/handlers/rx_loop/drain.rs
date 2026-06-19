@@ -60,6 +60,7 @@ pub(super) struct RxLoopDataDrainStats {
 }
 
 impl RxLoopDataDrainStats {
+    #[cfg(test)]
     pub(super) fn new(packets: usize, tun: usize, endpoint: usize) -> Self {
         Self {
             packets,
