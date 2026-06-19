@@ -943,8 +943,10 @@ impl DecryptWorkerShard {
         outputs: Vec<FspReadyCompletion>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        for output in self.outputs_for_fsp_ready_completions(outputs) {
-            plaintext_batch.push_output(output);
+        for completion in outputs {
+            if let Some(output) = self.output_for_fsp_ready_completion(completion) {
+                plaintext_batch.push_output(output);
+            }
         }
     }
 
@@ -954,24 +956,27 @@ impl DecryptWorkerShard {
     ) -> Vec<DecryptWorkerOutput> {
         let mut ready = Vec::with_capacity(outputs.len());
         for completion in outputs {
-            match completion {
-                FspReadyCompletion::Opened {
-                    opened,
-                    slot,
-                    source_peer,
-                } => {
-                    if let Some(output) =
-                        self.output_for_opened_fsp_job(source_peer, opened, slot)
-                    {
-                        ready.push(output);
-                    }
-                }
-                FspReadyCompletion::AeadFailed { job, header } => {
-                    ready.push(self.output_for_fsp_aead_failure(job, &header));
-                }
+            if let Some(output) = self.output_for_fsp_ready_completion(completion) {
+                ready.push(output);
             }
         }
         ready
+    }
+
+    fn output_for_fsp_ready_completion(
+        &self,
+        completion: FspReadyCompletion,
+    ) -> Option<DecryptWorkerOutput> {
+        match completion {
+            FspReadyCompletion::Opened {
+                opened,
+                slot,
+                source_peer,
+            } => self.output_for_opened_fsp_job(source_peer, opened, slot),
+            FspReadyCompletion::AeadFailed { job, header } => {
+                Some(self.output_for_fsp_aead_failure(job, &header))
+            }
+        }
     }
 
     fn dispatch_or_handle_fsp_job(
