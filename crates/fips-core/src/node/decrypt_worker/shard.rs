@@ -879,33 +879,39 @@ impl DecryptWorkerShard {
             .fsp_sessions
             .get_mut(&source_addr)
             .expect("FSP session was checked before taking reusable drain");
-        for completion in completions {
-            let FspAeadCompletion {
-                source_addr: _,
-                receive_order_id: _,
-                ticket,
-                source: _,
-                result,
-                completed_at: _,
-            } = completion;
-            if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain) {
-                record_fsp_aead_completion_order_error(&error);
-                debug!(
-                    worker = idx,
-                    ?error,
-                    %source_addr,
-                    "dropping invalid ordered FSP AEAD completion"
+        if state.can_complete_ordered_fsp_open_ready_batch(&completions) {
+            state.complete_ordered_fsp_open_ready_batch_into(completions, &mut drain);
+        } else {
+            for completion in completions {
+                let FspAeadCompletion {
+                    source_addr: _,
+                    receive_order_id: _,
+                    ticket,
+                    source: _,
+                    result,
+                    completed_at: _,
+                } = completion;
+                if let Err(error) =
+                    state.complete_ordered_fsp_open_into(ticket, result, &mut drain)
+                {
+                    record_fsp_aead_completion_order_error(&error);
+                    debug!(
+                        worker = idx,
+                        ?error,
+                        %source_addr,
+                        "dropping invalid ordered FSP AEAD completion"
+                    );
+                    continue;
+                }
+                debug_assert_eq!(
+                    drain.ready,
+                    drain.accepted
+                        + drain.aead_failures
+                        + drain.epoch_mismatches
+                        + drain.replay_drops
+                        + drain.dropped
                 );
-                continue;
             }
-            debug_assert_eq!(
-                drain.ready,
-                drain.accepted
-                    + drain.aead_failures
-                    + drain.epoch_mismatches
-                    + drain.replay_drops
-                    + drain.dropped
-            );
         }
         let next_ready = state.fsp_receive_order_next_ready();
 

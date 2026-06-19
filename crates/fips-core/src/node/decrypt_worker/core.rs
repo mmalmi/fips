@@ -785,6 +785,42 @@ impl OwnedFspSessionState {
         Ok(())
     }
 
+    fn can_complete_ordered_fsp_open_ready_batch(
+        &self,
+        completions: &[FspAeadCompletion],
+    ) -> bool {
+        debug_assert!(self.has_single_current_epoch());
+        self.fsp_receive_order.can_complete_ready_contiguous(
+            completions
+                .iter()
+                .map(|completion| completion.ticket),
+        )
+    }
+
+    fn complete_ordered_fsp_open_ready_batch_into(
+        &mut self,
+        completions: Vec<FspAeadCompletion>,
+        drain: &mut FspOrderedDrain,
+    ) {
+        debug_assert!(self.can_complete_ordered_fsp_open_ready_batch(&completions));
+        let ready = completions.len();
+        let source_peer = self.source_peer;
+        let current_k_bit = self.current_k_bit;
+        let current = &mut self.current;
+        for completion in completions {
+            let FspAeadCompletion { result, .. } = completion;
+            Self::apply_ready_fsp_ordered_completion(
+                current_k_bit,
+                current,
+                source_peer,
+                result,
+                drain,
+            );
+        }
+        self.fsp_receive_order.advance_ready_contiguous(ready);
+        drain.ready = drain.ready.saturating_add(ready);
+    }
+
     fn apply_ready_fsp_ordered_completion(
         current_k_bit: bool,
         current: &mut OwnedFspEpochState,
@@ -931,6 +967,15 @@ impl<T> OrderedCompletionBuffer<T> {
         self.next_ready
     }
 
+    fn pending_is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn advance_next_ready_by(&mut self, count: usize) {
+        debug_assert!(self.pending.is_empty());
+        self.next_ready = self.next_ready.saturating_add(count as u64);
+    }
+
     fn pending_limit(&self) -> usize {
         self.pending_limit
     }
@@ -1036,6 +1081,28 @@ impl FspReceiveOrder {
 
     fn advance_next_ticket_to(&mut self, next_ticket: u64) {
         self.next_ticket = self.next_ticket.max(next_ticket);
+    }
+
+    fn can_complete_ready_contiguous(
+        &self,
+        tickets: impl Iterator<Item = FspReceiveTicket>,
+    ) -> bool {
+        if !self.completions.pending_is_empty() {
+            return false;
+        }
+        let next_ready = self.completions.next_ready();
+        let mut saw_ticket = false;
+        for (offset, ticket) in tickets.enumerate() {
+            saw_ticket = true;
+            if ticket.sequence != next_ready.saturating_add(offset as u64) {
+                return false;
+            }
+        }
+        saw_ticket
+    }
+
+    fn advance_ready_contiguous(&mut self, count: usize) {
+        self.completions.advance_next_ready_by(count);
     }
 
 }
