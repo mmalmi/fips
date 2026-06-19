@@ -342,12 +342,20 @@ impl Node {
         destination: NodeAddr,
         next_hop: NodeAddr,
     ) {
+        self.learn_reverse_route_at(destination, next_hop, Self::now_ms());
+    }
+
+    pub(in crate::node) fn learn_reverse_route_at(
+        &mut self,
+        destination: NodeAddr,
+        next_hop: NodeAddr,
+        now_ms: u64,
+    ) {
         if self.config.node.routing.mode != RoutingMode::ReplyLearned
             || destination == *self.node_addr()
         {
             return;
         }
-        let now_ms = Self::now_ms();
         self.learned_routes.learn(
             destination,
             next_hop,

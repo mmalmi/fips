@@ -658,7 +658,7 @@ impl Node {
             return None;
         }
 
-        self.learn_reverse_route(source_addr, *previous_hop_peer.node_addr());
+        self.learn_reverse_route_at(source_addr, *previous_hop_peer.node_addr(), clock.now_ms);
         SessionDispatchCommit {
             source_addr,
             receive_completion: Some(SessionReceiveCompletion {

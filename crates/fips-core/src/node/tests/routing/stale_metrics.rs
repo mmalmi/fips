@@ -1,5 +1,24 @@
 use super::*;
 
+#[test]
+fn learn_reverse_route_at_uses_supplied_timestamp() {
+    let mut config = Config::new();
+    config.node.routing.mode = RoutingMode::ReplyLearned;
+    config.node.routing.learned_ttl_secs = 7;
+    let mut node = Node::new(config).unwrap();
+    let dest_addr = NodeAddr::from_bytes([0x41; 16]);
+    let next_hop = NodeAddr::from_bytes([0x42; 16]);
+
+    node.learn_reverse_route_at(dest_addr, next_hop, 1_000);
+
+    let snapshot = node.learned_route_table_snapshot(2_500);
+    assert_eq!(snapshot.destination_count, 1);
+    assert_eq!(snapshot.route_count, 1);
+    let route = &snapshot.destinations[0].routes[0];
+    assert_eq!(route.last_seen_ms, 1_000);
+    assert_eq!(route.expires_in_ms, 5_500);
+}
+
 #[tokio::test]
 async fn test_stale_mmp_receiver_reports_do_not_change_route_choice() {
     let mut config = Config::new();
