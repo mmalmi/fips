@@ -41,8 +41,6 @@ const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 /// contract at the packet channel boundary.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UDP_RECV_BATCH_SIZE: usize = 128;
-#[cfg(not(target_os = "linux"))]
-const NON_LINUX_UDP_RECV_DRAIN_LIMIT: usize = 64;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn reset_recv_buffer(buffer: &mut Vec<u8>) {
@@ -699,52 +697,36 @@ async fn udp_receive_loop(
         loop {
             match socket.recv_from(&mut buf).await {
                 Ok((len, remote_addr, kernel_drops)) => {
-                    if !enqueue_non_linux_udp_packet(
-                        transport_id,
-                        &packet_tx,
-                        &stats,
-                        &buf,
-                        len,
-                        remote_addr,
-                        kernel_drops,
-                    ) {
+                    stats.record_recv(len);
+                    stats.set_kernel_drops(kernel_drops as u64);
+
+                    if is_punch_packet(&buf[..len]) {
+                        trace!(
+                            transport_id = %transport_id,
+                            remote_addr = %remote_addr,
+                            bytes = len,
+                            "Dropping stray punch probe/ack on UDP transport"
+                        );
+                        continue;
+                    }
+
+                    let data = buf[..len].to_vec();
+                    let addr = TransportAddr::from_socket_addr(remote_addr);
+                    let packet = ReceivedPacket::new(transport_id, addr, data);
+
+                    trace!(
+                        transport_id = %transport_id,
+                        remote_addr = %remote_addr,
+                        bytes = len,
+                        "UDP packet received"
+                    );
+
+                    if packet_tx.send(packet).is_err() {
                         debug!(
                             transport_id = %transport_id,
                             "Packet channel closed, stopping receive loop"
                         );
                         break;
-                    }
-
-                    for _ in 1..NON_LINUX_UDP_RECV_DRAIN_LIMIT {
-                        match socket.try_recv_from(&mut buf) {
-                            Ok(Some((len, remote_addr, kernel_drops))) => {
-                                if !enqueue_non_linux_udp_packet(
-                                    transport_id,
-                                    &packet_tx,
-                                    &stats,
-                                    &buf,
-                                    len,
-                                    remote_addr,
-                                    kernel_drops,
-                                ) {
-                                    debug!(
-                                        transport_id = %transport_id,
-                                        "Packet channel closed, stopping receive loop"
-                                    );
-                                    return;
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                stats.record_recv_error();
-                                warn!(
-                                    transport_id = %transport_id,
-                                    error = %e,
-                                    "UDP receive error"
-                                );
-                                break;
-                            }
-                        }
                     }
                 }
                 Err(e) => {
@@ -758,43 +740,6 @@ async fn udp_receive_loop(
             }
         }
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn enqueue_non_linux_udp_packet(
-    transport_id: TransportId,
-    packet_tx: &PacketTx,
-    stats: &UdpStats,
-    buf: &[u8],
-    len: usize,
-    remote_addr: SocketAddr,
-    kernel_drops: u32,
-) -> bool {
-    stats.record_recv(len);
-    stats.set_kernel_drops(kernel_drops as u64);
-
-    if is_punch_packet(&buf[..len]) {
-        trace!(
-            transport_id = %transport_id,
-            remote_addr = %remote_addr,
-            bytes = len,
-            "Dropping stray punch probe/ack on UDP transport"
-        );
-        return true;
-    }
-
-    let data = buf[..len].to_vec();
-    let addr = TransportAddr::from_socket_addr(remote_addr);
-    let packet = ReceivedPacket::new(transport_id, addr, data);
-
-    trace!(
-        transport_id = %transport_id,
-        remote_addr = %remote_addr,
-        bytes = len,
-        "UDP packet received"
-    );
-
-    packet_tx.send(packet).is_ok()
 }
 
 // ============================================================================
