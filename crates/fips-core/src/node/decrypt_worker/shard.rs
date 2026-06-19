@@ -123,6 +123,7 @@ struct DecryptWorkerShard {
     // Lives entirely on this OS thread — never observed by any other thread.
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
+    fsp_ready_outputs: Vec<DecryptWorkerOutput>,
 }
 
 impl DecryptWorkerShard {
@@ -131,6 +132,7 @@ impl DecryptWorkerShard {
             pool,
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
+            fsp_ready_outputs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -701,7 +703,7 @@ impl DecryptWorkerShard {
             result,
             completed_at: _,
         } = completion;
-        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+        let Some(state) = self.fsp_sessions.get(&source_addr) else {
             record_fsp_aead_completion_drop(
                 crate::perf_profile::Event::FspAeadCompletionStaleSession,
                 1,
@@ -716,16 +718,26 @@ impl DecryptWorkerShard {
             return;
         }
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        let mut outputs = Vec::with_capacity(1);
-        let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
-            if let Some(output) =
-                Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
-            {
-                outputs.push(output);
-            }
-        }) {
-            Ok(drain) => drain,
+        let mut outputs = self.fsp_ready_outputs_with_capacity(1);
+        let completed = {
+            let state = self
+                .fsp_sessions
+                .get_mut(&source_addr)
+                .expect("FSP session was checked before taking reusable output buffer");
+            state
+                .complete_ordered_fsp_open(ticket, result, |completion| {
+                    if let Some(output) =
+                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
+                    {
+                        outputs.push(output);
+                    }
+                })
+                .map(|drain| (drain, state.fsp_receive_order_next_ready()))
+        };
+        let (drain, next_ready) = match completed {
+            Ok(completed) => completed,
             Err(error) => {
+                self.recycle_fsp_ready_outputs(outputs);
                 record_fsp_aead_completion_order_error(&error);
                 debug!(
                     worker = idx,
@@ -736,7 +748,6 @@ impl DecryptWorkerShard {
                 return;
             }
         };
-        let next_ready = state.fsp_receive_order_next_ready();
         debug_assert_eq!(drain.ready, drain.accounted_ready());
         crate::perf_profile::record_fsp_aead_completion_drain(
             drain.ready,
@@ -752,7 +763,7 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_outputs(outputs, plaintext_batch);
+        self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_aead_completion_batch_msg(
@@ -808,10 +819,11 @@ impl DecryptWorkerShard {
         let mut aead_failure_sources = FspAeadFailureSources::default();
         let mut replay_drop_sources = FspReplayDropSources::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        let mut outputs = Vec::with_capacity(completions.len());
+        let mut outputs = self.fsp_ready_outputs_with_capacity(completions.len());
         let next_ready;
         {
             let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+                self.recycle_fsp_ready_outputs(outputs);
                 record_fsp_aead_completion_drop(
                     crate::perf_profile::Event::FspAeadCompletionStaleSession,
                     completions.len(),
@@ -819,6 +831,7 @@ impl DecryptWorkerShard {
                 return;
             };
             if state.fsp_receive_order_id() != receive_order_id {
+                self.recycle_fsp_ready_outputs(outputs);
                 record_fsp_aead_completion_drop(
                     crate::perf_profile::Event::FspAeadCompletionStaleOrder,
                     completions.len(),
@@ -890,17 +903,30 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_outputs(outputs, plaintext_batch);
+        self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
-    fn push_fsp_ready_outputs(
-        &self,
-        outputs: Vec<DecryptWorkerOutput>,
+    fn fsp_ready_outputs_with_capacity(&mut self, reserve: usize) -> Vec<DecryptWorkerOutput> {
+        let mut outputs = std::mem::take(&mut self.fsp_ready_outputs);
+        outputs.clear();
+        outputs.reserve(reserve.min(DECRYPT_WORKER_BULK_BATCH_MAX));
+        outputs
+    }
+
+    fn recycle_fsp_ready_outputs(&mut self, mut outputs: Vec<DecryptWorkerOutput>) {
+        outputs.clear();
+        self.fsp_ready_outputs = outputs;
+    }
+
+    fn push_reused_fsp_ready_outputs(
+        &mut self,
+        mut outputs: Vec<DecryptWorkerOutput>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        for output in outputs {
+        for output in outputs.drain(..) {
             plaintext_batch.push_output(output);
         }
+        self.fsp_ready_outputs = outputs;
     }
 
     fn output_for_fsp_ready_completion(
