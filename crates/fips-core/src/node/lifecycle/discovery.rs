@@ -660,7 +660,7 @@ impl Node {
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
         for record in records {
-            let identity = match PeerIdentity::from_npub(&record.npub) {
+            let identity = match self.configured_or_parsed_peer_identity(&record.npub) {
                 Ok(identity) => identity,
                 Err(err) => {
                     debug!(npub = %record.npub, error = %err, "local instance discovery: skip bad npub");
@@ -757,7 +757,7 @@ impl Node {
                 );
                 continue;
             };
-            let identity = match crate::PeerIdentity::from_npub(&peer.npub) {
+            let identity = match self.configured_or_parsed_peer_identity(&peer.npub) {
                 Ok(id) => id,
                 Err(err) => {
                     debug!(npub = %peer.npub, error = %err, "lan: skip bad npub");
