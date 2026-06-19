@@ -101,7 +101,9 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 87;
-const N_EVENTS: usize = 223;
+const N_EVENTS: usize = 225;
+const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
+const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -766,6 +768,8 @@ pub enum Event {
     DecryptAuthenticatedSessionStale = 220,
     DecryptDirectSessionDataStale = 221,
     DecryptDirectSessionCommitStale = 222,
+    FspAeadCompletionReadyGe32 = 223,
+    FspAeadCompletionReadyGe128 = 224,
 }
 
 impl Event {
@@ -1090,6 +1094,8 @@ impl Event {
             Event::DecryptAuthenticatedSessionStale => "decrypt_authenticated_session_stale",
             Event::DecryptDirectSessionDataStale => "decrypt_direct_session_data_stale",
             Event::DecryptDirectSessionCommitStale => "decrypt_direct_session_commit_stale",
+            Event::FspAeadCompletionReadyGe32 => "fsp_aead_completion_ready_ge_32",
+            Event::FspAeadCompletionReadyGe128 => "fsp_aead_completion_ready_ge_128",
         }
     }
 }
@@ -1319,6 +1325,8 @@ fn event_from_index(idx: usize) -> Event {
         220 => Event::DecryptAuthenticatedSessionStale,
         221 => Event::DecryptDirectSessionDataStale,
         222 => Event::DecryptDirectSessionCommitStale,
+        223 => Event::FspAeadCompletionReadyGe32,
+        224 => Event::FspAeadCompletionReadyGe128,
         _ => unreachable!(),
     }
 }
@@ -1965,6 +1973,13 @@ pub(crate) fn record_fsp_aead_completion_drain(
     if ready > 1 {
         record_event_count_sample(Event::FspAeadCompletionReadyMulti, 1);
     }
+    let (burst, large_burst) = fsp_aead_completion_ready_burst_flags(ready);
+    if burst {
+        record_event_count_sample(Event::FspAeadCompletionReadyGe32, 1);
+    }
+    if large_burst {
+        record_event_count_sample(Event::FspAeadCompletionReadyGe128, 1);
+    }
 }
 
 #[inline]
@@ -2234,6 +2249,14 @@ fn record_udp_send_batch_tail_buckets(
 #[cfg(target_os = "linux")]
 fn udp_send_batch_tail_bucket_flags(packets: usize) -> (bool, bool, bool) {
     (packets >= 32, packets >= 48, packets >= 64)
+}
+
+#[inline]
+fn fsp_aead_completion_ready_burst_flags(ready: usize) -> (bool, bool) {
+    (
+        ready >= FSP_AEAD_COMPLETION_READY_BURST_MIN,
+        ready >= FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN,
+    )
 }
 
 #[inline]
