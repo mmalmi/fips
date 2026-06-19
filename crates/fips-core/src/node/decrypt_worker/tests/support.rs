@@ -616,6 +616,57 @@
     }
 
     #[test]
+    fn fsp_open_job_batcher_reuses_pending_buffer_for_single_flush() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x42; 16]);
+        let owner_idx = 0;
+        let open_idx = pool
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("two-worker pool should have a sibling opener");
+        let (unused_completion_tx, _unused_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let cipher = Arc::new(test_chacha_key([0x52; 32]));
+        let mut batcher = FspAeadOpenJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+
+        let returned = batcher.push(
+            &pool,
+            open_idx,
+            owner_idx,
+            test_fsp_aead_open_job(source_addr, 0, cipher, header, unused_completion_tx),
+        );
+        assert!(returned.is_empty(), "single opener job should fit in the batcher");
+        assert!(
+            batcher.flush(&pool).is_empty(),
+            "single opener job should queue without returning to caller"
+        );
+
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single opener flushes should not allocate a replacement pending buffer"
+        );
+        match bulk_receivers[open_idx]
+            .try_recv()
+            .expect("single opener job")
+        {
+            DecryptWorkerBulkItem::FspAeadOpen(job) => {
+                let completion_tx = job.completion_tx.expect("opener job needs owner completion tx");
+                assert!(pool.fsp_aead_completion_sender_is(owner_idx, &completion_tx));
+            }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => panic!("expected a single opener job"),
+            DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::FspJob(_)
+            | DecryptWorkerBulkItem::Batch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a single opener job"),
+        }
+    }
+
+    #[test]
     fn fsp_remote_open_worker_dispatches_owner_mismatch_to_third_worker() {
         let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(4, 8);

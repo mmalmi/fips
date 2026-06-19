@@ -364,6 +364,11 @@ impl FspDecryptJobBatcher {
         }
     }
 
+    #[cfg(test)]
+    fn pending_buffer_ptr(&self) -> *const FspDecryptJob {
+        self.jobs.as_ptr()
+    }
+
     fn push(&mut self, workers: &DecryptWorkerPool, job: FspDecryptJob) {
         if !matches!(job.lane(), DecryptWorkerLane::Bulk) {
             self.flush(workers);
@@ -398,13 +403,8 @@ impl FspDecryptJobBatcher {
             return;
         }
 
-        let jobs = std::mem::replace(
-            &mut self.jobs,
-            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-        );
-
-        if jobs.len() == 1 {
-            let job = jobs.into_iter().next().expect("checked single pending FSP job");
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single pending FSP job");
             if let Err(job) = workers.dispatch_bulk_fsp_job_or_return(worker_idx, job) {
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptFspPathFallback,
@@ -413,6 +413,11 @@ impl FspDecryptJobBatcher {
             }
             return;
         }
+
+        let jobs = std::mem::replace(
+            &mut self.jobs,
+            Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
+        );
 
         if let Err(jobs) = workers.dispatch_bulk_fsp_job_batch_or_return(worker_idx, jobs) {
             crate::perf_profile::record_event_count(
@@ -437,6 +442,11 @@ impl FspAeadOpenJobBatcher {
             owner_idx: None,
             jobs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
+    }
+
+    #[cfg(test)]
+    fn pending_buffer_ptr(&self) -> *const FspAeadOpenJob {
+        self.jobs.as_ptr()
     }
 
     fn push(
@@ -473,6 +483,15 @@ impl FspAeadOpenJobBatcher {
         };
         if self.jobs.is_empty() {
             return Vec::new();
+        }
+
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single pending opener job");
+            return workers
+                .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, job)
+                .err()
+                .into_iter()
+                .collect();
         }
 
         let jobs = std::mem::replace(

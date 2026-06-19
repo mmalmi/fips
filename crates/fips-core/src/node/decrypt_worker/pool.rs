@@ -465,11 +465,7 @@ impl DecryptWorkerPool {
         owner_idx: usize,
         job: FspAeadOpenJob,
     ) -> Result<(), FspAeadOpenJob> {
-        self.dispatch_fsp_aead_open_worker_job_batch_or_return(open_idx, owner_idx, vec![job])
-            .map_err(|mut jobs| {
-                jobs.pop()
-                    .expect("single opener dispatch should return one job")
-            })
+        self.dispatch_fsp_aead_open_decrypt_worker_job(open_idx, owner_idx, job)
     }
 
     #[allow(clippy::result_large_err)]
