@@ -1,8 +1,8 @@
 use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -49,6 +49,14 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
+    );
+}
+
+#[test]
+fn rx_loop_idle_slow_maintenance_timeout_stays_below_priority_gate() {
+    assert!(
+        RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT <= Duration::from_millis(25),
+        "idle slow maintenance must not hold the first post-idle priority packet past the release-gate latency budget"
     );
 }
 
