@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.65] - 2026-06-19
+
+### Fixed
+
+- Let fresh Nostr overlay adverts replace stale restart-cache endpoint hints
+  at the same priority tier, while preserving operator static paths above
+  overlay-discovered paths.
+- Allowed active direct-refresh retries to reach the path-candidate reclaim
+  logic when the per-peer race budget is full, so a better configured path can
+  evict lower-priority in-flight attempts.
+- Bumped `fips-endpoint` to 0.3.40 so app-facing consumers pick up the
+  `fips-core` 0.3.65 direct-path reliability fixes.
+
 ## [0.3.64] - 2026-06-19
 
 ### Fixed
