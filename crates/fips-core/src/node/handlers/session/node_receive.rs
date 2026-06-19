@@ -1,3 +1,17 @@
+#[derive(Clone, Copy)]
+struct WorkerReceiveClock {
+    now_ms: u64,
+    now: Instant,
+}
+
+impl WorkerReceiveClock {
+    fn now() -> Self {
+        let now = Instant::now();
+        let now_ms = Node::now_ms();
+        Self { now_ms, now }
+    }
+}
+
 impl Node {
     async fn flush_pending_destinations(&mut self, dests: &mut Vec<NodeAddr>) {
         for dest_addr in std::mem::take(dests) {
@@ -13,17 +27,17 @@ impl Node {
         }
     }
 
-    fn apply_worker_fsp_receive_sync(
+    fn apply_worker_fsp_receive_sync_at(
         &mut self,
         source_addr: NodeAddr,
         sync: crate::node::session::FspReceiveSync,
-        now: Instant,
+        clock: WorkerReceiveClock,
     ) -> bool {
         let apply = {
             let Some(entry) = self.sessions.get_mut(&source_addr) else {
                 return false;
             };
-            entry.apply_fsp_receive_sync_result(sync, Self::now_ms(), now)
+            entry.apply_fsp_receive_sync_result(sync, clock.now_ms, clock.now)
         };
         if apply.refresh_worker_session() {
             self.register_decrypt_worker_fsp_session(&source_addr);
@@ -230,7 +244,14 @@ impl Node {
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
     ) {
-        let now = Instant::now();
+        self.record_worker_authenticated_fmp_receive_at(fmp, WorkerReceiveClock::now());
+    }
+
+    fn record_worker_authenticated_fmp_receive_at(
+        &mut self,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        clock: WorkerReceiveClock,
+    ) {
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
             fmp.source_peer.node_addr(),
             fmp.transport_id,
@@ -247,7 +268,7 @@ impl Node {
             fmp.inner_timestamp_ms,
             fmp.fmp_flags & FLAG_CE != 0,
             fmp.fmp_flags & FLAG_SP != 0,
-            now,
+            clock.now,
             path_bookkeeping_allowed,
         );
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -269,12 +290,15 @@ impl Node {
         &mut self,
         authenticated: DecryptAuthenticatedSession,
     ) {
-        let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
+        let clock = WorkerReceiveClock::now();
+        self.record_worker_authenticated_fmp_receive_at(&authenticated.fmp, clock);
 
         let source_addr = authenticated.source_addr;
-        let receive_applied =
-            self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
+        let receive_applied = self.apply_worker_fsp_receive_sync_at(
+            source_addr,
+            authenticated.receive_sync,
+            clock,
+        );
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -305,12 +329,15 @@ impl Node {
     ) {
         let mut pending_flush_dests = Vec::new();
         for authenticated in sessions {
-            let now = Instant::now();
-            self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
+            let clock = WorkerReceiveClock::now();
+            self.record_worker_authenticated_fmp_receive_at(&authenticated.fmp, clock);
 
             let source_addr = authenticated.source_addr;
-            let receive_applied =
-                self.apply_worker_fsp_receive_sync(source_addr, authenticated.receive_sync, now);
+            let receive_applied = self.apply_worker_fsp_receive_sync_at(
+                source_addr,
+                authenticated.receive_sync,
+                clock,
+            );
             if !receive_applied {
                 debug!(
                     src = %self.peer_display_name(&source_addr),
@@ -404,13 +431,15 @@ impl Node {
         directs: Vec<DecryptDirectSessionData>,
     ) {
         let mut pending_flush_dests = Vec::new();
+        let clock = WorkerReceiveClock::now();
         for direct in directs {
-            let Some(finish) = self.commit_direct_session_data_from_worker(
+            let Some(finish) = self.commit_direct_session_data_from_worker_at(
                 &direct.fmp,
                 direct.source_addr,
                 direct.previous_hop_peer,
                 direct.receive_sync,
                 direct.body_len,
+                clock,
             ) else {
                 continue;
             };
@@ -454,13 +483,15 @@ impl Node {
         commits: Vec<DecryptDirectSessionCommit>,
     ) {
         let mut pending_flush_dests = Vec::new();
+        let clock = WorkerReceiveClock::now();
         for commit in commits {
-            let Some(finish) = self.commit_direct_session_data_from_worker(
+            let Some(finish) = self.commit_direct_session_data_from_worker_at(
                 &commit.fmp,
                 commit.source_addr,
                 commit.previous_hop_peer,
                 commit.receive_sync,
                 commit.body_len,
+                clock,
             ) else {
                 continue;
             };
@@ -483,10 +514,29 @@ impl Node {
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
     ) -> Option<SessionDispatchFinish> {
-        let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(fmp);
+        self.commit_direct_session_data_from_worker_at(
+            fmp,
+            source_addr,
+            previous_hop_peer,
+            receive_sync,
+            body_len,
+            WorkerReceiveClock::now(),
+        )
+    }
 
-        let receive_applied = self.apply_worker_fsp_receive_sync(source_addr, receive_sync, now);
+    fn commit_direct_session_data_from_worker_at(
+        &mut self,
+        fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        source_addr: NodeAddr,
+        previous_hop_peer: PeerIdentity,
+        receive_sync: crate::node::session::FspReceiveSync,
+        body_len: usize,
+        clock: WorkerReceiveClock,
+    ) -> Option<SessionDispatchFinish> {
+        self.record_worker_authenticated_fmp_receive_at(fmp, clock);
+
+        let receive_applied =
+            self.apply_worker_fsp_receive_sync_at(source_addr, receive_sync, clock);
         if !receive_applied {
             debug!(
                 src = %self.peer_display_name(&source_addr),
@@ -503,7 +553,7 @@ impl Node {
                 body_len,
             }),
         }
-        .finish_receive(self);
+        .finish_receive_at(self, clock.now_ms);
 
         Some(finish)
     }
