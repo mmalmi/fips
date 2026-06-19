@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.64] - 2026-06-19
+
+### Fixed
+
+- Skipped slow RX-loop discovery/stat maintenance on ticks that already drained
+  queued dataplane work, preventing direct-path priority packets from sitting
+  behind injected slow maintenance under load.
+- Shortened decrypt-worker bulk batches so priority FSP packets can preempt
+  high-throughput LAN receive bursts more frequently.
+- Bumped `fips-endpoint` to 0.3.39 so app-facing consumers pick up the
+  `fips-core` 0.3.64 reliability fixes.
+
 ## [0.3.63] - 2026-06-19
 
 ### Fixed
