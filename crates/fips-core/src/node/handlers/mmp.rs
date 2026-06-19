@@ -803,6 +803,7 @@ impl Node {
         self.purge_expired_local_send_failures(now);
         let defer_dead_peer_removal = self.rx_loop_maintenance_timed_out_recently();
         let heartbeat_msg = [LinkMessageType::Heartbeat.to_byte()];
+        let now_ms = Self::now_ms();
 
         let effective_dead_timeouts: std::collections::HashMap<NodeAddr, Duration> = self
             .peers
@@ -869,6 +870,33 @@ impl Node {
             })
             .collect();
 
+        let stale_session_direct_peers: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                if !peer.is_healthy() || !peer.can_send() {
+                    return None;
+                }
+                if heartbeat_plan
+                    .dead_peers
+                    .iter()
+                    .chain(heartbeat_plan.deferred_dead_peers.iter())
+                    .any(|dead_peer| dead_peer.node_addr == *node_addr)
+                {
+                    return None;
+                }
+                if !self.session_direct_path_exclusive_trust_expired(node_addr, now_ms) {
+                    return None;
+                }
+                let stale_for_ms = self
+                    .sessions
+                    .get(node_addr)
+                    .and_then(|session| session.last_authenticated_inbound_age_ms(now_ms))
+                    .unwrap_or(0);
+                Some((*node_addr, stale_for_ms))
+            })
+            .collect();
+
         for dead_peer in &heartbeat_plan.deferred_dead_peers {
             debug!(
                 peer = %self.peer_display_name(&dead_peer.node_addr),
@@ -878,8 +906,6 @@ impl Node {
         }
 
         // Demote dead direct paths and schedule direct re-probe.
-        let now_ms = Self::now_ms();
-
         for (node_addr, quiet_for, refresh_timeout) in quiet_traversal_peers {
             let scheduled = self.schedule_quiet_traversal_reprobe(node_addr, now_ms);
             let newly_degraded = self.mark_session_direct_path_degraded(node_addr, now_ms);
@@ -894,6 +920,23 @@ impl Node {
                 );
             }
             if newly_degraded {
+                self.maybe_initiate_link_dead_fallback_lookup(&node_addr)
+                    .await;
+            }
+        }
+
+        for (node_addr, stale_for_ms) in stale_session_direct_peers {
+            let scheduled = self.schedule_quiet_traversal_reprobe(node_addr, now_ms);
+            if scheduled {
+                info!(
+                    peer = %self.peer_display_name(&node_addr),
+                    stale_for_ms,
+                    trust_timeout_ms = self.session_direct_path_exclusive_trust_timeout_ms(),
+                    retry_scheduled = scheduled,
+                    "Refreshing stale direct session before next payload burst"
+                );
+            }
+            if scheduled || self.retry_pending.contains_key(&node_addr) {
                 self.maybe_initiate_link_dead_fallback_lookup(&node_addr)
                     .await;
             }

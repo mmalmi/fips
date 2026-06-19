@@ -153,6 +153,8 @@ fn test_reply_learned_keeps_configured_static_direct_peer_despite_session_degrad
         "udp",
         "127.0.0.1:5000",
     ));
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
 
     let mesh_link = LinkId::new(2);
     let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);
@@ -200,6 +202,8 @@ fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallba
         "udp",
         "127.0.0.1:5000",
     ));
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
 
     let mesh_link = LinkId::new(2);
     let (mesh_conn, mesh_id) = make_completed_connection(&mut node, mesh_link, transport_id, 1000);

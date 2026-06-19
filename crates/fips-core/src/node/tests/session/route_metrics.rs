@@ -106,6 +106,88 @@ async fn test_session_receiver_loss_degrades_direct_and_uses_fallback() {
     );
 }
 
+#[test]
+fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("quiet-direct-session".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+
+    let session = node.sessions.get_mut(&remote_addr).expect("session");
+    session.record_sent(128);
+    session.record_outbound_next_hop(remote_addr);
+    assert!(
+        session
+            .last_authenticated_inbound_age_ms(Node::now_ms())
+            .is_some_and(|age| age > 10_000),
+        "fixture should model a direct session that sent data but has no recent authenticated inbound proof"
+    );
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(fallback_next_hop),
+        "stale direct session trust should let known fallback carry the next burst before loss reports arrive"
+    );
+}
+
+#[tokio::test]
+async fn test_stale_direct_session_trust_queues_refresh_before_next_burst() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("quiet-direct-session-refresh".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+
+    let session = node.sessions.get_mut(&remote_addr).expect("session");
+    session.record_sent(128);
+    session.record_outbound_next_hop(remote_addr);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.retry_pending.contains_key(&remote_addr),
+        "stale direct session trust should queue a direct refresh before the next payload burst"
+    );
+    assert!(
+        node.pending_lookups.contains_key(&remote_addr),
+        "stale direct session trust should also keep fallback discovery warm"
+    );
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(fallback_next_hop),
+        "known fallback should carry payload while direct refresh runs"
+    );
+}
+
 #[tokio::test]
 async fn test_fresh_bogus_session_metrics_without_valid_rtt_do_not_change_route_choice() {
     let mut node = make_reply_learned_node_with_tree_peer();

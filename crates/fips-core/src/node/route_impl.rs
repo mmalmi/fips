@@ -54,6 +54,8 @@ impl Node {
         let now_ms = Self::now_ms();
         let direct_session_degraded =
             self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
+        let direct_session_untrusted = !direct_session_degraded
+            && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
 
         let healthy_direct_route = self
             .peers
@@ -61,6 +63,7 @@ impl Node {
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
         if let Some(direct_addr) = healthy_direct_route
+            && !direct_session_untrusted
             && self
                 .peers
                 .get(&direct_addr)
@@ -82,6 +85,13 @@ impl Node {
         // in that case a lower-cost mesh next-hop should carry traffic while
         // direct probes continue in the background.
         let fallback_beats_direct = |node: &Self, fallback_addr: NodeAddr| {
+            if direct_session_untrusted {
+                return healthy_direct_route != Some(fallback_addr)
+                    && node
+                        .peers
+                        .get(&fallback_addr)
+                        .is_some_and(|peer| peer.is_healthy());
+            }
             node.route_candidate_beats_direct(healthy_direct_route, fallback_addr)
         };
 
@@ -322,6 +332,43 @@ impl Node {
     ) -> bool {
         self.session_direct_path_is_degraded(dest, now_ms)
             && !self.active_peer_uses_configured_static_udp_path(dest)
+    }
+
+    pub(in crate::node) fn session_direct_path_exclusive_trust_timeout_ms(&self) -> u64 {
+        self.config
+            .node
+            .heartbeat_interval_secs
+            .saturating_mul(2)
+            .saturating_mul(1000)
+            .saturating_add(500)
+            .max(SESSION_DIRECT_MIN_EXCLUSIVE_TRUST_MS)
+    }
+
+    pub(in crate::node) fn session_direct_path_exclusive_trust_expired(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        if self.active_peer_uses_configured_static_udp_path(dest) {
+            return false;
+        }
+        if !self
+            .peers
+            .get(dest)
+            .is_some_and(|peer| peer.is_healthy() && peer.can_send())
+        {
+            return false;
+        }
+        let Some(session) = self.sessions.get(dest) else {
+            return false;
+        };
+        if !session.is_established() {
+            return false;
+        }
+        session.has_stale_outbound_only_activity(
+            now_ms,
+            self.session_direct_path_exclusive_trust_timeout_ms(),
+        )
     }
 
     pub(in crate::node) fn mark_session_direct_path_degraded(
