@@ -517,25 +517,34 @@
         }
         .into_completion();
 
-        let second_drain = state
-            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+        let mut drain = FspOrderedDrain::default();
+        state
+            .complete_ordered_fsp_open_into(
+                second_completion.ticket,
+                second_completion.result,
+                &mut drain,
+            )
             .expect("later worker-open completion should buffer behind missing first ticket");
-        assert_eq!(second_drain.ready, 0);
-        assert_eq!(second_drain.accepted, 0);
-        assert_eq!(second_drain.replay_drops, 0);
+        assert_eq!(drain.ready, 0);
+        assert_eq!(drain.accepted, 0);
+        assert_eq!(drain.replay_drops, 0);
         assert!(
-            second_drain.outputs.is_empty(),
+            drain.outputs.is_empty(),
             "later completion must not emit before the receive-order gap closes"
         );
 
-        let first_drain = state
-            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+        state
+            .complete_ordered_fsp_open_into(
+                first_completion.ticket,
+                first_completion.result,
+                &mut drain,
+            )
             .expect("first worker-open completion should drain itself and buffered second");
-        assert_eq!(first_drain.ready, 2);
-        assert_eq!(first_drain.accepted, 2);
-        assert_eq!(first_drain.replay_drops, 0);
-        assert_eq!(first_drain.outputs.len(), 2);
-        match (&first_drain.outputs[0], &first_drain.outputs[1]) {
+        assert_eq!(drain.ready, 2);
+        assert_eq!(drain.accepted, 2);
+        assert_eq!(drain.replay_drops, 0);
+        assert_eq!(drain.outputs.len(), 2);
+        match (&drain.outputs[0], &drain.outputs[1]) {
             (
                 FspReadyCompletion::Opened {
                     opened: first_opened,

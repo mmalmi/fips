@@ -849,15 +849,8 @@ impl DecryptWorkerShard {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         }
 
-        let mut ready = 0usize;
-        let mut accepted = 0usize;
-        let mut aead_failures = 0usize;
-        let mut epoch_mismatches = 0usize;
-        let mut replay_drops = 0usize;
-        let mut dropped = 0usize;
-        let mut aead_failure_sources = FspAeadFailureSources::default();
-        let mut replay_drop_sources = FspReplayDropSources::default();
-        let mut outputs = Vec::new();
+        let mut drain = FspOrderedDrain::default();
+        drain.outputs.reserve(completions.len().min(DECRYPT_WORKER_BULK_BATCH_MAX));
         let next_ready;
         {
             let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
@@ -883,19 +876,17 @@ impl DecryptWorkerShard {
                     result,
                     completed_at: _,
                 } = completion;
-                let drain = match state.complete_ordered_fsp_open(ticket, result) {
-                    Ok(drain) => drain,
-                    Err(error) => {
-                        record_fsp_aead_completion_order_error(&error);
-                        debug!(
-                            worker = idx,
-                            ?error,
-                            %source_addr,
-                            "dropping invalid ordered FSP AEAD completion"
-                        );
-                        continue;
-                    }
-                };
+                if let Err(error) = state.complete_ordered_fsp_open_into(ticket, result, &mut drain)
+                {
+                    record_fsp_aead_completion_order_error(&error);
+                    debug!(
+                        worker = idx,
+                        ?error,
+                        %source_addr,
+                        "dropping invalid ordered FSP AEAD completion"
+                    );
+                    continue;
+                }
                 debug_assert_eq!(
                     drain.ready,
                     drain.accepted
@@ -904,38 +895,33 @@ impl DecryptWorkerShard {
                         + drain.replay_drops
                         + drain.dropped
                 );
-                ready += drain.ready;
-                accepted += drain.accepted;
-                aead_failures += drain.aead_failures;
-                epoch_mismatches += drain.epoch_mismatches;
-                replay_drops += drain.replay_drops;
-                dropped += drain.dropped;
-                aead_failure_sources.add_sources(drain.aead_failure_sources);
-                replay_drop_sources.add_sources(drain.replay_drop_sources);
-                outputs.extend(drain.outputs);
             }
             next_ready = state.fsp_receive_order_next_ready();
         }
 
         debug_assert_eq!(
-            ready,
-            accepted + aead_failures + epoch_mismatches + replay_drops + dropped
+            drain.ready,
+            drain.accepted
+                + drain.aead_failures
+                + drain.epoch_mismatches
+                + drain.replay_drops
+                + drain.dropped
         );
         crate::perf_profile::record_fsp_aead_completion_drain(
-            ready,
-            accepted,
-            aead_failures,
-            epoch_mismatches,
-            replay_drops,
+            drain.ready,
+            drain.accepted,
+            drain.aead_failures,
+            drain.epoch_mismatches,
+            drain.replay_drops,
         );
-        aead_failure_sources.record();
-        replay_drop_sources.record();
+        drain.aead_failure_sources.record();
+        drain.replay_drop_sources.record();
         if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
             && shared.receive_order_id == receive_order_id
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(outputs, plaintext_batch);
+        self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
     }
 
     fn push_fsp_ready_completion_outputs(
