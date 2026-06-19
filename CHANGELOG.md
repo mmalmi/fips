@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.61] - 2026-06-19
+
 ### Fixed
 
 - Raised the default inbound `FilterAnnounce` false-positive-rate cap so
@@ -28,8 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versus fallback paths.
 - Added a floor to traversal/recent-endpoint link-dead detection so short
   heartbeat integrations do not false-stale live paths during transient load.
+- Paced repeated active direct refreshes when a peer has no concrete direct
+  candidate, avoiding retry churn while traversal paths remain healthy.
+- Let macOS priority endpoint sends bypass bulk sequence gaps so control
+  packets are not delayed behind large ordered data transfers.
+- Keyed macOS send ordering by endpoint flow, keeping per-flow packet order
+  without head-of-line blocking independent flows to the same peer.
 - Demoted routine Bloom and traversal backpressure logs from warning level so
   low-power nodes do not spend excessive CPU on repeated expected drops.
+- Bumped `fips-endpoint` to 0.3.36 so app-facing consumers pick up the
+  `fips-core` 0.3.61 private-mesh reliability fixes.
 
 ## [0.3.60] - 2026-06-15
 
