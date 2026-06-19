@@ -476,14 +476,15 @@ impl DecryptWorkerShard {
             DecryptDirectSessionDelivery::EndpointData(delivery) => delivery.source_peer,
             DecryptDirectSessionDelivery::Ipv6Packet(_) => fmp.source_peer,
         };
-        let direct_hop = previous_hop_peer.node_addr() == &source_addr;
+        let previous_hop_addr = *previous_hop_peer.node_addr();
+        let direct_hop = previous_hop_addr == source_addr;
         let delivered_ipv6 = matches!(delivery, DecryptDirectSessionDelivery::Ipv6Packet(_));
         if direct_hop && sink.can_deliver(&delivery) {
             return (
                 DecryptWorkerEvent::DirectSessionCommit(DecryptDirectSessionCommit {
                     fmp,
                     source_addr,
-                    previous_hop_peer,
+                    previous_hop_addr,
                     ce_flag,
                     receive_sync,
                     body_len,
@@ -505,7 +506,7 @@ impl DecryptWorkerShard {
             DecryptWorkerEvent::DirectSessionData(DecryptDirectSessionData {
                 fmp,
                 source_addr,
-                previous_hop_peer,
+                previous_hop_addr,
                 ce_flag,
                 receive_sync,
                 body_len,

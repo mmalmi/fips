@@ -2115,7 +2115,7 @@ impl PendingDirectSessionDelivery {
 pub(crate) struct DecryptDirectSessionData {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
-    pub previous_hop_peer: PeerIdentity,
+    pub previous_hop_addr: NodeAddr,
     pub ce_flag: bool,
     pub receive_sync: FspReceiveSync,
     pub body_len: usize,
@@ -2138,7 +2138,7 @@ impl DecryptDirectSessionData {
         Self {
             fmp,
             source_addr,
-            previous_hop_peer,
+            previous_hop_addr: *previous_hop_peer.node_addr(),
             ce_flag,
             receive_sync,
             body_len,
@@ -2152,7 +2152,7 @@ impl DecryptDirectSessionData {
 pub(crate) struct DecryptDirectSessionCommit {
     pub fmp: DecryptFmpBookkeeping,
     pub source_addr: NodeAddr,
-    pub previous_hop_peer: PeerIdentity,
+    pub previous_hop_addr: NodeAddr,
     pub ce_flag: bool,
     pub receive_sync: FspReceiveSync,
     pub body_len: usize,
@@ -2175,7 +2175,7 @@ impl DecryptDirectSessionCommit {
         Self {
             fmp,
             source_addr,
-            previous_hop_peer,
+            previous_hop_addr: *previous_hop_peer.node_addr(),
             ce_flag,
             receive_sync,
             body_len,

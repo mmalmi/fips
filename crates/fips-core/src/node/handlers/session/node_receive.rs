@@ -404,7 +404,7 @@ impl Node {
         let Some(finish) = self.commit_direct_session_data_from_worker(
             &direct.fmp,
             direct.source_addr,
-            direct.previous_hop_peer,
+            direct.previous_hop_addr,
             direct.receive_sync,
             direct.body_len,
             DirectSessionWorkerPath::Data,
@@ -466,7 +466,7 @@ impl Node {
             let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
                 &direct.fmp,
                 direct.source_addr,
-                direct.previous_hop_peer,
+                direct.previous_hop_addr,
                 direct.receive_sync,
                 direct.body_len,
                 DirectSessionWorkerPath::Data,
@@ -493,7 +493,7 @@ impl Node {
         let Some(finish) = self.commit_direct_session_data_from_worker(
             &commit.fmp,
             commit.source_addr,
-            commit.previous_hop_peer,
+            commit.previous_hop_addr,
             commit.receive_sync,
             commit.body_len,
             DirectSessionWorkerPath::Commit,
@@ -520,7 +520,7 @@ impl Node {
             let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
                 &commit.fmp,
                 commit.source_addr,
-                commit.previous_hop_peer,
+                commit.previous_hop_addr,
                 commit.receive_sync,
                 commit.body_len,
                 DirectSessionWorkerPath::Commit,
@@ -556,7 +556,7 @@ impl Node {
             let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
                 &commit.fmp,
                 commit.source_addr,
-                commit.previous_hop_peer,
+                commit.previous_hop_addr,
                 commit.receive_sync,
                 commit.body_len,
                 DirectSessionWorkerPath::Commit,
@@ -585,7 +585,7 @@ impl Node {
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
         source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
+        previous_hop_addr: NodeAddr,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
         path: DirectSessionWorkerPath,
@@ -593,7 +593,7 @@ impl Node {
         self.commit_direct_session_data_from_worker_at(
             fmp,
             source_addr,
-            previous_hop_peer,
+            previous_hop_addr,
             receive_sync,
             body_len,
             path,
@@ -605,7 +605,7 @@ impl Node {
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
         source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
+        previous_hop_addr: NodeAddr,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
         path: DirectSessionWorkerPath,
@@ -614,7 +614,7 @@ impl Node {
         let source_addr = self.record_direct_session_commit_from_worker_at(
             fmp,
             source_addr,
-            previous_hop_peer,
+            previous_hop_addr,
             receive_sync,
             body_len,
             path,
@@ -627,7 +627,7 @@ impl Node {
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
         source_addr: NodeAddr,
-        previous_hop_peer: PeerIdentity,
+        previous_hop_addr: NodeAddr,
         receive_sync: crate::node::session::FspReceiveSync,
         body_len: usize,
         path: DirectSessionWorkerPath,
@@ -658,7 +658,7 @@ impl Node {
             return None;
         }
 
-        self.learn_reverse_route_at(source_addr, *previous_hop_peer.node_addr(), clock.now_ms);
+        self.learn_reverse_route_at(source_addr, previous_hop_addr, clock.now_ms);
         SessionDispatchCommit {
             source_addr,
             receive_completion: Some(SessionReceiveCompletion {

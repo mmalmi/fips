@@ -141,7 +141,7 @@
         match output.event {
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 assert_eq!(direct.source_addr, *source.node_addr());
-                assert_eq!(direct.previous_hop_peer, previous_hop_peer);
+                assert_eq!(direct.previous_hop_addr, *previous_hop_peer.node_addr());
                 assert_eq!(direct.fmp.source_peer, previous_hop_peer);
                 assert_eq!(direct.fmp.fmp_counter, fmp_counter);
                 assert_eq!(direct.fmp.inner_timestamp_ms, inner_timestamp_ms);
