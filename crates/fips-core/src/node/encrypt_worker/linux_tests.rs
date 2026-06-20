@@ -87,29 +87,6 @@ mod tests {
         )
     }
 
-    fn selected_test_multi_packet_group(
-        target: SelectedSendTarget,
-        target_key: SendTargetKey,
-        lane: SelectedSendLane,
-        bytes: usize,
-        drop_on_backpressure: bool,
-        packets: usize,
-    ) -> SelectedSendBatch {
-        let packets = packets.max(1);
-        let mut group = SelectedSendBatch::new_with_capacity(
-            target,
-            target_key,
-            lane,
-            pkt(bytes),
-            drop_on_backpressure,
-            packets,
-        );
-        for _ in 1..packets {
-            group.push(pkt(bytes), drop_on_backpressure);
-        }
-        group
-    }
-
     fn recv_packet_first_byte(socket: &std::net::UdpSocket) -> u8 {
         let mut buf = [0u8; 256];
         let (len, _) = socket.recv_from(&mut buf).expect("receive packet");
@@ -251,15 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn linux_wg_send_batch_try_take_only_after_completion() {
-        let batch = LinuxWgSendBatch::default();
-        assert!(batch.try_take().is_none());
-        batch.complete(Vec::new());
-        assert_eq!(batch.try_take().expect("completed batch").len(), 0);
-        assert!(batch.try_take().is_none());
-    }
-
-    #[test]
     fn linux_wg_bulk_batch_dispatch_keeps_enough_target_runs_on_wg_lane() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_io()
@@ -270,7 +238,7 @@ mod tests {
             let cipher = test_cipher();
             let (target_a, key_a) = test_send_target().await;
             let (target_b, key_b) = test_send_target().await;
-            let min_packets = linux_wg_batch_min_packets();
+            let min_packets = LINUX_WG_BATCH_MIN_PACKETS;
             let first_a_run = min_packets / 2;
             let second_a_run = min_packets - first_a_run;
 
@@ -316,7 +284,7 @@ mod tests {
             let pool = EncryptWorkerPool::spawn(1);
             let cipher = test_cipher();
             let (target, _key) = test_send_target().await;
-            let min_packets = linux_wg_batch_min_packets();
+            let min_packets = LINUX_WG_BATCH_MIN_PACKETS;
             let mut jobs = Vec::new();
             for i in 0..min_packets {
                 jobs.push(linux_wg_test_job(
@@ -332,102 +300,6 @@ mod tests {
                 .dispatch_linux_wg_bulk_batch_unmeasured(jobs)
                 .expect_err("priority-like work must keep the existing worker path");
             assert_eq!(returned.len(), min_packets + 1);
-        });
-    }
-
-    #[test]
-    fn linux_wg_ready_group_coalescing_merges_adjacent_bulk_to_cap() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .expect("tokio rt");
-        rt.block_on(async {
-            let (target, target_key) = test_send_target().await;
-            let mut groups = vec![selected_test_multi_packet_group(
-                target.clone(),
-                target_key,
-                SelectedSendLane::Bulk,
-                1500,
-                true,
-                32,
-            )];
-            let next = selected_test_multi_packet_group(
-                target.clone(),
-                target_key,
-                SelectedSendLane::Bulk,
-                1500,
-                true,
-                32,
-            );
-
-            append_linux_wg_ready_send_groups(&mut groups, vec![next], LINUX_UDP_SEND_BATCH_MAX);
-
-            assert_eq!(groups.len(), 1);
-            assert_eq!(groups[0].packet_count(), LINUX_UDP_SEND_BATCH_MAX);
-            assert!(groups[0].gso_eligible_sizes());
-
-            let overflow = selected_test_multi_packet_group(
-                target,
-                target_key,
-                SelectedSendLane::Bulk,
-                1500,
-                true,
-                1,
-            );
-            append_linux_wg_ready_send_groups(
-                &mut groups,
-                vec![overflow],
-                LINUX_UDP_SEND_BATCH_MAX,
-            );
-
-            assert_eq!(groups.len(), 2);
-            assert_eq!(groups[0].packet_count(), LINUX_UDP_SEND_BATCH_MAX);
-            assert_eq!(groups[1].packet_count(), 1);
-        });
-    }
-
-    #[test]
-    fn linux_wg_ready_group_coalescing_respects_lane_and_drop_policy() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .expect("tokio rt");
-        rt.block_on(async {
-            let (target, target_key) = test_send_target().await;
-            let mut groups = vec![selected_test_group(
-                target.clone(),
-                target_key,
-                SelectedSendLane::Bulk,
-                1500,
-                true,
-            )];
-            let retry_bulk = selected_test_group(
-                target.clone(),
-                target_key,
-                SelectedSendLane::Bulk,
-                1500,
-                false,
-            );
-            let priority = selected_test_group(
-                target,
-                target_key,
-                SelectedSendLane::Priority,
-                160,
-                false,
-            );
-
-            append_linux_wg_ready_send_groups(
-                &mut groups,
-                vec![retry_bulk, priority],
-                LINUX_UDP_SEND_BATCH_MAX,
-            );
-
-            assert_eq!(groups.len(), 3);
-            assert_eq!(groups[0].lane(), SelectedSendLane::Bulk);
-            assert!(groups[0].drop_on_backpressure());
-            assert_eq!(groups[1].lane(), SelectedSendLane::Bulk);
-            assert!(!groups[1].drop_on_backpressure());
-            assert_eq!(groups[2].lane(), SelectedSendLane::Priority);
         });
     }
 
@@ -516,32 +388,14 @@ mod tests {
     }
 
     #[test]
-    fn linux_wg_batch_sender_env_defaults_on_with_explicit_opt_out() {
-        assert!(parse_linux_wg_batch_sender_enabled(None));
-        assert!(!parse_linux_wg_batch_sender_enabled(Some("0")));
-        assert!(!parse_linux_wg_batch_sender_enabled(Some("false")));
-        assert!(!parse_linux_wg_batch_sender_enabled(Some("OFF")));
-        assert!(parse_linux_wg_batch_sender_enabled(Some("1")));
-        assert!(parse_linux_wg_batch_sender_enabled(Some("true")));
-        assert!(parse_linux_wg_batch_sender_enabled(Some("unexpected")));
-    }
-
-    #[test]
-    fn linux_wg_batch_chunk_default_preserves_sender_batch_shape() {
+    fn linux_wg_batch_constants_preserve_sender_shape() {
+        assert_eq!(LINUX_WG_BATCH_MIN_PACKETS, 16);
+        assert_eq!(LINUX_WG_BATCH_WORKER_CHANNEL_CAP, 1024);
+        assert_eq!(LINUX_WG_BATCH_FLOW_CHANNEL_CAP, 1024);
         assert_eq!(
-            parse_linux_wg_batch_chunk_size(None),
-            DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE
-        );
-        assert_eq!(
-            parse_linux_wg_batch_chunk_size(Some("unexpected")),
-            DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE
-        );
-        assert_eq!(parse_linux_wg_batch_chunk_size(Some("1")), 1);
-        assert_eq!(parse_linux_wg_batch_chunk_size(Some("16")), 16);
-        assert_eq!(parse_linux_wg_batch_chunk_size(Some("32")), 32);
-        assert_eq!(
-            parse_linux_wg_batch_chunk_size(Some("128")),
-            LINUX_UDP_SEND_BATCH_MAX
+            DEFAULT_LINUX_WG_BATCH_CHUNK_SIZE,
+            32,
+            "accepted packet-mover chunk keeps the committed bulk run shape bounded"
         );
     }
 
