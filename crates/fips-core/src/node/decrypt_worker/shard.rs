@@ -552,7 +552,7 @@ impl DecryptWorkerShard {
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         };
         Ok((open_idx, owner_idx, open_job))
@@ -591,19 +591,17 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         record_fsp_open_pool_bulk_drop(1);
-        let completion_tx = open_job.completion_tx.take();
+        let completion_owner_idx = open_job.completion_owner_idx.take();
         open_job.mark_returned_completion();
         let completion = open_job.into_dropped_completion();
-        if completion_tx
-            .as_ref()
-            .is_some_and(|tx| self.pool.fsp_aead_completion_sender_is(idx, tx))
-            || completion_tx.is_none()
-        {
+        if completion_owner_idx == Some(idx) || completion_owner_idx.is_none() {
             self.handle_fsp_aead_completion_msg(idx, completion, plaintext_batch);
             return;
         }
-        if let Some(tx) = completion_tx {
-            let _ = tx.send(FspAeadCompletionBatch::one(completion));
+        if let Some(owner_idx) = completion_owner_idx {
+            let _ = self
+                .pool
+                .send_fsp_aead_completion_batch(owner_idx, FspAeadCompletionBatch::one(completion));
         }
     }
 
@@ -614,7 +612,7 @@ impl DecryptWorkerShard {
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
         record_fsp_open_pool_bulk_drop(jobs.len());
-        let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
+        let mut current_owner_idx = None;
         let mut current_local = false;
         let mut current_source_addr = None;
         let mut current_receive_order_id = None;
@@ -622,11 +620,9 @@ impl DecryptWorkerShard {
         let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
 
         for mut job in jobs {
-            let completion_tx = job.completion_tx.take();
-            let local_completion = completion_tx
-                .as_ref()
-                .is_some_and(|tx| self.pool.fsp_aead_completion_sender_is(idx, tx))
-                || completion_tx.is_none();
+            let completion_owner_idx = job.completion_owner_idx.take();
+            let local_completion =
+                completion_owner_idx == Some(idx) || completion_owner_idx.is_none();
             let source_addr = job.source_addr;
             let receive_order_id = job.receive_order_id;
             job.mark_returned_completion();
@@ -636,22 +632,18 @@ impl DecryptWorkerShard {
                 && current_local == local_completion
                 && current_source_addr == Some(source_addr)
                 && current_receive_order_id == Some(receive_order_id)
-                && (local_completion
-                    || current_tx
-                        .as_ref()
-                        .zip(completion_tx.as_ref())
-                        .is_some_and(|(current, next)| current.same_channel(next)));
+                && (local_completion || current_owner_idx == completion_owner_idx);
 
             if !same_batch {
                 self.flush_dropped_fsp_aead_open_completion_batch(
                     idx,
                     current_local,
-                    current_tx.take(),
+                    current_owner_idx.take(),
                     current_batch.take(),
                     plaintext_batch,
                 );
                 current_local = local_completion;
-                current_tx = completion_tx.filter(|_| !local_completion);
+                current_owner_idx = completion_owner_idx.filter(|_| !local_completion);
                 current_source_addr = Some(source_addr);
                 current_receive_order_id = Some(receive_order_id);
                 current_batch = Some(FspAeadCompletionBatch::one(job.into_dropped_completion()));
@@ -667,7 +659,7 @@ impl DecryptWorkerShard {
         self.flush_dropped_fsp_aead_open_completion_batch(
             idx,
             current_local,
-            current_tx,
+            current_owner_idx,
             current_batch,
             plaintext_batch,
         );
@@ -677,7 +669,7 @@ impl DecryptWorkerShard {
         &mut self,
         idx: usize,
         local_completion: bool,
-        completion_tx: Option<Sender<FspAeadCompletionBatch>>,
+        completion_owner_idx: Option<usize>,
         batch: Option<FspAeadCompletionBatch>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
@@ -686,8 +678,8 @@ impl DecryptWorkerShard {
             self.handle_fsp_aead_completion_batch_msg(idx, batch, plaintext_batch);
             return;
         }
-        if let Some(tx) = completion_tx {
-            let _ = tx.send(batch);
+        if let Some(owner_idx) = completion_owner_idx {
+            let _ = self.pool.send_fsp_aead_completion_batch(owner_idx, batch);
         }
     }
 

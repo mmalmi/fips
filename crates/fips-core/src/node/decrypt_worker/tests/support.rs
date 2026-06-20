@@ -370,7 +370,6 @@
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
-        let (unused_completion_tx, _unused_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
         header_packet.extend_from_slice(&[0u8; 16]);
@@ -380,7 +379,7 @@
             0,
             Arc::new(test_chacha_key([0x54; 32])),
             header,
-            unused_completion_tx,
+            None,
         );
 
         assert!(
@@ -440,7 +439,6 @@
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
-        let (unused_completion_tx, _unused_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
         header_packet.extend_from_slice(&[0u8; 16]);
@@ -452,9 +450,9 @@
                 0,
                 Arc::clone(&cipher),
                 header.clone(),
-                unused_completion_tx.clone(),
+                None,
             ),
-            test_fsp_aead_open_job(source_addr, 1, cipher, header, unused_completion_tx),
+            test_fsp_aead_open_job(source_addr, 1, cipher, header, None),
         ];
 
         assert!(
@@ -514,7 +512,6 @@
         let open_idx = pool
             .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("two-worker pool should have a sibling opener");
-        let (unused_completion_tx, _unused_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
         header_packet.extend_from_slice(&[0u8; 16]);
@@ -527,7 +524,7 @@
             &pool,
             open_idx,
             owner_idx,
-            test_fsp_aead_open_job(source_addr, 0, cipher, header, unused_completion_tx),
+            test_fsp_aead_open_job(source_addr, 0, cipher, header, None),
         );
         assert!(returned.is_empty(), "single opener job should fit in the batcher");
         assert!(
@@ -545,8 +542,7 @@
             .expect("single opener job")
         {
             DecryptWorkerBulkItem::FspAeadOpen(job) => {
-                let completion_tx = job.completion_tx.expect("opener job needs owner completion tx");
-                assert!(pool.fsp_aead_completion_sender_is(owner_idx, &completion_tx));
+                assert_eq!(job.completion_owner_idx, Some(owner_idx));
             }
             DecryptWorkerBulkItem::FspAeadOpenBatch(_) => panic!("expected a single opener job"),
             DecryptWorkerBulkItem::Job(_)
@@ -582,7 +578,7 @@
                     sequence,
                     Arc::clone(&cipher),
                     header.clone(),
-                    pool.senders[owner_idx].fsp_aead_completion.clone(),
+                    None,
                 ),
             );
             assert!(
@@ -722,7 +718,7 @@
             0,
             Arc::new(test_chacha_key([0x58; 32])),
             header,
-            pool.senders[owner_idx].fsp_aead_completion.clone(),
+            Some(owner_idx),
         );
         open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
 
@@ -770,7 +766,7 @@
                     0,
                     Arc::clone(&cipher),
                     header.clone(),
-                    pool.senders[owner_idx].fsp_aead_completion.clone(),
+                    Some(owner_idx),
                 );
                 job.completion_source = FspAeadCompletionSource::WorkerOpen;
                 job
@@ -781,7 +777,7 @@
                     1,
                     cipher,
                     header,
-                    pool.senders[owner_idx].fsp_aead_completion.clone(),
+                    Some(owner_idx),
                 );
                 job.completion_source = FspAeadCompletionSource::WorkerOpen;
                 job
@@ -840,7 +836,7 @@
                 0,
                 cipher,
                 header,
-                pool.senders[owner_idx].fsp_aead_completion.clone(),
+                Some(owner_idx),
             )];
 
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1309,7 +1305,7 @@
         ticket_sequence: u64,
         cipher: Arc<LessSafeKey>,
         header: FspEncryptedHeader,
-        completion_tx: Sender<FspAeadCompletionBatch>,
+        completion_owner_idx: Option<usize>,
     ) -> FspAeadOpenJob {
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
@@ -1324,7 +1320,7 @@
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: Some(completion_tx),
+            completion_owner_idx,
             open_queued_at: None,
         }
     }

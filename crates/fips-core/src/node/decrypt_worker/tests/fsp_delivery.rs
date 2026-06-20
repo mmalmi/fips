@@ -342,7 +342,7 @@
             job: make_job(fsp_payload.clone()),
             header: header.clone(),
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -375,7 +375,7 @@
             job: make_job(fsp_payload),
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -534,7 +534,7 @@
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -550,7 +550,7 @@
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -682,7 +682,7 @@
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -701,7 +701,7 @@
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -1046,7 +1046,7 @@
             job: make_job(local_payload, local_payload_len),
             header: local_header,
             completion_source: FspAeadCompletionSource::Local,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();
@@ -1067,7 +1067,7 @@
             job: make_job(open_payload, open_payload_len),
             header: open_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
-            completion_tx: None,
+            completion_owner_idx: None,
             open_queued_at: None,
         }
         .into_completion();

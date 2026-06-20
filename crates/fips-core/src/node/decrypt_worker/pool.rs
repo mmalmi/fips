@@ -376,10 +376,14 @@ impl DecryptWorkerPool {
         self.senders.len() > 1
     }
 
-    fn fsp_aead_completion_sender_is(&self, idx: usize, tx: &Sender<FspAeadCompletionBatch>) -> bool {
+    fn send_fsp_aead_completion_batch(
+        &self,
+        owner_idx: usize,
+        batch: FspAeadCompletionBatch,
+    ) -> bool {
         self.senders
-            .get(idx)
-            .is_some_and(|sender| sender.fsp_aead_completion.same_channel(tx))
+            .get(owner_idx)
+            .is_some_and(|sender| sender.fsp_aead_completion.send(batch).is_ok())
     }
 
     fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
@@ -427,10 +431,10 @@ impl DecryptWorkerPool {
         let Some(open_sender) = self.senders.get(open_idx) else {
             return Err(job);
         };
-        let Some(owner_sender) = self.senders.get(owner_idx) else {
+        if self.senders.get(owner_idx).is_none() {
             return Err(job);
-        };
-        job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
+        }
+        job.completion_owner_idx = Some(owner_idx);
         job.open_queued_at = crate::perf_profile::stamp();
         if !try_reserve_bulk_packets(
             &open_sender.bulk_queued_packets,
@@ -478,12 +482,12 @@ impl DecryptWorkerPool {
         let Some(open_sender) = self.senders.get(open_idx) else {
             return Err(jobs);
         };
-        let Some(owner_sender) = self.senders.get(owner_idx) else {
+        if self.senders.get(owner_idx).is_none() {
             return Err(jobs);
         };
         let queued_at = crate::perf_profile::stamp();
         for job in &mut jobs {
-            job.completion_tx = Some(owner_sender.fsp_aead_completion.clone());
+            job.completion_owner_idx = Some(owner_idx);
             job.open_queued_at = queued_at;
         }
 

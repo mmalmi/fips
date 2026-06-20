@@ -558,33 +558,37 @@ fn record_decrypt_worker_bulk_item_service(
 
 fn send_fsp_aead_open_completion_batch(
     idx: usize,
-    completion_tx: Sender<FspAeadCompletionBatch>,
+    pool: &DecryptWorkerPool,
+    owner_idx: usize,
     batch: FspAeadCompletionBatch,
 ) {
-    if completion_tx.send(batch).is_err() {
+    if !pool.send_fsp_aead_completion_batch(owner_idx, batch) {
         debug!(
             worker = idx,
+            owner = owner_idx,
             "FSP AEAD opener completion owner gone; dropping completion"
         );
     }
 }
 
-fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
+fn complete_fsp_aead_open_jobs(
+    idx: usize,
+    pool: &DecryptWorkerPool,
+    jobs: Vec<FspAeadOpenJob>,
+) {
     let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
-    let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
+    let mut current_owner_idx = None;
     let mut current_source_addr = None;
     let mut current_receive_order_id = None;
     let mut current_batch: Option<FspAeadCompletionBatch> = None;
 
     for mut job in jobs {
-        let Some(completion_tx) = job.completion_tx.take() else {
+        let Some(owner_idx) = job.completion_owner_idx.take() else {
             continue;
         };
         let source_addr = job.source_addr;
         let receive_order_id = job.receive_order_id;
-        let same_batch = current_tx
-            .as_ref()
-            .is_some_and(|tx| tx.same_channel(&completion_tx))
+        let same_batch = current_owner_idx == Some(owner_idx)
             && current_source_addr == Some(source_addr)
             && current_receive_order_id == Some(receive_order_id)
             && current_batch
@@ -592,10 +596,12 @@ fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
                 .is_some_and(|batch| batch.len() < completion_batch_max);
 
         if !same_batch {
-            if let (Some(tx), Some(batch)) = (current_tx.take(), current_batch.take()) {
-                send_fsp_aead_open_completion_batch(idx, tx, batch);
+            if let (Some(owner_idx), Some(batch)) =
+                (current_owner_idx.take(), current_batch.take())
+            {
+                send_fsp_aead_open_completion_batch(idx, pool, owner_idx, batch);
             }
-            current_tx = Some(completion_tx);
+            current_owner_idx = Some(owner_idx);
             current_source_addr = Some(source_addr);
             current_receive_order_id = Some(receive_order_id);
             current_batch = Some(FspAeadCompletionBatch::one(job.into_completion()));
@@ -608,8 +614,8 @@ fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
         batch.push(job.into_completion());
     }
 
-    if let (Some(tx), Some(batch)) = (current_tx, current_batch) {
-        send_fsp_aead_open_completion_batch(idx, tx, batch);
+    if let (Some(owner_idx), Some(batch)) = (current_owner_idx, current_batch) {
+        send_fsp_aead_open_completion_batch(idx, pool, owner_idx, batch);
     }
 }
 
@@ -655,14 +661,14 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
             let item_service_started_at = crate::perf_profile::stamp();
-            complete_fsp_aead_open_jobs(idx, vec![job]);
+            complete_fsp_aead_open_jobs(idx, &shard.pool, vec![job]);
             record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
-            complete_fsp_aead_open_jobs(idx, jobs);
+            complete_fsp_aead_open_jobs(idx, &shard.pool, jobs);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }

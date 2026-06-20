@@ -1321,7 +1321,7 @@ struct FspAeadOpenJob {
     job: FspDecryptJob,
     header: FspEncryptedHeader,
     completion_source: FspAeadCompletionSource,
-    completion_tx: Option<Sender<FspAeadCompletionBatch>>,
+    completion_owner_idx: Option<usize>,
     open_queued_at: Option<crate::perf_profile::TraceStamp>,
 }
 
