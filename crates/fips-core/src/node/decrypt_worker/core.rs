@@ -60,9 +60,8 @@ const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_
 /// exists, same-owner bulk uses the opener path and pressure is bounded by the
 /// opener bulk queue plus the ordered receive-ticket window.
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
-/// sessions by default. This removes the direct-peer hash lottery between
-/// local and handoff FSP lanes while preserving the wire protocol.
-const DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER: bool = true;
+/// sessions. This removes the direct-peer hash lottery between local and
+/// handoff FSP lanes while preserving the wire protocol.
 const DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
 /// Match one owner-side completion interleave slice so a helper can return a
 /// full bounded packet-mover turn without spending it across multiple messages.
@@ -272,28 +271,6 @@ fn fmp_aead_helper_max_completion_backlog() -> usize {
             fmp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
         )
     })
-}
-
-fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
-    raw.map(|raw| {
-        !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        )
-    })
-    .unwrap_or(default)
-}
-
-fn fmp_source_affine_session_owner_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER)
-}
-
-fn fmp_source_affine_session_owner_enabled() -> bool {
-    fmp_source_affine_session_owner_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER")
-            .ok()
-            .as_deref(),
-    )
 }
 
 fn fmp_aead_helper_count_from_raw(raw: Option<&str>) -> usize {
