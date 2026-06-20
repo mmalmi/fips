@@ -345,13 +345,21 @@ impl EncryptWorkerPool {
         &self,
         jobs: Vec<FmpSendJob>,
     ) -> Result<(), Vec<FmpSendJob>> {
-        if self.linux_wg_batch_senders.is_empty() || jobs.len() < linux_wg_batch_min_packets() {
+        let packet_count = jobs.len();
+        crate::perf_profile::record_linux_wg_batch_admission(packet_count);
+        if self.linux_wg_batch_senders.is_empty() {
+            crate::perf_profile::record_linux_wg_batch_admission_unavailable(packet_count);
+            return Err(jobs);
+        }
+        if packet_count < linux_wg_batch_min_packets() {
+            crate::perf_profile::record_linux_wg_batch_admission_too_small(packet_count);
             return Err(jobs);
         }
 
         let Some(selected_targets) =
             linux_wg_bulk_batch_selected_targets(&jobs, linux_wg_batch_min_packets())
         else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(packet_count);
             return Err(jobs);
         };
 
@@ -379,9 +387,11 @@ impl EncryptWorkerPool {
             if fallback_jobs.is_empty() {
                 Ok(())
             } else {
+                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
                 Err(fallback_jobs)
             }
         } else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
             Err(fallback_jobs)
         }
     }
@@ -391,13 +401,21 @@ impl EncryptWorkerPool {
         &self,
         jobs: Vec<FmpSendJob>,
     ) -> Result<bool, Vec<FmpSendJob>> {
-        if self.linux_wg_batch_senders.is_empty() || jobs.len() < linux_wg_batch_min_packets() {
+        let packet_count = jobs.len();
+        crate::perf_profile::record_linux_wg_batch_admission(packet_count);
+        if self.linux_wg_batch_senders.is_empty() {
+            crate::perf_profile::record_linux_wg_batch_admission_unavailable(packet_count);
+            return Err(jobs);
+        }
+        if packet_count < linux_wg_batch_min_packets() {
+            crate::perf_profile::record_linux_wg_batch_admission_too_small(packet_count);
             return Err(jobs);
         }
 
         let Some(selected_targets) =
             linux_wg_bulk_batch_selected_targets(&jobs, linux_wg_batch_min_packets())
         else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(packet_count);
             return Err(jobs);
         };
 
@@ -432,9 +450,11 @@ impl EncryptWorkerPool {
             if fallback_jobs.is_empty() {
                 Ok(all_enqueued)
             } else {
+                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
                 Err(fallback_jobs)
             }
         } else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
             Err(fallback_jobs)
         }
     }
@@ -542,6 +562,7 @@ impl EncryptWorkerPool {
 
         let ready = Arc::new(LinuxWgSendBatch::default());
         if flow.try_enqueue(Arc::clone(&ready)).is_err() {
+            crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
             self.drop_linux_wg_jobs(0, &jobs);
             return;
         }
@@ -558,6 +579,7 @@ impl EncryptWorkerPool {
         match self.linux_wg_batch_senders[idx].try_send(batch) {
             Ok(()) => {}
             Err(TrySendError::Full(batch)) | Err(TrySendError::Disconnected(batch)) => {
+                crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
                 self.drop_linux_wg_jobs(idx, &batch.jobs);
                 batch.ready.complete(Vec::new());
             }
@@ -577,6 +599,7 @@ impl EncryptWorkerPool {
 
         let ready = Arc::new(LinuxWgSendBatch::default());
         if !flow.enqueue_blocking(Arc::clone(&ready)) {
+            crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
             self.drop_linux_wg_jobs(0, &jobs);
             return false;
         }
@@ -593,6 +616,7 @@ impl EncryptWorkerPool {
         match self.linux_wg_batch_senders[idx].send(batch) {
             Ok(()) => true,
             Err(SendError(batch)) => {
+                crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
                 self.drop_linux_wg_jobs(idx, &batch.jobs);
                 batch.ready.complete(Vec::new());
                 false
