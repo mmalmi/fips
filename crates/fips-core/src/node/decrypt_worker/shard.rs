@@ -1109,23 +1109,35 @@ impl DecryptWorkerShard {
             fsp_payload_len: _,
             trace_enqueued_at: _,
         } = job;
+        let DecryptFallback {
+            source_peer: fmp_source_peer,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            lane,
+            fmp_counter,
+            fmp_flags,
+            packet_data,
+            fmp_plaintext_offset: _,
+            fmp_plaintext_len: _,
+            trace_enqueued_at: _,
+        } = fallback;
         let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
-        let plaintext = fallback
-            .packet_data
+        let plaintext = packet_data
             .get(ciphertext_offset..ciphertext_offset + plaintext_len)?;
-        let (timestamp, msg_type, inner_flags_byte, _body) = fsp_strip_inner_header(plaintext)?;
+        let (timestamp, msg_type, inner_flags_byte, _) = fsp_strip_inner_header(plaintext)?;
         let received_k_bit = header.flags & FSP_FLAG_K != 0;
         let spin_bit = inner_flags_byte & 0x01 != 0;
-        let lane = fallback.lane();
         let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr.clone(),
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
+            source_peer: fmp_source_peer,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms: timestamp_ms,
+            packet_len,
+            fmp_counter,
             inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
+            fmp_flags,
         };
         let sync = FspReceiveSync {
             counter: header.counter,
@@ -1139,7 +1151,7 @@ impl DecryptWorkerShard {
         };
         let message = AuthenticatedSessionMessage::from_buffer(
             source_peer,
-            fallback.packet_data,
+            packet_data,
             ciphertext_offset,
             plaintext_len,
             msg_type,
@@ -1378,16 +1390,6 @@ impl DecryptWorkerShard {
             header
         };
         let lane = fallback.lane();
-        let fmp = DecryptFmpBookkeeping {
-            source_peer: fallback.source_peer,
-            transport_id: fallback.transport_id,
-            remote_addr: fallback.remote_addr.clone(),
-            packet_timestamp_ms: fallback.timestamp_ms,
-            packet_len: fallback.packet_len,
-            fmp_counter: fallback.fmp_counter,
-            inner_timestamp_ms,
-            fmp_flags: fallback.fmp_flags,
-        };
 
         if state.has_single_current_epoch() {
             let Some(ticket) = state.issue_fsp_receive_ticket() else {
@@ -1535,7 +1537,30 @@ impl DecryptWorkerShard {
         };
         let spin_bit = inner_flags_byte & 0x01 != 0;
         let plaintext_len = plaintext.len();
-        let lane = fallback.lane();
+        let DecryptFallback {
+            source_peer: fmp_source_peer,
+            transport_id,
+            remote_addr,
+            timestamp_ms,
+            packet_len,
+            lane,
+            fmp_counter,
+            fmp_flags,
+            packet_data: _,
+            fmp_plaintext_offset: _,
+            fmp_plaintext_len: _,
+            trace_enqueued_at: _,
+        } = fallback;
+        let fmp = DecryptFmpBookkeeping {
+            source_peer: fmp_source_peer,
+            transport_id,
+            remote_addr,
+            packet_timestamp_ms: timestamp_ms,
+            packet_len,
+            fmp_counter,
+            inner_timestamp_ms,
+            fmp_flags,
+        };
         let sync = FspReceiveSync {
             counter: header.counter,
             slot,
@@ -2193,7 +2218,7 @@ impl DecryptWorkerShard {
 
         if let Some(meta) = fsp_meta {
             let fsp_job = FspDecryptJob {
-                fallback_tx: fallback_tx.clone(),
+                fallback_tx,
                 fallback,
                 local_node_addr,
                 source_addr: meta.source_addr,
