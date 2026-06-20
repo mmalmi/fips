@@ -112,6 +112,75 @@ mod tests {
         );
     }
 
+    fn linux_test_item(byte: u8) -> LinuxSendItem {
+        LinuxSendItem::Packet {
+            lane: SelectedSendLane::Bulk,
+            packet: vec![byte],
+            drop_on_backpressure: true,
+        }
+    }
+
+    fn linux_ready_chunk(items: Vec<LinuxSendItem>) -> LinuxPendingChunk {
+        let total = items.len();
+        let mut chunk = LinuxPendingChunk::new(total);
+        for (idx, item) in items.into_iter().enumerate() {
+            chunk.insert(idx, item);
+        }
+        chunk
+    }
+
+    fn linux_ready_bytes(chunks: Vec<LinuxReadyChunk>) -> Vec<u8> {
+        chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.items)
+            .filter_map(|item| match item {
+                LinuxSendItem::Packet { packet, .. } => packet.first().copied(),
+                LinuxSendItem::Skip => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn linux_ordered_container_sender_waits_for_next_ready_chunk() {
+        let mut state = LinuxSendFlowState::default();
+        state.pending.insert(1, linux_ready_chunk(vec![linux_test_item(2)]));
+
+        assert!(
+            pop_linux_ready_chunks_locked(&mut state, 8).is_empty(),
+            "later ready chunks must wait behind the missing next chunk"
+        );
+        assert_eq!(state.next_send_seq, 0);
+
+        state.pending.insert(0, linux_ready_chunk(vec![linux_test_item(1)]));
+        let chunks = pop_linux_ready_chunks_locked(&mut state, 8);
+        assert_eq!(linux_ready_bytes(chunks), vec![1, 2]);
+        assert_eq!(state.next_send_seq, 2);
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn linux_ordered_container_sender_respects_batch_budget_by_chunk() {
+        let mut state = LinuxSendFlowState::default();
+        state.pending.insert(
+            0,
+            linux_ready_chunk(vec![linux_test_item(1), linux_test_item(2)]),
+        );
+        state.pending.insert(1, linux_ready_chunk(vec![linux_test_item(3)]));
+
+        let chunks = pop_linux_ready_chunks_locked(&mut state, 2);
+        assert_eq!(linux_ready_bytes(chunks), vec![1, 2]);
+        assert_eq!(
+            state.next_send_seq, 1,
+            "a ready chunk is not split to squeeze in the next chunk"
+        );
+        assert_eq!(state.pending.len(), 1);
+
+        let chunks = pop_linux_ready_chunks_locked(&mut state, 2);
+        assert_eq!(linux_ready_bytes(chunks), vec![3]);
+        assert_eq!(state.next_send_seq, 2);
+        assert!(state.pending.is_empty());
+    }
+
     #[test]
     fn selected_send_batch_tracks_gso_eligibility_while_grouping() {
         let rt = tokio::runtime::Builder::new_current_thread()

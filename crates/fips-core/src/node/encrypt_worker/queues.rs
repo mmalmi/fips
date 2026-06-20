@@ -83,6 +83,14 @@ struct QueuedFmpSendJob {
     macos_flow: Option<Arc<MacSequencedSendFlow>>,
     #[cfg(target_os = "macos")]
     macos_seq: u64,
+    #[cfg(target_os = "linux")]
+    linux_flow: Option<Arc<LinuxSequencedSendFlow>>,
+    #[cfg(target_os = "linux")]
+    linux_chunk_seq: u64,
+    #[cfg(target_os = "linux")]
+    linux_chunk_index: usize,
+    #[cfg(target_os = "linux")]
+    linux_chunk_len: usize,
 }
 
 impl QueuedFmpSendJob {
@@ -108,6 +116,14 @@ impl QueuedFmpSendJob {
             macos_flow: None,
             #[cfg(target_os = "macos")]
             macos_seq: 0,
+            #[cfg(target_os = "linux")]
+            linux_flow: None,
+            #[cfg(target_os = "linux")]
+            linux_chunk_seq: 0,
+            #[cfg(target_os = "linux")]
+            linux_chunk_index: 0,
+            #[cfg(target_os = "linux")]
+            linux_chunk_len: 0,
         }
     }
 
@@ -125,10 +141,47 @@ impl QueuedFmpSendJob {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn linux_chunked(
+        job: FmpSendJob,
+        linux_flow: Arc<LinuxSequencedSendFlow>,
+        linux_chunk_seq: u64,
+        linux_chunk_index: usize,
+        linux_chunk_len: usize,
+    ) -> Self {
+        let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
+        let target_key = job.send_target_key();
+        let dispatch_key = SendDispatchKey::new(target_key, job.endpoint_flow_dispatch_key);
+        let scheduling_weight = clamp_send_scheduling_weight(job.scheduling_weight);
+        Self {
+            job,
+            lane,
+            target_key,
+            dispatch_key,
+            scheduling_weight,
+            fair_reservation: None,
+            linux_flow: Some(linux_flow),
+            linux_chunk_seq,
+            linux_chunk_index,
+            linux_chunk_len,
+        }
+    }
+
     fn complete_sequenced_skip(self) {
         #[cfg(target_os = "macos")]
         if let Some(flow) = self.macos_flow {
             flow.complete_many(vec![(self.macos_seq, MacSendItem::Skip)]);
+            return;
+        }
+
+        #[cfg(target_os = "linux")]
+        if let Some(flow) = self.linux_flow {
+            flow.complete_parts(vec![LinuxChunkPart::new(
+                self.linux_chunk_seq,
+                self.linux_chunk_index,
+                self.linux_chunk_len,
+                LinuxSendItem::Skip,
+            )]);
             return;
         }
 

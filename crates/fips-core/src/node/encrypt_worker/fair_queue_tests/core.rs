@@ -498,6 +498,10 @@
                 .collect();
             let pool = EncryptWorkerPool {
                 senders: Arc::from(senders.into_boxed_slice()),
+                #[cfg(target_os = "linux")]
+                linux_senders: Arc::new(LinuxSequencedSendFlows::default()),
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 10009));
 
