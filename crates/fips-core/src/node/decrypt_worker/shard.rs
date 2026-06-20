@@ -124,7 +124,6 @@ struct DecryptWorkerShard {
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
     fsp_ready_outputs: Vec<DecryptWorkerOutput>,
-    fsp_local_open_scratch: Vec<u8>,
 }
 
 impl DecryptWorkerShard {
@@ -134,7 +133,6 @@ impl DecryptWorkerShard {
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
             fsp_ready_outputs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
-            fsp_local_open_scratch: Vec::new(),
         }
     }
 
@@ -920,17 +918,6 @@ impl DecryptWorkerShard {
         self.fsp_ready_outputs = outputs;
     }
 
-    fn fsp_local_open_scratch(&mut self) -> Vec<u8> {
-        let mut scratch = std::mem::take(&mut self.fsp_local_open_scratch);
-        scratch.clear();
-        scratch
-    }
-
-    fn recycle_fsp_local_open_scratch(&mut self, mut scratch: Vec<u8>) {
-        scratch.clear();
-        self.fsp_local_open_scratch = scratch;
-    }
-
     fn push_reused_fsp_ready_outputs(
         &mut self,
         mut outputs: Vec<DecryptWorkerOutput>,
@@ -1256,20 +1243,13 @@ impl DecryptWorkerShard {
         let local_open_preserves_ciphertext = matches!(lane, DecryptWorkerLane::Bulk);
         let restore_ciphertext =
             matches!(lane, DecryptWorkerLane::Priority).then(|| ciphertext.to_vec());
-        let mut scratch_ciphertext = if local_open_preserves_ciphertext {
-            self.fsp_local_open_scratch()
-        } else {
-            Vec::new()
-        };
+        let mut scratch_ciphertext = Vec::new();
         let (ticket, open_result, receive_order_id) = {
             let state = self
                 .fsp_sessions
                 .get_mut(&source_addr)
                 .expect("FSP session was checked before current-epoch local open");
             let Some(ticket) = state.issue_fsp_receive_ticket() else {
-                if local_open_preserves_ciphertext {
-                    self.recycle_fsp_local_open_scratch(scratch_ciphertext);
-                }
                 match lane {
                     DecryptWorkerLane::Priority => {
                         record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
@@ -1370,9 +1350,6 @@ impl DecryptWorkerShard {
                 source: FspAeadCompletionSource::Local,
             },
         };
-        if local_open_preserves_ciphertext {
-            self.recycle_fsp_local_open_scratch(scratch_ciphertext);
-        }
 
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = self.fsp_ready_outputs_with_capacity(1);
