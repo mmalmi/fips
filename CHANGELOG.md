@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.69] - 2026-06-20
+
+### Fixed
+
+- Kept non-static direct paths with pending direct probes from carrying endpoint
+  payload when a learned fallback is available, reducing mobile/NAT direct-path
+  churn and packet loss while probes continue in the background.
+- Bumped `fips-endpoint` to 0.3.44 so app-facing consumers pick up the
+  `fips-core` 0.3.69 direct-probe route selection fix.
+
 ## [0.3.68] - 2026-06-20
 
 ### Changed

@@ -133,7 +133,7 @@ fn traversal_path_quiet_refresh_uses_heartbeat_and_fast_dead_floor() {
 }
 
 #[tokio::test]
-async fn quiet_recent_endpoint_path_refreshes_without_demoting_payload() {
+async fn quiet_recent_endpoint_path_refresh_uses_fallback_without_demoting_peer() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
@@ -204,17 +204,17 @@ async fn quiet_recent_endpoint_path_refreshes_without_demoting_payload() {
     );
     assert!(
         !node.session_direct_path_is_degraded(&peer_addr, Node::now_ms()),
-        "a quiet pre-dead refresh is only a probe signal, not proof that direct payload should stop"
+        "a quiet pre-dead refresh is only a probe signal, not a hard link-dead mark"
     );
     assert!(
         !node.pending_lookups.contains_key(&peer_addr),
         "quiet pre-dead refresh should not start fallback discovery until link-dead or loss evidence arrives"
     );
-    let direct = node.find_next_hop(&peer_addr).expect("direct route");
+    let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
     assert_eq!(
-        direct.node_addr(),
-        &peer_addr,
-        "payload should keep using the healthy direct path while background refresh runs"
+        fallback.node_addr(),
+        &transit_addr,
+        "payload should use learned fallback while a non-static direct path is under validation"
     );
 }
 

@@ -177,6 +177,43 @@ fn test_stale_direct_session_trust_without_fallback_returns_no_route() {
 }
 
 #[test]
+fn test_pending_direct_probe_prefers_fallback_for_non_static_path() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    let peer_config = crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("pending-direct-probe".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers.push(peer_config.clone());
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    node.sessions
+        .get_mut(&remote_addr)
+        .expect("session")
+        .record_outbound_next_hop(remote_addr);
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = Node::now_ms() + 500;
+    node.retry_pending.insert(remote_addr, retry);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(fallback_next_hop),
+        "direct probe state means the non-static direct path is under validation; payload should use fallback"
+    );
+}
+
+#[test]
 fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
