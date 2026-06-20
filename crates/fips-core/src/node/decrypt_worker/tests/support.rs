@@ -1728,6 +1728,24 @@
         })
     }
 
+    fn dummy_authenticated_fmp_receive_event(lane: DecryptWorkerLane) -> DecryptWorkerEvent {
+        let source_peer = test_source_peer();
+        DecryptWorkerEvent::AuthenticatedFmpReceive(DecryptAuthenticatedFmpReceive {
+            fmp: DecryptFmpBookkeeping {
+                source_peer,
+                transport_id: TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 1_000,
+                packet_len: 128,
+                fmp_counter: 2,
+                inner_timestamp_ms: 3,
+                fmp_flags: 0,
+            },
+            lane,
+            trace_enqueued_at: None,
+        })
+    }
+
     fn test_chacha_key(key_bytes: [u8; 32]) -> LessSafeKey {
         let unbound = UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &key_bytes).unwrap();
         LessSafeKey::new(unbound)

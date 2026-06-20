@@ -439,6 +439,34 @@
                 crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait
             )
         );
+
+        let authenticated_fmp = dummy_authenticated_fmp_receive_event(DecryptWorkerLane::Priority);
+        assert_eq!(
+            decrypt_worker_event_lane(&authenticated_fmp),
+            DecryptWorkerLane::Priority
+        );
+        assert_eq!(
+            authenticated_fmp.queue_wait_stages(),
+            (
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceivePriorityWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveBulkWait
+            )
+        );
+
+        let authenticated_fmp = dummy_authenticated_fmp_receive_event(DecryptWorkerLane::Bulk);
+        assert_eq!(
+            decrypt_worker_event_lane(&authenticated_fmp),
+            DecryptWorkerLane::Bulk
+        );
+        assert_eq!(
+            authenticated_fmp.queue_wait_stages(),
+            (
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceivePriorityWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveBulkWait
+            )
+        );
     }
 
     #[test]

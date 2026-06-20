@@ -851,7 +851,7 @@ fn fsp_completion_ready_buckets_classify_ordered_bursts() {
 
 #[test]
 fn stage_table_exposes_endpoint_command_lane_waits() {
-    assert_eq!(N_STAGES, 88);
+    assert_eq!(N_STAGES, 90);
     assert_eq!(
         stage_from_index(Stage::EndpointCommandWait as usize).name(),
         "endpoint_command_wait"
@@ -1083,6 +1083,14 @@ fn stage_table_exposes_endpoint_command_lane_waits() {
     assert_eq!(
         stage_from_index(Stage::FmpOpenedDispatch as usize).name(),
         "fmp_opened_dispatch"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedFmpReceivePriorityWait as usize).name(),
+        "decrypt_authenticated_fmp_receive_priority_wait"
+    );
+    assert_eq!(
+        stage_from_index(Stage::DecryptAuthenticatedFmpReceiveBulkWait as usize).name(),
+        "decrypt_authenticated_fmp_receive_bulk_wait"
     );
 }
 

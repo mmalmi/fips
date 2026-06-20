@@ -2515,8 +2515,8 @@ impl DecryptWorkerEvent {
         match self {
             Self::AuthenticatedFmpReceive(_) => (
                 crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveWait,
-                crate::perf_profile::Stage::DecryptAuthenticatedSessionPriorityWait,
-                crate::perf_profile::Stage::DecryptAuthenticatedSessionBulkWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceivePriorityWait,
+                crate::perf_profile::Stage::DecryptAuthenticatedFmpReceiveBulkWait,
             ),
             Self::AuthenticatedSession(_)
             | Self::AuthenticatedSessionBatch(_)
