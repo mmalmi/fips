@@ -625,6 +625,14 @@ impl OwnedFspSessionState {
         self.fsp_shared_crypto.as_ref().map(Arc::clone)
     }
 
+    fn mark_shared_crypto_next_ready(&self, receive_order_id: u64, next_ready: u64) {
+        if let Some(shared) = &self.fsp_shared_crypto
+            && shared.receive_order_id == receive_order_id
+        {
+            shared.mark_next_ready(next_ready);
+        }
+    }
+
     fn preserve_receive_order_from(&mut self, previous: OwnedFspSessionState) {
         let progress = previous.receive_progress();
         self.fsp_receive_order_id = previous.fsp_receive_order_id;

@@ -411,6 +411,45 @@
     }
 
     #[test]
+    fn fsp_ordered_completion_updates_attached_shared_progress() {
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x52; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let ticket = shared.issue_ticket();
+
+        let drain = state
+            .complete_ordered_fsp_open(
+                ticket,
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+            )
+            .expect("worker-open drop completion should fit receive order");
+        assert_eq!(drain.ready, 1);
+        state.mark_shared_crypto_next_ready(receive_order_id, state.fsp_receive_order_next_ready());
+
+        let progress = shared.progress();
+        assert_eq!(progress.next_ready, ticket.sequence + 1);
+        assert_eq!(progress.next_ticket, ticket.sequence + 1);
+    }
+
+    #[test]
     fn fsp_ordered_completion_buffers_out_of_order_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
