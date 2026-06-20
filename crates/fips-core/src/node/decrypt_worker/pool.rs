@@ -6,7 +6,6 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
-    fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
     fmp_source_affine_session_owner: bool,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_local_bulk_open_worker: bool,
@@ -18,174 +17,9 @@ struct DecryptWorkerSender {
     control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
-    fmp_aead_completion: Sender<FmpAeadCompletionBatch>,
     fsp_aead_completion: Sender<FspAeadCompletionBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
-}
-
-struct FmpAeadHelperPool {
-    tx: Sender<FmpAeadHelperWork>,
-}
-
-enum FmpAeadHelperWork {
-    One(FmpAeadHelperJob),
-    Batch(Vec<FmpAeadHelperJob>),
-}
-
-impl FmpAeadHelperWork {
-    fn into_jobs(self) -> Vec<FmpAeadHelperJob> {
-        match self {
-            Self::One(job) => vec![job],
-            Self::Batch(jobs) => jobs,
-        }
-    }
-}
-
-impl FmpAeadHelperPool {
-    fn spawn(n: usize, channel_cap: usize) -> Option<Arc<Self>> {
-        if n == 0 {
-            return None;
-        }
-        let (tx, rx) = bounded::<FmpAeadHelperWork>(channel_cap.max(1));
-        for i in 0..n {
-            let helper_rx = rx.clone();
-            std::thread::Builder::new()
-                .name(format!("fips-decrypt-fmp-aead-{i}"))
-                .spawn(move || run_fmp_aead_helper(i, helper_rx))
-                .expect("failed to spawn fips-decrypt-fmp-aead OS thread");
-        }
-        Some(Arc::new(Self { tx }))
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn try_dispatch(&self, work: FmpAeadHelperWork) -> Result<(), FmpAeadHelperWork> {
-        match self.tx.try_send(work) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(work)) | Err(TrySendError::Disconnected(work)) => Err(work),
-        }
-    }
-}
-
-fn send_fmp_aead_helper_completion_batch(
-    idx: usize,
-    completion_tx: Sender<FmpAeadCompletionBatch>,
-    batch: FmpAeadCompletionBatch,
-) {
-    if completion_tx.send(batch).is_err() {
-        debug!(
-            helper = idx,
-            "FMP AEAD helper completion owner gone; dropping completion"
-        );
-    }
-}
-
-fn push_fmp_aead_helper_completion(
-    idx: usize,
-    completion_batch_max: usize,
-    current_tx: &mut Option<Sender<FmpAeadCompletionBatch>>,
-    current_session_key: &mut Option<DecryptSessionKey>,
-    current_receive_order_id: &mut Option<u64>,
-    current_batch: &mut Option<FmpAeadCompletionBatch>,
-    mut job: FmpAeadHelperJob,
-) {
-    crate::perf_profile::record_since_count(
-        crate::perf_profile::Stage::FmpAeadHelperQueueWait,
-        job.helper_queued_at,
-        1,
-    );
-    let Some(completion_tx) = job.completion_tx.take() else {
-        return;
-    };
-    let session_key = job.session_key;
-    let receive_order_id = job.receive_order_id;
-    let same_batch = current_tx
-        .as_ref()
-        .is_some_and(|tx| tx.same_channel(&completion_tx))
-        && *current_session_key == Some(session_key)
-        && *current_receive_order_id == Some(receive_order_id)
-        && current_batch
-            .as_ref()
-            .is_some_and(|batch| batch.len() < completion_batch_max);
-
-    if !same_batch {
-        if let (Some(tx), Some(batch)) = (current_tx.take(), current_batch.take()) {
-            send_fmp_aead_helper_completion_batch(idx, tx, batch);
-        }
-        *current_tx = Some(completion_tx);
-        *current_session_key = Some(session_key);
-        *current_receive_order_id = Some(receive_order_id);
-        *current_batch = Some(FmpAeadCompletionBatch::one(job.into_completion()));
-        return;
-    }
-
-    let Some(batch) = current_batch.as_mut() else {
-        unreachable!("same_batch requires an active FMP completion batch")
-    };
-    batch.push(job.into_completion());
-}
-
-fn push_fmp_aead_helper_work(
-    idx: usize,
-    completion_batch_max: usize,
-    current_tx: &mut Option<Sender<FmpAeadCompletionBatch>>,
-    current_session_key: &mut Option<DecryptSessionKey>,
-    current_receive_order_id: &mut Option<u64>,
-    current_batch: &mut Option<FmpAeadCompletionBatch>,
-    work: FmpAeadHelperWork,
-) {
-    for job in work.into_jobs() {
-        push_fmp_aead_helper_completion(
-            idx,
-            completion_batch_max,
-            current_tx,
-            current_session_key,
-            current_receive_order_id,
-            current_batch,
-            job,
-        );
-    }
-}
-
-fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperWork>) {
-    trace!(helper = idx, "FMP AEAD helper thread starting");
-    let completion_batch_max = fmp_aead_completion_batch_max();
-    while let Ok(work) = rx.recv() {
-        let mut current_tx: Option<Sender<FmpAeadCompletionBatch>> = None;
-        let mut current_session_key = None;
-        let mut current_receive_order_id = None;
-        let mut current_batch: Option<FmpAeadCompletionBatch> = None;
-        push_fmp_aead_helper_work(
-            idx,
-            completion_batch_max,
-            &mut current_tx,
-            &mut current_session_key,
-            &mut current_receive_order_id,
-            &mut current_batch,
-            work,
-        );
-        while current_batch
-            .as_ref()
-            .is_some_and(|batch| batch.len() < completion_batch_max)
-        {
-            let Ok(next_work) = rx.try_recv() else {
-                break;
-            };
-            push_fmp_aead_helper_work(
-                idx,
-                completion_batch_max,
-                &mut current_tx,
-                &mut current_session_key,
-                &mut current_receive_order_id,
-                &mut current_batch,
-                next_work,
-            );
-        }
-        if let (Some(tx), Some(batch)) = (current_tx, current_batch) {
-            send_fmp_aead_helper_completion_batch(idx, tx, batch);
-        }
-    }
-    trace!(helper = idx, "FMP AEAD helper thread exiting");
 }
 
 fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
@@ -237,10 +71,6 @@ impl DecryptWorkerPool {
             let (control_tx, control_rx) = bounded::<WorkerMsg>(control_channel_cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
-            let (fmp_aead_completion_tx, fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(
-                    fmp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
-                );
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(
                     fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
@@ -249,7 +79,6 @@ impl DecryptWorkerPool {
             receivers.push((
                 control_rx,
                 priority_rx,
-                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
                 Arc::clone(&bulk_queued_packets),
@@ -258,18 +87,15 @@ impl DecryptWorkerPool {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
         }
-        let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
         let fsp_local_bulk_open_worker = fsp_local_bulk_open_worker_enabled();
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
-            fmp_aead_helpers,
             fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_local_bulk_open_worker,
@@ -280,7 +106,6 @@ impl DecryptWorkerPool {
             (
                 control_rx,
                 priority_rx,
-                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
                 worker_bulk_queued_packets,
@@ -296,7 +121,6 @@ impl DecryptWorkerPool {
                         worker_pool,
                         control_rx,
                         priority_rx,
-                        fmp_aead_completion_rx,
                         fsp_aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
@@ -405,89 +229,6 @@ impl DecryptWorkerPool {
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
         self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
-    }
-
-    fn fmp_aead_helpers_enabled(&self) -> bool {
-        self.fmp_aead_helpers.is_some()
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_fmp_aead_helper_job(
-        &self,
-        owner_idx: usize,
-        mut job: FmpAeadHelperJob,
-    ) -> Result<(), FmpAeadHelperJob> {
-        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
-            return Err(job);
-        };
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return Err(job);
-        };
-        if !self.fmp_aead_helper_owner_completion_backlog_ready_for(
-            owner_idx,
-            fmp_aead_helper_max_completion_backlog(),
-        ) {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpHelperCompletionBacklogFallback,
-            );
-            return Err(job);
-        }
-        job.completion_tx = Some(sender.fmp_aead_completion.clone());
-        job.helper_queued_at = crate::perf_profile::stamp();
-        match helpers.try_dispatch(FmpAeadHelperWork::One(job)) {
-            Ok(()) => Ok(()),
-            Err(work) => {
-                let mut jobs = work.into_jobs();
-                debug_assert_eq!(jobs.len(), 1);
-                Err(jobs.pop().expect("single helper work returns one job"))
-            }
-        }
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_fmp_aead_helper_job_batch(
-        &self,
-        owner_idx: usize,
-        mut jobs: Vec<FmpAeadHelperJob>,
-    ) -> Result<(), Vec<FmpAeadHelperJob>> {
-        if jobs.is_empty() {
-            return Ok(());
-        }
-        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
-            return Err(jobs);
-        };
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return Err(jobs);
-        };
-        if !self.fmp_aead_helper_owner_completion_backlog_ready_for(
-            owner_idx,
-            fmp_aead_helper_max_completion_backlog(),
-        ) {
-            crate::perf_profile::record_event_count(
-                crate::perf_profile::Event::DecryptFmpHelperCompletionBacklogFallback,
-                jobs.len() as u64,
-            );
-            return Err(jobs);
-        }
-        let queued_at = crate::perf_profile::stamp();
-        for job in &mut jobs {
-            job.completion_tx = Some(sender.fmp_aead_completion.clone());
-            job.helper_queued_at = queued_at;
-        }
-        helpers
-            .try_dispatch(FmpAeadHelperWork::Batch(jobs))
-            .map_err(FmpAeadHelperWork::into_jobs)
-    }
-
-    fn fmp_aead_helper_owner_completion_backlog_ready_for(
-        &self,
-        owner_idx: usize,
-        max_completion_backlog: usize,
-    ) -> bool {
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return false;
-        };
-        sender.fmp_aead_completion.len() <= max_completion_backlog
     }
 
     fn fsp_local_bulk_open_worker_enabled(&self) -> bool {

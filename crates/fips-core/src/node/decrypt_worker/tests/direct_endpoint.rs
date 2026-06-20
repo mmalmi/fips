@@ -593,7 +593,6 @@
         );
 
         let mut shard = test_shard();
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -601,7 +600,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -680,7 +678,6 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -688,7 +685,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -735,13 +731,10 @@
         priority_tx
             .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(session_key)))
             .expect("priority packet should enqueue");
-
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         match recv_worker_item_biased(
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
         ) {
@@ -760,9 +753,6 @@
             }
             DecryptWorkerQueueItem::FspAeadCompletion(_) => {
                 panic!("blocking receive must not select FSP AEAD completion while control is ready")
-            }
-            DecryptWorkerQueueItem::FmpAeadCompletion(_) => {
-                panic!("blocking receive must not select FMP AEAD completion while control is ready")
             }
             DecryptWorkerQueueItem::Closed => panic!("worker channels should be open"),
         }
@@ -826,7 +816,6 @@
         }
 
         let mut shard = test_shard();
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         drain_worker_queues(
@@ -834,7 +823,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -862,8 +850,6 @@
                 DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
             );
         }
-
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let completion_count = DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET + 3;
         let (fsp_completion_tx, fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(completion_count);
@@ -884,7 +870,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -929,8 +914,6 @@
             &bulk_queued_packets,
             DecryptWorkerBulkItem::FspJob(bulk_job),
         );
-
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(
@@ -945,7 +928,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &bulk_rx,
             &bulk_queued_packets,
@@ -977,7 +959,6 @@
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let bulk_packets = 2;
         let completion_count =
             (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 3;
@@ -1000,7 +981,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 dummy_bulk_decrypt_job(session_key),
@@ -1023,7 +1003,6 @@
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(
@@ -1053,7 +1032,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::FspBatch(vec![bulk_job]),
             &mut plaintext_batch,
@@ -1086,7 +1064,6 @@
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let bulk_packets = 2;
         let completion_count =
             (DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET * bulk_packets) + 5;
@@ -1109,7 +1086,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             DecryptWorkerBulkItem::FspBatch(vec![
                 dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1),
