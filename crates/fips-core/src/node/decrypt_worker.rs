@@ -1,11 +1,11 @@
 //! Off-task FMP + FSP decrypt + delivery worker.
 //!
 //! Incremental data-plane shard restructure: each worker owns its hot receive
-//! state directly in local `HashMap`s, with no `Arc<RwLock<HashMap>>` cache on
-//! the Node side and no `Arc<Mutex<ReplayWindow>>` shared with the rx_loop.
-//! FMP state is keyed by the link receiver session; local established FSP
-//! state is keyed by the end-to-end source peer so path drift does not split
-//! replay ownership.
+//! state directly in local `HashMap`s, with no cipher/replay cache on the Node
+//! side and no `Arc<Mutex<ReplayWindow>>` shared with the rx_loop. FMP state is
+//! keyed by the link receiver session; local established FSP state is keyed by
+//! the end-to-end source peer and routed through a pool-owned owner-index map
+//! so path drift does not split replay ownership.
 //!
 //! Dispatch is **deterministic by session key**: rx_loop computes
 //! `worker_idx = hash(session_key) % N` and routes both

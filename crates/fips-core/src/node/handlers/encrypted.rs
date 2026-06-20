@@ -473,14 +473,22 @@ impl Node {
         let Some(workers) = self.decrypt_workers.as_ref().cloned() else {
             return;
         };
-        let Some(snapshot) = self
-            .sessions
-            .get(node_addr)
-            .and_then(|entry| entry.fsp_recv_snapshot())
-        else {
-            return;
+        let (snapshot, preferred_owner) = {
+            let Some(entry) = self.sessions.get(node_addr) else {
+                return;
+            };
+            let Some(snapshot) = entry.fsp_recv_snapshot() else {
+                return;
+            };
+            let preferred_owner = self.peers.get(node_addr).and_then(|peer| {
+                Some(DecryptSessionKey::new(
+                    peer.transport_id()?,
+                    peer.our_index()?.as_u32(),
+                ))
+            });
+            (snapshot, preferred_owner)
         };
-        let _accepted = workers.register_fsp_session(*node_addr, snapshot);
+        let _accepted = workers.register_fsp_session(*node_addr, snapshot, preferred_owner);
     }
 
     pub(in crate::node) fn unregister_decrypt_worker_fsp_session(

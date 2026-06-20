@@ -17,7 +17,7 @@ use crate::upper::tun::TunTx;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::mpsc::{
     Receiver as TokioReceiver, Sender as TokioSender, error::TrySendError as TokioTrySendError,

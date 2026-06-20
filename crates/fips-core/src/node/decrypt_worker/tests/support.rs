@@ -87,6 +87,7 @@
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_owners: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_rx,
             bulk_rx,
@@ -121,6 +122,7 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_owners: Arc::new(RwLock::new(HashMap::new())),
             },
             priority_receivers,
             bulk_receivers,
@@ -164,6 +166,19 @@
             fmp_cipher: LessSafeKey::new(unbound),
             fmp_replay: ReplayWindow::new(),
             source_peer: test_source_peer(),
+        }
+    }
+
+    fn test_fsp_recv_snapshot() -> crate::node::session::FspRecvSessionSnapshot {
+        crate::node::session::FspRecvSessionSnapshot {
+            source_peer: test_source_peer(),
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([8u8; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
         }
     }
 

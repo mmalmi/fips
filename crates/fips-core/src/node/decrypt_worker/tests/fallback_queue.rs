@@ -46,6 +46,98 @@
     }
 
     #[test]
+    fn fsp_registration_prefers_matching_fmp_worker_owner() {
+        let (pool, priority_receivers, _bulk_receivers) = test_worker_pool(4, 4);
+        let source_addr = *test_source_peer().node_addr();
+        let default_owner = pool.default_worker_idx_for_fsp(&source_addr);
+        let preferred_key = (1..=256)
+            .map(|receiver_idx| test_session_key(7, receiver_idx))
+            .find(|session_key| pool.worker_idx_for(*session_key) != default_owner)
+            .expect("test needs a preferred worker that differs from the default FSP hash");
+        let preferred_owner = pool.worker_idx_for(preferred_key);
+
+        assert!(pool.register_fsp_session(
+            source_addr,
+            test_fsp_recv_snapshot(),
+            Some(preferred_key),
+        ));
+        assert_eq!(pool.worker_idx_for_fsp(&source_addr), preferred_owner);
+
+        match priority_receivers[preferred_owner]
+            .try_recv()
+            .expect("FSP registration should queue to preferred owner")
+        {
+            WorkerMsg::RegisterFspSession {
+                source_addr: queued_source,
+                ..
+            } => assert_eq!(queued_source, source_addr),
+            WorkerMsg::Job(_)
+            | WorkerMsg::FspJob(_)
+            | WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {
+                panic!("expected FSP registration")
+            }
+        }
+        for (idx, rx) in priority_receivers.iter().enumerate() {
+            if idx != preferred_owner {
+                assert!(
+                    rx.is_empty(),
+                    "worker {idx} must not receive the preferred-owner registration"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fsp_registration_keeps_existing_owner_on_refresh() {
+        let (pool, priority_receivers, _bulk_receivers) = test_worker_pool(4, 4);
+        let source_addr = *test_source_peer().node_addr();
+        let first_key = test_session_key(9, 1);
+        let first_owner = pool.worker_idx_for(first_key);
+        assert!(pool.register_fsp_session(source_addr, test_fsp_recv_snapshot(), Some(first_key)));
+        let _ = priority_receivers[first_owner]
+            .try_recv()
+            .expect("first registration should queue");
+
+        let different_key = (2..=256)
+            .map(|receiver_idx| test_session_key(9, receiver_idx))
+            .find(|session_key| pool.worker_idx_for(*session_key) != first_owner)
+            .expect("test needs a second preferred worker");
+        assert!(pool.register_fsp_session(
+            source_addr,
+            test_fsp_recv_snapshot(),
+            Some(different_key),
+        ));
+
+        assert_eq!(pool.worker_idx_for_fsp(&source_addr), first_owner);
+        match priority_receivers[first_owner]
+            .try_recv()
+            .expect("refresh should stay on the original FSP owner")
+        {
+            WorkerMsg::RegisterFspSession {
+                source_addr: queued_source,
+                ..
+            } => assert_eq!(queued_source, source_addr),
+            WorkerMsg::Job(_)
+            | WorkerMsg::FspJob(_)
+            | WorkerMsg::RegisterSession { .. }
+            | WorkerMsg::UnregisterSession { .. }
+            | WorkerMsg::UnregisterFspSession { .. } => {
+                panic!("expected FSP registration refresh")
+            }
+        }
+        for (idx, rx) in priority_receivers.iter().enumerate() {
+            if idx != first_owner {
+                assert!(
+                    rx.is_empty(),
+                    "worker {idx} must not receive an owner-moving refresh"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn fsp_job_batcher_groups_consecutive_bulk_jobs_for_one_owner() {
         let (pool, _priority_receivers, bulk_receivers) =
             test_worker_pool(4, DECRYPT_WORKER_BULK_BATCH_MAX);

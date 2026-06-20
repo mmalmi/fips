@@ -6,6 +6,7 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
+    fsp_owners: Arc<RwLock<HashMap<NodeAddr, usize>>>,
 }
 
 #[derive(Clone)]
@@ -46,6 +47,7 @@ impl DecryptWorkerPool {
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
+            fsp_owners: Arc::new(RwLock::new(HashMap::new())),
         };
         for (i, (priority_rx, bulk_rx, worker_bulk_queued_packets)) in
             receivers.into_iter().enumerate()
@@ -74,8 +76,16 @@ impl DecryptWorkerPool {
         (decrypt_session_fast_hash(session_key) as usize) % self.senders.len()
     }
 
-    fn worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
+    fn default_worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
         (decrypt_fsp_session_fast_hash(source_addr) as usize) % self.senders.len()
+    }
+
+    fn worker_idx_for_fsp(&self, source_addr: &NodeAddr) -> usize {
+        self.fsp_owners
+            .read()
+            .ok()
+            .and_then(|owners| owners.get(source_addr).copied())
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(source_addr))
     }
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
@@ -406,11 +416,15 @@ impl DecryptWorkerPool {
         &self,
         source_addr: NodeAddr,
         state: FspRecvSessionSnapshot,
+        preferred_owner: Option<DecryptSessionKey>,
     ) -> bool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for_fsp(&source_addr);
+        let preferred_idx = preferred_owner
+            .map(|session_key| self.worker_idx_for(session_key))
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(&source_addr));
+        let (idx, inserted_owner) = self.fsp_owner_for_register(source_addr, preferred_idx);
         let state = OwnedFspSessionState::from(state);
         match self.senders[idx]
             .priority
@@ -418,6 +432,9 @@ impl DecryptWorkerPool {
         {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
+                if inserted_owner {
+                    self.clear_fsp_owner_if_matches(source_addr, idx);
+                }
                 crate::perf_profile::record_event(
                     crate::perf_profile::Event::DecryptWorkerQueueFull,
                 );
@@ -431,6 +448,9 @@ impl DecryptWorkerPool {
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
+                if inserted_owner {
+                    self.clear_fsp_owner_if_matches(source_addr, idx);
+                }
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring FSP registration"
@@ -444,7 +464,12 @@ impl DecryptWorkerPool {
         if self.senders.is_empty() {
             return false;
         }
-        let idx = self.worker_idx_for_fsp(&source_addr);
+        let idx = self
+            .fsp_owners
+            .write()
+            .ok()
+            .and_then(|mut owners| owners.remove(&source_addr))
+            .unwrap_or_else(|| self.default_worker_idx_for_fsp(&source_addr));
         match self.senders[idx]
             .priority
             .try_send(WorkerMsg::UnregisterFspSession { source_addr })
@@ -461,6 +486,28 @@ impl DecryptWorkerPool {
                 );
                 false
             }
+        }
+    }
+
+    fn fsp_owner_for_register(&self, source_addr: NodeAddr, preferred_idx: usize) -> (usize, bool) {
+        let Ok(mut owners) = self.fsp_owners.write() else {
+            return (preferred_idx, false);
+        };
+        match owners.entry(source_addr) {
+            std::collections::hash_map::Entry::Occupied(entry) => (*entry.get(), false),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(preferred_idx);
+                (preferred_idx, true)
+            }
+        }
+    }
+
+    fn clear_fsp_owner_if_matches(&self, source_addr: NodeAddr, idx: usize) {
+        let Ok(mut owners) = self.fsp_owners.write() else {
+            return;
+        };
+        if owners.get(&source_addr).copied() == Some(idx) {
+            owners.remove(&source_addr);
         }
     }
 
