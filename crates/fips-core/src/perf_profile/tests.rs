@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 250);
+    assert_eq!(N_EVENTS, 258);
     assert!(
-        (Event::DecryptWorkerBatchWorker15 as usize) < N_EVENTS,
+        (Event::FmpWorkerDispatchWorker15 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -369,6 +369,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FmpWorkerDispatchWorker7 as usize).name(),
         "fmp_worker_dispatch_worker7"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchWorker8 as usize).name(),
+        "fmp_worker_dispatch_worker8"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpWorkerDispatchWorker15 as usize).name(),
+        "fmp_worker_dispatch_worker15"
     );
     assert_eq!(
         event_from_index(Event::FmpWorkerDispatchWorkerOther as usize).name(),

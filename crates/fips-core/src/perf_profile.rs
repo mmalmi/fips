@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 90;
-const N_EVENTS: usize = 250;
+const N_EVENTS: usize = 258;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -816,6 +816,14 @@ pub enum Event {
     DecryptWorkerBatchWorker13 = 247,
     DecryptWorkerBatchWorker14 = 248,
     DecryptWorkerBatchWorker15 = 249,
+    FmpWorkerDispatchWorker8 = 250,
+    FmpWorkerDispatchWorker9 = 251,
+    FmpWorkerDispatchWorker10 = 252,
+    FmpWorkerDispatchWorker11 = 253,
+    FmpWorkerDispatchWorker12 = 254,
+    FmpWorkerDispatchWorker13 = 255,
+    FmpWorkerDispatchWorker14 = 256,
+    FmpWorkerDispatchWorker15 = 257,
 }
 
 impl Event {
@@ -917,6 +925,14 @@ impl Event {
             Event::FmpWorkerDispatchWorker5 => "fmp_worker_dispatch_worker5",
             Event::FmpWorkerDispatchWorker6 => "fmp_worker_dispatch_worker6",
             Event::FmpWorkerDispatchWorker7 => "fmp_worker_dispatch_worker7",
+            Event::FmpWorkerDispatchWorker8 => "fmp_worker_dispatch_worker8",
+            Event::FmpWorkerDispatchWorker9 => "fmp_worker_dispatch_worker9",
+            Event::FmpWorkerDispatchWorker10 => "fmp_worker_dispatch_worker10",
+            Event::FmpWorkerDispatchWorker11 => "fmp_worker_dispatch_worker11",
+            Event::FmpWorkerDispatchWorker12 => "fmp_worker_dispatch_worker12",
+            Event::FmpWorkerDispatchWorker13 => "fmp_worker_dispatch_worker13",
+            Event::FmpWorkerDispatchWorker14 => "fmp_worker_dispatch_worker14",
+            Event::FmpWorkerDispatchWorker15 => "fmp_worker_dispatch_worker15",
             Event::FmpWorkerDispatchWorkerOther => "fmp_worker_dispatch_worker_other",
             Event::FmpAeadCompletionReady => "fmp_aead_completion_ready",
             Event::FmpAeadCompletionAccepted => "fmp_aead_completion_accepted",
@@ -1431,6 +1447,14 @@ fn event_from_index(idx: usize) -> Event {
         247 => Event::DecryptWorkerBatchWorker13,
         248 => Event::DecryptWorkerBatchWorker14,
         249 => Event::DecryptWorkerBatchWorker15,
+        250 => Event::FmpWorkerDispatchWorker8,
+        251 => Event::FmpWorkerDispatchWorker9,
+        252 => Event::FmpWorkerDispatchWorker10,
+        253 => Event::FmpWorkerDispatchWorker11,
+        254 => Event::FmpWorkerDispatchWorker12,
+        255 => Event::FmpWorkerDispatchWorker13,
+        256 => Event::FmpWorkerDispatchWorker14,
+        257 => Event::FmpWorkerDispatchWorker15,
         _ => unreachable!(),
     }
 }
@@ -1793,6 +1817,14 @@ pub(crate) fn record_fmp_worker_dispatch_target(worker_idx: usize, flow_keyed: b
         5 => Event::FmpWorkerDispatchWorker5,
         6 => Event::FmpWorkerDispatchWorker6,
         7 => Event::FmpWorkerDispatchWorker7,
+        8 => Event::FmpWorkerDispatchWorker8,
+        9 => Event::FmpWorkerDispatchWorker9,
+        10 => Event::FmpWorkerDispatchWorker10,
+        11 => Event::FmpWorkerDispatchWorker11,
+        12 => Event::FmpWorkerDispatchWorker12,
+        13 => Event::FmpWorkerDispatchWorker13,
+        14 => Event::FmpWorkerDispatchWorker14,
+        15 => Event::FmpWorkerDispatchWorker15,
         _ => Event::FmpWorkerDispatchWorkerOther,
     };
     record_event_count_sample(worker_event, 1);
