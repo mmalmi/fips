@@ -86,6 +86,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
 
     let peer = auto_connect_peer(peer_full.npub(), "127.0.0.1:9");
     node.config.peers = vec![peer.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
     let mut state = super::super::retry::RetryState::new(peer);
     state.retry_after_ms = 0;
     state.reconnect = true;
@@ -635,6 +636,7 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
     let old_addr = TransportAddr::from_string("127.0.0.1:7000");
     let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
     active_peer.set_current_addr(old_transport_id, &old_addr);
+    active_peer.mark_stale();
     node.peers.insert(peer_node_addr, active_peer);
     node.links.insert(
         old_link_id,

@@ -332,11 +332,10 @@ impl Node {
         let expected_k_bit = peer.current_k_bit();
         let session_key =
             crate::node::decrypt_worker::DecryptSessionKey::new(transport_id, our_index.as_u32());
-        if !self.sessions.is_worker_registered(&session_key) {
-            return None;
-        }
+        let worker_idx = self.sessions.worker_owner(&session_key)?;
         Some(Arc::new(ConnectedUdpDecryptFastPath::new(
             session_key,
+            worker_idx,
             expected_k_bit,
             *self.node_addr(),
             workers,

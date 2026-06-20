@@ -213,15 +213,6 @@ impl Node {
 
         let static_addresses = self.static_peer_addresses(peer_config);
         if !static_addresses.is_empty() {
-            let Some(peer) = self.peers.get(peer_node_addr) else {
-                return true;
-            };
-            if !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
-                && peer.is_healthy()
-                && peer.can_send()
-            {
-                return false;
-            }
             if peer.can_send() && !self.active_peer_needs_same_path_refresh(peer_node_addr) {
                 return false;
             }

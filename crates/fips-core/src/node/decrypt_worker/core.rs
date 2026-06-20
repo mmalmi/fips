@@ -1783,6 +1783,10 @@ pub(crate) struct DecryptJob {
     /// active peer registry session-index key on the Node side:
     /// `(transport_id, receiver_idx)`.
     pub session_key: DecryptSessionKey,
+    /// Worker shard that accepted this FMP session registration. This is the
+    /// same owner selected at registration time; carrying it on the job keeps
+    /// hot packet dispatch out of the pool owner map.
+    worker_idx: usize,
     /// Source kernel transport. Forwarded into the bounced
     /// `DecryptFallback` so rx_loop can update per-peer last-seen +
     /// link stats (otherwise the MMP link-dead timer fires at 30s
@@ -1820,6 +1824,7 @@ impl DecryptJob {
     pub(crate) fn new(
         packet_data: impl Into<PacketBuffer>,
         session_key: DecryptSessionKey,
+        worker_idx: usize,
         transport_id: TransportId,
         remote_addr: TransportAddr,
         local_node_addr: NodeAddr,
@@ -1836,6 +1841,7 @@ impl DecryptJob {
             packet_data,
             lane,
             session_key,
+            worker_idx,
             _transport_id: transport_id,
             _remote_addr: remote_addr,
             local_node_addr,
@@ -1851,6 +1857,10 @@ impl DecryptJob {
 
     fn lane(&self) -> DecryptWorkerLane {
         self.lane
+    }
+
+    fn worker_idx(&self) -> usize {
+        self.worker_idx
     }
 
     fn is_bulk_lane(&self) -> bool {

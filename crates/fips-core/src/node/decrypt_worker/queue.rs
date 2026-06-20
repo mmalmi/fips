@@ -317,7 +317,7 @@ impl DecryptJobBatcher {
             return;
         }
 
-        let worker_idx = workers.worker_idx_for_fmp_session(job.session_key);
+        let worker_idx = job.worker_idx();
         let batch_max = workers.bulk_batch_packet_max_for(worker_idx);
         if self.worker_idx != Some(worker_idx) || self.jobs.len() >= batch_max {
             self.flush(workers);

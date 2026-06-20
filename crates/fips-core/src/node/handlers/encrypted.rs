@@ -90,13 +90,14 @@ impl Node {
         if self.decrypt_workers.is_none() {
             return EncryptedFrameFastPath::Slow(packet);
         }
-        if !self.sessions.is_worker_registered(&session_key) {
+        let Some(worker_idx) = self.sessions.worker_owner(&session_key) else {
             return EncryptedFrameFastPath::Slow(packet);
-        }
+        };
 
         let job = super::super::decrypt_worker::DecryptJob::new(
             packet.data,
             session_key,
+            worker_idx,
             packet.transport_id,
             packet.remote_addr,
             *self.node_addr(),
@@ -277,11 +278,12 @@ impl Node {
         // session has been handed off
         // to it.
         if let Some(workers) = self.decrypt_workers.as_ref()
-            && self.sessions.is_worker_registered(&session_key)
+            && let Some(worker_idx) = self.sessions.worker_owner(&session_key)
         {
             let job = super::super::decrypt_worker::DecryptJob::new(
                 packet.data,
                 session_key,
+                worker_idx,
                 packet.transport_id,
                 packet.remote_addr,
                 *self.node_addr(),
@@ -466,9 +468,9 @@ impl Node {
         // means we keep using the legacy in-line decrypt path
         // until a later `register_decrypt_worker_session` succeeds
         // (the FSP-established / rekey callers retry naturally).
-        let accepted = workers.register_session(session_key, state);
+        let owner_idx = workers.register_session(session_key, state);
         self.sessions
-            .record_worker_registration(session_key, accepted);
+            .record_worker_registration(session_key, owner_idx);
     }
 
     pub(in crate::node) fn register_decrypt_worker_fsp_session(

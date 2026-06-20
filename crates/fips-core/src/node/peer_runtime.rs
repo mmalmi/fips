@@ -696,6 +696,7 @@ pub(crate) struct ConnectedUdpDecryptFastPath {
     // untouched to the normal packet path, where rx_loop owns session lookup
     // and pending-session promotion.
     session_key: decrypt_worker::DecryptSessionKey,
+    worker_idx: usize,
     expected_k_bit: bool,
     local_node_addr: NodeAddr,
     workers: decrypt_worker::DecryptWorkerPool,
@@ -722,6 +723,7 @@ impl ConnectedUdpDecryptFastPathBatcher {
 impl ConnectedUdpDecryptFastPath {
     pub(in crate::node) fn new(
         session_key: decrypt_worker::DecryptSessionKey,
+        worker_idx: usize,
         expected_k_bit: bool,
         local_node_addr: NodeAddr,
         workers: decrypt_worker::DecryptWorkerPool,
@@ -729,6 +731,7 @@ impl ConnectedUdpDecryptFastPath {
     ) -> Self {
         Self {
             session_key,
+            worker_idx,
             expected_k_bit,
             local_node_addr,
             workers,
@@ -760,6 +763,7 @@ impl ConnectedUdpDecryptFastPath {
         Ok(decrypt_worker::DecryptJob::new(
             packet_data,
             self.session_key,
+            self.worker_idx,
             transport_id,
             remote_addr,
             self.local_node_addr,

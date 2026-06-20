@@ -334,7 +334,11 @@ impl DecryptWorkerPool {
             return;
         }
         job.set_trace_enqueued_at(crate::perf_profile::stamp());
-        let idx = self.worker_idx_for_fmp_session(job.session_key);
+        let idx = job.worker_idx();
+        if idx >= self.senders.len() {
+            record_decrypt_worker_bulk_drop_count(idx, 1);
+            return;
+        }
         match decrypt_job_lane(&job) {
             DecryptWorkerLane::Priority => self.dispatch_priority_job(idx, job),
             DecryptWorkerLane::Bulk => self.dispatch_bulk_job(idx, job),
@@ -860,9 +864,9 @@ impl DecryptWorkerPool {
         &self,
         session_key: DecryptSessionKey,
         state: OwnedSessionState,
-    ) -> bool {
+    ) -> Option<usize> {
         if self.senders.is_empty() {
-            return false;
+            return None;
         }
         let idx = self.registered_fmp_session_owner(session_key).unwrap_or_else(|| {
             self.worker_idx_for_new_fmp_session(session_key, &state.source_peer)
@@ -877,7 +881,7 @@ impl DecryptWorkerPool {
                 {
                     owners.insert(session_key, idx);
                 }
-                true
+                Some(idx)
             }
             Err(TrySendError::Full(_)) => {
                 record_decrypt_worker_control_drop(idx, "register");
@@ -888,14 +892,14 @@ impl DecryptWorkerPool {
                     worker = idx,
                     "DecryptWorker channel full at session registration; will retry on next packet"
                 );
-                false
+                None
             }
             Err(TrySendError::Disconnected(_)) => {
                 debug!(
                     worker = idx,
                     "DecryptWorker thread gone; ignoring registration"
                 );
-                false
+                None
             }
         }
     }

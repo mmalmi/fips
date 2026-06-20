@@ -100,6 +100,7 @@
         let job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1278,6 +1279,7 @@
         let mut first = DecryptJob::new(
             wire_a,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1292,6 +1294,7 @@
         let mut second = DecryptJob::new(
             wire_b,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1377,6 +1380,7 @@
         let mut job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1491,6 +1495,7 @@
         let mut job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1587,6 +1592,7 @@
         let mut job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *local.node_addr(),
@@ -1662,7 +1668,9 @@
             .expect("test should find a session-key hash that differs from source owner");
         let hash_owner = pool.worker_idx_for(session_key);
 
-        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        let mut pre_registration_job = dummy_priority_decrypt_job(session_key);
+        pre_registration_job.worker_idx = hash_owner;
+        pool.dispatch_job(pre_registration_job);
         match priority_receivers[hash_owner]
             .try_recv()
             .expect("pre-registration packet should use hash fallback")
@@ -1677,11 +1685,13 @@
             }
         }
 
-        assert!(pool.register_session(
-            session_key,
-            test_owned_session_state_for(source_peer)
-        ));
-        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        assert_eq!(
+            pool.register_session(session_key, test_owned_session_state_for(source_peer)),
+            Some(owner)
+        );
+        let mut registered_job = dummy_priority_decrypt_job(session_key);
+        registered_job.worker_idx = owner;
+        pool.dispatch_job(registered_job);
         assert!(pool.unregister_session(session_key));
 
         match control_receivers[owner]
@@ -1731,7 +1741,9 @@
             }
         }
 
-        pool.dispatch_job(dummy_priority_decrypt_job(session_key));
+        let mut post_unregister_job = dummy_priority_decrypt_job(session_key);
+        post_unregister_job.worker_idx = hash_owner;
+        pool.dispatch_job(post_unregister_job);
         match priority_receivers[hash_owner]
             .try_recv()
             .expect("post-unregister packet should use hash fallback")

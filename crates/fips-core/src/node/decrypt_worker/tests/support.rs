@@ -1230,6 +1230,7 @@
         DecryptJob::new(
             vec![0; packet_len],
             session_key,
+            0,
             session_key.transport_id,
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *test_source_peer().node_addr(),
@@ -1756,6 +1757,7 @@
         DecryptJob::new(
             packet_data,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *test_source_peer().node_addr(),

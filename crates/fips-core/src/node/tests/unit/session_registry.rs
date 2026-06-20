@@ -27,15 +27,18 @@ fn session_registry_owns_endpoint_session_storage_and_worker_registration_mirror
         Some(&peer.pubkey_full())
     );
     assert!(
-        !registry.record_worker_registration(session_key, false),
+        !registry.record_worker_registration(session_key, None),
         "a rejected worker registration must not mark the session worker-owned"
     );
     assert!(!registry.is_worker_registered(&session_key));
+    assert_eq!(registry.worker_owner(&session_key), None);
     assert!(!registry.unregister_worker_session_if_registered(&session_key));
 
-    assert!(registry.record_worker_registration(session_key, true));
+    assert!(registry.record_worker_registration(session_key, Some(3)));
     assert!(registry.is_worker_registered(&session_key));
+    assert_eq!(registry.worker_owner(&session_key), Some(3));
     assert!(!registry.is_worker_registered(&other_key));
+    assert_eq!(registry.worker_owner(&other_key), None);
 
     let replacement = SessionEntry::new(
         peer_addr,
@@ -381,19 +384,22 @@ fn decrypt_session_registrations_own_worker_acceptance_and_unregister_gate() {
     let other_key = crate::node::decrypt_worker::DecryptSessionKey::new(TransportId::new(2), 10);
     let mut registrations = DecryptSessionRegistrations::default();
 
-    assert!(!registrations.record_worker_registration(session_key, false));
+    assert!(!registrations.record_worker_registration(session_key, None));
     assert!(
         !registrations.is_registered(&session_key),
         "a full worker queue must not make rx-loop dispatch to an unregistered shard"
     );
+    assert_eq!(registrations.owner(&session_key), None);
     assert!(
         !registrations.unregister_if_registered(&session_key),
         "worker unregister should be skipped when local registration never succeeded"
     );
 
-    assert!(registrations.record_worker_registration(session_key, true));
+    assert!(registrations.record_worker_registration(session_key, Some(2)));
     assert!(registrations.is_registered(&session_key));
+    assert_eq!(registrations.owner(&session_key), Some(2));
     assert!(!registrations.is_registered(&other_key));
+    assert_eq!(registrations.owner(&other_key), None);
 
     assert!(registrations.unregister_if_registered(&session_key));
     assert!(!registrations.is_registered(&session_key));

@@ -110,6 +110,7 @@ fn connected_udp_decrypt_fast_path_prepares_matching_established_packets() {
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
     let fast_path = ConnectedUdpDecryptFastPath::new(
         session_key,
+        0,
         false,
         make_node_addr(0x77),
         workers,

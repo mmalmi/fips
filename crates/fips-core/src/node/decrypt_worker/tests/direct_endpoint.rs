@@ -458,7 +458,10 @@
         pool.dispatch_job(dummy_bulk_decrypt_job(session_key));
         assert_eq!(bulk_rx.len(), 1, "test bulk queue should start full");
 
-        assert!(pool.register_session(session_key, test_owned_session_state()));
+        assert_eq!(
+            pool.register_session(session_key, test_owned_session_state()),
+            Some(0)
+        );
         assert_eq!(control_rx.len(), 1, "registration should enqueue");
         assert_eq!(
             priority_rx.len(),
@@ -497,7 +500,10 @@
     fn decrypt_worker_register_full_returns_false_without_waiting() {
         let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 77);
-        assert!(pool.register_session(session_key, test_owned_session_state()));
+        assert_eq!(
+            pool.register_session(session_key, test_owned_session_state()),
+            Some(0)
+        );
         assert_eq!(
             control_rx.len(),
             1,
@@ -516,7 +522,7 @@
             .recv_timeout(Duration::from_millis(250))
             .expect("full decrypt-worker control queue must not park registration");
         assert!(
-            !registered,
+            registered.is_none(),
             "registration should report pressure so caller retries later"
         );
         assert_eq!(
@@ -531,7 +537,10 @@
     fn decrypt_worker_unregister_full_returns_false_without_waiting() {
         let (pool, control_rx, priority_rx, _bulk_rx) = one_slot_worker_pool();
         let session_key = test_session_key(1, 78);
-        assert!(pool.register_session(session_key, test_owned_session_state()));
+        assert_eq!(
+            pool.register_session(session_key, test_owned_session_state()),
+            Some(0)
+        );
         assert_eq!(
             control_rx.len(),
             1,

@@ -1450,6 +1450,7 @@ impl DecryptWorkerShard {
             mut packet_data,
             lane,
             session_key,
+            worker_idx: _,
             _transport_id: transport_id,
             _remote_addr: remote_addr,
             local_node_addr,

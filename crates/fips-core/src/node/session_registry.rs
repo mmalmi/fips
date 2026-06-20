@@ -206,10 +206,10 @@ impl SessionRegistry {
     pub(in crate::node) fn record_worker_registration(
         &mut self,
         session_key: DecryptSessionKey,
-        accepted: bool,
+        owner_idx: Option<usize>,
     ) -> bool {
         self.worker_registrations
-            .record_worker_registration(session_key, accepted)
+            .record_worker_registration(session_key, owner_idx)
     }
 
     pub(in crate::node) fn unregister_worker_session_if_registered(
@@ -220,8 +220,13 @@ impl SessionRegistry {
             .unregister_if_registered(session_key)
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn is_worker_registered(&self, session_key: &DecryptSessionKey) -> bool {
         self.worker_registrations.is_registered(session_key)
+    }
+
+    pub(in crate::node) fn worker_owner(&self, session_key: &DecryptSessionKey) -> Option<usize> {
+        self.worker_registrations.owner(session_key)
     }
 
     #[cfg(test)]
@@ -242,31 +247,35 @@ impl<'a> IntoIterator for &'a SessionRegistry {
 /// Rx-loop mirror of sessions accepted by decrypt-worker shards.
 #[derive(Debug, Default)]
 pub(in crate::node) struct DecryptSessionRegistrations {
-    sessions: HashSet<DecryptSessionKey>,
+    sessions: HashMap<DecryptSessionKey, usize>,
 }
 
 impl DecryptSessionRegistrations {
     pub(in crate::node) fn record_worker_registration(
         &mut self,
         session_key: DecryptSessionKey,
-        accepted: bool,
+        owner_idx: Option<usize>,
     ) -> bool {
-        if !accepted {
+        let Some(owner_idx) = owner_idx else {
             return false;
-        }
-        self.sessions.insert(session_key);
-        true
+        };
+        self.sessions.insert(session_key, owner_idx).is_none()
+    }
+
+    pub(in crate::node) fn owner(&self, session_key: &DecryptSessionKey) -> Option<usize> {
+        self.sessions.get(session_key).copied()
     }
 
     pub(in crate::node) fn unregister_if_registered(
         &mut self,
         session_key: &DecryptSessionKey,
     ) -> bool {
-        self.sessions.remove(session_key)
+        self.sessions.remove(session_key).is_some()
     }
 
+    #[cfg(test)]
     pub(in crate::node) fn is_registered(&self, session_key: &DecryptSessionKey) -> bool {
-        self.sessions.contains(session_key)
+        self.sessions.contains_key(session_key)
     }
 
     #[cfg(test)]

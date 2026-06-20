@@ -863,6 +863,7 @@
         let job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *source_peer.node_addr(),
@@ -952,6 +953,7 @@
         let job = DecryptJob::new(
             wire,
             session_key,
+            0,
             TransportId::new(1),
             crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
             *source_peer.node_addr(),
