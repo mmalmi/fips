@@ -974,6 +974,20 @@ async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
         node.retry_pending.contains_key(&peer_addr),
         "bounded traversal liveness should schedule direct reprobe"
     );
+    assert!(
+        node.get_peer(&peer_addr).expect("peer").can_send(),
+        "soft-stale direct paths remain sendable for probes"
+    );
+    let configured_peer = node.configured_peer(&peer_addr).expect("configured peer");
+    assert!(
+        node.active_peer_uses_recent_endpoint_path(&peer_addr, configured_peer),
+        "test fixture should still classify the stale path as a recent endpoint path"
+    );
+    assert_eq!(
+        node.find_next_hop(&peer_addr).map(|peer| *peer.node_addr()),
+        Some(peer_addr),
+        "without a fallback route, a soft-stale traversal path should remain the last-resort payload route while reprobe runs"
+    );
 }
 
 #[tokio::test]

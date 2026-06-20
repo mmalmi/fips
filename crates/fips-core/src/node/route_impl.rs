@@ -59,6 +59,18 @@ impl Node {
             || self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
         let direct_session_untrusted = !direct_session_degraded
             && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
+        let stale_traversal_direct_route = self
+            .peers
+            .get(dest_node_addr)
+            .filter(|peer| !peer.is_healthy() && peer.can_send())
+            .and_then(|_| {
+                self.configured_peer(dest_node_addr)
+                    .and_then(|peer_config| {
+                        (peer_config.is_auto_connect()
+                            && self.active_peer_uses_traversal_path(dest_node_addr, peer_config))
+                        .then_some(*dest_node_addr)
+                    })
+            });
 
         let healthy_direct_route = self
             .peers
@@ -160,6 +172,9 @@ impl Node {
             {
                 return self.peers.get(&direct_addr);
             }
+            if let Some(direct_addr) = stale_traversal_direct_route {
+                return self.peers.get(&direct_addr);
+            }
             return None;
         };
 
@@ -219,6 +234,10 @@ impl Node {
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
         {
             return self.peers.get(&next_hop_addr);
+        }
+
+        if let Some(direct_addr) = stale_traversal_direct_route {
+            return self.peers.get(&direct_addr);
         }
 
         None
