@@ -214,6 +214,37 @@ fn test_pending_direct_probe_prefers_fallback_for_non_static_path() {
 }
 
 #[test]
+fn test_pending_direct_probe_does_not_block_fresh_healthy_direct_without_fallback() {
+    let mut node = Node::new(Config::new()).unwrap();
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("fresh-direct-probe".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+
+    add_direct_peer_for_identity(&mut node, &remote);
+    node.get_peer_mut(&remote_addr)
+        .expect("direct peer")
+        .touch(Node::now_ms());
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = Node::now_ms() + 500;
+    node.retry_pending.insert(remote_addr, retry);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "background direct-probe bookkeeping must not block a fresh healthy direct path when no fallback exists"
+    );
+}
+
+#[test]
 fn test_historical_outbound_session_counter_does_not_deprioritize_direct() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");

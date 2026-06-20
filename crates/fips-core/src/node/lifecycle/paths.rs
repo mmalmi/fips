@@ -263,7 +263,10 @@ impl Node {
         }
     }
 
-    pub(super) fn active_peer_needs_same_path_refresh(&self, peer_node_addr: &NodeAddr) -> bool {
+    pub(in crate::node) fn active_peer_needs_same_path_refresh(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
