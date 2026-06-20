@@ -723,9 +723,14 @@ impl DecryptWorkerShard {
             );
             return;
         }
+        let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = Vec::with_capacity(1);
         let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
-            outputs.push(output)
+            if let Some(output) =
+                Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
+            {
+                outputs.push(output);
+            }
         }) {
             Ok(drain) => drain,
             Err(error) => {
@@ -755,7 +760,7 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(outputs, plaintext_batch);
+        self.push_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_aead_completion_batch_msg(
@@ -810,6 +815,7 @@ impl DecryptWorkerShard {
         let mut rx_loop_fallbacks = 0usize;
         let mut aead_failure_sources = FspAeadFailureSources::default();
         let mut replay_drop_sources = FspReplayDropSources::default();
+        let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = Vec::with_capacity(completions.len());
         let next_ready;
         {
@@ -837,7 +843,11 @@ impl DecryptWorkerShard {
                     completed_at: _,
                 } = completion;
                 let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
-                    outputs.push(output)
+                    if let Some(output) =
+                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
+                    {
+                        outputs.push(output);
+                    }
                 }) {
                     Ok(drain) => drain,
                     Err(error) => {
@@ -888,51 +898,39 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(outputs, plaintext_batch);
+        self.push_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
-    fn push_fsp_ready_completion_outputs(
+    fn push_fsp_ready_outputs(
         &self,
-        outputs: Vec<FspReadyCompletion>,
+        outputs: Vec<DecryptWorkerOutput>,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        for output in self.outputs_for_fsp_ready_completions(outputs) {
+        for output in outputs {
             plaintext_batch.push_output(output);
         }
     }
 
-    fn outputs_for_fsp_ready_completions(
-        &self,
-        outputs: Vec<FspReadyCompletion>,
-    ) -> Vec<DecryptWorkerOutput> {
-        let mut ready = Vec::with_capacity(outputs.len());
-        for completion in outputs {
-            match completion {
-                FspReadyCompletion::Opened {
-                    opened,
-                    slot,
-                    source_peer,
-                } => {
-                    if let Some(output) =
-                        self.output_for_opened_fsp_job(source_peer, opened, slot)
-                    {
-                        ready.push(output);
-                    }
-                }
-                FspReadyCompletion::AeadFailed {
-                    job,
-                    header,
-                    fallback_to_rx_loop,
-                } => {
-                    ready.push(self.output_for_fsp_aead_failure(
-                        job,
-                        &header,
-                        fallback_to_rx_loop,
-                    ));
-                }
-            }
+    fn output_for_fsp_ready_completion(
+        direct_delivery_sink: &DecryptDirectSessionDeliverySink,
+        completion: FspReadyCompletion,
+    ) -> Option<DecryptWorkerOutput> {
+        match completion {
+            FspReadyCompletion::Opened {
+                opened,
+                slot,
+                source_peer,
+            } => Self::output_for_opened_fsp_job(direct_delivery_sink, source_peer, opened, slot),
+            FspReadyCompletion::AeadFailed {
+                job,
+                header,
+                fallback_to_rx_loop,
+            } => Some(Self::output_for_fsp_aead_failure(
+                job,
+                &header,
+                fallback_to_rx_loop,
+            )),
         }
-        ready
     }
 
     fn dispatch_or_handle_fsp_job(
@@ -960,7 +958,6 @@ impl DecryptWorkerShard {
     }
 
     fn output_for_fsp_aead_failure(
-        &self,
         job: FspDecryptJob,
         header: &FspEncryptedHeader,
         fallback_to_rx_loop: bool,
@@ -1042,7 +1039,7 @@ impl DecryptWorkerShard {
     }
 
     fn output_for_opened_fsp_job(
-        &self,
+        direct_delivery_sink: &DecryptDirectSessionDeliverySink,
         source_peer: PeerIdentity,
         opened: FspOpenedJob,
         slot: EpochSlot,
@@ -1107,7 +1104,7 @@ impl DecryptWorkerShard {
         match Self::direct_session_delivery_from_message(source_addr, local_node_addr, message) {
             Ok(delivery) => {
                 let (event, direct_delivery) = Self::direct_session_event(
-                    &self.pool.direct_delivery_sink,
+                    direct_delivery_sink,
                     fmp,
                     source_addr,
                     previous_hop_peer,
@@ -1325,9 +1322,14 @@ impl DecryptWorkerShard {
                     source: FspAeadCompletionSource::Local,
                 },
             };
+            let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
             let mut outputs = Vec::with_capacity(1);
             let drain = match state.complete_ordered_fsp_open(ticket, completion, |output| {
-                outputs.push(output)
+                if let Some(output) =
+                    Self::output_for_fsp_ready_completion(&direct_delivery_sink, output)
+                {
+                    outputs.push(output);
+                }
             }) {
                 Ok(drain) => drain,
                 Err(error) => {
@@ -1357,7 +1359,7 @@ impl DecryptWorkerShard {
             {
                 shared.mark_next_ready(next_ready);
             }
-            return self.outputs_for_fsp_ready_completions(outputs);
+            return outputs;
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
@@ -1399,7 +1401,7 @@ impl DecryptWorkerShard {
                     fsp_payload_len,
                     trace_enqueued_at: None,
                 };
-                return vec![self.output_for_fsp_aead_failure(job, &header, true)];
+                return vec![Self::output_for_fsp_aead_failure(job, &header, true)];
             }
         };
         let Some((timestamp, msg_type, inner_flags_byte, _body)) =
