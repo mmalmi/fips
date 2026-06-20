@@ -897,8 +897,6 @@ fn run_linux_wg_batch_sender(
         "Linux WG-batch UDP sender starting"
     );
 
-    let mut bulk_pacer = LinuxBulkUdpPacer::from_env();
-
     loop {
         let Ok(batch) = receiver.recv() else {
             break;
@@ -913,9 +911,7 @@ fn run_linux_wg_batch_sender(
 
         if !groups.is_empty() {
             let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-            if let Err(err) =
-                flush_linux_send_groups_sync_with_pacer(groups, bulk_pacer.as_mut())
-            {
+            if let Err(err) = flush_linux_send_groups_sync(groups) {
                 debug!(
                     socket_fd = key.socket_fd,
                     connected_fd = ?key.connected_fd,

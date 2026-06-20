@@ -297,13 +297,6 @@ fn run_linux_wg_batch_worker(idx: usize, rx: Receiver<LinuxWgEncryptBatch>, max_
 #[cfg(target_os = "linux")]
 const DEFAULT_LINUX_DEFERRED_SENDER_CAP: usize = 8;
 #[cfg(target_os = "linux")]
-const DEFAULT_LINUX_BULK_UDP_PACE_MBPS: u64 = 0;
-#[cfg(target_os = "linux")]
-const DEFAULT_LINUX_BULK_UDP_PACE_BURST_BYTES: u64 = 64 * 1024;
-#[cfg(target_os = "linux")]
-const DEFAULT_LINUX_BULK_UDP_PACE_SPIN_NS: u64 = 200_000;
-
-#[cfg(target_os = "linux")]
 fn parse_linux_deferred_sender_enabled(raw: Option<&str>) -> bool {
     !matches!(
         raw.map(str::trim),
@@ -336,143 +329,6 @@ fn linux_deferred_sender_cap() -> usize {
                 .as_deref(),
         )
     })
-}
-
-#[cfg(target_os = "linux")]
-fn parse_linux_bulk_udp_pace_mbps(raw: Option<&str>) -> u64 {
-    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LINUX_BULK_UDP_PACE_MBPS)
-        .min(100_000)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_bulk_udp_pace_bytes_per_sec() -> Option<u64> {
-    static VALUE: OnceLock<Option<u64>> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        let mbps = parse_linux_bulk_udp_pace_mbps(
-            std::env::var("FIPS_LINUX_BULK_UDP_PACE_MBPS")
-                .ok()
-                .as_deref(),
-        );
-        (mbps > 0).then_some(mbps.saturating_mul(1_000_000) / 8)
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn parse_linux_bulk_udp_pace_burst_bytes(raw: Option<&str>) -> u64 {
-    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LINUX_BULK_UDP_PACE_BURST_BYTES)
-        .clamp(8 * 1024, 4 * 1024 * 1024)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_bulk_udp_pace_burst_bytes() -> u64 {
-    static VALUE: OnceLock<u64> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_linux_bulk_udp_pace_burst_bytes(
-            std::env::var("FIPS_LINUX_BULK_UDP_PACE_BURST_BYTES")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn parse_linux_bulk_udp_pace_spin_ns(raw: Option<&str>) -> u64 {
-    raw.and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LINUX_BULK_UDP_PACE_SPIN_NS)
-        .min(1_000_000)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_bulk_udp_pace_spin_ns() -> u64 {
-    static VALUE: OnceLock<u64> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_linux_bulk_udp_pace_spin_ns(
-            std::env::var("FIPS_LINUX_BULK_UDP_PACE_SPIN_NS")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-struct LinuxBulkUdpPacer {
-    bytes_per_sec: u64,
-    burst_bytes: u64,
-    spin_ns: u64,
-    tokens: u64,
-    last_refill: std::time::Instant,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxBulkUdpPacer {
-    fn from_env() -> Option<Self> {
-        let bytes_per_sec = linux_bulk_udp_pace_bytes_per_sec()?;
-        let burst_bytes = linux_bulk_udp_pace_burst_bytes();
-        Some(Self {
-            bytes_per_sec,
-            burst_bytes,
-            spin_ns: linux_bulk_udp_pace_spin_ns(),
-            tokens: burst_bytes,
-            last_refill: std::time::Instant::now(),
-        })
-    }
-
-    fn pace_group(&mut self, group: &SelectedSendBatch) {
-        let Some(bytes) = group.bulk_wire_bytes() else {
-            return;
-        };
-        self.pace_bytes(bytes as u64);
-    }
-
-    fn pace_bytes(&mut self, bytes: u64) {
-        if bytes == 0 || self.bytes_per_sec == 0 {
-            return;
-        }
-        self.refill();
-        if self.tokens >= bytes {
-            self.tokens -= bytes;
-            return;
-        }
-
-        let deficit = bytes.saturating_sub(self.tokens);
-        self.tokens = 0;
-        let wait_ns = ((deficit as u128) * 1_000_000_000u128)
-            .div_ceil(self.bytes_per_sec as u128)
-            .min(u64::MAX as u128) as u64;
-        if wait_ns == 0 {
-            return;
-        }
-        crate::perf_profile::record_linux_bulk_udp_pace_wait();
-        self.last_refill = self.wait_ns(wait_ns);
-    }
-
-    fn wait_ns(&self, wait_ns: u64) -> std::time::Instant {
-        let started_at = std::time::Instant::now();
-        let Some(deadline) = started_at.checked_add(std::time::Duration::from_nanos(wait_ns))
-        else {
-            std::thread::sleep(std::time::Duration::from_nanos(wait_ns));
-            return std::time::Instant::now();
-        };
-        let spin_ns = self.spin_ns.min(wait_ns);
-        if wait_ns > spin_ns {
-            std::thread::sleep(std::time::Duration::from_nanos(wait_ns - spin_ns));
-        }
-        while std::time::Instant::now() < deadline {
-            std::hint::spin_loop();
-        }
-        deadline
-    }
-
-    fn refill(&mut self) {
-        let now = std::time::Instant::now();
-        let elapsed_ns = now.duration_since(self.last_refill).as_nanos();
-        self.last_refill = now;
-        let refill = (elapsed_ns * self.bytes_per_sec as u128 / 1_000_000_000u128)
-            .min(u64::MAX as u128) as u64;
-        self.tokens = self.tokens.saturating_add(refill).min(self.burst_bytes);
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -590,19 +446,18 @@ fn run_linux_deferred_sender(
     priority_rx: Receiver<Vec<SelectedSendBatch>>,
     bulk_rx: Receiver<Vec<SelectedSendBatch>>,
 ) {
-    let mut bulk_pacer = LinuxBulkUdpPacer::from_env();
     loop {
         while let Ok(groups) = priority_rx.try_recv() {
-            flush_linux_deferred_send_groups(groups, None);
+            flush_linux_deferred_send_groups(groups);
         }
 
         crossbeam_channel::select_biased! {
             recv(priority_rx) -> msg => match msg {
-                Ok(groups) => flush_linux_deferred_send_groups(groups, None),
+                Ok(groups) => flush_linux_deferred_send_groups(groups),
                 Err(_) => break,
             },
             recv(bulk_rx) -> msg => match msg {
-                Ok(groups) => flush_linux_deferred_send_groups(groups, bulk_pacer.as_mut()),
+                Ok(groups) => flush_linux_deferred_send_groups(groups),
                 Err(_) => break,
             },
         }
@@ -610,13 +465,10 @@ fn run_linux_deferred_sender(
 }
 
 #[cfg(target_os = "linux")]
-fn flush_linux_deferred_send_groups(
-    groups: Vec<SelectedSendBatch>,
-    bulk_pacer: Option<&mut LinuxBulkUdpPacer>,
-) {
+fn flush_linux_deferred_send_groups(groups: Vec<SelectedSendBatch>) {
     if !groups.is_empty() {
         let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-        if let Err(err) = flush_linux_send_groups_sync_with_pacer(groups, bulk_pacer) {
+        if let Err(err) = flush_linux_send_groups_sync(groups) {
             debug!(error = %err, "deferred Linux UDP send failed");
         }
     }
@@ -858,18 +710,7 @@ fn flush_batch_sync(
 fn flush_linux_send_groups_sync(
     groups: Vec<SelectedSendBatch>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    flush_linux_send_groups_sync_with_pacer(groups, None)
-}
-
-#[cfg(target_os = "linux")]
-fn flush_linux_send_groups_sync_with_pacer(
-    groups: Vec<SelectedSendBatch>,
-    mut bulk_pacer: Option<&mut LinuxBulkUdpPacer>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for group in groups {
-        if let Some(pacer) = bulk_pacer.as_mut() {
-            pacer.pace_group(&group);
-        }
         let mut send_attempt = LinuxSendBatchAttempt::from_batch(group);
         let (fd, connected, dest_addr) = send_attempt.target_parts();
 

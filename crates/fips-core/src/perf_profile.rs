@@ -1440,12 +1440,6 @@ pub(crate) fn record_connected_udp_peer_kernel_drops(drops: u64) {
 }
 
 #[inline]
-#[cfg(target_os = "linux")]
-pub(crate) fn record_linux_bulk_udp_pace_wait() {
-    record_event(Event::LinuxBulkUdpPaceWait);
-}
-
-#[inline]
 pub(crate) fn record_encrypt_worker_queue_full(priority: bool) {
     record_event(Event::EncryptWorkerQueueFull);
     record_event(if priority {

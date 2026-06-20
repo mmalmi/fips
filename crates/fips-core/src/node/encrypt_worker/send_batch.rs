@@ -364,7 +364,7 @@ impl SelectedSendBatch {
         self.wire_packets.len()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     fn bulk_wire_bytes(&self) -> Option<usize> {
         if self.lane != SelectedSendLane::Bulk {
             return None;
