@@ -9,7 +9,6 @@ pub(crate) struct DecryptWorkerPool {
     fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
     fmp_source_affine_session_owner: bool,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
-    fsp_local_bulk_open_worker: bool,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
 
@@ -187,14 +186,12 @@ impl DecryptWorkerPool {
             });
         }
         let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
-        let fsp_local_bulk_open_worker = fsp_local_bulk_open_worker_enabled();
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
             fmp_aead_helpers,
             fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-            fsp_local_bulk_open_worker,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
@@ -375,30 +372,8 @@ impl DecryptWorkerPool {
         sender.fmp_aead_completion.len() <= max_completion_backlog
     }
 
-    fn fsp_local_bulk_open_worker_enabled(&self) -> bool {
-        self.senders.len() > 1 && self.fsp_local_bulk_open_worker
-    }
-
     fn fsp_bulk_open_worker_enabled(&self) -> bool {
-        self.fsp_local_bulk_open_worker_enabled()
-    }
-
-    fn fsp_aead_owner_completion_backlog_ready_for(
-        &self,
-        owner_idx: usize,
-        max_completion_backlog: usize,
-    ) -> bool {
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return false;
-        };
-        sender.fsp_aead_completion.len() <= max_completion_backlog
-    }
-
-    fn fsp_open_worker_owner_completion_backlog_ready(&self, owner_idx: usize) -> bool {
-        self.fsp_aead_owner_completion_backlog_ready_for(
-            owner_idx,
-            fsp_open_worker_max_completion_backlog(),
-        )
+        self.senders.len() > 1
     }
 
     fn fsp_aead_completion_sender_is(&self, idx: usize, tx: &Sender<FspAeadCompletionBatch>) -> bool {

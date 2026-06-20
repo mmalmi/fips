@@ -66,45 +66,12 @@
     }
 
     #[test]
-    fn fsp_local_bulk_open_worker_env_defaults_off_but_can_opt_in() {
-        assert!(!fsp_local_bulk_open_worker_enabled_from_raw(None));
-        assert!(!fsp_local_bulk_open_worker_enabled_from_raw(Some("0")));
-        assert!(!fsp_local_bulk_open_worker_enabled_from_raw(Some("false")));
-        assert!(fsp_local_bulk_open_worker_enabled_from_raw(Some("1")));
-        assert!(fsp_local_bulk_open_worker_enabled_from_raw(Some("yes")));
-    }
-
-    #[test]
     fn fmp_source_affine_session_owner_env_defaults_on_but_can_opt_out() {
         assert!(fmp_source_affine_session_owner_enabled_from_raw(None));
         assert!(!fmp_source_affine_session_owner_enabled_from_raw(Some("0")));
         assert!(!fmp_source_affine_session_owner_enabled_from_raw(Some("false")));
         assert!(fmp_source_affine_session_owner_enabled_from_raw(Some("1")));
         assert!(fmp_source_affine_session_owner_enabled_from_raw(Some("yes")));
-    }
-
-    #[test]
-    fn fsp_open_worker_max_completion_backlog_defaults_passthrough_and_caps() {
-        assert_eq!(
-            fsp_open_worker_max_completion_backlog_from_raw(None, 1024),
-            DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG
-        );
-        assert_eq!(
-            fsp_open_worker_max_completion_backlog_from_raw(Some("0"), 1024),
-            0
-        );
-        assert_eq!(
-            fsp_open_worker_max_completion_backlog_from_raw(Some("64"), 1024),
-            64
-        );
-        assert_eq!(
-            fsp_open_worker_max_completion_backlog_from_raw(Some("999999"), 1024),
-            1024
-        );
-        assert_eq!(
-            fsp_open_worker_max_completion_backlog_from_raw(Some("bad"), 1024),
-            DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG
-        );
     }
 
     #[test]
@@ -255,7 +222,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_local_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_rx,
@@ -306,7 +272,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_local_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -360,7 +325,6 @@
                 fmp_aead_helpers: None,
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
-                fsp_local_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -404,44 +368,6 @@
     fn test_shard() -> DecryptWorkerShard {
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         DecryptWorkerShard::new(pool)
-    }
-
-    #[test]
-    fn fsp_aead_completion_backlog_gate_uses_owner_completion_lane() {
-        let (pool, _control, _priority, _bulk, _fsp_completion_receivers) =
-            test_worker_pool_with_fsp_completion_receivers(1, 4);
-        let source_addr = NodeAddr::from_bytes([0x33; 16]);
-
-        assert!(pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
-        pool.senders[0]
-            .fsp_aead_completion
-            .try_send(dummy_fsp_aead_completion_batch(source_addr, 0))
-            .expect("test completion lane should have room");
-        assert!(pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
-        pool.senders[0]
-            .fsp_aead_completion
-            .try_send(dummy_fsp_aead_completion_batch(source_addr, 1))
-            .expect("test completion lane should have room");
-        assert!(!pool.fsp_aead_owner_completion_backlog_ready_for(0, 1));
-    }
-
-    #[test]
-    fn fsp_open_worker_completion_backlog_gate_uses_owner_completion_lane() {
-        let (pool, _control, _priority, _bulk, _fsp_completion_receivers) =
-            test_worker_pool_with_fsp_completion_receivers(
-                1,
-                DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG + 1,
-            );
-        let source_addr = NodeAddr::from_bytes([0x34; 16]);
-
-        assert!(pool.fsp_open_worker_owner_completion_backlog_ready(0));
-        for sequence in 0..=DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG {
-            pool.senders[0]
-                .fsp_aead_completion
-                .try_send(dummy_fsp_aead_completion_batch(source_addr, sequence as u64))
-                .expect("test completion lane should have room");
-        }
-        assert!(!pool.fsp_open_worker_owner_completion_backlog_ready(0));
     }
 
     #[test]
@@ -723,12 +649,8 @@
 
     #[test]
     fn fsp_local_open_worker_stays_on_opener_path_when_owner_completion_backlogged() {
-        let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(
-                3,
-                DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG + 2,
-            );
-        pool.fsp_local_bulk_open_worker = true;
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
@@ -743,7 +665,7 @@
             .write()
             .unwrap()
             .insert(source_addr, Arc::clone(&shared));
-        for sequence in 0..=DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG {
+        for sequence in 0..DECRYPT_WORKER_BULK_BATCH_MAX {
             pool.senders[owner_idx]
                 .fsp_aead_completion
                 .try_send(dummy_fsp_aead_completion_batch(source_addr, sequence as u64))
@@ -950,9 +872,8 @@
 
     #[test]
     fn fsp_local_open_worker_registration_publishes_shared_crypto_without_helpers() {
-        let (mut pool, control_receivers, priority_receivers, _bulk_receivers) =
+        let (pool, control_receivers, priority_receivers, _bulk_receivers) =
             test_worker_pool(3, 4);
-        pool.fsp_local_bulk_open_worker = true;
 
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();

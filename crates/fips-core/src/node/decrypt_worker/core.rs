@@ -50,14 +50,15 @@ const DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_FSP_RECEIVE_WINDOW_RESERVE: usize = 64;
 const DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_BULK_BATCH_MAX;
 const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX;
-const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
 /// Match the WireGuard-style packet mover for the common same-owner case:
 /// the peer/session owner keeps replay and delivery order, while bulk FSP
 /// AEAD can run on another worker and return through the owner's ordered
 /// completion lane. Same-owner bulk stays on this opener path; pressure is
 /// surfaced as bounded opener/completion backpressure instead of a local open
 /// fallback that would make a second semantic path for the same packet stream.
-const DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER: bool = true;
+/// This is no longer an env-gated experiment: when a sibling decrypt worker
+/// exists, same-owner bulk uses the opener path and pressure is bounded by the
+/// opener bulk queue plus the ordered receive-ticket window.
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
 /// sessions by default. This removes the direct-peer hash lottery between
 /// local and handoff FSP lanes while preserving the wire protocol.
@@ -269,27 +270,6 @@ fn fallback_priority_channel_cap() -> usize {
     )
 }
 
-fn fsp_open_worker_max_completion_backlog_from_raw(
-    raw: Option<&str>,
-    completion_cap: usize,
-) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG)
-        .min(completion_cap)
-}
-
-fn fsp_open_worker_max_completion_backlog() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_open_worker_max_completion_backlog_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG")
-                .ok()
-                .as_deref(),
-            fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap()),
-        )
-    })
-}
-
 fn fmp_aead_helper_max_completion_backlog_from_raw(
     raw: Option<&str>,
     completion_cap: usize,
@@ -319,18 +299,6 @@ fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
         )
     })
     .unwrap_or(default)
-}
-
-fn fsp_local_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER)
-}
-
-fn fsp_local_bulk_open_worker_enabled() -> bool {
-    fsp_local_bulk_open_worker_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER")
-            .ok()
-            .as_deref(),
-    )
 }
 
 fn fmp_source_affine_session_owner_enabled_from_raw(raw: Option<&str>) -> bool {
