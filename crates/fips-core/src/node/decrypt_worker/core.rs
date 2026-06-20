@@ -785,12 +785,15 @@ impl OwnedFspSessionState {
                     job,
                     header,
                     source,
+                    fallback_to_rx_loop,
                 } => {
                     drain.aead_failures += 1;
                     drain.aead_failure_sources.add(source);
-                    drain
-                        .outputs
-                        .push(FspReadyCompletion::AeadFailed { job, header });
+                    drain.outputs.push(FspReadyCompletion::AeadFailed {
+                        job,
+                        header,
+                        fallback_to_rx_loop,
+                    });
                 }
                 FspOrderedCompletion::EpochMismatch {
                     job,
@@ -799,9 +802,11 @@ impl OwnedFspSessionState {
                 } => {
                     let _ = source;
                     drain.epoch_mismatches += 1;
-                    drain
-                        .outputs
-                        .push(FspReadyCompletion::AeadFailed { job, header });
+                    drain.outputs.push(FspReadyCompletion::AeadFailed {
+                        job,
+                        header,
+                        fallback_to_rx_loop: true,
+                    });
                 }
                 FspOrderedCompletion::Dropped { source } => {
                     let _ = source;
@@ -1025,6 +1030,7 @@ enum FspOrderedCompletion {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
         source: FspAeadCompletionSource,
+        fallback_to_rx_loop: bool,
     },
     EpochMismatch {
         job: FspDecryptJob,
@@ -1045,6 +1051,7 @@ enum FspReadyCompletion {
     AeadFailed {
         job: FspDecryptJob,
         header: FspEncryptedHeader,
+        fallback_to_rx_loop: bool,
     },
 }
 
@@ -1523,6 +1530,7 @@ impl FspAeadOpenJob {
                         job: self.job,
                         header: self.header,
                         source,
+                        fallback_to_rx_loop: false,
                     },
                 }
             }
@@ -1530,6 +1538,7 @@ impl FspAeadOpenJob {
                 job: self.job,
                 header: self.header,
                 source,
+                fallback_to_rx_loop: false,
             },
         };
         FspAeadCompletion {

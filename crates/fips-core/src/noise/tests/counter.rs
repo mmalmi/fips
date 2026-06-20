@@ -39,6 +39,45 @@ fn test_encrypt_with_counter_no_aad_roundtrip() {
 }
 
 #[test]
+fn test_failed_open_in_place_can_mutate_ciphertext() {
+    let keypair1 = generate_keypair();
+    let keypair2 = generate_keypair();
+
+    let mut init = HandshakeState::new_initiator(keypair1, keypair2.public_key());
+    init.set_local_epoch(generate_epoch());
+    let mut resp = HandshakeState::new_responder(keypair2);
+    resp.set_local_epoch(generate_epoch());
+
+    let msg1 = init.write_message_1().unwrap();
+    resp.read_message_1(&msg1).unwrap();
+    let msg2 = resp.write_message_2().unwrap();
+    init.read_message_2(&msg2).unwrap();
+
+    let mut sender = init.into_session().unwrap();
+    let aad = b"fallback-must-see-original-ciphertext";
+    let counter = sender.current_send_counter();
+    let ciphertext = sender
+        .encrypt_with_aad(b"fast path should not poison fallback", aad)
+        .unwrap();
+    let mut failed = ciphertext.clone();
+    let wrong_key =
+        ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0x5a; 32]).unwrap();
+    let wrong_cipher = ring::aead::LessSafeKey::new(wrong_key);
+    let nonce = CipherState::counter_to_nonce(counter);
+
+    assert!(
+        wrong_cipher
+            .open_in_place(nonce, ring::aead::Aad::from(aad), &mut failed)
+            .is_err(),
+        "wrong key must fail authentication"
+    );
+    assert_ne!(
+        failed, ciphertext,
+        "fallback processing must not assume failed in-place AEAD opens preserve bytes"
+    );
+}
+
+#[test]
 fn test_encrypt_with_counter_matches_internal_counter() {
     // Same key, same counter → identical ciphertext. Proves
     // encrypt_with_counter is a faithful &self mirror of encrypt().

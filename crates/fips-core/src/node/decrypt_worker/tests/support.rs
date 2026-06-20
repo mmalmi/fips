@@ -1279,6 +1279,7 @@
                 job,
                 header,
                 source: FspAeadCompletionSource::WorkerOpen,
+                fallback_to_rx_loop: false,
             },
             completed_at: None,
         })
