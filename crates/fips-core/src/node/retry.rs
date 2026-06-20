@@ -241,6 +241,16 @@ impl PendingRouteRetryDueTick {
 }
 
 impl Node {
+    fn has_established_fallback_session(&self, node_addr: &NodeAddr) -> bool {
+        self.sessions
+            .get(node_addr)
+            .is_some_and(|entry| entry.is_established())
+    }
+
+    fn retry_is_background_direct_refresh(&self, node_addr: &NodeAddr) -> bool {
+        self.peers.contains_key(node_addr) || self.has_established_fallback_session(node_addr)
+    }
+
     /// Schedule a retry for a failed outbound connection, if applicable.
     ///
     /// Only schedules if the peer is an auto-connect peer and max retries
@@ -269,6 +279,10 @@ impl Node {
                 return;
             }
 
+            self.schedule_link_dead_reprobe(node_addr, now_ms);
+            return;
+        }
+        if self.has_established_fallback_session(&node_addr) {
             self.schedule_link_dead_reprobe(node_addr, now_ms);
             return;
         }
@@ -687,14 +701,14 @@ impl Node {
             return;
         }
 
-        // Collect retries that are due. Existing peers are active direct-path
-        // refreshes; keep those in the background so a synchronized link-dead
-        // event cannot start a handshake/traversal storm that competes with
-        // fallback traffic recovery.
-        let peers = &self.peers;
+        // Collect retries that are due. Existing peers and live graph/FIPS
+        // fallback sessions are direct-path refreshes; keep those in the
+        // background so a synchronized link-dead event cannot start a
+        // handshake/traversal storm that competes with fallback traffic
+        // recovery.
         let due_tick = self.retry_pending.due_for_tick(
             now_ms,
-            |node_addr| peers.contains_key(node_addr),
+            |node_addr| self.retry_is_background_direct_refresh(node_addr),
             MAX_RETRY_CONNECTIONS_PER_TICK,
             MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK,
         );
@@ -713,7 +727,7 @@ impl Node {
         let due = due_tick.into_due_order().into_iter();
 
         for node_addr in due {
-            if self.peers.contains_key(&node_addr) {
+            if self.retry_is_background_direct_refresh(&node_addr) {
                 let Some(peer_config) = self
                     .retry_pending
                     .get(&node_addr)
@@ -722,7 +736,9 @@ impl Node {
                     continue;
                 };
 
-                if !self.active_peer_should_keep_direct_retry(&node_addr, &peer_config) {
+                if self.peers.contains_key(&node_addr)
+                    && !self.active_peer_should_keep_direct_retry(&node_addr, &peer_config)
+                {
                     self.retry_pending.remove(&node_addr);
                     continue;
                 }
@@ -742,10 +758,16 @@ impl Node {
                     .active_direct_refresh_has_concrete_candidate(&peer_config)
                     .await;
 
-                match self
-                    .initiate_active_peer_direct_refresh_connection(&peer_config)
-                    .await
-                {
+                let refresh_result = if self.peers.contains_key(&node_addr) {
+                    self.initiate_active_peer_direct_refresh_connection(&peer_config)
+                        .await
+                } else {
+                    self.initiate_peer_retry_connection(&peer_config)
+                        .await
+                        .map(|_| true)
+                };
+
+                match refresh_result {
                     Ok(true) => {
                         if has_concrete_direct_candidate {
                             self.schedule_link_dead_reprobe(node_addr, now_ms);
