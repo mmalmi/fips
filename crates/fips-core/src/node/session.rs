@@ -176,6 +176,12 @@ pub(crate) struct SessionEntry {
     /// when the peer stopped returning valid FSP frames. This timestamp is
     /// used to retire such stale sessions so the next send re-handshakes.
     last_inbound_frame_ms: u64,
+    /// Last received application data frame on this session (Unix milliseconds).
+    ///
+    /// Control/MMP frames can prove the peer and keys are alive without proving
+    /// endpoint payloads are returning. Route trust for direct endpoint traffic
+    /// uses this data-specific timestamp.
+    last_inbound_data_frame_ms: u64,
     /// Last application data frame sent on this session (Unix milliseconds).
     ///
     /// This keeps route trust decisions tied to currently active traffic. A
@@ -275,6 +281,7 @@ impl SessionEntry {
             created_at: now_ms,
             last_activity: now_ms,
             last_inbound_frame_ms: now_ms,
+            last_inbound_data_frame_ms: now_ms,
             last_outbound_frame_ms: 0,
             session_start_ms: 0,
             coords_warmup_remaining: 0,
@@ -359,6 +366,11 @@ impl SessionEntry {
         self.last_inbound_frame_ms = now_ms;
     }
 
+    /// Mark receipt of an authenticated application data frame from the peer.
+    pub(crate) fn touch_inbound_data_frame(&mut self, now_ms: u64) {
+        self.last_inbound_data_frame_ms = now_ms;
+    }
+
     /// Mark transmission of application data on this session.
     pub(crate) fn touch_outbound_frame(&mut self, now_ms: u64) {
         self.last_outbound_frame_ms = now_ms;
@@ -400,6 +412,11 @@ impl SessionEntry {
         self.last_inbound_frame_ms
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_inbound_data_frame_ms(&self) -> u64 {
+        self.last_inbound_data_frame_ms
+    }
+
     /// Get last outbound application data frame time.
     #[cfg(test)]
     pub(crate) fn last_outbound_frame_ms(&self) -> u64 {
@@ -418,7 +435,7 @@ impl SessionEntry {
         self.packets_sent > 0
             && self.last_outbound_frame_ms != 0
             && now_ms.saturating_sub(self.last_outbound_frame_ms) <= timeout_ms
-            && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
+            && now_ms.saturating_sub(self.last_inbound_data_frame_ms) > timeout_ms
     }
 
     /// Remaining DataPackets that should include COORDS_PRESENT.

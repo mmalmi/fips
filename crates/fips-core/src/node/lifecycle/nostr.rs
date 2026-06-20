@@ -38,11 +38,11 @@ impl Node {
             );
             return Vec::new();
         }
-        let endpoints = match bootstrap
-            .cached_advert_endpoints_for_peer(&peer_config.npub)
+        let (endpoints, created_at_secs) = match bootstrap
+            .cached_advert_endpoints_with_created_at_for_peer(&peer_config.npub)
             .await
         {
-            Some(endpoints) => endpoints,
+            Some(cached) => cached,
             None => {
                 debug!(
                     npub = %peer_config.npub,
@@ -54,12 +54,10 @@ impl Node {
 
         let mut fallback = Vec::new();
         let fallback_priority = Self::overlay_fallback_priority(existing);
-        // Stamp every overlay-derived candidate with the current wall clock.
-        // The dialer still honors explicit priority first; this timestamp is
-        // only a recency tiebreaker within the same priority tier. We use a
-        // single timestamp per fetch because all candidates in one advert are
-        // equally fresh.
-        let seen_at_ms = Self::now_ms();
+        // Preserve the advert event timestamp as the candidate freshness
+        // signal. Restamping cached adverts on every read makes stale LAN
+        // endpoints look fresh forever after a peer roams.
+        let seen_at_ms = created_at_secs.saturating_mul(1000);
         for endpoint in endpoints {
             let Some(candidate) =
                 Self::overlay_endpoint_to_peer_address(&endpoint, fallback_priority, seen_at_ms)

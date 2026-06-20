@@ -199,12 +199,17 @@ impl Node {
         else {
             return false;
         };
-        let Some(candidate_priority) =
-            self.configured_path_priority(peer_node_addr, candidate_transport_id, &candidate_addr)
-        else {
-            return false;
-        };
-        let candidate_priority = u16::from(candidate_priority);
+        let candidate_priority = self
+            .configured_path_priority(peer_node_addr, candidate_transport_id, &candidate_addr)
+            .or_else(|| {
+                self.active_peer_current_path_priority(
+                    peer_node_addr,
+                    candidate_transport_id,
+                    &candidate_addr,
+                )
+            })
+            .map(u16::from)
+            .unwrap_or_else(|| u16::from(candidate.priority));
 
         let victim = self
             .peers
@@ -221,6 +226,13 @@ impl Node {
                 }
                 let priority = self
                     .configured_path_priority(peer_node_addr, transport_id, remote_addr)
+                    .or_else(|| {
+                        self.active_peer_current_path_priority(
+                            peer_node_addr,
+                            transport_id,
+                            remote_addr,
+                        )
+                    })
                     .map(u16::from)
                     .unwrap_or(UNKNOWN_PATH_PRIORITY);
                 (priority > candidate_priority).then_some((

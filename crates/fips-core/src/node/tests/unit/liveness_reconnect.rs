@@ -301,9 +301,14 @@ fn stale_udp_peer_reuses_current_addr_after_traversal_transport_removed() {
         .expect("stale UDP path should remain directly re-probeable");
     assert_eq!(candidate.transport, "udp");
     assert_eq!(candidate.addr, "203.0.113.24:51820");
-    assert!(
-        candidate.seen_at_ms.is_some(),
-        "reused current endpoint should be treated as fresh"
+    assert_eq!(
+        candidate.priority,
+        u8::MAX,
+        "stale current endpoints must not outrank newer advertised paths"
+    );
+    assert_eq!(
+        candidate.seen_at_ms, None,
+        "stale current endpoints must not be restamped as fresh"
     );
 }
 

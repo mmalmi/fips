@@ -385,6 +385,22 @@ impl Node {
         self.session_direct_degradation.clear(dest)
     }
 
+    pub(in crate::node) fn clear_session_direct_path_degraded_after_promotion(
+        &mut self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) {
+        let keep_degraded = self.session_direct_path_blocks_direct_payload(dest, now_ms);
+        if keep_degraded {
+            debug!(
+                peer = %self.peer_display_name(dest),
+                "Keeping direct payload degraded after direct-path promotion"
+            );
+        } else {
+            self.clear_session_direct_path_degraded(dest);
+        }
+    }
+
     pub(in crate::node) fn learn_reverse_route(
         &mut self,
         destination: NodeAddr,

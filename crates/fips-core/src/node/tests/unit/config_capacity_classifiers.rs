@@ -164,6 +164,47 @@ fn overlay_adverts_stay_below_operator_static_hints() {
 }
 
 #[tokio::test]
+async fn cached_overlay_candidates_preserve_advert_created_at() {
+    let peer_identity = Identity::generate();
+    let peer_npub = peer_identity.npub();
+    let endpoint = crate::discovery::nostr::OverlayEndpointAdvert {
+        transport: crate::discovery::nostr::OverlayTransportKind::Udp,
+        addr: "203.0.113.10:51820".to_string(),
+    };
+    let created_at_secs = 1_700_000_000;
+    let discovery = Arc::new(NostrDiscovery::new_for_test());
+    let advert = NostrDiscovery::cached_advert_for_test(
+        peer_npub.clone(),
+        endpoint.clone(),
+        created_at_secs,
+    );
+    discovery
+        .insert_advert_for_test(peer_npub.clone(), advert)
+        .await;
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    let peer_config = auto_connect_peer(peer_npub.clone(), "198.51.100.20:51820");
+    config.peers.push(peer_config.clone());
+
+    let mut node = Node::new(config).expect("node");
+    node.nostr_discovery = Some(discovery);
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let candidates = node.peer_address_candidates(&peer_config).await;
+    let cached_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.transport == "udp" && candidate.addr == endpoint.addr)
+        .expect("cached overlay advert should be included");
+
+    assert_eq!(
+        cached_candidate.seen_at_ms,
+        Some(created_at_secs * 1000),
+        "reading a cached advert must not refresh stale endpoint candidates to now"
+    );
+}
+
+#[tokio::test]
 async fn update_peers_rejects_invalid_npub_atomically() {
     let mut node = make_node();
     let valid = auto_connect_peer(npub_for_test(), "127.0.0.1:9");

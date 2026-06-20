@@ -58,11 +58,9 @@ impl Node {
         let peer_node_addr = *peer_identity.node_addr();
         let mut candidates = self.peer_address_candidates(peer_config).await;
         let same_path_refresh_needed = allow_same_path_refresh
-            && (self.active_peer_needs_same_path_refresh(&peer_node_addr)
-                || self
-                    .peers
-                    .get(&peer_node_addr)
-                    .is_some_and(|peer| !peer.can_send()));
+            && self.peers.get(&peer_node_addr).is_some_and(|peer| {
+                !peer.is_healthy() || self.active_peer_needs_same_path_refresh(&peer_node_addr)
+            });
         if same_path_refresh_needed
             && let Some(candidate) = self.active_peer_current_udp_candidate(&peer_node_addr)
             && !candidates.iter().any(|existing| {
@@ -305,10 +303,40 @@ impl Node {
         }
         let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
 
-        Some(
-            PeerAddress::with_priority("udp", socket_addr.to_string(), 240)
-                .with_seen_at_ms(Self::now_ms()),
-        )
+        // A healthy current endpoint has already authenticated for this peer,
+        // so prefer it over older static/overlay hints during idle refresh.
+        // Once liveness has marked the peer stale, keep the old tuple
+        // probeable but stop presenting it as fresh; newer advert/traversal
+        // candidates should get the limited race budget first after roaming.
+        if peer.is_healthy() {
+            Some(
+                PeerAddress::with_priority("udp", socket_addr.to_string(), 0)
+                    .with_seen_at_ms(Self::now_ms()),
+            )
+        } else {
+            Some(PeerAddress::with_priority(
+                "udp",
+                socket_addr.to_string(),
+                u8::MAX,
+            ))
+        }
+    }
+
+    pub(super) fn active_peer_current_path_priority(
+        &self,
+        peer_node_addr: &NodeAddr,
+        transport_id: TransportId,
+        remote_addr: &TransportAddr,
+    ) -> Option<u8> {
+        let peer = self.peers.get(peer_node_addr)?;
+        if !peer.is_healthy() {
+            return None;
+        }
+        if peer.transport_id() != Some(transport_id) || peer.current_addr() != Some(remote_addr) {
+            return None;
+        }
+        let transport = self.transports.get(&transport_id)?;
+        (transport.transport_type().name == "udp").then_some(0)
     }
 
     pub(in crate::node) fn active_peer_matches_candidate(

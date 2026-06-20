@@ -80,15 +80,15 @@ fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
 }
 
 #[test]
-fn traversal_path_liveness_has_floor_for_short_heartbeats() {
+fn traversal_path_liveness_uses_configured_fast_dead_floor() {
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(
             2,
             std::time::Duration::from_secs(30),
             std::time::Duration::from_secs(5),
         ),
-        std::time::Duration::from_secs(15),
-        "nvpn's short heartbeat must not shrink traversal/recent path liveness to a 6s false-stale window"
+        std::time::Duration::from_secs(5),
+        "short-heartbeat products should use the configured fast-dead floor, not a global 15s floor"
     );
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(
@@ -96,8 +96,8 @@ fn traversal_path_liveness_has_floor_for_short_heartbeats() {
             std::time::Duration::from_secs(30),
             std::time::Duration::from_secs(5),
         ),
-        std::time::Duration::from_secs(22),
-        "default FIPS heartbeat keeps the existing 2*heartbeat+2s liveness window"
+        std::time::Duration::from_secs(20),
+        "default FIPS heartbeat keeps a two-heartbeat traversal liveness window"
     );
 }
 
@@ -109,8 +109,8 @@ fn traversal_path_quiet_refresh_uses_heartbeat_and_fast_dead_floor() {
             std::time::Duration::from_secs(5),
             std::time::Duration::from_secs(30),
         ),
-        std::time::Duration::from_secs(5),
-        "short-heartbeat products should not refresh traversal paths every two seconds"
+        std::time::Duration::from_secs(4),
+        "short-heartbeat products should refresh shortly before the configured fast-dead floor"
     );
     assert_eq!(
         crate::node::handlers::traversal_path_quiet_refresh_timeout(
@@ -855,7 +855,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
             std::time::Duration::from_secs(node.config.node.fast_link_dead_timeout_secs),
         )
         .expect("recent endpoint path should get bounded liveness timeout");
-    assert_eq!(recent_path_timeout, std::time::Duration::from_secs(22));
+    assert_eq!(recent_path_timeout, std::time::Duration::from_secs(20));
 
     node.record_link_dead_path_failure(&peer_addr, 1_000).await;
 
@@ -873,7 +873,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
     assert_eq!(state.peer_config.npub, peer_config.npub);
     assert_eq!(state.retry_count, 0);
     assert!(
-        (3_000..=8_000).contains(&state.retry_after_ms),
+        (1_500..=2_500).contains(&state.retry_after_ms),
         "link-dead retry should stay quick but jittered, got {}",
         state.retry_after_ms
     );
@@ -892,7 +892,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
         .expect("threshold link-dead penalty should preserve retry state");
     let first_retry_after_ms = state.retry_after_ms;
     assert!(
-        (3_000..=8_000).contains(&first_retry_after_ms),
+        (1_500..=2_500).contains(&first_retry_after_ms),
         "link-dead diagnostics must not push retry behind traversal cooldown"
     );
 
@@ -902,7 +902,7 @@ async fn link_dead_recent_endpoint_path_reprobes_without_traversal_cooldown() {
         .get(&peer_addr)
         .expect("reconnect should preserve cooled-down retry state");
     assert!(
-        (7_000..=12_000).contains(&state.retry_after_ms),
+        (5_500..=6_500).contains(&state.retry_after_ms),
         "each link-dead removal should make direct probing eligible again quickly"
     );
     assert_eq!(state.retry_count, 0);
@@ -968,11 +968,72 @@ async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
     );
     assert!(
         !node.get_peer(&peer_addr).expect("peer").is_healthy(),
-        "a proven traversal/recent path at 23s silence should use the bounded 22s liveness window, not the 30s normal dead timeout"
+        "a proven traversal/recent path at 23s silence should use the bounded 20s liveness window, not the 30s normal dead timeout"
     );
     assert!(
         node.retry_pending.contains_key(&peer_addr),
         "bounded traversal liveness should schedule direct reprobe"
+    );
+}
+
+#[tokio::test]
+async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(23),
+    );
+    active.touch(Node::now_ms());
+    node.peers.insert(peer_addr, active);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.get_peer(&peer_addr).expect("peer").is_healthy(),
+        "recent authenticated FMP traffic must keep traversal liveness warm even if MMP is stale"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "a live authenticated path should not schedule link-dead direct reprobe"
     );
 }
 

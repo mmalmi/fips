@@ -113,7 +113,7 @@ async fn process_pending_retries_races_primary_path_for_active_bootstrap_peer() 
     assert!(
         node.retry_pending
             .get(&peer_node_addr)
-            .is_some_and(|state| (3_000..=9_000).contains(&state.retry_after_ms)),
+            .is_some_and(|state| (1_500..=2_500).contains(&state.retry_after_ms)),
         "active fallback direct refresh should stay on quick reprobe cadence, got {:?}",
         node.retry_pending
             .get(&peer_node_addr)
@@ -220,6 +220,71 @@ async fn active_direct_refresh_reclaims_inflight_slot_for_configured_static_path
 }
 
 #[tokio::test]
+async fn active_direct_refresh_prioritizes_last_observed_udp_endpoint() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let primary_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        primary_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(primary_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let observed_addr = TransportAddr::from_string("127.0.0.1:21000");
+    let active_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, active_link_id, 1_000);
+    active_peer.set_current_addr(primary_id, &observed_addr);
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: (0..4)
+            .map(|offset| {
+                crate::config::PeerAddress::with_priority(
+                    "udp",
+                    format!("127.0.0.1:{}", 22000 + offset),
+                    1,
+                )
+            })
+            .collect(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers = vec![peer_config.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert!(
+        node.find_link_by_addr(primary_id, &observed_addr).is_some(),
+        "active direct refresh should try the last authenticated UDP endpoint before stale static hints exhaust the path race"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn active_fallback_static_hint_also_queues_nostr_traversal() {
     use crate::config::NostrDiscoveryPolicy;
     use crate::node::session::{EndToEndState, SessionEntry};
@@ -306,6 +371,83 @@ async fn active_fallback_static_hint_also_queues_nostr_traversal() {
         bootstrap.active_initiator_count_for_test().await,
         1,
         "stale static hints must not suppress Nostr/mesh traversal refresh"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
+async fn stale_active_direct_refresh_does_not_prioritize_old_current_path() {
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let primary_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        primary_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(primary_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let old_current_addr = TransportAddr::from_string("127.0.0.1:21000");
+    let active_link_id = LinkId::new(7);
+    let mut active_peer = ActivePeer::new(peer_identity, active_link_id, 1_000);
+    active_peer.set_current_addr(primary_id, &old_current_addr);
+    active_peer.mark_stale();
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: (0..4)
+            .map(|offset| {
+                crate::config::PeerAddress::with_priority(
+                    "udp",
+                    format!("127.0.0.1:{}", 22000 + offset),
+                    1,
+                )
+            })
+            .collect(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers = vec![peer_config.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let outcome = node.update_peers(vec![peer_config]).await.unwrap();
+    assert_eq!(outcome.unchanged, 1);
+
+    let attempted: std::collections::HashSet<_> = node
+        .peers
+        .connection_values()
+        .filter_map(|conn| {
+            (conn.transport_id() == Some(primary_id))
+                .then(|| conn.source_addr().map(ToString::to_string))
+                .flatten()
+        })
+        .collect();
+
+    assert_eq!(
+        attempted.len(),
+        4,
+        "fresh configured candidates should consume the race budget first"
+    );
+    assert!(
+        !attempted.contains("127.0.0.1:21000"),
+        "a stale old current path must not displace fresher candidates after roaming"
     );
 
     for transport in node.transports.values_mut() {

@@ -148,7 +148,7 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
         .get(&peer_addr)
         .expect("direct retry should stay queued");
     assert!(
-        (12_000..=17_000).contains(&retry.retry_after_ms),
+        (10_500..=11_500).contains(&retry.retry_after_ms),
         "link-dead fallback lookup should preserve the quick jittered direct retry, got {}",
         retry.retry_after_ms
     );
@@ -222,6 +222,26 @@ fn test_promote_clears_retry_pending() {
     assert!(
         !node.retry_pending.contains_key(&node_addr),
         "retry_pending should be cleared on successful promotion"
+    );
+}
+
+#[test]
+fn test_promote_keeps_direct_degradation_hold_for_discovered_path() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    let now_ms = Node::now_ms();
+
+    node.mark_session_direct_path_degraded(node_addr, now_ms);
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, now_ms).unwrap();
+
+    assert!(
+        node.session_direct_path_blocks_direct_payload(&node_addr, Node::now_ms()),
+        "direct refresh promotion should not instantly restore payload trust for a degraded discovered path"
     );
 }
 

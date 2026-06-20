@@ -369,7 +369,10 @@ impl Node {
                 );
                 self.links
                     .insert_addr((outbound_transport_id, outbound_addr.clone()), link_id);
-                self.clear_session_direct_path_degraded(&peer_node_addr);
+                self.clear_session_direct_path_degraded_after_promotion(
+                    &peer_node_addr,
+                    packet.timestamp_ms,
+                );
                 self.clear_retry_unless_direct_refresh_needed(&peer_node_addr);
                 self.register_identity(peer_node_addr, peer_identity.pubkey_full());
                 self.register_decrypt_worker_session(&peer_node_addr);

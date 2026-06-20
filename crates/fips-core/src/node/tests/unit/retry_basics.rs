@@ -476,7 +476,7 @@ fn test_schedule_retry_active_fallback_uses_quick_direct_reprobe() {
         "active fallback direct refresh must not inherit peer-level exponential backoff"
     );
     assert!(
-        (5_000..=10_000).contains(&state.retry_after_ms),
+        (3_500..=4_500).contains(&state.retry_after_ms),
         "active fallback direct refresh should use a quick jittered reprobe, got {}",
         state.retry_after_ms
     );
@@ -788,7 +788,7 @@ fn test_schedule_link_dead_reprobe_resets_backoff() {
         "link-dead direct paths should not preserve peer-level exponential backoff"
     );
     assert!(
-        (33_000..=38_000).contains(&state.retry_after_ms),
+        (31_500..=32_500).contains(&state.retry_after_ms),
         "link-dead should schedule a quick jittered direct re-probe, got {}",
         state.retry_after_ms
     );

@@ -273,6 +273,15 @@ impl NostrDiscovery {
         &self,
         peer_npub: &str,
     ) -> Option<Vec<OverlayEndpointAdvert>> {
+        self.cached_advert_endpoints_with_created_at_for_peer(peer_npub)
+            .await
+            .map(|(endpoints, _)| endpoints)
+    }
+
+    pub async fn cached_advert_endpoints_with_created_at_for_peer(
+        &self,
+        peer_npub: &str,
+    ) -> Option<(Vec<OverlayEndpointAdvert>, u64)> {
         let peer_key = NostrPeerKey::parse(peer_npub).ok()?;
         self.prune_advert_cache().await;
         let now = now_ms();
@@ -281,7 +290,7 @@ impl NostrDiscovery {
             .await
             .get(&peer_key)
             .filter(|cached| cached.valid_until_ms > now)
-            .map(|cached| cached.advert.endpoints.clone())
+            .map(|cached| (cached.advert.endpoints.clone(), cached.created_at))
     }
 
     pub async fn cached_open_discovery_candidates(

@@ -16,8 +16,6 @@ use crate::{ActivePeer, NodeAddr, PeerIdentity};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, trace, warn};
 
-const TRAVERSAL_PATH_MIN_DEAD_TIMEOUT_SECS: u64 = 15;
-
 /// Format bytes/sec as human-readable throughput.
 fn format_throughput(bps: f64) -> String {
     if bps == 0.0 {
@@ -793,6 +791,7 @@ impl Node {
             .and_then(|mmp| mmp.receiver.last_recv_time())
             .unwrap_or(peer.session_start());
         let mut quiet_for = now.duration_since(reference_time);
+        quiet_for = quiet_for.min(Duration::from_millis(peer.idle_time(now_ms)));
 
         if let Some(session_age_ms) = self
             .sessions
@@ -1020,8 +1019,7 @@ pub(in crate::node) fn traversal_path_liveness_timeout(
     fast_dead_timeout: Duration,
 ) -> Duration {
     let heartbeat = Duration::from_secs(heartbeat_interval_secs.max(1));
-    let recent_path_timeout = (heartbeat.saturating_mul(2) + Duration::from_secs(2))
-        .max(Duration::from_secs(TRAVERSAL_PATH_MIN_DEAD_TIMEOUT_SECS));
+    let recent_path_timeout = heartbeat.saturating_mul(2).max(fast_dead_timeout);
     recent_path_timeout.max(fast_dead_timeout).min(dead_timeout)
 }
 
