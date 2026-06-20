@@ -108,6 +108,31 @@ fn record_fsp_aead_completion_order_error(error: &OrderedCompletionError) {
     crate::perf_profile::record_event(event);
 }
 
+#[inline]
+fn record_fmp_aead_completion_drop(event: crate::perf_profile::Event, count: usize) {
+    crate::perf_profile::record_event_count(event, count as u64);
+}
+
+#[inline]
+fn record_fmp_aead_completion_order_error(error: &OrderedCompletionError) {
+    crate::perf_profile::record_event(fmp_aead_completion_order_error_event(error));
+}
+
+#[inline]
+fn fmp_aead_completion_order_error_event(
+    error: &OrderedCompletionError,
+) -> crate::perf_profile::Event {
+    match error {
+        OrderedCompletionError::Stale => crate::perf_profile::Event::FmpAeadCompletionStaleTicket,
+        OrderedCompletionError::Duplicate => {
+            crate::perf_profile::Event::FmpAeadCompletionDuplicateTicket
+        }
+        OrderedCompletionError::WindowExceeded => {
+            crate::perf_profile::Event::FmpAeadCompletionWindowExceeded
+        }
+    }
+}
+
 fn record_fsp_aead_completion_wait(
     source: FspAeadCompletionSource,
     completed_at: Option<crate::perf_profile::TraceStamp>,
@@ -1931,9 +1956,17 @@ impl DecryptWorkerShard {
         let mut actions = DecryptWorkerJobActions::None;
         {
             let Some(state) = self.sessions.get_mut(&session_key) else {
+                record_fmp_aead_completion_drop(
+                    crate::perf_profile::Event::FmpAeadCompletionStaleSession,
+                    completions.len(),
+                );
                 return;
             };
             if state.fmp_receive_order_id() != receive_order_id {
+                record_fmp_aead_completion_drop(
+                    crate::perf_profile::Event::FmpAeadCompletionStaleOrder,
+                    completions.len(),
+                );
                 return;
             }
             if state.can_complete_ordered_fmp_open_ready_batch(&completions) {
@@ -1994,10 +2027,14 @@ impl DecryptWorkerShard {
                             aead_failures += drain.aead_failures;
                             replay_drops += drain.replay_drops;
                         }
-                        Err(FmpOpenError::Replay) => {}
-                        #[cfg(test)]
-                        Err(FmpOpenError::Aead { .. }) => {
-                            unreachable!("ordered FMP completion cannot run AEAD")
+                        Err(error) => {
+                            record_fmp_aead_completion_order_error(&error);
+                            debug!(
+                                worker = idx,
+                                ?error,
+                                ?session_key,
+                                "dropping invalid ordered FMP AEAD completion"
+                            );
                         }
                     }
                 }
@@ -2040,9 +2077,17 @@ impl DecryptWorkerShard {
         } = completion;
 
         let Some(state) = self.sessions.get_mut(&session_key) else {
+            record_fmp_aead_completion_drop(
+                crate::perf_profile::Event::FmpAeadCompletionStaleSession,
+                1,
+            );
             return DecryptWorkerJobActions::None;
         };
         if state.fmp_receive_order_id() != receive_order_id {
+            record_fmp_aead_completion_drop(
+                crate::perf_profile::Event::FmpAeadCompletionStaleOrder,
+                1,
+            );
             return DecryptWorkerJobActions::None;
         }
 
@@ -2075,10 +2120,14 @@ impl DecryptWorkerShard {
                             drain.replay_drops,
                         );
                     }
-                    Err(FmpOpenError::Replay) => return actions,
-                    #[cfg(test)]
-                    Err(FmpOpenError::Aead { .. }) => {
-                        unreachable!("ordered FMP completion cannot run AEAD")
+                    Err(error) => {
+                        record_fmp_aead_completion_order_error(&error);
+                        debug!(
+                            ?error,
+                            ?session_key,
+                            "dropping invalid ordered FMP AEAD completion"
+                        );
+                        return actions;
                     }
                 }
                 actions
@@ -2099,13 +2148,23 @@ impl DecryptWorkerShard {
                         }
                     },
                 );
-                if let Ok(drain) = drain_result {
-                    crate::perf_profile::record_fmp_aead_completion_drain(
-                        drain.ready,
-                        drain.accepted,
-                        drain.aead_failures,
-                        drain.replay_drops,
-                    );
+                match drain_result {
+                    Ok(drain) => {
+                        crate::perf_profile::record_fmp_aead_completion_drain(
+                            drain.ready,
+                            drain.accepted,
+                            drain.aead_failures,
+                            drain.replay_drops,
+                        );
+                    }
+                    Err(error) => {
+                        record_fmp_aead_completion_order_error(&error);
+                        debug!(
+                            ?error,
+                            ?session_key,
+                            "dropping invalid ordered FMP AEAD completion"
+                        );
+                    }
                 }
                 actions
             }

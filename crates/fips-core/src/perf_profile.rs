@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 88;
-const N_EVENTS: usize = 229;
+const N_EVENTS: usize = 234;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -781,6 +781,11 @@ pub enum Event {
     FspAeadOpenWorkerBatchPackets = 226,
     FspAeadOpenWorkerBatchFull = 227,
     FspAeadOpenWorkerBatchSingle = 228,
+    FmpAeadCompletionStaleSession = 229,
+    FmpAeadCompletionStaleOrder = 230,
+    FmpAeadCompletionStaleTicket = 231,
+    FmpAeadCompletionDuplicateTicket = 232,
+    FmpAeadCompletionWindowExceeded = 233,
 }
 
 impl Event {
@@ -1111,6 +1116,11 @@ impl Event {
             Event::FspAeadOpenWorkerBatchPackets => "fsp_aead_open_worker_batch_packets",
             Event::FspAeadOpenWorkerBatchFull => "fsp_aead_open_worker_batch_full",
             Event::FspAeadOpenWorkerBatchSingle => "fsp_aead_open_worker_batch_single",
+            Event::FmpAeadCompletionStaleSession => "fmp_aead_completion_stale_session",
+            Event::FmpAeadCompletionStaleOrder => "fmp_aead_completion_stale_order",
+            Event::FmpAeadCompletionStaleTicket => "fmp_aead_completion_stale_ticket",
+            Event::FmpAeadCompletionDuplicateTicket => "fmp_aead_completion_duplicate_ticket",
+            Event::FmpAeadCompletionWindowExceeded => "fmp_aead_completion_window_exceeded",
         }
     }
 }
@@ -1346,6 +1356,11 @@ fn event_from_index(idx: usize) -> Event {
         226 => Event::FspAeadOpenWorkerBatchPackets,
         227 => Event::FspAeadOpenWorkerBatchFull,
         228 => Event::FspAeadOpenWorkerBatchSingle,
+        229 => Event::FmpAeadCompletionStaleSession,
+        230 => Event::FmpAeadCompletionStaleOrder,
+        231 => Event::FmpAeadCompletionStaleTicket,
+        232 => Event::FmpAeadCompletionDuplicateTicket,
+        233 => Event::FmpAeadCompletionWindowExceeded,
         _ => unreachable!(),
     }
 }

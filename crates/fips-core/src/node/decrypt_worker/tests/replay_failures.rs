@@ -564,6 +564,87 @@
     }
 
     #[test]
+    fn fmp_ordered_completion_reports_ticket_integrity_errors() {
+        assert_eq!(
+            fmp_aead_completion_order_error_event(&OrderedCompletionError::Stale),
+            crate::perf_profile::Event::FmpAeadCompletionStaleTicket
+        );
+        assert_eq!(
+            fmp_aead_completion_order_error_event(&OrderedCompletionError::Duplicate),
+            crate::perf_profile::Event::FmpAeadCompletionDuplicateTicket
+        );
+        assert_eq!(
+            fmp_aead_completion_order_error_event(&OrderedCompletionError::WindowExceeded),
+            crate::perf_profile::Event::FmpAeadCompletionWindowExceeded
+        );
+
+        let key_bytes = [0x55u8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+
+        let first_ticket = state.issue_fmp_receive_ticket().expect("first ticket");
+        state
+            .complete_ordered_fmp_open(
+                first_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx.clone(),
+                    100,
+                )),
+            )
+            .expect("first completion should drain");
+        assert_eq!(
+            state.complete_ordered_fmp_open(
+                first_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx.clone(),
+                    101,
+                )),
+            ),
+            Err(OrderedCompletionError::Stale),
+            "old helper completions must be classified as stale tickets"
+        );
+
+        let second_ticket = state.issue_fmp_receive_ticket().expect("second ticket");
+        let third_ticket = state.issue_fmp_receive_ticket().expect("third ticket");
+        state
+            .complete_ordered_fmp_open(
+                third_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx.clone(),
+                    103,
+                )),
+            )
+            .expect("later completion should wait behind the second ticket");
+        assert_eq!(
+            state.complete_ordered_fmp_open(
+                third_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx.clone(),
+                    104,
+                )),
+            ),
+            Err(OrderedCompletionError::Duplicate),
+            "same pending ticket must be classified as duplicate"
+        );
+
+        let far_ticket = FmpReceiveTicket {
+            sequence: second_ticket
+                .sequence
+                .saturating_add(fmp_receive_window() as u64),
+        };
+        assert_eq!(
+            state.complete_ordered_fmp_open(
+                far_ticket,
+                FmpOrderedCompletion::AeadFailed(dummy_fmp_aead_failure(fallback_tx, 105)),
+            ),
+            Err(OrderedCompletionError::WindowExceeded),
+            "completion beyond the ordered receive window must stay visible"
+        );
+    }
+
+    #[test]
     fn fmp_aead_helper_window_wait_drains_oldest_completion() {
         let session_key = test_session_key(1, 443);
         let mut state = test_owned_session_state();

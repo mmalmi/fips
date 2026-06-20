@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 229);
+    assert_eq!(N_EVENTS, 234);
     assert!(
         (Event::DecryptDirectSessionCommitStale as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
@@ -417,6 +417,26 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FmpAeadCompletionReadyMulti as usize).name(),
         "fmp_aead_completion_ready_multi"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleSession as usize).name(),
+        "fmp_aead_completion_stale_session"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleOrder as usize).name(),
+        "fmp_aead_completion_stale_order"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionStaleTicket as usize).name(),
+        "fmp_aead_completion_stale_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionDuplicateTicket as usize).name(),
+        "fmp_aead_completion_duplicate_ticket"
+    );
+    assert_eq!(
+        event_from_index(Event::FmpAeadCompletionWindowExceeded as usize).name(),
+        "fmp_aead_completion_window_exceeded"
     );
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReady as usize).name(),

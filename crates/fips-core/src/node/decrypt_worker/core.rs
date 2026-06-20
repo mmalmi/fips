@@ -902,7 +902,7 @@ struct FspReceiveTicket {
 
 type FmpReceiveTicket = FspReceiveTicket;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OrderedCompletionError {
     Stale,
     Duplicate,
@@ -1741,7 +1741,7 @@ impl OwnedSessionState {
         &mut self,
         ticket: FmpReceiveTicket,
         completion: FmpOrderedCompletion<OpenedFmpJob>,
-    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+    ) -> Result<FmpOrderedDrain, OrderedCompletionError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
         drain.ready = self
@@ -1766,7 +1766,7 @@ impl OwnedSessionState {
                     drain.aead_failures += 1;
                 }
             })
-            .map_err(|_| FmpOpenError::Replay)?;
+            ?;
         Ok(drain)
     }
 
@@ -1775,7 +1775,7 @@ impl OwnedSessionState {
         ticket: FmpReceiveTicket,
         completion: FmpOrderedCompletion<OpenedFmpJob>,
         mut on_ready: impl FnMut(FmpReadyCompletion<OpenedFmpJob>),
-    ) -> Result<FmpOrderedDrain, FmpOpenError> {
+    ) -> Result<FmpOrderedDrain, OrderedCompletionError> {
         let fmp_replay = &mut self.fmp_replay;
         let mut drain = FmpOrderedDrain::default();
         drain.ready = self
@@ -1805,7 +1805,7 @@ impl OwnedSessionState {
                     on_ready(FmpReadyCompletion::AeadFailed(failure));
                 }
             })
-            .map_err(|_| FmpOpenError::Replay)?;
+            ?;
         Ok(drain)
     }
 
