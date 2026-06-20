@@ -443,7 +443,7 @@ impl Node {
             .map(u16::from)
             .unwrap_or(UNKNOWN_PATH_PRIORITY);
 
-        if candidate_priority <= current_priority {
+        if candidate_priority < current_priority {
             return true;
         }
 

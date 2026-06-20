@@ -127,7 +127,7 @@ async fn fresh_handshake_replaces_reconnecting_peer_even_if_tie_breaker_would_lo
 }
 
 #[tokio::test]
-async fn fresh_outbound_alternate_path_replaces_healthy_peer_even_if_tie_breaker_would_lose() {
+async fn equal_priority_outbound_alternate_path_does_not_replace_healthy_peer() {
     let mut node = make_node();
     let peer_full = loop {
         let candidate = Identity::generate();
@@ -157,7 +157,7 @@ async fn fresh_outbound_alternate_path_replaces_healthy_peer_even_if_tie_breaker
         old_our_index,
         old_their_index,
         old_transport_id,
-        old_addr,
+        old_addr.clone(),
         crate::transport::LinkStats::new(),
         true,
         &node.config.node.mmp,
@@ -193,17 +193,17 @@ async fn fresh_outbound_alternate_path_replaces_healthy_peer_even_if_tie_breaker
         .unwrap();
 
     assert!(
-        matches!(result, PromotionResult::CrossConnectionWon { .. }),
-        "fresh authenticated outbound alternate path should replace the old healthy link"
+        matches!(result, PromotionResult::CrossConnectionLost { .. }),
+        "a same-priority alternate path should not churn a healthy active endpoint"
     );
     let active = node.get_peer(&peer_node_addr).unwrap();
-    assert_eq!(active.link_id(), new_link_id);
-    assert_eq!(active.current_addr(), Some(&new_addr));
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.current_addr(), Some(&old_addr));
     assert!(active.can_send());
 }
 
 #[tokio::test]
-async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_breaker_would_lose() {
+async fn handle_msg2_keeps_healthy_peer_over_equal_priority_outbound_alternate_path() {
     let mut node = make_node();
     let peer_full = loop {
         let candidate = Identity::generate();
@@ -297,33 +297,33 @@ async fn handle_msg2_promotes_active_peer_outbound_alternate_path_even_if_tie_br
     assert_eq!(node.connection_count(), 0);
     assert!(node.pending_outbound.is_empty());
     assert!(
-        !node.links.contains_key(&old_link_id),
-        "old active link should be retired after successful path refresh"
+        node.links.contains_key(&old_link_id),
+        "healthy active link should remain active"
     );
     assert!(
-        node.links.contains_key(&new_link_id),
-        "new outbound link should remain active"
-    );
-    assert_eq!(
-        node.links.get_addr(&(old_transport_id, old_addr.clone())),
-        None
+        !node.links.contains_key(&new_link_id),
+        "same-priority alternate link should be discarded"
     );
     assert_eq!(
         node.links
-            .get_addr(&(new_transport_id, new_addr.clone()))
+            .get_addr(&(old_transport_id, old_addr.clone()))
             .copied(),
-        Some(new_link_id)
+        Some(old_link_id)
+    );
+    assert_eq!(
+        node.links.get_addr(&(new_transport_id, new_addr.clone())),
+        None
     );
 
     let active = node.get_peer(&peer_node_addr).unwrap();
-    assert_eq!(active.link_id(), new_link_id);
-    assert_eq!(active.transport_id(), Some(new_transport_id));
-    assert_eq!(active.current_addr(), Some(&new_addr));
-    assert_eq!(active.our_index(), Some(our_index));
-    assert_eq!(active.their_index(), Some(their_index));
+    assert_eq!(active.link_id(), old_link_id);
+    assert_eq!(active.transport_id(), Some(old_transport_id));
+    assert_eq!(active.current_addr(), Some(&old_addr));
+    assert_eq!(active.our_index(), Some(old_our_index));
+    assert_eq!(active.their_index(), Some(old_their_index));
     assert_eq!(
         node.peers
-            .get_session_index(&(new_transport_id, our_index.as_u32()))
+            .get_session_index(&(old_transport_id, old_our_index.as_u32()))
             .copied(),
         Some(peer_node_addr)
     );

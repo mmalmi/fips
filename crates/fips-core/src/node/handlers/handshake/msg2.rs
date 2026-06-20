@@ -284,8 +284,10 @@ impl Node {
                         &peer_node_addr,
                         packet.timestamp_ms,
                     );
+                let reply_transport_handoff = packet.transport_id != outbound_transport_id;
                 if !remote_epoch_changed
                     && !existing_path_unusable
+                    && !reply_transport_handoff
                     && !self.alternate_path_priority_allows_replace(
                         &peer_node_addr,
                         outbound_transport_id,
