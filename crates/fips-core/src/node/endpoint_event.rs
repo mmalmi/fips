@@ -2,7 +2,7 @@ use super::*;
 use crate::transport::PacketBuffer;
 #[cfg(unix)]
 use crossbeam_channel::{
-    Receiver as CrossbeamReceiver, Sender as CrossbeamSender, TryRecvError, TrySendError, bounded,
+    Receiver as CrossbeamReceiver, Sender as CrossbeamSender, TrySendError, bounded,
 };
 
 /// App-owned packet channels for embedding FIPS without a system TUN.
@@ -211,14 +211,6 @@ impl EndpointCommittedBulkBatch {
     fn packet_count(&self) -> usize {
         self.jobs.len()
     }
-
-    fn can_merge_after(&self, other: &Self) -> bool {
-        crate::node::encrypt_worker::fmp_send_job_batches_share_bulk_target(&self.jobs, &other.jobs)
-    }
-
-    fn append_committed(&mut self, mut other: Self) {
-        self.jobs.append(&mut other.jobs);
-    }
 }
 
 #[cfg(unix)]
@@ -285,6 +277,7 @@ impl EndpointCommittedBulkReady {
         *state
     }
 
+    #[cfg(test)]
     fn try_state(&self) -> EndpointCommittedBulkState {
         self.state
             .lock()
@@ -295,83 +288,18 @@ impl EndpointCommittedBulkReady {
 
 #[cfg(unix)]
 fn run_endpoint_committed_bulk_dispatch(rx: CrossbeamReceiver<EndpointCommittedBulkBatch>) {
-    let mut pending: Option<EndpointCommittedBulkBatch> = None;
     loop {
-        let Some(mut batch) = pending.take().or_else(|| rx.recv().ok()) else {
+        let Ok(batch) = rx.recv() else {
             break;
         };
         if batch.ready.wait() != EndpointCommittedBulkState::Committed {
             continue;
         }
 
-        let mut merged_batches = 0usize;
-        let mut merged_packets = 0usize;
-        let max_batches = endpoint_committed_bulk_coalesce_batches();
-        let max_packets = endpoint_committed_bulk_coalesce_packets();
-        // Merge only already-committed adjacent bulk batches. Pending or
-        // different-target work is held for the next loop, preserving FIFO
-        // without widening UDP_GSO bursts or waiting on future commits.
-        while merged_batches + 1 < max_batches && batch.packet_count() < max_packets {
-            match rx.try_recv() {
-                Ok(next) => match next.ready.try_state() {
-                    EndpointCommittedBulkState::Committed => {
-                        if !batch.can_merge_after(&next) {
-                            pending = Some(next);
-                            break;
-                        }
-                        if batch.packet_count().saturating_add(next.packet_count()) > max_packets {
-                            pending = Some(next);
-                            break;
-                        }
-                        merged_batches = merged_batches.saturating_add(1);
-                        merged_packets = merged_packets.saturating_add(next.packet_count());
-                        batch.append_committed(next);
-                    }
-                    EndpointCommittedBulkState::Canceled => {}
-                    EndpointCommittedBulkState::Pending => {
-                        pending = Some(next);
-                        break;
-                    }
-                },
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-
-        crate::perf_profile::record_endpoint_committed_bulk_dispatch(
-            batch.packet_count(),
-            merged_batches,
-            merged_packets,
-        );
+        crate::perf_profile::record_endpoint_committed_bulk_dispatch(batch.packet_count(), 0, 0);
         let EndpointCommittedBulkBatch { workers, jobs, .. } = batch;
         let _all_enqueued = workers.dispatch_bulk_batch_blocking(jobs);
     }
-}
-
-#[cfg(unix)]
-fn endpoint_committed_bulk_coalesce_batches() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_ENDPOINT_COMMITTED_BULK_COALESCE_BATCHES")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            // Default off: the committed batches are usually large already;
-            // adjacent coalescing is kept as an explicit benchmark knob.
-            .unwrap_or(1)
-            .clamp(1, 16)
-    })
-}
-
-#[cfg(unix)]
-fn endpoint_committed_bulk_coalesce_packets() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_ENDPOINT_COMMITTED_BULK_COALESCE_PACKETS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(128)
-            .clamp(1, 1024)
-    })
 }
 
 #[cfg(unix)]
@@ -1504,9 +1432,6 @@ pub(crate) struct NodeEndpointRelayStatus {
 #[cfg(all(test, unix))]
 mod endpoint_committed_bulk_tests {
     use super::*;
-    use crate::node::encrypt_worker::DEFAULT_SEND_WEIGHT;
-    use crate::transport::udp::socket::UdpRawSocket;
-    use ring::aead::{LessSafeKey, UnboundKey};
 
     #[test]
     fn committed_bulk_ready_waits_for_commit_or_cancel() {
@@ -1533,83 +1458,5 @@ mod endpoint_committed_bulk_tests {
         ready.cancel();
         assert_eq!(ready.try_state(), EndpointCommittedBulkState::Canceled);
         assert_eq!(ready.wait(), EndpointCommittedBulkState::Canceled);
-    }
-
-    fn test_cipher() -> LessSafeKey {
-        let unbound =
-            UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &[0u8; 32]).expect("build key");
-        LessSafeKey::new(unbound)
-    }
-
-    fn with_test_socket(
-        test: impl FnOnce(crate::transport::udp::socket::AsyncUdpSocket, LessSafeKey),
-    ) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .expect("tokio runtime");
-        rt.block_on(async {
-            let raw = UdpRawSocket::open("127.0.0.1:0".parse().unwrap(), 1 << 20, 1 << 20)
-                .expect("open UDP socket");
-            test(raw.into_async().expect("async UDP socket"), test_cipher());
-        });
-    }
-
-    fn bulk_job(
-        socket: crate::transport::udp::socket::AsyncUdpSocket,
-        cipher: &LessSafeKey,
-        dest_addr: &str,
-        bulk_endpoint_data: bool,
-    ) -> crate::node::encrypt_worker::FmpSendJob {
-        let mut wire_buf = Vec::with_capacity(crate::node::wire::ESTABLISHED_HEADER_SIZE + 32);
-        wire_buf.extend_from_slice(&[0u8; crate::node::wire::ESTABLISHED_HEADER_SIZE]);
-        crate::node::encrypt_worker::FmpSendJob {
-            cipher: cipher.clone(),
-            counter: 0,
-            wire_buf,
-            fsp_seal: None,
-            send_target: crate::node::encrypt_worker::SelectedSendTarget::new(
-                socket,
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                None,
-                dest_addr.parse().expect("socket addr"),
-            ),
-            endpoint_flow_dispatch_key: None,
-            bulk_endpoint_data,
-            drop_on_backpressure: bulk_endpoint_data,
-            scheduling_weight: DEFAULT_SEND_WEIGHT,
-            queued_at: None,
-        }
-    }
-
-    #[test]
-    fn committed_bulk_batch_merge_requires_same_bulk_target() {
-        with_test_socket(|socket, cipher| {
-            let workers = crate::node::encrypt_worker::EncryptWorkerPool::spawn(1);
-            let first = EndpointCommittedBulkBatch {
-                workers: workers.clone(),
-                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10031", true)],
-                ready: Arc::new(EndpointCommittedBulkReady::new()),
-            };
-            let same = EndpointCommittedBulkBatch {
-                workers: workers.clone(),
-                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10031", true)],
-                ready: Arc::new(EndpointCommittedBulkReady::new()),
-            };
-            let other_target = EndpointCommittedBulkBatch {
-                workers: workers.clone(),
-                jobs: vec![bulk_job(socket.clone(), &cipher, "127.0.0.1:10032", true)],
-                ready: Arc::new(EndpointCommittedBulkReady::new()),
-            };
-            let priority_like = EndpointCommittedBulkBatch {
-                workers,
-                jobs: vec![bulk_job(socket, &cipher, "127.0.0.1:10031", false)],
-                ready: Arc::new(EndpointCommittedBulkReady::new()),
-            };
-
-            assert!(first.can_merge_after(&same));
-            assert!(!first.can_merge_after(&other_target));
-            assert!(!first.can_merge_after(&priority_like));
-        });
     }
 }

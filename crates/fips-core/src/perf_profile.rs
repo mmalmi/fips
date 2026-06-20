@@ -1530,12 +1530,6 @@ pub(crate) fn record_fmp_send_group_split_backpressure() {
 }
 
 #[inline]
-#[cfg(target_os = "linux")]
-pub(crate) fn record_fmp_send_group_split_packet_cap() {
-    record_fmp_send_group_split(Event::FmpSendGroupSplitPacketCap);
-}
-
-#[inline]
 fn record_fmp_send_group_split(event: Event) {
     if !enabled() {
         return;
