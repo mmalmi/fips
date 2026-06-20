@@ -1781,49 +1781,69 @@ impl DecryptWorkerShard {
             if state.fmp_receive_order_id() != receive_order_id {
                 return;
             }
-            for completion in completions {
-                let FmpAeadCompletion {
-                    session_key: _,
-                    receive_order_id: _,
-                    ticket,
-                    completed_at: _,
-                    result,
-                } = completion;
-                let ordered = match result {
-                    FmpAeadCompletionResult::Opened { replay, opened } => {
-                        FmpOrderedCompletion::Opened {
-                            replay,
-                            value: opened,
+            if state.can_complete_ordered_fmp_open_ready_batch(&completions) {
+                let drain = state.complete_ordered_fmp_open_ready_batch_with_values(
+                    completions,
+                    |ready| match ready {
+                        FmpReadyCompletion::Opened(opened_job) => {
+                            if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                                actions.push(action);
+                            }
                         }
-                    }
-                    FmpAeadCompletionResult::AeadFailed(failure) => {
-                        FmpOrderedCompletion::AeadFailed(failure)
-                    }
-                };
-                let drain_result =
-                    state.complete_ordered_fmp_open_with_value(ticket, ordered, |ready| {
-                        match ready {
-                            FmpReadyCompletion::Opened(opened_job) => {
-                                if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
-                                    actions.push(action);
+                        FmpReadyCompletion::AeadFailed(failure) => {
+                            actions.push(Self::fmp_aead_failure_action(failure));
+                        }
+                    },
+                );
+                ready += drain.ready;
+                accepted += drain.accepted;
+                aead_failures += drain.aead_failures;
+                replay_drops += drain.replay_drops;
+            } else {
+                for completion in completions {
+                    let FmpAeadCompletion {
+                        session_key: _,
+                        receive_order_id: _,
+                        ticket,
+                        completed_at: _,
+                        result,
+                    } = completion;
+                    let ordered = match result {
+                        FmpAeadCompletionResult::Opened { replay, opened } => {
+                            FmpOrderedCompletion::Opened {
+                                replay,
+                                value: opened,
+                            }
+                        }
+                        FmpAeadCompletionResult::AeadFailed(failure) => {
+                            FmpOrderedCompletion::AeadFailed(failure)
+                        }
+                    };
+                    let drain_result =
+                        state.complete_ordered_fmp_open_with_value(ticket, ordered, |ready| {
+                            match ready {
+                                FmpReadyCompletion::Opened(opened_job) => {
+                                    if let Some(action) = Self::handle_opened_fmp_job(opened_job) {
+                                        actions.push(action);
+                                    }
+                                }
+                                FmpReadyCompletion::AeadFailed(failure) => {
+                                    actions.push(Self::fmp_aead_failure_action(failure));
                                 }
                             }
-                            FmpReadyCompletion::AeadFailed(failure) => {
-                                actions.push(Self::fmp_aead_failure_action(failure));
-                            }
+                        });
+                    match drain_result {
+                        Ok(drain) => {
+                            ready += drain.ready;
+                            accepted += drain.accepted;
+                            aead_failures += drain.aead_failures;
+                            replay_drops += drain.replay_drops;
                         }
-                    });
-                match drain_result {
-                    Ok(drain) => {
-                        ready += drain.ready;
-                        accepted += drain.accepted;
-                        aead_failures += drain.aead_failures;
-                        replay_drops += drain.replay_drops;
-                    }
-                    Err(FmpOpenError::Replay) => {}
-                    #[cfg(test)]
-                    Err(FmpOpenError::Aead { .. }) => {
-                        unreachable!("ordered FMP completion cannot run AEAD")
+                        Err(FmpOpenError::Replay) => {}
+                        #[cfg(test)]
+                        Err(FmpOpenError::Aead { .. }) => {
+                            unreachable!("ordered FMP completion cannot run AEAD")
+                        }
                     }
                 }
             }

@@ -1016,6 +1016,28 @@ impl FmpReceiveOrder {
     ) -> Result<usize, OrderedCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
     }
+
+    fn can_complete_ready_contiguous(
+        &self,
+        tickets: impl Iterator<Item = FmpReceiveTicket>,
+    ) -> bool {
+        if !self.completions.pending_is_empty() {
+            return false;
+        }
+        let next_ready = self.completions.next_ready();
+        let mut saw_ticket = false;
+        for (offset, ticket) in tickets.enumerate() {
+            saw_ticket = true;
+            if ticket.sequence != next_ready.saturating_add(offset as u64) {
+                return false;
+            }
+        }
+        saw_ticket
+    }
+
+    fn advance_ready_contiguous(&mut self, count: usize) {
+        self.completions.advance_next_ready_by(count);
+    }
 }
 
 enum FmpOrderedCompletion<T> {
@@ -1777,6 +1799,67 @@ impl OwnedSessionState {
             })
             .map_err(|_| FmpOpenError::Replay)?;
         Ok(drain)
+    }
+
+    fn can_complete_ordered_fmp_open_ready_batch(
+        &self,
+        completions: &[FmpAeadCompletion],
+    ) -> bool {
+        self.fmp_receive_order
+            .can_complete_ready_contiguous(completions.iter().map(|completion| completion.ticket))
+    }
+
+    fn complete_ordered_fmp_open_ready_batch_with_values(
+        &mut self,
+        completions: Vec<FmpAeadCompletion>,
+        mut on_ready: impl FnMut(FmpReadyCompletion<OpenedFmpJob>),
+    ) -> FmpOrderedDrain {
+        debug_assert!(self.can_complete_ordered_fmp_open_ready_batch(&completions));
+        let ready = completions.len();
+        let mut drain = FmpOrderedDrain::default();
+        let fmp_replay = &mut self.fmp_replay;
+        for completion in completions {
+            let FmpAeadCompletion { result, .. } = completion;
+            let ordered = match result {
+                FmpAeadCompletionResult::Opened { replay, opened } => {
+                    FmpOrderedCompletion::Opened {
+                        replay,
+                        value: opened,
+                    }
+                }
+                FmpAeadCompletionResult::AeadFailed(failure) => {
+                    FmpOrderedCompletion::AeadFailed(failure)
+                }
+            };
+            match ordered {
+                FmpOrderedCompletion::Opened { replay, value } => {
+                    if let Err(reject) = Self::accept_or_classify_fmp_replay_on(fmp_replay, replay)
+                    {
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_mode(
+                            reject.deferred,
+                        );
+                        crate::perf_profile::record_fmp_aead_completion_replay_drop_reason(
+                            reject.reason,
+                            reject.counter_lag,
+                        );
+                        drain.replay_drops += 1;
+                    } else {
+                        drain.accepted += 1;
+                        on_ready(FmpReadyCompletion::Opened(value));
+                    }
+                }
+                FmpOrderedCompletion::AeadFailed(mut failure) => {
+                    failure
+                        .fmp_replay_highest
+                        .get_or_insert_with(|| fmp_replay.highest());
+                    drain.aead_failures += 1;
+                    on_ready(FmpReadyCompletion::AeadFailed(failure));
+                }
+            }
+        }
+        self.fmp_receive_order.advance_ready_contiguous(ready);
+        drain.ready = drain.ready.saturating_add(ready);
+        drain
     }
 
     #[cfg(test)]

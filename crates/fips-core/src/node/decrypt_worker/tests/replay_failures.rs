@@ -867,6 +867,152 @@
     }
 
     #[test]
+    fn fmp_ready_completion_batch_fast_path_rechecks_duplicate_counter() {
+        let key_bytes = [0x5au8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+        let session_key = test_session_key(5, 91);
+        let receive_order_id = state.fmp_receive_order_id();
+        let counter = 231;
+        let first_plaintext_len = 231usize;
+        let duplicate_plaintext_len = 1231usize;
+
+        let first_precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("first duplicate candidate should pass before either completion drains");
+        let first_ticket = state.issue_fmp_receive_ticket().expect("first ticket");
+        let duplicate_precheck = state
+            .precheck_fmp_replay(counter)
+            .expect("duplicate can pass precheck while the first completion is pending");
+        let duplicate_ticket = state
+            .issue_fmp_receive_ticket()
+            .expect("duplicate ticket");
+        let completions = vec![
+            FmpAeadCompletion {
+                session_key,
+                receive_order_id,
+                ticket: first_ticket,
+                completed_at: None,
+                result: FmpAeadCompletionResult::Opened {
+                    replay: FmpReplayDecision::Prechecked(first_precheck),
+                    opened: dummy_opened_fmp_job(first_plaintext_len),
+                },
+            },
+            FmpAeadCompletion {
+                session_key,
+                receive_order_id,
+                ticket: duplicate_ticket,
+                completed_at: None,
+                result: FmpAeadCompletionResult::Opened {
+                    replay: FmpReplayDecision::Prechecked(duplicate_precheck),
+                    opened: dummy_opened_fmp_job(duplicate_plaintext_len),
+                },
+            },
+        ];
+
+        assert!(
+            state.can_complete_ordered_fmp_open_ready_batch(&completions),
+            "contiguous ready FMP tickets should take the helper batch fast path"
+        );
+        let mut opened_counters = Vec::new();
+        let drain = state.complete_ordered_fmp_open_ready_batch_with_values(
+            completions,
+            |ready| match ready {
+                FmpReadyCompletion::Opened(opened) => {
+                    opened_counters.push(opened.fmp_plaintext_len)
+                }
+                FmpReadyCompletion::AeadFailed(_) => panic!("test completions authenticate"),
+            },
+        );
+
+        assert_eq!(
+            drain,
+            FmpOrderedDrain {
+                ready: 2,
+                accepted: 1,
+                aead_failures: 0,
+                replay_drops: 1,
+            }
+        );
+        assert_eq!(
+            opened_counters,
+            vec![first_plaintext_len],
+            "duplicate replay must not release plaintext from the fast path"
+        );
+        assert_eq!(state.fmp_replay.highest(), counter);
+        assert!(
+            !state.fmp_replay.check(counter),
+            "fast-path ordered drain must leave the duplicate counter rejected"
+        );
+    }
+
+    #[test]
+    fn fmp_ready_completion_batch_fast_path_declines_pending_gap() {
+        let key_bytes = [0x5bu8; 32];
+        let open_cipher = test_chacha_key(key_bytes);
+        let mut state =
+            OwnedSessionState::new(open_cipher, ReplayWindow::new(), test_source_peer());
+        let session_key = test_session_key(5, 92);
+        let receive_order_id = state.fmp_receive_order_id();
+
+        let first_precheck = state
+            .precheck_fmp_replay(241)
+            .expect("first fresh counter should pass precheck");
+        let first_ticket = state.issue_fmp_receive_ticket().expect("first ticket");
+        let second_precheck = state
+            .precheck_fmp_replay(242)
+            .expect("second fresh counter should pass precheck");
+        let second_ticket = state.issue_fmp_receive_ticket().expect("second ticket");
+
+        let pending_drain = state
+            .complete_ordered_fmp_open(
+                second_ticket,
+                FmpOrderedCompletion::Opened {
+                    replay: FmpReplayDecision::Prechecked(second_precheck),
+                    value: dummy_opened_fmp_job(242),
+                },
+            )
+            .expect("out-of-order completion should buffer");
+        assert_eq!(pending_drain.ready, 0);
+
+        let completions = vec![FmpAeadCompletion {
+            session_key,
+            receive_order_id,
+            ticket: first_ticket,
+            completed_at: None,
+            result: FmpAeadCompletionResult::Opened {
+                replay: FmpReplayDecision::Prechecked(first_precheck),
+                opened: dummy_opened_fmp_job(241),
+            },
+        }];
+        assert!(
+            !state.can_complete_ordered_fmp_open_ready_batch(&completions),
+            "pending gaps must fall back to the checked ordered-buffer path"
+        );
+        let completion = completions.into_iter().next().expect("completion exists");
+        let drain = state
+            .complete_ordered_fmp_open(
+                completion.ticket,
+                match completion.result {
+                    FmpAeadCompletionResult::Opened { replay, opened } => {
+                        FmpOrderedCompletion::Opened {
+                            replay,
+                            value: opened,
+                        }
+                    }
+                    FmpAeadCompletionResult::AeadFailed(failure) => {
+                        FmpOrderedCompletion::AeadFailed(failure)
+                    }
+                },
+            )
+            .expect("oldest completion should drain itself and the buffered gap");
+        assert_eq!(drain.ready, 2);
+        assert_eq!(drain.accepted, 2);
+        assert_eq!(state.fmp_replay.highest(), 242);
+    }
+
+    #[test]
     fn fmp_ordered_completion_drains_opened_values_in_receive_order() {
         let key_bytes = [0x59u8; 32];
         let open_cipher = test_chacha_key(key_bytes);
