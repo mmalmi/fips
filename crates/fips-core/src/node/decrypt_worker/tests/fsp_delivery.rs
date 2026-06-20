@@ -130,7 +130,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let job = DecryptJob::new(
             wire,
             session_key,
@@ -169,11 +169,12 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let output = shard
-            .handle_job_output(0, job)
-            .expect("worker job should not fail")
+        shard.handle_job(job).expect("worker job should not fail");
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
             .expect("direct FSP path should emit an event");
-        match output.event {
+        match event {
             DecryptWorkerEvent::DirectSessionData(direct) => {
                 assert_eq!(direct.source_addr, *source.node_addr());
                 assert_eq!(direct.previous_hop_peer, previous_hop_peer);
@@ -1517,7 +1518,7 @@
         let (wire_b, header_b) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, 78, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
 
         let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
         let mut shard = DecryptWorkerShard::new(pool);
@@ -1573,19 +1574,22 @@
         );
         second.lane = DecryptWorkerLane::Bulk;
 
+        shard
+            .handle_job(first)
+            .expect("first worker job should not fail");
         assert!(matches!(
-            shard
-                .handle_job_output(0, first)
-                .expect("first worker job should not fail")
-                .expect("first FSP frame should authenticate")
-                .event,
+            fallback_rx
+                .authenticated_bulk
+                .try_recv()
+                .expect("first FSP frame should authenticate"),
             DecryptWorkerEvent::DirectSessionData(_)
         ));
+        shard
+            .handle_job(second)
+            .expect("second worker job should not fail");
         assert!(
-            shard
-                .handle_job_output(0, second)
-                .expect("second worker job should not fail")
-                .is_none(),
+            fallback_rx.authenticated_bulk.try_recv().is_err()
+                && fallback_rx.bulk.try_recv().is_err(),
             "FSP replay must not bounce into rx-loop decrypt failure accounting"
         );
         assert_eq!(
@@ -1642,7 +1646,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 9);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -1682,11 +1686,12 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let output = shard
-            .handle_job_output(0, job)
-            .expect("worker job should not fail")
+        shard.handle_job(job).expect("worker job should not fail");
+        let event = fallback_rx
+            .priority
+            .try_recv()
             .expect("FSP AEAD failure should return a plaintext fallback");
-        match output.event {
+        match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
                 assert_eq!(fallback.source_peer, previous_hop_peer);
                 assert_eq!(fallback.fmp_counter, fmp_counter);
@@ -1757,7 +1762,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 10);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -1800,11 +1805,12 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let output = shard
-            .handle_job_output(0, job)
-            .expect("worker job should not fail")
+        shard.handle_job(job).expect("worker job should not fail");
+        let event = fallback_rx
+            .priority
+            .try_recv()
             .expect("multi-epoch FSP AEAD failure should fall back to rx_loop");
-        match output.event {
+        match event {
             DecryptWorkerEvent::Plaintext(fallback) => {
                 assert_eq!(fallback.source_peer, previous_hop_peer);
                 assert_eq!(fallback.fmp_counter, fmp_counter);
@@ -1854,7 +1860,7 @@
         let (wire, fmp_header) =
             sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
         let session_key = test_session_key(1, 11);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let mut job = DecryptJob::new(
             wire,
             session_key,
@@ -1894,11 +1900,12 @@
             OwnedFspSessionState::from(fsp_snapshot),
         );
 
-        let output = shard
-            .handle_job_output(0, job)
-            .expect("worker job should not fail")
+        shard.handle_job(job).expect("worker job should not fail");
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
             .expect("malformed FSP should still record authenticated FMP receive");
-        match output.event {
+        match event {
             DecryptWorkerEvent::AuthenticatedFmpReceive(receive) => {
                 assert_eq!(receive.fmp.source_peer, previous_hop_peer);
                 assert_eq!(receive.fmp.fmp_counter, fmp_counter);
