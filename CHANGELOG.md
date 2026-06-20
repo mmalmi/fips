@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.73] - 2026-06-20
+
+### Fixed
+
+- Prioritized endpoint-data control-lane commands ahead of raw packet receive
+  turns so embedded Windows endpoints do not drop latency-sensitive tunnel
+  packets behind receive-side churn.
+- Bumped `fips-endpoint` to 0.3.48 so app-facing consumers pick up the
+  `fips-core` 0.3.73 rx-loop scheduling fix.
+
 ## [0.3.70] - 2026-06-20
 
 ### Fixed
