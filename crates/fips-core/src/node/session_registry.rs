@@ -289,6 +289,7 @@ impl DecryptSessionRegistrations {
 pub(in crate::node) struct ConfiguredPeerSendWeights {
     entries: HashMap<NodeAddr, u8>,
     peer_configs: HashMap<NodeAddr, PeerConfig>,
+    identities: HashMap<NodeAddr, PeerIdentity>,
     peer_addrs_by_npub: HashMap<String, NodeAddr>,
 }
 
@@ -296,6 +297,7 @@ impl ConfiguredPeerSendWeights {
     pub(in crate::node) fn from_config(config: &Config) -> Self {
         let mut entries = HashMap::with_capacity(config.peers().len());
         let mut peer_configs = HashMap::with_capacity(config.peers().len());
+        let mut identities = HashMap::with_capacity(config.peers().len());
         let mut peer_addrs_by_npub = HashMap::with_capacity(config.peers().len());
         for peer in config.peers() {
             let Ok(identity) = PeerIdentity::from_npub(&peer.npub) else {
@@ -303,12 +305,14 @@ impl ConfiguredPeerSendWeights {
             };
             let node_addr = *identity.node_addr();
             entries.insert(node_addr, encrypt_worker::EXPLICIT_PEER_SEND_WEIGHT);
+            identities.insert(node_addr, identity);
             peer_addrs_by_npub.insert(peer.npub.clone(), node_addr);
             peer_configs.insert(node_addr, peer.clone());
         }
         Self {
             entries,
             peer_configs,
+            identities,
             peer_addrs_by_npub,
         }
     }
@@ -322,6 +326,15 @@ impl ConfiguredPeerSendWeights {
 
     pub(in crate::node) fn peer_config(&self, peer_addr: &NodeAddr) -> Option<&PeerConfig> {
         self.peer_configs.get(peer_addr)
+    }
+
+    pub(in crate::node) fn identity(&self, peer_addr: &NodeAddr) -> Option<&PeerIdentity> {
+        self.identities.get(peer_addr)
+    }
+
+    pub(in crate::node) fn identity_for_npub(&self, npub: &str) -> Option<&PeerIdentity> {
+        self.peer_addr_for_npub(npub)
+            .and_then(|peer_addr| self.identity(&peer_addr))
     }
 
     pub(in crate::node) fn peer_addr_for_npub(&self, npub: &str) -> Option<NodeAddr> {

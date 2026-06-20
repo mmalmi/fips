@@ -138,6 +138,54 @@ async fn update_peers_adds_new_peer_and_registers_alias() {
 }
 
 #[tokio::test]
+async fn update_peers_refreshes_configured_peer_binary_index() {
+    let mut node = make_node();
+    let first = Identity::generate();
+    let second = Identity::generate();
+    let first_peer = auto_connect_peer(first.npub(), "127.0.0.1:9");
+    let second_peer = auto_connect_peer(second.npub(), "127.0.0.1:10");
+    let first_identity = PeerIdentity::from_pubkey_full(first.pubkey_full());
+    let second_identity = PeerIdentity::from_pubkey_full(second.pubkey_full());
+    let first_addr = *first_identity.node_addr();
+    let second_addr = *second_identity.node_addr();
+
+    let _ = node.update_peers(vec![first_peer.clone()]).await.unwrap();
+    let outcome = node.update_peers(vec![second_peer.clone()]).await.unwrap();
+
+    assert_eq!(outcome.added, 1);
+    assert_eq!(outcome.removed, 1);
+    assert!(
+        node.configured_peer(&first_addr).is_none(),
+        "removed peer must leave the binary configured-peer index"
+    );
+    assert_eq!(
+        node.configured_peer(&second_addr)
+            .map(|peer| peer.npub.as_str()),
+        Some(second_peer.npub.as_str()),
+        "configured peer lookup should use the refreshed NodeAddr index"
+    );
+    assert_eq!(
+        node.configured_peer_identity(&second_addr)
+            .map(|identity| identity.node_addr()),
+        Some(&second_addr),
+        "configured identity should be cached beside the peer config"
+    );
+    assert_eq!(
+        node.configured_peer_send_weights
+            .identity_for_npub(&second_peer.npub)
+            .map(|identity| identity.node_addr()),
+        Some(&second_addr),
+        "npub lookup should resolve through the refreshed side index"
+    );
+    assert!(
+        node.configured_peer_send_weights
+            .identity_for_npub(&first_peer.npub)
+            .is_none(),
+        "removed npub must leave the configured-peer side index"
+    );
+}
+
+#[tokio::test]
 async fn update_peers_removes_dropped_peer_and_clears_retry_state() {
     let mut node = make_node();
     let npub = npub_for_test();

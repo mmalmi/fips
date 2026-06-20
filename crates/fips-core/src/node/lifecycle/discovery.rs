@@ -146,8 +146,11 @@ impl Node {
         for event in bootstrap.drain_events().await {
             match event {
                 BootstrapEvent::Established { traversal } => {
-                    let active_refresh = PeerIdentity::from_npub(&traversal.peer_npub)
-                        .ok()
+                    let peer_identity = self
+                        .configured_or_parsed_peer_identity(&traversal.peer_npub)
+                        .ok();
+                    let active_refresh = peer_identity
+                        .as_ref()
                         .is_some_and(|identity| self.peers.contains_key(identity.node_addr()));
                     let admission_allowed = if active_refresh {
                         self.outbound_direct_refresh_admission_check()
@@ -171,7 +174,7 @@ impl Node {
                         }
                         Err(err) => {
                             warn!(peer_npub = %peer_npub, error = %err, "Failed to adopt NAT traversal");
-                            if let Ok(peer_identity) = PeerIdentity::from_npub(&peer_npub) {
+                            if let Some(peer_identity) = peer_identity {
                                 self.schedule_retry(*peer_identity.node_addr(), Self::now_ms());
                             }
                         }
@@ -181,10 +184,11 @@ impl Node {
                     peer_config,
                     reason,
                 } => {
-                    let peer_identity = match PeerIdentity::from_npub(&peer_config.npub) {
-                        Ok(identity) => identity,
-                        Err(_) => continue,
-                    };
+                    let peer_identity =
+                        match self.configured_or_parsed_peer_identity(&peer_config.npub) {
+                            Ok(identity) => identity,
+                            Err(_) => continue,
+                        };
                     let node_addr = *peer_identity.node_addr();
                     let now_ms = Self::now_ms();
                     if self.peers.contains_key(&node_addr) {
@@ -344,7 +348,7 @@ impl Node {
                 }
             };
 
-            let peer_identity = match PeerIdentity::from_npub(&peer_npub) {
+            let peer_identity = match self.configured_or_parsed_peer_identity(&peer_npub) {
                 Ok(identity) => identity,
                 Err(error) => {
                     debug!(
@@ -656,7 +660,7 @@ impl Node {
         let mut connect_budget = self.discovery_connect_budget();
         let mut skipped_budget = 0usize;
         for record in records {
-            let identity = match PeerIdentity::from_npub(&record.npub) {
+            let identity = match self.configured_or_parsed_peer_identity(&record.npub) {
                 Ok(identity) => identity,
                 Err(err) => {
                     debug!(npub = %record.npub, error = %err, "local instance discovery: skip bad npub");
@@ -753,7 +757,7 @@ impl Node {
                 );
                 continue;
             };
-            let identity = match crate::PeerIdentity::from_npub(&peer.npub) {
+            let identity = match self.configured_or_parsed_peer_identity(&peer.npub) {
                 Ok(id) => id,
                 Err(err) => {
                     debug!(npub = %peer.npub, error = %err, "lan: skip bad npub");

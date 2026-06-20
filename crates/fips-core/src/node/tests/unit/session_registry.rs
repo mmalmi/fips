@@ -460,6 +460,20 @@ fn configured_peer_send_weights_own_identity_parse_and_default_policy() {
         "configured peer npubs are parsed once into a reverse address lookup"
     );
     assert_eq!(
+        weights
+            .identity(&configured_addr)
+            .map(|identity| identity.node_addr()),
+        Some(&configured_addr),
+        "configured peer identities are cached beside their node address"
+    );
+    assert_eq!(
+        weights
+            .identity_for_npub(&configured_npub)
+            .map(|identity| identity.node_addr()),
+        Some(&configured_addr),
+        "configured npubs should resolve to parsed identities without reparsing"
+    );
+    assert_eq!(
         weights.peer_addr_for_npub(&on_demand_npub),
         Some(on_demand_addr),
         "non-auto configured peers should still be addressable by npub"

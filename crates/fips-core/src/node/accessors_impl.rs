@@ -828,6 +828,24 @@ impl Node {
         self.configured_peer_send_weights.peer_config(peer_addr)
     }
 
+    #[cfg(test)]
+    pub(in crate::node) fn configured_peer_identity(
+        &self,
+        peer_addr: &NodeAddr,
+    ) -> Option<&PeerIdentity> {
+        self.configured_peer_send_weights.identity(peer_addr)
+    }
+
+    pub(in crate::node) fn configured_or_parsed_peer_identity(
+        &self,
+        npub: &str,
+    ) -> Result<PeerIdentity, String> {
+        if let Some(identity) = self.configured_peer_send_weights.identity_for_npub(npub) {
+            return Ok(*identity);
+        }
+        PeerIdentity::from_npub(npub).map_err(|error| error.to_string())
+    }
+
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(
         &self,
         peer_addr: &NodeAddr,
