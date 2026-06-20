@@ -13,41 +13,6 @@ fn send_connected_raw(fd: std::os::unix::io::RawFd, data: &[u8]) -> std::io::Res
     }
 }
 
-#[cfg(target_os = "macos")]
-fn send_one_with_backpressure(
-    fd: std::os::unix::io::RawFd,
-    connected: bool,
-    dest: &SocketAddr,
-    data: &[u8],
-    backpressure: &mut SendBackpressurePacer,
-    drop_on_backpressure: bool,
-) -> std::io::Result<()> {
-    loop {
-        let result = if connected {
-            send_connected_raw(fd, data)
-        } else {
-            send_one_raw(fd, data, dest)
-        };
-        match result {
-            Ok(_) => {
-                backpressure.record_success();
-                record_udp_send_path(connected, 1);
-                return Ok(());
-            }
-            Err(err) if is_send_backpressure(&err) => {
-                match send_backpressure_decision(backpressure.pause(&err), drop_on_backpressure) {
-                    SendBackpressureDecision::DropCurrentBulk => {
-                        record_udp_send_backpressure_drop(&err);
-                        return Err(err);
-                    }
-                    SendBackpressureDecision::Retry => {}
-                }
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 #[cfg(all(unix, not(target_os = "linux")))]
 fn send_one_raw(
     fd: std::os::unix::io::RawFd,

@@ -22,10 +22,6 @@ pub(crate) struct EncryptWorkerPool {
     linux_wg_batch_flows: Arc<LinuxWgBatchSendFlows>,
     #[cfg(target_os = "linux")]
     next_wg_batch_worker: Arc<std::sync::atomic::AtomicUsize>,
-    #[cfg(target_os = "macos")]
-    macos_senders: Arc<MacSequencedSendFlows>,
-    #[cfg(target_os = "macos")]
-    next_worker: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl EncryptWorkerPool {
@@ -86,10 +82,6 @@ impl EncryptWorkerPool {
             linux_wg_batch_flows: Arc::new(LinuxWgBatchSendFlows::default()),
             #[cfg(target_os = "linux")]
             next_wg_batch_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            #[cfg(target_os = "macos")]
-            macos_senders: Arc::new(MacSequencedSendFlows::default()),
-            #[cfg(target_os = "macos")]
-            next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -206,30 +198,14 @@ impl EncryptWorkerPool {
 
     #[cfg(target_os = "macos")]
     fn prepare_dispatch(&self, job: FmpSendJob) -> (usize, QueuedFmpSendJob) {
-        if !macos_ordered_sender_enabled() {
-            use std::hash::{Hash, Hasher};
+        use std::hash::{Hash, Hasher};
 
-            let queued = QueuedFmpSendJob::direct(job);
-            let key = queued.target_key();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut h);
-            let idx = (h.finish() as usize) % self.senders.len();
-            return (idx, queued);
-        }
-
-        // Darwin has no sendmmsg/UDP_GSO equivalent in the standard UDP
-        // path, and high-rate Wi-Fi sends regularly block in ENOBUFS. Keep
-        // nonce assignment in rx_loop, spread FMP AEAD over the worker pool,
-        // then serialize already-encrypted packets through one sender per
-        // kernel 5-tuple. This mirrors wireguard-go's
-        // route/nonce -> parallel encrypt -> sequential transmit shape.
-        let flow = self.macos_senders.flow_for(&job);
-        let ticket = self
-            .next_worker
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            / macos_worker_stride();
-        let idx = ticket % self.senders.len();
-        (idx, QueuedFmpSendJob::macos_sequenced(job, flow))
+        let queued = QueuedFmpSendJob::direct(job);
+        let key = queued.target_key();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        let idx = (h.finish() as usize) % self.senders.len();
+        (idx, queued)
     }
 
     #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
@@ -251,10 +227,10 @@ impl EncryptWorkerPool {
         match self.senders[idx].try_push(job) {
             Ok(()) => {}
             Err(MacWorkerTryPushError::Full(job)) => {
+                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_queue_full(job.queue_lane());
                     record_encrypt_worker_backpressure_drop(idx);
-                    (*job).complete_sequenced_skip();
+                    (*job).discard_without_send();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -268,7 +244,6 @@ impl EncryptWorkerPool {
                     );
                 }
                 if let Err(MacWorkerPushError) = self.senders[idx].push_blocking(*job) {
-                    record_encrypt_worker_queue_full(EncryptWorkerLane::Priority);
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
@@ -299,10 +274,10 @@ impl EncryptWorkerPool {
         match sender.try_push(job) {
             Ok(()) => {}
             Err(FairWorkerTryPushError::Full(job)) => {
+                record_encrypt_worker_queue_full(job.queue_lane());
                 if job.queue_lane() == EncryptWorkerLane::Bulk {
-                    record_encrypt_worker_queue_full(job.queue_lane());
                     record_encrypt_worker_backpressure_drop(idx);
-                    (*job).complete_sequenced_skip();
+                    (*job).discard_without_send();
                     return;
                 }
                 static FULL_COUNT: std::sync::atomic::AtomicU64 =
@@ -316,7 +291,6 @@ impl EncryptWorkerPool {
                     );
                 }
                 if let Err(FairWorkerPushError) = sender.push_blocking(*job) {
-                    record_encrypt_worker_queue_full(EncryptWorkerLane::Priority);
                     debug!(worker = idx, "EncryptWorker thread gone; dropping job");
                 }
             }
@@ -388,9 +362,11 @@ impl EncryptWorkerPool {
             if fallback_jobs.is_empty() {
                 Ok(())
             } else {
+                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
                 Err(fallback_jobs)
             }
         } else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
             Err(fallback_jobs)
         }
     }
@@ -449,9 +425,11 @@ impl EncryptWorkerPool {
             if fallback_jobs.is_empty() {
                 Ok(all_enqueued)
             } else {
+                crate::perf_profile::record_linux_wg_batch_admission_fallback(fallback_jobs.len());
                 Err(fallback_jobs)
             }
         } else {
+            crate::perf_profile::record_linux_wg_batch_admission_no_target(fallback_jobs.len());
             Err(fallback_jobs)
         }
     }
@@ -562,6 +540,7 @@ impl EncryptWorkerPool {
 
         let ready = Arc::new(LinuxWgSendBatch::default());
         if flow.try_enqueue(Arc::clone(&ready)).is_err() {
+            crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
             self.drop_linux_wg_jobs(0, &jobs);
             return;
         }
@@ -578,6 +557,7 @@ impl EncryptWorkerPool {
         match self.linux_wg_batch_senders[idx].try_send(batch) {
             Ok(()) => {}
             Err(TrySendError::Full(batch)) | Err(TrySendError::Disconnected(batch)) => {
+                crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
                 self.drop_linux_wg_jobs(idx, &batch.jobs);
                 batch.ready.complete(Vec::new());
             }
@@ -600,6 +580,7 @@ impl EncryptWorkerPool {
 
         let ready = Arc::new(LinuxWgSendBatch::default());
         if !flow.enqueue_blocking(Arc::clone(&ready)) {
+            crate::perf_profile::record_linux_wg_batch_flow_queue_full(jobs.len());
             self.drop_linux_wg_jobs(0, &jobs);
             return false;
         }
@@ -616,6 +597,7 @@ impl EncryptWorkerPool {
         match self.linux_wg_batch_senders[idx].send(batch) {
             Ok(()) => true,
             Err(SendError(batch)) => {
+                crate::perf_profile::record_linux_wg_batch_worker_queue_full(batch.jobs.len());
                 self.drop_linux_wg_jobs(idx, &batch.jobs);
                 batch.ready.complete(Vec::new());
                 false
@@ -934,127 +916,6 @@ fn linux_wg_batch_now_ms() -> u64 {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct MacSendFlowKey {
-    target: SendTargetKey,
-    endpoint_flow: Option<u64>,
-}
-
-#[cfg(target_os = "macos")]
-impl MacSendFlowKey {
-    fn from_job(job: &FmpSendJob) -> Self {
-        Self {
-            target: job.send_target_key(),
-            endpoint_flow: job.endpoint_flow_dispatch_key,
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-struct MacSequencedSendFlows {
-    flows: Mutex<HashMap<MacSendFlowKey, Arc<MacSequencedSendFlow>>>,
-    last_prune_ms: std::sync::atomic::AtomicU64,
-}
-
-#[cfg(target_os = "macos")]
-impl MacSequencedSendFlows {
-    fn flow_for(&self, job: &FmpSendJob) -> Arc<MacSequencedSendFlow> {
-        let now_ms = mac_now_ms();
-        let key = MacSendFlowKey::from_job(job);
-
-        let mut flows = self.flows.lock().expect("mac send flow map poisoned");
-        self.prune_idle_locked(&mut flows, now_ms);
-        if let Some(flow) = flows.get(&key) {
-            flow.mark_used(now_ms);
-            return Arc::clone(flow);
-        }
-
-        let flow = MacSequencedSendFlow::spawn(key, job.send_target.clone(), now_ms);
-        flows.insert(key, Arc::clone(&flow));
-        flow
-    }
-
-    fn prune_idle_locked(
-        &self,
-        flows: &mut HashMap<MacSendFlowKey, Arc<MacSequencedSendFlow>>,
-        now_ms: u64,
-    ) {
-        let last = self
-            .last_prune_ms
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 10_000 {
-            return;
-        }
-        if self
-            .last_prune_ms
-            .compare_exchange(
-                last,
-                now_ms,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            return;
-        }
-
-        let idle_ms = mac_send_flow_idle_ms();
-        flows.retain(|_, flow| {
-            if flow.is_idle(now_ms, idle_ms) {
-                flow.close();
-                false
-            } else {
-                true
-            }
-        });
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_ordered_sender_enabled() -> bool {
-    // Ordered mode gives Darwin the same broad shape as Linux's WG-batch
-    // sender: FMP/FSP AEAD can run across the worker pool, while one flow
-    // thread preserves UDP order for the kernel send target. Keep the env as
-    // an opt-out for NIC/Wi-Fi A/Bs.
-    static VALUE: OnceLock<bool> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        parse_macos_ordered_sender_enabled(
-            std::env::var("FIPS_MACOS_ORDERED_SENDER")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn parse_macos_ordered_sender_enabled(raw: Option<&str>) -> bool {
-    raw.map(|raw| {
-        !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        )
-    })
-    .unwrap_or(true)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_worker_stride() -> usize {
-    // One-packet round-robin maximizes FMP AEAD parallelism but wakes an idle
-    // worker for nearly every packet on Darwin. Short strides let a hot worker
-    // drain a local queue batch before the next worker is signalled, while still
-    // spreading sustained single-peer traffic across the full pool.
-    static VALUE: OnceLock<usize> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_MACOS_WORKER_STRIDE")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<usize>().ok())
-            .unwrap_or(1)
-            .clamp(1, 64)
-    })
-}
-
-#[cfg(target_os = "macos")]
 fn macos_worker_batch_size() -> usize {
     // The direct Darwin sender has no sendmmsg/GSO equivalent, so a large
     // worker-drain batch becomes a tight burst of send/sendto calls. MacBook
@@ -1071,287 +932,4 @@ fn macos_worker_batch_size() -> usize {
             .unwrap_or(8)
             .clamp(1, 64)
     })
-}
-
-#[cfg(target_os = "macos")]
-fn mac_send_flow_idle_ms() -> u64 {
-    static VALUE: OnceLock<u64> = OnceLock::new();
-    *VALUE.get_or_init(|| {
-        std::env::var("FIPS_MACOS_SEND_FLOW_IDLE_MS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(120_000)
-            .max(10_000)
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn mac_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[cfg(target_os = "macos")]
-struct MacSequencedSendFlow {
-    key: MacSendFlowKey,
-    send_target: SelectedSendTarget,
-    next_seq: std::sync::atomic::AtomicU64,
-    last_used_ms: std::sync::atomic::AtomicU64,
-    state: Mutex<MacSendFlowState>,
-    ready_cv: Condvar,
-    space_cv: Condvar,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-struct MacSendFlowState {
-    next_send_seq: u64,
-    pending: BTreeMap<u64, MacSendItem>,
-    priority_ready: VecDeque<MacSendItem>,
-    closed: bool,
-}
-
-#[cfg(target_os = "macos")]
-struct MacCompletionGroup {
-    flow_key: MacSendFlowKey,
-    flow: Arc<MacSequencedSendFlow>,
-    items: Vec<(u64, MacSendItem)>,
-}
-
-#[cfg(target_os = "macos")]
-enum MacSendItem {
-    Packet {
-        packet: Vec<u8>,
-        drop_on_backpressure: bool,
-        priority: bool,
-    },
-    Skip,
-}
-
-#[cfg(target_os = "macos")]
-impl MacCompletionGroup {
-    fn new(flow: Arc<MacSequencedSendFlow>, seq: u64, item: MacSendItem) -> Self {
-        let flow_key = flow.key;
-        Self {
-            flow_key,
-            flow,
-            items: vec![(seq, item)],
-        }
-    }
-
-    #[cfg(test)]
-    fn target_key(&self) -> MacSendFlowKey {
-        self.flow_key
-    }
-
-    fn push(&mut self, flow: &Arc<MacSequencedSendFlow>, seq: u64, item: MacSendItem) {
-        debug_assert_eq!(
-            self.flow_key, flow.key,
-            "macOS completion group must keep the queued flow key"
-        );
-        debug_assert!(
-            Arc::ptr_eq(&self.flow, flow),
-            "macOS completion group must not merge a different flow owner"
-        );
-        self.items.push((seq, item));
-    }
-
-    fn complete(self) {
-        self.flow.complete_many(self.items);
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl MacSequencedSendFlow {
-    fn spawn(key: MacSendFlowKey, send_target: SelectedSendTarget, now_ms: u64) -> Arc<Self> {
-        let flow = Arc::new(Self {
-            key,
-            send_target,
-            next_seq: std::sync::atomic::AtomicU64::new(0),
-            last_used_ms: std::sync::atomic::AtomicU64::new(now_ms),
-            state: Mutex::new(MacSendFlowState::default()),
-            ready_cv: Condvar::new(),
-            space_cv: Condvar::new(),
-        });
-        let thread_flow = Arc::clone(&flow);
-        std::thread::Builder::new()
-            .name(format!("fips-mac-send-{}", key.target.socket_fd))
-            .spawn(move || thread_flow.run())
-            .expect("failed to spawn fips macOS send thread");
-        flow
-    }
-
-    fn reserve_seq(&self) -> u64 {
-        self.next_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn mark_used(&self, now_ms: u64) {
-        self.last_used_ms
-            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn is_idle(&self, now_ms: u64, idle_ms: u64) -> bool {
-        let last_used = self.last_used_ms.load(std::sync::atomic::Ordering::Relaxed);
-        if now_ms.saturating_sub(last_used) < idle_ms {
-            return false;
-        }
-
-        let state = self.state.lock().expect("mac send flow state poisoned");
-        state.pending.is_empty()
-            && state.next_send_seq == self.next_seq.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn close(&self) {
-        let mut state = self.state.lock().expect("mac send flow state poisoned");
-        state.closed = true;
-        drop(state);
-        self.ready_cv.notify_one();
-        self.space_cv.notify_all();
-    }
-
-    fn complete_many(&self, items: Vec<(u64, MacSendItem)>) {
-        const PENDING_CAP: usize = 4096;
-        if items.is_empty() {
-            return;
-        }
-
-        let mut state = self.state.lock().expect("mac send flow state poisoned");
-        if state.closed {
-            return;
-        }
-        let mut wakes_sender = false;
-        for (seq, item) in items {
-            if item.is_priority_packet() {
-                state.priority_ready.push_back(item);
-                state.pending.insert(seq, MacSendItem::Skip);
-                wakes_sender = true;
-                continue;
-            }
-            while state.pending.len() >= PENDING_CAP && seq != state.next_send_seq && !wakes_sender
-            {
-                state = self
-                    .space_cv
-                    .wait(state)
-                    .expect("mac send flow state poisoned");
-            }
-            if seq == state.next_send_seq {
-                wakes_sender = true;
-            }
-            state.pending.insert(seq, item);
-        }
-        drop(state);
-        if wakes_sender {
-            self.ready_cv.notify_one();
-        }
-    }
-
-    #[cfg(test)]
-    fn take_next_ready_for_test(&self) -> Option<MacSendItem> {
-        let mut state = self.state.lock().expect("mac send flow state poisoned");
-        if let Some(item) = state.priority_ready.pop_front() {
-            return Some(item);
-        }
-
-        let next = state.next_send_seq;
-        if let Some(item) = state.pending.remove(&next) {
-            state.next_send_seq = next.wrapping_add(1);
-            self.space_cv.notify_one();
-            return Some(item);
-        }
-
-        None
-    }
-
-    fn run(self: Arc<Self>) {
-        trace!(
-            socket_fd = self.key.target.socket_fd,
-            connected_fd = ?self.key.target.connected_fd,
-            dest = %self.send_target.dest_addr(),
-            endpoint_flow = ?self.key.endpoint_flow,
-            "macOS ordered UDP sender starting"
-        );
-        let (fd, connected) = self.send_target.fd_and_connected();
-        let mut backpressure = SendBackpressurePacer::default();
-        let mut rate_pacer = MacSendRatePacer::default();
-
-        loop {
-            let item = {
-                let mut state = self.state.lock().expect("mac send flow state poisoned");
-                loop {
-                    let next = state.next_send_seq;
-                    if let Some(item) = state.priority_ready.pop_front() {
-                        break item;
-                    }
-                    if let Some(item) = state.pending.remove(&next) {
-                        state.next_send_seq = next.wrapping_add(1);
-                        self.space_cv.notify_one();
-                        break item;
-                    }
-                    if state.closed {
-                        return;
-                    }
-                    state = self
-                        .ready_cv
-                        .wait(state)
-                        .expect("mac send flow state poisoned");
-                }
-            };
-
-            match item {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                    ..
-                } => {
-                    let _t = crate::perf_profile::Timer::start(crate::perf_profile::Stage::UdpSend);
-                    rate_pacer.pace(packet.len());
-                    if let Err(err) = send_one_with_backpressure(
-                        fd,
-                        connected,
-                        &self.send_target.dest_addr(),
-                        &packet,
-                        &mut backpressure,
-                        drop_on_backpressure,
-                    ) {
-                        debug!(
-                            socket_fd = self.key.target.socket_fd,
-                            connected_fd = ?self.key.target.connected_fd,
-                            dest = %self.send_target.dest_addr(),
-                            endpoint_flow = ?self.key.endpoint_flow,
-                            error = %err,
-                            "macOS ordered UDP send failed"
-                        );
-                    }
-                }
-                MacSendItem::Skip => {}
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl MacSendItem {
-    fn is_priority_packet(&self) -> bool {
-        matches!(self, Self::Packet { priority: true, .. })
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn push_mac_completion(
-    groups: &mut Vec<MacCompletionGroup>,
-    flow: Arc<MacSequencedSendFlow>,
-    seq: u64,
-    item: MacSendItem,
-) {
-    if let Some(group) = groups
-        .iter_mut()
-        .find(|group| Arc::ptr_eq(&group.flow, &flow))
-    {
-        group.push(&flow, seq, item);
-    } else {
-        groups.push(MacCompletionGroup::new(flow, seq, item));
-    }
 }

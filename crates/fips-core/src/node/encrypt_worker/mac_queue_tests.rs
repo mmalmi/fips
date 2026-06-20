@@ -44,58 +44,20 @@ mod mac_queue_tests {
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     ) -> QueuedFmpSendJob {
-        QueuedFmpSendJob::direct(fmp_send_job_classified(
-            socket,
-            cipher,
-            dest_addr,
-            bulk_endpoint_data,
-            drop_on_backpressure,
-            None,
-        ))
-    }
-
-    fn fmp_send_job_classified(
-        socket: AsyncUdpSocket,
-        cipher: &LessSafeKey,
-        dest_addr: SocketAddr,
-        bulk_endpoint_data: bool,
-        drop_on_backpressure: bool,
-        endpoint_flow_dispatch_key: Option<u64>,
-    ) -> FmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
-        FmpSendJob {
+        QueuedFmpSendJob::direct(FmpSendJob {
             cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
             send_target: SelectedSendTarget::new(socket, None, dest_addr),
-            endpoint_flow_dispatch_key,
+            endpoint_flow_dispatch_key: None,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
-        }
-    }
-
-    fn test_mac_send_flow(
-        socket: AsyncUdpSocket,
-        dest_addr: SocketAddr,
-    ) -> Arc<MacSequencedSendFlow> {
-        let send_target = SelectedSendTarget::new(socket, None, dest_addr);
-        let key = MacSendFlowKey {
-            target: send_target.key(),
-            endpoint_flow: None,
-        };
-        Arc::new(MacSequencedSendFlow {
-            key,
-            send_target,
-            next_seq: std::sync::atomic::AtomicU64::new(0),
-            last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            state: Mutex::new(MacSendFlowState::default()),
-            ready_cv: Condvar::new(),
-            space_cv: Condvar::new(),
         })
     }
 
@@ -132,168 +94,41 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn mac_completion_group_owns_flow_key_and_fifo_items() {
-        with_test_socket(|socket, _cipher| {
-            let flow_a = test_mac_send_flow(socket.clone(), "127.0.0.1:10033".parse().unwrap());
-            let flow_b = test_mac_send_flow(socket, "127.0.0.1:10034".parse().unwrap());
-            let key_a = flow_a.key;
-            let key_b = flow_b.key;
-            assert_ne!(key_a, key_b);
-
-            let mut groups = Vec::new();
-            push_mac_completion(
-                &mut groups,
-                Arc::clone(&flow_a),
-                7,
-                MacSendItem::Packet {
-                    packet: vec![1],
-                    drop_on_backpressure: true,
-                    priority: false,
-                },
-            );
-            push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
-            push_mac_completion(
-                &mut groups,
-                Arc::clone(&flow_a),
-                8,
-                MacSendItem::Packet {
-                    packet: vec![2],
-                    drop_on_backpressure: false,
-                    priority: false,
-                },
-            );
-
-            assert_eq!(groups.len(), 2);
-            assert_eq!(groups[0].target_key(), key_a);
-            assert_eq!(groups[1].target_key(), key_b);
-            assert_eq!(groups[0].items.len(), 2);
-            assert_eq!(groups[0].items[0].0, 7);
-            assert_eq!(groups[0].items[1].0, 8);
-            match &groups[0].items[0].1 {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                    ..
-                } => {
-                    assert_eq!(packet.as_slice(), &[1]);
-                    assert!(*drop_on_backpressure);
-                }
-                MacSendItem::Skip => panic!("expected first flow item to be a packet"),
-            }
-            match &groups[0].items[1].1 {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                    ..
-                } => {
-                    assert_eq!(packet.as_slice(), &[2]);
-                    assert!(!*drop_on_backpressure);
-                }
-                MacSendItem::Skip => panic!("expected second flow item to be a packet"),
-            }
-            assert!(matches!(groups[1].items[0].1, MacSendItem::Skip));
-        });
-    }
-
-    #[test]
-    fn mac_ordered_sender_priority_bypasses_missing_bulk_sequence() {
-        with_test_socket(|socket, _cipher| {
-            let flow = test_mac_send_flow(socket, "127.0.0.1:10035".parse().unwrap());
-
-            flow.complete_many(vec![(
-                1,
-                MacSendItem::Packet {
-                    packet: vec![9],
-                    drop_on_backpressure: false,
-                    priority: true,
-                },
-            )]);
-
-            match flow.take_next_ready_for_test().expect("priority ready") {
-                MacSendItem::Packet {
-                    packet, priority, ..
-                } => {
-                    assert_eq!(packet, vec![9]);
-                    assert!(priority);
-                }
-                MacSendItem::Skip => panic!("priority packet should bypass missing bulk"),
-            }
-            assert!(flow.take_next_ready_for_test().is_none());
-
-            flow.complete_many(vec![(
-                0,
-                MacSendItem::Packet {
-                    packet: vec![1],
-                    drop_on_backpressure: true,
-                    priority: false,
-                },
-            )]);
-
-            match flow.take_next_ready_for_test().expect("bulk ready") {
-                MacSendItem::Packet {
-                    packet, priority, ..
-                } => {
-                    assert_eq!(packet, vec![1]);
-                    assert!(!priority);
-                }
-                MacSendItem::Skip => panic!("bulk packet should drain before skip"),
-            }
-            assert!(matches!(
-                flow.take_next_ready_for_test(),
-                Some(MacSendItem::Skip)
-            ));
-            assert!(flow.take_next_ready_for_test().is_none());
-        });
-    }
-
-    #[test]
-    fn mac_ordered_sender_keys_sequences_by_endpoint_flow() {
+    fn mac_worker_priority_reserve_absorbs_clean_line_rate_burst() {
         with_test_socket(|socket, cipher| {
-            let flows = MacSequencedSendFlows::default();
-            let addr: SocketAddr = "127.0.0.1:10036".parse().unwrap();
-            let flow_a_first = fmp_send_job_classified(
-                socket.clone(),
-                &cipher,
-                addr,
-                true,
-                true,
-                Some(0xabc),
+            const CLEAN_BURST: usize = 2048;
+            assert!(
+                DEFAULT_WORKER_PRIORITY_CHANNEL_CAP >= CLEAN_BURST,
+                "priority reserve should absorb clean ACK/control bursts without backpressure"
             );
-            let flow_a_next = fmp_send_job_classified(
-                socket.clone(),
-                &cipher,
-                addr,
-                true,
-                true,
-                Some(0xabc),
-            );
-            let flow_b = fmp_send_job_classified(
-                socket.clone(),
-                &cipher,
-                addr,
-                true,
-                true,
-                Some(0xdef),
-            );
-            let unkeyed = fmp_send_job_classified(socket, &cipher, addr, false, false, None);
-
-            let flow_a_first = flows.flow_for(&flow_a_first);
-            let flow_a_next = flows.flow_for(&flow_a_next);
-            let flow_b = flows.flow_for(&flow_b);
-            let unkeyed = flows.flow_for(&unkeyed);
+            let (tx, _rx) = mac_worker_channel(1);
+            let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
 
             assert!(
-                Arc::ptr_eq(&flow_a_first, &flow_a_next),
-                "one endpoint flow must keep one sequence"
+                tx.try_push(queued_job_classified(
+                    socket.clone(),
+                    &cipher,
+                    addr,
+                    true,
+                    true,
+                ))
+                .is_ok(),
+                "bulk job should fill the tiny bulk lane"
             );
-            assert!(
-                !Arc::ptr_eq(&flow_a_first, &flow_b),
-                "independent endpoint flows should not share a bulk sequence"
-            );
-            assert!(
-                !Arc::ptr_eq(&flow_a_first, &unkeyed),
-                "control/unkeyed traffic should not share a bulk endpoint sequence"
-            );
+
+            for _ in 0..CLEAN_BURST {
+                assert!(
+                    tx.try_push(queued_job_classified(
+                        socket.clone(),
+                        &cipher,
+                        addr,
+                        false,
+                        false,
+                    ))
+                    .is_ok(),
+                    "priority reserve should absorb the clean burst"
+                );
+            }
         });
     }
 
@@ -395,8 +230,6 @@ mod mac_queue_tests {
 
             let pool = EncryptWorkerPool {
                 senders: Arc::from(vec![tx].into_boxed_slice()),
-                macos_senders: Arc::new(MacSequencedSendFlows::default()),
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_done = Arc::clone(&done);
@@ -419,17 +252,6 @@ mod mac_queue_tests {
             );
             handle.join().expect("dispatch thread should finish");
         });
-    }
-
-    #[test]
-    fn macos_ordered_sender_defaults_on_but_can_opt_out() {
-        assert!(parse_macos_ordered_sender_enabled(None));
-        assert!(parse_macos_ordered_sender_enabled(Some("1")));
-        assert!(parse_macos_ordered_sender_enabled(Some("true")));
-        assert!(parse_macos_ordered_sender_enabled(Some("unexpected")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("0")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("false")));
-        assert!(!parse_macos_ordered_sender_enabled(Some("OFF")));
     }
 
     #[test]
