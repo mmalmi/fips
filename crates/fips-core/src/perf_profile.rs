@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 90;
-const N_EVENTS: usize = 242;
+const N_EVENTS: usize = 250;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -808,6 +808,14 @@ pub enum Event {
     LinuxWgBatchFlowQueueFullPackets = 239,
     LinuxWgBatchWorkerQueueFullPackets = 240,
     LinuxWgBatchAdmissionUnavailablePackets = 241,
+    DecryptWorkerBatchWorker8 = 242,
+    DecryptWorkerBatchWorker9 = 243,
+    DecryptWorkerBatchWorker10 = 244,
+    DecryptWorkerBatchWorker11 = 245,
+    DecryptWorkerBatchWorker12 = 246,
+    DecryptWorkerBatchWorker13 = 247,
+    DecryptWorkerBatchWorker14 = 248,
+    DecryptWorkerBatchWorker15 = 249,
 }
 
 impl Event {
@@ -1128,6 +1136,14 @@ impl Event {
             Event::DecryptWorkerBatchWorker5 => "decrypt_worker_batch_worker5",
             Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
             Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
+            Event::DecryptWorkerBatchWorker8 => "decrypt_worker_batch_worker8",
+            Event::DecryptWorkerBatchWorker9 => "decrypt_worker_batch_worker9",
+            Event::DecryptWorkerBatchWorker10 => "decrypt_worker_batch_worker10",
+            Event::DecryptWorkerBatchWorker11 => "decrypt_worker_batch_worker11",
+            Event::DecryptWorkerBatchWorker12 => "decrypt_worker_batch_worker12",
+            Event::DecryptWorkerBatchWorker13 => "decrypt_worker_batch_worker13",
+            Event::DecryptWorkerBatchWorker14 => "decrypt_worker_batch_worker14",
+            Event::DecryptWorkerBatchWorker15 => "decrypt_worker_batch_worker15",
             Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
             Event::DecryptAuthenticatedSessionStale => "decrypt_authenticated_session_stale",
             Event::DecryptDirectSessionDataStale => "decrypt_direct_session_data_stale",
@@ -1407,6 +1423,14 @@ fn event_from_index(idx: usize) -> Event {
         239 => Event::LinuxWgBatchFlowQueueFullPackets,
         240 => Event::LinuxWgBatchWorkerQueueFullPackets,
         241 => Event::LinuxWgBatchAdmissionUnavailablePackets,
+        242 => Event::DecryptWorkerBatchWorker8,
+        243 => Event::DecryptWorkerBatchWorker9,
+        244 => Event::DecryptWorkerBatchWorker10,
+        245 => Event::DecryptWorkerBatchWorker11,
+        246 => Event::DecryptWorkerBatchWorker12,
+        247 => Event::DecryptWorkerBatchWorker13,
+        248 => Event::DecryptWorkerBatchWorker14,
+        249 => Event::DecryptWorkerBatchWorker15,
         _ => unreachable!(),
     }
 }
@@ -1969,6 +1993,14 @@ pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usi
         5 => Event::DecryptWorkerBatchWorker5,
         6 => Event::DecryptWorkerBatchWorker6,
         7 => Event::DecryptWorkerBatchWorker7,
+        8 => Event::DecryptWorkerBatchWorker8,
+        9 => Event::DecryptWorkerBatchWorker9,
+        10 => Event::DecryptWorkerBatchWorker10,
+        11 => Event::DecryptWorkerBatchWorker11,
+        12 => Event::DecryptWorkerBatchWorker12,
+        13 => Event::DecryptWorkerBatchWorker13,
+        14 => Event::DecryptWorkerBatchWorker14,
+        15 => Event::DecryptWorkerBatchWorker15,
         _ => Event::DecryptWorkerBatchWorkerOther,
     };
     record_event_count_sample(worker_event, packets as u64);

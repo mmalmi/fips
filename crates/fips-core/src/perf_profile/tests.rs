@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 242);
+    assert_eq!(N_EVENTS, 250);
     assert!(
-        (Event::DecryptDirectSessionCommitStale as usize) < N_EVENTS,
+        (Event::DecryptWorkerBatchWorker15 as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -189,6 +189,14 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::DecryptWorkerBatchWorker0 as usize).name(),
         "decrypt_worker_batch_worker0"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBatchWorker8 as usize).name(),
+        "decrypt_worker_batch_worker8"
+    );
+    assert_eq!(
+        event_from_index(Event::DecryptWorkerBatchWorker15 as usize).name(),
+        "decrypt_worker_batch_worker15"
     );
     assert_eq!(
         event_from_index(Event::DecryptWorkerBatchWorkerOther as usize).name(),
