@@ -114,6 +114,19 @@ fn record_fsp_aead_completion_wait(
     }
 }
 
+fn record_fsp_ordered_drain(drain: &FspOrderedDrain) {
+    debug_assert_eq!(drain.ready, drain.accounted_ready());
+    crate::perf_profile::record_fsp_aead_completion_drain(
+        drain.ready,
+        drain.accepted,
+        drain.aead_failures,
+        drain.epoch_mismatches,
+        drain.replay_drops,
+    );
+    drain.aead_failure_sources.record();
+    drain.replay_drop_sources.record();
+}
+
 enum FspOpenWorkerPrepareError {
     Ineligible(FspDecryptJob),
 }
@@ -682,16 +695,13 @@ impl DecryptWorkerShard {
         }
     }
 
-    fn handle_fsp_aead_completion_msg(
+    fn complete_single_fsp_aead_completion(
         &mut self,
         idx: usize,
         completion: FspAeadCompletion,
+        invalid_order_message: &'static str,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
-        let _t_service = crate::perf_profile::Timer::start(
-            crate::perf_profile::Stage::FspAeadCompletionService,
-        );
-        record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         let FspAeadCompletion {
             source_addr,
             receive_order_id,
@@ -714,6 +724,7 @@ impl DecryptWorkerShard {
             );
             return;
         }
+
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = self.fsp_ready_outputs_with_capacity(1);
         let completed = {
@@ -740,27 +751,37 @@ impl DecryptWorkerShard {
                     worker = idx,
                     ?error,
                     %source_addr,
-                    "dropping invalid ordered FSP AEAD completion"
+                    "{}",
+                    invalid_order_message
                 );
                 return;
             }
         };
-        debug_assert_eq!(drain.ready, drain.accounted_ready());
-        crate::perf_profile::record_fsp_aead_completion_drain(
-            drain.ready,
-            drain.accepted,
-            drain.aead_failures,
-            drain.epoch_mismatches,
-            drain.replay_drops,
-        );
-        drain.aead_failure_sources.record();
-        drain.replay_drop_sources.record();
+        record_fsp_ordered_drain(&drain);
         if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
             && shared.receive_order_id == receive_order_id
         {
             shared.mark_next_ready(next_ready);
         }
         self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
+    }
+
+    fn handle_fsp_aead_completion_msg(
+        &mut self,
+        idx: usize,
+        completion: FspAeadCompletion,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let _t_service = crate::perf_profile::Timer::start(
+            crate::perf_profile::Stage::FspAeadCompletionService,
+        );
+        record_fsp_aead_completion_wait(completion.source, completion.completed_at);
+        self.complete_single_fsp_aead_completion(
+            idx,
+            completion,
+            "dropping invalid ordered FSP AEAD completion",
+            plaintext_batch,
+        );
     }
 
     fn handle_fsp_aead_completion_batch_msg(
@@ -806,15 +827,7 @@ impl DecryptWorkerShard {
             record_fsp_aead_completion_wait(completion.source, completion.completed_at);
         }
 
-        let mut ready = 0usize;
-        let mut accepted = 0usize;
-        let mut aead_failures = 0usize;
-        let mut epoch_mismatches = 0usize;
-        let mut replay_drops = 0usize;
-        let mut dropped = 0usize;
-        let mut rx_loop_fallbacks = 0usize;
-        let mut aead_failure_sources = FspAeadFailureSources::default();
-        let mut replay_drop_sources = FspReplayDropSources::default();
+        let mut total_drain = FspOrderedDrain::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = self.fsp_ready_outputs_with_capacity(completions.len());
         let next_ready;
@@ -864,37 +877,12 @@ impl DecryptWorkerShard {
                     }
                 };
                 debug_assert_eq!(drain.ready, drain.accounted_ready());
-                ready += drain.ready;
-                accepted += drain.accepted;
-                aead_failures += drain.aead_failures;
-                epoch_mismatches += drain.epoch_mismatches;
-                replay_drops += drain.replay_drops;
-                dropped += drain.dropped;
-                rx_loop_fallbacks += drain.rx_loop_fallbacks;
-                aead_failure_sources.add_sources(drain.aead_failure_sources);
-                replay_drop_sources.add_sources(drain.replay_drop_sources);
+                total_drain.add(drain);
             }
             next_ready = state.fsp_receive_order_next_ready();
         }
 
-        debug_assert_eq!(
-            ready,
-            accepted
-                + aead_failures
-                + epoch_mismatches
-                + replay_drops
-                + dropped
-                + rx_loop_fallbacks
-        );
-        crate::perf_profile::record_fsp_aead_completion_drain(
-            ready,
-            accepted,
-            aead_failures,
-            epoch_mismatches,
-            replay_drops,
-        );
-        aead_failure_sources.record();
-        replay_drop_sources.record();
+        record_fsp_ordered_drain(&total_drain);
         if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
             && shared.receive_order_id == receive_order_id
         {
@@ -1346,53 +1334,19 @@ impl DecryptWorkerShard {
             },
         };
 
-        let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        let mut outputs = self.fsp_ready_outputs_with_capacity(1);
-        let completed = {
-            let state = self
-                .fsp_sessions
-                .get_mut(&source_addr)
-                .expect("FSP session was checked before current-epoch local completion");
-            state
-                .complete_ordered_fsp_open(ticket, completion, |completion| {
-                    if let Some(output) =
-                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
-                    {
-                        outputs.push(output);
-                    }
-                })
-                .map(|drain| (drain, state.fsp_receive_order_next_ready()))
-        };
-        let (drain, next_ready) = match completed {
-            Ok(completed) => completed,
-            Err(error) => {
-                self.recycle_fsp_ready_outputs(outputs);
-                record_fsp_aead_completion_order_error(&error);
-                debug!(
-                    worker = idx,
-                    ?error,
-                    %source_addr,
-                    "dropping invalid local ordered FSP completion"
-                );
-                return;
-            }
-        };
-        debug_assert_eq!(drain.ready, drain.accounted_ready());
-        crate::perf_profile::record_fsp_aead_completion_drain(
-            drain.ready,
-            drain.accepted,
-            drain.aead_failures,
-            drain.epoch_mismatches,
-            drain.replay_drops,
+        self.complete_single_fsp_aead_completion(
+            idx,
+            FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                ticket,
+                source: FspAeadCompletionSource::Local,
+                result: completion,
+                completed_at: None,
+            },
+            "dropping invalid local ordered FSP completion",
+            plaintext_batch,
         );
-        drain.aead_failure_sources.record();
-        drain.replay_drop_sources.record();
-        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-            && shared.receive_order_id == receive_order_id
-        {
-            shared.mark_next_ready(next_ready);
-        }
-        self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_job_outputs(&mut self, job: FspDecryptJob) -> Vec<DecryptWorkerOutput> {

@@ -989,6 +989,20 @@ struct FspOrderedDrain {
 }
 
 impl FspOrderedDrain {
+    fn add(&mut self, other: Self) {
+        self.ready += other.ready;
+        self.accepted += other.accepted;
+        self.aead_failures += other.aead_failures;
+        self.epoch_mismatches += other.epoch_mismatches;
+        self.replay_drops += other.replay_drops;
+        self.dropped += other.dropped;
+        self.rx_loop_fallbacks += other.rx_loop_fallbacks;
+        self.aead_failure_sources
+            .add_sources(other.aead_failure_sources);
+        self.replay_drop_sources
+            .add_sources(other.replay_drop_sources);
+    }
+
     fn accounted_ready(&self) -> usize {
         self.accepted
             + self.aead_failures
