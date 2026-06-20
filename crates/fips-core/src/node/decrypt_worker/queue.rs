@@ -440,6 +440,11 @@ impl FspAeadOpenJobBatcher {
         }
     }
 
+    #[cfg(test)]
+    fn pending_buffer_ptr(&self) -> *const FspAeadOpenJob {
+        self.jobs.as_ptr()
+    }
+
     fn push(
         &mut self,
         workers: &DecryptWorkerPool,
@@ -474,6 +479,15 @@ impl FspAeadOpenJobBatcher {
         };
         if self.jobs.is_empty() {
             return Vec::new();
+        }
+
+        if self.jobs.len() == 1 {
+            let job = self.jobs.pop().expect("checked single opener job");
+            return workers
+                .dispatch_fsp_aead_open_worker_job(open_idx, owner_idx, job)
+                .err()
+                .into_iter()
+                .collect();
         }
 
         let jobs = std::mem::replace(

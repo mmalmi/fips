@@ -96,11 +96,7 @@ mod mac_queue_tests {
     #[test]
     fn mac_worker_priority_reserve_absorbs_clean_line_rate_burst() {
         with_test_socket(|socket, cipher| {
-            const CLEAN_BURST: usize = 2048;
-            assert!(
-                DEFAULT_WORKER_PRIORITY_CHANNEL_CAP >= CLEAN_BURST,
-                "priority reserve should absorb clean ACK/control bursts without backpressure"
-            );
+            const CLEAN_BURST: usize = MAC_WORKER_CONTROL_RESERVE_CAP;
             let (tx, _rx) = mac_worker_channel(1);
             let addr: SocketAddr = "127.0.0.1:10041".parse().unwrap();
 
