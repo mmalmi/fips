@@ -213,6 +213,15 @@ impl Node {
 
         let static_addresses = self.static_peer_addresses(peer_config);
         if !static_addresses.is_empty() {
+            let has_configured_static_udp = static_addresses.iter().any(|candidate| {
+                candidate.seen_at_ms.is_none() && candidate.transport.eq_ignore_ascii_case("udp")
+            });
+            if peer.is_healthy()
+                && !has_configured_static_udp
+                && !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
+            {
+                return false;
+            }
             if peer.can_send() && !self.active_peer_needs_same_path_refresh(peer_node_addr) {
                 return false;
             }
