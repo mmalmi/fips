@@ -635,6 +635,7 @@ async fn outbound_refresh_promotion_moves_active_peer_to_new_transport_tuple() {
     let old_addr = TransportAddr::from_string("127.0.0.1:7000");
     let mut active_peer = ActivePeer::new(peer_identity, old_link_id, 1_000);
     active_peer.set_current_addr(old_transport_id, &old_addr);
+    active_peer.mark_stale();
     node.peers.insert(peer_node_addr, active_peer);
     node.links.insert(
         old_link_id,

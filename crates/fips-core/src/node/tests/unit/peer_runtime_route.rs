@@ -293,3 +293,67 @@ fn peer_runtime_route_decision_owns_next_hop_snapshot_weight_and_policy() {
             if dest_addr == missing_dest
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn peer_runtime_route_decision_uses_learned_fallback_when_static_direct_is_degraded() {
+    let local = Identity::generate();
+    let peer_full = Identity::generate();
+    let transit_full = Identity::generate();
+    let peer_identity = PeerIdentity::from_pubkey_full(peer_full.pubkey_full());
+    let transit_identity = PeerIdentity::from_pubkey_full(transit_full.pubkey_full());
+    let peer_addr = *peer_identity.node_addr();
+    let transit_addr = *transit_identity.node_addr();
+
+    let mut config = crate::config::Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(crate::config::PeerConfig::new(
+        peer_full.npub(),
+        "udp",
+        "127.0.0.1:20202",
+    ));
+    let mut node = Node::with_identity(local, config).expect("node");
+
+    let peer = make_active_test_peer(
+        &node,
+        &peer_full,
+        peer_identity,
+        TransportId::new(31),
+        LinkId::new(32),
+        TransportAddr::from_string("127.0.0.1:20202"),
+        SessionIndex::new(33),
+        SessionIndex::new(34),
+    );
+    let transit = make_active_test_peer(
+        &node,
+        &transit_full,
+        transit_identity,
+        TransportId::new(41),
+        LinkId::new(42),
+        TransportAddr::from_string("127.0.0.1:30303"),
+        SessionIndex::new(43),
+        SessionIndex::new(44),
+    );
+    node.peers
+        .insert_with_current_session_index(peer_addr, peer);
+    node.peers
+        .insert_with_current_session_index(transit_addr, transit);
+
+    let now_ms = Node::now_ms();
+    node.mark_session_direct_path_degraded(peer_addr, now_ms);
+    node.learn_reverse_route(peer_addr, transit_addr);
+
+    let decision = node
+        .resolve_peer_runtime_route_decision(&peer_addr, now_ms)
+        .expect("learned fallback route should resolve for degraded static direct peer");
+
+    assert_eq!(
+        decision.next_hop_addr(),
+        transit_addr,
+        "endpoint runtime routing must not prepare sends to the stale direct path"
+    );
+    assert!(
+        !decision.direct_path_blocks_direct_payload(),
+        "transit fallback is already away from the degraded direct path"
+    );
+}

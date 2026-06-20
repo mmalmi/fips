@@ -431,16 +431,15 @@ impl PeerLifecycleRegistry {
         if path_bookkeeping_allowed {
             result.address_changed = peer.set_current_addr(transport_id, remote_addr);
             result.path_bookkeeping_recorded = true;
-        }
-
-        peer.link_stats_mut()
-            .record_recv(packet_len, packet_timestamp_ms);
-        peer.touch(packet_timestamp_ms);
-        if let Some(mmp) = peer.mmp_mut() {
-            mmp.receiver
-                .record_recv(fmp_counter, inner_timestamp_ms, packet_len, ce_flag, now);
-            result.spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
-            result.mmp_recorded = true;
+            peer.link_stats_mut()
+                .record_recv(packet_len, packet_timestamp_ms);
+            peer.touch(packet_timestamp_ms);
+            if let Some(mmp) = peer.mmp_mut() {
+                mmp.receiver
+                    .record_recv(fmp_counter, inner_timestamp_ms, packet_len, ce_flag, now);
+                result.spin_rtt = mmp.spin_bit.rx_observe(sp_flag, fmp_counter, now);
+                result.mmp_recorded = true;
+            }
         }
 
         Some(result)

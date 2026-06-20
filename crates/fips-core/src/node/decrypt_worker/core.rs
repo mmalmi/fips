@@ -1996,6 +1996,7 @@ pub(crate) struct DecryptFmpBookkeeping {
 
 pub(crate) struct DecryptAuthenticatedFmpReceive {
     pub fmp: DecryptFmpBookkeeping,
+    pub previous_hop_peer: Option<PeerIdentity>,
     lane: DecryptWorkerLane,
     pub(crate) trace_enqueued_at: Option<crate::perf_profile::TraceStamp>,
 }

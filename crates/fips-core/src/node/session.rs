@@ -366,7 +366,11 @@ impl SessionEntry {
         self.last_inbound_frame_ms = now_ms;
     }
 
-    /// Mark receipt of an authenticated application data frame from the peer.
+    /// Mark receipt of authenticated application data that arrived from the
+    /// source peer's direct path.
+    ///
+    /// Fallback/transit data still counts toward traffic and idle activity,
+    /// but it must not refresh direct-path trust for future payload routing.
     pub(crate) fn touch_inbound_data_frame(&mut self, now_ms: u64) {
         self.last_inbound_data_frame_ms = now_ms;
     }

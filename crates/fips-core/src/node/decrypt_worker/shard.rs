@@ -1031,6 +1031,7 @@ impl DecryptWorkerShard {
         fallback: DecryptFallback,
         lane: DecryptWorkerLane,
         inner_timestamp_ms: u32,
+        previous_hop_peer: PeerIdentity,
     ) -> DecryptWorkerOutput {
         crate::perf_profile::record_event(crate::perf_profile::Event::DecryptFspMalformedDropped);
         DecryptWorkerOutput {
@@ -1046,6 +1047,7 @@ impl DecryptWorkerShard {
                     inner_timestamp_ms,
                     fmp_flags: fallback.fmp_flags,
                 },
+                previous_hop_peer: Some(previous_hop_peer),
                 lane,
                 trace_enqueued_at: None,
             }),
@@ -1198,6 +1200,7 @@ impl DecryptWorkerShard {
                     fallback,
                     lane,
                     inner_timestamp_ms,
+                    previous_hop_peer,
                 )];
             };
             let Some(header) = FspEncryptedHeader::parse(payload) else {
@@ -1206,6 +1209,7 @@ impl DecryptWorkerShard {
                     fallback,
                     lane,
                     inner_timestamp_ms,
+                    previous_hop_peer,
                 )];
             };
             header
@@ -1241,6 +1245,7 @@ impl DecryptWorkerShard {
                     fallback,
                     lane,
                     inner_timestamp_ms,
+                    previous_hop_peer,
                 )];
             };
             let open_result = state.current_epoch_matches(&header).then(|| {
@@ -1337,6 +1342,7 @@ impl DecryptWorkerShard {
                 fallback,
                 lane,
                 inner_timestamp_ms,
+                previous_hop_peer,
             )];
         };
         let ciphertext = &payload[FSP_HEADER_SIZE..];
@@ -1914,6 +1920,7 @@ impl DecryptWorkerShard {
                 event: DecryptWorkerEvent::AuthenticatedFmpReceive(
                     DecryptAuthenticatedFmpReceive {
                         fmp,
+                        previous_hop_peer: None,
                         lane: DecryptWorkerLane::Priority,
                         trace_enqueued_at: None,
                     },

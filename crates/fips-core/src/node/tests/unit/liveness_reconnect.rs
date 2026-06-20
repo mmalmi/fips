@@ -134,8 +134,9 @@ fn queue_active_fallback_direct_retries_seeds_configured_relayed_peer() {
     config.node.discovery.nostr.enabled = true;
     config.peers.push(peer_config.clone());
     let mut node = Node::new(config).expect("node");
-    node.peers
-        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(7), 0));
+    let mut active = ActivePeer::new(peer, LinkId::new(7), 0);
+    active.mark_stale();
+    node.peers.insert(peer_addr, active);
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     node.queue_active_fallback_direct_retries(&bootstrap);

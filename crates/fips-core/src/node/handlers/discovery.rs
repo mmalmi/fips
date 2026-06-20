@@ -758,18 +758,34 @@ impl Node {
             return;
         }
 
-        let has_fallback_peer = self.peers.iter().any(|(addr, peer)| {
-            addr != dest
-                && peer.is_healthy()
-                && (self.config.node.routing.mode != RoutingMode::ReplyLearned
-                    || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
-        });
-        if !has_fallback_peer {
+        let fallback_peers = self
+            .peers
+            .iter()
+            .filter(|(addr, peer)| {
+                *addr != dest
+                    && peer.is_healthy()
+                    && (self.config.node.routing.mode != RoutingMode::ReplyLearned
+                        || self.should_use_reply_learned_lookup_fallback_peer(addr, peer, dest))
+            })
+            .map(|(addr, _)| *addr)
+            .collect::<Vec<_>>();
+        if fallback_peers.is_empty() {
             debug!(
                 target_node = %self.peer_display_name(dest),
                 "Skipping direct-path fallback lookup, no sendable fallback peer"
             );
             return;
+        }
+
+        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
+            for fallback_peer in &fallback_peers {
+                self.learn_reverse_route(*dest, *fallback_peer);
+            }
+            debug!(
+                target_node = %self.peer_display_name(dest),
+                fallback_peer_count = fallback_peers.len(),
+                "Seeded direct-path fallback learned routes"
+            );
         }
 
         self.discovery_backoff.record_success(dest);

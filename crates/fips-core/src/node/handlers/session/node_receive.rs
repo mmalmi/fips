@@ -229,16 +229,19 @@ impl Node {
     fn record_worker_authenticated_fmp_receive(
         &mut self,
         fmp: &crate::node::decrypt_worker::DecryptFmpBookkeeping,
+        previous_hop: Option<&NodeAddr>,
     ) {
         let now = Instant::now();
+        let source_addr = fmp.source_peer.node_addr();
+        let arrived_from_source = previous_hop.is_none_or(|hop| hop == source_addr);
         let path_bookkeeping_allowed = self.authenticated_packet_path_allows_bookkeeping(
-            fmp.source_peer.node_addr(),
+            source_addr,
             fmp.transport_id,
             &fmp.remote_addr,
             fmp.packet_timestamp_ms,
-        );
+        ) && arrived_from_source;
         let bookkeeping = self.peers.record_authenticated_fmp_receive(
-            fmp.source_peer.node_addr(),
+            source_addr,
             fmp.transport_id,
             &fmp.remote_addr,
             fmp.packet_timestamp_ms,
@@ -252,7 +255,7 @@ impl Node {
         );
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if bookkeeping.is_some_and(|update| update.address_changed) {
-            self.clear_connected_udp_for_peer(fmp.source_peer.node_addr());
+            self.clear_connected_udp_for_peer(source_addr);
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = bookkeeping;
@@ -262,7 +265,13 @@ impl Node {
         &mut self,
         receive: DecryptAuthenticatedFmpReceive,
     ) {
-        self.record_worker_authenticated_fmp_receive(&receive.fmp);
+        self.record_worker_authenticated_fmp_receive(
+            &receive.fmp,
+            receive
+                .previous_hop_peer
+                .as_ref()
+                .map(|peer| peer.node_addr()),
+        );
     }
 
     pub(in crate::node) async fn process_authenticated_session_from_worker(
@@ -270,7 +279,10 @@ impl Node {
         authenticated: DecryptAuthenticatedSession,
     ) {
         let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
+        self.record_worker_authenticated_fmp_receive(
+            &authenticated.fmp,
+            Some(authenticated.previous_hop_peer.node_addr()),
+        );
 
         let source_addr = authenticated.source_addr;
         let receive_applied =
@@ -306,7 +318,10 @@ impl Node {
         let mut pending_flush_dests = Vec::new();
         for authenticated in sessions {
             let now = Instant::now();
-            self.record_worker_authenticated_fmp_receive(&authenticated.fmp);
+            self.record_worker_authenticated_fmp_receive(
+                &authenticated.fmp,
+                Some(authenticated.previous_hop_peer.node_addr()),
+            );
 
             let source_addr = authenticated.source_addr;
             let receive_applied =
@@ -484,7 +499,7 @@ impl Node {
         body_len: usize,
     ) -> Option<SessionDispatchFinish> {
         let now = Instant::now();
-        self.record_worker_authenticated_fmp_receive(fmp);
+        self.record_worker_authenticated_fmp_receive(fmp, Some(previous_hop_peer.node_addr()));
 
         let receive_applied = self.apply_worker_fsp_receive_sync(source_addr, receive_sync, now);
         if !receive_applied {
@@ -496,11 +511,13 @@ impl Node {
         }
 
         self.learn_reverse_route(source_addr, *previous_hop_peer.node_addr());
+        let direct_path = previous_hop_peer.node_addr() == &source_addr;
         let finish = SessionDispatchCommit {
             source_addr,
             receive_completion: Some(SessionReceiveCompletion {
                 source_addr,
                 body_len,
+                direct_path,
             }),
         }
         .finish_receive(self);
@@ -512,7 +529,7 @@ impl Node {
         &mut self,
         report: DecryptFspFailureReport,
     ) {
-        self.record_worker_authenticated_fmp_receive(&report.fmp);
+        self.record_worker_authenticated_fmp_receive(&report.fmp, None);
         let src_addr = report.source_addr;
         let Some(entry) = self.sessions.get_mut(&src_addr) else {
             debug!(

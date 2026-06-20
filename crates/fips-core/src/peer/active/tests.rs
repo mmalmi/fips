@@ -143,7 +143,11 @@ fn test_tree_position() {
 
     assert!(peer.has_tree_position());
     assert!(peer.coords().is_some());
-    assert_eq!(peer.last_seen(), 2000);
+    assert_eq!(
+        peer.last_seen(),
+        1000,
+        "tree metadata updates must not refresh path liveness"
+    );
 }
 
 #[test]

@@ -628,6 +628,7 @@ async fn authenticated_endpoint_return_clears_static_retry_on_fresh_discovered_u
         false,
         std::time::Instant::now() - std::time::Duration::from_secs(11),
     );
+    active.touch(Node::now_ms());
     node.peers.insert(peer_addr, active);
 
     assert!(

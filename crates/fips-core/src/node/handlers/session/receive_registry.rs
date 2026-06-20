@@ -503,7 +503,9 @@ impl crate::node::SessionRegistry {
             return false;
         };
         entry.record_recv(completion.body_len);
-        entry.touch_inbound_data_frame(now_ms);
+        if completion.direct_path {
+            entry.touch_inbound_data_frame(now_ms);
+        }
         entry.touch(now_ms);
         true
     }

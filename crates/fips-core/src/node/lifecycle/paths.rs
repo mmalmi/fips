@@ -216,13 +216,21 @@ impl Node {
             let Some(peer) = self.peers.get(peer_node_addr) else {
                 return true;
             };
+            if peer
+                .transport_id()
+                .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+            {
+                return true;
+            }
+            let same_path_refresh_needed = self.active_peer_needs_same_path_refresh(peer_node_addr);
             if !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
                 && peer.is_healthy()
                 && peer.can_send()
+                && !same_path_refresh_needed
             {
                 return false;
             }
-            if peer.can_send() && !self.active_peer_needs_same_path_refresh(peer_node_addr) {
+            if peer.can_send() && !same_path_refresh_needed {
                 return false;
             }
             return !self

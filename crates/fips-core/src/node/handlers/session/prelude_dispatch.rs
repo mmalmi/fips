@@ -352,6 +352,7 @@ struct AuthenticatedSessionDispatch {
 struct SessionReceiveCompletion {
     source_addr: NodeAddr,
     body_len: usize,
+    direct_path: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,6 +417,7 @@ impl AuthenticatedSessionDispatch {
             .then_some(SessionReceiveCompletion {
                 source_addr: self.source_addr,
                 body_len: self.message.body_len(),
+                direct_path: self.previous_hop_addr == self.source_addr,
             })
     }
 
