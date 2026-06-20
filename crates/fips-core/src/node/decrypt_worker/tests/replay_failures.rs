@@ -793,6 +793,90 @@
     }
 
     #[test]
+    fn fmp_aead_helper_window_wait_drains_control_and_priority_while_blocked() {
+        let session_key = test_session_key(1, 445);
+        let mut state = test_owned_session_state();
+        let receive_order_id = state.fmp_receive_order_id();
+        let receive_window = fmp_receive_window();
+        let tickets = (0..receive_window)
+            .map(|_| state.issue_fmp_receive_ticket().expect("test ticket"))
+            .collect::<Vec<_>>();
+
+        let mut shard = test_shard();
+        let (helper_tx, _helper_rx) = bounded::<FmpAeadHelperWork>(1);
+        shard.pool.fmp_aead_helpers = Some(Arc::new(FmpAeadHelperPool { tx: helper_tx }));
+        shard.register_session(0, session_key, state);
+        assert!(
+            !shard.fmp_receive_order_window_available(session_key),
+            "issuing one full receive-order window must stop further ticket issue"
+        );
+
+        let other_session_key = test_session_key(9, 446);
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        control_tx
+            .try_send(WorkerMsg::UnregisterSession {
+                session_key: other_session_key,
+            })
+            .expect("test control lane should have room");
+        let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        priority_tx
+            .try_send(WorkerMsg::Job(dummy_priority_decrypt_job(other_session_key)))
+            .expect("test priority lane should have room");
+        let (completion_tx, completion_rx) = bounded::<FmpAeadCompletionBatch>(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let (fallback_tx, fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        completion_tx
+            .try_send(FmpAeadCompletionBatch::one(FmpAeadCompletion {
+                session_key,
+                receive_order_id,
+                ticket: tickets[0],
+                completed_at: None,
+                result: FmpAeadCompletionResult::AeadFailed(dummy_fmp_aead_failure(
+                    fallback_tx,
+                    47,
+                )),
+            }))
+            .expect("FMP completion lane should have room");
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        assert!(wait_for_fmp_receive_order_window(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &completion_rx,
+            &fsp_aead_completion_rx,
+            session_key,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        ));
+        plaintext_batch.flush();
+
+        assert!(control_rx.is_empty(), "control lane must drain while blocked");
+        assert!(
+            priority_rx.is_empty(),
+            "priority lane must drain while blocked"
+        );
+        assert!(
+            completion_rx.is_empty(),
+            "FMP completion lane should drain once control and priority are clear"
+        );
+        assert!(
+            shard.fmp_receive_order_window_available(session_key),
+            "oldest FMP completion must reopen the ordered receive window"
+        );
+        assert_eq!(
+            batch_stats.priority_packets, 1,
+            "priority packets drained during the wait must stay visible to batch stats"
+        );
+        assert!(
+            !fallback_rx.priority.is_empty(),
+            "FMP failure drained at unblock must remain observable"
+        );
+    }
+
+    #[test]
     fn fmp_ordered_completion_buffers_out_of_order_crypto_results() {
         let key_bytes = [0x56u8; 32];
         let open_cipher = test_chacha_key(key_bytes);
