@@ -33,7 +33,7 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 225);
+    assert_eq!(N_EVENTS, 229);
     assert!(
         (Event::DecryptDirectSessionCommitStale as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
@@ -65,6 +65,22 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FspAeadCompletionReadyGe128 as usize).name(),
         "fsp_aead_completion_ready_ge_128"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerBatchFlush as usize).name(),
+        "fsp_aead_open_worker_batch_flush"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerBatchPackets as usize).name(),
+        "fsp_aead_open_worker_batch_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerBatchFull as usize).name(),
+        "fsp_aead_open_worker_batch_full"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerBatchSingle as usize).name(),
+        "fsp_aead_open_worker_batch_single"
     );
     assert_eq!(
         event_from_index(Event::EndpointEventBulkBacklogHigh as usize).name(),

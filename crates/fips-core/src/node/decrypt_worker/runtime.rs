@@ -711,6 +711,10 @@ fn handle_bulk_item(
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
             let item_service_started_at = crate::perf_profile::stamp();
+            crate::perf_profile::record_fsp_aead_open_worker_batch(
+                1,
+                shard.pool.fsp_open_batch_packet_max_for(idx),
+            );
             complete_fsp_aead_open_job(idx, job);
             record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
@@ -718,6 +722,10 @@ fn handle_bulk_item(
         DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
             let item_service_started_at = crate::perf_profile::stamp();
             let count = jobs.len();
+            crate::perf_profile::record_fsp_aead_open_worker_batch(
+                count,
+                shard.pool.fsp_open_batch_packet_max_for(idx),
+            );
             complete_fsp_aead_open_jobs(idx, jobs);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count

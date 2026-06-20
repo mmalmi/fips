@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 88;
-const N_EVENTS: usize = 225;
+const N_EVENTS: usize = 229;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -777,6 +777,10 @@ pub enum Event {
     DecryptDirectSessionCommitStale = 222,
     FspAeadCompletionReadyGe32 = 223,
     FspAeadCompletionReadyGe128 = 224,
+    FspAeadOpenWorkerBatchFlush = 225,
+    FspAeadOpenWorkerBatchPackets = 226,
+    FspAeadOpenWorkerBatchFull = 227,
+    FspAeadOpenWorkerBatchSingle = 228,
 }
 
 impl Event {
@@ -1103,6 +1107,10 @@ impl Event {
             Event::DecryptDirectSessionCommitStale => "decrypt_direct_session_commit_stale",
             Event::FspAeadCompletionReadyGe32 => "fsp_aead_completion_ready_ge_32",
             Event::FspAeadCompletionReadyGe128 => "fsp_aead_completion_ready_ge_128",
+            Event::FspAeadOpenWorkerBatchFlush => "fsp_aead_open_worker_batch_flush",
+            Event::FspAeadOpenWorkerBatchPackets => "fsp_aead_open_worker_batch_packets",
+            Event::FspAeadOpenWorkerBatchFull => "fsp_aead_open_worker_batch_full",
+            Event::FspAeadOpenWorkerBatchSingle => "fsp_aead_open_worker_batch_single",
         }
     }
 }
@@ -1334,6 +1342,10 @@ fn event_from_index(idx: usize) -> Event {
         222 => Event::DecryptDirectSessionCommitStale,
         223 => Event::FspAeadCompletionReadyGe32,
         224 => Event::FspAeadCompletionReadyGe128,
+        225 => Event::FspAeadOpenWorkerBatchFlush,
+        226 => Event::FspAeadOpenWorkerBatchPackets,
+        227 => Event::FspAeadOpenWorkerBatchFull,
+        228 => Event::FspAeadOpenWorkerBatchSingle,
         _ => unreachable!(),
     }
 }
@@ -1832,6 +1844,26 @@ pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usi
         _ => Event::DecryptWorkerBatchWorkerOther,
     };
     record_event_count_sample(worker_event, packets as u64);
+}
+
+/// Record the actual FSP AEAD open-worker item shape.
+///
+/// The worker-open path is intentionally single-owner for replay/order safety,
+/// so this trace-only counter is the cheap way to tell whether that opener is
+/// receiving full packet-mover batches or fragmented one-packet turns.
+#[inline]
+pub(crate) fn record_fsp_aead_open_worker_batch(packets: usize, max_batch: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::FspAeadOpenWorkerBatchFlush, 1);
+    record_event_count_sample(Event::FspAeadOpenWorkerBatchPackets, packets as u64);
+    if packets >= max_batch.max(1) {
+        record_event_count_sample(Event::FspAeadOpenWorkerBatchFull, 1);
+    }
+    if packets == 1 {
+        record_event_count_sample(Event::FspAeadOpenWorkerBatchSingle, 1);
+    }
 }
 
 #[inline]
