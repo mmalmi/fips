@@ -475,3 +475,65 @@
             DecryptWorkerEvent::FspDecryptFailure(_) => panic!("expected decrypt failure report"),
         }
     }
+
+    #[test]
+    fn fsp_aead_helper_window_wait_drains_oldest_completion() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let mut state = test_owned_fsp_session_state(source_peer);
+        let receive_order_id = state.fsp_receive_order_id();
+        let tickets = (0..DECRYPT_WORKER_FSP_RECEIVE_WINDOW)
+            .map(|_| state.issue_fsp_receive_ticket())
+            .collect::<Vec<_>>();
+
+        let mut shard = test_shard();
+        let (helper_tx, _helper_rx) = bounded::<FspAeadHelperJob>(1);
+        shard.pool.fsp_aead_helpers = Some(std::sync::Arc::new(FspAeadHelperPool { tx: helper_tx }));
+        shard.register_fsp_session(0, source_addr, state);
+        assert!(
+            !shard.fsp_receive_order_window_available(&source_addr),
+            "issuing one full receive-order window must stop further FSP helper tickets"
+        );
+
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
+        let mut job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN);
+        job.source_addr = source_addr;
+        job.fallback_tx = fallback_tx;
+        completion_tx
+            .try_send(FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                ticket: tickets[0],
+                completed_at: None,
+                result: FspOrderedCompletion::AeadFailed {
+                    job,
+                    counter: 45,
+                    received_k_bit: false,
+                },
+            })
+            .expect("test completion lane has room");
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        assert!(wait_for_fsp_receive_order_window(
+            0,
+            &mut shard,
+            &priority_rx,
+            &completion_rx,
+            source_addr,
+            &mut plaintext_batch,
+            &mut batch_stats,
+        ));
+        plaintext_batch.flush();
+
+        assert!(
+            shard.fsp_receive_order_window_available(&source_addr),
+            "oldest FSP helper completion must reopen the ordered receive window"
+        );
+        assert!(
+            fallback_rx.priority.try_recv().is_ok(),
+            "AEAD failures drained while waiting must remain observable"
+        );
+    }

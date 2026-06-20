@@ -27,6 +27,14 @@
     }
 
     #[test]
+    fn fsp_aead_helper_env_can_enable_or_clamp() {
+        assert_eq!(fsp_aead_helper_count_from_raw(None, 0), 0);
+        assert_eq!(fsp_aead_helper_count_from_raw(Some("2"), 0), 2);
+        assert_eq!(fsp_aead_helper_count_from_raw(Some("99"), 0), 64);
+        assert_eq!(fsp_aead_helper_count_from_raw(Some("bad"), 3), 3);
+    }
+
+    #[test]
     fn decrypt_worker_priority_packet_classifier_keeps_small_packets_reserved() {
         assert_eq!(
             decrypt_worker_packet_lane(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN),
@@ -74,6 +82,7 @@
     ) {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
+        let (fsp_aead_completion_tx, _fsp_aead_completion_rx) = bounded::<FspAeadCompletion>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
         (
             DecryptWorkerPool {
@@ -81,12 +90,14 @@
                     vec![DecryptWorkerSender {
                         priority: priority_tx,
                         bulk: bulk_tx,
+                        fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
                     }]
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_aead_helpers: None,
             },
             priority_rx,
             bulk_rx,
@@ -107,10 +118,13 @@
         for _ in 0..worker_count {
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
+            let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
+                bounded::<FspAeadCompletion>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
             senders.push(DecryptWorkerSender {
                 priority: priority_tx,
                 bulk: bulk_tx,
+                fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
             });
@@ -121,6 +135,7 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
+                fsp_aead_helpers: None,
             },
             priority_receivers,
             bulk_receivers,
@@ -165,6 +180,19 @@
             fmp_replay: ReplayWindow::new(),
             source_peer: test_source_peer(),
         }
+    }
+
+    fn test_owned_fsp_session_state(source_peer: PeerIdentity) -> OwnedFspSessionState {
+        OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x5a; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        })
     }
 
     #[test]

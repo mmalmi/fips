@@ -119,6 +119,13 @@ impl DecryptWorkerBatchStats {
         }
     }
 
+    fn add_fsp_aead_completion(&mut self, completion: &FspAeadCompletion) {
+        if !self.enabled {
+            return;
+        }
+        self.add_lane(completion.lane(), 1);
+    }
+
     fn record(&self) {
         if !self.enabled {
             return;

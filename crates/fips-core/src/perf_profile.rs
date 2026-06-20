@@ -59,6 +59,9 @@
 //!   * `DECRYPT_FSP_WORKER_SERVICE` — FSP owner-worker decrypt/decode/output prep
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_HEAD_WAIT` — bulk FSP owner enqueue → batch item service start
 //!   * `DECRYPT_FSP_WORKER_BULK_INPUT_TAIL_WAIT` — FSP batch item service start → individual job handling
+//!   * `DECRYPT_FSP_AEAD_HELPER_QUEUE_WAIT` — FSP owner-worker helper dispatch → AEAD helper
+//!   * `DECRYPT_FSP_AEAD_HELPER_COMPLETION_WAIT` — FSP AEAD helper completion → owner-worker
+//!   * `DECRYPT_FSP_AEAD_RECEIVE_WINDOW_WAIT` — FSP owner-worker waiting for ordered helper completions
 
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
@@ -73,7 +76,7 @@ mod format;
 use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
-const N_STAGES: usize = 45;
+const N_STAGES: usize = 48;
 const N_EVENTS: usize = 65;
 const HIST_BUCKETS: usize = 48;
 
@@ -196,6 +199,13 @@ pub enum Stage {
     /// individual FSP job begins service. This is batch-tail residence inside
     /// one worker turn.
     DecryptFspWorkerBulkInputTailWait = 44,
+    /// FSP AEAD helper job residence before a helper thread starts opening it.
+    DecryptFspAeadHelperQueueWait = 45,
+    /// FSP AEAD helper completion residence before the owner worker handles it.
+    DecryptFspAeadHelperCompletionWait = 46,
+    /// FSP owner-worker residence waiting for ordered helper completions before
+    /// issuing more tickets.
+    DecryptFspAeadReceiveWindowWait = 47,
 }
 
 impl Stage {
@@ -248,6 +258,9 @@ impl Stage {
             Stage::DecryptFspWorkerService => "decrypt_fsp_worker_service",
             Stage::DecryptFspWorkerBulkInputHeadWait => "decrypt_fsp_worker_bulk_input_head_wait",
             Stage::DecryptFspWorkerBulkInputTailWait => "decrypt_fsp_worker_bulk_input_tail_wait",
+            Stage::DecryptFspAeadHelperQueueWait => "decrypt_fsp_aead_helper_queue_wait",
+            Stage::DecryptFspAeadHelperCompletionWait => "decrypt_fsp_aead_helper_completion_wait",
+            Stage::DecryptFspAeadReceiveWindowWait => "decrypt_fsp_aead_receive_window_wait",
         }
     }
 }
@@ -299,6 +312,9 @@ fn stage_from_index(idx: usize) -> Stage {
         42 => Stage::DecryptFspWorkerService,
         43 => Stage::DecryptFspWorkerBulkInputHeadWait,
         44 => Stage::DecryptFspWorkerBulkInputTailWait,
+        45 => Stage::DecryptFspAeadHelperQueueWait,
+        46 => Stage::DecryptFspAeadHelperCompletionWait,
+        47 => Stage::DecryptFspAeadReceiveWindowWait,
         _ => unreachable!(),
     }
 }

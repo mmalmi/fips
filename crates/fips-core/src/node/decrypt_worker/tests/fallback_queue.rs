@@ -492,6 +492,7 @@
         );
         let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
         drop(priority_tx);
         let bulk_body_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 64;
         let (packet_one, header_one) =
@@ -505,6 +506,7 @@
             0,
             &mut shard,
             &priority_rx,
+            &completion_rx,
             DecryptWorkerBulkItem::Batch(vec![
                 decrypt_job_for_test_packet(
                     packet_one,

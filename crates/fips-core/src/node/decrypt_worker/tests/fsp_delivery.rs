@@ -172,6 +172,123 @@
     }
 
     #[test]
+    fn fsp_aead_helper_opens_current_epoch_and_emits_authenticated_completion() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+
+        let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+            0x0102_0304,
+            crate::protocol::SessionMessageType::EndpointData.to_byte(),
+            0x01,
+            b"helper endpoint",
+        );
+        let fsp_counter = fsp_sender.current_send_counter();
+        let fsp_header =
+            crate::node::session_wire::build_fsp_header(fsp_counter, 0, inner_plaintext.len() as u16);
+        let fsp_ciphertext = fsp_sender
+            .encrypt_with_aad(&inner_plaintext, &fsp_header)
+            .unwrap();
+        let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+        fsp_payload.extend_from_slice(&fsp_header);
+        fsp_payload.extend_from_slice(&fsp_ciphertext);
+        let fsp_payload_len = fsp_payload.len();
+
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+        let fallback = DecryptFallback::new(
+            previous_hop_peer,
+            TransportId::new(1),
+            crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+            1_000,
+            DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+            77,
+            0,
+            fsp_payload,
+            0,
+            fsp_payload_len,
+        );
+        let job = FspDecryptJob {
+            fallback_tx,
+            fallback,
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len,
+            trace_enqueued_at: None,
+        };
+
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let (pool, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        let (helper_tx, helper_rx) = bounded::<FspAeadHelperJob>(1);
+        shard.pool.fsp_aead_helpers = Some(std::sync::Arc::new(FspAeadHelperPool { tx: helper_tx }));
+        shard.register_fsp_session(0, source_addr, OwnedFspSessionState::from(fsp_snapshot));
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_bulk_fsp_job_msg(0, job, &mut plaintext_batch);
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "helper dispatch should not emit authenticated output until completion returns"
+        );
+
+        let helper_job = helper_rx.try_recv().expect("FSP helper job should enqueue");
+        let completion = helper_job.into_completion();
+        shard.handle_fsp_aead_completion_msg(0, completion, &mut plaintext_batch);
+        plaintext_batch.flush();
+
+        match fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("helper completion should emit authenticated event")
+        {
+            DecryptWorkerEvent::DirectSessionData(direct) => {
+                assert_eq!(direct.source_addr, source_addr);
+                assert_eq!(direct.previous_hop_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.source_peer, previous_hop_peer);
+                assert_eq!(direct.fmp.fmp_counter, 77);
+                assert_eq!(direct.fmp.inner_timestamp_ms, 0x0a0b_0c0d);
+                assert_eq!(direct.receive_sync.counter, fsp_counter);
+                assert_eq!(direct.receive_sync.slot, EpochSlot::Current);
+                assert_eq!(direct.receive_sync.timestamp, 0x0102_0304);
+                assert_eq!(direct.receive_sync.plaintext_len, inner_plaintext.len());
+                assert_eq!(direct.body_len, b"helper endpoint".len());
+                assert!(direct.receive_sync.spin_bit);
+                match direct.delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.source_peer, source_peer);
+                        assert_eq!(delivery.payload, b"helper endpoint");
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("endpoint data must not become an IPv6 packet")
+                    }
+                }
+            }
+            other => panic!(
+                "expected direct session data event, got {:?}",
+                other.packet_count()
+            ),
+        }
+    }
+
+    #[test]
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();

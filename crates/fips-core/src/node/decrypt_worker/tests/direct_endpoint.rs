@@ -515,6 +515,7 @@
     #[test]
     fn decrypt_worker_drain_registers_priority_before_bulk_jobs() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 77);
         priority_tx
@@ -534,7 +535,14 @@
         );
 
         let mut shard = test_shard();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert!(
             shard.contains_session(session_key),
@@ -579,6 +587,7 @@
     #[test]
     fn decrypt_worker_drain_unregisters_priority_before_bulk_jobs() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 78);
 
@@ -597,7 +606,14 @@
 
         let mut shard = test_shard();
         shard.register_session(0, session_key, test_owned_session_state());
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert!(
             !shard.contains_session(session_key),
@@ -621,6 +637,7 @@
     #[test]
     fn decrypt_worker_blocking_receive_prefers_ready_priority_over_bulk() {
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
         let session_key = test_session_key(1, 79);
         priority_tx
@@ -635,13 +652,16 @@
             DecryptWorkerBulkItem::Job(dummy_bulk_decrypt_job(session_key)),
         );
 
-        match recv_worker_item_biased(&priority_rx, &bulk_rx) {
+        match recv_worker_item_biased(&priority_rx, &completion_rx, &bulk_rx) {
             DecryptWorkerQueueItem::Priority(WorkerMsg::RegisterSession {
                 session_key: got,
                 ..
             }) => assert_eq!(got, session_key),
             DecryptWorkerQueueItem::Priority(_) => {
                 panic!("expected priority registration item")
+            }
+            DecryptWorkerQueueItem::FspAeadCompletion(_) => {
+                panic!("blocking receive must not select helper completion while priority is ready")
             }
             DecryptWorkerQueueItem::Bulk(_) => {
                 panic!("blocking receive must not select bulk while priority is ready")
@@ -684,6 +704,7 @@
         );
 
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_completion_tx, completion_rx) = bounded::<FspAeadCompletion>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) =
             test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
         let session_key = test_session_key(1, 79);
@@ -696,7 +717,14 @@
         }
 
         let mut shard = test_shard();
-        drain_worker_queues(0, &mut shard, &priority_rx, &bulk_rx, &bulk_queued_packets);
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &priority_rx,
+            &completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+        );
 
         assert_eq!(
             bulk_rx.len(),
