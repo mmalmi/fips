@@ -59,11 +59,6 @@ const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 128;
 /// surfaced as bounded opener/completion backpressure instead of a local open
 /// fallback that would make a second semantic path for the same packet stream.
 const DEFAULT_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER: bool = true;
-/// Remote FSP bulk packets commonly arrive on an FMP owner that is not the FSP
-/// session owner. Keep the default on the owner handoff lane so pressure cannot
-/// create a second completion/backlog path; the remote open worker remains an
-/// explicit throughput experiment that preserves the FIPS wire protocol.
-const DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER: bool = false;
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
 /// sessions by default. This removes the direct-peer hash lottery between
 /// local and handoff FSP lanes while preserving the wire protocol.
@@ -335,18 +330,6 @@ fn fsp_local_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
 fn fsp_local_bulk_open_worker_enabled() -> bool {
     fsp_local_bulk_open_worker_enabled_from_raw(
         std::env::var("FIPS_DECRYPT_FSP_LOCAL_BULK_OPEN_WORKER")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn fsp_remote_bulk_open_worker_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER)
-}
-
-fn fsp_remote_bulk_open_worker_enabled() -> bool {
-    fsp_remote_bulk_open_worker_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FSP_REMOTE_BULK_OPEN_WORKER")
             .ok()
             .as_deref(),
     )
