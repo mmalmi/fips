@@ -657,23 +657,23 @@ impl OwnedFspSessionState {
             .open_in_place_deferred_replay(ciphertext, header.counter, &header.header_bytes)
     }
 
-    fn accept_opened_current_established_frame(
-        &mut self,
+    fn accept_opened_current_established_frame_for(
+        current: &mut OwnedFspEpochState,
+        current_k_bit: bool,
         header: &FspEncryptedHeader,
     ) -> Result<EpochSlot, FspOpenError> {
-        debug_assert!(self.has_single_current_epoch());
-        if header.flags & FSP_FLAG_K != u8::from(self.current_k_bit) * FSP_FLAG_K {
+        if header.flags & FSP_FLAG_K != u8::from(current_k_bit) * FSP_FLAG_K {
             return Err(FspOpenError::Aead);
         }
-        if let Some(rejection) = self.current.replay.rejection_reason(header.counter) {
-            let counter_lag = self.current.replay.highest().saturating_sub(header.counter);
+        if let Some(rejection) = current.replay.rejection_reason(header.counter) {
+            let counter_lag = current.replay.highest().saturating_sub(header.counter);
             crate::perf_profile::record_fsp_aead_completion_replay_drop_reason(
                 rejection,
                 counter_lag,
             );
             return Err(FspOpenError::Replay);
         }
-        self.current.replay.accept(header.counter);
+        current.replay.accept(header.counter);
         Ok(EpochSlot::Current)
     }
 
@@ -681,26 +681,27 @@ impl OwnedFspSessionState {
         &mut self,
         ticket: FspReceiveTicket,
         completion: FspOrderedCompletion,
+        mut on_output: impl FnMut(FspReadyCompletion),
     ) -> Result<FspOrderedDrain, OrderedCompletionError> {
-        let mut ready = Vec::new();
+        let current = &mut self.current;
+        let current_k_bit = self.current_k_bit;
+        let source_peer = self.source_peer;
+        let mut drain = FspOrderedDrain::default();
         let ready_count = self
             .fsp_receive_order
-            .complete(ticket, completion, |completion| ready.push(completion))?;
-
-        let mut drain = FspOrderedDrain {
-            ready: ready_count,
-            ..FspOrderedDrain::default()
-        };
-        for completion in ready {
-            match completion {
+            .complete(ticket, completion, |completion| match completion {
                 FspOrderedCompletion::Opened { opened, source } => {
-                    match self.accept_opened_current_established_frame(&opened.header) {
+                    match Self::accept_opened_current_established_frame_for(
+                        current,
+                        current_k_bit,
+                        &opened.header,
+                    ) {
                         Ok(slot) => {
                             drain.accepted += 1;
-                            drain.outputs.push(FspReadyCompletion::Opened {
+                            on_output(FspReadyCompletion::Opened {
                                 opened,
                                 slot,
-                                source_peer: self.source_peer,
+                                source_peer,
                             });
                         }
                         Err(FspOpenError::Replay) => {
@@ -730,7 +731,7 @@ impl OwnedFspSessionState {
                     } else if fallback_to_rx_loop {
                         drain.rx_loop_fallbacks += 1;
                     }
-                    drain.outputs.push(FspReadyCompletion::AeadFailed {
+                    on_output(FspReadyCompletion::AeadFailed {
                         job,
                         header,
                         fallback_to_rx_loop,
@@ -743,7 +744,7 @@ impl OwnedFspSessionState {
                 } => {
                     let _ = source;
                     drain.epoch_mismatches += 1;
-                    drain.outputs.push(FspReadyCompletion::AeadFailed {
+                    on_output(FspReadyCompletion::AeadFailed {
                         job,
                         header,
                         fallback_to_rx_loop: true,
@@ -753,8 +754,8 @@ impl OwnedFspSessionState {
                     let _ = source;
                     drain.dropped += 1;
                 }
-            }
-        }
+            })?;
+        drain.ready = ready_count;
         Ok(drain)
     }
 }
@@ -1008,7 +1009,6 @@ struct FspOrderedDrain {
     rx_loop_fallbacks: usize,
     aead_failure_sources: FspAeadFailureSources,
     replay_drop_sources: FspReplayDropSources,
-    outputs: Vec<FspReadyCompletion>,
 }
 
 impl FspOrderedDrain {

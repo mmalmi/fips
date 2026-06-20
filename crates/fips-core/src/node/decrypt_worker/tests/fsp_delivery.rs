@@ -1,3 +1,37 @@
+    struct FspOrderedDrainWithOutputs {
+        drain: FspOrderedDrain,
+        outputs: Vec<FspReadyCompletion>,
+    }
+
+    impl std::ops::Deref for FspOrderedDrainWithOutputs {
+        type Target = FspOrderedDrain;
+
+        fn deref(&self) -> &Self::Target {
+            &self.drain
+        }
+    }
+
+    trait OwnedFspSessionStateTestExt {
+        fn complete_ordered_fsp_open_for_test(
+            &mut self,
+            ticket: FspReceiveTicket,
+            completion: FspOrderedCompletion,
+        ) -> Result<FspOrderedDrainWithOutputs, OrderedCompletionError>;
+    }
+
+    impl OwnedFspSessionStateTestExt for OwnedFspSessionState {
+        fn complete_ordered_fsp_open_for_test(
+            &mut self,
+            ticket: FspReceiveTicket,
+            completion: FspOrderedCompletion,
+        ) -> Result<FspOrderedDrainWithOutputs, OrderedCompletionError> {
+            let mut outputs = Vec::new();
+            let drain =
+                self.complete_ordered_fsp_open(ticket, completion, |output| outputs.push(output))?;
+            Ok(FspOrderedDrainWithOutputs { drain, outputs })
+        }
+    }
+
     #[test]
     fn worker_decodes_local_ipv6_shim_data_without_plaintext_bounce() {
         let local = crate::Identity::generate();
@@ -314,7 +348,7 @@
         .into_completion();
 
         let drain = state
-            .complete_ordered_fsp_open(completion.ticket, completion.result)
+            .complete_ordered_fsp_open_for_test(completion.ticket, completion.result)
             .expect("first worker-open completion should fit receive order");
         assert_eq!(drain.ready, 1);
         assert_eq!(drain.accepted, 1);
@@ -346,7 +380,7 @@
         }
         .into_completion();
         let duplicate_drain = state
-            .complete_ordered_fsp_open(duplicate.ticket, duplicate.result)
+            .complete_ordered_fsp_open_for_test(duplicate.ticket, duplicate.result)
             .expect("duplicate worker-open completion should fit receive order");
         assert_eq!(duplicate_drain.ready, 1);
         assert_eq!(duplicate_drain.accepted, 0);
@@ -395,7 +429,7 @@
         assert_eq!(refreshed.fsp_receive_order.next_ticket(), ticket.sequence + 1);
 
         let drain = refreshed
-            .complete_ordered_fsp_open(
+            .complete_ordered_fsp_open_for_test(
                 ticket,
                 FspOrderedCompletion::Dropped {
                     source: FspAeadCompletionSource::WorkerOpen,
@@ -522,7 +556,7 @@
         .into_completion();
 
         let second_drain = state
-            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+            .complete_ordered_fsp_open_for_test(second_completion.ticket, second_completion.result)
             .expect("later worker-open completion should buffer behind missing first ticket");
         assert_eq!(second_drain.ready, 0);
         assert_eq!(second_drain.accepted, 0);
@@ -533,7 +567,7 @@
         );
 
         let first_drain = state
-            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+            .complete_ordered_fsp_open_for_test(first_completion.ticket, first_completion.result)
             .expect("first worker-open completion should drain itself and buffered second");
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 2);
@@ -673,7 +707,7 @@
         .into_completion();
 
         let second_drain = state
-            .complete_ordered_fsp_open(second_completion.ticket, second_completion.result)
+            .complete_ordered_fsp_open_for_test(second_completion.ticket, second_completion.result)
             .expect("later failed completion should wait behind missing first ticket");
         assert_eq!(second_drain.ready, 0);
         assert_eq!(second_drain.aead_failures, 0);
@@ -683,7 +717,7 @@
         );
 
         let first_drain = state
-            .complete_ordered_fsp_open(first_completion.ticket, first_completion.result)
+            .complete_ordered_fsp_open_for_test(first_completion.ticket, first_completion.result)
             .expect("first completion should release the queued AEAD failure");
         assert_eq!(first_drain.ready, 2);
         assert_eq!(first_drain.accepted, 1);
@@ -768,7 +802,7 @@
             .issue_fsp_receive_ticket()
             .expect("recoverable local open still reserves an ordered receive ticket");
         let drain = state
-            .complete_ordered_fsp_open(
+            .complete_ordered_fsp_open_for_test(
                 ticket,
                 FspOrderedCompletion::AeadFailed {
                     job,
@@ -879,7 +913,7 @@
             .issue_fsp_receive_ticket()
             .expect("single-current local owner should reserve an FSP ticket");
         let drain = state
-            .complete_ordered_fsp_open(
+            .complete_ordered_fsp_open_for_test(
                 ticket,
                 FspOrderedCompletion::EpochMismatch {
                     job,
@@ -1017,7 +1051,7 @@
         }
         .into_completion();
         let local_drain = state
-            .complete_ordered_fsp_open(local_completion.ticket, local_completion.result)
+            .complete_ordered_fsp_open_for_test(local_completion.ticket, local_completion.result)
             .expect("local completion should fit behind the pending worker-open ticket");
         assert_eq!(local_drain.ready, 0);
         assert!(
@@ -1038,7 +1072,7 @@
         }
         .into_completion();
         let open_drain = state
-            .complete_ordered_fsp_open(open_completion.ticket, open_completion.result)
+            .complete_ordered_fsp_open_for_test(open_completion.ticket, open_completion.result)
             .expect("oldest worker-open completion should drain itself and buffered local open");
         assert_eq!(open_drain.ready, 2);
         assert_eq!(open_drain.accepted, 2);

@@ -723,7 +723,10 @@ impl DecryptWorkerShard {
             );
             return;
         }
-        let drain = match state.complete_ordered_fsp_open(ticket, result) {
+        let mut outputs = Vec::with_capacity(1);
+        let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
+            outputs.push(output)
+        }) {
             Ok(drain) => drain,
             Err(error) => {
                 record_fsp_aead_completion_order_error(&error);
@@ -752,7 +755,7 @@ impl DecryptWorkerShard {
         {
             shared.mark_next_ready(next_ready);
         }
-        self.push_fsp_ready_completion_outputs(drain.outputs, plaintext_batch);
+        self.push_fsp_ready_completion_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_aead_completion_batch_msg(
@@ -807,7 +810,7 @@ impl DecryptWorkerShard {
         let mut rx_loop_fallbacks = 0usize;
         let mut aead_failure_sources = FspAeadFailureSources::default();
         let mut replay_drop_sources = FspReplayDropSources::default();
-        let mut outputs = Vec::new();
+        let mut outputs = Vec::with_capacity(completions.len());
         let next_ready;
         {
             let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
@@ -833,7 +836,9 @@ impl DecryptWorkerShard {
                     result,
                     completed_at: _,
                 } = completion;
-                let drain = match state.complete_ordered_fsp_open(ticket, result) {
+                let drain = match state.complete_ordered_fsp_open(ticket, result, |output| {
+                    outputs.push(output)
+                }) {
                     Ok(drain) => drain,
                     Err(error) => {
                         record_fsp_aead_completion_order_error(&error);
@@ -856,7 +861,6 @@ impl DecryptWorkerShard {
                 rx_loop_fallbacks += drain.rx_loop_fallbacks;
                 aead_failure_sources.add_sources(drain.aead_failure_sources);
                 replay_drop_sources.add_sources(drain.replay_drop_sources);
-                outputs.extend(drain.outputs);
             }
             next_ready = state.fsp_receive_order_next_ready();
         }
@@ -1316,7 +1320,10 @@ impl DecryptWorkerShard {
                     source: FspAeadCompletionSource::Local,
                 },
             };
-            let drain = match state.complete_ordered_fsp_open(ticket, completion) {
+            let mut outputs = Vec::with_capacity(1);
+            let drain = match state.complete_ordered_fsp_open(ticket, completion, |output| {
+                outputs.push(output)
+            }) {
                 Ok(drain) => drain,
                 Err(error) => {
                     record_fsp_aead_completion_order_error(&error);
@@ -1345,7 +1352,7 @@ impl DecryptWorkerShard {
             {
                 shared.mark_next_ready(next_ready);
             }
-            return self.outputs_for_fsp_ready_completions(drain.outputs);
+            return self.outputs_for_fsp_ready_completions(outputs);
         }
 
         let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
