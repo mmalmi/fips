@@ -75,21 +75,10 @@
     }
 
     #[test]
-    fn fsp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
+    fn fsp_aead_completion_batch_width_matches_benchmarked_bulk_width() {
         assert_eq!(
             DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
-        );
-        assert_eq!(
-            fsp_aead_completion_batch_max_from_raw(None),
-            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX
-        );
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("0")), 1);
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("16")), 16);
-        assert_eq!(fsp_aead_completion_batch_max_from_raw(Some("999")), 64);
-        assert_eq!(
-            fsp_aead_completion_batch_max_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX
         );
     }
 

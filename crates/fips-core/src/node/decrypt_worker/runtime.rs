@@ -232,7 +232,7 @@ fn try_recv_aead_completion_fair(
         .saturating_mul(fmp_aead_completion_batch_max());
     let fsp_backlog_packets = fsp_aead_completion_rx
         .len()
-        .saturating_mul(fsp_aead_completion_batch_max());
+        .saturating_mul(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX);
     let prefer_fsp = fsp_backlog_packets > fmp_backlog_packets;
     if prefer_fsp {
         if let Ok(completion) = fsp_aead_completion_rx.try_recv() {
@@ -570,7 +570,7 @@ fn send_fsp_aead_open_completion_batch(
 }
 
 fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
-    let completion_batch_max = fsp_aead_completion_batch_max();
+    let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
     let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
     let mut current_source_addr = None;
     let mut current_receive_order_id = None;

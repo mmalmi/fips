@@ -619,7 +619,7 @@ impl DecryptWorkerShard {
         let mut current_source_addr = None;
         let mut current_receive_order_id = None;
         let mut current_batch: Option<FspAeadCompletionBatch> = None;
-        let completion_batch_max = fsp_aead_completion_batch_max();
+        let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
 
         for mut job in jobs {
             let completion_tx = job.completion_tx.take();
