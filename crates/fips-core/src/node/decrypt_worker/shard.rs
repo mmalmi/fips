@@ -532,28 +532,12 @@ impl DecryptWorkerShard {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
         let owner_idx = shared.owner_idx;
-        let eligible_open_idx = if owner_idx == idx {
-            if !self.pool.fsp_local_bulk_open_worker_enabled() {
-                return Err(FspOpenWorkerPrepareError::Ineligible(job));
-            }
-            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
-        } else {
-            if !self.pool.fsp_remote_bulk_open_worker_enabled() {
-                return Err(FspOpenWorkerPrepareError::Ineligible(job));
-            }
-            self.pool
-                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
-        };
-        if eligible_open_idx.is_none() {
+        if owner_idx != idx || !self.pool.fsp_local_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
-        if owner_idx != idx
-            && !self
-                .pool
-                .fsp_open_worker_owner_completion_backlog_ready(owner_idx)
-        {
-            return Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job));
-        }
+        let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
         else {
@@ -573,13 +557,6 @@ impl DecryptWorkerShard {
             );
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
-        let open_idx = if owner_idx == idx {
-            self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx)
-        } else {
-            self.pool
-                .worker_idx_for_fsp_open_avoiding_pair(&source_addr, idx, owner_idx)
-        }
-        .unwrap_or_else(|| eligible_open_idx.expect("checked eligible FSP open worker"));
 
         let open_job = FspAeadOpenJob {
             source_addr,

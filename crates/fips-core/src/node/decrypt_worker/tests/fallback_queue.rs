@@ -695,8 +695,7 @@
 
     #[test]
     fn fsp_open_worker_backlog_does_not_shed_fmp_bulk_before_worker_boundary() {
-        let (mut pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
-        pool.fsp_remote_bulk_open_worker = true;
+        let (pool, _control_rx, _priority_rx, bulk_rx) = one_slot_worker_pool();
         pool.senders[0]
             .bulk_queued_packets
             .store(1, Ordering::Relaxed);

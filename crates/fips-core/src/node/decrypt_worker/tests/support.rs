@@ -75,15 +75,6 @@
     }
 
     #[test]
-    fn fsp_remote_bulk_open_worker_env_defaults_off_but_can_opt_in() {
-        assert!(!fsp_remote_bulk_open_worker_enabled_from_raw(None));
-        assert!(!fsp_remote_bulk_open_worker_enabled_from_raw(Some("0")));
-        assert!(!fsp_remote_bulk_open_worker_enabled_from_raw(Some("false")));
-        assert!(fsp_remote_bulk_open_worker_enabled_from_raw(Some("1")));
-        assert!(fsp_remote_bulk_open_worker_enabled_from_raw(Some("yes")));
-    }
-
-    #[test]
     fn fmp_source_affine_session_owner_env_defaults_on_but_can_opt_out() {
         assert!(fmp_source_affine_session_owner_enabled_from_raw(None));
         assert!(!fmp_source_affine_session_owner_enabled_from_raw(Some("0")));
@@ -265,7 +256,6 @@
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_local_bulk_open_worker: false,
-                fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_rx,
@@ -317,7 +307,6 @@
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_local_bulk_open_worker: false,
-                fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -372,7 +361,6 @@
                 fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_local_bulk_open_worker: false,
-                fsp_remote_bulk_open_worker: false,
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
             control_receivers,
@@ -603,135 +591,53 @@
     }
 
     #[test]
-    fn fsp_remote_open_worker_dispatches_owner_mismatch_to_third_worker() {
-        let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(4, 8);
-        pool.fsp_remote_bulk_open_worker = true;
-        let source_addr = NodeAddr::from_bytes([0x44; 16]);
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let current_idx = (owner_idx + 1) % 4;
+    fn fsp_open_job_batcher_reuses_pending_buffer_for_single_flush() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(2, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x42; 16]);
+        let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding_pair(&source_addr, current_idx, owner_idx)
-            .expect("four-worker pool should have a third opener worker");
-        assert_ne!(open_idx, owner_idx);
-        assert_ne!(open_idx, current_idx);
-        pool.fsp_aead_sessions.write().unwrap().insert(
-            source_addr,
-            Arc::new(FspSharedCryptoSession::new(
-                owner_idx,
-                7,
-                false,
-                Arc::new(test_chacha_key([0x56; 32])),
-            )),
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .expect("two-worker pool should have a sibling opener");
+        let (unused_completion_tx, _unused_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let cipher = Arc::new(test_chacha_key([0x52; 32]));
+        let mut batcher = FspAeadOpenJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+
+        let returned = batcher.push(
+            &pool,
+            open_idx,
+            owner_idx,
+            test_fsp_aead_open_job(source_addr, 0, cipher, header, unused_completion_tx),
+        );
+        assert!(returned.is_empty(), "single opener job should fit in the batcher");
+        assert!(
+            batcher.flush(&pool).is_empty(),
+            "single opener job should queue without returning to caller"
         );
 
-        let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-        shard.push_job_action_output(
-            current_idx,
-            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(source_addr)),
-            &mut plaintext_batch,
-            None,
-            Some(&mut fsp_open_batcher),
-        );
-        for open_job in fsp_open_batcher.flush(&shard.pool) {
-            shard.drop_returned_fsp_aead_open_job(current_idx, open_job, &mut plaintext_batch);
-        }
-
-        assert_eq!(bulk_receivers[owner_idx].len(), 0, "owner bulk handoff should be bypassed");
         assert_eq!(
-            bulk_receivers[current_idx].len(),
-            0,
-            "current worker should not queue opener work back to itself"
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single opener flushes should not allocate a replacement pending buffer"
         );
-        let item = bulk_receivers[open_idx]
+        match bulk_receivers[open_idx]
             .try_recv()
-            .expect("opener work should be queued on a third worker");
-        match item {
+            .expect("single opener job")
+        {
             DecryptWorkerBulkItem::FspAeadOpen(job) => {
                 let completion_tx = job.completion_tx.expect("opener job needs owner completion tx");
                 assert!(pool.fsp_aead_completion_sender_is(owner_idx, &completion_tx));
             }
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-                assert_eq!(jobs.len(), 1);
-                let completion_tx = jobs
-                    .into_iter()
-                    .next()
-                    .expect("checked one opener job")
-                    .completion_tx
-                    .expect("opener job needs owner completion tx");
-                assert!(pool.fsp_aead_completion_sender_is(owner_idx, &completion_tx));
-            }
+            DecryptWorkerBulkItem::FspAeadOpenBatch(_) => panic!("expected a single opener job"),
             DecryptWorkerBulkItem::Job(_)
             | DecryptWorkerBulkItem::FspJob(_)
             | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener work"),
-        }
-    }
-
-    #[test]
-    fn fmp_completion_fsp_actions_use_batched_remote_open_worker() {
-        let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(4, 8);
-        pool.fsp_remote_bulk_open_worker = true;
-        let source_addr = NodeAddr::from_bytes([0x4a; 16]);
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let current_idx = (owner_idx + 1) % 4;
-        let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding_pair(&source_addr, current_idx, owner_idx)
-            .expect("four-worker pool should have a third opener worker");
-        pool.fsp_aead_sessions.write().unwrap().insert(
-            source_addr,
-            Arc::new(FspSharedCryptoSession::new(
-                owner_idx,
-                7,
-                false,
-                Arc::new(test_chacha_key([0x5a; 32])),
-            )),
-        );
-
-        let mut actions = DecryptWorkerJobActions::None;
-        actions.push(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
-            source_addr,
-        )));
-        actions.push(DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(
-            source_addr,
-        )));
-
-        let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        shard.push_job_actions_output_with_fsp_batchers(current_idx, actions, &mut plaintext_batch);
-
-        assert_eq!(
-            bulk_receivers[owner_idx].len(),
-            0,
-            "completion-driven FSP actions should bypass owner bulk handoff"
-        );
-        assert_eq!(
-            bulk_receivers[current_idx].len(),
-            0,
-            "completion-driven FSP actions should not queue opener work locally"
-        );
-        let item = bulk_receivers[open_idx]
-            .try_recv()
-            .expect("opener work should be batched on a third worker");
-        match item {
-            DecryptWorkerBulkItem::FspAeadOpenBatch(jobs) => {
-                assert_eq!(jobs.len(), 2);
-                for job in jobs {
-                    let completion_tx =
-                        job.completion_tx.expect("opener job needs owner completion tx");
-                    assert!(pool.fsp_aead_completion_sender_is(owner_idx, &completion_tx));
-                }
-            }
-            DecryptWorkerBulkItem::FspAeadOpen(_) => {
-                panic!("completion-driven FSP actions should batch opener work")
-            }
-            DecryptWorkerBulkItem::Job(_)
-            | DecryptWorkerBulkItem::FspJob(_)
-            | DecryptWorkerBulkItem::Batch(_)
-            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
+            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a single opener job"),
         }
     }
 
@@ -813,59 +719,6 @@
             | DecryptWorkerBulkItem::Batch(_)
             | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected opener batch"),
         }
-    }
-
-    #[test]
-    fn fsp_remote_open_worker_backlog_gate_drops_bulk_instead_of_owner_handoff() {
-        let (mut pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
-            test_worker_pool_with_fsp_completion_receivers(
-                4,
-                DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG + 2,
-            );
-        pool.fsp_remote_bulk_open_worker = true;
-        let source_addr = NodeAddr::from_bytes([0x45; 16]);
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let current_idx = (owner_idx + 1) % 4;
-        let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding_pair(&source_addr, current_idx, owner_idx)
-            .expect("four-worker pool should have a third opener worker");
-        pool.fsp_aead_sessions.write().unwrap().insert(
-            source_addr,
-            Arc::new(FspSharedCryptoSession::new(
-                owner_idx,
-                7,
-                false,
-                Arc::new(test_chacha_key([0x57; 32])),
-            )),
-        );
-        for sequence in 0..=DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG {
-            pool.senders[owner_idx]
-                .fsp_aead_completion
-                .try_send(dummy_fsp_aead_completion_batch(source_addr, sequence as u64))
-                .expect("test completion lane should have room");
-        }
-
-        let mut shard = DecryptWorkerShard::new(pool.clone());
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
-        shard.push_job_action_output(
-            current_idx,
-            DecryptWorkerJobAction::FspJob(dummy_bulk_fsp_open_job(source_addr)),
-            &mut plaintext_batch,
-            None,
-            Some(&mut fsp_open_batcher),
-        );
-        assert!(
-            fsp_open_batcher.flush(&shard.pool).is_empty(),
-            "backlog gate should refuse opener tickets before dispatch"
-        );
-
-        assert_eq!(bulk_receivers[open_idx].len(), 0, "opener queue should stay empty");
-        assert_eq!(
-            bulk_receivers[owner_idx].len(),
-            0,
-            "owner queue should not become a pressure fallback for opener backlog"
-        );
     }
 
     #[test]
@@ -1143,54 +996,6 @@
         let shared = pool
             .fsp_aead_session(&source_addr)
             .expect("local FSP open worker needs shared crypto without helper pool");
-        assert_eq!(shared.owner_idx, owner_idx);
-        assert_eq!(shared.current_k_bit, false);
-    }
-
-    #[test]
-    fn fsp_remote_open_worker_registration_publishes_shared_crypto_without_helpers() {
-        let (mut pool, control_receivers, _priority_receivers, _bulk_receivers) =
-            test_worker_pool(4, 4);
-        pool.fsp_remote_bulk_open_worker = true;
-
-        let source_peer = test_source_peer();
-        let source_addr = *source_peer.node_addr();
-        let owner_idx = pool.worker_idx_for_fsp(&source_addr);
-        let shard_pool = pool.clone();
-        let snapshot = crate::node::session::FspRecvSessionSnapshot {
-            source_peer,
-            current_k_bit: false,
-            current: crate::node::session::FspRecvEpochSnapshot {
-                cipher: test_chacha_key([0x67; 32]),
-                replay: ReplayWindow::new(),
-            },
-            pending: None,
-            previous: None,
-        };
-
-        assert!(pool.register_fsp_session(source_addr, snapshot));
-        assert!(
-            pool.fsp_aead_session(&source_addr).is_none(),
-            "shared crypto is published by the owner after it installs state"
-        );
-        let mut shard = DecryptWorkerShard::new(shard_pool);
-        match control_receivers[owner_idx]
-            .recv_timeout(Duration::from_millis(100))
-            .expect("FSP registration should reach owner worker")
-        {
-            WorkerMsg::RegisterFspSession {
-                source_addr: got_source_addr,
-                state,
-            } => {
-                assert_eq!(got_source_addr, source_addr);
-                shard.register_fsp_session(owner_idx, got_source_addr, state);
-            }
-            _ => panic!("expected FSP registration"),
-        }
-
-        let shared = pool
-            .fsp_aead_session(&source_addr)
-            .expect("remote FSP open worker needs shared crypto without helper pool");
         assert_eq!(shared.owner_idx, owner_idx);
         assert_eq!(shared.current_k_bit, false);
     }

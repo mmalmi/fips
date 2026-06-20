@@ -10,7 +10,6 @@ pub(crate) struct DecryptWorkerPool {
     fmp_source_affine_session_owner: bool,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_local_bulk_open_worker: bool,
-    fsp_remote_bulk_open_worker: bool,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
 
@@ -189,7 +188,6 @@ impl DecryptWorkerPool {
         }
         let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
         let fsp_local_bulk_open_worker = fsp_local_bulk_open_worker_enabled();
-        let fsp_remote_bulk_open_worker = fsp_remote_bulk_open_worker_enabled();
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
@@ -197,7 +195,6 @@ impl DecryptWorkerPool {
             fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_local_bulk_open_worker,
-            fsp_remote_bulk_open_worker,
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
         for (
@@ -285,34 +282,6 @@ impl DecryptWorkerPool {
             idx += 1;
         }
         Some(idx)
-    }
-
-    fn worker_idx_for_fsp_open_avoiding_pair(
-        &self,
-        source_addr: &NodeAddr,
-        avoid_a: usize,
-        avoid_b: usize,
-    ) -> Option<usize> {
-        if avoid_a == avoid_b {
-            return self.worker_idx_for_fsp_open_avoiding(source_addr, avoid_a);
-        }
-        let worker_count = self.senders.len();
-        if worker_count <= 2 || avoid_a >= worker_count || avoid_b >= worker_count {
-            return None;
-        }
-
-        let mut offset =
-            (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 2);
-        for idx in 0..worker_count {
-            if idx == avoid_a || idx == avoid_b {
-                continue;
-            }
-            if offset == 0 {
-                return Some(idx);
-            }
-            offset -= 1;
-        }
-        None
     }
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
@@ -410,12 +379,8 @@ impl DecryptWorkerPool {
         self.senders.len() > 1 && self.fsp_local_bulk_open_worker
     }
 
-    fn fsp_remote_bulk_open_worker_enabled(&self) -> bool {
-        self.senders.len() > 2 && self.fsp_remote_bulk_open_worker
-    }
-
     fn fsp_bulk_open_worker_enabled(&self) -> bool {
-        self.fsp_local_bulk_open_worker_enabled() || self.fsp_remote_bulk_open_worker_enabled()
+        self.fsp_local_bulk_open_worker_enabled()
     }
 
     fn fsp_aead_owner_completion_backlog_ready_for(
