@@ -97,7 +97,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 74;
-const N_EVENTS: usize = 220;
+const N_EVENTS: usize = 228;
 const HIST_BUCKETS: usize = 48;
 
 /// Stage identifier. `as usize` indexes into the counter arrays.
@@ -704,6 +704,14 @@ pub enum Event {
     DecryptWorkerBatchWorker6 = 217,
     DecryptWorkerBatchWorker7 = 218,
     DecryptWorkerBatchWorkerOther = 219,
+    LinuxWgBatchAdmissionBatch = 220,
+    LinuxWgBatchAdmissionPackets = 221,
+    LinuxWgBatchAdmissionTooSmallPackets = 222,
+    LinuxWgBatchAdmissionNoTargetPackets = 223,
+    LinuxWgBatchAdmissionFallbackPackets = 224,
+    LinuxWgBatchFlowQueueFullPackets = 225,
+    LinuxWgBatchWorkerQueueFullPackets = 226,
+    LinuxWgBatchAdmissionUnavailablePackets = 227,
 }
 
 impl Event {
@@ -1025,6 +1033,22 @@ impl Event {
             Event::DecryptWorkerBatchWorker6 => "decrypt_worker_batch_worker6",
             Event::DecryptWorkerBatchWorker7 => "decrypt_worker_batch_worker7",
             Event::DecryptWorkerBatchWorkerOther => "decrypt_worker_batch_worker_other",
+            Event::LinuxWgBatchAdmissionBatch => "linux_wg_batch_admission_batch",
+            Event::LinuxWgBatchAdmissionPackets => "linux_wg_batch_admission_packets",
+            Event::LinuxWgBatchAdmissionTooSmallPackets => {
+                "linux_wg_batch_admission_too_small_packets"
+            }
+            Event::LinuxWgBatchAdmissionNoTargetPackets => {
+                "linux_wg_batch_admission_no_target_packets"
+            }
+            Event::LinuxWgBatchAdmissionFallbackPackets => {
+                "linux_wg_batch_admission_fallback_packets"
+            }
+            Event::LinuxWgBatchFlowQueueFullPackets => "linux_wg_batch_flow_queue_full_packets",
+            Event::LinuxWgBatchWorkerQueueFullPackets => "linux_wg_batch_worker_queue_full_packets",
+            Event::LinuxWgBatchAdmissionUnavailablePackets => {
+                "linux_wg_batch_admission_unavailable_packets"
+            }
         }
     }
 }
@@ -1251,6 +1275,14 @@ fn event_from_index(idx: usize) -> Event {
         217 => Event::DecryptWorkerBatchWorker6,
         218 => Event::DecryptWorkerBatchWorker7,
         219 => Event::DecryptWorkerBatchWorkerOther,
+        220 => Event::LinuxWgBatchAdmissionBatch,
+        221 => Event::LinuxWgBatchAdmissionPackets,
+        222 => Event::LinuxWgBatchAdmissionTooSmallPackets,
+        223 => Event::LinuxWgBatchAdmissionNoTargetPackets,
+        224 => Event::LinuxWgBatchAdmissionFallbackPackets,
+        225 => Event::LinuxWgBatchFlowQueueFullPackets,
+        226 => Event::LinuxWgBatchWorkerQueueFullPackets,
+        227 => Event::LinuxWgBatchAdmissionUnavailablePackets,
         _ => unreachable!(),
     }
 }
@@ -1622,6 +1654,73 @@ pub(crate) fn record_linux_wg_batch_chunk(packets: usize, chunk_size: usize) {
     if packets >= chunk_size.max(1) {
         record_event_count_sample(Event::LinuxWgBatchChunkFull, 1);
     }
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_admission(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchAdmissionBatch, 1);
+    record_event_count_sample(Event::LinuxWgBatchAdmissionPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_admission_too_small(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchAdmissionTooSmallPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_admission_unavailable(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(
+        Event::LinuxWgBatchAdmissionUnavailablePackets,
+        packets as u64,
+    );
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_admission_no_target(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchAdmissionNoTargetPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_admission_fallback(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchAdmissionFallbackPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_flow_queue_full(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchFlowQueueFullPackets, packets as u64);
+}
+
+#[inline]
+#[cfg(target_os = "linux")]
+pub(crate) fn record_linux_wg_batch_worker_queue_full(packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(Event::LinuxWgBatchWorkerQueueFullPackets, packets as u64);
 }
 
 /// Record batches whose ordered WG sender had to wait for crypto completion.

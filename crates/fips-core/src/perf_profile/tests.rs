@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 220);
+    assert_eq!(N_EVENTS, 228);
     assert!(
-        (Event::DecryptWorkerBatchWorkerOther as usize) < N_EVENTS,
+        (Event::LinuxWgBatchAdmissionUnavailablePackets as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -581,6 +581,38 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::LinuxWgBatchSenderWaitGe4ms as usize).name(),
         "linux_wg_batch_sender_wait_ge4ms"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionBatch as usize).name(),
+        "linux_wg_batch_admission_batch"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionPackets as usize).name(),
+        "linux_wg_batch_admission_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionTooSmallPackets as usize).name(),
+        "linux_wg_batch_admission_too_small_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionUnavailablePackets as usize).name(),
+        "linux_wg_batch_admission_unavailable_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionNoTargetPackets as usize).name(),
+        "linux_wg_batch_admission_no_target_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchAdmissionFallbackPackets as usize).name(),
+        "linux_wg_batch_admission_fallback_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchFlowQueueFullPackets as usize).name(),
+        "linux_wg_batch_flow_queue_full_packets"
+    );
+    assert_eq!(
+        event_from_index(Event::LinuxWgBatchWorkerQueueFullPackets as usize).name(),
+        "linux_wg_batch_worker_queue_full_packets"
     );
     assert_eq!(
         event_from_index(Event::FmpSendGroupSplitTarget as usize).name(),
