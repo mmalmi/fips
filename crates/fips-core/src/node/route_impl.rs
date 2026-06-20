@@ -353,7 +353,6 @@ impl Node {
         now_ms: u64,
     ) -> bool {
         self.session_direct_path_is_degraded(dest, now_ms)
-            && !self.active_peer_uses_configured_static_udp_path(dest)
     }
 
     pub(in crate::node) fn session_direct_path_exclusive_trust_timeout_ms(&self) -> u64 {

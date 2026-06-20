@@ -134,7 +134,7 @@ fn test_reply_learned_prefers_live_mesh_route_over_session_degraded_direct_peer(
 }
 
 #[test]
-fn test_reply_learned_keeps_configured_static_direct_peer_despite_session_degraded() {
+fn test_reply_learned_moves_configured_static_direct_peer_when_session_degraded() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -170,15 +170,15 @@ fn test_reply_learned_keeps_configured_static_direct_peer_despite_session_degrad
         "raw session degradation marker should remain visible"
     );
     assert!(
-        !node.session_direct_path_blocks_direct_payload(&dest_addr, now_ms),
-        "a healthy operator-configured static UDP path should ignore the session-loss hold"
+        node.session_direct_path_blocks_direct_payload(&dest_addr, now_ms),
+        "session loss on a configured static UDP path should still block direct payload when fallback exists"
     );
 
-    let direct = node.find_next_hop(&dest_addr).expect("direct route");
+    let fallback = node.find_next_hop(&dest_addr).expect("fallback route");
     assert_eq!(
-        direct.node_addr(),
-        &dest_addr,
-        "session loss on an explicit static LAN path must not force payload onto a fallback route"
+        fallback.node_addr(),
+        &mesh_next_hop,
+        "session loss on an explicit static path must not blackhole payload when a learned fallback is available"
     );
 }
 
