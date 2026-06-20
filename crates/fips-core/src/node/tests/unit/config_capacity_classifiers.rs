@@ -444,7 +444,7 @@ async fn poll_nostr_discovery_failed_active_peer_keeps_quick_reprobe() {
         "active direct refresh failure must not accumulate peer backoff"
     );
     assert!(
-        state.retry_after_ms >= before_ms + 2_000 && state.retry_after_ms <= after_ms + 8_000,
+        state.retry_after_ms >= before_ms + 500 && state.retry_after_ms <= after_ms + 1_500,
         "failed direct upgrade should schedule quick jittered reprobe, got {}",
         state.retry_after_ms
     );

@@ -7,11 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.68] - 2026-06-20
+
 ### Changed
 
 - Made macOS raw UDP send pacing opt-in again: the default no longer applies a
   hardware-specific throughput cap, while `FIPS_MACOS_SEND_PACE_MBPS=<rate>`
   remains available for controlled pacing trials.
+
+### Fixed
+
+- Kept mobile/NAT direct-path refreshes from immediately restoring payload
+  trust after a lossy direct refresh promotion, so fallback routing can keep
+  carrying traffic while direct probes continue.
+- Counted recent authenticated session traffic in direct-path liveness and
+  shortened direct retry cadence after path loss, reducing 15-30 second stale
+  direct-path stalls.
+- Warmed fallback routes and queued traffic when direct trust expires without a
+  usable fallback, preventing payload bursts from being silently forced onto a
+  suspect direct path.
+- Prioritized observed UDP endpoint refreshes over stale configured hints after
+  roaming/NAT changes.
+- Bumped `fips-endpoint` to 0.3.43 so app-facing consumers pick up the
+  `fips-core` 0.3.68 direct-path reliability fixes.
 
 ## [0.3.67] - 2026-06-19
 

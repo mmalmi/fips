@@ -216,7 +216,13 @@ async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
         .local_addr()
         .expect("static sink local addr")
         .to_string();
-    let fresh_overlay_addr = "127.0.0.1:55180";
+    let overlay_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind overlay sink");
+    let fresh_overlay_addr = overlay_sink
+        .local_addr()
+        .expect("overlay sink addr")
+        .to_string();
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     let endpoint = OverlayEndpointAdvert {
@@ -245,12 +251,13 @@ async fn test_retry_races_overlay_advert_alongside_static_udp_hint() {
         discovery_fallback_transit: true,
     };
     node.config.peers.push(peer_config.clone());
+    refresh_configured_peer_cache_for_test(&mut node);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
         .unwrap();
 
-    let fresh = TransportAddr::from_string(fresh_overlay_addr);
+    let fresh = TransportAddr::from_string(&fresh_overlay_addr);
     let stale = TransportAddr::from_string(&stale_static_addr);
     let fresh_link = node.find_link_by_addr(transport_id, &fresh);
     let stale_link = node.find_link_by_addr(transport_id, &stale);
@@ -310,12 +317,18 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
         .local_addr()
         .expect("static sink local addr")
         .to_string();
-    let overlay_addr = "127.0.0.1:55181";
+    let overlay_sink = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind overlay sink");
+    let overlay_addr = overlay_sink
+        .local_addr()
+        .expect("overlay sink addr")
+        .to_string();
 
     let bootstrap = Arc::new(NostrDiscovery::new_for_test());
     let endpoint = OverlayEndpointAdvert {
         transport: OverlayTransportKind::Udp,
-        addr: overlay_addr.to_string(),
+        addr: overlay_addr.clone(),
     };
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -336,11 +349,12 @@ async fn test_bootstrap_races_static_address_and_overlay_advert() {
         discovery_fallback_transit: true,
     };
     node.config.peers.push(peer_config.clone());
+    refresh_configured_peer_cache_for_test(&mut node);
 
     node.initiate_peer_connection(&peer_config).await.unwrap();
 
     let stat = TransportAddr::from_string(&static_addr);
-    let overlay = TransportAddr::from_string(overlay_addr);
+    let overlay = TransportAddr::from_string(&overlay_addr);
     let overlay_link = node.find_link_by_addr(transport_id, &overlay);
     let static_link = node.find_link_by_addr(transport_id, &stat);
     assert!(
@@ -435,6 +449,7 @@ async fn test_static_priority_preempts_fresh_overlay_when_budget_tight() {
         discovery_fallback_transit: true,
     };
     node.config.peers.push(peer_config.clone());
+    refresh_configured_peer_cache_for_test(&mut node);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
@@ -538,6 +553,7 @@ async fn test_retry_races_fresh_overlay_udp_candidates_without_static_direct() {
         discovery_fallback_transit: true,
     };
     node.config.peers.push(peer_config.clone());
+    refresh_configured_peer_cache_for_test(&mut node);
 
     node.initiate_peer_retry_connection(&peer_config)
         .await
