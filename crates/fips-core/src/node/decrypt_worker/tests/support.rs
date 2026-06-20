@@ -40,15 +40,6 @@
     }
 
     #[test]
-    fn fmp_source_affine_session_owner_env_defaults_on_but_can_opt_out() {
-        assert!(fmp_source_affine_session_owner_enabled_from_raw(None));
-        assert!(!fmp_source_affine_session_owner_enabled_from_raw(Some("0")));
-        assert!(!fmp_source_affine_session_owner_enabled_from_raw(Some("false")));
-        assert!(fmp_source_affine_session_owner_enabled_from_raw(Some("1")));
-        assert!(fmp_source_affine_session_owner_enabled_from_raw(Some("yes")));
-    }
-
-    #[test]
     fn fsp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
         assert_eq!(
             DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
@@ -163,7 +154,6 @@
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -209,7 +199,6 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -258,7 +247,6 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_source_affine_session_owner: true,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },

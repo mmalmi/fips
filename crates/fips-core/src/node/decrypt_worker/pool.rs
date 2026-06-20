@@ -6,7 +6,6 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
-    fmp_source_affine_session_owner: bool,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
@@ -94,7 +93,6 @@ impl DecryptWorkerPool {
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
-            fmp_source_affine_session_owner: fmp_source_affine_session_owner_enabled(),
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
@@ -149,20 +147,13 @@ impl DecryptWorkerPool {
 
     fn worker_idx_for_new_fmp_session(
         &self,
-        session_key: DecryptSessionKey,
+        _session_key: DecryptSessionKey,
         source_peer: &PeerIdentity,
     ) -> usize {
-        if self.fmp_source_affine_session_owner {
-            self.worker_idx_for_fsp(source_peer.node_addr())
-        } else {
-            self.worker_idx_for(session_key)
-        }
+        self.worker_idx_for_fsp(source_peer.node_addr())
     }
 
     fn worker_idx_for_fmp_session(&self, session_key: DecryptSessionKey) -> usize {
-        if !self.fmp_source_affine_session_owner {
-            return self.worker_idx_for(session_key);
-        }
         self.registered_fmp_session_owner(session_key)
             .unwrap_or_else(|| self.worker_idx_for(session_key))
     }
@@ -668,9 +659,7 @@ impl DecryptWorkerPool {
             .try_send(WorkerMsg::RegisterSession { session_key, state })
         {
             Ok(()) => {
-                if self.fmp_source_affine_session_owner
-                    && let Ok(mut owners) = self.fmp_session_owners.write()
-                {
+                if let Ok(mut owners) = self.fmp_session_owners.write() {
                     owners.insert(session_key, idx);
                 }
                 true
@@ -776,9 +765,7 @@ impl DecryptWorkerPool {
             .try_send(WorkerMsg::UnregisterSession { session_key })
         {
             Ok(()) => {
-                if self.fmp_source_affine_session_owner
-                    && let Ok(mut owners) = self.fmp_session_owners.write()
-                {
+                if let Ok(mut owners) = self.fmp_session_owners.write() {
                     owners.remove(&session_key);
                 }
                 true
@@ -788,9 +775,7 @@ impl DecryptWorkerPool {
                 false
             }
             Err(TrySendError::Disconnected(_)) => {
-                if self.fmp_source_affine_session_owner
-                    && let Ok(mut owners) = self.fmp_session_owners.write()
-                {
+                if let Ok(mut owners) = self.fmp_session_owners.write() {
                     owners.remove(&session_key);
                 }
                 debug!(

@@ -60,9 +60,8 @@ const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_
 /// exists, same-owner bulk uses the opener path and pressure is bounded by the
 /// opener bulk queue plus the ordered receive-ticket window.
 /// Keep FMP receive sessions on the same peer-derived owner as FSP receive
-/// sessions by default. This removes the direct-peer hash lottery between
-/// local and handoff FSP lanes while preserving the wire protocol.
-const DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER: bool = true;
+/// sessions. This removes the direct-peer hash lottery between local and
+/// handoff FSP lanes while preserving the wire protocol.
 const DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX: usize =
     DECRYPT_WORKER_BULK_BATCH_MAX;
 static NEXT_FSP_RECEIVE_ORDER_ID: AtomicU64 = AtomicU64::new(1);
@@ -224,28 +223,6 @@ fn fallback_priority_channel_cap() -> usize {
         priority_cap.as_deref(),
         None,
         DEFAULT_DECRYPT_FALLBACK_PRIORITY_CHANNEL_CAP,
-    )
-}
-
-fn enabled_from_raw_with_default(raw: Option<&str>, default: bool) -> bool {
-    raw.map(|raw| {
-        !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        )
-    })
-    .unwrap_or(default)
-}
-
-fn fmp_source_affine_session_owner_enabled_from_raw(raw: Option<&str>) -> bool {
-    enabled_from_raw_with_default(raw, DEFAULT_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER)
-}
-
-fn fmp_source_affine_session_owner_enabled() -> bool {
-    fmp_source_affine_session_owner_enabled_from_raw(
-        std::env::var("FIPS_DECRYPT_FMP_SOURCE_AFFINE_SESSION_OWNER")
-            .ok()
-            .as_deref(),
     )
 }
 
