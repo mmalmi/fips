@@ -443,7 +443,7 @@ fn complete_fsp_aead_open_job(idx: usize, mut job: FspAeadOpenJob) {
 }
 
 fn complete_fsp_aead_open_jobs(idx: usize, jobs: Vec<FspAeadOpenJob>) {
-    let completion_batch_max = fsp_aead_completion_batch_max();
+    let completion_batch_max = DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX;
     let mut current_tx: Option<Sender<FspAeadCompletionBatch>> = None;
     let mut current_source_addr = None;
     let mut current_receive_order_id = None;

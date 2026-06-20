@@ -179,23 +179,6 @@ fn fsp_aead_completion_channel_cap_from_bulk_cap(bulk_cap: usize) -> usize {
     fsp_receive_window_from_bulk_cap(bulk_cap)
 }
 
-fn fsp_aead_completion_batch_max_from_raw(raw: Option<&str>) -> usize {
-    raw.and_then(|raw| raw.trim().parse::<usize>().ok())
-        .unwrap_or(DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX)
-        .clamp(1, 64)
-}
-
-fn fsp_aead_completion_batch_max() -> usize {
-    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *VALUE.get_or_init(|| {
-        fsp_aead_completion_batch_max_from_raw(
-            std::env::var("FIPS_DECRYPT_FSP_AEAD_COMPLETION_BATCH_MAX")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
 fn priority_channel_cap() -> usize {
     let priority_cap = std::env::var("FIPS_DECRYPT_WORKER_PRIORITY_CHANNEL_CAP").ok();
     parse_channel_cap(
@@ -1114,7 +1097,9 @@ impl FspAeadCompletionBatch {
             Self::One(_) => {
                 let Self::One(existing) = std::mem::replace(
                     self,
-                    Self::Many(Vec::with_capacity(fsp_aead_completion_batch_max())),
+                    Self::Many(Vec::with_capacity(
+                        DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
+                    )),
                 ) else {
                     unreachable!("replaced One with Many")
                 };
