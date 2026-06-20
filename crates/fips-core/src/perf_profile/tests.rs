@@ -2,8 +2,9 @@
 use super::udp_send_batch_tail_bucket_flags;
 use super::{
     EVENTS, Event, HIST_BUCKETS, N_EVENTS, N_STAGES, Stage, TraceStamp, bucket_upper_ns,
-    event_from_index, fmt_rate_per_sec, fsp_aead_completion_ready_burst_flags, percentile_ns,
-    record_event_count_sample, record_wait_threshold, stage_from_index,
+    event_from_index, fmt_rate_per_sec, fsp_aead_completion_ready_burst_flags,
+    fsp_aead_open_worker_target_event, percentile_ns, record_event_count_sample,
+    record_wait_threshold, stage_from_index,
 };
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
@@ -33,9 +34,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 264);
+    assert_eq!(N_EVENTS, 281);
     assert!(
-        (Event::EndpointEventDequeueMixedLaneEvents as usize) < N_EVENTS,
+        (Event::FspAeadOpenWorkerTargetWorkerOther as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -105,6 +106,18 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::EndpointEventDequeueMixedLaneEvents as usize).name(),
         "endpoint_event_dequeue_mixed_lane_events"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerTargetWorker0 as usize).name(),
+        "fsp_aead_open_worker_target_worker0"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerTargetWorker15 as usize).name(),
+        "fsp_aead_open_worker_target_worker15"
+    );
+    assert_eq!(
+        event_from_index(Event::FspAeadOpenWorkerTargetWorkerOther as usize).name(),
+        "fsp_aead_open_worker_target_worker_other"
     );
     assert_eq!(
         event_from_index(Event::EndpointEventBulkBacklogHigh as usize).name(),
@@ -919,6 +932,22 @@ fn fsp_completion_ready_buckets_classify_ordered_bursts() {
     assert_eq!(fsp_aead_completion_ready_burst_flags(32), (true, false));
     assert_eq!(fsp_aead_completion_ready_burst_flags(127), (true, false));
     assert_eq!(fsp_aead_completion_ready_burst_flags(128), (true, true));
+}
+
+#[test]
+fn fsp_open_worker_target_event_maps_high_index_workers() {
+    assert_eq!(
+        fsp_aead_open_worker_target_event(0),
+        Event::FspAeadOpenWorkerTargetWorker0
+    );
+    assert_eq!(
+        fsp_aead_open_worker_target_event(15),
+        Event::FspAeadOpenWorkerTargetWorker15
+    );
+    assert_eq!(
+        fsp_aead_open_worker_target_event(16),
+        Event::FspAeadOpenWorkerTargetWorkerOther
+    );
 }
 
 #[test]

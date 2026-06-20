@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 90;
-const N_EVENTS: usize = 264;
+const N_EVENTS: usize = 281;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -830,6 +830,23 @@ pub enum Event {
     EndpointEventDequeueBulkMessages = 261,
     EndpointEventDequeueMultiMessageEvents = 262,
     EndpointEventDequeueMixedLaneEvents = 263,
+    FspAeadOpenWorkerTargetWorker0 = 264,
+    FspAeadOpenWorkerTargetWorker1 = 265,
+    FspAeadOpenWorkerTargetWorker2 = 266,
+    FspAeadOpenWorkerTargetWorker3 = 267,
+    FspAeadOpenWorkerTargetWorker4 = 268,
+    FspAeadOpenWorkerTargetWorker5 = 269,
+    FspAeadOpenWorkerTargetWorker6 = 270,
+    FspAeadOpenWorkerTargetWorker7 = 271,
+    FspAeadOpenWorkerTargetWorker8 = 272,
+    FspAeadOpenWorkerTargetWorker9 = 273,
+    FspAeadOpenWorkerTargetWorker10 = 274,
+    FspAeadOpenWorkerTargetWorker11 = 275,
+    FspAeadOpenWorkerTargetWorker12 = 276,
+    FspAeadOpenWorkerTargetWorker13 = 277,
+    FspAeadOpenWorkerTargetWorker14 = 278,
+    FspAeadOpenWorkerTargetWorker15 = 279,
+    FspAeadOpenWorkerTargetWorkerOther = 280,
 }
 
 impl Event {
@@ -1209,6 +1226,23 @@ impl Event {
             Event::EndpointEventDequeueMixedLaneEvents => {
                 "endpoint_event_dequeue_mixed_lane_events"
             }
+            Event::FspAeadOpenWorkerTargetWorker0 => "fsp_aead_open_worker_target_worker0",
+            Event::FspAeadOpenWorkerTargetWorker1 => "fsp_aead_open_worker_target_worker1",
+            Event::FspAeadOpenWorkerTargetWorker2 => "fsp_aead_open_worker_target_worker2",
+            Event::FspAeadOpenWorkerTargetWorker3 => "fsp_aead_open_worker_target_worker3",
+            Event::FspAeadOpenWorkerTargetWorker4 => "fsp_aead_open_worker_target_worker4",
+            Event::FspAeadOpenWorkerTargetWorker5 => "fsp_aead_open_worker_target_worker5",
+            Event::FspAeadOpenWorkerTargetWorker6 => "fsp_aead_open_worker_target_worker6",
+            Event::FspAeadOpenWorkerTargetWorker7 => "fsp_aead_open_worker_target_worker7",
+            Event::FspAeadOpenWorkerTargetWorker8 => "fsp_aead_open_worker_target_worker8",
+            Event::FspAeadOpenWorkerTargetWorker9 => "fsp_aead_open_worker_target_worker9",
+            Event::FspAeadOpenWorkerTargetWorker10 => "fsp_aead_open_worker_target_worker10",
+            Event::FspAeadOpenWorkerTargetWorker11 => "fsp_aead_open_worker_target_worker11",
+            Event::FspAeadOpenWorkerTargetWorker12 => "fsp_aead_open_worker_target_worker12",
+            Event::FspAeadOpenWorkerTargetWorker13 => "fsp_aead_open_worker_target_worker13",
+            Event::FspAeadOpenWorkerTargetWorker14 => "fsp_aead_open_worker_target_worker14",
+            Event::FspAeadOpenWorkerTargetWorker15 => "fsp_aead_open_worker_target_worker15",
+            Event::FspAeadOpenWorkerTargetWorkerOther => "fsp_aead_open_worker_target_worker_other",
         }
     }
 }
@@ -1479,6 +1513,23 @@ fn event_from_index(idx: usize) -> Event {
         261 => Event::EndpointEventDequeueBulkMessages,
         262 => Event::EndpointEventDequeueMultiMessageEvents,
         263 => Event::EndpointEventDequeueMixedLaneEvents,
+        264 => Event::FspAeadOpenWorkerTargetWorker0,
+        265 => Event::FspAeadOpenWorkerTargetWorker1,
+        266 => Event::FspAeadOpenWorkerTargetWorker2,
+        267 => Event::FspAeadOpenWorkerTargetWorker3,
+        268 => Event::FspAeadOpenWorkerTargetWorker4,
+        269 => Event::FspAeadOpenWorkerTargetWorker5,
+        270 => Event::FspAeadOpenWorkerTargetWorker6,
+        271 => Event::FspAeadOpenWorkerTargetWorker7,
+        272 => Event::FspAeadOpenWorkerTargetWorker8,
+        273 => Event::FspAeadOpenWorkerTargetWorker9,
+        274 => Event::FspAeadOpenWorkerTargetWorker10,
+        275 => Event::FspAeadOpenWorkerTargetWorker11,
+        276 => Event::FspAeadOpenWorkerTargetWorker12,
+        277 => Event::FspAeadOpenWorkerTargetWorker13,
+        278 => Event::FspAeadOpenWorkerTargetWorker14,
+        279 => Event::FspAeadOpenWorkerTargetWorker15,
+        280 => Event::FspAeadOpenWorkerTargetWorkerOther,
         _ => unreachable!(),
     }
 }
@@ -2106,6 +2157,40 @@ pub(crate) fn record_fsp_aead_open_worker_batch(packets: usize, max_batch: usize
     }
     if packets == 1 {
         record_event_count_sample(Event::FspAeadOpenWorkerBatchSingle, 1);
+    }
+}
+
+#[inline]
+pub(crate) fn record_fsp_aead_open_worker_target(worker_idx: usize, packets: usize) {
+    if !enabled() || packets == 0 {
+        return;
+    }
+    record_event_count_sample(
+        fsp_aead_open_worker_target_event(worker_idx),
+        packets as u64,
+    );
+}
+
+#[inline]
+fn fsp_aead_open_worker_target_event(worker_idx: usize) -> Event {
+    match worker_idx {
+        0 => Event::FspAeadOpenWorkerTargetWorker0,
+        1 => Event::FspAeadOpenWorkerTargetWorker1,
+        2 => Event::FspAeadOpenWorkerTargetWorker2,
+        3 => Event::FspAeadOpenWorkerTargetWorker3,
+        4 => Event::FspAeadOpenWorkerTargetWorker4,
+        5 => Event::FspAeadOpenWorkerTargetWorker5,
+        6 => Event::FspAeadOpenWorkerTargetWorker6,
+        7 => Event::FspAeadOpenWorkerTargetWorker7,
+        8 => Event::FspAeadOpenWorkerTargetWorker8,
+        9 => Event::FspAeadOpenWorkerTargetWorker9,
+        10 => Event::FspAeadOpenWorkerTargetWorker10,
+        11 => Event::FspAeadOpenWorkerTargetWorker11,
+        12 => Event::FspAeadOpenWorkerTargetWorker12,
+        13 => Event::FspAeadOpenWorkerTargetWorker13,
+        14 => Event::FspAeadOpenWorkerTargetWorker14,
+        15 => Event::FspAeadOpenWorkerTargetWorker15,
+        _ => Event::FspAeadOpenWorkerTargetWorkerOther,
     }
 }
 
