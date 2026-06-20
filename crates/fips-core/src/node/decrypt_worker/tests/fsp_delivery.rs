@@ -204,6 +204,143 @@
     }
 
     #[test]
+    fn bulk_local_fsp_push_path_batches_direct_data_outputs() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let previous_hop = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let (mut fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let fmp_key_bytes = [0x45; 32];
+        let fmp_seal = test_chacha_key(fmp_key_bytes);
+        let fmp_open = test_chacha_key(fmp_key_bytes);
+        let session_key = test_session_key(1, 9);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
+
+        let mut make_job = |fmp_counter: u64, endpoint_body: &[u8]| {
+            let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
+                0x0102_0304,
+                crate::protocol::SessionMessageType::EndpointData.to_byte(),
+                0x01,
+                endpoint_body,
+            );
+            let fsp_counter = fsp_sender.current_send_counter();
+            let fsp_header = crate::node::session_wire::build_fsp_header(
+                fsp_counter,
+                0,
+                inner_plaintext.len() as u16,
+            );
+            let fsp_ciphertext = fsp_sender
+                .encrypt_with_aad(&inner_plaintext, &fsp_header)
+                .expect("test FSP frame should encrypt");
+            let mut fsp_payload = Vec::with_capacity(fsp_header.len() + fsp_ciphertext.len());
+            fsp_payload.extend_from_slice(&fsp_header);
+            fsp_payload.extend_from_slice(&fsp_ciphertext);
+            let datagram = crate::protocol::SessionDatagram::new(
+                *source.node_addr(),
+                *local.node_addr(),
+                fsp_payload,
+            );
+            let mut fmp_plaintext = Vec::new();
+            fmp_plaintext.extend_from_slice(&0x0a0b_0c0d_u32.to_le_bytes());
+            fmp_plaintext.extend_from_slice(&datagram.encode());
+            let (wire, fmp_header) =
+                sealed_fmp_test_packet_with_plaintext(&fmp_seal, fmp_counter, 0, &fmp_plaintext);
+            let mut job = DecryptJob::new(
+                wire,
+                session_key,
+                0,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                *local.node_addr(),
+                1_000,
+                fmp_counter,
+                0,
+                fmp_header,
+                crate::node::wire::ESTABLISHED_HEADER_SIZE,
+                fallback_tx.clone(),
+            );
+            job.lane = DecryptWorkerLane::Bulk;
+            job
+        };
+
+        let first_payload = vec![0x11; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 256];
+        let second_payload = vec![0x22; DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 256];
+        let first = make_job(77, &first_payload);
+        let second = make_job(78, &second_payload);
+        let (pool, _control, _priority, _bulk) = test_worker_pool(1, 8);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(fmp_open, ReplayWindow::new(), previous_hop_peer),
+        );
+        let fsp_snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        shard.register_fsp_session(
+            0,
+            *source.node_addr(),
+            OwnedFspSessionState::from(fsp_snapshot),
+        );
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        shard.handle_bulk_job_msg(0, first, &mut plaintext_batch);
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "first local FSP direct-data output should stay in the worker return batch"
+        );
+        shard.handle_bulk_job_msg(0, second, &mut plaintext_batch);
+        assert!(
+            fallback_rx.authenticated_bulk.try_recv().is_err(),
+            "second local FSP direct-data output should still wait below the batch cap"
+        );
+
+        plaintext_batch.flush();
+        let event = fallback_rx
+            .authenticated_bulk
+            .try_recv()
+            .expect("direct data batch");
+        match &event {
+            DecryptWorkerEvent::DirectSessionDataBatch(directs) => {
+                assert_eq!(directs.len(), 2);
+                assert_eq!(directs[0].source_addr, *source.node_addr());
+                assert_eq!(directs[1].source_addr, *source.node_addr());
+                assert_eq!(directs[0].fmp.fmp_counter, 77);
+                assert_eq!(directs[1].fmp.fmp_counter, 78);
+                match &directs[0].delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.payload, first_payload);
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("first endpoint payload must not become IPv6")
+                    }
+                }
+                match &directs[1].delivery {
+                    DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                        assert_eq!(delivery.payload, second_payload);
+                    }
+                    DecryptDirectSessionDelivery::Ipv6Packet(_) => {
+                        panic!("second endpoint payload must not become IPv6")
+                    }
+                }
+            }
+            other => panic!(
+                "expected local FSP direct data batch, got {:?}",
+                other.packet_count()
+            ),
+        }
+        fallback_rx.release_dequeued_event(&event);
+    }
+
+    #[test]
     fn worker_leaves_coordinate_fsp_plaintext_for_rx_loop_owner() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();

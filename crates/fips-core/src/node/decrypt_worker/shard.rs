@@ -1161,9 +1161,243 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
+        if self
+            .fsp_sessions
+            .get(&job.source_addr)
+            .is_some_and(OwnedFspSessionState::has_single_current_epoch)
+        {
+            self.push_current_epoch_fsp_job_outputs(idx, job, plaintext_batch);
+            return;
+        }
         for output in self.handle_fsp_job_outputs(idx, job) {
             plaintext_batch.push_output(output);
         }
+    }
+
+    fn push_current_epoch_fsp_job_outputs(
+        &mut self,
+        idx: usize,
+        job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let FspDecryptJob {
+            fallback_tx,
+            mut fallback,
+            lane,
+            local_node_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu,
+            ce_flag,
+            inner_timestamp_ms,
+            fsp_payload_offset,
+            fsp_payload_len,
+            trace_enqueued_at: _,
+        } = job;
+        let Some(state) = self.fsp_sessions.get(&source_addr) else {
+            plaintext_batch.push_output(DecryptWorkerOutput {
+                fallback_tx,
+                event: DecryptWorkerEvent::Plaintext(fallback),
+                direct_delivery: None,
+            });
+            return;
+        };
+        debug_assert!(state.has_single_current_epoch());
+
+        let payload_end = fsp_payload_offset.saturating_add(fsp_payload_len);
+        let header = {
+            let Some(payload) = fallback.packet_data.get(fsp_payload_offset..payload_end) else {
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                    fallback_tx,
+                    fallback,
+                    lane,
+                    inner_timestamp_ms,
+                    previous_hop_peer,
+                ));
+                return;
+            };
+            let Some(header) = FspEncryptedHeader::parse(payload) else {
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                    fallback_tx,
+                    fallback,
+                    lane,
+                    inner_timestamp_ms,
+                    previous_hop_peer,
+                ));
+                return;
+            };
+            header
+        };
+
+        let ciphertext_offset = fsp_payload_offset + FSP_HEADER_SIZE;
+        let Some(ciphertext) = fallback.packet_data.get_mut(ciphertext_offset..payload_end) else {
+            plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                fallback_tx,
+                fallback,
+                lane,
+                inner_timestamp_ms,
+                previous_hop_peer,
+            ));
+            return;
+        };
+        let local_open_preserves_ciphertext = matches!(lane, DecryptWorkerLane::Bulk);
+        let restore_ciphertext =
+            matches!(lane, DecryptWorkerLane::Priority).then(|| ciphertext.to_vec());
+        let mut scratch_ciphertext = Vec::new();
+        let (ticket, open_result, receive_order_id) = {
+            let state = self
+                .fsp_sessions
+                .get_mut(&source_addr)
+                .expect("FSP session was checked before current-epoch local open");
+            let Some(ticket) = state.issue_fsp_receive_ticket() else {
+                match lane {
+                    DecryptWorkerLane::Priority => {
+                        record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+                    }
+                    DecryptWorkerLane::Bulk => {
+                        record_decrypt_worker_bulk_drop_count(idx, 1);
+                    }
+                }
+                return;
+            };
+            let receive_order_id = state.fsp_receive_order_id();
+            let open_result = state.current_epoch_matches(&header).then(|| {
+                let _t_fsp =
+                    crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+                if local_open_preserves_ciphertext {
+                    scratch_ciphertext.extend_from_slice(ciphertext);
+                    state.open_current_established_frame_in_place_deferred_replay(
+                        &header,
+                        &mut scratch_ciphertext,
+                    )
+                } else {
+                    state.open_current_established_frame_in_place_deferred_replay(
+                        &header, ciphertext,
+                    )
+                }
+            });
+            (ticket, open_result, receive_order_id)
+        };
+        let fallback_to_rx_loop = if matches!(open_result, Some(Err(FspOpenError::Aead))) {
+            if local_open_preserves_ciphertext {
+                true
+            } else if let Some(original) = restore_ciphertext.as_deref() {
+                let restore = &mut fallback.packet_data[ciphertext_offset..payload_end];
+                restore.copy_from_slice(original);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let mut job = FspDecryptJob {
+            fallback_tx,
+            fallback,
+            lane,
+            local_node_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu,
+            ce_flag,
+            inner_timestamp_ms,
+            fsp_payload_offset,
+            fsp_payload_len,
+            trace_enqueued_at: None,
+        };
+        let completion = match open_result {
+            Some(Ok(plaintext_len)) => {
+                if local_open_preserves_ciphertext {
+                    let plaintext = &scratch_ciphertext[..plaintext_len];
+                    let restore =
+                        &mut job.fallback.packet_data[ciphertext_offset..ciphertext_offset + plaintext_len];
+                    restore.copy_from_slice(plaintext);
+                }
+                FspOrderedCompletion::Opened {
+                    opened: FspOpenedJob {
+                        job,
+                        header,
+                        plaintext_len,
+                    },
+                    source: FspAeadCompletionSource::Local,
+                }
+            }
+            Some(Err(FspOpenError::Aead)) => {
+                let count_failure = !fallback_to_rx_loop;
+                if count_failure {
+                    crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
+                }
+                FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::Local,
+                    fallback_to_rx_loop,
+                    count_failure,
+                }
+            }
+            Some(Err(FspOpenError::Replay)) => {
+                FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::Local,
+                    fallback_to_rx_loop: false,
+                    count_failure: true,
+                }
+            }
+            None => FspOrderedCompletion::EpochMismatch {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
+            },
+        };
+
+        let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
+        let mut outputs = self.fsp_ready_outputs_with_capacity(1);
+        let completed = {
+            let state = self
+                .fsp_sessions
+                .get_mut(&source_addr)
+                .expect("FSP session was checked before current-epoch local completion");
+            state
+                .complete_ordered_fsp_open(ticket, completion, |completion| {
+                    if let Some(output) =
+                        Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
+                    {
+                        outputs.push(output);
+                    }
+                })
+                .map(|drain| (drain, state.fsp_receive_order_next_ready()))
+        };
+        let (drain, next_ready) = match completed {
+            Ok(completed) => completed,
+            Err(error) => {
+                self.recycle_fsp_ready_outputs(outputs);
+                record_fsp_aead_completion_order_error(&error);
+                debug!(
+                    worker = idx,
+                    ?error,
+                    %source_addr,
+                    "dropping invalid local ordered FSP completion"
+                );
+                return;
+            }
+        };
+        debug_assert_eq!(drain.ready, drain.accounted_ready());
+        crate::perf_profile::record_fsp_aead_completion_drain(
+            drain.ready,
+            drain.accepted,
+            drain.aead_failures,
+            drain.epoch_mismatches,
+            drain.replay_drops,
+        );
+        drain.aead_failure_sources.record();
+        drain.replay_drop_sources.record();
+        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
+            && shared.receive_order_id == receive_order_id
+        {
+            shared.mark_next_ready(next_ready);
+        }
+        self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_job_outputs(
