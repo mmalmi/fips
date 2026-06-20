@@ -287,6 +287,7 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
+    #[cfg(test)]
     fn next_hop_addr(&self) -> NodeAddr {
         self.peer_snapshot.node_addr()
     }
@@ -324,20 +325,36 @@ impl PipelinedEndpointPeerRuntimeRoute {
         )
     }
 
-    fn runtime_send_plan<'a>(
+    async fn resolve_send_target(
         &self,
-        send: &PipelinedEndpointSend<'a>,
-        transport: &crate::transport::TransportHandle,
-    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        transports: &std::collections::HashMap<
+            crate::transport::TransportId,
+            crate::transport::TransportHandle,
+        >,
+    ) -> Result<Option<PipelinedEndpointResolvedRoute>, PipelinedEndpointRuntimeSendError> {
+        let transport_id = self.transport_id();
+        let transport = transports
+            .get(&transport_id)
+            .ok_or(PipelinedEndpointRuntimeSendError::TransportNotFound(
+                transport_id,
+            ))?;
+        let crate::transport::TransportHandle::Udp(udp) = transport else {
+            return Ok(None);
+        };
+
         let route_plan = self.route_plan(transport);
-        let send_plan = route_plan
-            .build_send_plan(send)
-            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
-        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+        let target_snapshot = self.peer_snapshot.prepare_send_snapshot(false, 0);
+        let Some(send_target) =
+            PipelinedEndpointSendTarget::resolve(udp, target_snapshot.fmp_prepared()).await
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(PipelinedEndpointResolvedRoute::new(
             route_plan,
-            send_plan,
             self.peer_snapshot.clone(),
-        )
+            send_target,
+        )))
     }
 
     #[cfg(test)]
@@ -354,6 +371,44 @@ impl PipelinedEndpointPeerRuntimeRoute {
             route_plan,
             send_plan,
             self.peer_snapshot,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl PipelinedEndpointResolvedRoute {
+    fn new(
+        route_plan: PipelinedEndpointRoutePlan,
+        peer_snapshot: crate::node::PeerRuntimeRouteSnapshot,
+        send_target: PipelinedEndpointSendTarget,
+    ) -> Self {
+        Self {
+            route_plan,
+            peer_snapshot,
+            send_target,
+        }
+    }
+
+    fn next_hop_addr(&self) -> NodeAddr {
+        self.route_plan.next_hop_addr
+    }
+
+    fn send_target(&self) -> PipelinedEndpointSendTarget {
+        self.send_target.clone()
+    }
+
+    fn runtime_send_plan<'a>(
+        &self,
+        send: &PipelinedEndpointSend<'a>,
+    ) -> Result<PipelinedEndpointRuntimeSendPlan<'a>, PipelinedEndpointRuntimeSendPlanError> {
+        let send_plan = self
+            .route_plan
+            .build_send_plan(send)
+            .map_err(PipelinedEndpointRuntimeSendPlanError::SendPlan)?;
+        PipelinedEndpointRuntimeSendPlan::from_peer_route_snapshot(
+            self.route_plan,
+            send_plan,
+            self.peer_snapshot.clone(),
         )
     }
 }
@@ -575,6 +630,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.send_plan.dispatch_plan.scheduling_weight
     }
 
+    #[cfg(test)]
     fn fmp_prepared(&self) -> &crate::node::FmpSendPreparation {
         self.peer_snapshot.fmp_prepared()
     }
@@ -587,6 +643,7 @@ impl<'a> PipelinedEndpointRuntimeSendPlan<'a> {
         self.peer_snapshot.fmp_worker_send_available()
     }
 
+    #[cfg(test)]
     async fn resolve_send_target(
         &self,
         udp: &crate::transport::udp::UdpTransport,
