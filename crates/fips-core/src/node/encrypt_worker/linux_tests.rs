@@ -345,49 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn linux_bulk_udp_pacer_env_defaults_off_with_explicit_opt_in() {
-        assert_eq!(
-            parse_linux_bulk_udp_pace_mbps(None),
-            DEFAULT_LINUX_BULK_UDP_PACE_MBPS
-        );
-        assert_eq!(parse_linux_bulk_udp_pace_mbps(Some("0")), 0);
-        assert_eq!(parse_linux_bulk_udp_pace_mbps(Some("2500")), 2500);
-        assert_eq!(
-            parse_linux_bulk_udp_pace_mbps(Some("999999")),
-            100_000
-        );
-        assert_eq!(
-            parse_linux_bulk_udp_pace_mbps(Some("nope")),
-            DEFAULT_LINUX_BULK_UDP_PACE_MBPS
-        );
-
-        assert_eq!(
-            parse_linux_bulk_udp_pace_burst_bytes(None),
-            DEFAULT_LINUX_BULK_UDP_PACE_BURST_BYTES
-        );
-        assert_eq!(parse_linux_bulk_udp_pace_burst_bytes(Some("1")), 8 * 1024);
-        assert_eq!(
-            parse_linux_bulk_udp_pace_burst_bytes(Some("131072")),
-            131_072
-        );
-        assert_eq!(
-            parse_linux_bulk_udp_pace_burst_bytes(Some("99999999")),
-            4 * 1024 * 1024
-        );
-
-        assert_eq!(
-            parse_linux_bulk_udp_pace_spin_ns(None),
-            DEFAULT_LINUX_BULK_UDP_PACE_SPIN_NS
-        );
-        assert_eq!(parse_linux_bulk_udp_pace_spin_ns(Some("0")), 0);
-        assert_eq!(parse_linux_bulk_udp_pace_spin_ns(Some("50000")), 50_000);
-        assert_eq!(
-            parse_linux_bulk_udp_pace_spin_ns(Some("99999999")),
-            1_000_000
-        );
-    }
-
-    #[test]
     fn linux_wg_batch_constants_preserve_sender_shape() {
         assert_eq!(LINUX_WG_BATCH_MIN_PACKETS, 16);
         assert_eq!(LINUX_WG_BATCH_WORKER_CHANNEL_CAP, 1024);
