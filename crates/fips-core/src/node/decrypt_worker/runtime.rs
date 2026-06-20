@@ -703,10 +703,12 @@ fn handle_bulk_item(
             1
         }
         DecryptWorkerBulkItem::FspJob(job) => {
+            let item_service_started_at = crate::perf_profile::stamp();
             let item_started_at = crate::perf_profile::stamp();
             record_fsp_worker_bulk_input_head_wait(&job);
             record_fsp_worker_bulk_input_tail_wait(item_started_at);
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
+            record_decrypt_worker_bulk_item_service(item_service_started_at, 1);
             1
         }
         DecryptWorkerBulkItem::FspAeadOpen(job) => {
