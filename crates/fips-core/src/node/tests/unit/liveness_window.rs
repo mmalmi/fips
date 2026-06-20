@@ -1255,6 +1255,68 @@ async fn proven_recent_endpoint_path_uses_bounded_dead_timeout() {
 }
 
 #[tokio::test]
+async fn local_route_failure_does_not_collapse_recent_endpoint_liveness_window() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.peers.push(peer_config);
+    let session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(6),
+    );
+    node.peers.insert(peer_addr, active);
+    node.local_send_failures
+        .record_failure(peer_addr, std::time::Instant::now());
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.get_peer(&peer_addr).expect("peer").is_healthy(),
+        "a transient local route error must not shrink a recent endpoint path from the traversal liveness window to fast-dead"
+    );
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "recent endpoint path should not be reprobed until its traversal liveness window expires"
+    );
+}
+
+#[tokio::test]
 async fn recent_authenticated_fmp_receive_prevents_traversal_link_dead() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

@@ -814,11 +814,13 @@ impl Node {
     /// whose heartbeat interval has elapsed, and removes any peer that
     /// hasn't sent us a frame within the link dead timeout.
     ///
-    /// While the kernel has recently told us a `transport.send` was
-    /// locally unsendable (NetworkUnreachable / HostUnreachable /
+    /// While the kernel has recently told us a non-traversal `transport.send`
+    /// was locally unsendable (NetworkUnreachable / HostUnreachable /
     /// AddrNotAvailable), the dead-timeout collapses to
-    /// `fast_link_dead_timeout_secs`. Steady-state behavior is unchanged
-    /// because the signal is set on send-error and cleared on send-success.
+    /// `fast_link_dead_timeout_secs`. Traversal/recent endpoint paths keep
+    /// their bounded heartbeat window because stale candidate errors can be
+    /// transient and should not make a mobile/NAT path flap at the fast-dead
+    /// floor.
     pub(in crate::node) async fn check_link_heartbeats(&mut self) {
         let now = Instant::now();
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
@@ -841,11 +843,7 @@ impl Node {
                     fast_dead_timeout,
                 );
                 let effective_dead_timeout = self
-                    .traversal_path_link_dead_timeout(
-                        node_addr,
-                        local_send_failure_timeout,
-                        fast_dead_timeout,
-                    )
+                    .traversal_path_link_dead_timeout(node_addr, dead_timeout, fast_dead_timeout)
                     .unwrap_or(local_send_failure_timeout);
                 (*node_addr, effective_dead_timeout)
             })
