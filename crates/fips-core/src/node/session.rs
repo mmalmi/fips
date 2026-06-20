@@ -380,6 +380,14 @@ impl SessionEntry {
         (now_ms >= self.last_inbound_frame_ms).then(|| now_ms - self.last_inbound_frame_ms)
     }
 
+    pub(crate) fn last_authenticated_inbound_data_age_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.packets_recv == 0 {
+            return None;
+        }
+        (now_ms >= self.last_inbound_data_frame_ms)
+            .then(|| now_ms - self.last_inbound_data_frame_ms)
+    }
+
     /// Check if the session is established.
     pub(crate) fn is_established(&self) -> bool {
         self.state.as_ref().is_some_and(|s| s.is_established())
@@ -432,10 +440,13 @@ impl SessionEntry {
     /// True when current outbound traffic is not getting authenticated return
     /// traffic within the route trust window.
     pub(crate) fn has_recent_outbound_without_inbound(&self, now_ms: u64, timeout_ms: u64) -> bool {
+        let inbound_data_stale = self
+            .last_authenticated_inbound_data_age_ms(now_ms)
+            .is_none_or(|age_ms| age_ms > timeout_ms);
         self.packets_sent > 0
             && self.last_outbound_frame_ms != 0
             && now_ms.saturating_sub(self.last_outbound_frame_ms) <= timeout_ms
-            && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
+            && inbound_data_stale
     }
 
     /// Remaining DataPackets that should include COORDS_PRESENT.

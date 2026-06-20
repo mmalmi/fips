@@ -238,6 +238,19 @@ impl Node {
                         });
                         let stats = peer.link_stats();
                         let direct_probe_pending = retry_state.is_some();
+                        let last_outbound_route = self
+                            .sessions
+                            .iter()
+                            .find(|(_, session)| {
+                                session.last_outbound_next_hop() == Some(*peer.node_addr())
+                            })
+                            .map(|(dest_addr, _)| {
+                                if dest_addr == peer.node_addr() {
+                                    "direct".to_string()
+                                } else {
+                                    "fallback".to_string()
+                                }
+                            });
                         let srtt = peer.mmp().and_then(|mmp| {
                             mmp.metrics.srtt_ms().map(|value| {
                                 (value.round() as u64, mmp.metrics.srtt_age_ms(snapshot_now))
@@ -259,6 +272,7 @@ impl Node {
                             rekey_in_progress: peer.rekey_in_progress(),
                             rekey_draining: peer.is_draining(),
                             current_k_bit: Some(peer.current_k_bit()),
+                            last_outbound_route,
                             direct_probe_pending,
                             direct_probe_after_ms: retry_state.map(|state| state.retry_after_ms),
                             direct_probe_retry_count: retry_state
@@ -309,6 +323,7 @@ impl Node {
                         rekey_in_progress: false,
                         rekey_draining: false,
                         current_k_bit: None,
+                        last_outbound_route: None,
                         direct_probe_pending: true,
                         direct_probe_after_ms: Some(retry_state.retry_after_ms),
                         direct_probe_retry_count: retry_state.retry_count,

@@ -132,9 +132,9 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
     session.record_outbound_next_hop(remote_addr);
     assert!(
         session
-            .last_authenticated_inbound_age_ms(Node::now_ms())
-            .is_some_and(|age| age > 10_000),
-        "fixture should model a direct session that sent data but has no recent authenticated inbound proof"
+            .last_authenticated_inbound_data_age_ms(Node::now_ms())
+            .is_none_or(|age| age > 10_000),
+        "fixture should model a direct session that sent data but has no recent authenticated inbound data proof"
     );
 
     assert_eq!(
@@ -146,7 +146,7 @@ fn test_stale_direct_session_trust_prefers_fallback_before_loss_sample() {
 }
 
 #[test]
-fn test_stale_direct_session_trust_without_fallback_returns_no_route() {
+fn test_stale_direct_session_trust_without_fallback_uses_direct_last_resort() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let remote = Identity::generate();
     let remote_addr = *remote.node_addr();
@@ -171,13 +171,13 @@ fn test_stale_direct_session_trust_without_fallback_returns_no_route() {
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
-        None,
-        "an active one-way direct session with no known fallback should queue and discover instead of blackholing payload"
+        Some(remote_addr),
+        "an active one-way direct session with no known fallback must keep using the healthy direct route while recovery probes run"
     );
 }
 
 #[test]
-fn test_pending_direct_probe_prefers_fallback_for_non_static_path() {
+fn test_pending_direct_probe_alone_keeps_healthy_direct_over_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
     let remote = Identity::generate();
@@ -208,8 +208,48 @@ fn test_pending_direct_probe_prefers_fallback_for_non_static_path() {
     assert_eq!(
         node.find_next_hop(&remote_addr)
             .map(|peer| *peer.node_addr()),
+        Some(remote_addr),
+        "background direct-probe bookkeeping alone must not move payload off a healthy direct path"
+    );
+}
+
+#[test]
+fn test_unreturned_session_traffic_prefers_fallback_during_direct_probe() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+
+    let peer_config = crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("pending-direct-probe-unreturned".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    node.config.peers.push(peer_config.clone());
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    {
+        let now_ms = Node::now_ms();
+        let session = node.sessions.get_mut(&remote_addr).expect("session");
+        session.record_sent(512);
+        session.touch_outbound_frame(now_ms);
+        session.record_outbound_next_hop(remote_addr);
+    }
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = Node::now_ms() + 500;
+    node.retry_pending.insert(remote_addr, retry);
+
+    assert_eq!(
+        node.find_next_hop(&remote_addr)
+            .map(|peer| *peer.node_addr()),
         Some(fallback_next_hop),
-        "direct probe state means the non-static direct path is under validation; payload should use fallback"
+        "fallback should carry payload when recent direct session sends have no authenticated return"
     );
 }
 

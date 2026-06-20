@@ -40,6 +40,7 @@ fn endpoint_peer_conversion_preserves_rekey_state() {
         rekey_in_progress: true,
         rekey_draining: true,
         current_k_bit: Some(true),
+        last_outbound_route: Some("direct".to_string()),
         direct_probe_pending: false,
         direct_probe_after_ms: None,
         direct_probe_retry_count: 0,
@@ -54,6 +55,7 @@ fn endpoint_peer_conversion_preserves_rekey_state() {
     assert!(peer.rekey_in_progress);
     assert!(peer.rekey_draining);
     assert_eq!(peer.current_k_bit, Some(true));
+    assert_eq!(peer.last_outbound_route.as_deref(), Some("direct"));
     assert_eq!(peer.srtt_ms, Some(12));
     assert_eq!(peer.srtt_age_ms, Some(34));
     assert_eq!(peer.nostr_traversal_consecutive_failures, 2);

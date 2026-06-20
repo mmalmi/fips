@@ -34,6 +34,9 @@ pub struct FipsEndpointPeer {
     pub rekey_draining: bool,
     /// Current link-layer key bit for active peers.
     pub current_k_bit: Option<bool>,
+    /// Last outbound end-to-end session route: `direct` when the first hop was
+    /// the destination peer, `fallback` when traffic went through another peer.
+    pub last_outbound_route: Option<String>,
     /// Whether direct UDP probing is queued while this peer may still be
     /// reachable through a fallback transport.
     pub direct_probe_pending: bool,
@@ -80,6 +83,7 @@ impl From<NodeEndpointPeer> for FipsEndpointPeer {
             rekey_in_progress: peer.rekey_in_progress,
             rekey_draining: peer.rekey_draining,
             current_k_bit: peer.current_k_bit,
+            last_outbound_route: peer.last_outbound_route,
             direct_probe_pending: peer.direct_probe_pending,
             direct_probe_after_ms: peer.direct_probe_after_ms,
             direct_probe_retry_count: peer.direct_probe_retry_count,

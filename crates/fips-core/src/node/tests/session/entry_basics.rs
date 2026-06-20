@@ -141,6 +141,7 @@ fn test_control_frame_does_not_refresh_data_return_trust() {
         "recent outbound endpoint data without recent inbound data should expire direct trust"
     );
 
+    entry.record_recv(128);
     entry.touch_inbound_data_frame(20_000);
     assert!(
         !entry.has_recent_outbound_without_inbound(20_000, 10_000),

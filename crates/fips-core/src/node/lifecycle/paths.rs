@@ -213,6 +213,18 @@ impl Node {
 
         let static_addresses = self.static_peer_addresses(peer_config);
         if !static_addresses.is_empty() {
+            let Some(peer) = self.peers.get(peer_node_addr) else {
+                return true;
+            };
+            if !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
+                && peer.is_healthy()
+                && peer.can_send()
+            {
+                return false;
+            }
+            if peer.can_send() && !self.active_peer_needs_same_path_refresh(peer_node_addr) {
+                return false;
+            }
             return !self
                 .active_peer_candidate_is_fresh_enough_to_skip(peer_node_addr, &static_addresses);
         }
@@ -276,7 +288,20 @@ impl Node {
             .heartbeat_interval_secs
             .saturating_mul(1000)
             .max(1000);
-        peer.idle_time(Self::now_ms()) > stale_after_ms
+        let now_ms = Self::now_ms();
+        let mut idle_ms = peer.idle_time(now_ms);
+        if let Some(session_age_ms) = self
+            .sessions
+            .iter()
+            .filter(|(_, entry)| {
+                entry.is_established() && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+            })
+            .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
+            .min()
+        {
+            idle_ms = idle_ms.min(session_age_ms);
+        }
+        idle_ms > stale_after_ms
     }
 
     pub(in crate::node) fn active_peer_current_udp_candidate(

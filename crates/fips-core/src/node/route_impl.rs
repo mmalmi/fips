@@ -53,11 +53,8 @@ impl Node {
             return None;
         }
         let now_ms = Self::now_ms();
-        let direct_probe_blocks_payload = self.retry_pending.contains_key(dest_node_addr)
-            && !self.active_peer_uses_configured_static_udp_path(dest_node_addr)
-            && self.active_peer_needs_same_path_refresh(dest_node_addr);
-        let direct_session_degraded = direct_probe_blocks_payload
-            || self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
+        let direct_session_degraded =
+            self.session_direct_path_blocks_direct_payload(dest_node_addr, now_ms);
         let direct_session_untrusted = !direct_session_degraded
             && self.session_direct_path_exclusive_trust_expired(dest_node_addr, now_ms);
         let stale_traversal_direct_route = self
@@ -168,9 +165,7 @@ impl Node {
             {
                 return self.peers.get(&next_hop_addr);
             }
-            if let Some(direct_addr) = healthy_direct_route
-                && !direct_session_untrusted
-            {
+            if let Some(direct_addr) = healthy_direct_route {
                 return self.peers.get(&direct_addr);
             }
             if let Some(direct_addr) = stale_traversal_direct_route {
@@ -215,17 +210,17 @@ impl Node {
             return self.peers.get(&next_hop_addr);
         }
 
-        if explore_fallback {
-            return sendable_learned_peers.as_ref().and_then(|sendable| {
+        if explore_fallback
+            && let Some(peer) = sendable_learned_peers.as_ref().and_then(|sendable| {
                 self.learned_routes
                     .select_next_hop(dest_node_addr, now_ms, |addr| sendable.contains(addr))
                     .and_then(|next_hop_addr| self.peers.get(&next_hop_addr))
-            });
+            })
+        {
+            return Some(peer);
         }
 
-        if let Some(direct_addr) = healthy_direct_route
-            && !direct_session_untrusted
-        {
+        if let Some(direct_addr) = healthy_direct_route {
             return self.peers.get(&direct_addr);
         }
 

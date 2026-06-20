@@ -1482,6 +1482,7 @@ pub(crate) struct NodeEndpointPeer {
     pub(crate) rekey_in_progress: bool,
     pub(crate) rekey_draining: bool,
     pub(crate) current_k_bit: Option<bool>,
+    pub(crate) last_outbound_route: Option<String>,
     pub(crate) direct_probe_pending: bool,
     pub(crate) direct_probe_after_ms: Option<u64>,
     pub(crate) direct_probe_retry_count: u32,

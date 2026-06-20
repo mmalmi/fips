@@ -795,11 +795,12 @@ impl Node {
 
         if let Some(session_age_ms) = self
             .sessions
-            .get(node_addr)
-            .filter(|entry| {
+            .iter()
+            .filter(|(_, entry)| {
                 entry.is_established() && entry.last_outbound_next_hop() == Some(*node_addr)
             })
-            .and_then(|entry| entry.last_authenticated_inbound_age_ms(now_ms))
+            .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
+            .min()
         {
             quiet_for = quiet_for.min(Duration::from_millis(session_age_ms));
         }
@@ -877,6 +878,22 @@ impl Node {
                     .unwrap_or_else(|| now.duration_since(peer.session_start()))
             },
         );
+
+        let active_retry_peers = self
+            .retry_pending
+            .iter()
+            .filter_map(|(node_addr, _)| self.peers.contains_key(node_addr).then_some(*node_addr))
+            .collect::<Vec<_>>();
+        for node_addr in active_retry_peers {
+            let had_retry = self.retry_pending.contains_key(&node_addr);
+            self.clear_retry_unless_direct_refresh_needed(&node_addr);
+            if had_retry && !self.retry_pending.contains_key(&node_addr) {
+                debug!(
+                    peer = %self.peer_display_name(&node_addr),
+                    "Cleared direct-probe retry after authenticated traffic proved the active path fresh"
+                );
+            }
+        }
 
         let quiet_traversal_peers: Vec<_> = self
             .peers
