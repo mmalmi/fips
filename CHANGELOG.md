@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.70] - 2026-06-20
+
+### Fixed
+
+- Required fresh authenticated endpoint data, not session control traffic alone,
+  before treating a direct path as fresh for endpoint payload routing.
+- Bumped `fips-endpoint` to 0.3.45 so app-facing consumers pick up the
+  `fips-core` 0.3.70 direct-path freshness fix.
+
 ## [0.3.69] - 2026-06-20
 
 ### Fixed
