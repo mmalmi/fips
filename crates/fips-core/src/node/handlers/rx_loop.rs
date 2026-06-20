@@ -281,6 +281,24 @@ impl Node {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
+                // Endpoint priority is app-owned latency-sensitive traffic
+                // (ICMP, TCP ACK/SYN, tiny TCP data). On platforms without the
+                // unix encrypt-worker fast path, this branch is the outbound
+                // dataplane path, so give it an explicit turn before hot raw
+                // receive. Bulk endpoint commands intentionally remain below
+                // packet_rx.
+                Some(command) = endpoint_priority_command_rx.recv() => {
+                    let drained = self.drain_endpoint_commands(
+                        &mut endpoint_priority_command_rx,
+                        &mut endpoint_command_rx,
+                        Some(command),
+                        None,
+                        NON_PACKET_DRAIN_BUDGET,
+                    ).await;
+                    if drained > 0 {
+                        maintenance_state.record_data_activity(Instant::now());
+                    }
+                }
                 packet = packet_rx.recv() => {
                     match packet {
                         Some(p) => {
@@ -301,18 +319,6 @@ impl Node {
                             }
                         }
                         None => break, // channel closed
-                    }
-                }
-                Some(command) = endpoint_priority_command_rx.recv() => {
-                    let drained = self.drain_endpoint_commands(
-                        &mut endpoint_priority_command_rx,
-                        &mut endpoint_command_rx,
-                        Some(command),
-                        None,
-                        NON_PACKET_DRAIN_BUDGET,
-                    ).await;
-                    if drained > 0 {
-                        maintenance_state.record_data_activity(Instant::now());
                     }
                 }
                 Some(event) = decrypt_fallback_rx.bulk.recv() => {
