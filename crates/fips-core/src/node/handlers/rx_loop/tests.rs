@@ -60,6 +60,14 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
 }
 
 #[test]
+fn endpoint_priority_pre_packet_turn_stays_bounded() {
+    assert!(
+        NON_PACKET_DRAIN_BUDGET <= 16,
+        "endpoint-priority commands run before raw packet receive, so the turn must stay short"
+    );
+}
+
+#[test]
 fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     let empty = RxLoopDataDrainStats::default();
     assert_eq!(empty.total(), 0);
