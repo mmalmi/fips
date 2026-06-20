@@ -61,23 +61,6 @@ mod mac_queue_tests {
         })
     }
 
-    fn test_mac_send_flow(
-        socket: AsyncUdpSocket,
-        dest_addr: SocketAddr,
-    ) -> Arc<MacSequencedSendFlow> {
-        let send_target = SelectedSendTarget::new(socket, None, dest_addr);
-        let key = send_target.key();
-        Arc::new(MacSequencedSendFlow {
-            key,
-            send_target,
-            next_seq: std::sync::atomic::AtomicU64::new(0),
-            last_used_ms: std::sync::atomic::AtomicU64::new(0),
-            state: Mutex::new(MacSendFlowState::default()),
-            ready_cv: Condvar::new(),
-            space_cv: Condvar::new(),
-        })
-    }
-
     #[test]
     fn mac_worker_prioritizes_control_when_bulk_queue_is_full() {
         with_test_socket(|socket, cipher| {
@@ -146,66 +129,6 @@ mod mac_queue_tests {
                     "priority reserve should absorb the clean burst"
                 );
             }
-        });
-    }
-
-    #[test]
-    fn mac_completion_group_owns_flow_key_and_fifo_items() {
-        with_test_socket(|socket, _cipher| {
-            let flow_a = test_mac_send_flow(socket.clone(), "127.0.0.1:10033".parse().unwrap());
-            let flow_b = test_mac_send_flow(socket, "127.0.0.1:10034".parse().unwrap());
-            let key_a = flow_a.key;
-            let key_b = flow_b.key;
-            assert_ne!(key_a, key_b);
-
-            let mut groups = Vec::new();
-            push_mac_completion(
-                &mut groups,
-                Arc::clone(&flow_a),
-                7,
-                MacSendItem::Packet {
-                    packet: vec![1],
-                    drop_on_backpressure: true,
-                },
-            );
-            push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
-            push_mac_completion(
-                &mut groups,
-                Arc::clone(&flow_a),
-                8,
-                MacSendItem::Packet {
-                    packet: vec![2],
-                    drop_on_backpressure: false,
-                },
-            );
-
-            assert_eq!(groups.len(), 2);
-            assert_eq!(groups[0].target_key(), key_a);
-            assert_eq!(groups[1].target_key(), key_b);
-            assert_eq!(groups[0].items.len(), 2);
-            assert_eq!(groups[0].items[0].0, 7);
-            assert_eq!(groups[0].items[1].0, 8);
-            match &groups[0].items[0].1 {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                } => {
-                    assert_eq!(packet.as_slice(), &[1]);
-                    assert!(*drop_on_backpressure);
-                }
-                MacSendItem::Skip => panic!("expected first flow item to be a packet"),
-            }
-            match &groups[0].items[1].1 {
-                MacSendItem::Packet {
-                    packet,
-                    drop_on_backpressure,
-                } => {
-                    assert_eq!(packet.as_slice(), &[2]);
-                    assert!(!*drop_on_backpressure);
-                }
-                MacSendItem::Skip => panic!("expected second flow item to be a packet"),
-            }
-            assert!(matches!(groups[1].items[0].1, MacSendItem::Skip));
         });
     }
 
@@ -307,8 +230,6 @@ mod mac_queue_tests {
 
             let pool = EncryptWorkerPool {
                 senders: Arc::from(vec![tx].into_boxed_slice()),
-                macos_senders: Arc::new(MacSequencedSendFlows::default()),
-                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_done = Arc::clone(&done);
