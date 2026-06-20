@@ -435,7 +435,7 @@ impl SessionEntry {
         self.packets_sent > 0
             && self.last_outbound_frame_ms != 0
             && now_ms.saturating_sub(self.last_outbound_frame_ms) <= timeout_ms
-            && now_ms.saturating_sub(self.last_inbound_data_frame_ms) > timeout_ms
+            && now_ms.saturating_sub(self.last_inbound_frame_ms) > timeout_ms
     }
 
     /// Remaining DataPackets that should include COORDS_PRESENT.
