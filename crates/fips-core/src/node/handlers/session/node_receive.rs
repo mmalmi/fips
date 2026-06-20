@@ -456,11 +456,29 @@ impl Node {
         }
     }
 
+    fn flush_direct_session_endpoint_deliveries_from_worker(
+        &mut self,
+        deliveries: &mut Vec<EndpointDataDelivery>,
+    ) {
+        if deliveries.is_empty() {
+            return;
+        }
+        let delivered_count = deliveries.len();
+        if let Err(error) = self.deliver_endpoint_event_messages(std::mem::take(deliveries)) {
+            debug!(
+                error = %error,
+                messages = delivered_count,
+                "Failed to queue worker-decoded endpoint data batch"
+            );
+        }
+    }
+
     pub(in crate::node) async fn process_direct_session_data_batch_from_worker(
         &mut self,
         directs: Vec<DecryptDirectSessionData>,
     ) {
         let mut committed_sources = Vec::new();
+        let mut endpoint_deliveries = Vec::new();
         let clock = WorkerReceiveClock::now();
         for direct in directs {
             let Some(source_addr) = self.record_direct_session_commit_from_worker_at(
@@ -475,13 +493,24 @@ impl Node {
                 continue;
             };
 
-            self.deliver_direct_session_delivery_from_worker(
-                direct.source_addr,
-                direct.ce_flag,
-                direct.delivery,
-            );
+            match direct.delivery {
+                DecryptDirectSessionDelivery::EndpointData(delivery) => {
+                    endpoint_deliveries.push(delivery);
+                }
+                DecryptDirectSessionDelivery::Ipv6Packet(packet) => {
+                    self.flush_direct_session_endpoint_deliveries_from_worker(
+                        &mut endpoint_deliveries,
+                    );
+                    self.deliver_direct_session_delivery_from_worker(
+                        direct.source_addr,
+                        direct.ce_flag,
+                        DecryptDirectSessionDelivery::Ipv6Packet(packet),
+                    );
+                }
+            }
             Self::note_unique_flush_dest(&mut committed_sources, source_addr);
         }
+        self.flush_direct_session_endpoint_deliveries_from_worker(&mut endpoint_deliveries);
         self.flush_pending_committed_sources(&mut committed_sources)
             .await;
     }

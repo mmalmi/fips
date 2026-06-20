@@ -1008,19 +1008,24 @@
         ])
         .await;
 
-        for expected in [b"batch one".to_vec(), b"batch two".to_vec()] {
-            match endpoint_io.event_rx.try_recv().expect("endpoint event") {
-                crate::node::NodeEndpointEvent::Data {
-                    source_peer: delivered_source,
-                    payload,
-                    ..
-                } => {
-                    assert_eq!(delivered_source, source_peer);
-                    assert_eq!(payload, expected);
-                }
-                event => panic!("expected worker-decoded endpoint data event, got {event:?}"),
+        match endpoint_io
+            .event_rx
+            .try_recv()
+            .expect("endpoint event batch")
+        {
+            crate::node::NodeEndpointEvent::DataBatch { messages, .. } => {
+                assert_eq!(messages.len(), 2);
+                assert_eq!(messages[0].source_peer, source_peer);
+                assert_eq!(messages[0].payload.as_slice(), b"batch one");
+                assert_eq!(messages[1].source_peer, source_peer);
+                assert_eq!(messages[1].payload.as_slice(), b"batch two");
             }
+            event => panic!("expected worker-decoded endpoint data batch, got {event:?}"),
         }
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "worker direct-session data batch should enqueue one endpoint batch event"
+        );
         assert!(
             !node.pending_session_traffic.has_traffic_for(&source_addr),
             "batch boundary should flush pending session traffic after direct deliveries"
@@ -1030,6 +1035,133 @@
             .get(&source_addr)
             .expect("session should remain");
         assert_eq!(entry.current_highest_counter(), Some(8));
+    }
+
+    #[tokio::test]
+    async fn worker_direct_session_data_batch_flushes_endpoint_data_before_ipv6() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let previous_hop = Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let previous_hop_peer = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let source_addr = *peer.node_addr();
+        let local_addr = *local.node_addr();
+
+        let mut config = crate::config::Config::new();
+        config.tun.enabled = false;
+        let mut node = Node::new(config).expect("node");
+        let mut packet_io = node
+            .attach_external_packet_io(8)
+            .expect("external packet I/O should attach");
+        let mut endpoint_io = node
+            .attach_endpoint_data_io(8)
+            .expect("endpoint I/O should attach");
+        node.sessions
+            .insert(source_addr, established_entry(&local, &peer));
+
+        let endpoint_direct = |counter, payload: &[u8]| {
+            DecryptDirectSessionData::for_test(
+                crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                    source_peer: previous_hop_peer,
+                    transport_id: crate::transport::TransportId::new(1),
+                    remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                    packet_timestamp_ms: 2_000,
+                    packet_len: 256,
+                    fmp_counter: counter,
+                    inner_timestamp_ms: 22,
+                    fmp_flags: 0,
+                },
+                source_addr,
+                previous_hop_peer,
+                false,
+                crate::node::session::FspReceiveSync {
+                    counter,
+                    slot: EpochSlot::Current,
+                    received_k_bit: false,
+                    timestamp: 0x0102_0304,
+                    plaintext_len: FSP_INNER_HEADER_SIZE + payload.len(),
+                    ce_flag: false,
+                    path_mtu: 1_280,
+                    spin_bit: false,
+                },
+                payload.len(),
+                DecryptDirectSessionDelivery::EndpointData(EndpointDataDelivery::new(
+                    source_peer,
+                    payload.to_vec(),
+                )),
+            )
+        };
+
+        let src_ipv6 = crate::FipsAddress::from_node_addr(&source_addr)
+            .to_ipv6()
+            .octets();
+        let dst_ipv6 = crate::FipsAddress::from_node_addr(&local_addr)
+            .to_ipv6()
+            .octets();
+        let mut ipv6 = vec![0u8; 40];
+        ipv6[0] = 0x60;
+        ipv6[6] = 59;
+        ipv6[7] = 64;
+        ipv6[8..24].copy_from_slice(&src_ipv6);
+        ipv6[24..40].copy_from_slice(&dst_ipv6);
+        let ipv6_direct = DecryptDirectSessionData::for_test(
+            crate::node::decrypt_worker::DecryptFmpBookkeeping {
+                source_peer: previous_hop_peer,
+                transport_id: crate::transport::TransportId::new(1),
+                remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                packet_timestamp_ms: 2_000,
+                packet_len: 256,
+                fmp_counter: 8,
+                inner_timestamp_ms: 22,
+                fmp_flags: 0,
+            },
+            source_addr,
+            previous_hop_peer,
+            false,
+            crate::node::session::FspReceiveSync {
+                counter: 8,
+                slot: EpochSlot::Current,
+                received_k_bit: false,
+                timestamp: 0x0102_0304,
+                plaintext_len: FSP_INNER_HEADER_SIZE + ipv6.len(),
+                ce_flag: false,
+                path_mtu: 1_280,
+                spin_bit: false,
+            },
+            ipv6.len(),
+            DecryptDirectSessionDelivery::Ipv6Packet(ipv6.clone()),
+        );
+
+        node.process_direct_session_data_batch_from_worker(vec![
+            endpoint_direct(7, b"before-ipv6"),
+            ipv6_direct,
+            endpoint_direct(9, b"after-ipv6"),
+        ])
+        .await;
+
+        match endpoint_io.event_rx.try_recv().expect("first endpoint event") {
+            crate::node::NodeEndpointEvent::Data { payload, .. } => {
+                assert_eq!(payload, b"before-ipv6");
+            }
+            event => panic!("expected first contiguous endpoint data event, got {event:?}"),
+        }
+        match endpoint_io.event_rx.try_recv().expect("second endpoint event") {
+            crate::node::NodeEndpointEvent::Data { payload, .. } => {
+                assert_eq!(payload, b"after-ipv6");
+            }
+            event => panic!("expected second contiguous endpoint data event, got {event:?}"),
+        }
+        assert!(
+            endpoint_io.event_rx.try_recv().is_err(),
+            "endpoint batches separated by IPv6 must not coalesce"
+        );
+        let delivered = packet_io.inbound_rx.try_recv().expect("IPv6 packet");
+        assert_eq!(delivered.source_node_addr, source_addr);
+        assert_eq!(
+            delivered.destination,
+            crate::FipsAddress::from_node_addr(&local_addr)
+        );
+        assert_eq!(delivered.packet, ipv6);
     }
 
     #[tokio::test]
