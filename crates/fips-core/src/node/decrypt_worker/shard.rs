@@ -360,11 +360,10 @@ impl DecryptWorkerShard {
         match action {
             DecryptWorkerJobAction::Output(output) => plaintext_batch.push_output(output),
             DecryptWorkerJobAction::FspJob(job) => {
-                let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
-                record_fsp_owner_match(owner_idx == idx);
                 let job = if let Some(fsp_open_batcher) = fsp_open_batcher {
                     match self.try_prepare_fsp_bulk_open_worker_job(idx, job) {
                         Ok((open_idx, owner_idx, open_job)) => {
+                            record_fsp_owner_match(owner_idx == idx);
                             record_fsp_path_worker_open_bulk();
                             let returned =
                                 fsp_open_batcher.push(&self.pool, open_idx, owner_idx, open_job);
@@ -379,6 +378,8 @@ impl DecryptWorkerShard {
                         }
                         Err(FspOpenWorkerPrepareError::Ineligible(job)) => job,
                         Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
+                            let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                            record_fsp_owner_match(owner_idx == idx);
                             debug_assert_ne!(owner_idx, idx);
                             record_fsp_open_worker_completion_backlog_fallback();
                             drop_fsp_owner_handoff_job(job);
@@ -391,6 +392,8 @@ impl DecryptWorkerShard {
                         Err(job) => job,
                     }
                 };
+                let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                record_fsp_owner_match(owner_idx == idx);
                 if owner_idx == idx {
                     record_fsp_path_local(job.lane());
                     self.push_fsp_job_outputs(idx, job, plaintext_batch);
@@ -633,12 +636,14 @@ impl DecryptWorkerShard {
             Err(FspOpenWorkerPrepareError::Ineligible(job)) => return Err(job),
             Err(FspOpenWorkerPrepareError::OwnerCompletionBacklog(job)) => {
                 let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+                record_fsp_owner_match(owner_idx == idx);
                 debug_assert_ne!(owner_idx, idx);
                 record_fsp_open_worker_completion_backlog_fallback();
                 drop_fsp_owner_handoff_job(job);
                 return Ok(());
             }
         };
+        record_fsp_owner_match(owner_idx == idx);
         record_fsp_path_worker_open_bulk();
         match self
             .pool
