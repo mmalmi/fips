@@ -27,6 +27,19 @@
     }
 
     #[test]
+    fn decrypt_fallback_sender_clone_shares_inner_channels() {
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 4);
+        let cloned = fallback_tx.clone();
+
+        assert!(
+            Arc::ptr_eq(&fallback_tx.inner, &cloned.inner),
+            "hot-path fallback sender clones should share one channel handle"
+        );
+        assert!(fallback_tx.same_channels(&cloned));
+        assert_eq!(fallback_tx.bulk_packet_cap(), 4);
+    }
+
+    #[test]
     fn fmp_aead_helper_env_uses_platform_default_and_caps_override() {
         assert_eq!(
             fmp_aead_helper_count_from_raw(None),

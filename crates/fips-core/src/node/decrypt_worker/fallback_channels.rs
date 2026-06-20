@@ -1,5 +1,9 @@
 #[derive(Clone)]
 pub(crate) struct DecryptWorkerFallbackSender {
+    inner: Arc<DecryptWorkerFallbackSenderInner>,
+}
+
+struct DecryptWorkerFallbackSenderInner {
     priority: TokioSender<DecryptWorkerEvent>,
     bulk: TokioSender<DecryptWorkerEvent>,
     authenticated_bulk: TokioSender<DecryptWorkerEvent>,
@@ -36,12 +40,14 @@ fn decrypt_worker_fallback_channels_with_caps(
     let authenticated_bulk_queued_packets = Arc::new(AtomicUsize::new(0));
     (
         DecryptWorkerFallbackSender {
-            priority: priority_tx,
-            bulk: bulk_tx,
-            authenticated_bulk: authenticated_bulk_tx,
-            bulk_queued_packets: Arc::clone(&bulk_queued_packets),
-            authenticated_bulk_queued_packets: Arc::clone(&authenticated_bulk_queued_packets),
-            bulk_packet_cap: bulk_cap.max(1),
+            inner: Arc::new(DecryptWorkerFallbackSenderInner {
+                priority: priority_tx,
+                bulk: bulk_tx,
+                authenticated_bulk: authenticated_bulk_tx,
+                bulk_queued_packets: Arc::clone(&bulk_queued_packets),
+                authenticated_bulk_queued_packets: Arc::clone(&authenticated_bulk_queued_packets),
+                bulk_packet_cap: bulk_cap.max(1),
+            }),
         },
         DecryptWorkerFallbackReceivers {
             priority: priority_rx,
@@ -55,17 +61,29 @@ fn decrypt_worker_fallback_channels_with_caps(
 
 impl DecryptWorkerFallbackSender {
     fn same_channels(&self, other: &Self) -> bool {
-        self.priority.same_channel(&other.priority)
-            && self.bulk.same_channel(&other.bulk)
-            && self
+        Arc::ptr_eq(&self.inner, &other.inner)
+            || (self
+                .inner
+                .priority
+                .same_channel(&other.inner.priority)
+                && self.inner.bulk.same_channel(&other.inner.bulk)
+                && self
+                    .inner
                 .authenticated_bulk
-                .same_channel(&other.authenticated_bulk)
-            && Arc::ptr_eq(&self.bulk_queued_packets, &other.bulk_queued_packets)
-            && Arc::ptr_eq(
-                &self.authenticated_bulk_queued_packets,
-                &other.authenticated_bulk_queued_packets,
-            )
-            && self.bulk_packet_cap == other.bulk_packet_cap
+                    .same_channel(&other.inner.authenticated_bulk)
+                && Arc::ptr_eq(
+                    &self.inner.bulk_queued_packets,
+                    &other.inner.bulk_queued_packets,
+                )
+                && Arc::ptr_eq(
+                    &self.inner.authenticated_bulk_queued_packets,
+                    &other.inner.authenticated_bulk_queued_packets,
+                )
+                && self.inner.bulk_packet_cap == other.inner.bulk_packet_cap)
+    }
+
+    fn bulk_packet_cap(&self) -> usize {
+        self.inner.bulk_packet_cap
     }
 
     fn send(&self, mut event: DecryptWorkerEvent) -> bool {
@@ -82,7 +100,7 @@ impl DecryptWorkerFallbackSender {
             let queued_packets = self.return_bulk_queued_packets(bulk_lane);
             let Some(previous) = try_reserve_bulk_packets_with_previous(
                 queued_packets,
-                self.bulk_packet_cap,
+                self.bulk_packet_cap(),
                 packet_count,
             ) else {
                 record_decrypt_worker_return_drop_count(drop_event, lane, packet_count);
@@ -104,11 +122,11 @@ impl DecryptWorkerFallbackSender {
             }
         }
         let result = match lane {
-            DecryptWorkerLane::Priority => self.priority.try_send(event),
+            DecryptWorkerLane::Priority => self.inner.priority.try_send(event),
             DecryptWorkerLane::Bulk => match bulk_lane.expect("bulk event has return bulk lane") {
-                DecryptWorkerReturnBulkLane::Fallback => self.bulk.try_send(event),
+                DecryptWorkerReturnBulkLane::Fallback => self.inner.bulk.try_send(event),
                 DecryptWorkerReturnBulkLane::Authenticated => {
-                    self.authenticated_bulk.try_send(event)
+                    self.inner.authenticated_bulk.try_send(event)
                 }
             },
         };
@@ -136,8 +154,10 @@ impl DecryptWorkerFallbackSender {
 
     fn return_bulk_queued_packets(&self, lane: DecryptWorkerReturnBulkLane) -> &Arc<AtomicUsize> {
         match lane {
-            DecryptWorkerReturnBulkLane::Fallback => &self.bulk_queued_packets,
-            DecryptWorkerReturnBulkLane::Authenticated => &self.authenticated_bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Fallback => &self.inner.bulk_queued_packets,
+            DecryptWorkerReturnBulkLane::Authenticated => {
+                &self.inner.authenticated_bulk_queued_packets
+            }
         }
     }
 }

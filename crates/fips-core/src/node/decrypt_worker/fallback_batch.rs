@@ -33,19 +33,19 @@ impl DecryptPlaintextFallbackBatch {
 
     fn batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
         fallback_tx
-            .bulk_packet_cap
+            .bulk_packet_cap()
             .clamp(1, DECRYPT_WORKER_BULK_BATCH_MAX)
     }
 
     fn endpoint_batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
         fallback_tx
-            .bulk_packet_cap
+            .bulk_packet_cap()
             .clamp(1, DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX)
     }
 
     fn direct_batch_max_for(fallback_tx: &DecryptWorkerFallbackSender) -> usize {
         fallback_tx
-            .bulk_packet_cap
+            .bulk_packet_cap()
             .clamp(1, DECRYPT_WORKER_DIRECT_DELIVERY_BATCH_MAX)
     }
 
