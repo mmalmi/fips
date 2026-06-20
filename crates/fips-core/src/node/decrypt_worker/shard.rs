@@ -1190,9 +1190,151 @@ impl DecryptWorkerShard {
         job: FspDecryptJob,
         plaintext_batch: &mut DecryptPlaintextFallbackBatch,
     ) {
+        if self
+            .fsp_sessions
+            .get(&job.source_addr)
+            .is_some_and(OwnedFspSessionState::has_single_current_epoch)
+        {
+            self.push_current_epoch_fsp_job_outputs(idx, job, plaintext_batch);
+            return;
+        }
         for output in self.handle_fsp_job_outputs(idx, job) {
             plaintext_batch.push_output(output);
         }
+    }
+
+    fn push_current_epoch_fsp_job_outputs(
+        &mut self,
+        idx: usize,
+        mut job: FspDecryptJob,
+        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
+    ) {
+        let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
+        let header = {
+            let Some(payload) = job
+                .fallback
+                .packet_data
+                .get(job.fsp_payload_offset..payload_end)
+            else {
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                    job.fallback_tx,
+                    job.fallback,
+                    job.inner_timestamp_ms,
+                ));
+                return;
+            };
+            let Some(header) = FspEncryptedHeader::parse(payload) else {
+                plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                    job.fallback_tx,
+                    job.fallback,
+                    job.inner_timestamp_ms,
+                ));
+                return;
+            };
+            header
+        };
+        let source_addr = job.source_addr;
+        let lane = job.fallback.lane();
+        let mut drain = self.fsp_ordered_drain_with_reused_outputs(1);
+
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            self.recycle_fsp_ordered_drain_outputs(drain);
+            plaintext_batch.push_output(DecryptWorkerOutput {
+                fallback_tx: job.fallback_tx,
+                event: DecryptWorkerEvent::Plaintext(job.fallback),
+                direct_delivery: None,
+            });
+            return;
+        };
+        debug_assert!(state.has_single_current_epoch());
+
+        let Some(ticket) = state.issue_fsp_receive_ticket() else {
+            self.recycle_fsp_ordered_drain_outputs(drain);
+            match lane {
+                DecryptWorkerLane::Priority => {
+                    record_decrypt_worker_priority_drop(idx, "fsp-receive-window");
+                }
+                DecryptWorkerLane::Bulk => {
+                    record_decrypt_worker_bulk_drop_count(idx, 1);
+                }
+            }
+            return;
+        };
+        let ciphertext_offset = job.fsp_payload_offset + FSP_HEADER_SIZE;
+        let Some(ciphertext) = job.fallback.packet_data.get_mut(ciphertext_offset..payload_end)
+        else {
+            self.recycle_fsp_ordered_drain_outputs(drain);
+            plaintext_batch.push_output(self.output_for_malformed_fsp_drop(
+                job.fallback_tx,
+                job.fallback,
+                job.inner_timestamp_ms,
+            ));
+            return;
+        };
+        let open_result = state.current_epoch_matches(&header).then(|| {
+            let _t_fsp = crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
+            state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
+        });
+        let receive_order_id = state.fsp_receive_order_id();
+        let completion = match open_result {
+            Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
+                opened: FspOpenedJob {
+                    job,
+                    header,
+                    plaintext_len,
+                },
+                source: FspAeadCompletionSource::Local,
+            },
+            Some(Err(FspOpenError::Aead)) => {
+                crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
+                FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::Local,
+                }
+            }
+            Some(Err(FspOpenError::Replay)) => FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
+            },
+            None => FspOrderedCompletion::EpochMismatch {
+                job,
+                header,
+                source: FspAeadCompletionSource::Local,
+            },
+        };
+        if let Err(error) = state.complete_ordered_fsp_open_into(ticket, completion, &mut drain) {
+            self.recycle_fsp_ordered_drain_outputs(drain);
+            record_fsp_aead_completion_order_error(&error);
+            debug!(
+                worker = idx,
+                ?error,
+                %source_addr,
+                "dropping invalid local ordered FSP completion"
+            );
+            return;
+        }
+        let next_ready = state.fsp_receive_order_next_ready();
+        debug_assert_eq!(
+            drain.ready,
+            drain.accepted
+                + drain.aead_failures
+                + drain.epoch_mismatches
+                + drain.replay_drops
+                + drain.dropped
+        );
+        crate::perf_profile::record_fsp_aead_completion_drain(
+            drain.ready,
+            drain.accepted,
+            drain.aead_failures,
+            drain.epoch_mismatches,
+            drain.replay_drops,
+        );
+        drain.aead_failure_sources.record();
+        drain.replay_drop_sources.record();
+        state.mark_shared_crypto_next_ready(receive_order_id, next_ready);
+        self.push_reused_fsp_ready_completion_outputs(drain, plaintext_batch);
     }
 
     fn handle_fsp_job_outputs(
