@@ -33,9 +33,9 @@ fn percentile_uses_observed_histogram_count_when_stage_count_leads() {
 
 #[test]
 fn event_table_exposes_liveness_and_send_path_events() {
-    assert_eq!(N_EVENTS, 258);
+    assert_eq!(N_EVENTS, 264);
     assert!(
-        (Event::FmpWorkerDispatchWorker15 as usize) < N_EVENTS,
+        (Event::EndpointEventDequeueMixedLaneEvents as usize) < N_EVENTS,
         "last event must fit in the EVENTS table"
     );
     assert_eq!(
@@ -81,6 +81,30 @@ fn event_table_exposes_liveness_and_send_path_events() {
     assert_eq!(
         event_from_index(Event::FspAeadOpenWorkerBatchSingle as usize).name(),
         "fsp_aead_open_worker_batch_single"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueEvents as usize).name(),
+        "endpoint_event_dequeue_events"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMessages as usize).name(),
+        "endpoint_event_dequeue_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeuePriorityMessages as usize).name(),
+        "endpoint_event_dequeue_priority_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueBulkMessages as usize).name(),
+        "endpoint_event_dequeue_bulk_messages"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMultiMessageEvents as usize).name(),
+        "endpoint_event_dequeue_multi_message_events"
+    );
+    assert_eq!(
+        event_from_index(Event::EndpointEventDequeueMixedLaneEvents as usize).name(),
+        "endpoint_event_dequeue_mixed_lane_events"
     );
     assert_eq!(
         event_from_index(Event::EndpointEventBulkBacklogHigh as usize).name(),

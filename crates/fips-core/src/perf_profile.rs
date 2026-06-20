@@ -102,7 +102,7 @@ use format::{fmt_ns, fmt_rate_per_sec};
 
 /// Number of measurement buckets. Indices match `Stage`.
 const N_STAGES: usize = 90;
-const N_EVENTS: usize = 258;
+const N_EVENTS: usize = 264;
 const FSP_AEAD_COMPLETION_READY_BURST_MIN: usize = 32;
 const FSP_AEAD_COMPLETION_READY_LARGE_BURST_MIN: usize = 128;
 const HIST_BUCKETS: usize = 48;
@@ -824,6 +824,12 @@ pub enum Event {
     FmpWorkerDispatchWorker13 = 255,
     FmpWorkerDispatchWorker14 = 256,
     FmpWorkerDispatchWorker15 = 257,
+    EndpointEventDequeueEvents = 258,
+    EndpointEventDequeueMessages = 259,
+    EndpointEventDequeuePriorityMessages = 260,
+    EndpointEventDequeueBulkMessages = 261,
+    EndpointEventDequeueMultiMessageEvents = 262,
+    EndpointEventDequeueMixedLaneEvents = 263,
 }
 
 impl Event {
@@ -1191,6 +1197,18 @@ impl Event {
             Event::LinuxWgBatchAdmissionUnavailablePackets => {
                 "linux_wg_batch_admission_unavailable_packets"
             }
+            Event::EndpointEventDequeueEvents => "endpoint_event_dequeue_events",
+            Event::EndpointEventDequeueMessages => "endpoint_event_dequeue_messages",
+            Event::EndpointEventDequeuePriorityMessages => {
+                "endpoint_event_dequeue_priority_messages"
+            }
+            Event::EndpointEventDequeueBulkMessages => "endpoint_event_dequeue_bulk_messages",
+            Event::EndpointEventDequeueMultiMessageEvents => {
+                "endpoint_event_dequeue_multi_message_events"
+            }
+            Event::EndpointEventDequeueMixedLaneEvents => {
+                "endpoint_event_dequeue_mixed_lane_events"
+            }
         }
     }
 }
@@ -1455,6 +1473,12 @@ fn event_from_index(idx: usize) -> Event {
         255 => Event::FmpWorkerDispatchWorker13,
         256 => Event::FmpWorkerDispatchWorker14,
         257 => Event::FmpWorkerDispatchWorker15,
+        258 => Event::EndpointEventDequeueEvents,
+        259 => Event::EndpointEventDequeueMessages,
+        260 => Event::EndpointEventDequeuePriorityMessages,
+        261 => Event::EndpointEventDequeueBulkMessages,
+        262 => Event::EndpointEventDequeueMultiMessageEvents,
+        263 => Event::EndpointEventDequeueMixedLaneEvents,
         _ => unreachable!(),
     }
 }
@@ -2036,6 +2060,33 @@ pub(crate) fn record_decrypt_worker_batch_target(worker_idx: usize, packets: usi
         _ => Event::DecryptWorkerBatchWorkerOther,
     };
     record_event_count_sample(worker_event, packets as u64);
+}
+
+/// Record the shape of endpoint events consumed by the embedded application.
+///
+/// `endpoint_bulk_event_wait` says plaintext was ready before the endpoint
+/// consumer saw it; these counters show whether the consumer is receiving large
+/// grouped bulk events, tiny fragmented events, or priority/bulk mixes.
+#[inline]
+pub(crate) fn record_endpoint_event_dequeue(total: usize, priority: usize, bulk: usize) {
+    if !enabled() || total == 0 {
+        return;
+    }
+    debug_assert_eq!(
+        total,
+        priority.saturating_add(bulk),
+        "endpoint event lane counts should cover every message"
+    );
+    record_event_count_sample(Event::EndpointEventDequeueEvents, 1);
+    record_event_count_sample(Event::EndpointEventDequeueMessages, total as u64);
+    record_event_count_sample(Event::EndpointEventDequeuePriorityMessages, priority as u64);
+    record_event_count_sample(Event::EndpointEventDequeueBulkMessages, bulk as u64);
+    if total > 1 {
+        record_event_count_sample(Event::EndpointEventDequeueMultiMessageEvents, 1);
+    }
+    if priority > 0 && bulk > 0 {
+        record_event_count_sample(Event::EndpointEventDequeueMixedLaneEvents, 1);
+    }
 }
 
 /// Record the actual FSP AEAD open-worker item shape.
