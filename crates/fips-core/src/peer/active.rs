@@ -830,16 +830,19 @@ impl ActivePeer {
 
     // === Tree Updates ===
 
-    /// Update peer's tree position.
+    /// Update peer's tree position without refreshing path liveness.
+    ///
+    /// The TreeAnnounce itself may arrive over a fallback/transit FMP path.
+    /// Authenticated receive bookkeeping owns `last_seen`; topology metadata
+    /// must not make a stale direct path look alive again.
     pub fn update_tree_position(
         &mut self,
         declaration: ParentDeclaration,
         ancestry: TreeCoordinate,
-        current_time_ms: u64,
+        _current_time_ms: u64,
     ) {
         self.declaration = Some(declaration);
         self.ancestry = Some(ancestry);
-        self.last_seen = current_time_ms;
     }
 
     /// Clear peer's tree position.

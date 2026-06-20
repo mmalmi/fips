@@ -54,6 +54,7 @@ async fn active_direct_refresh_retries_process_oldest_due_peers_first() {
                 transport_id,
                 &TransportAddr::from_string(&format!("127.0.0.1:{}", 32_000 + retry_after_ms)),
             );
+            active_peer.mark_stale();
             node.peers.insert(node_addr, active_peer);
 
             let mut retry = super::super::retry::RetryState::new(peer_config.clone());
@@ -128,6 +129,8 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
     config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
     config.peers.push(peer_config.clone());
     let mut node = Node::new(config).unwrap();
+    node.peers
+        .insert(peer_addr, ActivePeer::new(peer, LinkId::new(8), 0));
     node.peers.insert(
         transit_addr,
         ActivePeer::new(transit_peer, LinkId::new(9), 0),
@@ -139,7 +142,14 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
         "fixture should start with stale discovery backoff"
     );
 
-    node.schedule_link_dead_reprobe(peer_addr, 10_000);
+    let now_ms = Node::now_ms();
+    node.schedule_link_dead_reprobe(peer_addr, now_ms);
+    node.mark_session_direct_path_degraded(peer_addr, now_ms);
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "degraded direct path should have no payload route before fallback is seeded"
+    );
+
     node.maybe_initiate_direct_path_fallback_lookup(&peer_addr)
         .await;
 
@@ -147,14 +157,24 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
         .retry_pending
         .get(&peer_addr)
         .expect("direct retry should stay queued");
+    let min_retry_after_ms = now_ms.saturating_add(500);
+    let max_retry_after_ms = now_ms.saturating_add(1_500);
     assert!(
-        (10_500..=11_500).contains(&retry.retry_after_ms),
+        (min_retry_after_ms..=max_retry_after_ms).contains(&retry.retry_after_ms),
         "link-dead fallback lookup should preserve the quick jittered direct retry, got {}",
         retry.retry_after_ms
     );
     assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "link-dead should immediately ask fallback peers for a route"
+    );
+    let fallback = node
+        .find_next_hop(&peer_addr)
+        .expect("link-dead fallback peer should be seeded as a learned route");
+    assert_eq!(
+        fallback.node_addr(),
+        &transit_addr,
+        "direct-path recovery should move payload/session warmup to transit while direct probes continue"
     );
     assert!(
         !node.discovery_backoff.is_suppressed(&peer_addr),
@@ -242,6 +262,31 @@ fn test_promote_keeps_direct_degradation_hold_for_discovered_path() {
     assert!(
         node.session_direct_path_blocks_direct_payload(&node_addr, Node::now_ms()),
         "direct refresh promotion should not instantly restore payload trust for a degraded discovered path"
+    );
+}
+
+#[test]
+fn test_promote_clears_direct_degradation_hold_for_configured_static_path() {
+    let mut node = make_node();
+    let transport_id = TransportId::new(1);
+
+    let link_id = LinkId::new(1);
+    let (conn, identity) = make_completed_connection(&mut node, link_id, transport_id, 1000);
+    let node_addr = *identity.node_addr();
+    let now_ms = Node::now_ms();
+
+    node.config.peers = vec![crate::config::PeerConfig::new(
+        identity.npub(),
+        "udp",
+        "127.0.0.1:5000",
+    )];
+    node.mark_session_direct_path_degraded(node_addr, now_ms);
+    node.add_connection(conn).unwrap();
+    node.promote_connection(link_id, identity, now_ms).unwrap();
+
+    assert!(
+        !node.session_direct_path_blocks_direct_payload(&node_addr, Node::now_ms()),
+        "configured direct refresh promotion should restore payload trust"
     );
 }
 

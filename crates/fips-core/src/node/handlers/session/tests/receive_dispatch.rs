@@ -392,7 +392,8 @@
             dispatch.receive_completion(),
             Some(SessionReceiveCompletion {
                 source_addr,
-                body_len: endpoint_payload.len()
+                body_len: endpoint_payload.len(),
+                direct_path: false,
             })
         );
         let commit = dispatch.commit();
@@ -401,7 +402,8 @@
             commit.receive_completion(),
             Some(SessionReceiveCompletion {
                 source_addr,
-                body_len: endpoint_payload.len()
+                body_len: endpoint_payload.len(),
+                direct_path: false,
             })
         );
         let local = Identity::generate();
@@ -414,6 +416,11 @@
             (0, 1, 0, endpoint_payload.len() as u64)
         );
         assert_eq!(entry.last_activity(), 0x0bad_cafe);
+        assert_eq!(
+            entry.last_inbound_data_frame_ms(),
+            1000,
+            "relayed application data must not refresh direct-path trust"
+        );
 
         let delivery = dispatch.into_endpoint_data_delivery();
         assert_eq!(delivery.source_peer, source_peer);
@@ -512,6 +519,11 @@
         assert_eq!(
             entry.traffic_counters(),
             (0, 1, 0, endpoint_payload.len() as u64)
+        );
+        assert_eq!(
+            entry.last_inbound_data_frame_ms(),
+            1000,
+            "fast relayed endpoint data must not refresh direct-path trust"
         );
         assert!(
             !node.pending_session_traffic.has_traffic_for(&source_addr),

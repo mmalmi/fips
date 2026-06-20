@@ -407,14 +407,35 @@ impl Node {
         now_ms: u64,
     ) {
         let keep_degraded = self.session_direct_path_blocks_direct_payload(dest, now_ms);
-        if keep_degraded {
+        if !keep_degraded {
+            self.clear_session_direct_path_degraded(dest);
+        } else if self.promoted_path_matches_configured_static_peer(dest) {
+            debug!(
+                peer = %self.peer_display_name(dest),
+                "Clearing direct payload degradation after configured direct-path promotion"
+            );
+            self.clear_session_direct_path_degraded(dest);
+        } else {
             debug!(
                 peer = %self.peer_display_name(dest),
                 "Keeping direct payload degraded after direct-path promotion"
             );
-        } else {
-            self.clear_session_direct_path_degraded(dest);
         }
+    }
+
+    fn promoted_path_matches_configured_static_peer(&self, peer_node_addr: &NodeAddr) -> bool {
+        self.config
+            .auto_connect_peers()
+            .filter(|peer_config| {
+                PeerIdentity::from_npub(&peer_config.npub)
+                    .ok()
+                    .is_some_and(|identity| identity.node_addr() == peer_node_addr)
+            })
+            .any(|peer_config| {
+                self.static_peer_addresses(peer_config)
+                    .iter()
+                    .any(|candidate| self.active_peer_matches_candidate(peer_node_addr, candidate))
+            })
     }
 
     pub(in crate::node) fn learn_reverse_route(

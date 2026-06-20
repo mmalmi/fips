@@ -216,13 +216,22 @@ impl Node {
             let has_configured_static_udp = static_addresses.iter().any(|candidate| {
                 candidate.seen_at_ms.is_none() && candidate.transport.eq_ignore_ascii_case("udp")
             });
+            if peer
+                .transport_id()
+                .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+            {
+                return true;
+            }
+            let same_path_refresh_needed = self.active_peer_needs_same_path_refresh(peer_node_addr);
             if peer.is_healthy()
+                && peer.can_send()
                 && !has_configured_static_udp
                 && !self.active_peer_matches_any_candidate(peer_node_addr, &static_addresses)
+                && !same_path_refresh_needed
             {
                 return false;
             }
-            if peer.can_send() && !self.active_peer_needs_same_path_refresh(peer_node_addr) {
+            if peer.can_send() && !same_path_refresh_needed {
                 return false;
             }
             return !self
