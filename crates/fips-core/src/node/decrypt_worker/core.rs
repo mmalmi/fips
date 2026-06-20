@@ -722,9 +722,14 @@ impl OwnedFspSessionState {
                     header,
                     source,
                     fallback_to_rx_loop,
+                    count_failure,
                 } => {
-                    drain.aead_failures += 1;
-                    drain.aead_failure_sources.add(source);
+                    if count_failure {
+                        drain.aead_failures += 1;
+                        drain.aead_failure_sources.add(source);
+                    } else if fallback_to_rx_loop {
+                        drain.rx_loop_fallbacks += 1;
+                    }
                     drain.outputs.push(FspReadyCompletion::AeadFailed {
                         job,
                         header,
@@ -967,6 +972,7 @@ enum FspOrderedCompletion {
         header: FspEncryptedHeader,
         source: FspAeadCompletionSource,
         fallback_to_rx_loop: bool,
+        count_failure: bool,
     },
     EpochMismatch {
         job: FspDecryptJob,
@@ -999,9 +1005,21 @@ struct FspOrderedDrain {
     epoch_mismatches: usize,
     replay_drops: usize,
     dropped: usize,
+    rx_loop_fallbacks: usize,
     aead_failure_sources: FspAeadFailureSources,
     replay_drop_sources: FspReplayDropSources,
     outputs: Vec<FspReadyCompletion>,
+}
+
+impl FspOrderedDrain {
+    fn accounted_ready(&self) -> usize {
+        self.accepted
+            + self.aead_failures
+            + self.epoch_mismatches
+            + self.replay_drops
+            + self.dropped
+            + self.rx_loop_fallbacks
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1469,6 +1487,7 @@ impl FspAeadOpenJob {
                         header: self.header,
                         source,
                         fallback_to_rx_loop: false,
+                        count_failure: true,
                     },
                 }
             }
@@ -1477,6 +1496,7 @@ impl FspAeadOpenJob {
                 header: self.header,
                 source,
                 fallback_to_rx_loop: false,
+                count_failure: true,
             },
         };
         FspAeadCompletion {

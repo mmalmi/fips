@@ -995,6 +995,7 @@
                 header,
                 source: FspAeadCompletionSource::WorkerOpen,
                 fallback_to_rx_loop: false,
+                count_failure: true,
             },
             completed_at: None,
         })

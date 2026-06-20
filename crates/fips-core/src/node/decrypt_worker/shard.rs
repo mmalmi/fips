@@ -737,14 +737,7 @@ impl DecryptWorkerShard {
             }
         };
         let next_ready = state.fsp_receive_order_next_ready();
-        debug_assert_eq!(
-            drain.ready,
-            drain.accepted
-                + drain.aead_failures
-                + drain.epoch_mismatches
-                + drain.replay_drops
-                + drain.dropped
-        );
+        debug_assert_eq!(drain.ready, drain.accounted_ready());
         crate::perf_profile::record_fsp_aead_completion_drain(
             drain.ready,
             drain.accepted,
@@ -811,6 +804,7 @@ impl DecryptWorkerShard {
         let mut epoch_mismatches = 0usize;
         let mut replay_drops = 0usize;
         let mut dropped = 0usize;
+        let mut rx_loop_fallbacks = 0usize;
         let mut aead_failure_sources = FspAeadFailureSources::default();
         let mut replay_drop_sources = FspReplayDropSources::default();
         let mut outputs = Vec::new();
@@ -852,20 +846,14 @@ impl DecryptWorkerShard {
                         continue;
                     }
                 };
-                debug_assert_eq!(
-                    drain.ready,
-                    drain.accepted
-                        + drain.aead_failures
-                        + drain.epoch_mismatches
-                        + drain.replay_drops
-                        + drain.dropped
-                );
+                debug_assert_eq!(drain.ready, drain.accounted_ready());
                 ready += drain.ready;
                 accepted += drain.accepted;
                 aead_failures += drain.aead_failures;
                 epoch_mismatches += drain.epoch_mismatches;
                 replay_drops += drain.replay_drops;
                 dropped += drain.dropped;
+                rx_loop_fallbacks += drain.rx_loop_fallbacks;
                 aead_failure_sources.add_sources(drain.aead_failure_sources);
                 replay_drop_sources.add_sources(drain.replay_drop_sources);
                 outputs.extend(drain.outputs);
@@ -875,7 +863,12 @@ impl DecryptWorkerShard {
 
         debug_assert_eq!(
             ready,
-            accepted + aead_failures + epoch_mismatches + replay_drops + dropped
+            accepted
+                + aead_failures
+                + epoch_mismatches
+                + replay_drops
+                + dropped
+                + rx_loop_fallbacks
         );
         crate::perf_profile::record_fsp_aead_completion_drain(
             ready,
@@ -1232,16 +1225,30 @@ impl DecryptWorkerShard {
                     inner_timestamp_ms,
                 )];
             };
+            let local_open_preserves_ciphertext = matches!(lane, DecryptWorkerLane::Bulk);
             let restore_ciphertext = matches!(lane, DecryptWorkerLane::Priority)
                 .then(|| ciphertext.to_vec());
+            let mut scratch_ciphertext = Vec::new();
             let open_result = state.current_epoch_matches(&header).then(|| {
                 let _t_fsp =
                     crate::perf_profile::Timer::start(crate::perf_profile::Stage::FspDecrypt);
-                state.open_current_established_frame_in_place_deferred_replay(&header, ciphertext)
+                if local_open_preserves_ciphertext {
+                    scratch_ciphertext.extend_from_slice(ciphertext);
+                    state.open_current_established_frame_in_place_deferred_replay(
+                        &header,
+                        &mut scratch_ciphertext,
+                    )
+                } else {
+                    state.open_current_established_frame_in_place_deferred_replay(
+                        &header, ciphertext,
+                    )
+                }
             });
             let fallback_to_rx_loop =
                 if matches!(open_result, Some(Err(FspOpenError::Aead))) {
-                    if let Some(original) = restore_ciphertext.as_deref() {
+                    if local_open_preserves_ciphertext {
+                        true
+                    } else if let Some(original) = restore_ciphertext.as_deref() {
                         ciphertext.copy_from_slice(original);
                         true
                     } else {
@@ -1249,8 +1256,8 @@ impl DecryptWorkerShard {
                     }
                 } else {
                     false
-                };
-            let job = FspDecryptJob {
+            };
+            let mut job = FspDecryptJob {
                 fallback_tx,
                 fallback,
                 lane,
@@ -1265,21 +1272,33 @@ impl DecryptWorkerShard {
                 trace_enqueued_at: None,
             };
             let completion = match open_result {
-                Some(Ok(plaintext_len)) => FspOrderedCompletion::Opened {
-                    opened: FspOpenedJob {
-                        job,
-                        header,
-                        plaintext_len,
-                    },
-                    source: FspAeadCompletionSource::Local,
-                },
+                Some(Ok(plaintext_len)) => {
+                    if local_open_preserves_ciphertext {
+                        let plaintext = &scratch_ciphertext[..plaintext_len];
+                        let restore = &mut job.fallback.packet_data
+                            [ciphertext_offset..ciphertext_offset + plaintext_len];
+                        restore.copy_from_slice(plaintext);
+                    }
+                    FspOrderedCompletion::Opened {
+                        opened: FspOpenedJob {
+                            job,
+                            header,
+                            plaintext_len,
+                        },
+                        source: FspAeadCompletionSource::Local,
+                    }
+                }
                 Some(Err(FspOpenError::Aead)) => {
-                    crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
+                    let count_failure = !fallback_to_rx_loop;
+                    if count_failure {
+                        crate::perf_profile::record_fsp_aead_completion_local_open_aead_failure();
+                    }
                     FspOrderedCompletion::AeadFailed {
                         job,
                         header,
                         source: FspAeadCompletionSource::Local,
                         fallback_to_rx_loop,
+                        count_failure,
                     }
                 }
                 Some(Err(FspOpenError::Replay)) => {
@@ -1288,6 +1307,7 @@ impl DecryptWorkerShard {
                         header,
                         source: FspAeadCompletionSource::Local,
                         fallback_to_rx_loop: false,
+                        count_failure: true,
                     }
                 }
                 None => FspOrderedCompletion::EpochMismatch {
@@ -1310,14 +1330,7 @@ impl DecryptWorkerShard {
                 }
             };
             let next_ready = state.fsp_receive_order_next_ready();
-            debug_assert_eq!(
-                drain.ready,
-                drain.accepted
-                    + drain.aead_failures
-                    + drain.epoch_mismatches
-                    + drain.replay_drops
-                    + drain.dropped
-            );
+            debug_assert_eq!(drain.ready, drain.accounted_ready());
             crate::perf_profile::record_fsp_aead_completion_drain(
                 drain.ready,
                 drain.accepted,

@@ -710,6 +710,101 @@
     }
 
     #[test]
+    fn fsp_recoverable_local_aead_miss_falls_back_without_hard_failure_count() {
+        let local = crate::Identity::generate();
+        let source = crate::Identity::generate();
+        let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
+        let previous_hop_peer = test_source_peer();
+        let source_addr = *source.node_addr();
+        let local_addr = *local.node_addr();
+        let (_fsp_sender, fsp_receiver) = test_xk_session_pair(&source, &local);
+        let snapshot = crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: fsp_receiver.recv_cipher_clone().unwrap(),
+                replay: fsp_receiver.recv_replay_snapshot_owned(),
+            },
+            pending: None,
+            previous: None,
+        };
+        let mut state = OwnedFspSessionState::from(snapshot);
+
+        let mut frame = crate::node::session_wire::build_fsp_header(1, 0, 1).to_vec();
+        frame.extend_from_slice(&[0u8; 16]);
+        let frame_len = frame.len();
+        let header = FspEncryptedHeader::parse(&frame).expect("test FSP header");
+        let mut packet_data = frame;
+        packet_data.resize(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1, 0);
+        let packet_len = packet_data.len();
+        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let job = FspDecryptJob {
+            fallback_tx,
+            lane: decrypt_worker_packet_lane(packet_len),
+            fallback: DecryptFallback::new(
+                previous_hop_peer,
+                TransportId::new(1),
+                crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
+                1_000,
+                packet_len,
+                10,
+                0,
+                packet_data,
+                0,
+                frame_len,
+            ),
+            local_node_addr: local_addr,
+            source_addr,
+            previous_hop_peer,
+            path_mtu: 1_280,
+            ce_flag: false,
+            inner_timestamp_ms: 0x0a0b_0c0d,
+            fsp_payload_offset: 0,
+            fsp_payload_len: frame_len,
+            trace_enqueued_at: None,
+        };
+        assert_eq!(job.lane, DecryptWorkerLane::Bulk);
+        let ticket = state
+            .issue_fsp_receive_ticket()
+            .expect("recoverable local open still reserves an ordered receive ticket");
+        let drain = state
+            .complete_ordered_fsp_open(
+                ticket,
+                FspOrderedCompletion::AeadFailed {
+                    job,
+                    header,
+                    source: FspAeadCompletionSource::Local,
+                    fallback_to_rx_loop: true,
+                    count_failure: false,
+                },
+            )
+            .expect("recoverable local AEAD miss should complete its ordered slot");
+
+        assert_eq!(drain.ready, 1);
+        assert_eq!(drain.accepted, 0);
+        assert_eq!(drain.aead_failures, 0);
+        assert_eq!(drain.rx_loop_fallbacks, 1);
+        assert_eq!(
+            drain.aead_failure_sources,
+            FspAeadFailureSources::default()
+        );
+        assert_eq!(drain.outputs.len(), 1);
+        match &drain.outputs[0] {
+            FspReadyCompletion::AeadFailed {
+                header: reported,
+                fallback_to_rx_loop,
+                ..
+            } => {
+                assert_eq!(reported.counter, 1);
+                assert!(*fallback_to_rx_loop);
+            }
+            FspReadyCompletion::Opened { .. } => {
+                panic!("recoverable AEAD miss must not authenticate an FSP frame")
+            }
+        }
+    }
+
+    #[test]
     fn fsp_ordered_completion_tracks_epoch_mismatch_separately_from_aead() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
@@ -1419,18 +1514,17 @@
         let output = shard
             .handle_job_output(0, job)
             .expect("worker job should not fail")
-            .expect("FSP AEAD failure should report back to rx_loop");
+            .expect("FSP AEAD failure should return a plaintext fallback");
         match output.event {
-            DecryptWorkerEvent::FspDecryptFailure(report) => {
-                assert_eq!(report.fmp.source_peer, previous_hop_peer);
-                assert_eq!(report.fmp.fmp_counter, fmp_counter);
-                assert_eq!(report.fmp.fmp_flags, 0);
-                assert_eq!(report.fmp.packet_timestamp_ms, 1_000);
-                assert_eq!(report.counter, fsp_counter);
-                assert!(!report.received_k_bit);
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                assert_eq!(fallback.source_peer, previous_hop_peer);
+                assert_eq!(fallback.fmp_counter, fmp_counter);
+                assert_eq!(fallback.fmp_flags, 0);
+                assert_eq!(fallback.timestamp_ms, 1_000);
+                assert_eq!(fallback.packet_len, fallback.packet_data.len());
             }
             DecryptWorkerEvent::PlaintextBatch(_)
-            | DecryptWorkerEvent::Plaintext(_)
+            | DecryptWorkerEvent::FspDecryptFailure(_)
             | DecryptWorkerEvent::AuthenticatedFmpReceive(_)
             | DecryptWorkerEvent::AuthenticatedSession(_)
             | DecryptWorkerEvent::AuthenticatedSessionBatch(_)
@@ -1439,7 +1533,7 @@
             | DecryptWorkerEvent::DirectSessionData(_)
             | DecryptWorkerEvent::DirectSessionDataBatch(_)
             | DecryptWorkerEvent::DecryptFailure(_) => {
-                panic!("expected FSP decrypt failure report")
+                panic!("expected plaintext fallback")
             }
         }
     }
