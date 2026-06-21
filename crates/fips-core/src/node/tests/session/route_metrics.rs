@@ -177,6 +177,57 @@ fn test_stale_direct_session_trust_without_fallback_uses_direct_last_resort() {
 }
 
 #[test]
+fn test_stale_discovered_direct_session_trust_without_fallback_queues_payload() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    let remote_npub = crate::encode_npub(&remote.pubkey());
+    let discovered_addr = crate::transport::TransportAddr::from_string("203.0.113.9:2121");
+
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: remote_npub,
+        alias: Some("quiet-discovered-no-fallback".to_string()),
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    node.configured_peer_send_weights =
+        crate::node::ConfiguredPeerSendWeights::from_config(&node.config);
+    add_direct_peer_for_identity(&mut node, &remote);
+    node.peers
+        .get_mut(&remote_addr)
+        .expect("direct peer")
+        .set_current_addr(TransportId::new(1), &discovered_addr);
+    install_established_session_with_mmp(&mut node, &remote);
+
+    let session = node.sessions.get_mut(&remote_addr).expect("session");
+    session.record_sent(128);
+    session.touch_outbound_frame(Node::now_ms());
+    session.record_outbound_next_hop(remote_addr);
+    assert!(
+        node.session_direct_path_exclusive_trust_expired(&remote_addr, Node::now_ms()),
+        "fixture should model active one-way endpoint data without authenticated return"
+    );
+    let configured_peer = node
+        .configured_peer(&remote_addr)
+        .expect("configured peer")
+        .clone();
+    assert!(
+        node.active_peer_uses_traversal_path(&remote_addr, &configured_peer),
+        "fixture should model a discovered endpoint hint, not an operator-pinned static path"
+    );
+
+    assert!(
+        node.find_next_hop(&remote_addr).is_none(),
+        "untrusted discovered endpoint hints should queue payload while discovery/probes recover"
+    );
+}
+
+#[test]
 fn test_pending_direct_probe_alone_keeps_healthy_direct_over_fallback() {
     let mut node = make_reply_learned_node_with_tree_peer();
     let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");

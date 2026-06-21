@@ -353,6 +353,7 @@ impl Node {
         now_ms: u64,
     ) -> bool {
         self.session_direct_path_is_degraded(dest, now_ms)
+            || self.session_direct_discovered_endpoint_trust_expired(dest, now_ms)
     }
 
     pub(in crate::node) fn session_direct_path_exclusive_trust_timeout_ms(&self) -> u64 {
@@ -386,6 +387,18 @@ impl Node {
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )
+    }
+
+    fn session_direct_discovered_endpoint_trust_expired(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_path_exclusive_trust_expired(dest, now_ms)
+            && self.configured_peer(dest).is_some_and(|peer_config| {
+                peer_config.is_auto_connect()
+                    && self.active_peer_uses_traversal_path(dest, peer_config)
+            })
     }
 
     pub(in crate::node) fn mark_session_direct_path_degraded(
