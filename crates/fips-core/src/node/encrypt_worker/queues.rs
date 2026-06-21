@@ -79,9 +79,14 @@ struct QueuedFmpSendJob {
     scheduling_weight: usize,
     #[cfg(not(target_os = "macos"))]
     fair_reservation: Option<FairAdmissionReservation>,
+    #[cfg(target_os = "macos")]
+    macos_flow: Option<Arc<MacSequencedSendFlow>>,
+    #[cfg(target_os = "macos")]
+    macos_seq: u64,
 }
 
 impl QueuedFmpSendJob {
+    #[allow(dead_code)] // used on non-macOS and by tests; macOS production uses sequenced flows.
     fn direct(job: FmpSendJob) -> Self {
         let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
         let target_key = job.send_target_key();
@@ -99,11 +104,39 @@ impl QueuedFmpSendJob {
             scheduling_weight,
             #[cfg(not(target_os = "macos"))]
             fair_reservation: None,
+            #[cfg(target_os = "macos")]
+            macos_flow: None,
+            #[cfg(target_os = "macos")]
+            macos_seq: 0,
         }
     }
 
-    fn discard_without_send(self) {
+    #[cfg(target_os = "macos")]
+    fn macos_sequenced(job: FmpSendJob, macos_flow: Arc<MacSequencedSendFlow>) -> Self {
+        let macos_seq = macos_flow.reserve_seq();
+        let lane = encrypt_worker_lane_for_endpoint_data(job.bulk_endpoint_data);
+        let target_key = job.send_target_key();
+        Self {
+            job,
+            lane,
+            target_key,
+            macos_flow: Some(macos_flow),
+            macos_seq,
+        }
+    }
+
+    fn complete_sequenced_skip(self) {
+        #[cfg(target_os = "macos")]
+        if let Some(flow) = self.macos_flow {
+            flow.complete_many(vec![(self.macos_seq, MacSendItem::Skip)]);
+            return;
+        }
+
         drop(self);
+    }
+
+    fn discard_without_send(self) {
+        self.complete_sequenced_skip();
     }
 
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

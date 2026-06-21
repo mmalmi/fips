@@ -73,7 +73,7 @@ impl SealedSendPacket {
         return Self::from_job_without_target_key(job);
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, any(test, not(target_os = "macos"))))]
     fn from_queued(queued: QueuedFmpSendJob) -> Result<Self, SealPacketError> {
         let QueuedFmpSendJob {
             job, target_key, ..
@@ -565,9 +565,22 @@ fn flush_batch_sync(
     let group_packet_capacity = batch.len();
     #[cfg(unix)]
     let mut groups: Vec<SelectedSendBatch> = Vec::with_capacity(1);
+    #[cfg(target_os = "macos")]
+    let mut macos_completions: Vec<MacCompletionGroup> = Vec::with_capacity(1);
 
     for queued in batch.drain(..) {
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
+        let QueuedFmpSendJob {
+            job,
+            target_key,
+            macos_flow,
+            macos_seq,
+            ..
+        } = queued;
+
+        #[cfg(target_os = "macos")]
+        let sealed_result = SealedSendPacket::from_job_with_target_key(job, target_key);
+        #[cfg(all(unix, not(target_os = "macos")))]
         let sealed_result = SealedSendPacket::from_queued(queued);
         #[cfg(not(unix))]
         let sealed_result = {
@@ -577,8 +590,35 @@ fn flush_batch_sync(
 
         let sealed = match sealed_result {
             Ok(sealed) => sealed,
-            Err(_) => continue,
+            Err(_) => {
+                #[cfg(target_os = "macos")]
+                if let Some(flow) = macos_flow.as_ref() {
+                    push_mac_completion(
+                        &mut macos_completions,
+                        Arc::clone(flow),
+                        macos_seq,
+                        MacSendItem::Skip,
+                    );
+                }
+                continue;
+            }
         };
+
+        #[cfg(target_os = "macos")]
+        if let Some(flow) = macos_flow {
+            let (_send_target, _target_key, _lane, wire_packet, drop_on_backpressure) =
+                sealed.into_parts();
+            push_mac_completion(
+                &mut macos_completions,
+                flow,
+                macos_seq,
+                MacSendItem::Packet {
+                    packet: wire_packet,
+                    drop_on_backpressure,
+                },
+            );
+            continue;
+        }
 
         #[cfg(unix)]
         {
@@ -601,6 +641,11 @@ fn flush_batch_sync(
             // values explicitly so the compiler sees them as used.
             let _ = sealed;
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    for group in macos_completions {
+        group.complete();
     }
 
     #[cfg(unix)]

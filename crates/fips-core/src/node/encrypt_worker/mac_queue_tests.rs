@@ -44,20 +44,57 @@ mod mac_queue_tests {
         bulk_endpoint_data: bool,
         drop_on_backpressure: bool,
     ) -> QueuedFmpSendJob {
+        QueuedFmpSendJob::direct(fmp_send_job_classified(
+            socket,
+            cipher,
+            dest_addr,
+            bulk_endpoint_data,
+            drop_on_backpressure,
+            None,
+        ))
+    }
+
+    fn fmp_send_job_classified(
+        socket: AsyncUdpSocket,
+        cipher: &LessSafeKey,
+        dest_addr: SocketAddr,
+        bulk_endpoint_data: bool,
+        drop_on_backpressure: bool,
+        endpoint_flow_dispatch_key: Option<u64>,
+    ) -> FmpSendJob {
         let mut wire_buf = Vec::with_capacity(ESTABLISHED_HEADER_SIZE + 64 + 16);
         wire_buf.extend_from_slice(&[0u8; ESTABLISHED_HEADER_SIZE]);
         wire_buf.resize(ESTABLISHED_HEADER_SIZE + 64, 0);
-        QueuedFmpSendJob::direct(FmpSendJob {
+        FmpSendJob {
             cipher: cipher.clone(),
             counter: 0,
             wire_buf,
             fsp_seal: None,
             send_target: SelectedSendTarget::new(socket, None, dest_addr),
-            endpoint_flow_dispatch_key: None,
+            endpoint_flow_dispatch_key,
             bulk_endpoint_data,
             drop_on_backpressure,
             scheduling_weight: DEFAULT_SEND_WEIGHT,
             queued_at: None,
+        }
+    }
+
+    fn test_mac_send_flow(
+        socket: AsyncUdpSocket,
+        dest_addr: SocketAddr,
+    ) -> Arc<MacSequencedSendFlow> {
+        let send_target = SelectedSendTarget::new(socket, None, dest_addr);
+        let key = MacSendFlowKey {
+            target: send_target.key(),
+        };
+        Arc::new(MacSequencedSendFlow {
+            key,
+            send_target,
+            next_seq: std::sync::atomic::AtomicU64::new(0),
+            last_used_ms: std::sync::atomic::AtomicU64::new(0),
+            state: Mutex::new(MacSendFlowState::default()),
+            ready_cv: Condvar::new(),
+            space_cv: Condvar::new(),
         })
     }
 
@@ -90,6 +127,162 @@ mod mac_queue_tests {
             assert!(!batch[0].job.drop_on_backpressure);
             assert!(batch[1].job.drop_on_backpressure);
             assert!(batch[2].job.drop_on_backpressure);
+        });
+    }
+
+    #[test]
+    fn mac_completion_group_owns_flow_key_and_fifo_items() {
+        with_test_socket(|socket, _cipher| {
+            let flow_a = test_mac_send_flow(socket.clone(), "127.0.0.1:10033".parse().unwrap());
+            let flow_b = test_mac_send_flow(socket, "127.0.0.1:10034".parse().unwrap());
+            let key_a = flow_a.key;
+            let key_b = flow_b.key;
+            assert_ne!(key_a, key_b);
+
+            let mut groups = Vec::new();
+            push_mac_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                7,
+                MacSendItem::Packet {
+                    packet: vec![1],
+                    drop_on_backpressure: true,
+                },
+            );
+            push_mac_completion(&mut groups, Arc::clone(&flow_b), 3, MacSendItem::Skip);
+            push_mac_completion(
+                &mut groups,
+                Arc::clone(&flow_a),
+                8,
+                MacSendItem::Packet {
+                    packet: vec![2],
+                    drop_on_backpressure: false,
+                },
+            );
+
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups[0].target_key(), key_a);
+            assert_eq!(groups[1].target_key(), key_b);
+            assert_eq!(groups[0].items.len(), 2);
+            assert_eq!(groups[0].items[0].0, 7);
+            assert_eq!(groups[0].items[1].0, 8);
+            match &groups[0].items[0].1 {
+                MacSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                    ..
+                } => {
+                    assert_eq!(packet.as_slice(), &[1]);
+                    assert!(*drop_on_backpressure);
+                }
+                MacSendItem::Skip => panic!("expected first flow item to be a packet"),
+            }
+            match &groups[0].items[1].1 {
+                MacSendItem::Packet {
+                    packet,
+                    drop_on_backpressure,
+                    ..
+                } => {
+                    assert_eq!(packet.as_slice(), &[2]);
+                    assert!(!*drop_on_backpressure);
+                }
+                MacSendItem::Skip => panic!("expected second flow item to be a packet"),
+            }
+            assert!(matches!(groups[1].items[0].1, MacSendItem::Skip));
+        });
+    }
+
+    #[test]
+    fn mac_ordered_sender_priority_waits_for_missing_sequence() {
+        with_test_socket(|socket, _cipher| {
+            let flow = test_mac_send_flow(socket, "127.0.0.1:10035".parse().unwrap());
+
+            flow.complete_many(vec![(
+                1,
+                MacSendItem::Packet {
+                    packet: vec![9],
+                    drop_on_backpressure: false,
+                },
+            )]);
+
+            assert!(
+                flow.take_next_ready_for_test().is_none(),
+                "priority packet must not bypass an earlier reserved FMP counter"
+            );
+
+            flow.complete_many(vec![(
+                0,
+                MacSendItem::Packet {
+                    packet: vec![1],
+                    drop_on_backpressure: true,
+                },
+            )]);
+
+            match flow.take_next_ready_for_test().expect("bulk ready") {
+                MacSendItem::Packet { packet, .. } => {
+                    assert_eq!(packet, vec![1]);
+                }
+                MacSendItem::Skip => panic!("bulk packet should drain first"),
+            }
+
+            match flow.take_next_ready_for_test().expect("priority ready") {
+                MacSendItem::Packet { packet, .. } => {
+                    assert_eq!(packet, vec![9]);
+                }
+                MacSendItem::Skip => panic!("priority packet should drain after earlier counter"),
+            }
+            assert!(flow.take_next_ready_for_test().is_none());
+        });
+    }
+
+    #[test]
+    fn mac_ordered_sender_sequences_by_send_target_not_endpoint_flow() {
+        with_test_socket(|socket, cipher| {
+            let flows = MacSequencedSendFlows::default();
+            let addr: SocketAddr = "127.0.0.1:10036".parse().unwrap();
+            let flow_a_first = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xabc),
+            );
+            let flow_a_next = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xabc),
+            );
+            let flow_b = fmp_send_job_classified(
+                socket.clone(),
+                &cipher,
+                addr,
+                true,
+                true,
+                Some(0xdef),
+            );
+            let unkeyed = fmp_send_job_classified(socket, &cipher, addr, false, false, None);
+
+            let flow_a_first = flows.flow_for(&flow_a_first);
+            let flow_a_next = flows.flow_for(&flow_a_next);
+            let flow_b = flows.flow_for(&flow_b);
+            let unkeyed = flows.flow_for(&unkeyed);
+
+            assert!(
+                Arc::ptr_eq(&flow_a_first, &flow_a_next),
+                "one endpoint flow must keep one sequence"
+            );
+            assert!(
+                Arc::ptr_eq(&flow_a_first, &flow_b),
+                "endpoint-flow fanout must not split one encrypted peer counter sequence"
+            );
+            assert!(
+                Arc::ptr_eq(&flow_a_first, &unkeyed),
+                "control and endpoint traffic for one send target share one counter sequence"
+            );
         });
     }
 
@@ -226,6 +419,8 @@ mod mac_queue_tests {
 
             let pool = EncryptWorkerPool {
                 senders: Arc::from(vec![tx].into_boxed_slice()),
+                macos_senders: Arc::new(MacSequencedSendFlows::default()),
+                next_worker: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let thread_done = Arc::clone(&done);

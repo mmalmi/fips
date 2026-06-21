@@ -168,13 +168,9 @@ async fn link_dead_direct_path_initiates_fallback_lookup_without_peer_backoff() 
         node.pending_lookups.contains_key(&peer_addr),
         "link-dead should immediately ask fallback peers for a route"
     );
-    let fallback = node
-        .find_next_hop(&peer_addr)
-        .expect("link-dead fallback peer should be seeded as a learned route");
-    assert_eq!(
-        fallback.node_addr(),
-        &transit_addr,
-        "direct-path recovery should move payload/session warmup to transit while direct probes continue"
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "direct-path recovery should wait for a verified fallback route instead of treating every lookup fanout peer as transit"
     );
     assert!(
         !node.discovery_backoff.is_suppressed(&peer_addr),

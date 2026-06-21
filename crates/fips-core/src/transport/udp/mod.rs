@@ -19,6 +19,8 @@ mod stats;
 use super::resolve_socket_addr;
 use crate::config::UdpConfig;
 use crate::discovery::is_punch_packet;
+#[cfg(target_os = "macos")]
+use socket::macos_connected_udp_enabled;
 use socket::{AsyncUdpSocket, UdpRawSocket};
 use stats::UdpStats;
 use std::collections::HashMap;
@@ -127,6 +129,10 @@ pub struct UdpTransport {
     packet_tx: PacketTx,
     /// Receive loop task handle.
     recv_task: Option<JoinHandle<()>>,
+    /// Whether macOS should put the wildcard listener in the connected-UDP
+    /// `SO_REUSEPORT` group.
+    #[cfg(target_os = "macos")]
+    connected_udp_listener_enabled: bool,
     /// Local bound address (after start).
     local_addr: Option<SocketAddr>,
     /// Transport statistics.
@@ -150,6 +156,18 @@ impl UdpTransport {
         config: UdpConfig,
         packet_tx: PacketTx,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            return Self::new_with_connected_udp_listener(
+                transport_id,
+                name,
+                config,
+                packet_tx,
+                macos_connected_udp_enabled(false),
+            );
+        }
+
+        #[cfg(not(target_os = "macos"))]
         Self {
             transport_id,
             name,
@@ -162,6 +180,29 @@ impl UdpTransport {
             stats: Arc::new(UdpStats::new()),
             #[cfg(target_os = "linux")]
             udp_rcvbuf_error_baseline: linux_udp_rcvbuf_errors().unwrap_or(0),
+            dns_cache: StdMutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn new_with_connected_udp_listener(
+        transport_id: TransportId,
+        name: Option<String>,
+        config: UdpConfig,
+        packet_tx: PacketTx,
+        connected_udp_listener_enabled: bool,
+    ) -> Self {
+        Self {
+            transport_id,
+            name,
+            config,
+            state: TransportState::Configured,
+            socket: None,
+            packet_tx,
+            recv_task: None,
+            connected_udp_listener_enabled,
+            local_addr: None,
+            stats: Arc::new(UdpStats::new()),
             dns_cache: StdMutex::new(HashMap::new()),
         }
     }
@@ -313,6 +354,14 @@ impl UdpTransport {
             .map_err(|e| TransportError::StartFailed(format!("invalid bind address: {}", e)))?;
 
         // Create, bind, and configure UDP socket
+        #[cfg(target_os = "macos")]
+        let raw_socket = UdpRawSocket::open_with_connected_udp_listener(
+            bind_addr,
+            self.config.recv_buf_size(),
+            self.config.send_buf_size(),
+            self.connected_udp_listener_enabled,
+        )?;
+        #[cfg(not(target_os = "macos"))]
         let raw_socket = UdpRawSocket::open(
             bind_addr,
             self.config.recv_buf_size(),
@@ -374,6 +423,14 @@ impl UdpTransport {
 
         self.state = TransportState::Starting;
 
+        #[cfg(target_os = "macos")]
+        let raw_socket = UdpRawSocket::adopt_with_connected_udp_listener(
+            socket,
+            self.config.recv_buf_size(),
+            self.config.send_buf_size(),
+            self.connected_udp_listener_enabled,
+        )?;
+        #[cfg(not(target_os = "macos"))]
         let raw_socket = UdpRawSocket::adopt(
             socket,
             self.config.recv_buf_size(),

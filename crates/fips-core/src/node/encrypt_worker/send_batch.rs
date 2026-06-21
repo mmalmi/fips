@@ -7,7 +7,8 @@ use crossbeam_channel::{Receiver, SendError, Sender, TrySendError, bounded};
 use ring::aead::{Aad, LessSafeKey, Nonce};
 #[cfg(target_os = "macos")]
 use std::cell::RefCell;
-#[cfg(target_os = "linux")]
+#[cfg(target_os = "macos")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::collections::VecDeque;
