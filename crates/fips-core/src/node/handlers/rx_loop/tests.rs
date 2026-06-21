@@ -2,7 +2,7 @@ use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
     NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    fallback_drain_plan, non_packet_drain_budget, transport_bulk_needs_post_auth_packet_turn,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -51,18 +51,22 @@ fn fallback_drain_plan_stays_bounded_under_return_pressure() {
 }
 
 #[test]
-fn authenticated_bulk_yields_to_transport_pressure() {
-    assert!(authenticated_bulk_preempts_packet_rx(0, 0));
+fn authenticated_bulk_yields_to_ready_transport_priority() {
+    assert!(authenticated_bulk_preempts_packet_rx(0));
     assert!(
-        authenticated_bulk_preempts_packet_rx(0, super::budget::FALLBACK_INTERLEAVE_EVERY - 1),
-        "small transport bulk backlog should not strand authenticated delivery until the next packet turn"
-    );
-    assert!(
-        !authenticated_bulk_preempts_packet_rx(1, 0),
+        !authenticated_bulk_preempts_packet_rx(1),
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
     );
+}
+
+#[test]
+fn authenticated_bulk_turn_drains_transport_bulk_under_pressure() {
+    assert!(!transport_bulk_needs_post_auth_packet_turn(0));
+    assert!(!transport_bulk_needs_post_auth_packet_turn(
+        FALLBACK_INTERLEAVE_EVERY - 1
+    ));
     assert!(
-        !authenticated_bulk_preempts_packet_rx(0, super::budget::FALLBACK_INTERLEAVE_EVERY),
+        transport_bulk_needs_post_auth_packet_turn(FALLBACK_INTERLEAVE_EVERY),
         "a full interleave interval of transport bulk should cut ahead; packet drains interleave authenticated delivery"
     );
 }
