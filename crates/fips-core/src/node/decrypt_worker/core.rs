@@ -666,74 +666,131 @@ impl OwnedFspSessionState {
         let mut drain = FspOrderedDrain::default();
         let ready_count = self
             .fsp_receive_order
-            .complete(ticket, completion, |completion| match completion {
-                FspOrderedCompletion::Opened { opened, source } => {
-                    match Self::accept_opened_current_established_frame_for(
-                        current,
-                        current_k_bit,
-                        &opened.header,
-                    ) {
-                        Ok(slot) => {
-                            drain.accepted += 1;
-                            on_output(FspReadyCompletion::Opened {
-                                opened,
-                                slot,
-                                source_peer,
-                            });
-                        }
-                        Err(FspOpenError::Replay) => {
-                            drain.replay_drops += 1;
-                            drain.replay_drop_sources.add(source);
-                            crate::perf_profile::record_event(
-                                crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
-                            );
-                        }
-                        Err(FspOpenError::Aead) => {
-                            drain.aead_failures += 1;
-                            drain.aead_failure_sources.add(source);
-                            crate::perf_profile::record_fsp_aead_completion_accept_kbit_mismatch();
-                        }
-                    }
-                }
-                FspOrderedCompletion::AeadFailed {
-                    job,
-                    header,
-                    source,
-                    fallback_to_rx_loop,
-                    count_failure,
-                } => {
-                    if count_failure {
-                        drain.aead_failures += 1;
-                        drain.aead_failure_sources.add(source);
-                    } else if fallback_to_rx_loop {
-                        drain.rx_loop_fallbacks += 1;
-                    }
-                    on_output(FspReadyCompletion::AeadFailed {
-                        job,
-                        header,
-                        fallback_to_rx_loop,
-                    });
-                }
-                FspOrderedCompletion::EpochMismatch {
-                    job,
-                    header,
-                    source,
-                } => {
-                    let _ = source;
-                    drain.epoch_mismatches += 1;
-                    on_output(FspReadyCompletion::AeadFailed {
-                        job,
-                        header,
-                        fallback_to_rx_loop: true,
-                    });
-                }
-                FspOrderedCompletion::Dropped { source } => {
-                    let _ = source;
-                    drain.dropped += 1;
-                }
+            .complete(ticket, completion, |completion| {
+                Self::apply_ready_fsp_ordered_completion(
+                    current_k_bit,
+                    current,
+                    source_peer,
+                    completion,
+                    &mut drain,
+                    &mut on_output,
+                )
             })?;
         drain.ready = ready_count;
         Ok(drain)
+    }
+
+    fn can_complete_ordered_fsp_open_ready_batch(
+        &self,
+        completions: &[FspAeadCompletion],
+    ) -> bool {
+        self.fsp_receive_order.can_complete_ready_contiguous(
+            completions
+                .iter()
+                .map(|completion| completion.ticket),
+        )
+    }
+
+    fn complete_ordered_fsp_open_ready_batch(
+        &mut self,
+        completions: Vec<FspAeadCompletion>,
+        mut on_output: impl FnMut(FspReadyCompletion),
+    ) -> FspOrderedDrain {
+        debug_assert!(self.can_complete_ordered_fsp_open_ready_batch(&completions));
+        let ready = completions.len();
+        let current = &mut self.current;
+        let current_k_bit = self.current_k_bit;
+        let source_peer = self.source_peer;
+        let mut drain = FspOrderedDrain::default();
+        for completion in completions {
+            Self::apply_ready_fsp_ordered_completion(
+                current_k_bit,
+                current,
+                source_peer,
+                completion.result,
+                &mut drain,
+                &mut on_output,
+            );
+        }
+        self.fsp_receive_order.advance_ready_contiguous(ready);
+        drain.ready = ready;
+        drain
+    }
+
+    fn apply_ready_fsp_ordered_completion(
+        current_k_bit: bool,
+        current: &mut OwnedFspEpochState,
+        source_peer: PeerIdentity,
+        completion: FspOrderedCompletion,
+        drain: &mut FspOrderedDrain,
+        on_output: &mut impl FnMut(FspReadyCompletion),
+    ) {
+        match completion {
+            FspOrderedCompletion::Opened { opened, source } => {
+                match Self::accept_opened_current_established_frame_for(
+                    current,
+                    current_k_bit,
+                    &opened.header,
+                ) {
+                    Ok(slot) => {
+                        drain.accepted += 1;
+                        on_output(FspReadyCompletion::Opened {
+                            opened,
+                            slot,
+                            source_peer,
+                        });
+                    }
+                    Err(FspOpenError::Replay) => {
+                        drain.replay_drops += 1;
+                        drain.replay_drop_sources.add(source);
+                        crate::perf_profile::record_event(
+                            crate::perf_profile::Event::DecryptFspWorkerReplayDropped,
+                        );
+                    }
+                    Err(FspOpenError::Aead) => {
+                        drain.aead_failures += 1;
+                        drain.aead_failure_sources.add(source);
+                        crate::perf_profile::record_fsp_aead_completion_accept_kbit_mismatch();
+                    }
+                }
+            }
+            FspOrderedCompletion::AeadFailed {
+                job,
+                header,
+                source,
+                fallback_to_rx_loop,
+                count_failure,
+            } => {
+                if count_failure {
+                    drain.aead_failures += 1;
+                    drain.aead_failure_sources.add(source);
+                } else if fallback_to_rx_loop {
+                    drain.rx_loop_fallbacks += 1;
+                }
+                on_output(FspReadyCompletion::AeadFailed {
+                    job,
+                    header,
+                    fallback_to_rx_loop,
+                });
+            }
+            FspOrderedCompletion::EpochMismatch {
+                job,
+                header,
+                source,
+            } => {
+                let _ = source;
+                drain.epoch_mismatches += 1;
+                on_output(FspReadyCompletion::AeadFailed {
+                    job,
+                    header,
+                    fallback_to_rx_loop: true,
+                });
+            }
+            FspOrderedCompletion::Dropped { source } => {
+                let _ = source;
+                drain.dropped += 1;
+            }
+        }
     }
 }
 
@@ -815,6 +872,15 @@ impl<T> OrderedCompletionBuffer<T> {
 
     fn next_ready(&self) -> u64 {
         self.next_ready
+    }
+
+    fn pending_is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn advance_next_ready_by(&mut self, count: usize) {
+        debug_assert!(self.pending.is_empty());
+        self.next_ready = self.next_ready.saturating_add(count as u64);
     }
 
     fn pending_limit(&self) -> usize {
@@ -931,6 +997,28 @@ impl FspReceiveOrder {
         on_ready: impl FnMut(FspOrderedCompletion),
     ) -> Result<usize, OrderedCompletionError> {
         self.completions.complete(ticket, completion, on_ready)
+    }
+
+    fn can_complete_ready_contiguous(
+        &self,
+        tickets: impl Iterator<Item = FspReceiveTicket>,
+    ) -> bool {
+        if !self.completions.pending_is_empty() {
+            return false;
+        }
+        let next_ready = self.completions.next_ready();
+        let mut saw_ticket = false;
+        for (offset, ticket) in tickets.enumerate() {
+            saw_ticket = true;
+            if ticket.sequence != next_ready.saturating_add(offset as u64) {
+                return false;
+            }
+        }
+        saw_ticket
+    }
+
+    fn advance_ready_contiguous(&mut self, count: usize) {
+        self.completions.advance_next_ready_by(count);
     }
 }
 
