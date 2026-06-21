@@ -411,6 +411,86 @@ async fn endpoint_session_traffic_keeps_traversal_liveness_fresh() {
 }
 
 #[tokio::test]
+async fn endpoint_session_traffic_from_direct_peer_keeps_liveness_fresh_without_route_marker() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config);
+    let link_session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let endpoint_session = make_test_fmp_session(&local_identity, &peer_identity, [3; 8], [4; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        link_session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        TransportId::new(1),
+        crate::transport::TransportAddr::from_string("203.0.113.9:2121"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now() - std::time::Duration::from_secs(11),
+    );
+    node.peers.insert(peer_addr, active);
+
+    let mut session = crate::node::session::SessionEntry::new(
+        peer_addr,
+        peer_identity.pubkey_full(),
+        crate::node::session::EndToEndState::Established(endpoint_session),
+        1_000,
+        true,
+    );
+    session.record_recv(512);
+    session.touch_inbound_data_frame(Node::now_ms());
+    node.sessions.insert(peer_addr, session);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "authenticated direct endpoint data should keep the peer fresh even when next-hop bookkeeping is missing"
+    );
+    assert!(
+        !node.pending_lookups.contains_key(&peer_addr),
+        "fresh direct endpoint data should not start fallback discovery"
+    );
+    let direct = node.find_next_hop(&peer_addr).expect("direct route");
+    assert_eq!(
+        direct.node_addr(),
+        &peer_addr,
+        "direct payload route should stay eligible while authenticated direct endpoint data is fresh"
+    );
+}
+
+#[tokio::test]
 async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::SessionEntry;
 
 impl Node {
     pub(in crate::node) async fn try_peer_addresses(
@@ -280,6 +281,15 @@ impl Node {
         }
     }
 
+    pub(in crate::node) fn session_tracks_direct_peer_path(
+        dest_addr: &NodeAddr,
+        entry: &SessionEntry,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        entry.last_outbound_next_hop() == Some(*peer_node_addr)
+            || (dest_addr == peer_node_addr && entry.last_outbound_next_hop().is_none())
+    }
+
     pub(in crate::node) fn active_peer_needs_same_path_refresh(
         &self,
         peer_node_addr: &NodeAddr,
@@ -288,9 +298,9 @@ impl Node {
             return false;
         };
         let now_ms = Self::now_ms();
-        if self.sessions.iter().any(|(_, entry)| {
+        if self.sessions.iter().any(|(dest_addr, entry)| {
             entry.is_established()
-                && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+                && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
                 && entry.has_recent_outbound_without_inbound(
                     now_ms,
                     self.session_direct_path_exclusive_trust_timeout_ms(),
@@ -308,8 +318,9 @@ impl Node {
         if let Some(session_age_ms) = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                entry.is_established() && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+            .filter(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
             })
             .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
             .min()
