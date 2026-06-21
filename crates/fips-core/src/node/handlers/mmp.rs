@@ -998,10 +998,9 @@ impl Node {
                 continue;
             }
 
-            self.mark_session_direct_path_degraded(node_addr, now_ms);
             debug!(
                 peer = %self.peer_display_name(&node_addr),
-                "Warming fallback lookup and degrading direct payload route for path with fresh control but unreturned endpoint data"
+                "Warming fallback lookup for path with fresh control but unreturned endpoint data"
             );
             if self.retry_pending.contains_key(&node_addr) {
                 self.maybe_initiate_direct_path_fallback_lookup(&node_addr)

@@ -777,17 +777,6 @@ impl Node {
             return;
         }
 
-        if self.config.node.routing.mode == RoutingMode::ReplyLearned {
-            for fallback_peer in &fallback_peers {
-                self.learn_reverse_route(*dest, *fallback_peer);
-            }
-            debug!(
-                target_node = %self.peer_display_name(dest),
-                fallback_peer_count = fallback_peers.len(),
-                "Seeded direct-path fallback learned routes"
-            );
-        }
-
         self.discovery_backoff.record_success(dest);
 
         if self.find_next_hop(dest).is_some()
