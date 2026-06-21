@@ -1271,6 +1271,63 @@
     }
 
     #[test]
+    fn fsp_owner_completion_marks_attached_shared_ready_progress() {
+        let source_peer = test_source_peer();
+        let cipher = test_chacha_key([0x56; 32]);
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher,
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+
+        let receive_window = fsp_receive_window();
+        let first_ticket = shared
+            .try_issue_ticket()
+            .expect("shared worker-open window should admit the first ticket");
+        for expected in 1..receive_window as u64 {
+            let ticket = shared
+                .try_issue_ticket()
+                .expect("shared worker-open window should admit initial tickets");
+            assert_eq!(ticket.sequence, expected);
+        }
+        assert!(
+            shared.try_issue_ticket().is_none(),
+            "full shared window should block further worker-open tickets"
+        );
+
+        let drain = state
+            .complete_ordered_fsp_open_for_test(
+                first_ticket,
+                FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+            )
+            .expect("oldest completion should fit the receive-order window");
+        assert_eq!(drain.ready, 1);
+        assert!(
+            shared.try_issue_ticket().is_none(),
+            "ordered-owner progress should not reach shared open admission until it is marked"
+        );
+
+        state.mark_shared_crypto_ready_progress();
+        let reopened = shared
+            .try_issue_ticket()
+            .expect("owner progress should reopen shared worker-open admission");
+        assert_eq!(reopened.sequence, receive_window as u64);
+    }
+
+    #[test]
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();

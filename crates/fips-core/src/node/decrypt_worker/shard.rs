@@ -752,9 +752,9 @@ impl DecryptWorkerShard {
                         outputs.push(output);
                     }
                 })
-                .map(|drain| (drain, state.fsp_receive_order_next_ready()))
+                .inspect(|_| state.mark_shared_crypto_ready_progress())
         };
-        let (drain, next_ready) = match completed {
+        let drain = match completed {
             Ok(completed) => completed,
             Err(error) => {
                 self.recycle_fsp_ready_outputs(outputs);
@@ -770,11 +770,6 @@ impl DecryptWorkerShard {
             }
         };
         record_fsp_ordered_drain(&drain);
-        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-            && shared.receive_order_id == receive_order_id
-        {
-            shared.mark_next_ready(next_ready);
-        }
         self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
@@ -842,7 +837,6 @@ impl DecryptWorkerShard {
         let mut total_drain = FspOrderedDrain::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
         let mut outputs = self.fsp_ready_outputs_with_capacity(completions.len());
-        let next_ready;
         {
             let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
                 self.recycle_fsp_ready_outputs(outputs);
@@ -891,15 +885,10 @@ impl DecryptWorkerShard {
                 debug_assert_eq!(drain.ready, drain.accounted_ready());
                 total_drain.add(drain);
             }
-            next_ready = state.fsp_receive_order_next_ready();
+            state.mark_shared_crypto_ready_progress();
         }
 
         record_fsp_ordered_drain(&total_drain);
-        if let Some(shared) = self.pool.fsp_aead_session(&source_addr)
-            && shared.receive_order_id == receive_order_id
-        {
-            shared.mark_next_ready(next_ready);
-        }
         self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
