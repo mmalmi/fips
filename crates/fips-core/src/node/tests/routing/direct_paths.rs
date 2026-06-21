@@ -183,7 +183,7 @@ fn test_reply_learned_moves_configured_static_direct_peer_when_session_degraded(
 }
 
 #[test]
-fn test_reply_learned_treats_configured_static_udp_as_hint_when_fallback_is_better() {
+fn test_reply_learned_keeps_configured_static_direct_peer_over_lower_cost_fallback() {
     let mut config = Config::new();
     config.node.routing.mode = RoutingMode::ReplyLearned;
     let mut node = Node::new(config).unwrap();
@@ -240,11 +240,11 @@ fn test_reply_learned_treats_configured_static_udp_as_hint_when_fallback_is_bett
         );
     }
 
-    let route = node.find_next_hop(&dest_addr).expect("fallback route");
+    let route = node.find_next_hop(&dest_addr).expect("direct route");
     assert_eq!(
         route.node_addr(),
-        &mesh_next_hop,
-        "a configured static UDP address is a candidate hint; a much better learned fallback should carry payload"
+        &dest_addr,
+        "a healthy operator-configured static UDP path must not silently move payload onto a learned fallback"
     );
 }
 

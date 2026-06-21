@@ -828,7 +828,6 @@ impl Node {
         self.configured_peer_send_weights.peer_config(peer_addr)
     }
 
-    #[cfg(test)]
     pub(in crate::node) fn active_peer_uses_configured_static_udp_path(
         &self,
         peer_addr: &NodeAddr,
