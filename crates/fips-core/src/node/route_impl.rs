@@ -26,10 +26,9 @@ impl Node {
     /// Routing priority:
     /// 1. Destination is self → `None` (local delivery)
     /// 2. Destination is a healthy direct peer → that peer. A known fallback
-    ///    next-hop may beat a non-static direct path when it has a meaningful
-    ///    link-quality advantage; operator-configured static UDP peers stay
-    ///    pinned to direct while healthy and endpoint traffic is getting
-    ///    authenticated return traffic.
+    ///    next-hop may beat direct when it has a meaningful link-quality
+    ///    advantage; configured UDP addresses are dial hints, not exclusive
+    ///    payload-route authority.
     /// 3. Reply-learned routes in `reply_learned` mode. These are locally
     ///    observed reverse paths, selected with weighted multipath plus
     ///    periodic coordinate/tree exploration.
@@ -280,9 +279,6 @@ impl Node {
         let Some(direct) = self.peers.get(&direct_addr) else {
             return true;
         };
-        if self.active_peer_uses_configured_static_udp_path(&direct_addr) {
-            return false;
-        }
         let Some(candidate) = self.peers.get(&candidate_addr) else {
             return false;
         };
