@@ -60,7 +60,7 @@ impl Node {
         let stale_traversal_direct_route = self
             .peers
             .get(dest_node_addr)
-            .filter(|peer| !peer.is_healthy() && peer.can_send())
+            .filter(|peer| !direct_session_degraded && !peer.is_healthy() && peer.can_send())
             .and_then(|_| {
                 self.configured_peer(dest_node_addr)
                     .and_then(|peer_config| {
