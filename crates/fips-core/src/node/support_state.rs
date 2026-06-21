@@ -60,6 +60,12 @@ pub(in crate::node) struct SessionDirectDegradation {
 }
 
 impl SessionDirectDegradation {
+    pub(in crate::node) fn is_degraded_at(&self, dest: &NodeAddr, now_ms: u64) -> bool {
+        self.degraded_until_ms
+            .get(dest)
+            .is_some_and(|until_ms| *until_ms > now_ms)
+    }
+
     pub(in crate::node) fn is_degraded(&mut self, dest: &NodeAddr, now_ms: u64) -> bool {
         match self.degraded_until_ms.get(dest).copied() {
             Some(until_ms) if until_ms > now_ms => true,

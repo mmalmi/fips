@@ -366,6 +366,14 @@ impl Node {
         self.session_direct_degradation.is_degraded(dest, now_ms)
     }
 
+    pub(in crate::node) fn session_direct_path_degradation_active(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.session_direct_degradation.is_degraded_at(dest, now_ms)
+    }
+
     pub(in crate::node) fn session_direct_path_blocks_direct_payload(
         &mut self,
         dest: &NodeAddr,

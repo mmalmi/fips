@@ -209,6 +209,10 @@ impl Node {
             return false;
         };
 
+        if self.session_direct_path_degradation_active(peer_node_addr, Self::now_ms()) {
+            return true;
+        }
+
         let static_addresses = self.static_peer_addresses(peer_config);
         if !static_addresses.is_empty() {
             let Some(peer) = self.peers.get(peer_node_addr) else {
