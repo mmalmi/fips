@@ -386,6 +386,17 @@ impl Node {
         // Create UDP transport instances
         for (name, udp_config) in udp_instances {
             let transport_id = self.allocate_transport_id();
+            #[cfg(target_os = "macos")]
+            let udp = UdpTransport::new_with_connected_udp_listener(
+                transport_id,
+                name,
+                udp_config,
+                packet_tx.clone(),
+                crate::transport::udp::socket::macos_connected_udp_enabled(
+                    self.config.node.connected_udp.enabled,
+                ),
+            );
+            #[cfg(not(target_os = "macos"))]
             let udp = UdpTransport::new(transport_id, name, udp_config, packet_tx.clone());
             transports.push(TransportHandle::Udp(udp));
         }

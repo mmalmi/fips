@@ -19,6 +19,23 @@ use std::sync::Arc;
 #[cfg(unix)]
 use tracing::warn;
 
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_connected_udp_enabled(config_enabled: bool) -> bool {
+    macos_env_flag("FIPS_CONNECTED_UDP")
+        .or_else(|| macos_env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
+        .unwrap_or(config_enabled)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_env_flag(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 /// Maximum number of datagrams a single `recvmmsg` syscall pulls from the
 /// kernel queue. Shared with the higher-level UDP receive loops so all Linux
 /// packet ingress paths use the same batch width.
@@ -68,10 +85,41 @@ mod platform {
         ///
         /// Enables `SO_RXQ_OVFL` for kernel drop counting (non-fatal if
         /// unsupported). Sets non-blocking mode for async integration.
+        #[cfg_attr(target_os = "macos", allow(dead_code))]
         pub fn open(
             bind_addr: SocketAddr,
             recv_buf_size: usize,
             send_buf_size: usize,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(
+                bind_addr,
+                recv_buf_size,
+                send_buf_size,
+                #[cfg(target_os = "macos")]
+                super::macos_connected_udp_enabled(false),
+            )
+        }
+
+        #[cfg(target_os = "macos")]
+        pub(crate) fn open_with_connected_udp_listener(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            connected_udp_listener_enabled: bool,
+        ) -> Result<Self, TransportError> {
+            Self::open_inner(
+                bind_addr,
+                recv_buf_size,
+                send_buf_size,
+                connected_udp_listener_enabled,
+            )
+        }
+
+        fn open_inner(
+            bind_addr: SocketAddr,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            #[cfg(target_os = "macos")] connected_udp_listener_enabled: bool,
         ) -> Result<Self, TransportError> {
             let domain = if bind_addr.is_ipv4() {
                 Domain::IPV4
@@ -100,7 +148,7 @@ mod platform {
                 let _ = sock.set_reuse_address(true);
             }
             #[cfg(target_os = "macos")]
-            if macos_connected_udp_listener_enabled() {
+            if connected_udp_listener_enabled {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
@@ -232,10 +280,41 @@ mod platform {
         /// Adopt an existing bound UDP socket.
         ///
         /// This preserves socket identity/NAT mapping created by bootstrap code.
+        #[cfg_attr(target_os = "macos", allow(dead_code))]
         pub fn adopt(
             socket: std::net::UdpSocket,
             recv_buf_size: usize,
             send_buf_size: usize,
+        ) -> Result<Self, TransportError> {
+            Self::adopt_inner(
+                socket,
+                recv_buf_size,
+                send_buf_size,
+                #[cfg(target_os = "macos")]
+                super::macos_connected_udp_enabled(false),
+            )
+        }
+
+        #[cfg(target_os = "macos")]
+        pub(crate) fn adopt_with_connected_udp_listener(
+            socket: std::net::UdpSocket,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            connected_udp_listener_enabled: bool,
+        ) -> Result<Self, TransportError> {
+            Self::adopt_inner(
+                socket,
+                recv_buf_size,
+                send_buf_size,
+                connected_udp_listener_enabled,
+            )
+        }
+
+        fn adopt_inner(
+            socket: std::net::UdpSocket,
+            recv_buf_size: usize,
+            send_buf_size: usize,
+            #[cfg(target_os = "macos")] connected_udp_listener_enabled: bool,
         ) -> Result<Self, TransportError> {
             let sock = Socket::from(socket);
 
@@ -253,7 +332,7 @@ mod platform {
                 let _ = sock.set_reuse_address(true);
             }
             #[cfg(target_os = "macos")]
-            if macos_connected_udp_listener_enabled() {
+            if connected_udp_listener_enabled {
                 let _ = sock.set_reuse_port(true);
                 let _ = sock.set_reuse_address(true);
             }
@@ -763,26 +842,6 @@ mod platform {
                     Err(_would_block) => continue,
                 }
             }
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn macos_connected_udp_listener_enabled() -> bool {
-        static VALUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *VALUE.get_or_init(|| {
-            macos_env_flag("FIPS_CONNECTED_UDP")
-                .or_else(|| macos_env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
-                .unwrap_or(true)
-        })
-    }
-
-    #[cfg(target_os = "macos")]
-    fn macos_env_flag(name: &str) -> Option<bool> {
-        let value = std::env::var(name).ok()?;
-        match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => Some(true),
-            "0" | "false" | "no" | "off" => Some(false),
-            _ => None,
         }
     }
 

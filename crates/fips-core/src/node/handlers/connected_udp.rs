@@ -1,7 +1,7 @@
 //! Lifecycle for per-peer connected UDP sockets.
 //!
-//! Tick-driven, idempotent, **on by default** for established UDP peers on
-//! Linux and macOS:
+//! Tick-driven and idempotent for established UDP peers. It is default-on for
+//! Linux and opt-in on macOS:
 //!
 //! - **Tick-driven:** every node tick, scan healthy established UDP peers
 //!   that don't yet have a connected socket installed and try to
@@ -27,23 +27,23 @@
 //! state while preserving the FIPS wire protocol.
 //!
 //! macOS originally defaulted to the wildcard UDP socket because early
-//! Darwin tests found liveness regressions under load. Later testing
-//! showed the problem was mismatched listener/peer `SO_REUSE*` state:
-//! with the live listener and connected sibling in the same reuse group,
-//! the connected `send(2)` path improves the MacBook Wi-Fi sender case
-//! and is now the default for dynamic UDP peers. Peers with a configured
-//! static UDP endpoint stay on wildcard UDP because NAT/VM paths can drift
-//! between the configured endpoint and observed source tuples, and liveness
-//! recovery must accept either path. Operators can configure it through
-//! `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
-//! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
-//! tests. `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
+//! Darwin tests found liveness regressions under load. Later performance work
+//! made the connected path available, but mobile/hotspot testing showed the
+//! `SO_REUSEPORT` listener group can still destabilize the wildcard receive
+//! path when the application has not opted into the fast path. Keep macOS
+//! opt-in so listener setup, socket activation, and app config agree. Peers
+//! with a configured static UDP endpoint stay on wildcard UDP because NAT/VM
+//! paths can drift between the configured endpoint and observed source tuples,
+//! and liveness recovery must accept either path. Operators can configure it
+//! through `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
+//! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B tests.
+//! `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
 //! caps the one-drain-thread-per-peer fast path for large meshes without
 //! disabling wildcard UDP delivery. Peer-cap and fd-budget skips are reported
 //! as perf events so a large mesh can show why some peers stayed on wildcard
 //! UDP without looking like activation failures. The old macOS-specific
-//! `FIPS_MACOS_CONNECTED_UDP=0` is ignored so stale launchd plists do not
-//! disable the now-default fast path.
+//! `FIPS_MACOS_CONNECTED_UDP=1` still enables the macOS path for legacy lab
+//! plists.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -357,18 +357,16 @@ fn connected_udp_enabled(config_enabled: bool) -> bool {
 
 #[cfg(target_os = "macos")]
 fn connected_udp_enabled(config_enabled: bool) -> bool {
-    env_flag("FIPS_CONNECTED_UDP")
-        .or_else(|| env_flag("FIPS_MACOS_CONNECTED_UDP").filter(|enabled| *enabled))
-        .unwrap_or(config_enabled)
+    crate::transport::udp::socket::macos_connected_udp_enabled(config_enabled)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn env_flag(name: &str) -> Option<bool> {
     let value = std::env::var(name).ok()?;
     parse_env_flag(&value)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", test))]
 fn parse_env_flag(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),

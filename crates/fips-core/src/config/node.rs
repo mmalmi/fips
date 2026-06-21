@@ -61,9 +61,11 @@ impl LimitsConfig {
 pub struct ConnectedUdpConfig {
     /// Enable per-peer connected UDP sockets (`node.connected_udp.enabled`).
     ///
-    /// `FIPS_CONNECTED_UDP` remains honored for operational A/B tests. The
-    /// old macOS-specific `FIPS_MACOS_CONNECTED_UDP=0` no longer disables the
-    /// default fast path, but `=1` is still accepted as an enable-only legacy
+    /// `FIPS_CONNECTED_UDP` remains honored for operational A/B tests.
+    /// Connected UDP stays default-on for Linux and default-off for macOS,
+    /// where live mobile/NAT testing has shown the `SO_REUSEPORT` listener
+    /// group can destabilize the wildcard receive path. The old macOS-specific
+    /// `FIPS_MACOS_CONNECTED_UDP=1` is still accepted as an enable-only legacy
     /// override.
     #[serde(default = "ConnectedUdpConfig::default_enabled")]
     pub enabled: bool,
@@ -101,6 +103,12 @@ impl Default for ConnectedUdpConfig {
 
 impl ConnectedUdpConfig {
     fn default_enabled() -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            return false;
+        }
+
+        #[cfg(not(target_os = "macos"))]
         true
     }
 
