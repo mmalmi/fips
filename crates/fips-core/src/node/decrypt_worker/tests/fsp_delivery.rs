@@ -367,7 +367,6 @@
         let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(8, 8);
         let action = DecryptWorkerShard::handle_opened_fmp_job(OpenedFmpJob {
             packet_data: packet_data.clone().into(),
-            lane: DecryptWorkerLane::Priority,
             source_peer,
             transport_id: TransportId::new(1),
             remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),

@@ -27,89 +27,10 @@
     }
 
     #[test]
-    fn fmp_aead_helper_env_uses_platform_default_and_caps_override() {
-        assert_eq!(
-            fmp_aead_helper_count_from_raw(None),
-            DEFAULT_DECRYPT_FMP_AEAD_HELPERS
-        );
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("0")), 0);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("2")), 2);
-        assert_eq!(fmp_aead_helper_count_from_raw(Some("99")), 64);
-        assert_eq!(
-            fmp_aead_helper_count_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_FMP_AEAD_HELPERS
-        );
-    }
-
-    #[test]
-    fn fmp_aead_helper_max_completion_backlog_defaults_passthrough_and_caps() {
-        assert_eq!(
-            fmp_aead_helper_max_completion_backlog_from_raw(None, 1024),
-            DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG
-        );
-        assert_eq!(
-            fmp_aead_helper_max_completion_backlog_from_raw(Some("0"), 1024),
-            0
-        );
-        assert_eq!(
-            fmp_aead_helper_max_completion_backlog_from_raw(Some("64"), 1024),
-            64
-        );
-        assert_eq!(
-            fmp_aead_helper_max_completion_backlog_from_raw(Some("999999"), 1024),
-            1024
-        );
-        assert_eq!(
-            fmp_aead_helper_max_completion_backlog_from_raw(Some("bad"), 1024),
-            DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG
-        );
-    }
-
-    #[test]
     fn fsp_aead_completion_batch_width_matches_benchmarked_bulk_width() {
         assert_eq!(
             DEFAULT_DECRYPT_WORKER_FSP_AEAD_COMPLETION_BATCH_MAX,
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
-        );
-    }
-
-    #[test]
-    fn fmp_aead_completion_batch_max_defaults_to_benchmarked_width_and_caps_override() {
-        assert_eq!(
-            DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX,
-            DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
-        );
-        assert_eq!(
-            fmp_aead_completion_batch_max_from_raw(None),
-            DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX
-        );
-        assert_eq!(fmp_aead_completion_batch_max_from_raw(Some("0")), 1);
-        assert_eq!(fmp_aead_completion_batch_max_from_raw(Some("16")), 16);
-        assert_eq!(fmp_aead_completion_batch_max_from_raw(Some("999")), 64);
-        assert_eq!(
-            fmp_aead_completion_batch_max_from_raw(Some("bad")),
-            DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX
-        );
-    }
-
-    #[test]
-    fn fmp_aead_completion_channel_covers_ordered_receive_window() {
-        assert_eq!(
-            fmp_aead_completion_channel_cap_from_bulk_cap(0),
-            fmp_receive_window_from_bulk_cap(0)
-        );
-        assert_eq!(
-            fmp_aead_completion_channel_cap_from_bulk_cap(1),
-            1 + DECRYPT_WORKER_FMP_RECEIVE_WINDOW_RESERVE
-        );
-        assert_eq!(
-            fmp_aead_completion_channel_cap_from_bulk_cap(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
-            fmp_receive_window_from_bulk_cap(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP)
-        );
-        assert_eq!(
-            fmp_receive_window_from_bulk_cap(DEFAULT_DECRYPT_WORKER_BULK_CHANNEL_CAP),
-            crate::noise::REPLAY_WINDOW_SIZE,
-            "deferred FMP completions must not outgrow the replay window"
         );
     }
 
@@ -179,8 +100,6 @@
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(1);
-        let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-            bounded::<FmpAeadCompletionBatch>(1);
         let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
             bounded::<FspAeadCompletionBatch>(1);
         let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -191,7 +110,6 @@
                         control: control_tx,
                         priority: priority_tx,
                         bulk: bulk_tx,
-                        fmp_aead_completion: fmp_aead_completion_tx,
                         fsp_aead_completion: fsp_aead_completion_tx,
                         bulk_queued_packets,
                         bulk_packet_cap: 1,
@@ -199,7 +117,6 @@
                     .into_boxed_slice(),
                 ),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_aead_helpers: None,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -226,8 +143,6 @@
             let (control_tx, control_rx) = bounded::<WorkerMsg>(cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(cap);
             let (fsp_aead_completion_tx, _fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -235,7 +150,6 @@
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
@@ -248,7 +162,6 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_aead_helpers: None,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -277,8 +190,6 @@
             let (control_tx, control_rx) = bounded::<WorkerMsg>(cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(cap);
-            let (fmp_aead_completion_tx, _fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(cap);
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(cap);
             let bulk_queued_packets = Arc::new(AtomicUsize::new(0));
@@ -286,7 +197,6 @@
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: cap,
@@ -300,7 +210,6 @@
             DecryptWorkerPool {
                 senders: std::sync::Arc::from(senders.into_boxed_slice()),
                 direct_delivery_sink: DecryptDirectSessionDeliverySink::default(),
-                fmp_aead_helpers: None,
                 fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
                 fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
             },
@@ -325,11 +234,6 @@
 
     fn test_fsp_aead_completion_lane(cap: usize) -> Receiver<FspAeadCompletionBatch> {
         let (_completion_tx, completion_rx) = bounded::<FspAeadCompletionBatch>(cap);
-        completion_rx
-    }
-
-    fn test_fmp_aead_completion_lane(cap: usize) -> Receiver<FmpAeadCompletionBatch> {
-        let (_completion_tx, completion_rx) = bounded::<FmpAeadCompletionBatch>(cap);
         completion_rx
     }
 
@@ -388,7 +292,6 @@
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -402,7 +305,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &opener_fsp_completion_rx,
             item,
             &mut plaintext_batch,
@@ -467,7 +369,6 @@
         drop(control_tx);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         drop(priority_tx);
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let opener_fsp_completion_rx = test_fsp_aead_completion_lane(1);
         let mut shard = DecryptWorkerShard::new(pool.clone());
         let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
@@ -477,7 +378,6 @@
             &mut shard,
             &control_rx,
             &priority_rx,
-            &fmp_aead_completion_rx,
             &opener_fsp_completion_rx,
             item,
             &mut plaintext_batch,
@@ -580,7 +480,6 @@
         );
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
-        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
         let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
         fsp_completion_tx
             .try_send(dummy_fsp_aead_completion_batch(source_addr, 99))
@@ -591,7 +490,6 @@
         drain_aead_completions_for_bulk_item(
             0,
             &mut shard,
-            &fmp_aead_completion_rx,
             &fsp_aead_completion_rx,
             &mut plaintext_batch,
             &mut completion_interleave_budget,
@@ -953,19 +851,6 @@
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1)
     }
 
-    fn dummy_fmp_aead_failure(
-        fallback_tx: DecryptWorkerFallbackSender,
-        counter: u64,
-    ) -> FmpAeadFailure {
-        FmpAeadFailure {
-            fallback_tx,
-            source_peer: test_source_peer(),
-            lane: DecryptWorkerLane::Priority,
-            fmp_counter: counter,
-            fmp_replay_highest: Some(counter.saturating_sub(1)),
-        }
-    }
-
     fn dummy_fsp_aead_completion_batch(
         source_addr: NodeAddr,
         sequence: u64,
@@ -994,26 +879,6 @@
 
     fn dummy_priority_decrypt_job(session_key: DecryptSessionKey) -> DecryptJob {
         dummy_decrypt_job_with_len(session_key, DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN)
-    }
-
-    fn dummy_opened_fmp_job(plaintext_len: usize) -> OpenedFmpJob {
-        let packet_len = crate::node::wire::ESTABLISHED_HEADER_SIZE + plaintext_len.max(1);
-        let (fallback_tx, _fallback_rx) = decrypt_worker_fallback_channels_with_caps(1, 1);
-        OpenedFmpJob {
-            packet_data: vec![0; packet_len].into(),
-            lane: decrypt_worker_packet_lane(packet_len),
-            source_peer: test_source_peer(),
-            transport_id: TransportId::new(1),
-            remote_addr: crate::transport::TransportAddr::from_string("127.0.0.1:1234"),
-            local_node_addr: *test_source_peer().node_addr(),
-            timestamp_ms: 1_000,
-            packet_len,
-            fmp_counter: 1,
-            fmp_flags: 0,
-            fmp_plaintext_offset: crate::node::wire::ESTABLISHED_HEADER_SIZE,
-            fmp_plaintext_len: plaintext_len,
-            fallback_tx,
-        }
     }
 
     fn dummy_plaintext_event(packet_len: usize) -> DecryptWorkerEvent {

@@ -6,7 +6,6 @@
 pub(crate) struct DecryptWorkerPool {
     senders: Arc<[DecryptWorkerSender]>,
     direct_delivery_sink: DecryptDirectSessionDeliverySink,
-    fmp_aead_helpers: Option<Arc<FmpAeadHelperPool>>,
     fmp_session_owners: Arc<RwLock<HashMap<DecryptSessionKey, usize>>>,
     fsp_aead_sessions: Arc<RwLock<HashMap<NodeAddr, Arc<FspSharedCryptoSession>>>>,
 }
@@ -16,96 +15,9 @@ struct DecryptWorkerSender {
     control: Sender<WorkerMsg>,
     priority: Sender<WorkerMsg>,
     bulk: Sender<DecryptWorkerBulkItem>,
-    fmp_aead_completion: Sender<FmpAeadCompletionBatch>,
     fsp_aead_completion: Sender<FspAeadCompletionBatch>,
     bulk_queued_packets: Arc<AtomicUsize>,
     bulk_packet_cap: usize,
-}
-
-struct FmpAeadHelperPool {
-    tx: Sender<FmpAeadHelperJob>,
-}
-
-impl FmpAeadHelperPool {
-    fn spawn(n: usize, channel_cap: usize) -> Option<Arc<Self>> {
-        if n == 0 {
-            return None;
-        }
-        let (tx, rx) = bounded::<FmpAeadHelperJob>(channel_cap.max(1));
-        for i in 0..n {
-            let helper_rx = rx.clone();
-            std::thread::Builder::new()
-                .name(format!("fips-decrypt-fmp-aead-{i}"))
-                .spawn(move || run_fmp_aead_helper(i, helper_rx))
-                .expect("failed to spawn fips-decrypt-fmp-aead OS thread");
-        }
-        Some(Arc::new(Self { tx }))
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn try_dispatch(&self, job: FmpAeadHelperJob) -> Result<(), FmpAeadHelperJob> {
-        match self.tx.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => Err(job),
-        }
-    }
-}
-
-fn run_fmp_aead_helper(idx: usize, rx: Receiver<FmpAeadHelperJob>) {
-    trace!(helper = idx, "FMP AEAD helper thread starting");
-    let completion_batch_max = fmp_aead_completion_batch_max();
-    while let Ok(mut job) = rx.recv() {
-        crate::perf_profile::record_since_count(
-            crate::perf_profile::Stage::FmpAeadHelperQueueWait,
-            job.helper_queued_at,
-            1,
-        );
-        let Some(mut completion_tx) = job.completion_tx.take() else {
-            continue;
-        };
-        let mut batch_session_key = job.session_key;
-        let mut batch_receive_order_id = job.receive_order_id;
-        let mut batch = FmpAeadCompletionBatch::one(job.into_completion());
-        while batch.len() < completion_batch_max {
-            let Ok(mut next_job) = rx.try_recv() else {
-                break;
-            };
-            crate::perf_profile::record_since_count(
-                crate::perf_profile::Stage::FmpAeadHelperQueueWait,
-                next_job.helper_queued_at,
-                1,
-            );
-            let Some(next_completion_tx) = next_job.completion_tx.take() else {
-                continue;
-            };
-            let next_session_key = next_job.session_key;
-            let next_receive_order_id = next_job.receive_order_id;
-            if !completion_tx.same_channel(&next_completion_tx)
-                || next_session_key != batch_session_key
-                || next_receive_order_id != batch_receive_order_id
-            {
-                if completion_tx.send(batch).is_err() {
-                    debug!(
-                        helper = idx,
-                        "FMP AEAD helper completion owner gone; dropping completion"
-                    );
-                }
-                completion_tx = next_completion_tx;
-                batch_session_key = next_session_key;
-                batch_receive_order_id = next_receive_order_id;
-                batch = FmpAeadCompletionBatch::one(next_job.into_completion());
-                continue;
-            }
-            batch.push(next_job.into_completion());
-        }
-        if completion_tx.send(batch).is_err() {
-            debug!(
-                helper = idx,
-                "FMP AEAD helper completion owner gone; dropping completion"
-            );
-        }
-    }
-    trace!(helper = idx, "FMP AEAD helper thread exiting");
 }
 
 fn record_decrypt_fsp_bulk_queue_full_fallback_count(count: usize) {
@@ -157,10 +69,6 @@ impl DecryptWorkerPool {
             let (control_tx, control_rx) = bounded::<WorkerMsg>(control_channel_cap);
             let (priority_tx, priority_rx) = bounded::<WorkerMsg>(priority_channel_cap);
             let (bulk_tx, bulk_rx) = bounded::<DecryptWorkerBulkItem>(bulk_channel_cap);
-            let (fmp_aead_completion_tx, fmp_aead_completion_rx) =
-                bounded::<FmpAeadCompletionBatch>(
-                    fmp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
-                );
             let (fsp_aead_completion_tx, fsp_aead_completion_rx) =
                 bounded::<FspAeadCompletionBatch>(
                     fsp_aead_completion_channel_cap_from_bulk_cap(bulk_channel_cap),
@@ -169,7 +77,6 @@ impl DecryptWorkerPool {
             receivers.push((
                 control_rx,
                 priority_rx,
-                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
                 Arc::clone(&bulk_queued_packets),
@@ -178,17 +85,14 @@ impl DecryptWorkerPool {
                 control: control_tx,
                 priority: priority_tx,
                 bulk: bulk_tx,
-                fmp_aead_completion: fmp_aead_completion_tx,
                 fsp_aead_completion: fsp_aead_completion_tx,
                 bulk_queued_packets,
                 bulk_packet_cap: bulk_channel_cap,
             });
         }
-        let fmp_aead_helpers = FmpAeadHelperPool::spawn(fmp_aead_helper_count(), bulk_channel_cap);
         let pool = Self {
             senders: senders.into(),
             direct_delivery_sink,
-            fmp_aead_helpers,
             fmp_session_owners: Arc::new(RwLock::new(HashMap::new())),
             fsp_aead_sessions: Arc::new(RwLock::new(HashMap::new())),
         };
@@ -197,7 +101,6 @@ impl DecryptWorkerPool {
             (
                 control_rx,
                 priority_rx,
-                fmp_aead_completion_rx,
                 fsp_aead_completion_rx,
                 bulk_rx,
                 worker_bulk_queued_packets,
@@ -213,7 +116,6 @@ impl DecryptWorkerPool {
                         worker_pool,
                         control_rx,
                         priority_rx,
-                        fmp_aead_completion_rx,
                         fsp_aead_completion_rx,
                         bulk_rx,
                         worker_bulk_queued_packets,
@@ -320,47 +222,6 @@ impl DecryptWorkerPool {
 
     fn dispatch_bulk_job(&self, idx: usize, job: DecryptJob) {
         self.dispatch_bulk_item(idx, DecryptWorkerBulkItem::Job(job));
-    }
-
-    fn fmp_aead_helpers_enabled(&self) -> bool {
-        self.fmp_aead_helpers.is_some()
-    }
-
-    #[allow(clippy::result_large_err)]
-    fn dispatch_fmp_aead_helper_job(
-        &self,
-        owner_idx: usize,
-        mut job: FmpAeadHelperJob,
-    ) -> Result<(), FmpAeadHelperJob> {
-        let Some(helpers) = self.fmp_aead_helpers.as_ref() else {
-            return Err(job);
-        };
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return Err(job);
-        };
-        if !self.fmp_aead_helper_owner_completion_backlog_ready_for(
-            owner_idx,
-            fmp_aead_helper_max_completion_backlog(),
-        ) {
-            crate::perf_profile::record_event(
-                crate::perf_profile::Event::DecryptFmpHelperCompletionBacklogFallback,
-            );
-            return Err(job);
-        }
-        job.completion_tx = Some(sender.fmp_aead_completion.clone());
-        job.helper_queued_at = crate::perf_profile::stamp();
-        helpers.try_dispatch(job)
-    }
-
-    fn fmp_aead_helper_owner_completion_backlog_ready_for(
-        &self,
-        owner_idx: usize,
-        max_completion_backlog: usize,
-    ) -> bool {
-        let Some(sender) = self.senders.get(owner_idx) else {
-            return false;
-        };
-        sender.fmp_aead_completion.len() <= max_completion_backlog
     }
 
     fn fsp_open_worker_owner_completion_backlog_ready_for(

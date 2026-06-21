@@ -70,12 +70,8 @@
 //!   * `DECRYPT_WORKER_BULK_INPUT_HEAD_WAIT` — bulk decrypt-worker enqueue → batch item service start
 //!   * `DECRYPT_WORKER_BULK_INPUT_TAIL_WAIT` — decrypt-worker batch item service start → individual job handling
 //!   * `DECRYPT_WORKER_BULK_ITEM_SERVICE` — decrypt-worker bulk item service time
-//!   * `FMP_AEAD_HELPER_QUEUE_WAIT` — FMP owner-worker helper dispatch → AEAD helper
-//!   * `FMP_AEAD_HELPER_COMPLETION_WAIT` — AEAD helper completion → owner-worker
-//!   * `FMP_AEAD_HELPER_PRIORITY_COMPLETION_WAIT` — priority helper completion → owner-worker
-//!   * `FMP_AEAD_HELPER_BULK_COMPLETION_WAIT` — bulk helper completion → owner-worker
-//!   * `FMP_RECEIVE_ORDER_WINDOW_WAIT` — owner-worker waits for ordered FMP helper completions
-//!   * `FMP_AEAD_HELPER_COMPLETION_SERVICE` — owner-worker completion handling + output prep
+//!   * `FMP_AEAD_HELPER_*` / `FMP_RECEIVE_ORDER_WINDOW_WAIT` — retired FMP helper slots kept for
+//!     stable trace decoding; the live FMP receive path opens on the session owner.
 //!   * `DECRYPT_WORKER_OUTPUT_FLUSH` — worker output batch flush into rx_loop/endpoint lanes
 //!   * `FSP_AEAD_WORKER_OPEN_QUEUE_WAIT` — FSP opener-worker bulk queue residence
 //!   * `FSP_AEAD_WORKER_OPEN_COMPLETION_WAIT` — FSP opener-worker completion residence
@@ -240,18 +236,17 @@ pub enum Stage {
     DecryptWorkerBulkInputTailWait = 51,
     /// Time a decrypt worker spends servicing one dequeued bulk item.
     DecryptWorkerBulkItemService = 52,
-    /// FMP AEAD helper job residence before a helper thread starts opening it.
+    /// Retired FMP AEAD helper slot kept for stable trace decoding.
     FmpAeadHelperQueueWait = 53,
-    /// FMP AEAD helper completion residence before the owning decrypt worker handles it.
+    /// Retired FMP AEAD helper slot kept for stable trace decoding.
     FmpAeadHelperCompletionWait = 54,
-    /// Priority FMP AEAD helper completion residence before the owner worker handles it.
+    /// Retired FMP AEAD helper slot kept for stable trace decoding.
     FmpAeadHelperPriorityCompletionWait = 55,
-    /// Bulk FMP AEAD helper completion residence before the owner worker handles it.
+    /// Retired FMP AEAD helper slot kept for stable trace decoding.
     FmpAeadHelperBulkCompletionWait = 56,
-    /// FMP owner-worker residence waiting for ordered helper completions.
+    /// Retired FMP helper receive-order slot kept for stable trace decoding.
     FmpReceiveOrderWindowWait = 57,
-    /// Owner-worker service time for an FMP AEAD helper completion, including
-    /// ordered drain, ready packet handling, and batching outputs for return.
+    /// Retired FMP AEAD helper slot kept for stable trace decoding.
     FmpAeadHelperCompletionService = 58,
     /// Time spent flushing decrypt-worker output batches into rx_loop fallback
     /// and direct endpoint delivery lanes.
@@ -565,6 +560,7 @@ pub enum Event {
     FmpWorkerDispatchWorker6 = 88,
     FmpWorkerDispatchWorker7 = 89,
     FmpWorkerDispatchWorkerOther = 90,
+    // Retired FMP AEAD helper completion slots kept for stable trace decoding.
     FmpAeadCompletionReady = 91,
     FmpAeadCompletionAccepted = 92,
     FmpAeadCompletionAeadFailed = 93,
@@ -1849,11 +1845,6 @@ pub(crate) fn record_decrypt_worker_select_control() {
 }
 
 #[inline]
-pub(crate) fn record_decrypt_worker_select_fmp_completion() {
-    record_event(Event::DecryptWorkerSelectFmpCompletion);
-}
-
-#[inline]
 pub(crate) fn record_decrypt_worker_select_fsp_completion(packets: usize) {
     record_event(Event::DecryptWorkerSelectFspCompletionBatch);
     record_event_count(
@@ -1912,31 +1903,6 @@ pub(crate) fn record_decrypt_worker_bulk_interleave_aead_completion(
 #[inline]
 pub(crate) fn record_decrypt_worker_bulk_interleave_budget_exhausted() {
     record_event(Event::DecryptWorkerBulkInterleaveBudgetExhausted);
-}
-
-#[inline]
-pub(crate) fn record_fmp_aead_completion_drain(
-    ready: usize,
-    accepted: usize,
-    aead_failures: usize,
-    replay_drops: usize,
-) {
-    if !enabled() || ready == 0 {
-        return;
-    }
-    record_event_count_sample(Event::FmpAeadCompletionReady, ready as u64);
-    if accepted > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionAccepted, accepted as u64);
-    }
-    if aead_failures > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionAeadFailed, aead_failures as u64);
-    }
-    if replay_drops > 0 {
-        record_event_count_sample(Event::FmpAeadCompletionReplayDropped, replay_drops as u64);
-    }
-    if ready > 1 {
-        record_event_count_sample(Event::FmpAeadCompletionReadyMulti, 1);
-    }
 }
 
 #[inline]
@@ -2052,36 +2018,6 @@ pub(crate) fn record_fsp_aead_completion_accept_kbit_mismatch() {
 }
 
 #[inline]
-pub(crate) fn record_fmp_aead_completion_replay_drop_mode(deferred: bool) {
-    if !enabled() {
-        return;
-    }
-    record_event(if deferred {
-        Event::FmpAeadCompletionReplayDroppedDeferred
-    } else {
-        Event::FmpAeadCompletionReplayDroppedPrechecked
-    });
-}
-
-#[inline]
-pub(crate) fn record_fmp_aead_completion_replay_drop_reason(
-    reason: crate::noise::ReplayRejection,
-    counter_lag: u64,
-) {
-    if !enabled() {
-        return;
-    }
-    let event = match reason {
-        crate::noise::ReplayRejection::Duplicate => Event::FmpAeadCompletionReplayDroppedDuplicate,
-        crate::noise::ReplayRejection::TooOld => Event::FmpAeadCompletionReplayDroppedTooOld,
-    };
-    record_event(event);
-    if reason == crate::noise::ReplayRejection::TooOld {
-        record_fmp_aead_completion_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
 pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
@@ -2114,23 +2050,6 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     record_event(event);
     if reason == crate::noise::ReplayRejection::TooOld {
         record_decrypt_fsp_worker_too_old_lag_buckets(counter_lag);
-    }
-}
-
-#[inline]
-fn record_fmp_aead_completion_too_old_lag_buckets(counter_lag: u64) {
-    let window = crate::noise::REPLAY_WINDOW_SIZE as u64;
-    if counter_lag >= window.saturating_mul(2) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow);
-    }
-    if counter_lag >= window.saturating_mul(4) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow);
-    }
-    if counter_lag >= window.saturating_mul(16) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow);
-    }
-    if counter_lag >= window.saturating_mul(64) {
-        record_event(Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow);
     }
 }
 
