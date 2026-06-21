@@ -560,7 +560,7 @@ impl DecryptWorkerShard {
             source_addr,
             receive_order_id: shared.receive_order_id,
             ticket,
-            shared,
+            cipher: Arc::clone(&shared.cipher),
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,

@@ -438,11 +438,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
 
         let make_job = |packet_data: Vec<u8>| {
@@ -478,7 +476,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload.clone()),
             header: header.clone(),
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -511,7 +509,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(fsp_payload),
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -607,11 +605,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
 
         let mut make_payload = |body: &'static [u8]| {
@@ -672,7 +668,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -688,7 +684,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -757,11 +753,9 @@
             previous: None,
         };
         let mut state = OwnedFspSessionState::from(snapshot);
-        let shared = Arc::new(
-            state
-                .shared_crypto_session(0)
-                .expect("single-current FSP session should expose shared crypto"),
-        );
+        let shared = state
+            .shared_crypto_session(0)
+            .expect("single-current FSP session should expose shared crypto");
         let receive_order_id = state.fsp_receive_order_id();
 
         let mut make_payload = |body: &'static [u8]| {
@@ -822,7 +816,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(first_payload, first_payload_len),
             header: first_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -841,7 +835,7 @@
             source_addr,
             receive_order_id,
             ticket: shared.issue_ticket(),
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(second_payload, second_payload_len),
             header: second_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
@@ -1186,7 +1180,7 @@
             source_addr,
             receive_order_id,
             ticket: local_ticket,
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(local_payload, local_payload_len),
             header: local_header,
             completion_source: FspAeadCompletionSource::Local,
@@ -1207,7 +1201,7 @@
             source_addr,
             receive_order_id,
             ticket: open_ticket,
-            shared: Arc::clone(&shared),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(open_payload, open_payload_len),
             header: open_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
