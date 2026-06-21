@@ -146,9 +146,29 @@ impl Node {
         for event in bootstrap.drain_events().await {
             match event {
                 BootstrapEvent::Established { traversal } => {
-                    let active_refresh = PeerIdentity::from_npub(&traversal.peer_npub)
-                        .ok()
-                        .is_some_and(|identity| self.peers.contains_key(identity.node_addr()));
+                    let peer_identity = match PeerIdentity::from_npub(&traversal.peer_npub) {
+                        Ok(identity) => identity,
+                        Err(err) => {
+                            debug!(
+                                peer_npub = %traversal.peer_npub,
+                                error = %err,
+                                "Dropping established NAT traversal: invalid peer identity"
+                            );
+                            continue;
+                        }
+                    };
+                    if self.enforces_configured_only_peer_admission()
+                        && !self.is_configured_peer_identity(&peer_identity)
+                    {
+                        debug!(
+                            peer = %self.peer_display_name(peer_identity.node_addr()),
+                            npub = %peer_identity.npub(),
+                            "Dropping established NAT traversal for non-configured peer"
+                        );
+                        continue;
+                    }
+
+                    let active_refresh = self.peers.contains_key(peer_identity.node_addr());
                     let admission_allowed = if active_refresh {
                         self.outbound_direct_refresh_admission_check()
                     } else {

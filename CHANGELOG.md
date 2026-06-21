@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dropped established Nostr traversal handoffs from non-configured peers before
+  socket adoption when configured-only discovery is active, avoiding ambient
+  relay churn on roster-only nodes.
 - Restored the 15s traversal/recent-endpoint liveness floor so short-heartbeat
   products do not demote mobile/NAT paths at the 5s local-route-failure floor.
 
