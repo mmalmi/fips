@@ -185,6 +185,8 @@ impl Node {
         let peer_node_addr = *peer_identity.node_addr();
         let mut concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
         let mut started_candidate_this_pass = false;
+        let mut started_active_current_path_this_pass = false;
+        let mut reclaimed_after_active_current_path_this_pass = false;
 
         for addr in addresses {
             if addr.transport == "udp" && addr.addr.eq_ignore_ascii_case("nat") {
@@ -275,11 +277,24 @@ impl Node {
                 continue;
             }
 
+            let is_active_current_path = self.active_peer_matches_candidate(&peer_node_addr, addr);
+            let is_configured_static_udp = addr.seen_at_ms.is_none()
+                && addr.transport.eq_ignore_ascii_case("udp")
+                && self
+                    .configured_path_priority(&peer_node_addr, transport_id, &remote_addr)
+                    .is_some();
+            let may_reclaim_after_started = started_active_current_path_this_pass
+                && is_configured_static_udp
+                && !reclaimed_after_active_current_path_this_pass;
+
             if concrete_budget == 0
-                && !started_candidate_this_pass
+                && (!started_candidate_this_pass || may_reclaim_after_started)
                 && self.reclaim_lower_priority_inflight_candidate_for_peer(&peer_node_addr, addr)
             {
                 concrete_budget = self.path_candidate_attempt_budget(&peer_node_addr);
+                if may_reclaim_after_started {
+                    reclaimed_after_active_current_path_this_pass = true;
+                }
             }
 
             if concrete_budget == 0 {
@@ -298,6 +313,9 @@ impl Node {
                 Ok(()) => {
                     attempted = true;
                     started_candidate_this_pass = true;
+                    if is_active_current_path {
+                        started_active_current_path_this_pass = true;
+                    }
                     concrete_budget = concrete_budget.saturating_sub(1);
                 }
                 Err(e @ NodeError::AccessDenied(_)) => return Err(e),
