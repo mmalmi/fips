@@ -608,14 +608,27 @@ fn handle_bulk_item(
             let item_started_at = crate::perf_profile::stamp();
             record_fsp_worker_bulk_input_head_wait_batch(&jobs);
             let count = jobs.len();
+            let mut fsp_open_batcher = FspAeadOpenJobBatcher::new();
             for job in jobs {
                 while let Ok(msg) = control_rx.try_recv() {
+                    flush_fsp_open_batcher(
+                        idx,
+                        shard,
+                        plaintext_batch,
+                        &mut fsp_open_batcher,
+                    );
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_control();
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
                 while let Ok(msg) = priority_rx.try_recv() {
+                    flush_fsp_open_batcher(
+                        idx,
+                        shard,
+                        plaintext_batch,
+                        &mut fsp_open_batcher,
+                    );
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_priority();
                     batch_stats.add_msg(&msg);
@@ -631,8 +644,15 @@ fn handle_bulk_item(
                     &mut completion_interleave_budget,
                 );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
-                shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
+                shard.push_job_action_output(
+                    idx,
+                    DecryptWorkerJobAction::FspJob(job),
+                    plaintext_batch,
+                    None,
+                    Some(&mut fsp_open_batcher),
+                );
             }
+            flush_fsp_open_batcher(idx, shard, plaintext_batch, &mut fsp_open_batcher);
             record_decrypt_worker_bulk_item_service(item_service_started_at, count);
             count
         }
