@@ -306,60 +306,6 @@ fn drain_aead_completions_for_bulk_item(
     }
 }
 
-fn drain_aead_completions_for_bulk_packet(
-    idx: usize,
-    shard: &mut DecryptWorkerShard,
-    fmp_aead_completion_rx: &Receiver<FmpAeadCompletionBatch>,
-    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
-    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-) {
-    let mut completion_interleave_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
-    drain_aead_completions_for_bulk_item(
-        idx,
-        shard,
-        fmp_aead_completion_rx,
-        fsp_aead_completion_rx,
-        plaintext_batch,
-        &mut completion_interleave_budget,
-    );
-}
-
-fn drain_fsp_aead_completions_for_open_worker_backlog(
-    idx: usize,
-    shard: &mut DecryptWorkerShard,
-    fsp_aead_completion_rx: &Receiver<FspAeadCompletionBatch>,
-    plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-) {
-    if fsp_aead_completion_rx.len() <= DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG {
-        return;
-    }
-
-    let mut remaining_budget = DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
-    let mut drained_packets = 0usize;
-    let mut drained_messages = 0usize;
-    while remaining_budget > 0
-        && fsp_aead_completion_rx.len() > DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG
-    {
-        let Ok(completions) = fsp_aead_completion_rx.try_recv() else {
-            break;
-        };
-        let handled = completions.len();
-        shard.handle_fsp_aead_completion_batch_msg(idx, completions, plaintext_batch);
-        drained_packets = drained_packets.saturating_add(handled.max(1));
-        drained_messages = drained_messages.saturating_add(1);
-        remaining_budget = remaining_budget.saturating_sub(handled.max(1));
-    }
-    crate::perf_profile::record_decrypt_worker_bulk_interleave_aead_completion(
-        drained_messages,
-        drained_packets,
-    );
-    if remaining_budget == 0
-        && fsp_aead_completion_rx.len() > DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG
-    {
-        crate::perf_profile::record_decrypt_worker_bulk_interleave_budget_exhausted();
-    }
-}
-
 fn recv_worker_item_biased(
     control_rx: &Receiver<WorkerMsg>,
     priority_rx: &Receiver<WorkerMsg>,
@@ -720,12 +666,6 @@ fn handle_bulk_item(
             let item_started_at = crate::perf_profile::stamp();
             record_fsp_worker_bulk_input_head_wait(&job);
             record_fsp_worker_bulk_input_tail_wait(item_started_at);
-            drain_fsp_aead_completions_for_open_worker_backlog(
-                idx,
-                shard,
-                fsp_aead_completion_rx,
-                plaintext_batch,
-            );
             shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
             1
         }
@@ -778,12 +718,15 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                drain_aead_completions_for_bulk_packet(
+                let mut completion_interleave_budget =
+                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+                drain_aead_completions_for_bulk_item(
                     idx,
                     shard,
                     fmp_aead_completion_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
+                    &mut completion_interleave_budget,
                 );
                 if !wait_for_fmp_receive_order_window(
                     idx,
@@ -837,12 +780,15 @@ fn handle_bulk_item(
                     batch_stats.add_msg(&msg);
                     shard.handle_msg(idx, msg);
                 }
-                drain_aead_completions_for_bulk_packet(
+                let mut completion_interleave_budget =
+                    DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
+                drain_aead_completions_for_bulk_item(
                     idx,
                     shard,
                     fmp_aead_completion_rx,
                     fsp_aead_completion_rx,
                     plaintext_batch,
+                    &mut completion_interleave_budget,
                 );
                 record_fsp_worker_bulk_input_tail_wait(item_started_at);
                 shard.handle_bulk_fsp_job_msg(idx, job, plaintext_batch);
