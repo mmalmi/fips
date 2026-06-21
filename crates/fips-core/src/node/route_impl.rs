@@ -80,6 +80,13 @@ impl Node {
             .get(dest_node_addr)
             .filter(|peer| peer.is_healthy() && !direct_session_degraded)
             .map(|_| *dest_node_addr);
+        let direct_session_has_recent_data_return =
+            self.session_direct_path_has_recent_data_return(dest_node_addr, now_ms);
+        if let Some(direct_addr) = healthy_direct_route
+            && direct_session_has_recent_data_return
+        {
+            return self.peers.get(&direct_addr);
+        }
         if let Some(direct_addr) = healthy_direct_route
             && !direct_session_untrusted
             && self
@@ -425,6 +432,17 @@ impl Node {
             now_ms,
             self.session_direct_path_exclusive_trust_timeout_ms(),
         )
+    }
+
+    pub(in crate::node) fn session_direct_path_has_recent_data_return(
+        &self,
+        dest: &NodeAddr,
+        now_ms: u64,
+    ) -> bool {
+        self.sessions
+            .get(dest)
+            .and_then(|session| session.last_authenticated_inbound_data_age_ms(now_ms))
+            .is_some_and(|age_ms| age_ms <= self.session_direct_path_exclusive_trust_timeout_ms())
     }
 
     fn session_direct_discovered_endpoint_trust_expired(
