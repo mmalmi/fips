@@ -747,6 +747,9 @@ impl ConnectedUdpDecryptFastPath {
         timestamp_ms: u64,
     ) -> Result<decrypt_worker::DecryptJob, crate::transport::PacketBuffer> {
         let packet_data = packet_data.into();
+        if packet_data.len() > crate::transport::udp::peer_drain::CONNECTED_UDP_PRIORITY_MAX_LEN {
+            return Err(packet_data);
+        }
         let Some(header) = wire::EncryptedHeader::parse(&packet_data) else {
             return Err(packet_data);
         };

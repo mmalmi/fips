@@ -13,12 +13,12 @@
 //! parent signals shutdown via a self-pipe.
 //!
 //! When a decrypt fast path is installed, the dispatch thread may skip
-//! the wildcard packet-channel hop for matching established packets, but
-//! that is still the canonical decrypt-worker path: session/peer ownership,
-//! replay, and TUN/endpoint delivery stay with the normal worker owner.
-//! Non-matching packets return untouched to `packet_tx`; bulk pressure is
-//! handled by visible bounded-ring/worker drops, not by alternate replay
-//! ownership.
+//! the wildcard packet-channel hop for priority-sized matching established
+//! packets, but that is still the canonical decrypt-worker path: session/peer
+//! ownership, replay, and TUN/endpoint delivery stay with the normal worker
+//! owner. Non-matching and bulk packets return untouched to `packet_tx`; bulk
+//! pressure is handled by visible bounded-ring/worker drops, not by alternate
+//! replay ownership.
 //!
 //! Future: when the full data-plane shard lands, this per-peer thread
 //! becomes a `epoll_wait` arm inside the shard's event loop instead
