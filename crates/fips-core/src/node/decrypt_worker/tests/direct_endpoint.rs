@@ -1006,6 +1006,72 @@
     }
 
     #[test]
+    fn decrypt_worker_completion_drain_flushes_ready_outputs_before_bulk() {
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        plaintext_batch.push_output(DecryptWorkerOutput {
+            fallback_tx: fallback_tx.clone(),
+            event: dummy_plaintext_event(bulk_len),
+            direct_delivery: None,
+        });
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "first bulk return should stay buffered below the fallback cap"
+        );
+
+        let mut bulk_job = dummy_fsp_job(bulk_len);
+        bulk_job.fallback_tx = fallback_tx;
+        queue_bulk_item_for_test(
+            &bulk_tx,
+            &bulk_queued_packets,
+            DecryptWorkerBulkItem::FspJob(bulk_job),
+        );
+
+        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        fsp_completion_tx
+            .try_send(dummy_fsp_aead_completion_batch(
+                *test_source_peer().node_addr(),
+                0,
+            ))
+            .expect("completion lane should have room");
+
+        let mut shard = test_shard();
+        drain_worker_queues(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            &bulk_rx,
+            &bulk_queued_packets,
+            &mut plaintext_batch,
+        );
+
+        let first = fallback_rx
+            .bulk
+            .try_recv()
+            .expect("completion drain should flush the already-ready return before bulk work");
+        assert_eq!(
+            first.packet_count(),
+            1,
+            "the pre-bulk completion flush must not coalesce with the next bulk packet"
+        );
+        fallback_rx.release_dequeued_event(&first);
+        let second = fallback_rx
+            .bulk
+            .try_recv()
+            .expect("bulk packet should flush at the end of the drain turn");
+        assert_eq!(second.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&second);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
+    }
+
+    #[test]
     fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
         let session_key = test_session_key(1, 83);
         let mut shard = test_shard();
@@ -1048,6 +1114,67 @@
             3,
             "a saturated completion lane should drain one bounded slice per bulk packet"
         );
+    }
+
+    #[test]
+    fn decrypt_worker_bulk_interleave_flushes_ready_outputs_before_bulk_packet() {
+        let mut shard = test_shard();
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (fsp_completion_tx, fsp_aead_completion_rx) = bounded::<FspAeadCompletionBatch>(1);
+        fsp_completion_tx
+            .try_send(dummy_fsp_aead_completion_batch(
+                *test_source_peer().node_addr(),
+                0,
+            ))
+            .expect("completion lane should have room");
+
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 2);
+        let bulk_len = DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1;
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        plaintext_batch.push_output(DecryptWorkerOutput {
+            fallback_tx: fallback_tx.clone(),
+            event: dummy_plaintext_event(bulk_len),
+            direct_delivery: None,
+        });
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "first bulk return should stay buffered below the fallback cap"
+        );
+
+        let mut bulk_job = dummy_fsp_job(bulk_len);
+        bulk_job.fallback_tx = fallback_tx;
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fsp_aead_completion_rx,
+            DecryptWorkerBulkItem::FspBatch(vec![bulk_job]),
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+        plaintext_batch.flush();
+
+        assert_eq!(processed, 1);
+        let first = fallback_rx
+            .bulk
+            .try_recv()
+            .expect("completion interleave should flush the already-ready return");
+        assert_eq!(
+            first.packet_count(),
+            1,
+            "the completion interleave flush must not coalesce with the bulk packet"
+        );
+        fallback_rx.release_dequeued_event(&first);
+        let second = fallback_rx
+            .bulk
+            .try_recv()
+            .expect("bulk packet should flush after service");
+        assert_eq!(second.packet_count(), 1);
+        fallback_rx.release_dequeued_event(&second);
+        assert_eq!(fallback_rx.bulk_queued_packets(), 0);
     }
 
     #[test]
