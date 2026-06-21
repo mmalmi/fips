@@ -1298,13 +1298,14 @@
         let mut job = dummy_fsp_job(FSP_HEADER_SIZE);
         job.source_addr = source_addr;
         job.fsp_payload_len = 0;
+        let shared = Arc::new(FspSharedCryptoSession::new(0, 7, false, cipher));
         FspAeadOpenJob {
             source_addr,
-            receive_order_id: 7,
+            receive_order_id: shared.receive_order_id,
             ticket: FspReceiveTicket {
                 sequence: ticket_sequence,
             },
-            cipher,
+            shared,
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,

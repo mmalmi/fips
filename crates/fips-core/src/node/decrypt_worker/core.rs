@@ -1308,7 +1308,7 @@ struct FspAeadOpenJob {
     source_addr: NodeAddr,
     receive_order_id: u64,
     ticket: FspReceiveTicket,
-    cipher: Arc<LessSafeKey>,
+    shared: Arc<FspSharedCryptoSession>,
     job: FspDecryptJob,
     header: FspEncryptedHeader,
     completion_source: FspAeadCompletionSource,
@@ -1459,6 +1459,7 @@ impl FspAeadOpenJob {
                 nonce_bytes[4..12].copy_from_slice(&self.header.counter.to_le_bytes());
                 let nonce = Nonce::assume_unique_for_key(nonce_bytes);
                 match self
+                    .shared
                     .cipher
                     .open_in_place(nonce, Aad::from(&self.header.header_bytes), ciphertext)
                 {
