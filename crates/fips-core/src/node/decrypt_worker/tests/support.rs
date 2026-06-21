@@ -348,13 +348,54 @@
     }
 
     #[test]
+    fn fsp_open_worker_selection_spreads_batch_windows_across_siblings() {
+        let (pool, _control, _priority, _bulk, _fsp_completion) =
+            test_worker_pool_with_fsp_completion_receivers(4, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = NodeAddr::from_bytes([0x40; 16]);
+
+        for owner_idx in 0..4 {
+            let batch_window = pool.fsp_open_batch_packet_max_for(owner_idx) as u64;
+            let first_idx = pool
+                .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
+                .expect("four-worker pool should have sibling openers");
+            for sequence in 1..batch_window {
+                assert_eq!(
+                    pool.worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, sequence),
+                    Some(first_idx),
+                    "one opener batch window should keep a stable sibling"
+                );
+            }
+
+            let mut seen = [false; 4];
+            for window in 0..12 {
+                let open_idx = pool
+                    .worker_idx_for_fsp_open_avoiding(
+                        &source_addr,
+                        owner_idx,
+                        window * batch_window,
+                    )
+                    .expect("four-worker pool should have sibling openers");
+                assert_ne!(open_idx, owner_idx);
+                seen[open_idx] = true;
+            }
+
+            assert!(!seen[owner_idx], "owner must never open sibling jobs");
+            assert_eq!(
+                seen.into_iter().filter(|seen| *seen).count(),
+                3,
+                "batch windows should spread opener work across all siblings"
+            );
+        }
+    }
+
+    #[test]
     fn fsp_open_worker_dispatch_avoids_owner_and_returns_ordered_completion() {
         let (pool, control_receivers, priority_receivers, bulk_receivers, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(2, 4);
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
@@ -423,7 +464,7 @@
         let source_addr = NodeAddr::from_bytes([0x43; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
             .expect("two-worker pool should have a sibling opener");
         assert_ne!(open_idx, owner_idx);
 
@@ -498,7 +539,7 @@
         let source_addr = NodeAddr::from_bytes([0x42; 16]);
         let owner_idx = 0;
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
             .expect("two-worker pool should have a sibling opener");
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
@@ -547,7 +588,7 @@
         let source_addr = NodeAddr::from_bytes([0x4b; 16]);
         let owner_idx = pool.worker_idx_for_fsp(&source_addr);
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
             .expect("three-worker pool should have a sibling opener");
         let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
         let mut header_packet = header_bytes.to_vec();
@@ -658,7 +699,7 @@
         state.fsp_receive_order_id = shared.receive_order_id;
         state.attach_shared_crypto_session(shared);
         let open_idx = pool
-            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
+            .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx, 0)
             .expect("three-worker pool should have a sibling opener");
 
         let mut shard = DecryptWorkerShard::new(pool.clone());
