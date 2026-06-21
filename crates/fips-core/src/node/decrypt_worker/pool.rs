@@ -238,7 +238,6 @@ impl DecryptWorkerPool {
             .is_some_and(|sender| sender.fsp_aead_completion.send(batch).is_ok())
     }
 
-    #[cfg(test)]
     fn fsp_aead_session(&self, source_addr: &NodeAddr) -> Option<Arc<FspSharedCryptoSession>> {
         self.fsp_aead_sessions
             .read()
