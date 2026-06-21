@@ -63,6 +63,7 @@ const DECRYPT_WORKER_ENDPOINT_DELIVERY_BATCH_MAX: usize = DECRYPT_WORKER_DIRECT_
 /// sessions. This removes the direct-peer hash lottery between local and
 /// handoff FSP lanes while preserving the wire protocol.
 const DEFAULT_DECRYPT_FMP_AEAD_HELPER_MAX_COMPLETION_BACKLOG: usize = 64;
+const DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG: usize = 64;
 /// Match one owner-side completion interleave slice so a helper can return a
 /// full bounded packet-mover turn without spending it across multiple messages.
 const DEFAULT_DECRYPT_WORKER_FMP_AEAD_COMPLETION_BATCH_MAX: usize =

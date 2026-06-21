@@ -363,6 +363,18 @@ impl DecryptWorkerPool {
         sender.fmp_aead_completion.len() <= max_completion_backlog
     }
 
+    fn fsp_open_worker_owner_completion_backlog_ready_for(
+        &self,
+        owner_idx: usize,
+        max_completion_backlog: usize,
+    ) -> bool {
+        let Some(sender) = self.senders.get(owner_idx) else {
+            return false;
+        };
+        !sender.fsp_aead_completion.is_full()
+            && sender.fsp_aead_completion.len() <= max_completion_backlog
+    }
+
     fn fsp_bulk_open_worker_enabled(&self) -> bool {
         self.senders.len() > 1
     }

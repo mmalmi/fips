@@ -621,7 +621,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_stays_on_opener_path_when_owner_completion_backlogged() {
+    fn fsp_local_open_worker_yields_when_owner_completion_backlogged() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_peer = test_source_peer();
@@ -656,7 +656,7 @@
             previous: None,
         });
         state.fsp_receive_order_id = shared.receive_order_id;
-        state.attach_shared_crypto_session(shared);
+        state.attach_shared_crypto_session(Arc::clone(&shared));
         let open_idx = pool
             .worker_idx_for_fsp_open_avoiding(&source_addr, owner_idx)
             .expect("three-worker pool should have a sibling opener");
@@ -678,15 +678,22 @@
         );
         assert_eq!(
             bulk_receivers[open_idx].len(),
-            1,
-            "same-owner bulk should stay on the opener path"
+            0,
+            "backlogged owner completion lane should keep same-owner bulk off the opener path"
         );
         assert!(
-            bulk_receivers
-                .iter()
-                .enumerate()
-                .all(|(idx, rx)| idx == open_idx || rx.is_empty()),
-            "same-owner backlog should not create owner-side fallback work"
+            bulk_receivers.iter().all(|rx| rx.is_empty()),
+            "backlogged same-owner bulk should stay local, not enqueue alternate worker work"
+        );
+        let published_shared = shard
+            .pool
+            .fsp_aead_session(&source_addr)
+            .expect("registered FSP session should publish shared receive progress");
+        assert_eq!(published_shared.receive_order_id, shared.receive_order_id);
+        assert_eq!(
+            published_shared.next_ticket.load(Ordering::Relaxed),
+            1,
+            "owner-local ordered path should issue the shared receive ticket"
         );
     }
 
