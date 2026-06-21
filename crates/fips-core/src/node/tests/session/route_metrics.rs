@@ -305,6 +305,55 @@ fn test_unreturned_session_traffic_prefers_fallback_during_direct_probe() {
 }
 
 #[test]
+fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    let first_fallback = *node.peer_ids().next().expect("first fallback peer");
+    let transport_id = TransportId::new(1);
+    let second_link = LinkId::new(2);
+    let (second_conn, second_identity) =
+        make_completed_connection(&mut node, second_link, transport_id, 1000);
+    let second_fallback = *second_identity.node_addr();
+    node.add_connection(second_conn).unwrap();
+    node.promote_connection(second_link, second_identity, 2000)
+        .unwrap();
+
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("active-fallback-affinity".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, first_fallback);
+    node.learn_reverse_route(remote_addr, second_fallback);
+    node.mark_session_direct_path_degraded(remote_addr, Node::now_ms());
+    {
+        let session = node.sessions.get_mut(&remote_addr).expect("session");
+        session.record_sent(128);
+        session.touch_outbound_frame(Node::now_ms());
+        session.record_outbound_next_hop(first_fallback);
+    }
+
+    let selected = (0..8)
+        .map(|_| {
+            node.find_next_hop(&remote_addr)
+                .map(|peer| *peer.node_addr())
+                .expect("learned fallback route")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        selected.iter().all(|addr| *addr == first_fallback),
+        "active fallback session should not spray one flow across learned routes: {selected:?}"
+    );
+}
+
+#[test]
 fn test_pending_direct_probe_does_not_block_fresh_healthy_direct_without_fallback() {
     let mut node = Node::new(Config::new()).unwrap();
     let remote = Identity::generate();

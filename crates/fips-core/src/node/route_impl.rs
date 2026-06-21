@@ -120,6 +120,25 @@ impl Node {
             None
         };
 
+        if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
+            let session = self.sessions.get(dest_node_addr)?;
+            let next_hop_addr = session.last_outbound_next_hop()?;
+            if next_hop_addr == *dest_node_addr
+                || !session.is_established()
+                || !session.has_recent_outbound_activity(
+                    now_ms,
+                    self.session_direct_path_exclusive_trust_timeout_ms(),
+                )
+                || !sendable.contains(&next_hop_addr)
+                || !fallback_beats_direct(self, next_hop_addr)
+            {
+                return None;
+            }
+            Some(next_hop_addr)
+        }) {
+            return self.peers.get(&next_hop_addr);
+        }
+
         // 3. Optional reply-learned routing. These entries are not peer
         // claims; they are local observations of which peer carried traffic
         // or a verified lookup response back from the destination. Most

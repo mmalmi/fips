@@ -453,6 +453,11 @@ impl SessionEntry {
             && inbound_data_stale
     }
 
+    pub(crate) fn has_recent_outbound_activity(&self, now_ms: u64, timeout_ms: u64) -> bool {
+        self.last_outbound_frame_ms != 0
+            && now_ms.saturating_sub(self.last_outbound_frame_ms) <= timeout_ms
+    }
+
     /// Remaining DataPackets that should include COORDS_PRESENT.
     pub(crate) fn coords_warmup_remaining(&self) -> u8 {
         self.coords_warmup_remaining
