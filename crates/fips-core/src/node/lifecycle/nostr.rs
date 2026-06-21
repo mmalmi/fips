@@ -275,6 +275,16 @@ impl Node {
                 continue;
             }
 
+            if concrete_budget == 0 && self.active_peer_matches_candidate(&peer_node_addr, addr) {
+                debug!(
+                    npub = %peer_config.npub,
+                    transport_id = %transport_id,
+                    remote_addr = %remote_addr,
+                    "Skipping active current path while candidate race budget is exhausted"
+                );
+                continue;
+            }
+
             if concrete_budget == 0
                 && !started_candidate_this_pass
                 && self.reclaim_lower_priority_inflight_candidate_for_peer(&peer_node_addr, addr)

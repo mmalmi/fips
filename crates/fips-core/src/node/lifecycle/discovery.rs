@@ -185,13 +185,14 @@ impl Node {
                         continue;
                     }
                     let peer_npub = traversal.peer_npub.clone();
-                    if active_refresh
-                        && !self.active_peer_uses_bootstrap_transport(peer_identity.node_addr())
-                        && self.active_peer_has_fresh_link_liveness(peer_identity.node_addr())
-                    {
+                    let fresh_active_path = self
+                        .active_peer_has_fresh_endpoint_data_liveness(peer_identity.node_addr())
+                        || (!self.active_peer_uses_bootstrap_transport(peer_identity.node_addr())
+                            && self.active_peer_has_fresh_link_liveness(peer_identity.node_addr()));
+                    if active_refresh && fresh_active_path {
                         debug!(
                             peer_npub = %peer_npub,
-                            "Ignoring established NAT traversal for already-connected peer on fresh direct path"
+                            "Ignoring established NAT traversal for already-connected peer on fresh active path"
                         );
                         continue;
                     }
