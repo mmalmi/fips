@@ -268,6 +268,11 @@ impl Node {
         &mut self,
         peer_node_addr: &NodeAddr,
     ) {
+        if self.active_peer_has_fresh_link_liveness(peer_node_addr) {
+            self.retry_pending.remove(peer_node_addr);
+            return;
+        }
+
         let keep_retry = self
             .retry_pending
             .get(peer_node_addr)
@@ -279,6 +284,34 @@ impl Node {
         if !keep_retry {
             self.retry_pending.remove(peer_node_addr);
         }
+    }
+
+    fn active_peer_has_fresh_link_liveness(&self, peer_node_addr: &NodeAddr) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        if !peer.is_healthy() || !peer.can_send() {
+            return false;
+        }
+
+        let now_ms = Self::now_ms();
+        let now = std::time::Instant::now();
+        let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        peer.idle_time(now_ms) <= fresh_after_ms
+            || peer
+                .mmp()
+                .and_then(|mmp| mmp.metrics.srtt_age_ms(now))
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+            || self.sessions.iter().any(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
+                    && (entry
+                        .last_authenticated_inbound_age_ms(now_ms)
+                        .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+                        || entry
+                            .last_authenticated_inbound_data_age_ms(now_ms)
+                            .is_some_and(|age_ms| age_ms <= fresh_after_ms))
+            })
     }
 
     pub(in crate::node) fn session_tracks_direct_peer_path(

@@ -567,12 +567,12 @@ async fn authenticated_control_return_does_not_keep_direct_payload_route_trusted
     node.check_link_heartbeats().await;
 
     assert!(
-        node.retry_pending.contains_key(&peer_addr),
-        "authenticated control/session return alone should not suppress proactive direct refresh"
+        !node.retry_pending.contains_key(&peer_addr),
+        "fresh authenticated control/session return can stop direct-probe churn"
     );
     assert!(
-        node.pending_lookups.contains_key(&peer_addr),
-        "authenticated control/session return alone should warm fallback discovery when endpoint data is not returning"
+        !node.pending_lookups.contains_key(&peer_addr),
+        "a known learned fallback can carry payload without starting another lookup"
     );
     let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
     assert_eq!(
@@ -672,14 +672,16 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
         "fresh control traffic must not keep unreturned endpoint data pinned to the suspect direct path"
     );
     assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "fresh control traffic should clear direct-probe retry even while payload trust remains degraded"
+    );
+    assert!(
         node.pending_lookups.contains_key(&peer_addr),
         "active endpoint sends without authenticated endpoint return should warm fallback even when control is fresh"
     );
-    let fallback = node.find_next_hop(&peer_addr).expect("fallback route");
-    assert_eq!(
-        fallback.node_addr(),
-        &transit_addr,
-        "direct-probe fallback warming should seed a learned fallback route before the next payload burst"
+    assert!(
+        node.find_next_hop(&peer_addr).is_none(),
+        "without a learned fallback, payload should queue instead of continuing into the suspect direct tuple"
     );
 }
 
