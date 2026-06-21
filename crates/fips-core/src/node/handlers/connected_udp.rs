@@ -32,18 +32,20 @@
 //! with the live listener and connected sibling in the same reuse group,
 //! the connected `send(2)` path improves the MacBook Wi-Fi sender case
 //! and is now the default for dynamic UDP peers. Peers with a configured
-//! static UDP endpoint stay on wildcard UDP because NAT/VM paths can drift
-//! between the configured endpoint and observed source tuples, and liveness
-//! recovery must accept either path. Operators can configure it through
-//! `node.connected_udp.*`; `FIPS_CONNECTED_UDP` and
-//! `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment overrides for A/B
-//! tests. `node.connected_udp.max_peers` / `FIPS_CONNECTED_UDP_MAX_PEERS`
-//! caps the one-drain-thread-per-peer fast path for large meshes without
-//! disabling wildcard UDP delivery. Peer-cap and fd-budget skips are reported
-//! as perf events so a large mesh can show why some peers stayed on wildcard
-//! UDP without looking like activation failures. The old macOS-specific
-//! `FIPS_MACOS_CONNECTED_UDP=0` is ignored so stale launchd plists do not
-//! disable the now-default fast path.
+//! static UDP endpoint stay on wildcard UDP by default because NAT/VM paths
+//! can drift between the configured endpoint and observed source tuples, and
+//! liveness recovery must accept either path. `FIPS_CONNECTED_UDP=1` may force
+//! the connected fast path for static endpoints during controlled A/B tests,
+//! but only while the observed tuple still matches the configured endpoint.
+//! Operators can configure it through `node.connected_udp.*`;
+//! `FIPS_CONNECTED_UDP` and `FIPS_CONNECTED_UDP_FD_RESERVE` remain environment
+//! overrides for A/B tests. `node.connected_udp.max_peers` /
+//! `FIPS_CONNECTED_UDP_MAX_PEERS` caps the one-drain-thread-per-peer fast path
+//! for large meshes without disabling wildcard UDP delivery. Peer-cap and
+//! fd-budget skips are reported as perf events so a large mesh can show why
+//! some peers stayed on wildcard UDP without looking like activation failures.
+//! The old macOS-specific `FIPS_MACOS_CONNECTED_UDP=0` is ignored so stale
+//! launchd plists do not disable the now-default fast path.
 
 use crate::NodeAddr;
 use crate::node::Node;
@@ -194,16 +196,30 @@ impl Node {
             let Some(addr) = peer.current_addr().cloned() else {
                 return Ok(false);
             };
-            if self
+            if let Some(configured_addr) = self
                 .configured_static_udp_path_for_peer(node_addr, tid)
-                .is_some()
+                .as_ref()
             {
-                debug!(
-                    peer = %self.peer_display_name(node_addr),
-                    current_addr = %addr,
-                    "connected UDP skipped for peer with configured static UDP endpoint"
-                );
-                return Ok(false);
+                let forced = connected_udp_env_forced_enabled();
+                let current_matches_configured = &addr == configured_addr;
+                if connected_udp_static_path_allows_install(forced, current_matches_configured) {
+                    debug!(
+                        peer = %self.peer_display_name(node_addr),
+                        current_addr = %addr,
+                        configured_addr = %configured_addr,
+                        "connected UDP forced for matching configured static UDP endpoint"
+                    );
+                } else {
+                    debug!(
+                        peer = %self.peer_display_name(node_addr),
+                        current_addr = %addr,
+                        configured_addr = %configured_addr,
+                        forced,
+                        current_matches_configured,
+                        "connected UDP skipped for peer with configured static UDP endpoint"
+                    );
+                    return Ok(false);
+                }
             }
             let fast_path = self.connected_udp_decrypt_fast_path_for_peer(node_addr, tid);
             (tid, addr, fast_path)
@@ -347,6 +363,19 @@ impl Node {
     /// call us unconditionally.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub(in crate::node) fn clear_connected_udp_for_peer(&mut self, _node_addr: &NodeAddr) {}
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_env_forced_enabled() -> bool {
+    env_flag("FIPS_CONNECTED_UDP") == Some(true)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn connected_udp_static_path_allows_install(
+    forced: bool,
+    current_matches_configured: bool,
+) -> bool {
+    forced && current_matches_configured
 }
 
 #[cfg(target_os = "linux")]
@@ -493,6 +522,22 @@ mod tests {
         assert_eq!(parse_env_flag("false"), Some(false));
         assert_eq!(parse_env_flag("off"), Some(false));
         assert_eq!(parse_env_flag("maybe"), None);
+    }
+
+    #[test]
+    fn static_configured_path_requires_explicit_force_and_matching_tuple() {
+        assert!(
+            !connected_udp_static_path_allows_install(false, true),
+            "static configured peers stay on wildcard UDP unless explicitly forced"
+        );
+        assert!(
+            !connected_udp_static_path_allows_install(true, false),
+            "forced static connected UDP must not hide configured/observed path drift"
+        );
+        assert!(
+            connected_udp_static_path_allows_install(true, true),
+            "controlled A/B can force static connected UDP when the tuple still matches"
+        );
     }
 
     #[test]
