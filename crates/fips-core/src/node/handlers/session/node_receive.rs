@@ -517,6 +517,7 @@ impl Node {
             source_addr,
             receive_completion: Some(SessionReceiveCompletion {
                 source_addr,
+                previous_hop_addr: *previous_hop_peer.node_addr(),
                 body_len,
                 direct_path,
             }),

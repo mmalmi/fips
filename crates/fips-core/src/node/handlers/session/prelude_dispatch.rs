@@ -351,6 +351,7 @@ struct AuthenticatedSessionDispatch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SessionReceiveCompletion {
     source_addr: NodeAddr,
+    previous_hop_addr: NodeAddr,
     body_len: usize,
     direct_path: bool,
 }
@@ -416,6 +417,7 @@ impl AuthenticatedSessionDispatch {
             .is_application_data()
             .then_some(SessionReceiveCompletion {
                 source_addr: self.source_addr,
+                previous_hop_addr: self.previous_hop_addr,
                 body_len: self.message.body_len(),
                 direct_path: self.previous_hop_addr == self.source_addr,
             })
@@ -580,15 +582,21 @@ impl SessionDispatchCommit {
     fn finish_receive(&self, node: &mut Node) -> SessionDispatchFinish {
         // Only application data resets the idle timer and traffic counters —
         // MMP reports (SenderReport, ReceiverReport, PathMtuNotification) do not.
-        let direct_source_addr = self
-            .receive_completion
-            .filter(|completion| completion.direct_path)
-            .map(|completion| completion.source_addr);
-        let receive_recorded = self.record_receive(&mut node.sessions, Node::now_ms());
+        let now_ms = Node::now_ms();
+        let receive_recorded = self.record_receive(&mut node.sessions, now_ms);
         if receive_recorded
-            && let Some(source_addr) = direct_source_addr
+            && let Some(completion) = self.receive_completion
         {
-            node.clear_retry_unless_direct_refresh_needed(&source_addr);
+            if let Some(peer) = node.peers.get_mut(&completion.previous_hop_addr) {
+                peer.touch(now_ms);
+            }
+
+            let retry_peer = if completion.direct_path {
+                completion.source_addr
+            } else {
+                completion.previous_hop_addr
+            };
+            node.clear_retry_unless_direct_refresh_needed(&retry_peer);
         }
 
         SessionDispatchFinish {
