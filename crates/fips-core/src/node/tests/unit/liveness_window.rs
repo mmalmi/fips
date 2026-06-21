@@ -686,6 +686,73 @@ async fn fresh_control_with_unreturned_endpoint_data_warms_fallback_lookup() {
 }
 
 #[tokio::test]
+async fn fresh_bootstrap_path_keeps_static_direct_refresh_pending() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![
+            crate::config::PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)
+                .with_seen_at_ms(10),
+        ],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config.clone());
+    let link_session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.config.node.heartbeat_interval_secs = 10;
+    node.config.node.link_dead_timeout_secs = 30;
+    node.config.node.fast_link_dead_timeout_secs = 5;
+
+    let bootstrap_transport = TransportId::new(77);
+    let mut active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        0,
+        link_session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        bootstrap_transport,
+        crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    let now_ms = Node::now_ms();
+    active.touch(now_ms);
+    active.mmp_mut().expect("mmp").receiver.record_recv(
+        1,
+        100,
+        64,
+        false,
+        std::time::Instant::now(),
+    );
+    node.peers.insert(peer_addr, active);
+    node.bootstrap_transports.mark(bootstrap_transport);
+
+    let mut retry = super::super::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_after_ms = now_ms;
+    node.retry_pending.insert(peer_addr, retry);
+
+    node.check_link_heartbeats().await;
+
+    assert!(
+        node.retry_pending.contains_key(&peer_addr),
+        "a fresh adopted traversal path must not cancel refresh toward configured direct endpoints"
+    );
+}
+
+#[tokio::test]
 async fn fresh_control_with_unreturned_endpoint_data_blocks_direct_without_known_fallback() {
     let local_identity = Identity::generate();
     let peer_identity = Identity::generate();

@@ -557,6 +557,65 @@ async fn poll_nostr_discovery_established_active_peer_bypasses_peer_capacity() {
     );
 }
 
+#[tokio::test]
+async fn poll_nostr_discovery_established_fresh_active_peer_skips_redundant_traversal() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.9:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).expect("node");
+    node.set_max_peers(1);
+    node.peers.insert(
+        peer_addr,
+        ActivePeer::new(peer, LinkId::new(7), Node::now_ms()),
+    );
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "fresh-active-refresh-session",
+            peer_identity.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    let before_peers = node.peer_count();
+    let before_links = node.link_count();
+    let before_connections = node.connection_count();
+
+    node.poll_nostr_discovery().await;
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.link_count(), before_links);
+    assert_eq!(node.connection_count(), before_connections);
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "fresh active peers should ignore redundant traversal handoffs"
+    );
+}
+
 #[test]
 fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
     use crate::node::session::{EndToEndState, SessionEntry};

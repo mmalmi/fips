@@ -185,6 +185,16 @@ impl Node {
                         continue;
                     }
                     let peer_npub = traversal.peer_npub.clone();
+                    if active_refresh
+                        && !self.active_peer_uses_bootstrap_transport(peer_identity.node_addr())
+                        && self.active_peer_has_fresh_link_liveness(peer_identity.node_addr())
+                    {
+                        debug!(
+                            peer_npub = %peer_npub,
+                            "Ignoring established NAT traversal for already-connected peer on fresh direct path"
+                        );
+                        continue;
+                    }
                     match self.adopt_established_traversal(traversal).await {
                         Ok(_) => {
                             info!(peer_npub = %peer_npub, "Adopted NAT traversal socket");

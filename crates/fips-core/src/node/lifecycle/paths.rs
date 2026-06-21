@@ -268,11 +268,6 @@ impl Node {
         &mut self,
         peer_node_addr: &NodeAddr,
     ) {
-        if self.active_peer_has_fresh_link_liveness(peer_node_addr) {
-            self.retry_pending.remove(peer_node_addr);
-            return;
-        }
-
         let keep_retry = self
             .retry_pending
             .get(peer_node_addr)
@@ -283,10 +278,20 @@ impl Node {
 
         if !keep_retry {
             self.retry_pending.remove(peer_node_addr);
+            return;
+        }
+
+        if !self.active_peer_uses_bootstrap_transport(peer_node_addr)
+            && self.active_peer_has_fresh_link_liveness(peer_node_addr)
+        {
+            self.retry_pending.remove(peer_node_addr);
         }
     }
 
-    fn active_peer_has_fresh_link_liveness(&self, peer_node_addr: &NodeAddr) -> bool {
+    pub(in crate::node) fn active_peer_has_fresh_link_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
@@ -312,6 +317,16 @@ impl Node {
                             .last_authenticated_inbound_data_age_ms(now_ms)
                             .is_some_and(|age_ms| age_ms <= fresh_after_ms))
             })
+    }
+
+    pub(in crate::node) fn active_peer_uses_bootstrap_transport(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
     }
 
     pub(in crate::node) fn session_tracks_direct_peer_path(
