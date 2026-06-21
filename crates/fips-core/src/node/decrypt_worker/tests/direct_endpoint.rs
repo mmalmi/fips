@@ -1048,3 +1048,49 @@
             "FSP owner bulk service should drain one bounded completion slice per bulk packet"
         );
     }
+
+    #[test]
+    fn decrypt_worker_single_fsp_bulk_packet_drains_backlogged_owner_completion_slice() {
+        let mut shard = test_shard();
+        let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let fmp_aead_completion_rx = test_fmp_aead_completion_lane(1);
+        let tail_above_backlog = 5;
+        let completion_count = DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG
+            + DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET
+            + tail_above_backlog;
+        let (fsp_completion_tx, fsp_aead_completion_rx) =
+            bounded::<FspAeadCompletionBatch>(completion_count);
+        let source_addr = *test_source_peer().node_addr();
+        for sequence in 0..completion_count {
+            fsp_completion_tx
+                .try_send(dummy_fsp_aead_completion_batch(
+                    source_addr,
+                    sequence as u64,
+                ))
+                .expect("completion lane should have room");
+        }
+
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        let mut batch_stats = DecryptWorkerBatchStats::enabled_for_test();
+        let processed = handle_bulk_item(
+            0,
+            &mut shard,
+            &control_rx,
+            &priority_rx,
+            &fmp_aead_completion_rx,
+            &fsp_aead_completion_rx,
+            DecryptWorkerBulkItem::FspJob(dummy_fsp_job(
+                DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1,
+            )),
+            &mut plaintext_batch,
+            &mut batch_stats,
+        );
+
+        assert_eq!(processed, 1);
+        assert_eq!(
+            fsp_aead_completion_rx.len(),
+            DEFAULT_DECRYPT_FSP_OPEN_WORKER_MAX_COMPLETION_BACKLOG + tail_above_backlog,
+            "a single FSP bulk packet should drain one bounded slice only above the owner backlog guardrail"
+        );
+    }
