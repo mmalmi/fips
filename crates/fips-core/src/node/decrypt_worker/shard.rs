@@ -279,7 +279,7 @@ impl DecryptWorkerShard {
         }
         let shared = self
             .pool
-            .fsp_bulk_open_worker_enabled()
+            .fsp_open_worker_available_avoiding(idx)
             .then(|| state.shared_crypto_session(idx))
             .flatten()
             .map(Arc::new);
@@ -528,12 +528,9 @@ impl DecryptWorkerShard {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
         let owner_idx = shared.owner_idx;
-        if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
+        if owner_idx != idx || !self.pool.fsp_open_worker_available_avoiding(idx) {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
-        let Some(open_idx) = self.pool.worker_idx_for_fsp_open_avoiding(&source_addr, idx) else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
-        };
         let payload_end = job.fsp_payload_offset.saturating_add(job.fsp_payload_len);
         let Some(payload) = job.fallback.packet_data.get(job.fsp_payload_offset..payload_end)
         else {
@@ -546,6 +543,13 @@ impl DecryptWorkerShard {
         if received_k_bit != shared.current_k_bit {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
+        let next_ticket_sequence = shared.next_ticket.load(Ordering::Relaxed);
+        let Some(open_idx) =
+            self.pool
+                .worker_idx_for_fsp_open_avoiding(&source_addr, idx, next_ticket_sequence)
+        else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
         let Some(ticket) = shared.try_issue_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
@@ -553,6 +557,7 @@ impl DecryptWorkerShard {
             );
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
+        debug_assert_eq!(ticket.sequence, next_ticket_sequence);
 
         let open_job = FspAeadOpenJob {
             source_addr,
