@@ -411,8 +411,8 @@ mod mac_queue_tests {
     }
 
     #[test]
-    fn macos_ordered_sender_defaults_on_but_can_opt_out() {
-        assert!(parse_macos_ordered_sender_enabled(None));
+    fn macos_ordered_sender_defaults_off_but_can_opt_in() {
+        assert!(!parse_macos_ordered_sender_enabled(None));
         assert!(parse_macos_ordered_sender_enabled(Some("1")));
         assert!(parse_macos_ordered_sender_enabled(Some("true")));
         assert!(parse_macos_ordered_sender_enabled(Some("unexpected")));
