@@ -17,7 +17,7 @@ const MAX_ACTIVE_DIRECT_REFRESH_RETRIES_PER_TICK: usize = 2;
 const LOCAL_ROUTE_RETRY_DELAY_MS: u64 = 2_000;
 const LINK_DEAD_DIRECT_REPROBE_DELAY_MS: u64 = 500;
 const LINK_DEAD_DIRECT_REPROBE_JITTER_MS: u64 = 1_000;
-const QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS: u64 = 1_000;
+const QUIET_TRAVERSAL_DIRECT_REFRESH_JITTER_MS: u64 = 10_000;
 const ACTIVE_DIRECT_REFRESH_NO_TRANSPORT_COOLDOWN_MS: u64 = 30_000;
 
 fn node_addr_jitter_ms(node_addr: &NodeAddr, max_ms: u64) -> u64 {
@@ -918,6 +918,22 @@ mod tests {
             reconnect: true,
             expires_at_ms,
         }
+    }
+
+    #[test]
+    fn quiet_traversal_refresh_jitter_spreads_across_heartbeat_window() {
+        let samples = (0u8..=32)
+            .map(|byte| quiet_traversal_refresh_jitter_ms(&test_addr(byte)))
+            .collect::<Vec<_>>();
+
+        assert!(
+            samples.iter().all(|jitter| *jitter <= 10_000),
+            "quiet traversal refresh jitter must stay within the heartbeat-sized spread window"
+        );
+        assert!(
+            samples.iter().any(|jitter| *jitter > 1_000),
+            "quiet traversal refreshes should not collapse roster probes into the old one-second window"
+        );
     }
 
     #[test]
