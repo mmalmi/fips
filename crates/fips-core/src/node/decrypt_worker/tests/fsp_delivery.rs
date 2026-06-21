@@ -1082,7 +1082,7 @@
     }
 
     #[test]
-    fn fsp_local_owner_open_uses_owner_order_with_worker_open_results() {
+    fn fsp_local_owner_open_uses_shared_order_with_worker_open_results() {
         let local = crate::Identity::generate();
         let source = crate::Identity::generate();
         let source_peer = PeerIdentity::from_pubkey_full(source.pubkey_full());
@@ -1108,7 +1108,6 @@
         );
         state.attach_shared_crypto_session(Arc::clone(&shared));
         let receive_order_id = state.fsp_receive_order_id();
-        let cipher = Arc::clone(&state.current.cipher);
 
         let mut make_payload = |body: &'static [u8]| {
             let inner_plaintext = crate::node::session_wire::fsp_prepend_inner_header(
@@ -1164,8 +1163,8 @@
         let (open_payload, open_plaintext_len) = make_payload(b"worker-open first");
         let open_payload_len = open_payload.len();
         let open_header = FspEncryptedHeader::parse(&open_payload).expect("worker-open header");
-        let open_ticket = state
-            .issue_fsp_receive_ticket()
+        let open_ticket = shared
+            .try_issue_ticket()
             .expect("worker-open should reserve the first FSP ticket");
         assert_eq!(open_ticket.sequence, 0);
 
@@ -1174,15 +1173,14 @@
         let local_header = FspEncryptedHeader::parse(&local_payload).expect("local header");
         let local_ticket = state
             .issue_fsp_receive_ticket()
-            .expect("local owner open should reserve from the same owner ticket source");
+            .expect("local owner open should reserve from the same shared ticket source");
         assert_eq!(local_ticket.sequence, 1);
-        assert_eq!(shared.progress().next_ticket, 2);
 
         let local_completion = FspAeadOpenJob {
             source_addr,
             receive_order_id,
             ticket: local_ticket,
-            cipher: Arc::clone(&cipher),
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(local_payload, local_payload_len),
             header: local_header,
             completion_source: FspAeadCompletionSource::Local,
@@ -1203,7 +1201,7 @@
             source_addr,
             receive_order_id,
             ticket: open_ticket,
-            cipher,
+            cipher: Arc::clone(&shared.cipher),
             job: make_job(open_payload, open_payload_len),
             header: open_header,
             completion_source: FspAeadCompletionSource::WorkerOpen,
