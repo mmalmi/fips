@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.75] - 2026-06-21
+
+### Fixed
+
+- Kept discovered direct paths from carrying endpoint payload until fresh
+  authenticated return data proves the path after NAT or network changes.
+- Spread quiet traversal reprobes so mobile/NAT recovery does not burst retries
+  for every configured peer at once.
+- Rejected off-subnet private UDP hints when the local interface state shows
+  they cannot be on the current LAN, preventing stale LAN addresses from
+  overriding viable fallback paths.
+- Bumped `fips-endpoint` to 0.3.50 so app-facing consumers pick up the
+  `fips-core` 0.3.75 direct-path reliability fixes.
+
 ## [0.3.74] - 2026-06-21
 
 ### Fixed
