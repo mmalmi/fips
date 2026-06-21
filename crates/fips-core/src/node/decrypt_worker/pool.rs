@@ -260,23 +260,16 @@ impl DecryptWorkerPool {
         &self,
         source_addr: &NodeAddr,
         avoid_idx: usize,
-        ticket_sequence: u64,
     ) -> Option<usize> {
         let worker_count = self.senders.len();
         if worker_count <= 1 || avoid_idx >= worker_count {
             return None;
         }
-        let spread_key = decrypt_fsp_open_worker_fast_hash(source_addr)
-            .wrapping_add(ticket_sequence.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let mut idx = (spread_key as usize) % (worker_count - 1);
+        let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 1);
         if idx >= avoid_idx {
             idx += 1;
         }
         Some(idx)
-    }
-
-    fn fsp_open_worker_available_avoiding(&self, avoid_idx: usize) -> bool {
-        self.senders.len() > 1 && avoid_idx < self.senders.len()
     }
 
     fn bulk_batch_packet_max_for(&self, idx: usize) -> usize {
