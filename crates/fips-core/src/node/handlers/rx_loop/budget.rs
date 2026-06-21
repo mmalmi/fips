@@ -35,6 +35,9 @@ pub(super) const PACKET_DRAIN_BUDGET: usize = 512;
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT: Duration = Duration::from_millis(100);
 pub(super) const RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT: Duration = Duration::from_millis(10);
 pub(super) const RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW: Duration = Duration::from_secs(2);
+/// Slow discovery/stat work may yield to dataplane pressure, but not forever:
+/// after a few skipped pressure ticks it gets one busy-timeboxed turn.
+pub(super) const RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS: u8 = 4;
 const RX_LOOP_FAULT_MAX_DELAY_MS: u64 = 5_000;
 
 pub(super) fn non_packet_drain_budget(packet_budget: usize) -> usize {

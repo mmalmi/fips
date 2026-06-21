@@ -1,8 +1,9 @@
 use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
-    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget,
+    NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+    RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
+    authenticated_bulk_preempts_packet_rx, fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -314,9 +315,13 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     let mut state = RxLoopMaintenanceState::default();
 
     assert!(!state.data_pressure(empty, start, window));
-    assert!(!state.skip_slow_maintenance(empty, false));
+    assert!(!state.skip_slow_maintenance(
+        empty,
+        false,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS
+    ));
     assert!(
-        state.skip_slow_maintenance(drained, true),
+        state.skip_slow_maintenance(drained, true, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS),
         "queued dataplane work should reserve the tick for fast maintenance only"
     );
 
@@ -325,15 +330,43 @@ fn rx_loop_maintenance_state_owns_activity_window_and_timeout_skip() {
     assert!(!state.data_pressure(empty, start + Duration::from_secs(3), window));
     assert!(state.data_pressure(drained, start + Duration::from_secs(3), window));
 
-    state.record_maintenance_result(true, true);
-    assert!(state.skip_slow_maintenance(empty, true));
-    assert!(!state.skip_slow_maintenance(empty, false));
+    state.record_maintenance_result(
+        RxLoopMaintenancePlan::new(
+            true,
+            false,
+            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+        ),
+        true,
+    );
+    assert!(state.skip_slow_maintenance(empty, true, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS));
+    assert!(!state.skip_slow_maintenance(
+        empty,
+        false,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS
+    ));
 
-    state.record_maintenance_result(true, false);
-    assert!(state.skip_slow_maintenance(empty, true));
+    state.record_maintenance_result(
+        RxLoopMaintenancePlan::new(
+            true,
+            false,
+            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+        ),
+        false,
+    );
+    assert!(!state.skip_slow_maintenance(empty, true, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS));
 
-    state.record_maintenance_result(false, true);
-    assert!(!state.skip_slow_maintenance(empty, true));
+    state.record_maintenance_result(
+        RxLoopMaintenancePlan::new(
+            false,
+            false,
+            RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
+            RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+        ),
+        true,
+    );
+    assert!(!state.skip_slow_maintenance(empty, true, RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS));
 }
 
 #[test]
@@ -346,7 +379,14 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
     let drained = RxLoopDataDrainStats::new(1, 0, 0);
     let mut state = RxLoopMaintenanceState::default();
 
-    let idle = state.plan_maintenance(empty, start, window, idle_timeout, busy_timeout);
+    let idle = state.plan_maintenance(
+        empty,
+        start,
+        window,
+        idle_timeout,
+        busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
+    );
     assert_eq!(
         idle,
         RxLoopMaintenancePlan::new(false, false, idle_timeout, busy_timeout)
@@ -365,17 +405,19 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
         window,
         idle_timeout,
         busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
     );
     assert!(recent_busy.data_pressure());
     assert_eq!(recent_busy.slow_timeout(), Some(busy_timeout));
 
-    state.record_maintenance_result(true, true);
+    state.record_maintenance_result(recent_busy, true);
     let skipped_busy_after_timeout = state.plan_maintenance(
         empty,
         start + Duration::from_secs(1),
         window,
         idle_timeout,
         busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
     );
     assert!(skipped_busy_after_timeout.data_pressure());
     assert_eq!(skipped_busy_after_timeout.slow_timeout(), None);
@@ -386,6 +428,7 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
         window,
         idle_timeout,
         busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
     );
     assert!(skipped_busy_with_queued_data.data_pressure());
     assert_eq!(skipped_busy_with_queued_data.slow_timeout(), None);
@@ -396,9 +439,58 @@ fn rx_loop_maintenance_plan_owns_pressure_skip_and_timeout_budget() {
         window,
         idle_timeout,
         busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
     );
     assert!(!expired_idle.data_pressure());
     assert_eq!(expired_idle.slow_timeout(), Some(idle_timeout));
+}
+
+#[test]
+fn rx_loop_maintenance_pressure_skips_are_bounded() {
+    let start = Instant::now();
+    let window = Duration::from_secs(2);
+    let idle_timeout = Duration::from_millis(100);
+    let busy_timeout = Duration::from_millis(10);
+    let drained = RxLoopDataDrainStats::new(1, 0, 0);
+    let mut state = RxLoopMaintenanceState::default();
+
+    for _ in 0..RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS {
+        let skipped = state.plan_maintenance(
+            drained,
+            start,
+            window,
+            idle_timeout,
+            busy_timeout,
+            RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
+        );
+        assert!(skipped.data_pressure());
+        assert!(skipped.slow_maintenance_skipped());
+        assert_eq!(skipped.slow_timeout(), None);
+        state.record_maintenance_result(skipped, false);
+    }
+
+    let bounded_progress = state.plan_maintenance(
+        drained,
+        start,
+        window,
+        idle_timeout,
+        busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
+    );
+    assert!(bounded_progress.data_pressure());
+    assert!(!bounded_progress.slow_maintenance_skipped());
+    assert_eq!(bounded_progress.slow_timeout(), Some(busy_timeout));
+
+    state.record_maintenance_result(bounded_progress, false);
+    let skipped_again = state.plan_maintenance(
+        drained,
+        start,
+        window,
+        idle_timeout,
+        busy_timeout,
+        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
+    );
+    assert!(skipped_again.slow_maintenance_skipped());
 }
 
 #[tokio::test]

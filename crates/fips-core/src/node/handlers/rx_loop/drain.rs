@@ -151,6 +151,7 @@ impl RxLoopDataDrainStats {
 pub(super) struct RxLoopMaintenanceState {
     last_data_activity: Option<Instant>,
     slow_maintenance_timed_out_under_data: bool,
+    consecutive_slow_maintenance_skips: u8,
 }
 
 impl RxLoopMaintenanceState {
@@ -171,8 +172,11 @@ impl RxLoopMaintenanceState {
         &self,
         drained: RxLoopDataDrainStats,
         data_pressure: bool,
+        max_pressure_skips: u8,
     ) -> bool {
-        drained.has_data_drained() || (data_pressure && self.slow_maintenance_timed_out_under_data)
+        let pressure_skip = drained.has_data_drained()
+            || (data_pressure && self.slow_maintenance_timed_out_under_data);
+        pressure_skip && self.consecutive_slow_maintenance_skips < max_pressure_skips
     }
 
     pub(super) fn plan_maintenance(
@@ -182,21 +186,35 @@ impl RxLoopMaintenanceState {
         activity_window: Duration,
         idle_timeout: Duration,
         busy_timeout: Duration,
+        max_pressure_skips: u8,
     ) -> RxLoopMaintenancePlan {
         let data_pressure = self.data_pressure(drained, now, activity_window);
         RxLoopMaintenancePlan::new(
             data_pressure,
-            self.skip_slow_maintenance(drained, data_pressure),
+            self.skip_slow_maintenance(drained, data_pressure, max_pressure_skips),
             idle_timeout,
             busy_timeout,
         )
     }
 
-    pub(super) fn record_maintenance_result(&mut self, data_pressure: bool, slow_timed_out: bool) {
-        if !data_pressure {
+    pub(super) fn record_maintenance_result(
+        &mut self,
+        plan: RxLoopMaintenancePlan,
+        slow_timed_out: bool,
+    ) {
+        if plan.slow_maintenance_skipped() {
+            self.consecutive_slow_maintenance_skips =
+                self.consecutive_slow_maintenance_skips.saturating_add(1);
+        } else {
+            self.consecutive_slow_maintenance_skips = 0;
+        }
+
+        if !plan.data_pressure() {
             self.slow_maintenance_timed_out_under_data = false;
         } else if slow_timed_out {
             self.slow_maintenance_timed_out_under_data = true;
+        } else if !plan.slow_maintenance_skipped() {
+            self.slow_maintenance_timed_out_under_data = false;
         }
     }
 
@@ -210,6 +228,7 @@ impl RxLoopMaintenanceState {
 pub(super) struct RxLoopMaintenancePlan {
     data_pressure: bool,
     slow_timeout: Option<Duration>,
+    slow_maintenance_skipped: bool,
 }
 
 impl RxLoopMaintenancePlan {
@@ -219,7 +238,8 @@ impl RxLoopMaintenancePlan {
         idle_timeout: Duration,
         busy_timeout: Duration,
     ) -> Self {
-        let slow_timeout = if data_pressure && skip_slow_maintenance {
+        let slow_maintenance_skipped = data_pressure && skip_slow_maintenance;
+        let slow_timeout = if slow_maintenance_skipped {
             None
         } else if data_pressure {
             Some(busy_timeout)
@@ -230,6 +250,7 @@ impl RxLoopMaintenancePlan {
         Self {
             data_pressure,
             slow_timeout,
+            slow_maintenance_skipped,
         }
     }
 
@@ -239,6 +260,10 @@ impl RxLoopMaintenancePlan {
 
     pub(super) fn slow_timeout(&self) -> Option<Duration> {
         self.slow_timeout
+    }
+
+    pub(super) fn slow_maintenance_skipped(&self) -> bool {
+        self.slow_maintenance_skipped
     }
 }
 

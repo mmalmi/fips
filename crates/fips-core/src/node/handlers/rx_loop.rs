@@ -215,13 +215,14 @@ impl Node {
                         RX_LOOP_RECENT_DATA_ACTIVITY_WINDOW,
                         RX_LOOP_SLOW_MAINTENANCE_IDLE_TIMEOUT,
                         RX_LOOP_SLOW_MAINTENANCE_BUSY_TIMEOUT,
+                        RX_LOOP_SLOW_MAINTENANCE_MAX_PRESSURE_SKIPS,
                     );
 
                     let slow_timed_out = self.run_rx_loop_maintenance_tick(
                         maintenance_plan,
                     ).await;
                     maintenance_state.record_maintenance_result(
-                        maintenance_plan.data_pressure(),
+                        maintenance_plan,
                         slow_timed_out,
                     );
 
