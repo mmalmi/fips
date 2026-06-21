@@ -173,6 +173,7 @@ impl Node {
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
+                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -191,6 +192,7 @@ impl Node {
                     let drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
+                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -226,6 +228,7 @@ impl Node {
                     let post_drained = self.drain_rx_loop_data_queues(
                         &mut packet_rx,
                         &mut decrypt_fallback_rx,
+                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -255,6 +258,7 @@ impl Node {
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
+                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -307,6 +311,7 @@ impl Node {
                                 &mut decrypt_fallback_rx,
                                 Some(RxLoopSideQueues {
                                     control_query_rx: &mut control_query_rx,
+                                    endpoint_bulk_feedback_rx: &mut endpoint_bulk_feedback_rx,
                                     tun_outbound_rx: &mut tun_outbound_rx,
                                     endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
                                     endpoint_command_rx: &mut endpoint_command_rx,
@@ -332,6 +337,7 @@ impl Node {
                     ).await;
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
+                        &mut endpoint_bulk_feedback_rx,
                         &mut tun_outbound_rx,
                         &mut endpoint_priority_command_rx,
                         &mut endpoint_command_rx,
@@ -389,6 +395,7 @@ impl Node {
         &mut self,
         packet_rx: &mut PacketRx,
         decrypt_fallback_rx: &mut DecryptWorkerFallbackReceivers,
+        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
@@ -404,6 +411,11 @@ impl Node {
         } else {
             0
         };
+        let drained_endpoint_feedback = self.drain_endpoint_bulk_send_feedback(
+            endpoint_bulk_feedback_rx,
+            None,
+            non_packet_budget,
+        );
         let drained_tun = self
             .drain_tun_outbound(tun_outbound_rx, None, non_packet_budget)
             .await;
@@ -416,9 +428,10 @@ impl Node {
                 non_packet_budget,
             )
             .await;
-        RxLoopDataDrainStats::with_decrypt(
+        RxLoopDataDrainStats::with_feedback(
             drained_packets,
             drained_decrypt,
+            drained_endpoint_feedback,
             drained_tun,
             drained_endpoint,
         )
@@ -492,6 +505,7 @@ impl Node {
                         if rx_loop_side_queues_have_ready(side_queues) {
                             self.drain_rx_loop_side_queues(
                                 side_queues.control_query_rx,
+                                side_queues.endpoint_bulk_feedback_rx,
                                 side_queues.tun_outbound_rx,
                                 side_queues.endpoint_priority_command_rx,
                                 side_queues.endpoint_command_rx,
@@ -536,16 +550,20 @@ impl Node {
     async fn drain_rx_loop_side_queues(
         &mut self,
         control_query_rx: &mut Receiver<ControlMessage>,
+        endpoint_bulk_feedback_rx: &mut Receiver<crate::node::EndpointBulkSendFeedback>,
         tun_outbound_rx: &mut TunOutboundRx,
         endpoint_priority_command_rx: &mut Receiver<NodeEndpointCommand>,
         endpoint_command_rx: &mut Receiver<NodeEndpointCommand>,
         budget: usize,
     ) -> RxLoopDataDrainStats {
-        let control_budget = budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
+        let drained_endpoint_feedback =
+            self.drain_endpoint_bulk_send_feedback(endpoint_bulk_feedback_rx, None, budget);
+        let feedback_remaining_budget = budget.saturating_sub(drained_endpoint_feedback);
+        let control_budget = feedback_remaining_budget.min(CONTROL_QUERY_INTERLEAVE_BUDGET);
         let drained_control = self
             .drain_control_queries(control_query_rx, None, control_budget)
             .await;
-        let remaining_budget = budget.saturating_sub(drained_control);
+        let remaining_budget = feedback_remaining_budget.saturating_sub(drained_control);
         let (endpoint_budget, tun_budget) = split_side_queue_budget(remaining_budget);
         let mut drained_endpoint = self
             .drain_endpoint_commands(
@@ -581,7 +599,13 @@ impl Node {
                 .await;
         }
 
-        RxLoopDataDrainStats::with_control(0, drained_tun, drained_endpoint, drained_control)
+        RxLoopDataDrainStats::with_control(
+            0,
+            drained_endpoint_feedback,
+            drained_tun,
+            drained_endpoint,
+            drained_control,
+        )
     }
 
     async fn drain_control_queries(

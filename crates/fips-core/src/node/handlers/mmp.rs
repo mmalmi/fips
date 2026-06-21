@@ -796,13 +796,27 @@ impl Node {
         if let Some(session_age_ms) = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                entry.is_established() && entry.last_outbound_next_hop() == Some(*node_addr)
+            .filter(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, node_addr)
+            })
+            .filter_map(|(_, entry)| entry.last_authenticated_inbound_age_ms(now_ms))
+            .min()
+        {
+            quiet_for = quiet_for.min(Duration::from_millis(session_age_ms));
+        }
+
+        if let Some(session_data_age_ms) = self
+            .sessions
+            .iter()
+            .filter(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, node_addr)
             })
             .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
             .min()
         {
-            quiet_for = quiet_for.min(Duration::from_millis(session_age_ms));
+            quiet_for = quiet_for.min(Duration::from_millis(session_data_age_ms));
         }
 
         quiet_for

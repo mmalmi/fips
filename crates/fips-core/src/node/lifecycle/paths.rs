@@ -1,4 +1,5 @@
 use super::*;
+use crate::node::SessionEntry;
 
 impl Node {
     pub(in crate::node) async fn try_peer_addresses(
@@ -217,7 +218,7 @@ impl Node {
                 .transport_id()
                 .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
             {
-                return true;
+                return !self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr);
             }
             let same_path_refresh_needed = self.active_peer_needs_same_path_refresh(peer_node_addr);
             if peer.is_healthy()
@@ -278,7 +279,87 @@ impl Node {
 
         if !keep_retry {
             self.retry_pending.remove(peer_node_addr);
+            return;
         }
+
+        if self.active_peer_has_fresh_endpoint_data_liveness(peer_node_addr)
+            || (!self.active_peer_uses_bootstrap_transport(peer_node_addr)
+                && self.active_peer_has_fresh_link_liveness(peer_node_addr))
+        {
+            self.retry_pending.remove(peer_node_addr);
+        }
+    }
+
+    pub(in crate::node) fn active_peer_has_fresh_endpoint_data_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        if !peer.is_healthy() || !peer.can_send() {
+            return false;
+        }
+
+        let now_ms = Self::now_ms();
+        let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        self.sessions.iter().any(|(dest_addr, entry)| {
+            entry.is_established()
+                && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
+                && entry
+                    .last_authenticated_inbound_data_age_ms(now_ms)
+                    .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+        })
+    }
+
+    pub(in crate::node) fn active_peer_has_fresh_link_liveness(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        let Some(peer) = self.peers.get(peer_node_addr) else {
+            return false;
+        };
+        if !peer.is_healthy() || !peer.can_send() {
+            return false;
+        }
+
+        let now_ms = Self::now_ms();
+        let now = std::time::Instant::now();
+        let fresh_after_ms = self.session_direct_path_exclusive_trust_timeout_ms();
+        peer.idle_time(now_ms) <= fresh_after_ms
+            || peer
+                .mmp()
+                .and_then(|mmp| mmp.metrics.srtt_age_ms(now))
+                .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+            || self.sessions.iter().any(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
+                    && (entry
+                        .last_authenticated_inbound_age_ms(now_ms)
+                        .is_some_and(|age_ms| age_ms <= fresh_after_ms)
+                        || entry
+                            .last_authenticated_inbound_data_age_ms(now_ms)
+                            .is_some_and(|age_ms| age_ms <= fresh_after_ms))
+            })
+    }
+
+    pub(in crate::node) fn active_peer_uses_bootstrap_transport(
+        &self,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        self.peers
+            .get(peer_node_addr)
+            .and_then(|peer| peer.transport_id())
+            .is_some_and(|transport_id| self.bootstrap_transports.contains(&transport_id))
+    }
+
+    pub(in crate::node) fn session_tracks_direct_peer_path(
+        dest_addr: &NodeAddr,
+        entry: &SessionEntry,
+        peer_node_addr: &NodeAddr,
+    ) -> bool {
+        entry.last_outbound_next_hop() == Some(*peer_node_addr)
+            || (dest_addr == peer_node_addr && entry.last_outbound_next_hop().is_none())
     }
 
     pub(in crate::node) fn active_peer_needs_same_path_refresh(
@@ -289,9 +370,9 @@ impl Node {
             return false;
         };
         let now_ms = Self::now_ms();
-        if self.sessions.iter().any(|(_, entry)| {
+        if self.sessions.iter().any(|(dest_addr, entry)| {
             entry.is_established()
-                && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+                && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
                 && entry.has_recent_outbound_without_inbound(
                     now_ms,
                     self.session_direct_path_exclusive_trust_timeout_ms(),
@@ -309,8 +390,9 @@ impl Node {
         if let Some(session_age_ms) = self
             .sessions
             .iter()
-            .filter(|(_, entry)| {
-                entry.is_established() && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+            .filter(|(dest_addr, entry)| {
+                entry.is_established()
+                    && Self::session_tracks_direct_peer_path(dest_addr, entry, peer_node_addr)
             })
             .filter_map(|(_, entry)| entry.last_authenticated_inbound_data_age_ms(now_ms))
             .min()

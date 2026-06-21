@@ -287,6 +287,16 @@ impl Node {
                 && is_configured_static_udp
                 && !reclaimed_after_active_current_path_this_pass;
 
+            if concrete_budget == 0 && is_active_current_path {
+                debug!(
+                    npub = %peer_config.npub,
+                    transport_id = %transport_id,
+                    remote_addr = %remote_addr,
+                    "Skipping active current path while candidate race budget is exhausted"
+                );
+                continue;
+            }
+
             if concrete_budget == 0
                 && (!started_candidate_this_pass || may_reclaim_after_started)
                 && self.reclaim_lower_priority_inflight_candidate_for_peer(&peer_node_addr, addr)

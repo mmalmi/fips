@@ -557,6 +557,160 @@ async fn poll_nostr_discovery_established_active_peer_bypasses_peer_capacity() {
     );
 }
 
+#[tokio::test]
+async fn poll_nostr_discovery_established_fresh_active_peer_skips_redundant_traversal() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.9:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.peers.push(peer_config);
+    let mut node = Node::new(config).expect("node");
+    node.set_max_peers(1);
+    node.peers.insert(
+        peer_addr,
+        ActivePeer::new(peer, LinkId::new(7), Node::now_ms()),
+    );
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "fresh-active-refresh-session",
+            peer_identity.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    let before_peers = node.peer_count();
+    let before_links = node.link_count();
+    let before_connections = node.connection_count();
+
+    node.poll_nostr_discovery().await;
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.link_count(), before_links);
+    assert_eq!(node.connection_count(), before_connections);
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "fresh active peers should ignore redundant traversal handoffs"
+    );
+}
+
+#[tokio::test]
+async fn poll_nostr_discovery_established_fresh_bootstrap_data_skips_redundant_traversal() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let app_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "203.0.113.9:2121",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    let peer = PeerIdentity::from_npub(&peer_config.npub).expect("peer identity");
+    let peer_addr = *peer.node_addr();
+    let app_peer = PeerIdentity::from_pubkey_full(app_identity.pubkey_full());
+    let app_addr = *app_peer.node_addr();
+
+    let mut config = Config::new();
+    config.node.discovery.nostr.enabled = true;
+    config.node.routing.mode = crate::config::RoutingMode::ReplyLearned;
+    config.peers.push(peer_config);
+    let link_session = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let endpoint_session = make_test_fmp_session(&local_identity, &app_identity, [3; 8], [4; 8]);
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    node.set_max_peers(1);
+
+    let bootstrap_transport = TransportId::new(77);
+    let active = ActivePeer::with_session(
+        peer,
+        LinkId::new(7),
+        Node::now_ms(),
+        link_session,
+        crate::utils::index::SessionIndex::new(11),
+        crate::utils::index::SessionIndex::new(12),
+        bootstrap_transport,
+        crate::transport::TransportAddr::from_string("198.51.100.9:44444"),
+        crate::transport::LinkStats::new(),
+        true,
+        &crate::mmp::MmpConfig::default(),
+        None,
+    );
+    node.peers.insert(peer_addr, active);
+    node.bootstrap_transports.mark(bootstrap_transport);
+
+    let now_ms = Node::now_ms();
+    let mut session = crate::node::session::SessionEntry::new(
+        app_addr,
+        app_identity.pubkey_full(),
+        crate::node::session::EndToEndState::Established(endpoint_session),
+        1_000,
+        true,
+    );
+    session.record_sent(512);
+    session.touch_outbound_frame(now_ms);
+    session.record_recv(512);
+    session.touch_inbound_data_frame(now_ms);
+    session.record_outbound_next_hop(peer_addr);
+    node.sessions.insert(app_addr, session);
+
+    let bootstrap = std::sync::Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "fresh-bootstrap-refresh-session",
+            peer_identity.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    let before_peers = node.peer_count();
+    let before_links = node.link_count();
+    let before_connections = node.connection_count();
+
+    node.poll_nostr_discovery().await;
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.link_count(), before_links);
+    assert_eq!(node.connection_count(), before_connections);
+    assert!(
+        !node.retry_pending.contains_key(&peer_addr),
+        "fresh endpoint data on a bootstrap path should ignore redundant traversal handoffs"
+    );
+}
+
 #[test]
 fn mesh_signaling_allows_configured_roster_peer_without_established_session() {
     use crate::node::session::{EndToEndState, SessionEntry};

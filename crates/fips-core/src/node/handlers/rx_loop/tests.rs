@@ -11,7 +11,42 @@ use super::drain::{
 };
 use crate::control::protocol::Request;
 use crate::node::decrypt_worker::DecryptWorkerEvent;
+#[cfg(unix)]
+use crate::{
+    Identity,
+    node::session::{EndToEndState, SessionEntry},
+    noise::HandshakeState,
+};
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+fn make_xk_session(initiator: &Identity, responder: &Identity) -> crate::noise::NoiseSession {
+    let mut initiator_hs =
+        HandshakeState::new_xk_initiator(initiator.keypair(), responder.pubkey_full());
+    let mut responder_hs = HandshakeState::new_xk_responder(responder.keypair());
+    initiator_hs.set_local_epoch([1u8; 8]);
+    responder_hs.set_local_epoch([2u8; 8]);
+
+    let msg1 = initiator_hs.write_xk_message_1().unwrap();
+    responder_hs.read_xk_message_1(&msg1).unwrap();
+    let msg2 = responder_hs.write_xk_message_2().unwrap();
+    initiator_hs.read_xk_message_2(&msg2).unwrap();
+    let msg3 = initiator_hs.write_xk_message_3().unwrap();
+    responder_hs.read_xk_message_3(&msg3).unwrap();
+
+    initiator_hs.into_session().unwrap()
+}
+
+#[cfg(unix)]
+fn established_entry(local: &Identity, peer: &Identity) -> SessionEntry {
+    SessionEntry::new(
+        *peer.node_addr(),
+        peer.pubkey_full(),
+        EndToEndState::Established(make_xk_session(local, peer)),
+        1_000,
+        true,
+    )
+}
 
 #[test]
 fn non_packet_drain_budget_caps_large_packet_turns() {
@@ -85,7 +120,7 @@ fn rx_loop_data_drain_stats_owns_counts_total_and_pressure() {
     assert!(drained.data_pressure(false));
     assert!(drained.data_pressure(true));
 
-    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 2);
+    let control_only = RxLoopDataDrainStats::with_control(0, 0, 0, 0, 2);
     assert_eq!(control_only.data_total(), 0);
     assert_eq!(control_only.total(), 2);
     assert!(control_only.has_drained());
@@ -112,6 +147,7 @@ async fn rx_loop_side_queue_readiness_includes_control_queries() {
     );
 
     let (control_tx, mut control_rx) = tokio::sync::mpsc::channel(1);
+    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
@@ -130,6 +166,7 @@ async fn rx_loop_side_queue_readiness_includes_control_queries() {
 
     let side_queues = RxLoopSideQueues {
         control_query_rx: &mut control_rx,
+        endpoint_bulk_feedback_rx: &mut feedback_rx,
         tun_outbound_rx: &mut tun_rx,
         endpoint_priority_command_rx: &mut endpoint_priority_rx,
         endpoint_command_rx: &mut endpoint_rx,
@@ -175,6 +212,7 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
     let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
     let (fallback_tx, mut fallback_rx) =
         crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let (_feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
     let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
     let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
@@ -187,6 +225,7 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
         .drain_rx_loop_data_queues(
             &mut packet_rx,
             &mut fallback_rx,
+            &mut feedback_rx,
             &mut tun_rx,
             &mut endpoint_priority_rx,
             &mut endpoint_rx,
@@ -201,6 +240,69 @@ async fn pre_maintenance_drain_consumes_worker_fallback_without_raw_packets() {
         drained.has_data_drained(),
         "queued authenticated receive bookkeeping must be applied before link-dead maintenance"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn pre_maintenance_drain_applies_endpoint_bulk_feedback_before_link_liveness() {
+    let local = Identity::generate();
+    let dest = Identity::generate();
+    let next_hop = Identity::generate();
+    let dest_addr = *dest.node_addr();
+    let next_hop_addr = *next_hop.node_addr();
+
+    let mut node =
+        crate::node::Node::with_identity(local, crate::config::Config::new()).expect("node");
+    let mut session = established_entry(&node.identity, &dest);
+    session.mark_established(1_000);
+    session.init_mmp(&node.config.node.session_mmp);
+    assert!(node.sessions.insert(dest_addr, session).is_none());
+
+    let (_packet_tx, mut packet_rx) = crate::transport::packet_channel(1);
+    let (_fallback_tx, mut fallback_rx) =
+        crate::node::decrypt_worker::decrypt_worker_fallback_channels();
+    let (feedback_tx, mut feedback_rx) = tokio::sync::mpsc::channel(1);
+    let (_tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_priority_tx, mut endpoint_priority_rx) = tokio::sync::mpsc::channel(1);
+    let (_endpoint_tx, mut endpoint_rx) = tokio::sync::mpsc::channel(1);
+
+    feedback_tx
+        .send(crate::node::EndpointBulkSendFeedback {
+            records: vec![crate::node::EndpointBulkSendFeedbackRecord {
+                dest_addr,
+                next_hop_addr,
+                fmp_counter: 3,
+                fmp_timestamp_ms: 4,
+                fmp_wire_capacity: 128,
+                originated_bytes: 96,
+                session_bookkeeping: crate::node::EndpointBulkSendSessionBookkeeping::Fsp {
+                    path_mtu: 1234,
+                    bookkeeping: crate::node::FspSendBookkeepingInput::data(80, 5, 6, 96, 2_000)
+                        .with_next_hop(next_hop_addr),
+                },
+            }],
+        })
+        .await
+        .expect("feedback queued");
+
+    let drained = node
+        .drain_rx_loop_data_queues(
+            &mut packet_rx,
+            &mut fallback_rx,
+            &mut feedback_rx,
+            &mut tun_rx,
+            &mut endpoint_priority_rx,
+            &mut endpoint_rx,
+            NON_PACKET_DRAIN_BUDGET,
+        )
+        .await;
+
+    assert_eq!(drained.endpoint_feedback, 1);
+    assert!(drained.has_data_drained());
+    assert!(feedback_rx.is_empty());
+    let session = node.sessions.get(&dest_addr).expect("session remains");
+    assert_eq!(session.last_outbound_next_hop(), Some(next_hop_addr));
+    assert_eq!(session.traffic_counters().0, 1);
 }
 
 #[test]

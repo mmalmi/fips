@@ -122,6 +122,7 @@
             source_addr: peer_addr,
             receive_completion: Some(SessionReceiveCompletion {
                 source_addr: peer_addr,
+                previous_hop_addr: peer_addr,
                 body_len: 512,
                 direct_path: true,
             }),
@@ -131,6 +132,176 @@
         assert!(
             !node.retry_pending.contains_key(&peer_addr),
             "fresh authenticated payload return on the direct peer path should stop direct-probe churn"
+        );
+    }
+
+    #[test]
+    fn direct_session_receive_clears_direct_probe_retry_without_route_marker() {
+        use crate::PeerIdentity;
+        use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+        use crate::node::retry::RetryState;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let peer_config = PeerConfig {
+            npub: peer.npub(),
+            alias: None,
+            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            connect_policy: ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+
+        let mut config = crate::config::Config::new();
+        config.peers.push(peer_config.clone());
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.config.node.heartbeat_interval_secs = 10;
+
+        let mut active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            TransportId::new(0x55),
+            TransportAddr::from_string("198.51.100.20:61062"),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            None,
+        );
+        active_peer.touch(Node::now_ms().saturating_sub(11_000));
+        node.peers
+            .insert_with_current_session_index(peer_addr, active_peer);
+
+        let session = SessionEntry::new(
+            peer_addr,
+            peer.pubkey_full(),
+            EndToEndState::Established(make_xk_session(&node.identity, &peer)),
+            1_000,
+            true,
+        );
+        node.sessions.insert(peer_addr, session);
+
+        let mut retry = RetryState::new(peer_config);
+        retry.reconnect = true;
+        node.retry_pending.insert(peer_addr, retry);
+
+        SessionDispatchCommit {
+            source_addr: peer_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr: peer_addr,
+                previous_hop_addr: peer_addr,
+                body_len: 512,
+                direct_path: true,
+            }),
+        }
+        .finish_receive(&mut node);
+
+        assert!(
+            !node.retry_pending.contains_key(&peer_addr),
+            "authenticated endpoint data from the direct peer itself should refresh the direct path even if outbound next-hop bookkeeping was absent"
+        );
+    }
+
+    #[test]
+    fn application_receive_refreshes_previous_hop_peer_without_direct_source_trust() {
+        use crate::PeerIdentity;
+        use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+        use crate::node::retry::RetryState;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let source = Identity::generate();
+        let previous_hop = Identity::generate();
+        let previous_hop_identity = PeerIdentity::from_pubkey_full(previous_hop.pubkey_full());
+        let previous_hop_addr = *previous_hop_identity.node_addr();
+        let source_addr = *source.node_addr();
+        let previous_hop_config = PeerConfig {
+            npub: previous_hop.npub(),
+            alias: None,
+            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            connect_policy: ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+
+        let mut config = crate::config::Config::new();
+        config.peers.push(previous_hop_config.clone());
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.config.node.heartbeat_interval_secs = 10;
+
+        let stale_seen_ms = Node::now_ms().saturating_sub(11_000);
+        let mut active_peer = ActivePeer::with_session(
+            previous_hop_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &previous_hop),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            TransportId::new(0x55),
+            TransportAddr::from_string("203.0.113.9:2121"),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            None,
+        );
+        active_peer.touch(stale_seen_ms);
+        node.peers
+            .insert_with_current_session_index(previous_hop_addr, active_peer);
+
+        let session = SessionEntry::new(
+            source_addr,
+            source.pubkey_full(),
+            EndToEndState::Established(make_xk_session(&node.identity, &source)),
+            1_000,
+            true,
+        );
+        node.sessions.insert(source_addr, session);
+
+        let mut retry = RetryState::new(previous_hop_config);
+        retry.reconnect = true;
+        node.retry_pending.insert(previous_hop_addr, retry);
+
+        SessionDispatchCommit {
+            source_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr,
+                previous_hop_addr,
+                body_len: 512,
+                direct_path: false,
+            }),
+        }
+        .finish_receive(&mut node);
+
+        let previous_hop_peer = node
+            .peers
+            .get(&previous_hop_addr)
+            .expect("previous hop should remain active");
+        assert!(
+            previous_hop_peer.idle_time(Node::now_ms()) <= 1_000,
+            "accepted application data should refresh the direct previous-hop link"
+        );
+        assert!(
+            !node.retry_pending.contains_key(&previous_hop_addr),
+            "fresh authenticated data from the direct previous hop should stop link refresh churn"
+        );
+        let entry = node
+            .sessions
+            .get(&source_addr)
+            .expect("source session should remain");
+        assert_eq!(
+            entry.last_inbound_data_frame_ms(),
+            1_000,
+            "previous-hop liveness must not become direct-source payload trust"
         );
     }
 
@@ -613,6 +784,7 @@
             dispatch.receive_completion(),
             Some(SessionReceiveCompletion {
                 source_addr,
+                previous_hop_addr,
                 body_len: endpoint_payload.len(),
                 direct_path: false,
             })
@@ -623,6 +795,7 @@
             commit.receive_completion(),
             Some(SessionReceiveCompletion {
                 source_addr,
+                previous_hop_addr,
                 body_len: endpoint_payload.len(),
                 direct_path: false,
             })
