@@ -60,7 +60,7 @@
     }
 
     #[test]
-    fn direct_session_receive_clears_direct_probe_retry() {
+    fn direct_session_receive_clears_direct_probe_retry_and_degradation() {
         use crate::PeerIdentity;
         use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
         use crate::node::retry::RetryState;
@@ -117,6 +117,11 @@
         let mut retry = RetryState::new(peer_config);
         retry.reconnect = true;
         node.retry_pending.insert(peer_addr, retry);
+        node.mark_session_direct_path_degraded(peer_addr, Node::now_ms());
+        assert!(
+            node.session_direct_path_blocks_direct_payload(&peer_addr, Node::now_ms()),
+            "fixture should start with the direct path withheld from payload routing"
+        );
 
         SessionDispatchCommit {
             source_addr: peer_addr,
@@ -132,6 +137,10 @@
         assert!(
             !node.retry_pending.contains_key(&peer_addr),
             "fresh authenticated payload return on the direct peer path should stop direct-probe churn"
+        );
+        assert!(
+            !node.session_direct_path_blocks_direct_payload(&peer_addr, Node::now_ms()),
+            "fresh authenticated endpoint data from the direct peer should restore payload routing"
         );
     }
 
