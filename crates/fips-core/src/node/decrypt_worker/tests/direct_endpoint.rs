@@ -777,8 +777,8 @@
             "worker burst should track the reference packet-mover receive batch width"
         );
         assert_eq!(
-            DECRYPT_WORKER_BULK_BATCH_MAX, 16,
-            "bulk batches should amortize handoff churn without becoming a long priority-blocking slice"
+            DECRYPT_WORKER_BULK_BATCH_MAX, 32,
+            "bulk batches should amortize handoff churn while control and priority still get per-packet checkpoints"
         );
         assert_eq!(
             DECRYPT_WORKER_BULK_BURST_BUDGET % DECRYPT_WORKER_BULK_BATCH_MAX,
@@ -799,13 +799,13 @@
         );
         assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion backlog should get one reserved owner slice before bulk, not consume the whole bulk turn"
+            DECRYPT_WORKER_BULK_BATCH_MAX * 2,
+            "completion backlog should get a bounded owner slice before bulk without becoming an unbounded drain"
         );
         assert_eq!(
             DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET,
-            DECRYPT_WORKER_BULK_BATCH_MAX,
-            "completion interleave should be bounded to one bulk item width"
+            DECRYPT_WORKER_BULK_BATCH_MAX * 2,
+            "completion interleave should let opener results catch up without becoming an unbounded drain"
         );
 
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
