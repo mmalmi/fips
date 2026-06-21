@@ -526,10 +526,7 @@ impl DecryptWorkerShard {
         }
 
         let source_addr = job.source_addr;
-        let Some(shared) = self.pool.fsp_aead_session(&source_addr) else {
-            return Err(FspOpenWorkerPrepareError::Ineligible(job));
-        };
-        let owner_idx = shared.owner_idx;
+        let owner_idx = self.pool.worker_idx_for_fsp(&source_addr);
         if owner_idx != idx || !self.pool.fsp_bulk_open_worker_enabled() {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
@@ -544,23 +541,28 @@ impl DecryptWorkerShard {
         let Some(header) = FspEncryptedHeader::parse(payload) else {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
-        let received_k_bit = header.flags & FSP_FLAG_K != 0;
-        if received_k_bit != shared.current_k_bit {
+
+        let Some(state) = self.fsp_sessions.get_mut(&source_addr) else {
+            return Err(FspOpenWorkerPrepareError::Ineligible(job));
+        };
+        if !state.has_single_current_epoch() || !state.current_epoch_matches(&header) {
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         }
-        let Some(ticket) = shared.try_issue_ticket() else {
+        let Some(ticket) = state.issue_fsp_receive_ticket() else {
             crate::perf_profile::record_event_count(
                 crate::perf_profile::Event::DecryptFspOpenWorkerWindowFallback,
                 1,
             );
             return Err(FspOpenWorkerPrepareError::Ineligible(job));
         };
+        let receive_order_id = state.fsp_receive_order_id();
+        let cipher = Arc::clone(&state.current.cipher);
 
         let open_job = FspAeadOpenJob {
             source_addr,
-            receive_order_id: shared.receive_order_id,
+            receive_order_id,
             ticket,
-            cipher: Arc::clone(&shared.cipher),
+            cipher,
             job,
             header,
             completion_source: FspAeadCompletionSource::WorkerOpen,

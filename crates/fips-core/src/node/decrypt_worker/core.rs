@@ -377,9 +377,12 @@ impl From<FspRecvSessionSnapshot> for OwnedFspSessionState {
 }
 
 struct FspSharedCryptoSession {
+    #[cfg(test)]
     owner_idx: usize,
     receive_order_id: u64,
+    #[cfg(test)]
     current_k_bit: bool,
+    #[cfg(test)]
     cipher: Arc<LessSafeKey>,
     next_ticket: AtomicU64,
     next_ready: AtomicU64,
@@ -412,10 +415,16 @@ impl FspSharedCryptoSession {
         cipher: Arc<LessSafeKey>,
         progress: FspReceiveProgress,
     ) -> Self {
+        #[cfg(not(test))]
+        let _ = (owner_idx, current_k_bit, &cipher);
+
         Self {
+            #[cfg(test)]
             owner_idx,
             receive_order_id,
+            #[cfg(test)]
             current_k_bit,
+            #[cfg(test)]
             cipher,
             next_ticket: AtomicU64::new(progress.next_ticket),
             next_ready: AtomicU64::new(progress.next_ready),
@@ -430,6 +439,7 @@ impl FspSharedCryptoSession {
             < fsp_receive_window() as u64
     }
 
+    #[cfg(test)]
     fn try_issue_ticket(&self) -> Option<FspReceiveTicket> {
         self
             .next_ticket
@@ -449,6 +459,10 @@ impl FspSharedCryptoSession {
 
     fn mark_next_ready(&self, next_ready: u64) {
         self.next_ready.store(next_ready, Ordering::Relaxed);
+    }
+
+    fn mark_next_ticket(&self, next_ticket: u64) {
+        self.next_ticket.store(next_ticket, Ordering::Relaxed);
     }
 
     fn progress(&self) -> FspReceiveProgress {
@@ -505,13 +519,20 @@ impl OwnedFspSessionState {
     }
 
     fn receive_progress(&self) -> FspReceiveProgress {
+        let local = FspReceiveProgress {
+            next_ticket: self.fsp_receive_order.next_ticket(),
+            next_ready: self.fsp_receive_order_next_ready(),
+        };
         self.fsp_shared_crypto
             .as_ref()
-            .map(|shared| shared.progress())
-            .unwrap_or_else(|| FspReceiveProgress {
-                next_ticket: self.fsp_receive_order.next_ticket(),
-                next_ready: self.fsp_receive_order_next_ready(),
+            .map(|shared| {
+                let shared = shared.progress();
+                FspReceiveProgress {
+                    next_ticket: local.next_ticket.max(shared.next_ticket),
+                    next_ready: local.next_ready.max(shared.next_ready),
+                }
             })
+            .unwrap_or(local)
     }
 
     fn shared_crypto_session(&self, owner_idx: usize) -> Option<FspSharedCryptoSession> {
@@ -552,10 +573,11 @@ impl OwnedFspSessionState {
     }
 
     fn issue_fsp_receive_ticket(&mut self) -> Option<FspReceiveTicket> {
+        let ticket = self.fsp_receive_order.issue()?;
         if let Some(shared) = &self.fsp_shared_crypto {
-            return shared.try_issue_ticket();
+            shared.mark_next_ticket(self.fsp_receive_order.next_ticket());
         }
-        self.fsp_receive_order.issue()
+        Some(ticket)
     }
 
     fn open_established_frame(
