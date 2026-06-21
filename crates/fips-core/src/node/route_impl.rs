@@ -70,6 +70,11 @@ impl Node {
                     })
             });
 
+        let healthy_direct_peer = self
+            .peers
+            .get(dest_node_addr)
+            .filter(|peer| peer.is_healthy() && peer.can_send())
+            .map(|_| *dest_node_addr);
         let healthy_direct_route = self
             .peers
             .get(dest_node_addr)
@@ -120,6 +125,21 @@ impl Node {
             None
         };
 
+        let explore_fallback = sendable_learned_peers.as_ref().is_some_and(|sendable| {
+            self.learned_routes.should_explore_fallback(
+                dest_node_addr,
+                now_ms,
+                self.config.node.routing.learned_fallback_explore_interval,
+                |addr| sendable.contains(addr),
+            )
+        });
+        if (direct_session_degraded || direct_session_untrusted)
+            && explore_fallback
+            && let Some(direct_addr) = healthy_direct_peer
+        {
+            return self.peers.get(&direct_addr);
+        }
+
         if let Some(next_hop_addr) = sendable_learned_peers.as_ref().and_then(|sendable| {
             let session = self.sessions.get(dest_node_addr)?;
             let next_hop_addr = session.last_outbound_next_hop()?;
@@ -136,6 +156,8 @@ impl Node {
             }
             Some(next_hop_addr)
         }) {
+            self.learned_routes
+                .record_selected(dest_node_addr, &next_hop_addr, now_ms);
             return self.peers.get(&next_hop_addr);
         }
 
@@ -145,14 +167,6 @@ impl Node {
         // packets use weighted multipath over learned routes, but periodic
         // fallback exploration lets coord/bloom/tree routes discover better
         // candidates.
-        let explore_fallback = sendable_learned_peers.as_ref().is_some_and(|sendable| {
-            self.learned_routes.should_explore_fallback(
-                dest_node_addr,
-                now_ms,
-                self.config.node.routing.learned_fallback_explore_interval,
-                |addr| sendable.contains(addr),
-            )
-        });
         if let Some(sendable) = &sendable_learned_peers
             && !explore_fallback
         {

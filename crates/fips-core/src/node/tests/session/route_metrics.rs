@@ -354,6 +354,52 @@ fn test_active_session_keeps_learned_fallback_next_hop_affinity() {
 }
 
 #[test]
+fn test_active_fallback_affinity_periodically_retries_direct_payload() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    node.config.node.routing.learned_fallback_explore_interval = 2;
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let remote = Identity::generate();
+    let remote_addr = *remote.node_addr();
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&remote.pubkey()),
+        alias: Some("direct-retry-after-fallback-affinity".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    add_direct_peer_for_identity(&mut node, &remote);
+    install_established_session_with_mmp(&mut node, &remote);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    {
+        let now_ms = Node::now_ms();
+        let session = node.sessions.get_mut(&remote_addr).expect("session");
+        session.record_sent(128);
+        session.touch_outbound_frame(now_ms);
+        session.record_outbound_next_hop(fallback_next_hop);
+    }
+
+    let selected = (0..4)
+        .map(|_| {
+            node.find_next_hop(&remote_addr)
+                .map(|peer| *peer.node_addr())
+                .expect("route")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        selected,
+        vec![
+            fallback_next_hop,
+            fallback_next_hop,
+            remote_addr,
+            fallback_next_hop,
+        ],
+        "fallback affinity must not starve periodic direct payload probes"
+    );
+}
+
+#[test]
 fn test_pending_direct_probe_does_not_block_fresh_healthy_direct_without_fallback() {
     let mut node = Node::new(Config::new()).unwrap();
     let remote = Identity::generate();
