@@ -1,4 +1,4 @@
-use super::FipsEndpointMessage;
+use super::{FipsEndpointBufferedMessage, FipsEndpointMessage};
 use crate::PeerIdentity;
 use crate::node::{ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointEventReceiver, NodeEndpointEvent};
 use crate::transport::PacketBuffer;
@@ -21,6 +21,13 @@ impl EndpointQueuedMessage {
         FipsEndpointMessage {
             source_peer: self.source_peer,
             data: self.payload.into_vec(),
+        }
+    }
+
+    fn into_buffered(self) -> FipsEndpointBufferedMessage {
+        FipsEndpointBufferedMessage {
+            source_peer: self.source_peer,
+            payload: self.payload,
         }
     }
 }
@@ -114,6 +121,42 @@ impl EndpointReceiveState {
         true
     }
 
+    pub(super) fn drain_priority_pending_buffered_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointBufferedMessage) -> bool,
+    ) -> bool {
+        while *drained < limit {
+            let Some(message) = self.pending_priority.pop_front() else {
+                break;
+            };
+            *drained += 1;
+            if !handle_message(message.into_buffered()) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub(super) fn drain_bulk_pending_buffered_for_each(
+        &mut self,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointBufferedMessage) -> bool,
+    ) -> bool {
+        while *drained < limit {
+            let Some(message) = self.pending_bulk.pop_front() else {
+                break;
+            };
+            *drained += 1;
+            if !handle_message(message.into_buffered()) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(super) fn push_event_into(
         &mut self,
         event: NodeEndpointEvent,
@@ -200,6 +243,43 @@ impl EndpointReceiveState {
         }
     }
 
+    pub(super) fn push_event_buffered_for_each(
+        &mut self,
+        event: NodeEndpointEvent,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointBufferedMessage) -> bool,
+    ) -> bool {
+        match event {
+            NodeEndpointEvent::Data {
+                source_peer,
+                payload,
+                ..
+            } => self.push_queued_buffered_for_each(
+                EndpointQueuedMessage::new(source_peer, payload),
+                drained,
+                limit,
+                handle_message,
+            ),
+            NodeEndpointEvent::DataBatch { messages, .. } => {
+                let mut iter = messages.into_iter();
+                while let Some(message) = iter.next() {
+                    let queued = EndpointQueuedMessage::new(message.source_peer, message.payload);
+                    if !self.push_queued_buffered_for_each(queued, drained, limit, handle_message) {
+                        for message in iter {
+                            self.push_pending(EndpointQueuedMessage::new(
+                                message.source_peer,
+                                message.payload,
+                            ));
+                        }
+                        return false;
+                    }
+                }
+                true
+            }
+        }
+    }
+
     fn push_queued_for_each(
         &mut self,
         message: EndpointQueuedMessage,
@@ -210,6 +290,22 @@ impl EndpointReceiveState {
         if *drained < limit {
             *drained += 1;
             handle_message(message.into_public())
+        } else {
+            self.push_pending(message);
+            false
+        }
+    }
+
+    fn push_queued_buffered_for_each(
+        &mut self,
+        message: EndpointQueuedMessage,
+        drained: &mut usize,
+        limit: usize,
+        handle_message: &mut impl FnMut(FipsEndpointBufferedMessage) -> bool,
+    ) -> bool {
+        if *drained < limit {
+            *drained += 1;
+            handle_message(message.into_buffered())
         } else {
             self.push_pending(message);
             false

@@ -634,6 +634,11 @@ impl PacketTx {
         PacketBuffer::pooled(data, self.buffer_pool.clone())
     }
 
+    #[cfg(test)]
+    pub(crate) fn cached_packet_buffers(&self) -> usize {
+        self.buffer_pool.cached_len()
+    }
+
     pub fn send(
         &self,
         packet: ReceivedPacket,

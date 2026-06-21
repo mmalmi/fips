@@ -543,6 +543,94 @@ async fn blocking_recv_batch_for_each_preserves_unhandled_internal_batch_tail() 
 }
 
 #[tokio::test]
+async fn blocking_recv_buffered_batch_for_each_respects_limit_without_vec_detach() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    endpoint
+        .send_batch_to_peer(
+            local,
+            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        )
+        .await
+        .expect("loopback batch send should succeed");
+
+    let endpoint = tokio::task::spawn_blocking(move || {
+        let mut messages = Vec::with_capacity(3);
+        let received = endpoint
+            .blocking_recv_buffered_batch_for_each(2, |message| {
+                messages.push(message.data().to_vec());
+                true
+            })
+            .expect("messages should arrive");
+        assert_eq!(received, 2);
+        assert_eq!(messages, vec![b"first".to_vec(), b"second".to_vec()]);
+
+        let received = endpoint
+            .blocking_recv_buffered_batch_for_each(8, |message| {
+                messages.push(message.as_slice().to_vec());
+                true
+            })
+            .expect("message should arrive");
+        assert_eq!(received, 1);
+        assert_eq!(
+            messages,
+            vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+        );
+        endpoint
+    })
+    .await
+    .expect("blocking receiver should join");
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn blocking_recv_buffered_batch_for_each_returns_pooled_packet_buffer() {
+    let endpoint = FipsEndpoint::builder()
+        .without_system_tun()
+        .bind()
+        .await
+        .expect("endpoint should bind");
+    let local = PeerIdentity::from_npub(endpoint.npub()).expect("local peer identity");
+    let (packet_tx, _packet_rx) = crate::packet_channel(8);
+
+    endpoint
+        .inbound_endpoint_tx
+        .send(NodeEndpointEvent::Data {
+            source_peer: local,
+            payload: packet_tx.packet_buffer(b"pooled".to_vec()),
+            queued_at: crate::perf_profile::stamp(),
+        })
+        .expect("inject pooled message");
+
+    assert_eq!(packet_tx.cached_packet_buffers(), 0);
+    let (endpoint, packet_tx) = tokio::task::spawn_blocking(move || {
+        let received = endpoint
+            .blocking_recv_buffered_batch_for_each(8, |message| {
+                assert_eq!(message.source_node_addr(), local.node_addr());
+                assert_eq!(message.len(), b"pooled".len());
+                assert!(!message.is_empty());
+                assert_eq!(message.data(), b"pooled");
+                true
+            })
+            .expect("message should arrive");
+        assert_eq!(received, 1);
+        assert_eq!(packet_tx.cached_packet_buffers(), 1);
+        (endpoint, packet_tx)
+    })
+    .await
+    .expect("blocking receiver should join");
+    assert_eq!(packet_tx.cached_packet_buffers(), 1);
+
+    endpoint.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
 async fn blocking_recv_batch_into_splits_internal_endpoint_batches_without_reordering() {
     let endpoint = FipsEndpoint::builder()
         .without_system_tun()

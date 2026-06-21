@@ -12,6 +12,7 @@ use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
     NodeEndpointCommand, NodeEndpointEvent,
 };
+use crate::transport::PacketBuffer;
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -152,6 +153,70 @@ impl FipsEndpointMessage {
     /// Source Nostr public key as human-facing bech32 text.
     pub fn source_npub(&self) -> String {
         self.source_peer.npub()
+    }
+}
+
+/// Source-attributed endpoint data that preserves the internal receive buffer.
+///
+/// This is the allocation-conscious counterpart to [`FipsEndpointMessage`] for
+/// dedicated packet movers that inspect or forward payload bytes immediately.
+/// Dropping a buffered message returns pooled transport receive storage to FIPS;
+/// calling [`Self::into_message`] or [`Self::into_bytes`] intentionally detaches
+/// the bytes into the stable public `Vec<u8>` shape.
+#[derive(Debug)]
+pub struct FipsEndpointBufferedMessage {
+    /// Authenticated FIPS peer that originated the endpoint data.
+    pub source_peer: PeerIdentity,
+    payload: PacketBuffer,
+}
+
+impl FipsEndpointBufferedMessage {
+    /// FIPS node address that originated the endpoint data.
+    pub fn source_node_addr(&self) -> &NodeAddr {
+        self.source_peer.node_addr()
+    }
+
+    /// Source Nostr public key as human-facing bech32 text.
+    pub fn source_npub(&self) -> String {
+        self.source_peer.npub()
+    }
+
+    /// Borrow the application payload bytes without detaching pooled storage.
+    pub fn data(&self) -> &[u8] {
+        self.payload.as_ref()
+    }
+
+    /// Borrow the application payload bytes without detaching pooled storage.
+    pub fn as_slice(&self) -> &[u8] {
+        self.data()
+    }
+
+    /// Mutably borrow the application payload bytes without detaching storage.
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        self.payload.as_mut()
+    }
+
+    /// Payload length in bytes.
+    pub fn len(&self) -> usize {
+        self.payload.len()
+    }
+
+    /// Whether the payload is empty.
+    pub fn is_empty(&self) -> bool {
+        self.payload.is_empty()
+    }
+
+    /// Detach the payload into the stable public endpoint message shape.
+    pub fn into_message(self) -> FipsEndpointMessage {
+        FipsEndpointMessage {
+            source_peer: self.source_peer,
+            data: self.payload.into_vec(),
+        }
+    }
+
+    /// Detach the payload bytes into a `Vec<u8>`.
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.payload.into_vec()
     }
 }
 
@@ -741,6 +806,60 @@ impl FipsEndpoint {
                 }
             };
             if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
+                return Some(drained);
+            }
+        }
+
+        Some(drained)
+    }
+
+    /// Synchronous blocking batch receive that preserves pooled receive buffers.
+    ///
+    /// This mirrors [`Self::blocking_recv_batch_for_each`] but delivers
+    /// [`FipsEndpointBufferedMessage`] values, allowing hot packet movers to
+    /// borrow payload bytes and return FIPS-owned receive storage to the packet
+    /// buffer pool when the callback returns.
+    pub fn blocking_recv_buffered_batch_for_each(
+        &self,
+        max: usize,
+        mut handle_message: impl FnMut(FipsEndpointBufferedMessage) -> bool,
+    ) -> Option<usize> {
+        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
+        let mut drained = 0usize;
+
+        let mut state = self.inbound_endpoint_rx.blocking_lock();
+        if !state.drain_priority_pending_buffered_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+        while drained < max {
+            match state.rx.try_recv_priority() {
+                Ok(event) => {
+                    if !state.push_event_buffered_for_each(
+                        event,
+                        &mut drained,
+                        max,
+                        &mut handle_message,
+                    ) {
+                        return Some(drained);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if !state.drain_bulk_pending_buffered_for_each(&mut drained, max, &mut handle_message) {
+            return Some(drained);
+        }
+
+        while drained < max {
+            let event = if drained == 0 {
+                state.rx.blocking_recv()?
+            } else {
+                match state.rx.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                }
+            };
+            if !state.push_event_buffered_for_each(event, &mut drained, max, &mut handle_message) {
                 return Some(drained);
             }
         }
