@@ -12,7 +12,6 @@ use crate::node::{
     EndpointCommandLane, EndpointDataPayload, EndpointEventSender, EndpointPayloadClass,
     NodeEndpointCommand, NodeEndpointEvent,
 };
-use crate::transport::PacketBuffer;
 use crate::{
     Config, FipsAddress, IdentityConfig, Node, NodeAddr, NodeDeliveredPacket, NodeError,
     PeerIdentity,
@@ -153,39 +152,6 @@ impl FipsEndpointMessage {
     /// Source Nostr public key as human-facing bech32 text.
     pub fn source_npub(&self) -> String {
         self.source_peer.npub()
-    }
-}
-
-/// Source-attributed endpoint data with FIPS-owned packet-buffer lifetime.
-///
-/// Most embedders should use [`FipsEndpointMessage`]. Packet movers that
-/// immediately forward received payloads can use this form to keep FIPS receive
-/// buffers recyclable until after their write path is done.
-#[derive(Debug, PartialEq, Eq)]
-pub struct FipsEndpointPacketMessage {
-    /// Authenticated FIPS peer that originated the endpoint data.
-    pub source_peer: PeerIdentity,
-    /// Packet bytes that may return to the FIPS receive buffer pool on drop.
-    pub data: PacketBuffer,
-}
-
-impl FipsEndpointPacketMessage {
-    /// FIPS node address that originated the endpoint data.
-    pub fn source_node_addr(&self) -> &NodeAddr {
-        self.source_peer.node_addr()
-    }
-
-    /// Source Nostr public key as human-facing bech32 text.
-    pub fn source_npub(&self) -> String {
-        self.source_peer.npub()
-    }
-
-    /// Convert to the stable public endpoint message shape.
-    pub fn into_public(self) -> FipsEndpointMessage {
-        FipsEndpointMessage {
-            source_peer: self.source_peer,
-            data: self.data.into_vec(),
-        }
     }
 }
 
@@ -775,60 +741,6 @@ impl FipsEndpoint {
                 }
             };
             if !state.push_event_for_each(event, &mut drained, max, &mut handle_message) {
-                return Some(drained);
-            }
-        }
-
-        Some(drained)
-    }
-
-    /// Synchronous blocking batch receive with FIPS-owned packet buffers.
-    ///
-    /// This advanced variant is for packet-mover threads that can finish with
-    /// each payload before returning from the callback. The regular public
-    /// [`Self::blocking_recv_batch_for_each`] API remains the right default for
-    /// applications that need stable `Vec<u8>` ownership.
-    pub fn blocking_recv_packet_batch_for_each(
-        &self,
-        max: usize,
-        mut handle_message: impl FnMut(FipsEndpointPacketMessage) -> bool,
-    ) -> Option<usize> {
-        let max = max.clamp(1, ENDPOINT_RECV_BATCH_MAX);
-        let mut drained = 0usize;
-
-        let mut state = self.inbound_endpoint_rx.blocking_lock();
-        if !state.drain_priority_pending_packet_for_each(&mut drained, max, &mut handle_message) {
-            return Some(drained);
-        }
-        while drained < max {
-            match state.rx.try_recv_priority() {
-                Ok(event) => {
-                    if !state.push_event_packet_for_each(
-                        event,
-                        &mut drained,
-                        max,
-                        &mut handle_message,
-                    ) {
-                        return Some(drained);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        if !state.drain_bulk_pending_packet_for_each(&mut drained, max, &mut handle_message) {
-            return Some(drained);
-        }
-
-        while drained < max {
-            let event = if drained == 0 {
-                state.rx.blocking_recv()?
-            } else {
-                match state.rx.try_recv() {
-                    Ok(event) => event,
-                    Err(_) => break,
-                }
-            };
-            if !state.push_event_packet_for_each(event, &mut drained, max, &mut handle_message) {
                 return Some(drained);
             }
         }

@@ -1,4 +1,4 @@
-use super::{FipsEndpointMessage, FipsEndpointPacketMessage};
+use super::FipsEndpointMessage;
 use crate::PeerIdentity;
 use crate::node::{ENDPOINT_EVENT_PRIORITY_MAX_LEN, EndpointEventReceiver, NodeEndpointEvent};
 use crate::transport::PacketBuffer;
@@ -18,13 +18,9 @@ impl EndpointQueuedMessage {
     }
 
     fn into_public(self) -> FipsEndpointMessage {
-        self.into_packet().into_public()
-    }
-
-    fn into_packet(self) -> FipsEndpointPacketMessage {
-        FipsEndpointPacketMessage {
+        FipsEndpointMessage {
             source_peer: self.source_peer,
-            data: self.payload,
+            data: self.payload.into_vec(),
         }
     }
 }
@@ -54,18 +50,6 @@ impl EndpointReceiveState {
         self.pending_bulk
             .pop_front()
             .map(EndpointQueuedMessage::into_public)
-    }
-
-    fn pop_pending_priority_packet(&mut self) -> Option<FipsEndpointPacketMessage> {
-        self.pending_priority
-            .pop_front()
-            .map(EndpointQueuedMessage::into_packet)
-    }
-
-    fn pop_pending_bulk_packet(&mut self) -> Option<FipsEndpointPacketMessage> {
-        self.pending_bulk
-            .pop_front()
-            .map(EndpointQueuedMessage::into_packet)
     }
 
     pub(super) fn drain_priority_pending_into(
@@ -120,42 +104,6 @@ impl EndpointReceiveState {
     ) -> bool {
         while *drained < limit {
             let Some(message) = self.pop_pending_bulk() else {
-                break;
-            };
-            *drained += 1;
-            if !handle_message(message) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub(super) fn drain_priority_pending_packet_for_each(
-        &mut self,
-        drained: &mut usize,
-        limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointPacketMessage) -> bool,
-    ) -> bool {
-        while *drained < limit {
-            let Some(message) = self.pop_pending_priority_packet() else {
-                break;
-            };
-            *drained += 1;
-            if !handle_message(message) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub(super) fn drain_bulk_pending_packet_for_each(
-        &mut self,
-        drained: &mut usize,
-        limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointPacketMessage) -> bool,
-    ) -> bool {
-        while *drained < limit {
-            let Some(message) = self.pop_pending_bulk_packet() else {
                 break;
             };
             *drained += 1;
@@ -252,43 +200,6 @@ impl EndpointReceiveState {
         }
     }
 
-    pub(super) fn push_event_packet_for_each(
-        &mut self,
-        event: NodeEndpointEvent,
-        drained: &mut usize,
-        limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointPacketMessage) -> bool,
-    ) -> bool {
-        match event {
-            NodeEndpointEvent::Data {
-                source_peer,
-                payload,
-                ..
-            } => self.push_queued_packet_for_each(
-                EndpointQueuedMessage::new(source_peer, payload),
-                drained,
-                limit,
-                handle_message,
-            ),
-            NodeEndpointEvent::DataBatch { messages, .. } => {
-                let mut iter = messages.into_iter();
-                while let Some(message) = iter.next() {
-                    let queued = EndpointQueuedMessage::new(message.source_peer, message.payload);
-                    if !self.push_queued_packet_for_each(queued, drained, limit, handle_message) {
-                        for message in iter {
-                            self.push_pending(EndpointQueuedMessage::new(
-                                message.source_peer,
-                                message.payload,
-                            ));
-                        }
-                        return false;
-                    }
-                }
-                true
-            }
-        }
-    }
-
     fn push_queued_for_each(
         &mut self,
         message: EndpointQueuedMessage,
@@ -299,22 +210,6 @@ impl EndpointReceiveState {
         if *drained < limit {
             *drained += 1;
             handle_message(message.into_public())
-        } else {
-            self.push_pending(message);
-            false
-        }
-    }
-
-    fn push_queued_packet_for_each(
-        &mut self,
-        message: EndpointQueuedMessage,
-        drained: &mut usize,
-        limit: usize,
-        handle_message: &mut impl FnMut(FipsEndpointPacketMessage) -> bool,
-    ) -> bool {
-        if *drained < limit {
-            *drained += 1;
-            handle_message(message.into_packet())
         } else {
             self.push_pending(message);
             false
