@@ -99,6 +99,41 @@
     }
 
     #[test]
+    fn fsp_job_batcher_reuses_pending_buffer_for_single_bulk_flush() {
+        let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
+            test_worker_pool(4, DECRYPT_WORKER_BULK_BATCH_MAX);
+        let source_addr = *test_source_peer().node_addr();
+        let owner = pool.worker_idx_for_fsp(&source_addr);
+        let mut batcher = FspDecryptJobBatcher::new();
+        let pending_buffer = batcher.pending_buffer_ptr();
+        let mut job = dummy_fsp_job(DECRYPT_WORKER_PRIORITY_PACKET_MAX_LEN + 1);
+        job.source_addr = source_addr;
+
+        batcher.push(&pool, job);
+        batcher.flush(&pool);
+
+        assert_eq!(
+            batcher.pending_buffer_ptr(),
+            pending_buffer,
+            "single FSP bulk flushes should not allocate a replacement pending buffer"
+        );
+        match bulk_receivers[owner]
+            .try_recv()
+            .expect("single FSP bulk item")
+        {
+            DecryptWorkerBulkItem::FspJob(job) => {
+                assert_eq!(job.lane(), DecryptWorkerLane::Bulk);
+                assert_eq!(job.source_addr, source_addr);
+            }
+            DecryptWorkerBulkItem::Job(_)
+            | DecryptWorkerBulkItem::FspAeadOpen(_)
+            | DecryptWorkerBulkItem::FspAeadOpenBatch(_)
+            | DecryptWorkerBulkItem::Batch(_)
+            | DecryptWorkerBulkItem::FspBatch(_) => panic!("expected a single FSP bulk job"),
+        }
+    }
+
+    #[test]
     fn bulk_fsp_batch_dispatch_uses_partial_worker_capacity() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers) =
             test_worker_pool(1, 2);
