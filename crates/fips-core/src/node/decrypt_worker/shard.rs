@@ -147,18 +147,13 @@ impl DecryptWorkerShard {
         }
     }
 
-    fn handle_msg(
-        &mut self,
-        idx: usize,
-        msg: WorkerMsg,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
+    fn handle_msg(&mut self, idx: usize, msg: WorkerMsg) {
         match msg {
             WorkerMsg::Job(job) => {
-                self.handle_job_msg(idx, job, plaintext_batch);
+                self.handle_job_msg(idx, job);
             }
             WorkerMsg::FspJob(job) => {
-                self.handle_fsp_job_msg(idx, job, plaintext_batch);
+                self.handle_fsp_job_msg(idx, job);
             }
             WorkerMsg::RegisterSession { session_key, state } => {
                 self.register_session(idx, session_key, state);
@@ -175,16 +170,9 @@ impl DecryptWorkerShard {
         }
     }
 
-    fn handle_job_msg(
-        &mut self,
-        idx: usize,
-        job: DecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
+    fn handle_job_msg(&mut self, idx: usize, job: DecryptJob) {
         match self.handle_job_action(idx, job) {
-            Ok(actions) => {
-                self.push_job_actions_output(idx, actions, plaintext_batch, None, None);
-            }
+            Ok(actions) => self.handle_job_actions_immediate(idx, actions),
             Err(err) => {
                 debug!(worker = idx, error = %err, "decrypt worker job failed");
             }
@@ -207,16 +195,13 @@ impl DecryptWorkerShard {
         }
     }
 
-    fn handle_fsp_job_msg(
-        &mut self,
-        idx: usize,
-        job: FspDecryptJob,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
+    fn handle_fsp_job_msg(&mut self, idx: usize, job: FspDecryptJob) {
         job.record_queue_wait();
         let _t_service =
             crate::perf_profile::Timer::start(crate::perf_profile::Stage::DecryptFspWorkerService);
-        self.push_fsp_job_outputs(idx, job, plaintext_batch);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+        self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
+        plaintext_batch.flush();
         trace!(worker = idx, "processed FSP decrypt worker job");
     }
 
@@ -319,10 +304,23 @@ impl DecryptWorkerShard {
         job: DecryptJob,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let actions = self.handle_job_action(0, job)?;
-        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
-        self.push_job_actions_output(0, actions, &mut plaintext_batch, None, None);
-        plaintext_batch.flush();
+        self.handle_job_actions_immediate(0, actions);
         Ok(())
+    }
+
+    fn handle_job_actions_immediate(&mut self, idx: usize, actions: DecryptWorkerJobActions) {
+        actions.for_each(|action| self.handle_job_action_immediate(idx, action));
+    }
+
+    fn handle_job_action_immediate(&mut self, idx: usize, action: DecryptWorkerJobAction) {
+        match action {
+            DecryptWorkerJobAction::Output(output) => {
+                let _ = output.send();
+            }
+            DecryptWorkerJobAction::FspJob(job) => {
+                self.dispatch_or_handle_fsp_job_immediate(idx, job);
+            }
+        }
     }
 
     fn push_job_actions_output(
@@ -847,6 +845,28 @@ impl DecryptWorkerShard {
                 &header,
                 fallback_to_rx_loop,
             )),
+        }
+    }
+
+    fn dispatch_or_handle_fsp_job_immediate(&mut self, idx: usize, job: FspDecryptJob) {
+        let owner_idx = self.pool.worker_idx_for_fsp(&job.source_addr);
+        record_fsp_owner_match(owner_idx == idx);
+        if owner_idx == idx {
+            record_fsp_path_local(job.lane());
+            let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+            self.push_fsp_job_outputs(idx, job, &mut plaintext_batch);
+            plaintext_batch.flush();
+            return;
+        }
+        record_fsp_path_handoff(job.lane());
+        match self.pool.dispatch_fsp_job_or_return(job) {
+            Ok(()) => {}
+            Err(job) => {
+                crate::perf_profile::record_event(
+                    crate::perf_profile::Event::DecryptFspPathFallback,
+                );
+                drop_fsp_owner_handoff_job(job);
+            }
         }
     }
 
