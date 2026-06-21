@@ -168,6 +168,67 @@
     }
 
     #[test]
+    fn session_receiver_report_loss_accumulates_for_low_rate_route_quality() {
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_addr = *peer.node_addr();
+        let mut entry = established_entry(&local, &peer);
+        entry.mark_established(1_000);
+        entry.init_mmp(&crate::config::SessionMmpConfig::default());
+        entry.record_outbound_next_hop(peer_addr);
+
+        let mut sessions = crate::node::SessionRegistry::default();
+        assert!(sessions.insert(peer_addr, entry).is_none());
+
+        let now = std::time::Instant::now();
+        let baseline = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(100, 100, 10_000, 50),
+                1_100,
+                now,
+            )
+            .expect("baseline report should process");
+        assert_eq!(baseline.sample, None);
+
+        for (i, (highest, received)) in [(104, 103), (108, 106), (112, 109)]
+            .into_iter()
+            .enumerate()
+        {
+            let sample = sessions
+                .process_session_receiver_report(
+                    &peer_addr,
+                    &receiver_report(highest, received, received * 100, 100),
+                    1_200 + i as u64,
+                    now + std::time::Duration::from_millis(500 + i as u64),
+                )
+                .expect("low-rate report should process")
+                .sample;
+            assert_eq!(sample, None, "tiny report {i} should accumulate only");
+        }
+
+        let accumulated = sessions
+            .process_session_receiver_report(
+                &peer_addr,
+                &receiver_report(116, 112, 11_200, 100),
+                1_300,
+                now + std::time::Duration::from_secs(2),
+            )
+            .expect("fourth low-rate report should process");
+
+        let (span, loss) = accumulated
+            .sample
+            .expect("low-rate samples should accumulate into route evidence");
+        assert_eq!(span, SESSION_DIRECT_DEGRADED_MIN_SAMPLE);
+        assert!(
+            (loss - 0.25).abs() < 0.01,
+            "loss={loss}, expected roughly 25%"
+        );
+        assert!(accumulated.used_direct_next_hop);
+        assert!(accumulated.route_quality_sample);
+    }
+
+    #[test]
     fn session_receiver_report_missing_route_metadata_still_flags_direct_quality() {
         let local = Identity::generate();
         let peer = Identity::generate();
