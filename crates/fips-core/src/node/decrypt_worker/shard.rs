@@ -136,7 +136,6 @@ struct DecryptWorkerShard {
     // Lives entirely on this OS thread — never observed by any other thread.
     sessions: HashMap<DecryptSessionKey, OwnedSessionState>,
     fsp_sessions: HashMap<NodeAddr, OwnedFspSessionState>,
-    fsp_ready_outputs: Vec<DecryptWorkerOutput>,
 }
 
 impl DecryptWorkerShard {
@@ -145,7 +144,6 @@ impl DecryptWorkerShard {
             pool,
             sessions: HashMap::new(),
             fsp_sessions: HashMap::new(),
-            fsp_ready_outputs: Vec::with_capacity(DECRYPT_WORKER_BULK_BATCH_MAX),
         }
     }
 
@@ -729,12 +727,11 @@ impl DecryptWorkerShard {
 
         let mut total_drain = FspOrderedDrain::default();
         let direct_delivery_sink = self.pool.direct_delivery_sink.clone();
-        let mut outputs = self.fsp_ready_outputs_with_capacity(completion_count);
         {
             let state = self
                 .fsp_sessions
                 .get_mut(&source_addr)
-                .expect("FSP session was checked before taking reusable output buffer");
+                .expect("FSP session was checked before handling completions");
             for completion in completions.by_ref() {
                 record_fsp_aead_completion_wait(completion.source, completion.completed_at);
                 let FspAeadCompletion {
@@ -751,7 +748,7 @@ impl DecryptWorkerShard {
                     if let Some(output) =
                         Self::output_for_fsp_ready_completion(&direct_delivery_sink, completion)
                     {
-                        outputs.push(output);
+                        plaintext_batch.push_output(output);
                     }
                 }) {
                     Ok(drain) => drain,
@@ -773,7 +770,6 @@ impl DecryptWorkerShard {
             state.mark_shared_crypto_ready_progress();
         }
         record_fsp_ordered_drain(&total_drain);
-        self.push_reused_fsp_ready_outputs(outputs, plaintext_batch);
     }
 
     fn handle_fsp_aead_completion_msg(
@@ -828,24 +824,6 @@ impl DecryptWorkerShard {
                 );
             }
         }
-    }
-
-    fn fsp_ready_outputs_with_capacity(&mut self, reserve: usize) -> Vec<DecryptWorkerOutput> {
-        let mut outputs = std::mem::take(&mut self.fsp_ready_outputs);
-        outputs.clear();
-        outputs.reserve(reserve.min(DECRYPT_WORKER_BULK_BATCH_MAX));
-        outputs
-    }
-
-    fn push_reused_fsp_ready_outputs(
-        &mut self,
-        mut outputs: Vec<DecryptWorkerOutput>,
-        plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-    ) {
-        for output in outputs.drain(..) {
-            plaintext_batch.push_output(output);
-        }
-        self.fsp_ready_outputs = outputs;
     }
 
     fn output_for_fsp_ready_completion(
