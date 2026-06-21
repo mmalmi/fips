@@ -777,8 +777,8 @@
             "worker burst should track the reference packet-mover receive batch width"
         );
         assert_eq!(
-            DECRYPT_WORKER_BULK_BATCH_MAX, 32,
-            "bulk batches should amortize handoff churn while control and priority still get per-packet checkpoints"
+            DECRYPT_WORKER_BULK_BATCH_MAX, 16,
+            "bulk batches should amortize handoff churn without becoming a long priority-blocking slice"
         );
         assert_eq!(
             DECRYPT_WORKER_BULK_BURST_BUDGET % DECRYPT_WORKER_BULK_BATCH_MAX,
