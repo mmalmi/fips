@@ -1138,7 +1138,7 @@ fn macos_ordered_sender_enabled() -> bool {
     // Ordered mode gives Darwin the same broad shape as Linux's WG-batch
     // sender: FMP/FSP AEAD can run across the worker pool, while one flow
     // thread preserves UDP order for the kernel send target. Keep the env as
-    // an opt-in for NIC/Wi-Fi A/Bs.
+    // an opt-out for NIC/Wi-Fi A/Bs.
     static VALUE: OnceLock<bool> = OnceLock::new();
     *VALUE.get_or_init(|| {
         parse_macos_ordered_sender_enabled(
@@ -1157,7 +1157,7 @@ fn parse_macos_ordered_sender_enabled(raw: Option<&str>) -> bool {
             "0" | "false" | "no" | "off"
         )
     })
-    .unwrap_or(false)
+    .unwrap_or(true)
 }
 
 #[cfg(target_os = "macos")]
