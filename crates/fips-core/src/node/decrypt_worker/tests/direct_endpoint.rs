@@ -708,11 +708,74 @@
     }
 
     #[test]
+    fn decrypt_worker_drain_reports_idle_only_after_ready_work_is_empty() {
+        let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
+        let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
+        let (_bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
+        let fsp_aead_completion_rx = test_fsp_aead_completion_lane(1);
+        let session_key = test_session_key(1, 79);
+        let mut shard = test_shard();
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+
+        assert!(
+            !drain_worker_queues(
+                0,
+                &mut shard,
+                &control_rx,
+                &priority_rx,
+                &fsp_aead_completion_rx,
+                &bulk_rx,
+                &bulk_queued_packets,
+                &mut plaintext_batch,
+            ),
+            "empty queues should let the worker enter the blocking receive"
+        );
+
+        control_tx
+            .try_send(WorkerMsg::RegisterSession {
+                session_key,
+                state: test_owned_session_state(),
+            })
+            .expect("control registration should enqueue");
+
+        assert!(
+            drain_worker_queues(
+                0,
+                &mut shard,
+                &control_rx,
+                &priority_rx,
+                &fsp_aead_completion_rx,
+                &bulk_rx,
+                &bulk_queued_packets,
+                &mut plaintext_batch,
+            ),
+            "ready control work should keep the worker on the bounded drain path"
+        );
+        assert!(
+            shard.contains_session(session_key),
+            "ready control work should still be processed by the drain"
+        );
+        assert!(
+            !drain_worker_queues(
+                0,
+                &mut shard,
+                &control_rx,
+                &priority_rx,
+                &fsp_aead_completion_rx,
+                &bulk_rx,
+                &bulk_queued_packets,
+                &mut plaintext_batch,
+            ),
+            "drained queues should report idle on the next pass"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_blocking_receive_prefers_ready_control_over_bulk() {
         let (control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) = test_bulk_lane(1);
-        let session_key = test_session_key(1, 79);
+        let session_key = test_session_key(1, 80);
         control_tx
             .try_send(WorkerMsg::RegisterSession {
                 session_key,
@@ -803,7 +866,7 @@
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) =
             test_bulk_lane(DECRYPT_WORKER_BULK_BURST_BUDGET + 1);
-        let session_key = test_session_key(1, 79);
+        let session_key = test_session_key(1, 81);
         for _ in 0..=DECRYPT_WORKER_BULK_BURST_BUDGET {
             queue_bulk_item_for_test(
                 &bulk_tx,
@@ -891,7 +954,7 @@
 
     #[test]
     fn decrypt_worker_completion_drain_budget_does_not_spend_bulk_turn() {
-        let session_key = test_session_key(1, 80);
+        let session_key = test_session_key(1, 82);
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);
         let (bulk_tx, bulk_rx, bulk_queued_packets) =
@@ -944,7 +1007,7 @@
 
     #[test]
     fn decrypt_worker_bulk_packet_steps_bound_aead_completion_interleave() {
-        let session_key = test_session_key(1, 81);
+        let session_key = test_session_key(1, 83);
         let mut shard = test_shard();
         let (_control_tx, control_rx) = bounded::<WorkerMsg>(1);
         let (_priority_tx, priority_rx) = bounded::<WorkerMsg>(1);

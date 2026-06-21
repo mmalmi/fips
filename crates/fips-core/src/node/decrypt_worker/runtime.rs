@@ -124,7 +124,7 @@ fn run_worker(
     let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
 
     loop {
-        drain_worker_queues(
+        if drain_worker_queues(
             idx,
             &mut shard,
             &control_rx,
@@ -133,7 +133,9 @@ fn run_worker(
             &bulk_rx,
             &bulk_queued_packets,
             &mut plaintext_batch,
-        );
+        ) {
+            continue;
+        }
         match recv_worker_item_biased(
             &control_rx,
             &priority_rx,
@@ -296,14 +298,17 @@ fn drain_worker_queues(
     bulk_rx: &Receiver<DecryptWorkerBulkItem>,
     bulk_queued_packets: &AtomicUsize,
     plaintext_batch: &mut DecryptPlaintextFallbackBatch,
-) {
+) -> bool {
+    let mut did_work = false;
     let mut batch_stats = DecryptWorkerBatchStats::default();
     while let Ok(msg) = control_rx.try_recv() {
+        did_work = true;
         crate::perf_profile::record_decrypt_worker_drain_control();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
     }
     while let Ok(msg) = priority_rx.try_recv() {
+        did_work = true;
         crate::perf_profile::record_decrypt_worker_drain_priority();
         batch_stats.add_msg(&msg);
         shard.handle_msg(idx, msg);
@@ -312,6 +317,7 @@ fn drain_worker_queues(
     let mut drained_bulk_jobs = 0;
     while drained_bulk_jobs < DECRYPT_WORKER_BULK_BURST_BUDGET {
         if let Ok(msg) = control_rx.try_recv() {
+            did_work = true;
             plaintext_batch.flush();
             crate::perf_profile::record_decrypt_worker_drain_control();
             batch_stats.add_msg(&msg);
@@ -319,6 +325,7 @@ fn drain_worker_queues(
             continue;
         }
         if let Ok(msg) = priority_rx.try_recv() {
+            did_work = true;
             plaintext_batch.flush();
             crate::perf_profile::record_decrypt_worker_drain_priority();
             batch_stats.add_msg(&msg);
@@ -328,6 +335,7 @@ fn drain_worker_queues(
         if drained_completion_packets < DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET
             && let Some(completion) = try_recv_fsp_aead_completion(fsp_aead_completion_rx)
         {
+            did_work = true;
             let handled = handle_fsp_aead_completion(idx, shard, completion, plaintext_batch);
             drained_completion_packets =
                 drained_completion_packets.saturating_add(handled.max(1));
@@ -336,6 +344,7 @@ fn drain_worker_queues(
         }
         match bulk_rx.try_recv() {
             Ok(item) => {
+                did_work = true;
                 crate::perf_profile::record_decrypt_worker_drain_bulk(item.packet_count());
                 release_bulk_packets(bulk_queued_packets, item.packet_count());
                 batch_stats.add_bulk_item(&item);
@@ -355,6 +364,7 @@ fn drain_worker_queues(
     }
     plaintext_batch.flush();
     batch_stats.record(idx);
+    did_work
 }
 
 #[inline]
