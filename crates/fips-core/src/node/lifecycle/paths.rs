@@ -291,13 +291,23 @@ impl Node {
         let Some(peer) = self.peers.get(peer_node_addr) else {
             return false;
         };
+        let now_ms = Self::now_ms();
+        if self.sessions.iter().any(|(_, entry)| {
+            entry.is_established()
+                && entry.last_outbound_next_hop() == Some(*peer_node_addr)
+                && entry.has_recent_outbound_without_inbound(
+                    now_ms,
+                    self.session_direct_path_exclusive_trust_timeout_ms(),
+                )
+        }) {
+            return true;
+        }
         let stale_after_ms = self
             .config
             .node
             .heartbeat_interval_secs
             .saturating_mul(1000)
             .max(1000);
-        let now_ms = Self::now_ms();
         let mut idle_ms = peer.idle_time(now_ms);
         if let Some(session_age_ms) = self
             .sessions

@@ -271,6 +271,84 @@ async fn active_direct_refresh_no_transport_is_cooled_down() {
     );
 }
 
+#[tokio::test]
+async fn established_fallback_session_direct_refresh_stays_out_of_peer_backoff() {
+    let local_identity = Identity::generate();
+    let peer_identity = Identity::generate();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_identity.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority(
+            "udp",
+            "127.0.0.1:9",
+            1,
+        )],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    };
+    let peer_addr = *PeerIdentity::from_npub(&peer_config.npub)
+        .expect("peer identity")
+        .node_addr();
+
+    let fsp = make_test_fmp_session(&local_identity, &peer_identity, [1; 8], [2; 8]);
+    let mut config = Config::new();
+    config.peers.push(peer_config.clone());
+    let mut node = Node::with_identity(local_identity, config).expect("node");
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let transport_id = TransportId::new(1);
+    let mut udp = UdpTransport::new(
+        transport_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(transport_id, TransportHandle::Udp(udp));
+
+    let session = crate::node::session::SessionEntry::new(
+        peer_addr,
+        peer_identity.pubkey_full(),
+        crate::node::session::EndToEndState::Established(fsp),
+        1_000,
+        true,
+    );
+    node.sessions.insert(peer_addr, session);
+
+    let mut retry = crate::node::retry::RetryState::new(peer_config);
+    retry.reconnect = true;
+    retry.retry_count = 12;
+    retry.retry_after_ms = 0;
+    node.retry_pending.insert(peer_addr, retry);
+
+    node.process_pending_retries(1_000).await;
+
+    let retry = node
+        .retry_pending
+        .get(&peer_addr)
+        .expect("direct refresh should remain queued while fallback session is live");
+    assert_eq!(
+        retry.retry_count, 0,
+        "a live fallback FIPS session should keep direct refresh out of peer-level exponential backoff"
+    );
+    assert!(
+        (1_500..=2_500).contains(&retry.retry_after_ms),
+        "fallback direct refresh should be quickly re-probed, got {}",
+        retry.retry_after_ms
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
 /// Test that auto-connect peers with auto-reconnect enabled retry indefinitely
 /// (never exhaust).
 #[test]

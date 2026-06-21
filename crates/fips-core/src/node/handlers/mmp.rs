@@ -814,11 +814,13 @@ impl Node {
     /// whose heartbeat interval has elapsed, and removes any peer that
     /// hasn't sent us a frame within the link dead timeout.
     ///
-    /// While the kernel has recently told us a `transport.send` was
-    /// locally unsendable (NetworkUnreachable / HostUnreachable /
+    /// While the kernel has recently told us a non-traversal `transport.send`
+    /// was locally unsendable (NetworkUnreachable / HostUnreachable /
     /// AddrNotAvailable), the dead-timeout collapses to
-    /// `fast_link_dead_timeout_secs`. Steady-state behavior is unchanged
-    /// because the signal is set on send-error and cleared on send-success.
+    /// `fast_link_dead_timeout_secs`. Traversal/recent endpoint paths keep
+    /// their bounded heartbeat window because stale candidate errors can be
+    /// transient and should not make a mobile/NAT path flap at the fast-dead
+    /// floor.
     pub(in crate::node) async fn check_link_heartbeats(&mut self) {
         let now = Instant::now();
         let heartbeat_interval = Duration::from_secs(self.config.node.heartbeat_interval_secs);
@@ -841,11 +843,7 @@ impl Node {
                     fast_dead_timeout,
                 );
                 let effective_dead_timeout = self
-                    .traversal_path_link_dead_timeout(
-                        node_addr,
-                        local_send_failure_timeout,
-                        fast_dead_timeout,
-                    )
+                    .traversal_path_link_dead_timeout(node_addr, dead_timeout, fast_dead_timeout)
                     .unwrap_or(local_send_failure_timeout);
                 (*node_addr, effective_dead_timeout)
             })
@@ -957,6 +955,44 @@ impl Node {
                 );
                 self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
                     .await;
+            }
+        }
+
+        let unreturned_direct_payload_peers: Vec<_> = self
+            .peers
+            .iter()
+            .filter_map(|(node_addr, peer)| {
+                if !peer.is_healthy() || !peer.can_send() {
+                    return None;
+                }
+                if heartbeat_plan
+                    .dead_peers
+                    .iter()
+                    .chain(heartbeat_plan.deferred_dead_peers.iter())
+                    .any(|dead_peer| dead_peer.node_addr == *node_addr)
+                {
+                    return None;
+                }
+                self.session_direct_path_exclusive_trust_expired(node_addr, now_ms)
+                    .then_some(*node_addr)
+            })
+            .collect();
+
+        for node_addr in unreturned_direct_payload_peers {
+            let selected_next_hop = self.find_next_hop(&node_addr).map(|peer| *peer.node_addr());
+            if selected_next_hop.is_some_and(|next_hop| next_hop != node_addr) {
+                continue;
+            }
+
+            debug!(
+                peer = %self.peer_display_name(&node_addr),
+                "Warming fallback lookup for direct path with fresh control but unreturned endpoint data"
+            );
+            if self.retry_pending.contains_key(&node_addr) {
+                self.maybe_initiate_direct_path_fallback_lookup(&node_addr)
+                    .await;
+            } else {
+                self.maybe_initiate_lookup(&node_addr).await;
             }
         }
 
