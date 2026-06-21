@@ -400,6 +400,90 @@ fn test_active_fallback_affinity_periodically_retries_direct_payload() {
 }
 
 #[test]
+fn test_cost_based_fallback_periodically_retries_healthy_direct_payload() {
+    let mut node = make_reply_learned_node_with_tree_peer();
+    node.config.node.routing.learned_fallback_explore_interval = 2;
+    let fallback_next_hop = *node.peer_ids().next().expect("fallback peer");
+    let transport_id = TransportId::new(1);
+    let direct_link = LinkId::new(42);
+    let (direct_conn, direct_identity) =
+        make_completed_connection(&mut node, direct_link, transport_id, 1000);
+    let remote_addr = *direct_identity.node_addr();
+    node.add_connection(direct_conn).unwrap();
+    node.promote_connection(direct_link, direct_identity, 2000)
+        .unwrap();
+    node.config.peers.push(crate::config::PeerConfig {
+        npub: crate::encode_npub(&direct_identity.pubkey()),
+        alias: Some("direct-retry-after-cost-fallback".to_string()),
+        addresses: Vec::new(),
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: true,
+    });
+    let session = make_noise_session(node.identity(), &Identity::generate());
+    let mut entry = crate::node::session::SessionEntry::new(
+        remote_addr,
+        direct_identity.pubkey_full(),
+        EndToEndState::Established(session),
+        1000,
+        true,
+    );
+    entry.init_mmp(&node.config.node.session_mmp);
+    node.sessions.insert(remote_addr, entry);
+    node.learn_reverse_route(remote_addr, fallback_next_hop);
+    node.get_peer_mut(&remote_addr)
+        .expect("direct peer")
+        .mmp_mut()
+        .expect("direct mmp")
+        .metrics
+        .srtt
+        .update(90_000);
+    node.get_peer_mut(&fallback_next_hop)
+        .expect("fallback peer")
+        .mmp_mut()
+        .expect("fallback mmp")
+        .metrics
+        .srtt
+        .update(5_000);
+    {
+        let now_ms = Node::now_ms();
+        let session = node.sessions.get_mut(&remote_addr).expect("session");
+        session.record_sent(128);
+        session.record_recv(128);
+        session.touch_inbound_data_frame(now_ms);
+        session.touch_outbound_frame(now_ms);
+        session.record_outbound_next_hop(fallback_next_hop);
+    }
+    assert!(
+        !node.session_direct_path_exclusive_trust_expired(&remote_addr, Node::now_ms()),
+        "fixture should make fallback win by stale path cost, not by missing direct data return"
+    );
+    assert!(
+        node.route_candidate_beats_direct(Some(remote_addr), fallback_next_hop),
+        "fixture should make the learned fallback look cheaper than direct"
+    );
+
+    let selected = (0..4)
+        .map(|_| {
+            node.find_next_hop(&remote_addr)
+                .map(|peer| *peer.node_addr())
+                .expect("route")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        selected,
+        vec![
+            fallback_next_hop,
+            fallback_next_hop,
+            remote_addr,
+            fallback_next_hop,
+        ],
+        "cost-based fallback must not starve periodic direct payload probes"
+    );
+}
+
+#[test]
 fn test_pending_direct_probe_does_not_block_fresh_healthy_direct_without_fallback() {
     let mut node = Node::new(Config::new()).unwrap();
     let remote = Identity::generate();

@@ -133,10 +133,7 @@ impl Node {
                 |addr| sendable.contains(addr),
             )
         });
-        if (direct_session_degraded || direct_session_untrusted)
-            && explore_fallback
-            && let Some(direct_addr) = healthy_direct_peer
-        {
+        if explore_fallback && let Some(direct_addr) = healthy_direct_peer {
             return self.peers.get(&direct_addr);
         }
 
