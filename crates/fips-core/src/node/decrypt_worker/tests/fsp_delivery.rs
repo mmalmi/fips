@@ -1327,6 +1327,97 @@
     }
 
     #[test]
+    fn fsp_owner_completion_batches_share_one_ordered_drain() {
+        let source_peer = test_source_peer();
+        let source_addr = *source_peer.node_addr();
+        let mut state = OwnedFspSessionState::from(crate::node::session::FspRecvSessionSnapshot {
+            source_peer,
+            current_k_bit: false,
+            current: crate::node::session::FspRecvEpochSnapshot {
+                cipher: test_chacha_key([0x57; 32]),
+                replay: ReplayWindow::new(),
+            },
+            pending: None,
+            previous: None,
+        });
+        let shared = Arc::new(
+            state
+                .shared_crypto_session(0)
+                .expect("single-current FSP session should expose shared crypto"),
+        );
+        state.attach_shared_crypto_session(Arc::clone(&shared));
+        let receive_order_id = state.fsp_receive_order_id();
+        let tickets = [
+            shared.try_issue_ticket().expect("ticket 0"),
+            shared.try_issue_ticket().expect("ticket 1"),
+            shared.try_issue_ticket().expect("ticket 2"),
+        ];
+
+        let pool = DecryptWorkerPool::spawn(1);
+        let mut shard = DecryptWorkerShard::new(pool);
+        shard.fsp_sessions.insert(source_addr, state);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+
+        shard.handle_fsp_aead_completion_batch_msg(
+            0,
+            FspAeadCompletionBatch::one(FspAeadCompletion {
+                source_addr,
+                receive_order_id,
+                ticket: tickets[0],
+                source: FspAeadCompletionSource::WorkerOpen,
+                result: FspOrderedCompletion::Dropped {
+                    source: FspAeadCompletionSource::WorkerOpen,
+                },
+                completed_at: None,
+            }),
+            &mut plaintext_batch,
+        );
+        let state = shard
+            .fsp_sessions
+            .get(&source_addr)
+            .expect("owner state should remain registered");
+        assert_eq!(state.fsp_receive_order_next_ready(), 1);
+        assert_eq!(shared.progress().next_ready, 1);
+
+        shard.handle_fsp_aead_completion_batch_msg(
+            0,
+            FspAeadCompletionBatch::Many {
+                source_addr,
+                receive_order_id,
+                completions: vec![
+                    FspAeadCompletion {
+                        source_addr,
+                        receive_order_id,
+                        ticket: tickets[1],
+                        source: FspAeadCompletionSource::WorkerOpen,
+                        result: FspOrderedCompletion::Dropped {
+                            source: FspAeadCompletionSource::WorkerOpen,
+                        },
+                        completed_at: None,
+                    },
+                    FspAeadCompletion {
+                        source_addr,
+                        receive_order_id,
+                        ticket: tickets[2],
+                        source: FspAeadCompletionSource::WorkerOpen,
+                        result: FspOrderedCompletion::Dropped {
+                            source: FspAeadCompletionSource::WorkerOpen,
+                        },
+                        completed_at: None,
+                    },
+                ],
+            },
+            &mut plaintext_batch,
+        );
+        let state = shard
+            .fsp_sessions
+            .get(&source_addr)
+            .expect("owner state should remain registered");
+        assert_eq!(state.fsp_receive_order_next_ready(), 3);
+        assert_eq!(shared.progress().next_ready, 3);
+    }
+
+    #[test]
     fn worker_direct_hop_tun_delivery_waits_for_commit_queue_acceptance() {
         let source_peer = test_source_peer();
         let source_addr = *source_peer.node_addr();
