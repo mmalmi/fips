@@ -158,16 +158,38 @@ impl DecryptWorkerPool {
             .unwrap_or_else(|| self.worker_idx_for(session_key))
     }
 
+    #[cfg(test)]
     fn worker_idx_for_fsp_open_avoiding(
         &self,
         source_addr: &NodeAddr,
+        avoid_idx: usize,
+    ) -> Option<usize> {
+        self.worker_idx_for_fsp_open_stripe_avoiding(source_addr, 0, avoid_idx)
+    }
+
+    fn worker_idx_for_fsp_open_ticket_avoiding(
+        &self,
+        source_addr: &NodeAddr,
+        ticket: FspReceiveTicket,
+        avoid_idx: usize,
+    ) -> Option<usize> {
+        let stripe = ticket.sequence / FSP_OPEN_WORKER_STRIPE_TICKETS.max(1);
+        self.worker_idx_for_fsp_open_stripe_avoiding(source_addr, stripe, avoid_idx)
+    }
+
+    fn worker_idx_for_fsp_open_stripe_avoiding(
+        &self,
+        source_addr: &NodeAddr,
+        stripe: u64,
         avoid_idx: usize,
     ) -> Option<usize> {
         let worker_count = self.senders.len();
         if worker_count <= 1 || avoid_idx >= worker_count {
             return None;
         }
-        let mut idx = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % (worker_count - 1);
+        let open_worker_count = worker_count - 1;
+        let base = (decrypt_fsp_open_worker_fast_hash(source_addr) as usize) % open_worker_count;
+        let mut idx = base.wrapping_add(stripe as usize) % open_worker_count;
         if idx >= avoid_idx {
             idx += 1;
         }
