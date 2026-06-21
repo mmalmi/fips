@@ -529,6 +529,88 @@ async fn active_nostr_peer_without_static_addresses_retests_observed_udp_path() 
 }
 
 #[tokio::test]
+async fn active_fallback_uses_cached_direct_advert_as_probe_hint() {
+    use crate::discovery::nostr::{OverlayEndpointAdvert, OverlayTransportKind};
+
+    let mut node = make_node();
+    let (packet_tx, packet_rx) = packet_channel(64);
+    node.packet_tx = Some(packet_tx.clone());
+    node.packet_rx = Some(packet_rx);
+
+    let primary_id = TransportId::new(2);
+    let mut udp = UdpTransport::new(
+        primary_id,
+        Some("main".to_string()),
+        crate::config::UdpConfig {
+            bind_addr: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        },
+        packet_tx,
+    );
+    udp.start_async().await.unwrap();
+    node.transports
+        .insert(primary_id, TransportHandle::Udp(udp));
+
+    let (peer_full, peer_identity) = peer_identity_for_outbound_refresh_owner(&node);
+    let peer_node_addr = *peer_identity.node_addr();
+    let peer_config = crate::config::PeerConfig {
+        npub: peer_full.npub(),
+        alias: None,
+        addresses: vec![crate::config::PeerAddress::with_priority("udp", "nat", 1)],
+        connect_policy: crate::config::ConnectPolicy::AutoConnect,
+        auto_reconnect: true,
+        discovery_fallback_transit: false,
+    };
+    node.config.node.discovery.nostr.enabled = true;
+    node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+    node.config.peers = vec![peer_config.clone()];
+    refresh_configured_peer_cache_for_test(&mut node);
+
+    let bootstrap_id = TransportId::new(77);
+    node.bootstrap_transports.mark(bootstrap_id);
+    let mut active_peer = ActivePeer::new(peer_identity, LinkId::new(7), 1_000);
+    active_peer.set_current_addr(bootstrap_id, &TransportAddr::from_string("fips"));
+    node.peers.insert(peer_node_addr, active_peer);
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let advert_addr = "127.0.0.1:9";
+    let advert = NostrDiscovery::cached_advert_for_test(
+        peer_config.npub.clone(),
+        OverlayEndpointAdvert {
+            transport: OverlayTransportKind::Udp,
+            addr: advert_addr.to_string(),
+        },
+        1_700_000_000,
+    );
+    bootstrap
+        .insert_advert_for_test(peer_config.npub.clone(), advert)
+        .await;
+    node.nostr_discovery = Some(bootstrap.clone());
+
+    let mut state = super::super::retry::RetryState::new(peer_config);
+    state.retry_after_ms = 0;
+    state.reconnect = true;
+    node.retry_pending.insert(peer_node_addr, state);
+
+    node.process_pending_retries(1_000).await;
+
+    assert!(
+        node.find_link_by_addr(primary_id, &TransportAddr::from_string(advert_addr))
+            .is_some(),
+        "cached direct adverts are peer-location hints and should still be probed while fallback remains active"
+    );
+    assert_eq!(
+        bootstrap.active_initiator_count_for_test().await,
+        1,
+        "probing a cached endpoint must not suppress the fresh Nostr/mesh traversal request"
+    );
+
+    for transport in node.transports.values_mut() {
+        transport.stop().await.ok();
+    }
+}
+
+#[tokio::test]
 async fn configured_direct_refresh_ignores_traversal_cooldown_for_mesh_signal() {
     use crate::config::NostrDiscoveryPolicy;
 
