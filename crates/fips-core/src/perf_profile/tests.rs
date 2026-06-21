@@ -805,6 +805,22 @@ fn event_table_exposes_liveness_and_send_path_events() {
 }
 
 #[test]
+fn event_counter_mode_keeps_failures_without_batch_shape_counters() {
+    assert!(Event::TransportBulkDropped.recorded_by_event_counter_mode());
+    assert!(Event::TransportChannelBacklogHigh.recorded_by_event_counter_mode());
+    assert!(Event::RxLoopSlowMaintenanceSkipped.recorded_by_event_counter_mode());
+    assert!(Event::FspAeadCompletionAeadFailed.recorded_by_event_counter_mode());
+    assert!(Event::FspAeadCompletionEpochMismatch.recorded_by_event_counter_mode());
+    assert!(Event::UdpKernelDropped.recorded_by_event_counter_mode());
+
+    assert!(!Event::FmpWorkerBatchPackets.recorded_by_event_counter_mode());
+    assert!(!Event::UdpSendGsoPackets.recorded_by_event_counter_mode());
+    assert!(!Event::DecryptWorkerBatchPackets.recorded_by_event_counter_mode());
+    assert!(!Event::PacketBatchPoolReuse.recorded_by_event_counter_mode());
+    assert!(!Event::LinuxWgBatchAdmissionPackets.recorded_by_event_counter_mode());
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn udp_send_batch_buckets_classify_large_bursts() {
     assert_eq!(udp_send_batch_tail_bucket_flags(0), (false, false, false));

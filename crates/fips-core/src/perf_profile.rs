@@ -5,7 +5,10 @@
 //! and packet counts. A background task prints a per-stage breakdown
 //! every `FIPS_PERF_INTERVAL_SECS` seconds when `FIPS_PERF=1`,
 //! `FIPS_PIPELINE_TRACE=1`, or `NVPN_PIPELINE_TRACE=1` is set at
-//! runtime.
+//! runtime. `FIPS_PIPELINE_EVENTS=1` or `NVPN_PIPELINE_EVENTS=1`
+//! enables a lower-overhead event-only reporter for drops, queue
+//! pressure, replay/auth failures, and liveness-maintenance skips
+//! without turning on per-packet timing.
 //!
 //! Enabling adds `Instant::now()` plus a few relaxed atomics per
 //! measured stage, so the measured numbers are slightly pessimistic vs
@@ -711,6 +714,116 @@ pub enum Event {
 }
 
 impl Event {
+    #[inline]
+    fn recorded_by_event_counter_mode(self) -> bool {
+        matches!(
+            self,
+            Event::ConnectedUdpActivationFailed
+                | Event::ConnectedUdpFdBudgetSkipped
+                | Event::EncryptWorkerQueueFull
+                | Event::EncryptWorkerBulkDropped
+                | Event::UdpSendBulkDropped
+                | Event::DecryptWorkerQueueFull
+                | Event::DecryptWorkerBulkDropped
+                | Event::DecryptWorkerRegisterFull
+                | Event::DecryptWorkerPriorityDropped
+                | Event::DecryptFallbackBulkDropped
+                | Event::DecryptFallbackPriorityDropped
+                | Event::PendingTunDestinationDropped
+                | Event::PendingTunPacketDropped
+                | Event::PendingEndpointDestinationDropped
+                | Event::PendingEndpointPacketDropped
+                | Event::EndpointEventBacklogHigh
+                | Event::EndpointCommandBulkDropped
+                | Event::TransportChannelBacklogHigh
+                | Event::TransportBulkDropped
+                | Event::EndpointEventBulkDropped
+                | Event::DecryptFallbackBacklogHigh
+                | Event::RxLoopSlowMaintenanceTimeout
+                | Event::RxLoopSlowMaintenanceSkipped
+                | Event::DecryptFallbackPressureDrain
+                | Event::DecryptFallbackPriorityGated
+                | Event::DecryptFspPriorityQueueFullFallback
+                | Event::DecryptFspBulkQueueFullFallback
+                | Event::DecryptFspWorkerReplayDropped
+                | Event::DecryptAuthenticatedSessionPriorityDropped
+                | Event::DecryptAuthenticatedSessionBulkDropped
+                | Event::EncryptWorkerPriorityQueueFull
+                | Event::EncryptWorkerBulkQueueFull
+                | Event::DecryptFspOwnerMismatch
+                | Event::DecryptFspPathFallback
+                | Event::DecryptFmpPreownerHelperFallback
+                | Event::DecryptFmpPreownerWindowFallback
+                | Event::DecryptFmpPreownerInlineFallback
+                | Event::FmpAeadCompletionAeadFailed
+                | Event::FmpAeadCompletionReplayDropped
+                | Event::FspAeadCompletionAeadFailed
+                | Event::FspAeadCompletionReplayDropped
+                | Event::EndpointBulkFastPathPrepareFailed
+                | Event::EndpointBulkFastPathStageFull
+                | Event::EndpointBulkFastPathFeedbackFull
+                | Event::FspAeadCompletionStaleSession
+                | Event::FspAeadCompletionStaleOrder
+                | Event::FspAeadCompletionStaleTicket
+                | Event::FspAeadCompletionDuplicateTicket
+                | Event::FspAeadCompletionWindowExceeded
+                | Event::DecryptFspOpenWorkerWindowFallback
+                | Event::DecryptWorkerControlDropped
+                | Event::DecryptFspHelperCompletionBacklogFallback
+                | Event::DecryptFspHelperQueueFullFallback
+                | Event::DecryptFmpHelperCompletionBacklogFallback
+                | Event::DecryptFmpPreownerCompletionBacklogFallback
+                | Event::DecryptFspOpenWorkerCompletionBacklogFallback
+                | Event::FspAeadCompletionReplayDroppedHelper
+                | Event::FspAeadCompletionReplayDroppedHelperReturned
+                | Event::FspAeadCompletionReplayDroppedWorkerOpen
+                | Event::FspAeadCompletionReplayDroppedWorkerOpenReturned
+                | Event::FspAeadCompletionReplayDroppedDuplicate
+                | Event::FspAeadCompletionReplayDroppedTooOld
+                | Event::FspAeadCompletionReplayDroppedTooOldLagGe2xWindow
+                | Event::FspAeadCompletionReplayDroppedTooOldLagGe4xWindow
+                | Event::FspAeadCompletionReplayDroppedTooOldLagGe16xWindow
+                | Event::FspAeadCompletionReplayDroppedTooOldLagGe64xWindow
+                | Event::ConnectedUdpDirectDecryptBulkShed
+                | Event::DecryptFspOpenPoolQueueFullFallback
+                | Event::ConnectedUdpKernelDropped
+                | Event::ConnectedUdpPeerKernelDropped
+                | Event::DecryptAuthenticatedBacklogHigh
+                | Event::EndpointEventBulkBacklogHigh
+                | Event::UdpKernelDropped
+                | Event::UdpSocketKernelDropped
+                | Event::UdpNamespaceRcvbufErrors
+                | Event::ConnectedUdpDrainBulkDropped
+                | Event::DecryptFspWorkerReplayDroppedDuplicate
+                | Event::DecryptFspWorkerReplayDroppedTooOld
+                | Event::DecryptFspWorkerReplayDroppedTooOldLagGe2xWindow
+                | Event::DecryptFspWorkerReplayDroppedTooOldLagGe4xWindow
+                | Event::DecryptFspWorkerReplayDroppedTooOldLagGe16xWindow
+                | Event::DecryptFspWorkerReplayDroppedTooOldLagGe64xWindow
+                | Event::DecryptFspOwnerHandoffDropped
+                | Event::FmpAeadCompletionReplayDroppedPrechecked
+                | Event::FmpAeadCompletionReplayDroppedDeferred
+                | Event::FmpAeadCompletionReplayDroppedDuplicate
+                | Event::FmpAeadCompletionReplayDroppedTooOld
+                | Event::FmpAeadCompletionReplayDroppedTooOldLagGe2xWindow
+                | Event::FmpAeadCompletionReplayDroppedTooOldLagGe4xWindow
+                | Event::FmpAeadCompletionReplayDroppedTooOldLagGe16xWindow
+                | Event::FmpAeadCompletionReplayDroppedTooOldLagGe64xWindow
+                | Event::DecryptFspMalformedDropped
+                | Event::FspAeadCompletionAeadFailedLocal
+                | Event::FspAeadCompletionAeadFailedHelper
+                | Event::FspAeadCompletionAeadFailedHelperReturned
+                | Event::FspAeadCompletionAeadFailedWorkerOpen
+                | Event::FspAeadCompletionAeadFailedWorkerOpenReturned
+                | Event::FspAeadCompletionEpochMismatch
+                | Event::FspAeadCompletionAeadFailedLocalOpen
+                | Event::FspAeadCompletionAeadFailedAcceptKbitMismatch
+                | Event::LinuxWgBatchFlowQueueFullPackets
+                | Event::LinuxWgBatchWorkerQueueFullPackets
+                | Event::LinuxWgBatchAdmissionUnavailablePackets
+        )
+    }
+
     const fn name(self) -> &'static str {
         match self {
             Event::UdpSendConnected => "udp_send_connected",
@@ -1328,13 +1441,24 @@ fn trace_elapsed_ns() -> u64 {
 pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        ["FIPS_PERF", "FIPS_PIPELINE_TRACE", "NVPN_PIPELINE_TRACE"]
-            .into_iter()
-            .any(|key| {
-                std::env::var(key)
-                    .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false)
-            })
+        env_any_enabled(["FIPS_PERF", "FIPS_PIPELINE_TRACE", "NVPN_PIPELINE_TRACE"])
+    })
+}
+
+/// True iff the low-overhead event reporter is enabled. Full tracing implies
+/// event counters, but event-only mode does not enable stamps or histograms.
+fn event_counters_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        enabled() || env_any_enabled(["FIPS_PIPELINE_EVENTS", "NVPN_PIPELINE_EVENTS"])
+    })
+}
+
+fn env_any_enabled<const N: usize>(keys: [&str; N]) -> bool {
+    keys.into_iter().any(|key| {
+        std::env::var(key)
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
     })
 }
 
@@ -1440,7 +1564,10 @@ pub fn record_event(event: Event) {
 }
 
 pub fn record_event_count(event: Event, count: u64) {
-    if !enabled() || count == 0 {
+    if count == 0 {
+        return;
+    }
+    if !enabled() && (!event_counters_enabled() || !event.recorded_by_event_counter_mode()) {
         return;
     }
     record_event_count_sample(event, count);
@@ -1674,10 +1801,10 @@ pub(crate) fn record_linux_wg_batch_admission_too_small(packets: usize) {
 #[inline]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_linux_wg_batch_admission_unavailable(packets: usize) {
-    if !enabled() || packets == 0 {
+    if packets == 0 {
         return;
     }
-    record_event_count_sample(
+    record_event_count(
         Event::LinuxWgBatchAdmissionUnavailablePackets,
         packets as u64,
     );
@@ -1704,19 +1831,19 @@ pub(crate) fn record_linux_wg_batch_admission_fallback(packets: usize) {
 #[inline]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_linux_wg_batch_flow_queue_full(packets: usize) {
-    if !enabled() || packets == 0 {
+    if packets == 0 {
         return;
     }
-    record_event_count_sample(Event::LinuxWgBatchFlowQueueFullPackets, packets as u64);
+    record_event_count(Event::LinuxWgBatchFlowQueueFullPackets, packets as u64);
 }
 
 #[inline]
 #[cfg(target_os = "linux")]
 pub(crate) fn record_linux_wg_batch_worker_queue_full(packets: usize) {
-    if !enabled() || packets == 0 {
+    if packets == 0 {
         return;
     }
-    record_event_count_sample(Event::LinuxWgBatchWorkerQueueFullPackets, packets as u64);
+    record_event_count(Event::LinuxWgBatchWorkerQueueFullPackets, packets as u64);
 }
 
 /// Record batches whose ordered WG sender had to wait for crypto completion.
@@ -1913,27 +2040,27 @@ pub(crate) fn record_fsp_aead_completion_drain(
     epoch_mismatches: usize,
     replay_drops: usize,
 ) {
-    if !enabled() || ready == 0 {
+    if ready == 0 {
         return;
     }
-    record_event_count_sample(Event::FspAeadCompletionReady, ready as u64);
+    record_event_count(Event::FspAeadCompletionReady, ready as u64);
     if accepted > 0 {
-        record_event_count_sample(Event::FspAeadCompletionAccepted, accepted as u64);
+        record_event_count(Event::FspAeadCompletionAccepted, accepted as u64);
     }
     if aead_failures > 0 {
-        record_event_count_sample(Event::FspAeadCompletionAeadFailed, aead_failures as u64);
+        record_event_count(Event::FspAeadCompletionAeadFailed, aead_failures as u64);
     }
     if epoch_mismatches > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionEpochMismatch,
             epoch_mismatches as u64,
         );
     }
     if replay_drops > 0 {
-        record_event_count_sample(Event::FspAeadCompletionReplayDropped, replay_drops as u64);
+        record_event_count(Event::FspAeadCompletionReplayDropped, replay_drops as u64);
     }
     if ready > 1 {
-        record_event_count_sample(Event::FspAeadCompletionReadyMulti, 1);
+        record_event_count(Event::FspAeadCompletionReadyMulti, 1);
     }
 }
 
@@ -1944,26 +2071,23 @@ pub(crate) fn record_fsp_aead_completion_source_replay_drops(
     worker_open: usize,
     worker_open_returned: usize,
 ) {
-    if !enabled() {
-        return;
-    }
     if helper > 0 {
-        record_event_count_sample(Event::FspAeadCompletionReplayDroppedHelper, helper as u64);
+        record_event_count(Event::FspAeadCompletionReplayDroppedHelper, helper as u64);
     }
     if helper_returned > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionReplayDroppedHelperReturned,
             helper_returned as u64,
         );
     }
     if worker_open > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionReplayDroppedWorkerOpen,
             worker_open as u64,
         );
     }
     if worker_open_returned > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionReplayDroppedWorkerOpenReturned,
             worker_open_returned as u64,
         );
@@ -1978,29 +2102,26 @@ pub(crate) fn record_fsp_aead_completion_source_aead_failures(
     worker_open: usize,
     worker_open_returned: usize,
 ) {
-    if !enabled() {
-        return;
-    }
     if local > 0 {
-        record_event_count_sample(Event::FspAeadCompletionAeadFailedLocal, local as u64);
+        record_event_count(Event::FspAeadCompletionAeadFailedLocal, local as u64);
     }
     if helper > 0 {
-        record_event_count_sample(Event::FspAeadCompletionAeadFailedHelper, helper as u64);
+        record_event_count(Event::FspAeadCompletionAeadFailedHelper, helper as u64);
     }
     if helper_returned > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionAeadFailedHelperReturned,
             helper_returned as u64,
         );
     }
     if worker_open > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionAeadFailedWorkerOpen,
             worker_open as u64,
         );
     }
     if worker_open_returned > 0 {
-        record_event_count_sample(
+        record_event_count(
             Event::FspAeadCompletionAeadFailedWorkerOpenReturned,
             worker_open_returned as u64,
         );
@@ -2022,9 +2143,6 @@ pub(crate) fn record_fsp_aead_completion_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
 ) {
-    if !enabled() {
-        return;
-    }
     let event = match reason {
         crate::noise::ReplayRejection::Duplicate => Event::FspAeadCompletionReplayDroppedDuplicate,
         crate::noise::ReplayRejection::TooOld => Event::FspAeadCompletionReplayDroppedTooOld,
@@ -2040,9 +2158,6 @@ pub(crate) fn record_decrypt_fsp_worker_replay_drop_reason(
     reason: crate::noise::ReplayRejection,
     counter_lag: u64,
 ) {
-    if !enabled() {
-        return;
-    }
     let event = match reason {
         crate::noise::ReplayRejection::Duplicate => Event::DecryptFspWorkerReplayDroppedDuplicate,
         crate::noise::ReplayRejection::TooOld => Event::DecryptFspWorkerReplayDroppedTooOld,
@@ -2198,9 +2313,10 @@ impl Drop for Timer {
 
 /// Spawn a background task that prints a per-stage breakdown every
 /// `FIPS_PERF_INTERVAL_SECS` seconds (default 5). Idempotent — only
-/// the first call spawns. No-op when profiling isn't enabled.
+/// the first call spawns. No-op when profiling/event reporting isn't enabled.
 pub fn maybe_spawn_reporter() {
-    if !enabled() {
+    let full_trace = enabled();
+    if !full_trace && !event_counters_enabled() {
         return;
     }
     static STARTED: OnceLock<()> = OnceLock::new();
@@ -2220,44 +2336,46 @@ pub fn maybe_spawn_reporter() {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let mut line = format!("[pipe {}s]", interval);
-            for i in 0..N_STAGES {
-                let c = COUNT[i].load(Acquire);
-                let dc = c.saturating_sub(prev_count[i]);
-                if dc == 0 {
-                    continue;
-                }
-                let t = TOTAL_NS[i].load(Relaxed);
-                let dt = t.saturating_sub(prev_total[i]);
-                prev_total[i] = t;
-                prev_count[i] = c;
+            if full_trace {
+                for i in 0..N_STAGES {
+                    let c = COUNT[i].load(Acquire);
+                    let dc = c.saturating_sub(prev_count[i]);
+                    if dc == 0 {
+                        continue;
+                    }
+                    let t = TOTAL_NS[i].load(Relaxed);
+                    let dt = t.saturating_sub(prev_total[i]);
+                    prev_total[i] = t;
+                    prev_count[i] = c;
 
-                let base = i * HIST_BUCKETS;
-                let mut hist_delta = [0u64; HIST_BUCKETS];
-                for (bucket, delta) in hist_delta.iter_mut().enumerate().take(HIST_BUCKETS) {
-                    let idx = base + bucket;
-                    let current = HIST[idx].load(Relaxed);
-                    *delta = current.saturating_sub(prev_hist[idx]);
-                    prev_hist[idx] = current;
+                    let base = i * HIST_BUCKETS;
+                    let mut hist_delta = [0u64; HIST_BUCKETS];
+                    for (bucket, delta) in hist_delta.iter_mut().enumerate().take(HIST_BUCKETS) {
+                        let idx = base + bucket;
+                        let current = HIST[idx].load(Relaxed);
+                        *delta = current.saturating_sub(prev_hist[idx]);
+                        prev_hist[idx] = current;
+                    }
+                    let stage = stage_from_index(i);
+                    let avg_ns = if dc > 0 { dt / dc } else { 0 };
+                    let rate_per_sec = fmt_rate_per_sec(dc, interval);
+                    let p50 = percentile_ns(&hist_delta, dc, 50);
+                    let p95 = percentile_ns(&hist_delta, dc, 95);
+                    let p99 = percentile_ns(&hist_delta, dc, 99);
+                    let approx_max = interval_max_ns(&hist_delta);
+                    let lifetime_max = MAX_NS[i].load(Relaxed);
+                    line.push_str(&format!(
+                        " {}={}/s avg={} p50<={} p95<={} p99<={} max<={} allmax={}",
+                        stage.name(),
+                        rate_per_sec,
+                        fmt_ns(avg_ns),
+                        fmt_ns(p50),
+                        fmt_ns(p95),
+                        fmt_ns(p99),
+                        fmt_ns(approx_max),
+                        fmt_ns(lifetime_max),
+                    ));
                 }
-                let stage = stage_from_index(i);
-                let avg_ns = if dc > 0 { dt / dc } else { 0 };
-                let rate_per_sec = fmt_rate_per_sec(dc, interval);
-                let p50 = percentile_ns(&hist_delta, dc, 50);
-                let p95 = percentile_ns(&hist_delta, dc, 95);
-                let p99 = percentile_ns(&hist_delta, dc, 99);
-                let approx_max = interval_max_ns(&hist_delta);
-                let lifetime_max = MAX_NS[i].load(Relaxed);
-                line.push_str(&format!(
-                    " {}={}/s avg={} p50<={} p95<={} p99<={} max<={} allmax={}",
-                    stage.name(),
-                    rate_per_sec,
-                    fmt_ns(avg_ns),
-                    fmt_ns(p50),
-                    fmt_ns(p95),
-                    fmt_ns(p99),
-                    fmt_ns(approx_max),
-                    fmt_ns(lifetime_max),
-                ));
             }
             for i in 0..N_EVENTS {
                 let current = EVENTS[i].load(Relaxed);
