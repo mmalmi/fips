@@ -519,7 +519,7 @@
     }
 
     #[test]
-    fn fsp_local_open_worker_yields_when_owner_completion_backlogged() {
+    fn fsp_local_open_worker_uses_ticket_window_when_completions_wait() {
         let (pool, _control_receivers, _priority_receivers, bulk_receivers, _fsp_completion) =
             test_worker_pool_with_fsp_completion_receivers(3, DECRYPT_WORKER_BULK_BATCH_MAX);
         let source_peer = test_source_peer();
@@ -570,18 +570,11 @@
             None,
             Some(&mut fsp_open_batcher),
         );
-        assert!(
-            fsp_open_batcher.flush(&shard.pool).is_empty(),
-            "same-owner backlog should not return opener work"
-        );
+        assert!(fsp_open_batcher.flush(&shard.pool).is_empty());
         assert_eq!(
             bulk_receivers[open_idx].len(),
-            0,
-            "backlogged owner completion lane should keep same-owner bulk off the opener path"
-        );
-        assert!(
-            bulk_receivers.iter().all(|rx| rx.is_empty()),
-            "backlogged same-owner bulk should stay local, not enqueue alternate worker work"
+            1,
+            "waiting owner completions should not create a local-open fallback path"
         );
         let published_shared = shard
             .pool
@@ -591,7 +584,7 @@
         assert_eq!(
             published_shared.next_ticket.load(Ordering::Relaxed),
             1,
-            "owner-local ordered path should issue the shared receive ticket"
+            "opener path should issue the shared receive ticket"
         );
     }
 
