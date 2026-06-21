@@ -80,10 +80,6 @@ pub(super) fn authenticated_bulk_preempts_packet_rx(transport_priority_packets: 
     transport_priority_packets == 0
 }
 
-pub(super) fn transport_bulk_needs_post_auth_packet_turn(transport_bulk_packets: usize) -> bool {
-    transport_bulk_packets >= FALLBACK_INTERLEAVE_EVERY
-}
-
 pub(super) fn rx_loop_slow_maintenance_fault_delay() -> Option<Duration> {
     let raw = std::env::var("FIPS_FAULT_INJECT_RX_LOOP_SLOW_MAINTENANCE_MS").ok()?;
     let ms = raw

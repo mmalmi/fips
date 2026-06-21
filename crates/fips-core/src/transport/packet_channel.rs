@@ -898,13 +898,6 @@ impl PacketRx {
             .saturating_add(self.priority_queued_packets())
     }
 
-    pub(crate) fn bulk_ready_packets(&self) -> usize {
-        self.pending_bulk
-            .as_ref()
-            .map_or(0, PendingPackets::len)
-            .saturating_add(self.bulk_queued_packets.load(Relaxed))
-    }
-
     pub async fn recv(&mut self) -> Option<ReceivedPacket> {
         loop {
             match self.try_recv() {

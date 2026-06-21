@@ -2,7 +2,7 @@ use super::budget::{
     CONTROL_QUERY_INTERLEAVE_BUDGET, ENDPOINT_COMMAND_COALESCE_MAX_PACKETS,
     FALLBACK_INTERLEAVE_BUDGET, FALLBACK_INTERLEAVE_EVERY, FallbackDrainPlan,
     NON_PACKET_DRAIN_BUDGET, PACKET_DRAIN_BUDGET, authenticated_bulk_preempts_packet_rx,
-    fallback_drain_plan, non_packet_drain_budget, transport_bulk_needs_post_auth_packet_turn,
+    fallback_drain_plan, non_packet_drain_budget,
 };
 use super::drain::{
     DecryptReturnDrainCursor, PacketDrainAction, PacketDrainCursor, PriorityBulkDrainCursor,
@@ -56,18 +56,6 @@ fn authenticated_bulk_yields_to_ready_transport_priority() {
     assert!(
         !authenticated_bulk_preempts_packet_rx(1),
         "bulk endpoint delivery should not preempt a ready control-sized transport packet"
-    );
-}
-
-#[test]
-fn authenticated_bulk_turn_drains_transport_bulk_under_pressure() {
-    assert!(!transport_bulk_needs_post_auth_packet_turn(0));
-    assert!(!transport_bulk_needs_post_auth_packet_turn(
-        FALLBACK_INTERLEAVE_EVERY - 1
-    ));
-    assert!(
-        transport_bulk_needs_post_auth_packet_turn(FALLBACK_INTERLEAVE_EVERY),
-        "a full interleave interval of transport bulk should cut ahead; packet drains interleave authenticated delivery"
     );
 }
 

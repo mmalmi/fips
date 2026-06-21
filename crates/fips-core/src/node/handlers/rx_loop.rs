@@ -253,24 +253,6 @@ impl Node {
                         None,
                         NON_PACKET_DRAIN_BUDGET,
                     ).await;
-                    let packet_drained = if transport_bulk_needs_post_auth_packet_turn(
-                        packet_rx.bulk_ready_packets(),
-                    ) {
-                        self.drain_packet_rx(
-                            &mut packet_rx,
-                            &mut decrypt_fallback_rx,
-                            Some(RxLoopSideQueues {
-                                control_query_rx: &mut control_query_rx,
-                                tun_outbound_rx: &mut tun_outbound_rx,
-                                endpoint_priority_command_rx: &mut endpoint_priority_command_rx,
-                                endpoint_command_rx: &mut endpoint_command_rx,
-                            }),
-                            None,
-                            PACKET_DRAIN_BUDGET,
-                        ).await
-                    } else {
-                        0
-                    };
                     let side_drained = self.drain_rx_loop_side_queues(
                         &mut control_query_rx,
                         &mut tun_outbound_rx,
@@ -278,7 +260,7 @@ impl Node {
                         &mut endpoint_command_rx,
                         SIDE_QUEUE_INTERLEAVE_BUDGET,
                     ).await;
-                    if fallback_drained > 0 || packet_drained > 0 || side_drained.has_data_drained() {
+                    if fallback_drained > 0 || side_drained.has_data_drained() {
                         maintenance_state.record_data_activity(Instant::now());
                     }
                 }
