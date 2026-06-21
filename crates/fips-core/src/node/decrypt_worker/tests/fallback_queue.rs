@@ -865,6 +865,52 @@
     }
 
     #[test]
+    fn decrypt_worker_priority_msg_uses_shared_output_batcher_without_waiting_for_flush() {
+        let session_key = test_session_key(1, 108);
+        let source_peer = test_source_peer();
+        let cipher = test_chacha_key([0x43; 32]);
+        let mut shard = test_shard();
+        shard.register_session(
+            0,
+            session_key,
+            OwnedSessionState::new(cipher.clone(), ReplayWindow::new(), source_peer),
+        );
+        let (fallback_tx, mut fallback_rx) = decrypt_worker_fallback_channels_with_caps(4, 4);
+        let (packet, header) = sealed_fmp_test_packet_with_link_body(&cipher, 1, 0, 1);
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
+
+        shard.handle_msg(
+            0,
+            WorkerMsg::Job(decrypt_job_for_test_packet(
+                packet,
+                header,
+                session_key,
+                1,
+                0,
+                fallback_tx,
+            )),
+            &mut plaintext_batch,
+        );
+
+        match fallback_rx
+            .priority
+            .try_recv()
+            .expect("priority output should not wait for explicit batch flush")
+        {
+            DecryptWorkerEvent::Plaintext(fallback) => {
+                assert_eq!(fallback.source_peer, source_peer);
+                assert_eq!(fallback.fmp_counter, 1);
+                assert_eq!(fallback.lane(), DecryptWorkerLane::Priority);
+            }
+            _ => panic!("expected priority plaintext output"),
+        }
+        assert!(
+            fallback_rx.bulk.try_recv().is_err(),
+            "priority output must not spill into the bulk fallback queue"
+        );
+    }
+
+    #[test]
     fn decrypt_worker_bulk_batch_interleaves_priority_work() {
         let session_key = test_session_key(1, 107);
         let mut shard = test_shard();

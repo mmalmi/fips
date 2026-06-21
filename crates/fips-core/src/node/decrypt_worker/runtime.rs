@@ -146,14 +146,16 @@ fn run_worker(
                 crate::perf_profile::record_decrypt_worker_select_control();
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_msg(&msg);
-                shard.handle_msg(idx, msg);
+                shard.handle_msg(idx, msg, &mut plaintext_batch);
+                plaintext_batch.flush();
                 batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::Priority(msg) => {
                 crate::perf_profile::record_decrypt_worker_select_priority();
                 let mut batch_stats = DecryptWorkerBatchStats::default();
                 batch_stats.add_msg(&msg);
-                shard.handle_msg(idx, msg);
+                shard.handle_msg(idx, msg, &mut plaintext_batch);
+                plaintext_batch.flush();
                 batch_stats.record(idx);
             }
             DecryptWorkerQueueItem::FspAeadCompletion(completions) => {
@@ -305,13 +307,13 @@ fn drain_worker_queues(
         did_work = true;
         crate::perf_profile::record_decrypt_worker_drain_control();
         batch_stats.add_msg(&msg);
-        shard.handle_msg(idx, msg);
+        shard.handle_msg(idx, msg, plaintext_batch);
     }
     while let Ok(msg) = priority_rx.try_recv() {
         did_work = true;
         crate::perf_profile::record_decrypt_worker_drain_priority();
         batch_stats.add_msg(&msg);
-        shard.handle_msg(idx, msg);
+        shard.handle_msg(idx, msg, plaintext_batch);
     }
     let mut drained_completion_packets = 0usize;
     let mut drained_bulk_jobs = 0;
@@ -321,7 +323,7 @@ fn drain_worker_queues(
             plaintext_batch.flush();
             crate::perf_profile::record_decrypt_worker_drain_control();
             batch_stats.add_msg(&msg);
-            shard.handle_msg(idx, msg);
+            shard.handle_msg(idx, msg, plaintext_batch);
             continue;
         }
         if let Ok(msg) = priority_rx.try_recv() {
@@ -329,7 +331,7 @@ fn drain_worker_queues(
             plaintext_batch.flush();
             crate::perf_profile::record_decrypt_worker_drain_priority();
             batch_stats.add_msg(&msg);
-            shard.handle_msg(idx, msg);
+            shard.handle_msg(idx, msg, plaintext_batch);
             continue;
         }
         if drained_completion_packets < DECRYPT_WORKER_AEAD_COMPLETION_DRAIN_BUDGET
@@ -558,7 +560,7 @@ fn handle_bulk_item(
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_control();
                     batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
+                    shard.handle_msg(idx, msg, plaintext_batch);
                 }
                 while let Ok(msg) = priority_rx.try_recv() {
                     fsp_batcher.flush(&shard.pool);
@@ -571,7 +573,7 @@ fn handle_bulk_item(
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_priority();
                     batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
+                    shard.handle_msg(idx, msg, plaintext_batch);
                 }
                 let mut completion_interleave_budget =
                     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;
@@ -620,7 +622,7 @@ fn handle_bulk_item(
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_control();
                     batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
+                    shard.handle_msg(idx, msg, plaintext_batch);
                 }
                 while let Ok(msg) = priority_rx.try_recv() {
                     flush_fsp_open_batcher(
@@ -632,7 +634,7 @@ fn handle_bulk_item(
                     plaintext_batch.flush();
                     crate::perf_profile::record_decrypt_worker_drain_priority();
                     batch_stats.add_msg(&msg);
-                    shard.handle_msg(idx, msg);
+                    shard.handle_msg(idx, msg, plaintext_batch);
                 }
                 let mut completion_interleave_budget =
                     DECRYPT_WORKER_AEAD_COMPLETION_INTERLEAVE_BUDGET;

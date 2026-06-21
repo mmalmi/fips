@@ -340,19 +340,25 @@
             !shard.contains_session(session_key),
             "new shard starts without session state"
         );
+        let mut plaintext_batch = DecryptPlaintextFallbackBatch::new();
         shard.handle_msg(
             0,
             WorkerMsg::RegisterSession {
                 session_key,
                 state: test_owned_session_state(),
             },
+            &mut plaintext_batch,
         );
         assert!(
             shard.contains_session(session_key),
             "registration must populate shard-owned state"
         );
 
-        shard.handle_msg(0, WorkerMsg::UnregisterSession { session_key });
+        shard.handle_msg(
+            0,
+            WorkerMsg::UnregisterSession { session_key },
+            &mut plaintext_batch,
+        );
         assert!(
             !shard.contains_session(session_key),
             "unregister must remove shard-owned state"
