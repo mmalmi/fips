@@ -427,6 +427,7 @@ impl Node {
             return None;
         }
         let socket_addr = current_addr.as_str()?.parse::<SocketAddr>().ok()?;
+        self.find_udp_transport_for_remote_addr(socket_addr)?;
 
         // A healthy current endpoint has already authenticated for this peer,
         // so prefer it over older static/overlay hints during idle refresh.
@@ -480,6 +481,15 @@ impl Node {
                 self.resolve_peer_address_for_match(candidate)
         {
             return peer_transport_id == candidate_transport_id && current_addr == &candidate_addr;
+        }
+        if candidate.transport == "udp"
+            && candidate.addr.parse::<SocketAddr>().is_ok()
+            && self
+                .transports
+                .values()
+                .any(|transport| transport.transport_type().name == "udp")
+        {
+            return false;
         }
         if peer
             .transport_id()

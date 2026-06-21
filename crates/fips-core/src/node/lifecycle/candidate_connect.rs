@@ -303,8 +303,9 @@ impl Node {
             })
             .filter_map(|(id, handle)| {
                 let local_addr = handle.local_addr()?;
-                socket_addr_families_compatible(local_addr, remote_addr)
-                    .then_some((*id, local_addr))
+                (socket_addr_families_compatible(local_addr, remote_addr)
+                    && udp_remote_addr_locally_plausible(local_addr, remote_addr))
+                .then_some((*id, local_addr))
             })
             .min_by_key(|(id, _)| id.as_u32())
     }
