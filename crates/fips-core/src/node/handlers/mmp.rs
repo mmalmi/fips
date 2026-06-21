@@ -1067,13 +1067,18 @@ impl Node {
     }
 }
 
+const TRAVERSAL_PATH_LIVENESS_FLOOR: Duration = Duration::from_secs(15);
+
 pub(in crate::node) fn traversal_path_liveness_timeout(
     heartbeat_interval_secs: u64,
     dead_timeout: Duration,
     fast_dead_timeout: Duration,
 ) -> Duration {
     let heartbeat = Duration::from_secs(heartbeat_interval_secs.max(1));
-    let recent_path_timeout = heartbeat.saturating_mul(2).max(fast_dead_timeout);
+    let recent_path_timeout = heartbeat
+        .saturating_mul(2)
+        .max(fast_dead_timeout)
+        .max(TRAVERSAL_PATH_LIVENESS_FLOOR);
     recent_path_timeout.max(fast_dead_timeout).min(dead_timeout)
 }
 

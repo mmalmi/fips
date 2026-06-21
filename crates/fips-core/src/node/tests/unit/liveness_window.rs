@@ -80,15 +80,15 @@ fn session_direct_degradation_owns_hold_extension_expiry_and_clear() {
 }
 
 #[test]
-fn traversal_path_liveness_uses_configured_fast_dead_floor() {
+fn traversal_path_liveness_keeps_mobile_safe_floor() {
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(
             2,
             std::time::Duration::from_secs(30),
             std::time::Duration::from_secs(5),
         ),
-        std::time::Duration::from_secs(5),
-        "short-heartbeat products should use the configured fast-dead floor, not a global 15s floor"
+        std::time::Duration::from_secs(15),
+        "short-heartbeat traversal paths should not collapse to the 5s local-failure floor"
     );
     assert_eq!(
         crate::node::handlers::traversal_path_liveness_timeout(
@@ -98,6 +98,15 @@ fn traversal_path_liveness_uses_configured_fast_dead_floor() {
         ),
         std::time::Duration::from_secs(20),
         "default FIPS heartbeat keeps a two-heartbeat traversal liveness window"
+    );
+    assert_eq!(
+        crate::node::handlers::traversal_path_liveness_timeout(
+            2,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(20),
+        ),
+        std::time::Duration::from_secs(20),
+        "an explicitly higher fast floor should still be honored"
     );
 }
 
@@ -109,8 +118,8 @@ fn traversal_path_quiet_refresh_uses_heartbeat_and_fast_dead_floor() {
             std::time::Duration::from_secs(5),
             std::time::Duration::from_secs(30),
         ),
-        std::time::Duration::from_secs(4),
-        "short-heartbeat products should refresh shortly before the configured fast-dead floor"
+        std::time::Duration::from_secs(5),
+        "short-heartbeat products should refresh at the local-failure fast floor before the traversal liveness floor"
     );
     assert_eq!(
         crate::node::handlers::traversal_path_quiet_refresh_timeout(
