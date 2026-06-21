@@ -726,6 +726,39 @@
     }
 
     #[test]
+    fn fsp_open_completion_send_reports_closed_owner_channel() {
+        let (pool, _control, _priority, _bulk, mut fsp_completion_receivers) =
+            test_worker_pool_with_fsp_completion_receivers(3, 4);
+        let source_addr = NodeAddr::from_bytes([0x49; 16]);
+        let owner_idx = 0;
+        let current_idx = 1;
+        let header_bytes = crate::node::session_wire::build_fsp_header(1, 0, 1);
+        let mut header_packet = header_bytes.to_vec();
+        header_packet.extend_from_slice(&[0u8; 16]);
+        let header = FspEncryptedHeader::parse(&header_packet).expect("test FSP header");
+        let mut open_job = test_fsp_aead_open_job(
+            source_addr,
+            0,
+            Arc::new(test_chacha_key([0x61; 32])),
+            header,
+            Some(owner_idx),
+        );
+        open_job.completion_source = FspAeadCompletionSource::WorkerOpen;
+        open_job.mark_returned_completion();
+        drop(fsp_completion_receivers.remove(owner_idx));
+
+        assert!(
+            !send_fsp_aead_open_completion_batch(
+                current_idx,
+                &pool,
+                owner_idx,
+                FspAeadCompletionBatch::one(open_job.into_dropped_completion()),
+            ),
+            "closed owner completion lane must be reported to the caller"
+        );
+    }
+
+    #[test]
     fn returned_owner_mismatch_fsp_open_jobs_send_one_dropped_completion_batch_to_owner() {
         let (pool, _control, _priority, _bulk, fsp_completion_receivers) =
             test_worker_pool_with_fsp_completion_receivers(3, 4);

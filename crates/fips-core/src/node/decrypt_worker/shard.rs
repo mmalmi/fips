@@ -607,9 +607,12 @@ impl DecryptWorkerShard {
             return;
         }
         if let Some(owner_idx) = completion_owner_idx {
-            let _ = self
-                .pool
-                .send_fsp_aead_completion_batch(owner_idx, FspAeadCompletionBatch::one(completion));
+            send_fsp_aead_open_completion_batch(
+                idx,
+                &self.pool,
+                owner_idx,
+                FspAeadCompletionBatch::one(completion),
+            );
         }
     }
 
@@ -683,7 +686,7 @@ impl DecryptWorkerShard {
             return;
         }
         if let Some(owner_idx) = completion_owner_idx {
-            let _ = self.pool.send_fsp_aead_completion_batch(owner_idx, batch);
+            send_fsp_aead_open_completion_batch(idx, &self.pool, owner_idx, batch);
         }
     }
 

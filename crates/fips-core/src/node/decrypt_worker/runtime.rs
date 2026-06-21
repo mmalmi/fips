@@ -430,14 +430,22 @@ fn send_fsp_aead_open_completion_batch(
     pool: &DecryptWorkerPool,
     owner_idx: usize,
     batch: FspAeadCompletionBatch,
-) {
-    if !pool.send_fsp_aead_completion_batch(owner_idx, batch) {
-        debug!(
-            worker = idx,
-            owner = owner_idx,
-            "FSP AEAD opener completion owner gone; dropping completion"
-        );
+) -> bool {
+    let count = batch.len();
+    if pool.send_fsp_aead_completion_batch(owner_idx, batch) {
+        return true;
     }
+    record_fsp_aead_completion_drop(
+        crate::perf_profile::Event::FspAeadCompletionStaleSession,
+        count,
+    );
+    debug!(
+        worker = idx,
+        owner = owner_idx,
+        completions = count,
+        "FSP AEAD opener completion owner gone; dropping completion"
+    );
+    false
 }
 
 fn complete_fsp_aead_open_jobs(
