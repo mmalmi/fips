@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.3.75] - 2026-06-21
+
+### Fixed
+
+- Probed healthy direct endpoint paths even while fallback affinity is active,
+  so recovered LAN paths can reclaim endpoint payload traffic instead of
+  staying pinned to stale fallback routing.
+- Preferred recent authenticated direct payload evidence over stale learned
+  fallback cost, preventing reverse transfers from staying slow after the
+  direct path has already recovered.
+- Bumped `fips-endpoint` to 0.3.50 so app-facing consumers pick up the
+  `fips-core` 0.3.75 path-freshness fixes.
+
 ## [0.3.74] - 2026-06-21
 
 ### Fixed
