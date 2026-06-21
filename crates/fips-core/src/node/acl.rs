@@ -415,12 +415,15 @@ impl PeerAclReloader {
 }
 
 impl Node {
-    fn enforces_configured_only_peer_admission(&self) -> bool {
+    pub(in crate::node) fn enforces_configured_only_peer_admission(&self) -> bool {
         self.config.node.discovery.nostr.enabled
             && self.config.node.discovery.nostr.policy == NostrDiscoveryPolicy::ConfiguredOnly
     }
 
-    fn is_configured_peer_identity(&self, peer_identity: &PeerIdentity) -> bool {
+    pub(in crate::node) fn is_configured_peer_identity(
+        &self,
+        peer_identity: &PeerIdentity,
+    ) -> bool {
         self.configured_peer(peer_identity.node_addr()).is_some()
     }
 

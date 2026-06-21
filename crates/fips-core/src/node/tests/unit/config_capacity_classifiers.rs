@@ -427,6 +427,49 @@ async fn poll_nostr_discovery_established_gated_at_capacity() {
 }
 
 #[tokio::test]
+async fn poll_nostr_discovery_configured_only_drops_nonconfigured_handoff() {
+    use crate::discovery::EstablishedTraversal;
+    use std::net::UdpSocket;
+
+    let mut node = make_node();
+    node.config.node.discovery.nostr.enabled = true;
+    node.config.node.discovery.nostr.policy = crate::config::NostrDiscoveryPolicy::ConfiguredOnly;
+
+    let stranger = Identity::generate();
+    let stranger_peer = PeerIdentity::from_npub(&stranger.npub()).expect("stranger peer identity");
+    let stranger_addr = *stranger_peer.node_addr();
+
+    let bootstrap = Arc::new(NostrDiscovery::new_for_test());
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("bind local UDP socket");
+    let remote_addr = "127.0.0.1:9999".parse().expect("parse remote addr");
+    bootstrap.push_event_for_test(BootstrapEvent::Established {
+        traversal: EstablishedTraversal::new(
+            "configured-only-stranger",
+            stranger.npub(),
+            remote_addr,
+            socket,
+        ),
+    });
+    node.nostr_discovery = Some(bootstrap);
+
+    let before_peers = node.peer_count();
+    let before_links = node.link_count();
+    let before_connections = node.connection_count();
+    let before_transports = node.transports.len();
+
+    node.poll_nostr_discovery().await;
+
+    assert_eq!(node.peer_count(), before_peers);
+    assert_eq!(node.link_count(), before_links);
+    assert_eq!(node.connection_count(), before_connections);
+    assert_eq!(node.transports.len(), before_transports);
+    assert!(
+        !node.retry_pending.contains_key(&stranger_addr),
+        "non-configured traversal handoffs must not schedule retries under configured-only discovery"
+    );
+}
+
+#[tokio::test]
 async fn poll_nostr_discovery_failed_active_peer_keeps_quick_reprobe() {
     let peer_identity = Identity::generate();
     let peer_config = crate::config::PeerConfig {
