@@ -1,6 +1,6 @@
 use crate::control::ControlMessage;
-use crate::node::NodeEndpointCommand;
 use crate::node::decrypt_worker::{DecryptJob, DecryptWorkerFallbackReceivers};
+use crate::node::{EndpointBulkSendFeedback, NodeEndpointCommand};
 use crate::transport::{PacketRx, ReceivedPacket};
 use crate::upper::tun::TunOutboundRx;
 use std::time::{Duration, Instant};
@@ -34,6 +34,7 @@ pub(super) enum PacketDrainAction<T> {
 
 pub(super) struct RxLoopSideQueues<'a> {
     pub(super) control_query_rx: &'a mut Receiver<ControlMessage>,
+    pub(super) endpoint_bulk_feedback_rx: &'a mut Receiver<EndpointBulkSendFeedback>,
     pub(super) tun_outbound_rx: &'a mut TunOutboundRx,
     pub(super) endpoint_priority_command_rx: &'a mut Receiver<NodeEndpointCommand>,
     pub(super) endpoint_command_rx: &'a mut Receiver<NodeEndpointCommand>,
@@ -45,6 +46,7 @@ pub(super) fn decrypt_fallback_has_ready(rx: &DecryptWorkerFallbackReceivers) ->
 
 pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>) -> bool {
     !side_queues.control_query_rx.is_empty()
+        || !side_queues.endpoint_bulk_feedback_rx.is_empty()
         || !side_queues.tun_outbound_rx.is_empty()
         || !side_queues.endpoint_priority_command_rx.is_empty()
         || !side_queues.endpoint_command_rx.is_empty()
@@ -54,6 +56,7 @@ pub(super) fn rx_loop_side_queues_have_ready(side_queues: &RxLoopSideQueues<'_>)
 pub(super) struct RxLoopDataDrainStats {
     pub(super) packets: usize,
     pub(super) decrypt: usize,
+    pub(super) endpoint_feedback: usize,
     pub(super) tun: usize,
     pub(super) endpoint: usize,
     pub(super) control: usize,
@@ -65,12 +68,14 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt: 0,
+            endpoint_feedback: 0,
             tun,
             endpoint,
             control: 0,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn with_decrypt(
         packets: usize,
         decrypt: usize,
@@ -80,6 +85,24 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt,
+            endpoint_feedback: 0,
+            tun,
+            endpoint,
+            control: 0,
+        }
+    }
+
+    pub(super) fn with_feedback(
+        packets: usize,
+        decrypt: usize,
+        endpoint_feedback: usize,
+        tun: usize,
+        endpoint: usize,
+    ) -> Self {
+        Self {
+            packets,
+            decrypt,
+            endpoint_feedback,
             tun,
             endpoint,
             control: 0,
@@ -88,6 +111,7 @@ impl RxLoopDataDrainStats {
 
     pub(super) fn with_control(
         packets: usize,
+        endpoint_feedback: usize,
         tun: usize,
         endpoint: usize,
         control: usize,
@@ -95,6 +119,7 @@ impl RxLoopDataDrainStats {
         Self {
             packets,
             decrypt: 0,
+            endpoint_feedback,
             tun,
             endpoint,
             control,
@@ -102,7 +127,7 @@ impl RxLoopDataDrainStats {
     }
 
     pub(super) fn data_total(&self) -> usize {
-        self.packets + self.decrypt + self.tun + self.endpoint
+        self.packets + self.decrypt + self.endpoint_feedback + self.tun + self.endpoint
     }
 
     pub(super) fn total(&self) -> usize {
