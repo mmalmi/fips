@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dropped established Nostr traversal handoffs from non-configured peers before
   socket adoption when configured-only discovery is active, avoiding ambient
   relay churn on roster-only nodes.
+- Cleared pending direct-probe retries as soon as authenticated direct payload
+  data returns, preventing repeated refresh churn on paths that have already
+  recovered.
 - Restored the 30s/three-heartbeat traversal/recent-endpoint liveness floor so
   short-heartbeat products do not demote mobile/NAT paths at the 5s
   local-route-failure floor.

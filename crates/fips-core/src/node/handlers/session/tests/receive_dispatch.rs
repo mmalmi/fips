@@ -60,6 +60,81 @@
     }
 
     #[test]
+    fn direct_session_receive_clears_direct_probe_retry() {
+        use crate::PeerIdentity;
+        use crate::config::{ConnectPolicy, PeerAddress, PeerConfig};
+        use crate::node::retry::RetryState;
+        use crate::peer::ActivePeer;
+        use crate::transport::{LinkId, LinkStats, TransportAddr, TransportId};
+        use crate::utils::index::SessionIndex;
+
+        let local = Identity::generate();
+        let peer = Identity::generate();
+        let peer_identity = PeerIdentity::from_pubkey_full(peer.pubkey_full());
+        let peer_addr = *peer_identity.node_addr();
+        let peer_config = PeerConfig {
+            npub: peer.npub(),
+            alias: None,
+            addresses: vec![PeerAddress::with_priority("udp", "203.0.113.9:2121", 1)],
+            connect_policy: ConnectPolicy::AutoConnect,
+            auto_reconnect: true,
+            discovery_fallback_transit: true,
+        };
+
+        let mut config = crate::config::Config::new();
+        config.peers.push(peer_config.clone());
+        let mut node = Node::with_identity(local, config).expect("node");
+        node.config.node.heartbeat_interval_secs = 10;
+
+        let mut active_peer = ActivePeer::with_session(
+            peer_identity,
+            LinkId::new(9),
+            1_000,
+            make_xk_session(&node.identity, &peer),
+            SessionIndex::new(0x1010),
+            SessionIndex::new(0x2020),
+            TransportId::new(0x55),
+            TransportAddr::from_string("198.51.100.20:61062"),
+            LinkStats::new(),
+            true,
+            &node.config.node.mmp,
+            None,
+        );
+        active_peer.touch(Node::now_ms().saturating_sub(11_000));
+        node.peers
+            .insert_with_current_session_index(peer_addr, active_peer);
+
+        let mut session = SessionEntry::new(
+            peer_addr,
+            peer.pubkey_full(),
+            EndToEndState::Established(make_xk_session(&node.identity, &peer)),
+            1_000,
+            true,
+        );
+        session.record_outbound_next_hop(peer_addr);
+        node.sessions.insert(peer_addr, session);
+
+        let mut retry = RetryState::new(peer_config);
+        retry.reconnect = true;
+        node.retry_pending.insert(peer_addr, retry);
+
+        SessionDispatchCommit {
+            source_addr: peer_addr,
+            receive_completion: Some(SessionReceiveCompletion {
+                source_addr: peer_addr,
+                body_len: 512,
+                direct_path: true,
+            }),
+        }
+        .finish_receive(&mut node);
+
+        assert!(
+            !node.retry_pending.contains_key(&peer_addr),
+            "fresh authenticated payload return on the direct peer path should stop direct-probe churn"
+        );
+    }
+
+    #[test]
     fn fsp_receive_sync_requests_worker_refresh_only_on_epoch_promotion() {
         let local = Identity::generate();
         let peer = Identity::generate();
