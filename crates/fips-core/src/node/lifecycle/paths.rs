@@ -269,13 +269,15 @@ impl Node {
         &mut self,
         peer_node_addr: &NodeAddr,
     ) {
-        let keep_retry = self
+        let Some(peer_config) = self
             .retry_pending
             .get(peer_node_addr)
             .map(|state| state.peer_config.clone())
-            .is_some_and(|peer_config| {
-                self.active_peer_should_keep_direct_retry(peer_node_addr, &peer_config)
-            });
+        else {
+            return;
+        };
+
+        let keep_retry = self.active_peer_should_keep_direct_retry(peer_node_addr, &peer_config);
 
         if !keep_retry {
             self.retry_pending.remove(peer_node_addr);
